@@ -58,19 +58,19 @@ function withStyles(): HTMLStyleElement {
 function me(over: Partial<Me['principal']> = {}): Me {
   return {
     tenant: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       kind: 'user',
       principal: 'someone@example.com',
-      display_name: 'Bogdan',
+      display_name: 'Alex',
       created_at: new Date().toISOString(),
       max_active: 4,
       capacity_units: 8,
       monthly_budget_usd: null,
       enabled: true,
       credentials: ['anthropic'],
-      service_account: 'swarm-agent-worker-u-bogdan@example.iam.gserviceaccount.com',
-      gcs_prefix: 'tenants/u-bogdan',
-      namespace: 'swarm-tenant-u-bogdan',
+      service_account: 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com',
+      gcs_prefix: 'tenants/u-owner',
+      namespace: 'swarm-tenant-u-owner',
     },
     principal: {
       email: 'someone@example.com',
@@ -588,7 +588,7 @@ describe('the frame', () => {
     // signed-in principal in the panel's foot. The caller's own personal
     // workspace is `Your workspace` whatever its document says (admin-shell-21).
     await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Your workspace'))
-    expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-bogdan')
+    expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-owner')
     // Its role line carries the address in its title (S1a, CONFIG-ADMIN-POLISH).
     expect(c.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('someone@example.com')
   })
@@ -603,7 +603,7 @@ describe('the frame', () => {
     expect(c.querySelector('.sk-pfoot b')?.textContent).toBe('not read')
     // And no invented tenant or principal anywhere in the frame.
     expect(c.querySelector('.sk-cp'), 'a copy control for a tenant id nobody read').toBeNull()
-    expect(c.textContent).not.toContain('u-bogdan')
+    expect(c.textContent).not.toContain('u-owner')
     expect(c.querySelector('.sk-pfoot small')).toBeNull()
     expect(c.querySelector('.sk-pbar .sk-tn')).toBeNull()
   })
@@ -717,12 +717,12 @@ describe('CH-20: the identity at phone width', () => {
       })
       expect(copy.tagName, 'the tenant id is not a control').toBe('BUTTON')
       expect(copy.getAttribute('type')).toBe('button')
-      expect(copy.getAttribute('title')).toBe('u-bogdan')
-      expect(copy.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(/copy.*u-bogdan/i)
+      expect(copy.getAttribute('title')).toBe('u-owner')
+      expect(copy.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(/copy.*u-owner/i)
       await act(async () => {
         fireEvent.click(copy)
       })
-      expect(writeText).toHaveBeenCalledWith('u-bogdan')
+      expect(writeText).toHaveBeenCalledWith('u-owner')
       // Said, not silent: the outcome is announced beside the control, and
       // the announcement is not drawn.
       const said = c.querySelector('.sk-tenant [role="status"]')!

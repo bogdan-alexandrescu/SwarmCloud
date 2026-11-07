@@ -20,8 +20,8 @@ documents lose `<id>` from their `lend_to` lists.
 **The two decisions this runbook exists for.**
 
 * Owner decision, 2026-09-24: the reconciler does **not** garbage-collect GKE
-  tenant namespaces, and it is not getting a ClusterRole so that it could. PR
-  #32 (commit `8a533b0`) removed the reconciler's cluster-scope list and delete
+  tenant namespaces, and it is not getting a ClusterRole so that it could. The
+  cluster-scope-removal change (commit `8a533b0`) removed the reconciler's cluster-scope list and delete
   calls; `GkeBackend.list_job_resources` in
   `apps/reconciler/reconciler/backends.py` now returns nothing, by design. A
   Namespace is a cluster-scoped object, so collecting one needs cluster-scope
@@ -37,13 +37,13 @@ documents lose `<id>` from their `lend_to` lists.
   the deleting in [step 6](#6-delete-everything-the-tenant-left), and proves it
   before it releases the id. Provider secrets stay terraform's to delete, when
   the tenant leaves tfvars in step 7; the owner chose not to add deletion
-  protection to them. Owner decision, BGD 2026-10-22 (#1977): the same step 6
+  protection to them. Owner decision, [the owner] 2026-10-22: the same step 6
   run also deletes the forge slot `swarm-tenant-<id>-git` and the QA secret
   `swarm-tenant-<id>-qa`, by those exact ids and behind the same typed
   confirmation, so an id registered again starts with empty slots.
 
-> **The deny-list.** `saga-agents-staging` is a shared project. It holds
-> another team's live GKE cluster `agents-staging`, their VPC, their buckets,
+> **The deny-list.** `example-project` is a shared project. It holds
+> another team's live GKE cluster `peer-cluster`, their VPC, their buckets,
 > their service accounts and their Cloud Run services. The list of protected names lives
 > once, in `SHARED_DENY_LIST` in `scripts/lib/common.sh`, and is not copied
 > here (a second copy is how the two drift). Print the live list with:
@@ -60,13 +60,13 @@ documents lose `<id>` from their `lend_to` lists.
 >
 > | What | The only shapes this runbook touches |
 > |---|---|
-> | Service account | `swarm-agent-worker-<id>@saga-agents-staging.iam.gserviceaccount.com` (deleted) |
+> | Service account | `swarm-agent-worker-<id>@example-project.iam.gserviceaccount.com` (deleted) |
 > | Secrets | `swarm-tenant-<id>-<p>`, `swarm-tenant-<id>-<p>-refresh`, `swarm-account-<id>--<label>`, `swarm-account-<id>--<label>-refresh`, each also labelled `tenant=<id>` |
 > | Cloud Run jobs | `swarm-job-<id>-<profile>` and `swarm-job-<id>-<profile>-<class>`, each also labelled `swarm-tenant=<id>` |
 > | GKE | namespace `swarm-tenant-<id>` (or the older `swarm-<id>`, row B2), labelled `swarm-tenant=<id>`, through context `swarm-dev` to cluster `swarm-autopilot` only |
-> | GCS | objects under `gs://swarm-artifacts-saga-agents-staging/tenants/<id>/`; never the bucket |
+> | GCS | objects under `gs://swarm-artifacts-example-project/tenants/<id>/`; never the bucket |
 > | Firestore | documents in the database named `swarm` (never `(default)`): `tenants/<id>`, `pools/tenant:<id>`, `pools/provider:<p>:tenant:<id>`, `accounts/<id>:<label>`, `quota/<p>:<id>`, `credential_publications/<one of the secret names above>`, and the `tasks` (with their `events`), `attempts`, `leases`, `workflows`, `outcome_days` and `account_auth` documents whose `tenant_id` or `owner_tenant` field is `<id>` |
-> | IAM policies (edited) | the project's, `swarm-artifacts-saga-agents-staging`'s, `swarm-images`' and `swarm-quota-broker`'s, and only by removing the member `serviceAccount:swarm-agent-worker-<id>@...` or its `deleted:serviceAccount:...?uid=<digits>` form |
+> | IAM policies (edited) | the project's, `swarm-artifacts-example-project`'s, `swarm-images`' and `swarm-quota-broker`'s, and only by removing the member `serviceAccount:swarm-agent-worker-<id>@...` or its `deleted:serviceAccount:...?uid=<digits>` form |
 > | Other tenants' accounts (edited) | the `lend_to` field of `accounts/<other>:<label>`, and only by removing `<id>` from it |
 >
 > Two things the shapes alone do not settle, and how the runbook settles them:
@@ -77,11 +77,11 @@ documents lose `<id>` from their `lend_to` lists.
 >   exact label (`tenant=<id>`, `swarm-tenant=<id>`, a `tenant_id` equality
 >   filter) and check the name only as a second guard. A command that selects by
 >   a name prefix alone is not one of this runbook's.
-> * **The project id itself contains the string `agents-staging`**, so "the
->   command mentions agents-staging" is not the test. The test for a kube
+> * **The project id itself contains the string `peer-cluster`**, so "the
+>   command mentions peer-cluster" is not the test. The test for a kube
 >   context is the segment after its last `_`: ours is `swarm-autopilot`,
->   theirs is `agents-staging`
->   (`gke_saga-agents-staging_us-central1-a_agents-staging`, which is the
+>   theirs is `peer-cluster`
+>   (`gke_example-project_us-central1-a_peer-cluster`, which is the
 >   *current* context in a default kubeconfig on the reference workstation).
 
 Background: [multi-tenancy](../multi-tenancy.md#5-tenant-lifecycle) for what a
@@ -104,7 +104,7 @@ filters and IAM shapes below were checked against the live dev project on
 2026-09-24.
 
 `<id>` is the tenant id, `<p>` a provider in the tenant's `providers` list,
-`<project>` is `saga-agents-staging`.
+`<project>` is `example-project`.
 
 ### A. Removed by terraform when the tenant is dropped from tfvars
 
@@ -184,8 +184,7 @@ What stays whatever you do, and is worth saying so nobody reports it deleted:
   and `accounts/<id>:<label>` have predictable ids; task ids do not. Whether a
   read at a past time needs more than `datastore.entities.get` was **not**
   verified.
-* Firestore's daily backups of the `swarm` database (#1818,
-  `terraform/modules/firestore/backups.tf`). Each daily backup holds the whole
+* Firestore's daily backups of the `swarm` database (`terraform/modules/firestore/backups.tf`). Each daily backup holds the whole
   database as it was that day, every tenant included, and is kept 7 days
   (`backup_retention`, `604800s`). So backups keep an offboarded tenant's
   documents for up to 7 days after step 6, the same window as point-in-time
@@ -196,7 +195,7 @@ What stays whatever you do, and is worth saying so nobody reports it deleted:
   permission. A tenant's worker holds neither: its `swarmTenantWorkerFirestore`
   role (`terraform/bootstrap/platform_roles.tf`) is `databases.get` plus
   document get, create and update. Nothing in this runbook deletes a backup
-  early: shortening the window is the owner's call, on #1818.
+  early: shortening the window is the owner's call.
 * Firestore exports that `scripts/purge-data.sh` wrote earlier, for some other
   purge, to `gs://<bucket>/backups/purge-<timestamp>`. Each holds the whole
   database, every tenant included, until the bucket's age rule expires it after
@@ -240,7 +239,7 @@ a typo):
 
 ```bash
 sed -n '/^tenants = {/,/^}/p' terraform/environments/dev/dev.tfvars | grep -E '^  [a-z0-9-]+ = \{'
-# on 2026-09-24:  eng = {   smoke = {   u-sw-c90291 = {   u-bogdan = {
+# on 2026-09-24:  eng = {   smoke = {   u-sw-c90291 = {   example-tenant = {
 ```
 
 Terraform-declared tenants follow steps 0 to 11. A tenant made by
@@ -272,7 +271,7 @@ runbook shortens any of them.
 
 **Offboarding a tenant is not revoking people.** Who may pass IAP is
 `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, and today it
-is `domain:saga.xyz`. After this runbook, a member of an offboarded group who
+is `domain:example.com`. After this runbook, a member of an offboarded group who
 still signs in falls back to a personal `u-<user>` tenant, which the API creates
 on first sight with no GSA, no secrets and no namespace (their work parks or
 fails to dispatch with a missing identity). A personal tenant whose person keeps
@@ -310,7 +309,7 @@ Put the tenant id between the quotes on the third line, and keep the quotes:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-export ENVIRONMENT=dev PROJECT_ID=saga-agents-staging REGION=us-central1
+export ENVIRONMENT=dev PROJECT_ID=example-project REGION=us-central1
 TENANT='<id>'
 unset GSA OUT ARTIFACT_BUCKET
 case "$TENANT" in
@@ -332,7 +331,7 @@ refuses an empty or malformed id itself, but not every command does:
 `scripts/purge-data.sh`, which this runbook used to call, given
 `--tenant ""` has no tenant filter at all: it would delete every
 tenant's records, every tenant's provider keys (measured 2026-09-24: six
-secrets across `eng` and `u-bogdan` carry `component=tenant-credential`) and
+secrets across `eng` and `example-tenant` carry `component=tenant-credential`) and
 everything under `tenants/` in the bucket. So a failed check here removes
 `TENANT`, `GSA`, `OUT` and `ARTIFACT_BUCKET`, and every later block that
 deletes or writes refuses to start without them. The rule is the one
@@ -382,7 +381,7 @@ export KUBECONFIG="$PWD/build/kubeconfig-${ENVIRONMENT}.yaml"
 
 `scripts/configure-kubectl.sh` writes a kubeconfig holding only the swarm
 cluster, refuses to fetch credentials for anything on the deny-list, and
-renames the generated context `gke_saga-agents-staging_us-central1_swarm-autopilot`
+renames the generated context `gke_example-project_us-central1_swarm-autopilot`
 to `swarm-dev`. **The context to use is `swarm-dev`**, and every kubectl command
 below names it explicitly rather than trusting `current-context`.
 
@@ -404,7 +403,7 @@ echo "TENANT=${TENANT:-UNSET} GSA=${GSA:-UNSET} OUT=${OUT:-UNSET} KUBECTL=${KUBE
 ```
 
 Expect no `UNSET` on the first line, and exactly
-`gke_saga-agents-staging_us-central1_swarm-autopilot` on the second. The segment
+`gke_example-project_us-central1_swarm-autopilot` on the second. The segment
 after the last `_` must be `swarm-autopilot`. Anything else, including an empty
 line: stop, and run `make kubectl` again.
 
@@ -997,7 +996,7 @@ whatever their condition:
 
 ```bash
 gcloud projects remove-iam-policy-binding "$PROJECT_ID" --role <role as printed> \
-  --member 'deleted:serviceAccount:swarm-agent-worker-<id>@saga-agents-staging.iam.gserviceaccount.com?uid=<digits>' \
+  --member 'deleted:serviceAccount:swarm-agent-worker-<id>@example-project.iam.gserviceaccount.com?uid=<digits>' \
   --all
 ```
 
@@ -1525,7 +1524,7 @@ the exact labels, then by the exact names, as every deletion here is:
 
 `gcloud secrets delete` asks for each one. Expect two names. A person who
 connected GitHub through the App may have more `managed-by=swarm-api` secrets;
-the `case` skips them and prints each, and they are #780's, outside this
+the `case` skips them and prints each, and they are a separate, known issue, outside this
 runbook.
 
 **The workspace's Firestore records** in the `swarm` database:
@@ -1558,7 +1557,7 @@ workspace, and the Cloud Run job `swarm-workspace-apply` made it
 2026-10-19 against `main`: **no tool removes one**, and none has been made in
 any environment yet. The deprovisioning run stays separate and unbuilt (owner
 answer Q9 (a), [workspaces.md §7](../workspaces.md#7-deprovisioning-a-follow-up-not-built-now)).
-The four Terraform tenants (`eng`, `smoke`, `u-sw-c90291`, `u-or-9a0792`)
+The four Terraform tenants (`eng`, `smoke`, `u-sw-c90291`, `team-a`)
 are not this section's. They have no such record and leave by the main path.
 
 **Stop it at once, before deleting anything.** Two writes, both reversible:
@@ -1595,7 +1594,7 @@ are not this section's. They have no such record and leave by the main path.
 [a tenant never in terraform](#if-the-tenant-was-never-in-terraform): steps
 0 to 6, that section in place of step 7, then steps 8 to 11. That removes the
 worker account `swarm-agent-worker-<id>` and its project and bucket bindings,
-the namespace (step 9: the job labelled it `swarm.saga.xyz/workspace`, and
+the namespace (step 9: the job labelled it `swarm.example.com/workspace`, and
 deleting it is still a person's job), and `tenants/<id>/` with its `.tenant`
 marker. Before step 11, also remove the following.
 

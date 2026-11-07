@@ -187,6 +187,7 @@ import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, wit
 import { TriageChip, useVerdictTriage } from './DecisionCard'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import { WorkflowFacts, WorkflowRepoCell, WorkflowRepoUnder, workflowName } from './WorkflowFacts'
+import { OneRowName } from './OneRowName'
 import { Mark } from './primitives'
 import { stateWord } from './words'
 import './styles/workflows.css'
@@ -6134,7 +6135,7 @@ function WorkflowListRow({
           title={named.showId ? `${named.name} · ${workflow.workflow_id}` : named.name}
           onClick={(e) => e.stopPropagation()}
         >
-          {named.name}
+          <OneRowName name={named.name} title={named.showId ? `${named.name} · ${workflow.workflow_id}` : named.name} />
         </a>
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
@@ -6966,7 +6967,7 @@ function WorkflowHead({
 }
 
 /**
- * BEHIND THE FINISHED WORKFLOW'S QUIET TICK (BGD's pick "Only what still holds
+ * BEHIND THE FINISHED WORKFLOW'S QUIET TICK (the owner's pick "Only what still holds
  * work", 6 November 2026): each asking step's "Questions for you" card, read
  * and answered through the task's own questions route, as on its page. The
  * list read serves a step's open indices, not the file's count, so a task

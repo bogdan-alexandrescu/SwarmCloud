@@ -402,7 +402,7 @@ def seed_stranded(
 
 def config(**overrides: Any) -> ReconcilerConfig:
     base: dict[str, Any] = dict(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,
@@ -479,14 +479,14 @@ def event_types(db: FakeFirestore, task_id: str) -> list[str]:
 def test_the_reconciler_never_asks_the_cluster_for_anything_cluster_scoped():
     """(1) The live 403, as a test.
 
-    Four registered tenants, as in saga-agents-staging on 2026-09-24 -- and only
+    Four registered tenants, as in example-project on 2026-09-24 -- and only
     `eng`'s namespace carries the `swarm-reaper` binding. The other three answer
     403 like a missing namespace does. That must cost nothing: none of them
     holds an attempt, so none is an error, and GKE is not "unavailable".
     """
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
-    for other in ("smoke", "u-bogdan", "u-sw-c90291"):
+    for other in ("smoke", "u-owner", "u-sw-c90291"):
         seed_tenant(db, other)
     batch, core = RbacBatchApi(listable={ENG_NS}), RbacCoreApi()
     rec, stream = reconciler(db, gke(batch, core))
@@ -500,9 +500,9 @@ def test_the_reconciler_never_asks_the_cluster_for_anything_cluster_scoped():
     assert ENG_NS in batch.listed()
     # Every registered tenant's namespace was asked about, by the dispatcher's
     # own naming rule -- and the three refusals are recorded, not raised.
-    assert {f"{NS}smoke", f"{NS}u-bogdan", f"{NS}u-sw-c90291"} <= set(batch.listed())
+    assert {f"{NS}smoke", f"{NS}u-owner", f"{NS}u-sw-c90291"} <= set(batch.listed())
     assert set(report.unreadable_namespaces[GKE]) == {
-        f"{NS}smoke", f"{NS}u-bogdan", f"{NS}u-sw-c90291"
+        f"{NS}smoke", f"{NS}u-owner", f"{NS}u-sw-c90291"
     }
     assert not any(
         line["message"] == repair.BACKEND_UNAVAILABLE for line in log_lines(stream)
@@ -543,16 +543,16 @@ def test_a_stranded_gke_lease_is_released_once_its_namespace_reads_empty():
 def test_one_unreadable_namespace_does_not_hold_another_tenants_lease():
     """(3) Readability is per namespace, both ways.
 
-    `u-bogdan` answers 403 (no RoleBinding there); `eng` reads. The eng lease is
-    released and repaired; the u-bogdan lease is held, because nothing proves
+    `u-owner` answers 403 (no RoleBinding there); `eng` reads. The eng lease is
+    released and repaired; the u-owner lease is held, because nothing proves
     its execution is gone.
     """
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
-    seed_tenant(db, "u-bogdan", record_namespace=True)
+    seed_tenant(db, "u-owner", record_namespace=True)
     readable = seed_stranded(db, "task_64a451a63efb48438265", tenant=ENG)
     blind = seed_stranded(
-        db, "task_719225c0557148c793d9", tenant="u-bogdan", minutes_ago=INSIDE_THE_WAIT
+        db, "task_719225c0557148c793d9", tenant="u-owner", minutes_ago=INSIDE_THE_WAIT
     )
     batch = RbacBatchApi(listable={ENG_NS}, gettable={ENG_NS})
     rec, _ = reconciler(db, gke(batch))
@@ -568,10 +568,10 @@ def test_one_unreadable_namespace_does_not_hold_another_tenants_lease():
     assert db.docs[f"tasks/{blind['task']}"]["current_generation"] == 1
     # Shared pools went down by exactly the one lease that was released.
     assert db.docs["pools/global"]["active"] == 2
-    assert db.docs["pools/tenant:u-bogdan"]["active"] == 2
+    assert db.docs["pools/tenant:u-owner"]["active"] == 2
     assert db.docs["pools/tenant:eng"]["active"] == 0
     # The held namespace holds one of our attempts, so it IS an error.
-    assert any(f"{NS}u-bogdan" in e for e in report.errors), report.errors
+    assert any(f"{NS}u-owner" in e for e in report.errors), report.errors
 
 
 def test_nothing_is_released_when_the_attempts_own_namespace_is_unreadable():
@@ -623,7 +623,7 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
     ]
     tenants = [
         Tenant(tenant_id="eng", kind="group", principal="eng@example.com", created_at=utcnow()),
-        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@example.com",
+        Tenant(tenant_id="u-owner", kind="user", principal="owner@example.com",
                created_at=utcnow()),
         Tenant(tenant_id="u-sw-c90291", kind="user", principal="sw@example.com",
                created_at=utcnow()),
@@ -633,11 +633,11 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
                created_at=utcnow(), namespace=f"{NS}smoke-legacy"),
         Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
                created_at=utcnow(), namespace=ENG_NS),
-        # OUTSIDE the prefix: the 2026-10-11 u-bogdan document. Both sides must
+        # OUTSIDE the prefix: the 2026-10-11 u-owner document. Both sides must
         # ignore it for the same derived name, or the reconciler reads a
         # namespace the dispatcher no longer writes to.
-        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@example.com",
-               created_at=utcnow(), namespace="swarm-u-bogdan"),  # namespace-prefix-exempt: stale, on purpose
+        Tenant(tenant_id="u-owner", kind="user", principal="owner@example.com",
+               created_at=utcnow(), namespace="swarm-u-owner"),  # namespace-prefix-exempt: stale, on purpose
         # The bare prefix names no tenant's namespace at all.
         Tenant(tenant_id="smoke", kind="group", principal="smoke@example.com",
                created_at=utcnow(), namespace=NS),
@@ -654,7 +654,7 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
 # A stored namespace is verified, not trusted (owner decision 2026-10-11)
 # ---------------------------------------------------------------------------
 #
-# tenants/u-bogdan stored `swarm-u-bogdan`, the pre-2026-09-23 spelling, and
+# tenants/u-owner stored `swarm-u-owner`, the pre-2026-09-23 spelling, and
 # both services used it unchecked: GKE Jobs went to a namespace that does not
 # exist (403 `jobs.batch is forbidden`, docs/gke-dispatch-403.md).
 
@@ -711,16 +711,16 @@ def test_a_stored_namespace_outside_the_prefix_is_ignored_and_logged_at_error_by
     dispatcher = GkeJobDispatcher(scheduler_settings(),
                                   target=GkeTarget("10.0.0.1", "/dev/null"))
 
-    used = dispatcher.namespace_for(_tenant("u-bogdan", "swarm-u-bogdan"))
+    used = dispatcher.namespace_for(_tenant("u-owner", "swarm-u-owner"))
 
-    assert used == f"{NS}u-bogdan", "the stale spelling must not be dispatched into"
+    assert used == f"{NS}u-owner", "the stale spelling must not be dispatched into"
     [entry] = _mismatch_records(caplog)
     assert entry["severity"] == "ERROR"
     assert {k: entry[k] for k in ("event", "tenant_id", "stored", "derived")} == {
         "event": "tenant_namespace_mismatch",
-        "tenant_id": "u-bogdan",
-        "stored": "swarm-u-bogdan",
-        "derived": f"{NS}u-bogdan",
+        "tenant_id": "u-owner",
+        "stored": "swarm-u-owner",
+        "derived": f"{NS}u-owner",
     }
 
 
@@ -731,17 +731,17 @@ def test_a_stored_namespace_outside_the_prefix_is_ignored_and_logged_at_error_by
     backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
                          core_api=RbacCoreApi(), logger=build_logger(stream))
 
-    used = backend.namespace_for("u-bogdan", "swarm-u-bogdan")
+    used = backend.namespace_for("u-owner", "swarm-u-owner")
 
-    assert used == f"{NS}u-bogdan", "the reconciler must read where the dispatcher writes"
+    assert used == f"{NS}u-owner", "the reconciler must read where the dispatcher writes"
     [entry] = _reconciler_mismatches(stream)
     assert entry["severity"] == "ERROR"
     assert entry["component"] == "reconciler"
     assert {k: entry[k] for k in ("event", "tenant_id", "stored", "derived")} == {
         "event": "tenant_namespace_mismatch",
-        "tenant_id": "u-bogdan",
-        "stored": "swarm-u-bogdan",
-        "derived": f"{NS}u-bogdan",
+        "tenant_id": "u-owner",
+        "stored": "swarm-u-owner",
+        "derived": f"{NS}u-owner",
     }
 
 
@@ -813,10 +813,10 @@ def test_a_mismatch_is_logged_once_per_tenant_per_process_per_hour_by_both(
             backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
                                  core_api=RbacCoreApi(), logger=build_logger(stream))
             for _ in range(3):
-                assert dispatcher.namespace_for(_tenant("u-bogdan", "swarm-u-bogdan")) == (
-                    f"{NS}u-bogdan"
+                assert dispatcher.namespace_for(_tenant("u-owner", "swarm-u-owner")) == (
+                    f"{NS}u-owner"
                 )
-                assert backend.namespace_for("u-bogdan", "swarm-u-bogdan") == f"{NS}u-bogdan"
+                assert backend.namespace_for("u-owner", "swarm-u-owner") == f"{NS}u-owner"
                 dispatcher.namespace_for(_tenant("eng", "swarm-eng"))
                 backend.namespace_for("eng", "swarm-eng")
 
@@ -827,17 +827,17 @@ def test_a_mismatch_is_logged_once_per_tenant_per_process_per_hour_by_both(
         )
 
     ask_everything()
-    assert tenants_logged() == (["eng", "u-bogdan"], ["eng", "u-bogdan"])
+    assert tenants_logged() == (["eng", "u-owner"], ["eng", "u-owner"])
 
     now[0] += 3599.0
     ask_everything()
-    assert tenants_logged() == (["eng", "u-bogdan"], ["eng", "u-bogdan"]), "within the hour"
+    assert tenants_logged() == (["eng", "u-owner"], ["eng", "u-owner"]), "within the hour"
 
     now[0] += 2.0
     ask_everything()
     assert tenants_logged() == (
-        ["eng", "eng", "u-bogdan", "u-bogdan"],
-        ["eng", "eng", "u-bogdan", "u-bogdan"],
+        ["eng", "eng", "u-owner", "u-owner"],
+        ["eng", "eng", "u-owner", "u-owner"],
     ), "an hour later the still-wrong document is said again"
 
 
@@ -866,7 +866,7 @@ def test_the_mismatch_metric_counts_the_event_both_services_log():
 #: tenant document written by hand, or by a future path, is bound by neither.
 NAMING_CORPUS = [
     "eng",
-    "u-bogdan",
+    "u-owner",
     "Eng_Platform.Team",             # lossy: case, underscore, dot
     "double__underscore--dash",      # runs collapse to one dash
     "--edges--",                     # stripped at both ends
@@ -923,7 +923,7 @@ def test_the_reconciler_and_the_dispatcher_sanitise_names_identically():
     ] + [
         ("9lives",),                  # not led by a letter: an `s` is prepended
         ("swarm", "", "job", "eng"),  # empty parts are skipped, not joined
-        ("swarm", "job", "u-bogdan", "claude-code"),
+        ("swarm", "job", "u-owner", "claude-code"),
     ]
     for parts in cases:
         for max_length in (63, 40, 20):
@@ -1009,7 +1009,7 @@ def test_the_incident_shape_ends_cancelled_and_frees_every_pool():
     """
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
-    for other in ("smoke", "u-bogdan", "u-sw-c90291"):
+    for other in ("smoke", "u-owner", "u-sw-c90291"):
         seed_tenant(db, other)
     task_ids = [
         "task_719225c0557148c793d9", "task_64a451a63efb48438265",

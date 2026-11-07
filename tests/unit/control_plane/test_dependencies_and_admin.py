@@ -524,8 +524,8 @@ def test_a_failed_dispatch_does_not_leak_backend_detail_to_the_tenant(
 
     def explode(*, task, lease, profile, tenant):
         raise DispatchError(
-            "PermissionDenied: swarm-agent-worker-eng@saga-agents-staging.iam."
-            "gserviceaccount.com cannot access secret swarm-tenant-eng-anthropic",
+            "PermissionDenied: swarm-agent-worker-eng@example-project"
+            ".iam.gserviceaccount.com cannot access secret swarm-tenant-eng-anthropic",
             code="cloud_run_run_job_failed",
         )
 
@@ -597,11 +597,11 @@ def test_the_scheduler_refuses_to_start_with_its_push_check_disabled(monkeypatch
     assert "PUSH_SERVICE_ACCOUNT" in str(exc.value)
 
     with pytest.raises(ValueError) as exc:
-        PushVerifier("tick@saga-agents-staging.iam.gserviceaccount.com", "", required=True)
+        PushVerifier("tick@example-project.iam.gserviceaccount.com", "", required=True)
     assert "PUSH_AUDIENCE" in str(exc.value)
 
     PushVerifier(
-        "tick@saga-agents-staging.iam.gserviceaccount.com",
+        "tick@example-project.iam.gserviceaccount.com",
         "https://scheduler.example",
         required=True,
     )

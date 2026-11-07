@@ -7,7 +7,7 @@ import { apiHeaders, chosenTenant, dropRefusedTenant, encoded, route } from './f
 import type { PatchSection } from './WorkflowChanges'
 
 /**
- * AN AGENT'S MOCK-UP, DRAWN (BGD, 2026-11-06: "see the mockups produced by
+ * AN AGENT'S MOCK-UP, DRAWN (owner, 2026-11-06: "see the mockups produced by
  * the workflow agents in here ... and not just the file name"). The Changes
  * view's file pane opens an HTML page, an SVG or an image on a Rendered view,
  * with Diff one click away and unchanged.
@@ -31,7 +31,7 @@ import type { PatchSection } from './WorkflowChanges'
  * img element from a Blob object URL, revoked when it is replaced or unmounted.
  */
 
-/** Over this many bytes a file is not rendered (BGD's brief, 2026-11-06). */
+/** Over this many bytes a file is not rendered (the owner's brief, 2026-11-06). */
 export const RENDER_CAP_BYTES = 5 * 1024 * 1024
 
 export type RenderKind = 'html' | 'svg' | 'image'
@@ -391,7 +391,7 @@ export async function readRendered(path: string, kind: RenderKind, source: Rende
 // The pane
 // ---------------------------------------------------------------------------
 
-/** The (i): the explanation the page does not print (BGD's rule, 2026-11-05). */
+/** The (i): the explanation the page does not print (the owner's rule, 2026-11-05). */
 function About({ about, tip }: { about: string; tip: string }) {
   const id = useId()
   const [open, setOpen] = useState(false)

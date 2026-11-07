@@ -142,7 +142,7 @@ describe('B: the log is a tab, and nothing is drawn under the pane', () => {
     const pane = s.querySelector(':scope > .ag-split-pane')!
     expect(s.lastElementChild, 'something is docked under the pane').toBe(pane)
     // The head scrolls away with Details and the tab strip sticks (AGENT-HEAD-B,
-    // BGD's pick AH1 B, 2026-10-28; qa.g2.inspector.test.tsx holds the rest).
+    // the owner's pick AH1 B, 2026-10-28; qa.g2.inspector.test.tsx holds the rest).
     expect(painted(s, ['overflow-y', 'overflow'], WIDE), 'the column does not scroll').toBe('auto')
     expect(painted(pane, ['overflow-y', 'overflow'], WIDE) ?? 'visible', 'the pane is a second scroller').not.toMatch(/auto|scroll/)
     // Details' one log line is in the pane's flow, in the leading card at the

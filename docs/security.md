@@ -12,7 +12,7 @@ Every section below names a concrete attack, what stops it, and — where releva
 
 ## Authentication
 
-Google ID token, verified per request, `hd` claim restricted to `saga.xyz`.
+Google ID token, verified per request, `hd` claim restricted to `example.com`.
 
 **There is no shared platform bearer token, anywhere.** This is the design, not
 an omission. A shared secret carries no identity, so it cannot answer "whose
@@ -126,7 +126,7 @@ An agent clones a repository and reads it. The repository may be hostile.
   Single-branch is the transfer only: the clone's `origin` is then set to track
   every branch (`gitops.TRACK_EVERY_BRANCH`), because with the clone's
   one-branch refspec `git fetch origin main` never moved an existing
-  `origin/main`, and an agent merged a stale main (#453).
+  `origin/main`, and an agent merged a stale main.
 * The URL comes from an authenticated caller and is still not trusted: the scheme
   must be `https` or `ssh`. `file://` and `ext::` are refused, because
   `ext::sh -c ...` is a git URL that executes a command.
@@ -211,10 +211,10 @@ Covered in depth in [multi-tenancy.md](multi-tenancy.md#secrets). In short:
    credential material, both worker-only, attempt-key-signed,
    generation-fenced and once per attempt, each by an owner's decision:
    `POST /v1/attempts/{attempt_id}/secrets:release` (workspace secrets, Q2 of
-   #1347) and `POST /v1/attempts/{attempt_id}/mcp:attach` (a registered MCP
-   server's credential, Q9 of #1433, [below](#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach)).
+   the workspace-secrets-release design) and `POST /v1/attempts/{attempt_id}/mcp:attach` (a registered MCP
+   server's credential, Q9 of the registered-MCP-servers design, [below](#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach)).
    `tests/unit/control_plane/test_no_route_serves_credentials.py` fails on a
-   third. The GitHub Actions secret routes (2026-10-24, #2158) take a value
+   third. The GitHub Actions secret routes (2026-10-24) take a value
    in and serve none, so they are not a third. (Amended 2026-10-18: this line used to say there was no read path
    at all, which stopped being true when the release shipped.)
 4. keys reach the agent through the child's environment only — never argv, never
@@ -245,8 +245,8 @@ It is a list of `sed` patterns, so it masks the shapes it knows — `sk-…`,
 `ya29.…`, JWTs, `AIza…`, `ghp_`/`gho_`/`github_pat_`, `xox*`, `AKIA`/`ASIA`, PEM
 headers, `Bearer <token>` bodies and `key|password|secret|token|credential|
 authorization` assignments, including one written as JSON text with escaped
-quotes at any depth (`PASSWORD=\"…\"`, `\"api_key\": \"…\"` since #221, and
-`\\\"…\\\"`, a command that quoted its own quotes, since the PR #229 review;
+quotes at any depth (a `PASSWORD` assignment and an `api_key` JSON field, each in escaped quotes, since the escaped-JSON redaction fix, and
+`\\\"…\\\"`, a command that quoted its own quotes, since the command-quoting redaction review;
 the same rule as the API's) — and nothing else. Being sed over text, it cannot
 decode a JSON line the way `/logs` does (`redaction.redact_lines`), so a list's
 later elements under a credential's name, and a value opened by an escaped
@@ -268,8 +268,8 @@ artifact as stored only to the caller whose email is the agent's
 `Task.submitted_by` (not another member, a tenant admin or a platform admin, who
 get a 403), always as a `text/x-diff` attachment with `Cache-Control:
 no-store`, and writes an `artifact_audit` record (who, which artifact, when;
-never the content) before the first byte or serves nothing. BGD decided this
-on #1857 (2026-10-27) because read-time masking turned credential-shaped test
+never the content) before the first byte or serves nothing. [the owner] decided this
+on 2026-10-27 because read-time masking turned credential-shaped test
 fixtures in a diff into `***` and the served patch no longer applied; the
 masking rules were left unchanged, so every other read of the same patch is
 still redacted.
@@ -284,8 +284,7 @@ only. It is the command an operator runs while sharing a screen, so its
 ## Registered MCP servers: the caller's credential is never in the agent's reach
 
 An agent may name MCP servers its workspace registered, and a caller may send a
-per-run credential for one ([design](design/registered-mcp-servers.md), part
-of #1433). The whole feature is dark until `SWARM_MCP_SERVERS` is `on`: off, every
+per-run credential for one ([design](design/registered-mcp-servers.md)). The whole feature is dark until `SWARM_MCP_SERVERS` is `on`: off, every
 registration write, submission naming a server and attach is refused
 `mcp_unavailable`. What holds once it is on:
 
@@ -344,7 +343,7 @@ the relay refuses private addresses and the pod policy drops them anyway.
 ## Workspace roles and a platform admin's reach
 
 Each workspace's people are `viewer`, `member` or `admin`
-([design](design/workspace-roles.md), part of #1518). Two properties carry
+([design](design/workspace-roles.md)). Two properties carry
 the security weight. The refusals `role_member_required` and
 `role_admin_required` are switches that ship off (Q10), and
 `PLATFORM_ADMIN_REACH` ships off. Since ROLES-ON-DEV (owner decision
@@ -410,7 +409,7 @@ What holds once they are on:
 ## Secrets scopes and GitHub Actions secrets
 
 A secret has one of three scopes: the workspace's, a person's, or a
-**repository's** ([design](design/secrets-scopes.md), part of #2158; what
+**repository's** ([design](design/secrets-scopes.md); what
 each lane built is its §12). SwarmCloud also writes a repository's **GitHub
 Actions** secrets, which it sends to GitHub and does not keep. Both are
 built. What carries the security weight:
@@ -455,7 +454,7 @@ tool's schema accepts a value (`apps/swarm-mcp/swarm_mcp/secrets.py`). It is
 sealed in swarm-api with PyNaCl to the public key GitHub serves
 (`apps/swarm-api/swarm_api/actions_secrets.py::seal`), PUT to GitHub and
 dropped. So the plaintext passes through swarm-api's memory, as every other
-store's value does: BGD chose that over sealing in the browser (Q5). Firestore
+store's value does: [the owner] chose that over sealing in the browser (Q5). Firestore
 keeps the name, who set it and when, and GitHub's status. It keeps no value,
 no ciphertext and no token. Each GitHub call uses an installation token of the
 existing SwarmCloud App, minted for **one repository and one permission**
@@ -466,8 +465,8 @@ reads the environment's branch rule, and a write into an environment that
 any branch can deploy needs the environment's name typed, because a secret
 there reaches every branch's workflows.
 
-**Accepted residual risk (BGD, Q3 of the design's §11, until
-user-scoped-secrets step 5).** BGD chose to give the **existing** SwarmCloud
+**Accepted residual risk ([the owner], Q3 of the design's §11, until
+user-scoped-secrets step 5).** [the owner] chose to give the **existing** SwarmCloud
 App `Secrets` and `Environments` write, instead of a second App with no user
 tokens. That App acts through user access tokens, and each person's token
 sits in a `-git-u-` slot that tenant workers can still read
@@ -486,7 +485,7 @@ delete every secret and stop releases. Three limits hold:
 2. `Administration: write` (environment creation, branch protection, deploy
    keys) is held back until step 5 ships, because on these tokens it would
    come close to control of the repository.
-3. Until BGD grants the two permissions and each installation accepts them,
+3. Until [the owner] grants the two permissions and each installation accepts them,
    the App holds neither, and every Actions write is refused
    `secrets_not_granted`.
 
@@ -499,7 +498,7 @@ Manager **metadata**, never a payload, under a role holding exactly
 `secretmanager.secrets.get` and `secretmanager.versions.list`, conditioned on
 `swarm-` names in this project (`terraform/bootstrap/platform_secret_status.tf`).
 That role cannot read a value, and the condition keeps it off the shared
-project's `agents-*` secrets. It is off until BGD applies it with `make
+project's `agents-*` secrets. It is off until [the owner] applies it with `make
 bootstrap`.
 
 **A managed plugin's secret is read by swarm-api alone.** A plugin's secret
@@ -526,7 +525,7 @@ workload's token. Mitigation is to make that token worth as little as possible:
   control-plane documents**: the Firestore grant is
   `swarmTenantWorkerFirestore` (get, create, update), bound project-wide with no
   condition, so it reaches every document in the `swarm` database whose id it
-  can name. What that lets a token minted here do, today and after #1457's
+  can name. What that lets a token minted here do, today and after the tenant-settings-integrity design's
   fixes, is in
   [A tenant worker's Firestore access](#a-tenant-workers-firestore-access-today-phase-0-and-design-b);
 * on GKE, Workload Identity means the node's service account is not what the pod
@@ -537,7 +536,7 @@ workload's token. Mitigation is to make that token worth as little as possible:
 What is **not** prevented: an agent minting a token for its own tenant's
 identity. That is the identity it is supposed to have. The boundary is what that
 identity can do, and today that includes rewriting the documents the control
-plane acts on for every tenant (#1457). Design B moves the boundary from the
+plane acts on for every tenant. Design B moves the boundary from the
 token to the attempt: a state write needs a proof from a key the agent does
 not hold.
 
@@ -559,7 +558,7 @@ not hold.
   * **A symlink that leaves `work/` is skipped**, never created, and the rest
     restores. uv leaves `bin/python -> /usr/local/bin/python3.11` in every
     build environment, and refusing the archive over it failed every resume of
-    the agent (#286). The skip is logged once per restore: at most 20 links
+    the agent. The skip is logged once per restore: at most 20 links
     named, each name and target through the worker's secret scrub, then a
     count. A symlink that comes to leave only once a later one is made
     (`y -> z/..`, then `z -> .`) is removed after extraction and named the same
@@ -575,7 +574,7 @@ not hold.
     here rather than left to `tarfile`, whose fallback for a link it cannot
     make extracts the link's target member in its place (the CVE-2025-4330
     class), so the restore's safety does not depend on the Python patch level.
-* **Which checkpoint is restored is not chosen from the bucket** (#347). Every
+* **Which checkpoint is restored is not chosen from the bucket**. Every
   agent of a tenant can write anywhere under `tenants/<tenant>/`, so another
   step of the same tenant could put a checkpoint under an agent's prefix, and
   `.claude/` — settings, hooks — travels in every checkpoint because HOME is
@@ -585,7 +584,7 @@ not hold.
   pointer lies in the agent's own prefix. That stops an agent holding only the
   bucket, whether it adds a checkpoint or rewrites the recorded one. It does
   not stop an agent that also writes Firestore, which has no document-level
-  IAM: the complete fix waits for signed step specs (#342).
+  IAM: the complete fix waits for signed step specs.
   [checkpointing.md](checkpointing.md#3-restore) lists every check.
 
 ---
@@ -657,7 +656,7 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   digest an earlier release promoted -- one carrying the
   `promoted-<channel>-<tag>` mark `scripts/push-images.sh` adds and never moves
   (its old form `<channel>-promoted-<tag>` is no longer read:
-  `scripts/registry-remark.sh` gave every such digest the new one; #1886) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
+  `scripts/registry-remark.sh` gave every such digest the new one) -- that lag is a warning, "awaiting owner re-pin", with the command, and the
   summary says "1 owner action pending". On a digest no release promoted it
   still fails: that is an image nobody released running as a privileged
   account. The checkov image-reference checks (CKV_K8S_14/15/43) are still
@@ -761,8 +760,7 @@ boundary. **The exception is control-plane data in Firestore**, where one
 mechanism stands, and it is not a tenant boundary: any tenant's worker can
 rewrite another tenant's settings, the shared capacity pools and the dispatch
 switch, and its own tenant record so that its next attempt runs as another
-tenant (#1457;
-[A tenant worker's Firestore access](#a-tenant-workers-firestore-access-today-phase-0-and-design-b)).
+tenant ([A tenant worker's Firestore access](#a-tenant-workers-firestore-access-today-phase-0-and-design-b)).
 Until that is closed, "two mechanisms" is not true of this platform.
 
 The single most dangerous future change is a non-admin route that accepts a
@@ -773,16 +771,16 @@ token, never *accepted* from the request.
 
 ## Operating in a shared project
 
-`saga-agents-staging` holds another team's live GKE cluster (`agents-staging`),
+`example-project` holds another team's live GKE cluster (`peer-cluster`),
 their VPC, six of their buckets, eighteen of their service accounts and one of
-their Cloud Run services (`oracle-web`) — counted from `SHARED_DENY_LIST` after
+their Cloud Run services (`peer-web`) — counted from `SHARED_DENY_LIST` after
 the 2026-10-21 read of the live project, which found twelve the 2026-09-15 list
-did not name. Two of those twelve, the `oracle-api@` service account and the
-bare `oracle-api` Cloud Run service name, left the list on 2026-10-27 by the
-owner's decision (#1835, "Both entries"): the account is also this platform's
-principal (the service tenant `u-or-9a0792`, a front-door IAP member,
+did not name. Two of those twelve, the `peer-api@` service account and the
+bare `peer-api` Cloud Run service name, left the list on 2026-10-27 by the
+owner's decision ("Both entries"): the account is also this platform's
+principal (the service tenant `team-a`, a front-door IAP member,
 `ALLOWED_USERS`), and on the list the two made the guards refuse this
-platform's own tenant. `oracle-web` and the other `oracle-*` service accounts
+platform's own tenant. `peer-web` and the other `oracle-*` service accounts
 stay protected. Protections:
 
 * `SHARED_DENY_LIST` in `scripts/lib/common.sh` — one list, read by `destroy.sh`,
@@ -929,7 +927,7 @@ one; the next section is about that.
 
 ## A tenant worker's Firestore access: today, phase 0 and design B
 
-Issue #1457, S0. Read from the source on 2026-10-17 at `766b9af`; not exercised
+The tenant-settings-integrity design, S0. Read from the source on 2026-10-17 at `766b9af`; not exercised
 against the live database. The design that closes it, approved by the owner on
 2026-10-17, is [docs/design/tenant-settings-integrity.md](design/tenant-settings-integrity.md),
 whose §1.3 inventories all 30 documents. The per-row table, with the reader of
@@ -982,7 +980,7 @@ and GCS prefix from the tenant id instead of reading them, which closes "run
 as tenant B" for good. swarm-api MACs the `workspace_settings` fields the
 control plane acts on with a key no worker holds, and every reader treats a
 missing or bad MAC as unset, which for the judgment backend is `internal-jev`
-and fails closed: that closes #1457's instance. **Phase 0 leaves the rest
+and fails closed: that closes the tenant-settings-integrity design's instance. **Phase 0 leaves the rest
 open**: over-admission, pausing every tenant, B's pools, tenant record limits,
 quota and accounts, and every read. A MAC cannot close the pool and lease rows
 at all, because the worker writes them legitimately.

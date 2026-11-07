@@ -246,21 +246,21 @@ describe('V076: Last changed and the pool id wrap only where they should', () =>
     api.loadAdminPools.mockResolvedValue(ok({ pools: [] }))
     const at = new Date(Date.now() - 3 * 3_600_000).toISOString()
     await limits([
-      pool('provider:anthropic:tenant:u-bogdan', {
+      pool('provider:anthropic:tenant:u-owner', {
         admin_changed_by: 'ops@example.com',
         admin_changed_at: at,
       } as Partial<Pool>),
     ])
-    const row = document.getElementById('limit-provider:anthropic:tenant:u-bogdan')!
+    const row = document.getElementById('limit-provider:anthropic:tenant:u-owner')!
     const time = row.querySelector('td[data-label="Last changed"] time')!
     expect(time.textContent).toBe('3h ago')
     expect(won(time, 'white-space', WIDE)).toBe('nowrap')
     const sub = row.querySelector('th .ctl-sub')!
     const segs = [...sub.querySelectorAll('.adm-key-seg')]
     // One segment per `kind:name` pair (visual QA run 3, admin-003).
-    expect(segs.map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-bogdan'])
-    expect(sub.textContent).toBe('provider:anthropic:tenant:u-bogdan')
-    // MUTATION: make the segment inline again: `u- / bogdan` is a break
+    expect(segs.map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-owner'])
+    expect(sub.textContent).toBe('provider:anthropic:tenant:u-owner')
+    // MUTATION: make the segment inline again: `u- / owner` is a break
     // again. An inline block as wide as its text never breaks inside; only
     // one wider than the cell does (VQA V160, vqa2.r3.admin.test.tsx).
     for (const s of segs) {
@@ -291,7 +291,7 @@ describe('V077: a long pool list gets the filter at every width, and the columns
   it('takes the Ceiling column down to its slot and gives Last changed the room', async () => {
     await limits([pool('global')])
     const width = (key: string) => won(document.querySelector(`col.adm-col-${key}`)!, 'width', WIDE)
-    // Pool 27% holds provider:anthropic:tenant:u-bogdan on one line, from Set
+    // Pool 27% holds provider:anthropic:tenant:u-owner on one line, from Set
     // by's slack and Last changed's 1% (run 5b, Providers; qafix6.admin.test.tsx).
     // Set by 15% holds `lowered automatically` (QA1B-13 review), from the
     // Ceiling slot's slack and Last changed's 1%.

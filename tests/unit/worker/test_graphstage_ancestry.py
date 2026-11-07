@@ -330,10 +330,10 @@ def test_a_token_is_held_in_a_scoped_file_and_no_planted_helper_is_handed_it(tmp
 
 
 # --------------------------------------------------------------------------
-# the commit-only history (lane GRAPH-DELIVERY, BGD 2026-11-06)
+# the commit-only history (lane GRAPH-DELIVERY, the owner 2026-11-06)
 # --------------------------------------------------------------------------
 #
-# AI Studio's graph was not delivered on 213 of 637 steps: the deepen of the
+# A peer application's graph was not delivered on 213 of 637 steps: the deepen of the
 # checkout brought every blob 200 commits changed and ran past its 20-second
 # limit. The proof reads commits and trees only; `fetch_commit_history`
 # fetches those alone, into a scratch repository.
@@ -343,7 +343,7 @@ _REAL_GIT = shutil.which("git") or "/usr/bin/git"
 
 def _blob_fetch_is_slow(tmp_path: Path, *, filtered_exit: int | None = None) -> Path:
     """A git whose fetch WITHOUT `--filter=blob:none` -- the blob-carrying
-    deepen -- outlasts any limit a test sets, as on AI Studio's repository;
+    deepen -- outlasts any limit a test sets, as on a peer application's repository;
     with `filtered_exit`, the filtered fetch exits that code instead (a forge
     that refuses the filter)."""
     wrapper = tmp_path / "bin" / "git"

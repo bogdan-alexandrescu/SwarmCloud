@@ -1,4 +1,4 @@
-"""IMPLEMENT-RENDER (#2442, BGD 2026-10-26): `swarm-handoff compare SHOT FRAME`.
+"""IMPLEMENT-RENDER (#2442, the owner 2026-10-26): `swarm-handoff compare SHOT FRAME`.
 
 A UI lane's implement step renders its own branch in the live browser and
 compares each render with the repository's frame PNG at the same preset and
@@ -353,7 +353,7 @@ def test_a_half_transparent_pixel_is_composited_over_white():
     assert qa._opaque_rgb(3, 1, 4, pixels) == bytes((127, 127, 127, 255, 0, 0, 255, 255, 255))
 
 
-# -- where the change is (TOKEN-RENDER, BGD 2026-10-27, part of #2524) ------------
+# -- where the change is (TOKEN-RENDER, the owner 2026-10-27, part of #2524) ------------
 #
 # A diff image Read into a lane stays in its context for the rest of the lane.
 # So compare says WHERE the frames differ, as boxes in the shot's CSS pixels,

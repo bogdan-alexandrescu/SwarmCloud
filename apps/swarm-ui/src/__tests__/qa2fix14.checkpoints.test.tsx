@@ -84,7 +84,7 @@ const LISTED: CheckpointLoaders = {
       attempt_id: 'att_1',
       checkpoint_id: 'ckpt-00001',
       prefix: PREFIX,
-      archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096 },
+      archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz`, bytes: 4096 },
       manifest: {
         status: 'present',
         detail: null,

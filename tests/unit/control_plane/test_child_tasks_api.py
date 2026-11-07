@@ -774,6 +774,6 @@ def test_a_worker_token_is_pinned_to_the_child_audience_when_one_is_configured()
 def test_swarm_api_reads_the_child_audience(monkeypatch):
     from swarm_api.settings import ApiSettings
 
-    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("SWARM_API_AUDIENCE", "https://swarm-api.dev.swarm.internal")
     assert ApiSettings.from_env().child_audience == "https://swarm-api.dev.swarm.internal"

@@ -1,6 +1,6 @@
 """A person resumes or stops a fix loop parked for them (FL-DRIVE, part of #2509).
 
-docs/design/fix-loop.md §4.5 and BGD's Q4 (a) (2026-10-27):
+docs/design/fix-loop.md §4.5 and the owner's Q4 (a) (2026-10-27):
 
     POST /v1/workflows/{workflow_id}/fix-loop/rounds   {rounds?, note?}
     POST /v1/workflows/{workflow_id}/fix-loop/end      {outcome: "stop"}

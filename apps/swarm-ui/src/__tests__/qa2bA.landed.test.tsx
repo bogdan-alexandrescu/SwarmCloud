@@ -49,7 +49,7 @@ describe('cap2-01: a paused account says why it cannot take an agent', () => {
     const r = await loadAccountPool()
     if (r.status !== 'ok') throw new Error('the fixture accounts did not load')
     const scope = r.data.tenant_id ?? null
-    const primary = (r.data.accounts as PoolAccount[]).find((a) => a.account_id === 'u-bogdan:primary') as PoolAccount
+    const primary = (r.data.accounts as PoolAccount[]).find((a) => a.account_id === 'u-owner:primary') as PoolAccount
     const paused: PoolAccount = { ...primary, state: 'PAUSED', reason: 'holiday', can_take_new_agent: true }
     const { container } = render(<CanTakeChip a={paused} scope={scope} />)
     // MUTATION: drop the PAUSED branch from CanTakeChip and this reads "No".
@@ -91,7 +91,7 @@ describe('admin2-02: the frame refuses a workspace admin’s own page as such', 
   }
   const refusal = () => document.querySelector<HTMLElement>('[data-refused="admin"]')
 
-  // A member reaches Admin › Workspaces since the admin routes lane (part of #2688; BGD 3 November), so the
+  // A member reaches Admin › Workspaces since the admin routes lane (part of #2688; owner 3 November), so the
   // workspace admins' page they are refused is Platform people.
   it('titles Platform people "for workspace admins" for a member of a group workspace', async () => {
     await shell('people', [PERSONAL, ENG_MEMBER])

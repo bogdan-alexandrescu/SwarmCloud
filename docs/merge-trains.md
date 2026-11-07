@@ -10,8 +10,8 @@ the train branch in `agent_worker.merge._with_forge`.
 ## 1. Why
 
 A base branch that requires its checks green on the merged result lets one
-pull request land per CI run. The merge slot (docs/merge-step.md, merge race
-#295) made that safe -- one merge step per base at a time -- but it is still
+pull request land per CI run. The merge slot (docs/merge-step.md, the merge-step
+design) made that safe -- one merge step per base at a time -- but it is still
 one full CI run per landing. With a wave of lanes finishing at once, the
 queue is as long as the wave times the CI time.
 
@@ -248,7 +248,7 @@ is a fenced transaction, so a superseded attempt writes nothing
   first train park of an unbroken run of them, carried by every train park
   after it, cleared by any other park (both park writers keep it).
   swarm-api serves it as `waiting.detail.train_since`, and `/sc check` ages
-  the wait from it (rule `merge_train_stalled`, part of #2688) BECAUSE the
+  the wait from it (rule `merge_train_stalled`) BECAUSE the
   train pauses the CI clock, so `waiting.since` cannot say how long the step
   has queued.
 
@@ -264,12 +264,12 @@ is a fenced transaction, so a superseded attempt writes nothing
 An `ejected` entry of THIS train refuses at once, unchanged: the coordinator
 records its reason, and a culprit found by bisection is not a lone flake.
 
-**The repository-level train ejects differently (#3313).** With
+**The repository-level train ejects differently.** With
 `vars.MERGE_TRAIN` on, the merge step boards `scripts/merge-train.sh` by
 labelling its pull request `ready`, and an ejection there is a comment
 beginning `**Ejected from the merge train` plus `ready` removed. That train
 runs main plus this pull request alone, so when it fails while the pull
-request's own head is green the failure is often a flake: PR #3212 was
+request's own head is green the failure is often a flake: a pull request was
 ejected because two CPU-bound vitest ladder tests timed out at vitest's 30 s
 on a loaded shard, green on its own head and on main's. So the step, at a
 green head, labels `ready` again ONCE per head and parks `merge_train_waiting`
@@ -277,7 +277,7 @@ again; a second ejection at the same head is a CI-fix round's
 (`train_fix_pending`, the train run's failing jobs as its excerpt) when the
 step has rounds left; only after that round ends at the same head, or with no
 round, does it end FAILED `train_ejected` with the train's reason. One
-re-board per head, so it cannot loop. Since 6 November 2026 (BGD: keep the
+re-board per head, so it cannot loop. Since 6 November 2026 ([the owner]: keep the
 train and fix red trains), that train ejects less often. It first re-runs a
 red train's failed jobs once. If the train is red again while main is red on
 the same checks, it closes `Held: main is red on <names>` and ejects nobody.

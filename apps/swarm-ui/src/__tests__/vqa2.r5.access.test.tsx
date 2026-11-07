@@ -271,7 +271,7 @@ describe('Access (VQA2-R5)', () => {
   it('V232: the lede says what Connection and Choose repositories each show, as the (i) beside the title', async () => {
     api([ORG('example-org')])
     await mount()
-    // BGD's no-prose rule (2026-11-05): no line under the title; the (i) carries it.
+    // the owner's no-prose rule (2026-11-05): no line under the title; the (i) carries it.
     // MUTATION: draw `<p className="ur-sub">` under the tabs again.
     expect(document.querySelector('.ac-page > .ur-sub')).toBeNull()
     const lede = () => {

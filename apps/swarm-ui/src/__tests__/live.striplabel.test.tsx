@@ -13,7 +13,7 @@
 //       "You are in control".
 //
 //   1. In theater, the gate's reason is in the strip above the browser while
-//      the desktop name carries one, and goes when it does not. Since BGD's
+//      the desktop name carries one, and goes when it does not. Since the owner's
 //      decision of 2026-10-25 (LIVE-NOMASK-COPY, part of #2298) the gate
 //      covers nothing, so the one reason left is that the agent finished and
 //      its browser closed; a "Part of this page is covered" name draws nothing.

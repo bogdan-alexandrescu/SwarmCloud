@@ -44,9 +44,9 @@ a Firestore **write**. The verify identity cannot write Firestore.
 
 Read from the live project on 2026-09-22, not from the `.tf`:
 
-    $ gcloud projects get-iam-policy saga-agents-staging --format=json
-      roles/datastore.viewer   serviceAccount:swarm-verify@saga-agents-staging…
-      roles/run.viewer         serviceAccount:swarm-verify@saga-agents-staging…
+    $ gcloud projects get-iam-policy example-project --format=json
+      roles/datastore.viewer   serviceAccount:swarm-verify@example-project…
+      roles/run.viewer         serviceAccount:swarm-verify@example-project…
 
 plus two resource-scoped grants that do not appear in the project policy and are
 declared in `terraform/infra/verify.tf`: `roles/run.invoker` on the `swarm-api`
@@ -56,7 +56,7 @@ access, by design — the suites use the `mock` runner profile, which has
 
 It is also `ALLOWED_USERS` on swarm-api (`terraform/infra/locals.tf:387`) and
 owns tenant `u-sw-c90291` (`terraform/environments/dev/dev.tfvars:266`). It is
-**not** in `admin_users`, which today is `["bogdan@saga.xyz"]` alone.
+**not** in `admin_users`, which today is `["owner@example.com"]` alone.
 
 ## Option (a): give the verify identity a Firestore write role
 
@@ -94,7 +94,7 @@ The mitigation people reach for here — "the suite would never do that" — is
 exactly the claim the incident above disproved.
 
 One thing (a1) does **not** cost: reach into another team's data. The shared
-project holds one Firestore database, `projects/saga-agents-staging/databases/swarm`,
+project holds one Firestore database, `projects/example-project/databases/swarm`,
 and it is ours (`gcloud firestore databases list`, 2026-09-22). But a
 project-level binding follows any database created later, and the other team
 creating one is not an event this repository would notice.
@@ -103,7 +103,7 @@ creating one is not an event this repository would notice.
 
 `swarmTenantWorkerFirestore` exists and is narrower:
 
-    $ gcloud iam roles describe swarmTenantWorkerFirestore --project saga-agents-staging
+    $ gcloud iam roles describe swarmTenantWorkerFirestore --project example-project
       datastore.databases.get
       datastore.entities.create
       datastore.entities.get
@@ -125,7 +125,7 @@ rather than claiming a removal that did not happen.
 `ADMIN_USERS` is an email list consulted **after** the token is verified
 (`apps/swarm-api/swarm_api/auth.py:342,421`), so it changes which verified
 identities are admins, never whether the identity was verified. Adding
-`swarm-verify@saga-agents-staging.iam.gserviceaccount.com` to `var.admin_users`
+`swarm-verify@example-project.iam.gserviceaccount.com` to `var.admin_users`
 opens these nineteen routes and nothing else:
 
 | | |
@@ -220,8 +220,8 @@ If (b) is taken, two things should land with it, and the second is not optional:
 1. **The Track C change.** In `terraform/environments/dev/dev.tfvars`:
 
        admin_users = [
-         "bogdan@saga.xyz",
-         "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+         "owner@example.com",
+         "swarm-verify@example-project.iam.gserviceaccount.com",
        ]
 
    `terraform/infra/locals.tf:371` already joins and sorts `var.admin_users`
@@ -382,22 +382,22 @@ proof rather than a sympathetic edit.
 ## Decisions, 2026-09-24
 
 The owner took two decisions for
-`swarm-verify@saga-agents-staging.iam.gserviceaccount.com` on 2026-09-24. Both
-were implemented on PR #21 (`lane/verify-identity`). Nothing was applied by
+`swarm-verify@example-project.iam.gserviceaccount.com` on 2026-09-24. Both
+were implemented on an earlier pull request (`lane/verify-identity`). Nothing was applied by
 hand: the release applies `terraform/infra` when the PR merges, and the grants
 below exist only once that has happened.
 
 ### 1. `swarm-verify` passes IAP on the front door
 
-**Decision:** add `serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com`
+**Decision:** add `serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com`
 to `frontend_iap_members` in `terraform/environments/dev/dev.tfvars`.
 
 **Why.** The load balancer answered `403 Access denied. For user
 swarm-verify@…` — IAP accepted the credential, knew who the caller was, and
 found it not on the list (the four measurements are in
-`scripts/lib/common.sh`, above `api_credential`). `domain:saga.xyz` cannot
+`scripts/lib/common.sh`, above `api_credential`). `domain:example.com` cannot
 cover it: a `*.iam.gserviceaccount.com` identity is not a member of the
-Workspace domain. The measured need is PR #15's end-to-end check and every
+Workspace domain. The measured need is an earlier pull request's end-to-end check and every
 operator script run with `SWARM_IMPERSONATE_SA=swarm-verify@…`, both of which
 reach swarm-api through that door.
 
@@ -412,11 +412,11 @@ through `ALLOWED_USERS` (`terraform/infra/locals.tf`), not `allowed_domains`.
 **State before, measured read-only on 2026-09-24:**
 
     $ gcloud iap web get-iam-policy --resource-type=backend-services \
-        --service=swarm-ui-backend    --project saga-agents-staging
-      roles/iap.httpsResourceAccessor   domain:saga.xyz
+        --service=swarm-ui-backend    --project example-project
+      roles/iap.httpsResourceAccessor   domain:example.com
     $ gcloud iap web get-iam-policy --resource-type=backend-services \
-        --service=swarm-ui-ui-backend --project saga-agents-staging
-      roles/iap.httpsResourceAccessor   domain:saga.xyz
+        --service=swarm-ui-ui-backend --project example-project
+      roles/iap.httpsResourceAccessor   domain:example.com
 
 **Status: decided, NOT yet in the branch.** The `dev.tfvars` edit was refused
 by the authoring session's permission classifier as a permission grant, and it
@@ -427,7 +427,7 @@ the edit or to authorise it directly.
 
 The test that requires it,
 `tests/unit/scripts/test_verify_identity_grants.py::test_the_verify_identity_can_pass_iap_on_the_front_door`,
-is committed as `xfail(strict=True)`. It was plain red on PR #21's first
+is committed as `xfail(strict=True)`. It was plain red on an earlier pull request's first
 version, and that was wrong for a branch that can merge: `release.yml`'s
 `verify` job runs `tests/unit`, and build, infrastructure and deploy all need
 it, so main's release pipeline would have gone red on merge and blocked every
@@ -435,20 +435,20 @@ later release, including the one that applies decision 2. Strict means it
 turns red the moment the member is added, so the marker has to come off in
 that change.
 
-**Update, later on 2026-09-24: landed, through #23 and not in `dev.tfvars`.**
-#23 moved the IAP accessor list out of `terraform/infra` altogether, because
+**Update, later on 2026-09-24: landed, through an earlier issue and not in `dev.tfvars`.**
+An earlier issue moved the IAP accessor list out of `terraform/infra` altogether, because
 the release's deployer needed an IAP admin role that could not be scoped to
 this platform's two backends. The list is now `frontend_iap_members` in
 `terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by the
-release, and it holds `domain:saga.xyz` and
-`serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com`. #23
+release, and it holds `domain:example.com` and
+`serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com`. An earlier issue
 records the grant as applied and read back through the IAP API on both
-backends. That is #23's measurement; this lane did not repeat it.
+backends. That is an earlier issue's measurement; this lane did not repeat it.
 
 The strict xfail above did **not** catch it, and could not have: it read
 `frontend_iap_members` from `dev.tfvars`, the variable left that file, and the
 test went on failing, as expected, for the wrong reason. The merge of main into
-PR #21 points the test at `terraform/bootstrap/terraform.tfvars`, removes the
+An earlier pull request points the test at `terraform/bootstrap/terraform.tfvars`, removes the
 marker, and adds a check that the bootstrap root's `project_id` is dev's, so the
 member is on the front door `swarm-verify` actually calls. The race-test repair
 that names the list now names the file too, and the integration test requires
@@ -486,7 +486,7 @@ was "not optional".
   on every other path (INT and TERM re-raise), and its verdict comes from
   reading the pool back. **A restore that did not take fails the run**: it is a
   failed case in the summary, and the EXIT trap turns a passing exit status into
-  1. On PR #21's first version it was only reported, and a run with every race
+  1. On an earlier pull request's first version it was only reported, and a run with every race
   case green exited 0 with `runner:mock` still at one slot. It prints two
   repairs: `scripts/pool-limit.sh --pool runner:mock --limit N`, which works
   from a workstation today as an operator, and the admin route
@@ -506,7 +506,7 @@ was "not optional".
     then be a 422. The script holds a copy of that bound as `API_LIMIT_MAX`, and
     `tests/unit/scripts/test_race_test_limit_bound.py` fails if the copy drifts.
     This is a new mirrored value. It is listed in `docs/mirrored-values.md`,
-    under "Covered elsewhere", added when PR #16 (which had that file open)
+    under "Covered elsewhere", added when an earlier pull request (which had that file open)
     merged and main was merged into this branch.
 * **Attribution**, in `apps/swarm-api`. `Store.upsert_pool(…, by=)` writes
   `admin_changed_by` (the verified caller) and `admin_changed_at` on the pool
@@ -527,7 +527,7 @@ and when. There is still no append-only history: a later change by someone else
 overwrites the name, and the full record is that field plus Cloud Run's request
 log.
 
-**What CI proves, and the red runs that prove the tests can fail:** see PR #21.
+**What CI proves, and the red runs that prove the tests can fail:** see an earlier pull request.
 The run ids are recorded in the PR description and in the commits. They are
 not repeated here, where they would be a second copy of a fact.
 
@@ -540,8 +540,8 @@ not repeated here, where they would be a second copy of a fact.
   this swarm-api.
 * That the release's apply actually sets `ADMIN_USERS` on swarm-api to both
   addresses has been read from `locals.tf`, not observed. Live `swarm-api` read
-  `ADMIN_USERS=bogdan@saga.xyz` on 2026-09-24 before the change. *(Superseded:
-  under the owner's decision below `ADMIN_USERS` stays `bogdan@saga.xyz`, and
+  `ADMIN_USERS=owner@example.com` on 2026-09-24 before the change. *(Superseded:
+  under the owner's decision below `ADMIN_USERS` stays `owner@example.com`, and
   the gate arrives as `ADMIN_POOL_USERS`.)*
 * `runner:mock` read `hard_limit=20, enabled=true, active=0` on 2026-09-24,
   which clears all four refusals. That was a single read, not a guarantee about
@@ -549,12 +549,12 @@ not repeated here, where they would be a second copy of a fact.
 
 ### Correction to decision 2's premise, 2026-09-24
 
-**What was said.** The analysis above, and every copy of it on PR #21's first
+**What was said.** The analysis above, and every copy of it on an earlier pull request's first
 version (`dev.tfvars`, `terraform/infra/variables.tf`, `terraform/infra/verify.tf`,
 the header of `scripts/race-test.sh`), said the admin grant cannot touch a
 tenant document: "no route that … writes a tenant document", "no admin route
 touches a tenant document", "none able to touch `active`, a tenant document or a
-secret". **That is false.** Found in review of PR #21, and confirmed by reading
+secret". **That is false.** Found in review of an earlier pull request, and confirmed by reading
 `apps/swarm-api/swarm_api/routes/admin.py` and `store.py` on the branch:
 
 * `PUT /v1/admin/tenants/{tenant_id}/limits` calls `Store.set_tenant_limits`,
@@ -593,7 +593,7 @@ can impersonate `swarm-verify`, can disable any tenant or change its limits, and
 putting it back needs the old value from somewhere else.
 
 **Status: returned to the owner.** This changes a stated premise of decision 2,
-so re-confirming it is the owner's call, not this lane's. PR #21 keeps the
+so re-confirming it is the owner's call, not this lane's. An earlier pull request keeps the
 grant exactly as decided and corrects every copy of the claim: the four files
 named above.
 
@@ -642,7 +642,7 @@ not asked for and is not built. It still cannot write `active`, create a pool
 outside the frozen catalogue, or reach a tenant, a provider switch or
 dispatch.
 
-**What changed on PR #21:**
+**What changed on an earlier pull request:**
 
 * `apps/swarm-api/swarm_api/settings.py` — `admin_pool_users`, read from
   `ADMIN_POOL_USERS` the way `admin_users` is read from `ADMIN_USERS`.
@@ -657,8 +657,8 @@ dispatch.
   the tfvars as is, nothing appended, so the gate holds it only where an
   environment names it.
 * `terraform/environments/dev/dev.tfvars` — `admin_users` is
-  `["bogdan@saga.xyz"]` again; `admin_pool_users` holds the bare
-  `swarm-verify@saga-agents-staging.iam.gserviceaccount.com`.
+  `["owner@example.com"]` again; `admin_pool_users` holds the bare
+  `swarm-verify@example-project.iam.gserviceaccount.com`.
 * `terraform/infra/verify.tf` — the service account's description says
   "runner ceilings where admin_pool_users names it" and "Not a platform admin"
   (245 of the provider's 256 characters).
@@ -680,7 +680,7 @@ requires the gate on `admin_pool_users`, off `admin_users`, and the env var
 name locals.tf sets to be the one settings.py reads. The tests were pushed
 before the code, and a deliberate mutation — pool admins made full admins —
 was pushed and shown red before the allow-list replaced it. The run ids are in
-PR #21's description, not here.
+An earlier pull request's description, not here.
 
 **Hardened on review, same day.** A second review found four ways the
 decision could be undone with every test green, and each now has a test that a

@@ -24,7 +24,7 @@ Three reasons, in the order they cost the most:
    client silently drops manifest fields — and a Homebrew checkov 3.3.10 that
    raises on import and shadows the 3.3.17 the checks need. `common.sh` carries
    `kubectl_bin` and `prefer_local_bin` precisely because of those two. The
-   runner is a known image (the `bogdan-ci` VM image, or GitHub-hosted
+   runner is a known image (the `swarm-ci` VM image, or GitHub-hosted
    `ubuntu-24.04`; see [Where jobs run](#where-jobs-run)) with a pinned tool
    version per job; the laptop is whatever it has drifted into since the last `brew upgrade`.
 2. **A gate that runs in one place can be believed by everyone.** A mutation
@@ -46,9 +46,9 @@ Three reasons, in the order they cost the most:
 | `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `acceptance (tenant-isolation)` (the cross-tenant Firestore probe, beside wave 2; report-only until the repository variable `ISO_PROBE_REQUIRED` is `true`, [below](#the-cross-tenant-firestore-probe-is-report-only-until-the-cutover)) · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/`, `.trivyignore.yaml` or a release workflow or action (the paths `release.yml` filtered on until 2026-10-26); or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
+| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name)). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
-| `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded (BGD 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
+| `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -71,8 +71,8 @@ Three details in that table are easy to misread and each has bitten someone:
 Owner decision, 2026-10-14: *"make sure we use CI runners for all jobs moving
 forward if capacity allows"*. GitHub-hosted `ubuntu-24.04` had saturated (76
 jobs queued at 13:05Z) while the self-hosted pool had room. That pool is
-ephemeral GCE VMs with the `bogdan-ci` label (e2-standard-8, one VM per job,
-image built by sagaxyz/ai-studio `deploy/ci-runners/vm/provision-image.sh`).
+ephemeral GCE VMs with the `swarm-ci` label (e2-standard-8, one VM per job,
+image built by example-org/peer-app `deploy/ci-runners/vm/provision-image.sh`).
 
 **Every job runs on the pool except one class: jobs that hold a Google cloud
 identity through workload identity** (`id-token: write` with
@@ -84,7 +84,7 @@ GitHub-hosted, the rule PR 1184 set for release.yml.
 Every other job spells `runs-on` as one guarded expression:
 
 ```
-${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","swarm-ci"]') }}
 ```
 
 * **Main's own runs go first, on GitHub-hosted runners** (owner decision
@@ -103,7 +103,7 @@ auto-merge.yml and merge-train.yml (schedule, `workflow_run` of a `train/`
 branch, dispatch; no `pull_request`) spell `runs-on` without the fork clause:
 
 ```
-${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","swarm-ci"]') }}
 ```
 
 The long form's text cannot sit in those files: test_auto_merge_workflow.py
@@ -141,7 +141,7 @@ GitHub-writing secret (environment `repo-secrets`) and run on the pool all the s
 
 While such a job runs, its secret is in the VM's memory and on its disk.
 Anyone with IAP SSH (the VMs' one ingress rule) or disk-snapshot rights in
-saga-ci-runners could read it there. The VM is single-use and is deleted
+example-shared-project could read it there. The VM is single-use and is deleted
 afterwards, but that window is real. The owner accepted it on 2026-10-14. No
 other secret may go on a guarded job.
 
@@ -171,7 +171,7 @@ comes from a setup action.
 
 ### Sub-minute checks share a job
 
-**Owner approval, 2026-10-21 (#1799, FIX 2 of the ci-runners capacity
+**Owner approval, 2026-10-21 (FIX 2 of the ci-runners capacity
 review).** In the 24 h from 2026-10-20 06:00 to 2026-10-21 06:00 UTC, 3,313 of
 7,341 self-hosted VM jobs (45%) did under 60 s of work, 18.4 h in all. Each
 one paid a VM create and boot (about 52 s created-to-started at best) and took
@@ -227,14 +227,13 @@ inherits the default `success()`. The ids and names stay because something
 reads each one:
 
 * `secret scan` and `platform policy assertions` are required by ruleset
-  `main-protection` (24160219), as is `trivy (repo)`, which stays a job of its
+  `main-protection`, as is `trivy (repo)`, which stays a job of its
   own (below). Its five contexts were read from
   this repository (`REQUIRED_CONTEXTS` in
   [`test_merge_queue_workflows.py`](../tests/unit/scripts/test_merge_queue_workflows.py),
   the ruleset read of 2026-10-01), not live;
 * `workflows`, `ruff`, `manifests` and `python-checks` are what
-  `scripts/lib/ci_reuse.py` reuses, records and gates by (CI-TREE-REUSE,
-  #1798). Each keeps its old `if:` after `always() &&`, and the folded step
+  `scripts/lib/ci_reuse.py` reuses, records and gates by (CI-TREE-REUSE). Each keeps its old `if:` after `always() &&`, and the folded step
   carries the same condition, so a check a run of the identical tree already
   passed is skipped in both places. `build` needs `manifests`, and ci-gate
   needs all four and `quick-checks`;
@@ -262,15 +261,15 @@ verdict step against faked step outcomes.
 
 ### CI falls back to GitHub-hosted runners on its own
 
-Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's
+Measured 2026-10-17: runner-dispatcher registers the pool's
 runners as the owner's GitHub user. When that user's quota ran out
 (`generate-jitconfig` 403 from 02:00 UTC) its sweep read
 `per_target: {swarmcloud: 0}`, and every pull request's checks stayed queued
 for hours until someone set the escape hatch by hand. The hatch is now set by
 `.github/workflows/runner-fallback.yml`, every 10 minutes and on dispatch:
 
-* **Off.** A job of another workflow that asked for `bogdan-ci` has been
-  queued more than 10 minutes, and no `bogdan-ci` job is running or started
+* **Off.** A job of another workflow that asked for `swarm-ci` has been
+  queued more than 10 minutes, and no `swarm-ci` job is running or started
   in that time: the judge sets `SELF_HOSTED_CI=off`, then cancels every run
   still queued on the pool and re-runs its cancelled jobs, so they land on
   `ubuntu-24.04`. **A run with any job in progress is never cancelled**
@@ -289,7 +288,7 @@ for hours until someone set the escape hatch by hand. The hatch is now set by
 * **On again.** While the hatch is off nothing asks the pool for a runner,
   and the dispatcher starts one VM per queued job, so an empty runner list
   says nothing. So the workflow's `probe` job, the one job that targets
-  `bogdan-ci` directly, runs only while the hatch is off. When every probe
+  `swarm-ci` directly, runs only while the hatch is off. When every probe
   since the flip has been picked up for at least 15 minutes, two probes or
   more, the judge sets the variable back to `on`. It writes `on`, the
   default, rather than deleting it, because the variable's `updated_at` is
@@ -443,7 +442,7 @@ those digests. The release submits no Cloud Build of its own on a push.
 
 **Why.** Every push to `main` used to build all eight images twice —
 `application.yml`'s job (tagged `pr-<run>-<sha>`) and the release's own build
-(tagged `<sha>`) — competing for Cloud Build in `saga-agents-staging`, whose
+(tagged `<sha>`) — competing for Cloud Build in `example-project`, whose
 build quota is shared with another team, while the release waited behind the
 duplicate. Measured on commit `94ee043`: `application.yml` built it
 16:33:09–16:41:51 (run 36027980122), and release 36027980448 built the same
@@ -483,13 +482,13 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    reads to tell an earlier release's digest from one nobody released. It
    starts with `promoted-`, not with the channel, because Artifact Registry's
    cleanup policies match tags by prefix: a rule keeping `:dev` forever must
-   not also keep every mark forever (#1886). Digests promoted before that
+   not also keep every mark forever. Digests promoted before that
    carry the old `<channel>-promoted-<sha>`; `deploy.sh` reads both until the
    operator has run `scripts/registry-remark.sh --apply` once, which adds the
    new form beside each old one and removes nothing.
 5. The apply pins those digests and the deploy verifies them, unchanged.
 
-**A dev release skips the images dev switches off** (Bogdan's pick, 6
+**A dev release skips the images dev switches off** ([the owner]'s pick, 6
 November 2026, "Skip it in releases"). The release of 11:28Z that day waited
 16 minutes for main's build, rebuilt 18 images (2 to 5 minutes each, four at a
 time) and swarm-speech alone in 28 minutes 50 seconds, then scanned for about
@@ -510,7 +509,7 @@ checks the images the record names, and Terraform lists swarm-speech as a
 gated image (`terraform/infra/images.json`), given a digest only while the
 speech machine is on.
 
-**Every promote records its runner images' sizes** (#625). Right after the
+**Every promote records its runner images' sizes**. Right after the
 channel moves, `release-promote` runs `scripts/image-sizes.sh --manifest
 build/deployed-images-<env>.json` and appends its table to the job summary:
 for each runner image the promotion wrote (`agent-runtime-*`), the promoted
@@ -521,7 +520,7 @@ the registry, which the deployer already reads in the promote step itself, so
 it needs no new role. It **cannot fail or hold the release**: the step is
 `continue-on-error` and bounded by `timeout 300`, and an image it cannot
 measure is a row saying so and a failed step, nothing more. It exists because
-#625's start-time question needed every release's size, and until this step
+the indexer-image split's start-time question needed every release's size, and until this step
 no release recorded its own, so the 2026-10-05 bisect had to read each one
 back out of the registry.
 `tests/unit/scripts/test_release_size_record.py` holds the step's place and
@@ -547,7 +546,7 @@ build. A prod release is always dispatched, so it builds — and the build is
 
 ### Only the newest commit on `main` is built and released
 
-**Owner decision, BGD, 2026-10-26 (#2438): "Release only the newest".** On
+**Owner decision, [the owner], 2026-10-26: "Release only the newest".** On
 `main`, every `application.yml` run is in one concurrency group,
 `application-refs/heads/main`, with `cancel-in-progress: true`: a newer push
 cancels an older run that has not finished, queued or running. `release.yml`
@@ -653,7 +652,7 @@ deploys are recent, and never twice for one train; an API it cannot read, or
 a hold it cannot record, merges as before. A dry run says what it would have
 held. The cost is at most 12 API reads per green train and 2 per held tick.
 
-#2438's cancelling stays: the hold only spaces merges out while a build is
+The merge-train hold change's cancelling stays: the hold only spaces merges out while a build is
 already running, so the build that is running is the one that ships, and a
 burst of merges still costs one build, not one per commit.
 
@@ -774,8 +773,8 @@ and ages from `built_at`, never from the record's own commit. Otherwise a
 change made two builds ago could hide behind a build that reused its image.
 The job's summary lists every image as rebuilt or reused.
 
-**The release checks the record before it promotes it** (lane REL-SKIP, part
-of #1194, owner-approved 2026-10-12). Release run 38273482069 on `f816e09b`
+**The release checks the record before it promotes it** (lane REL-SKIP,
+owner-approved 2026-10-12). Release run 38273482069 on `f816e09b`
 built nothing and failed, and nothing on the release side checked whether the
 digests it was offered matched the commit. So `build-images.sh --reuse-ci` now
 runs the same plan over CI's record of this commit. Each reused digest is
@@ -884,8 +883,8 @@ its summary.
 
 ## Images are built on a pull request, without pushing
 
-**Owner decision, 2026-10-05 (#650).** Until then images were built only on
-`main`. #641 changed `images/agent-runtime-base/Dockerfile` and the repo-index
+**Owner decision, 2026-10-05.** Until then images were built only on
+`main`. The LSP-package PR changed `images/agent-runtime-base/Dockerfile` and the repo-index
 LSP package; its pull request was green, and the first build of the image ran
 after merge, where `swarm-repo-index --lsp-self-test` failed (Cloud Build
 650b9ebb, main 539b5b58 and f1c4b075). Main was red and releases blocked until a
@@ -903,7 +902,7 @@ this repository's GCP project, which is a **shared project**: its Cloud Build qu
 its logs and the other team's resources in it are not this repository's to expose.
 The deployer stays pinned to `refs/heads/main` (`terraform/bootstrap/wif.tf`,
 and `build images` in `application.yml` says why that pin must never widen),
-and no second, narrower identity is created either. #673 first shipped this
+and no second, narrower identity is created either. The narrower-identity design first shipped this
 job waiting for one; that path is gone.
 
 So a pull request builds on the GitHub-hosted runner, with `docker buildx`,
@@ -1190,7 +1189,7 @@ environment's settings. Measured 2026-09-24:
 
 | environment | protection |
 |---|---|
-| `prod` | required reviewer `bogdan-alexandrescu` (self-review allowed); deployment branch policy: branch `main` only; `can_admins_bypass: true` |
+| `prod` | required reviewer `<owner>` (self-review allowed); deployment branch policy: branch `main` only; `can_admins_bypass: true` |
 | `dev` | none |
 
 `can_admins_bypass: true` means a repository admin can deploy to prod
@@ -1232,12 +1231,12 @@ proof.
 
 ## A dev release that changes IAM waits for the owner
 
-**Owner decision, 2026-09-28 (#268).** Gate only IAM plans. A dev release
+**Owner decision, 2026-09-28.** Gate only IAM plans. A dev release
 whose Terraform plan touches IAM stops for the owner. Every other dev release
 applies un-gated, as it did before. Prod is unchanged: its one approval is
 `approval (prod)`, which already covers every plan.
 
-**Why IAM, and only IAM.** A dev apply runs in `saga-agents-staging`, which is
+**Why IAM, and only IAM.** A dev apply runs in `example-project`, which is
 shared with another team. Most dev plans move image digests or change a
 service's environment, and gating those would put the owner in front of every
 merge. An IAM change decides who can do what in that shared project, and that
@@ -1282,12 +1281,12 @@ not. The rule is [`scripts/lib/iam-plan.jq`](../scripts/lib/iam-plan.jq),
 stated there once, and it is reached only through
 `scripts/lib/plan-guard.sh --classify-iam`.
 
-**The second widening, 2026-09-28 (#274).** The `google_iam_workload_identity_pool`
+**The second widening, 2026-09-28.** The `google_iam_workload_identity_pool`
 family, the deny and principal-access-boundary policies, a service account's key
 or deletion, the pre-IAM-conditions ACL mechanisms on a bucket or a BigQuery
 dataset, an organization-level custom role, an audit config and
 `_iam_member_remove` all decide who can do what, or what they can do it as, in
-`saga-agents-staging` exactly like the families #268 already gated -- so they
+`example-project` exactly like the families the original widening already gated -- so they
 gate the same way, through the same rule.
 
 **`forget` is the case that would be missed.** A `removed` block with
@@ -1347,17 +1346,17 @@ for anyone. `release.yml` cannot check this. To create it with the owner as
 required reviewer, restricted to `main` like `prod`:
 
 ```bash
-owner_id="$(gh api users/bogdan-alexandrescu --jq .id)"
+owner_id="$(gh api users/<owner> --jq .id)"
 printf '{"reviewers":[{"type":"User","id":%s}],"prevent_self_review":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' "${owner_id}" \
-  | gh api --method PUT repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam --input -
-gh api --method POST repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam/deployment-branch-policies \
+  | gh api --method PUT repos/example-org/example-repo/environments/dev-iam --input -
+gh api --method POST repos/example-org/example-repo/environments/dev-iam/deployment-branch-policies \
   -f name=main -f type=branch
 ```
 
 and to read it back:
 
 ```bash
-gh api repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam \
+gh api repos/example-org/example-repo/environments/dev-iam \
   --jq '{reviewers: [.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login], branches: .deployment_branch_policy, can_admins_bypass}'
 ```
 
@@ -1392,7 +1391,7 @@ IAM change after this lands is that proof.
 **Measured 2026-10-11.** Release run 38115700349 (`3f6dbd26`, started 05:43Z)
 stopped at `terraform apply, IAM (dev-iam)`. Its held plan carried a Cloud
 Storage IAM condition written with `matches()`, which those conditions do not
-support, so IAM would have refused it on approval (#1057 replaced it with
+support, so IAM would have refused it on approval (the matches-to-extract fix replaced it with
 `extract()`). While it waited it held `release-dev`. 20 consecutive releases,
 06:02Z to 08:40Z, ended `cancelled`, and nothing merged in that window reached
 dev. Rejecting the held deployment at 09:0xZ let the next release, 38126514258, run.
@@ -1607,11 +1606,11 @@ acceptance.
 
 ### The cross-tenant Firestore probe is report-only until the cutover
 
-**Owner decision, 2026-10-20 (lane ISO-ACCEPT-WIRE, part of #1457): run the
+**Owner decision, 2026-10-20 (lane ISO-ACCEPT-WIRE): run the
 probe on every acceptance run now, so the isolation cutover has its proof.**
 Every tenant worker's account holds `swarmTenantWorkerFirestore` across the
 whole `swarm` database, so an agent in one tenant's pod can read and write
-another tenant's documents by id (#1457). Design B moves the worker's state
+another tenant's documents by id. Design B moves the worker's state
 onto attempt-signed swarm-api routes and then removes that role
 ([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §6).
 [`test_cross_tenant_firestore.py`](../tests/acceptance/fixtures/tenant-isolation/test_cross_tenant_firestore.py)
@@ -1712,7 +1711,7 @@ repository variable `GCP_ACCEPT_SA` to the `github_accept_service_account`
 output. Until then `what dev runs` fails at authentication, and the report
 files that as a red acceptance.
 
-**The runner grant is unconditioned. Owner decision 2026-10-09 (#965).** It
+**The runner grant is unconditioned. Owner decision 2026-10-09.** It
 was conditioned to the job names (`resource.name.endsWith("/jobs/swarm-verify")`,
 `extract("/jobs/{job}").startsWith("swarm-job-")`), and that condition never
 matched any job: Cloud Run does not expose `resource.name` to IAM Conditions.
@@ -1724,7 +1723,7 @@ job's name supplied. So `swarm-accept` was denied `run.jobs.get` on
 swarm-verify and `warm, smoke and GKE proof (dev)` was red on every run.
 
 The trade-off the owner accepted: in the **shared** project
-`saga-agents-staging`, the grant reaches **every Cloud Run job, present and
+`example-project`, the grant reaches **every Cloud Run job, present and
 future** — the other team's, and swarm's own merge job `swarm-job-eng-merge` —
 not only swarm-verify and the worker jobs. What it allows on any of them is
 the role and no more: get a job, start an execution (with overridden
@@ -1760,7 +1759,7 @@ Measured 2026-10-08 over 22 successful `release.yml` runs:
 78 of the last 100 release runs were cancelled while pending, superseded by a
 newer push: `release-dev` is `cancel-in-progress: false`, so it holds one
 running release and one pending, and each new push replaces the pending one. A
-hotfix (#857) waited about 1 h 45 min to reach dev.
+hotfix waited about 1 h 45 min to reach dev.
 
 ### When to use the label
 
@@ -1820,7 +1819,7 @@ workflow** (the first design asked for `release-steps.yml` with
 and for a reusable workflow that names the called file. The called file would
 have to be on the trust pin and callable at once, so any workflow on `main`
 granting `id-token` could call it and mint the deployer -- exactly what
-`test_no_deployer_pinned_workflow_is_callable` (#457) forbids. A composite
+`test_no_deployer_pinned_workflow_is_callable` forbids. A composite
 action runs inside the caller's job, so the token still names `release.yml` or
 `hotfix.yml`. Every gate -- `approval`, `dev-iam`, each job's `if:` -- stays in
 the workflow files, and the release tests flatten each composite action into
@@ -1889,7 +1888,7 @@ promote or apply after the hotfix stops there, superseded.
 
 ### A build a newer push cancelled ends the hotfix green
 
-Since #2438 (2026-10-26) `application.yml` runs all of `main` in one
+Since the merge-train hold change (2026-10-26) `application.yml` runs all of `main` in one
 concurrency group with `cancel-in-progress`, so a push to `main` cancels the
 older commit's run before its `build images` job finishes. The hotfix waits
 for exactly that job (`--reuse-ci only`), so its images stage then fails
@@ -1939,7 +1938,7 @@ bridge from.
 [`tests/unit/mcp/test_plugin_bridge_install.py`](../tests/unit/mcp/test_plugin_bridge_install.py)
 holds the two equal. But the tag itself used to be made by hand, so it could
 be missing. sc-v0.5.6 was: main pinned it before anyone had tagged it, every
-fresh install of 0.5.6 failed to fetch its bridge, and no check said so (#272).
+fresh install of 0.5.6 failed to fetch its bridge, and no check said so.
 
 **Who tags, and when.** `application.yml`'s `plugin-tag` job creates the
 annotated tag `sc-v<version>` on the commit main was pushed to (`github.sha`).
@@ -1954,8 +1953,8 @@ never names a version. It refuses anything that is not `X.Y.Z`.
   proven job by job on its pull request ([Main reuses the tested
   tree](#main-reuses-the-tested-tree)). The job's `if:` names
   `needs.python.result == 'success'` and no status function.
-* **Why not the release any more** (owner decision, BGD, 2026-11-04: "Tag
-  once tests pass"; part of #2688). Until then `release.yml` made the tag, and
+* **Why not the release any more** (owner decision, [the owner], 2026-11-04: "Tag
+  once tests pass"). Until then `release.yml` made the tag, and
   on a push it waited for `images and scan`, which waits for CI's whole image
   build. On 2026-11-04 plugin.json reached 0.5.79 at 21:04Z; that job ran
   about an hour, and for that hour every session that reloaded the plugin
@@ -1983,7 +1982,7 @@ remote again and counts the tag being there as success.
 default stays `contents: read`. Every other job runs the repository's own code,
 and none of it needs to write to the repository. `plugin-tag` runs only
 checkout, `gh`, `jq` and `git`. (`acceptance` held the same grant for its own
-sweep until #628 moved its pull requests to the private sandbox; it is
+sweep until the private-sandbox move moved its pull requests to the private sandbox; it is
 `contents: read` now, and the sweep uses the sandbox's own token.)
 
 **A commit a newer one superseded tags nothing.** A newer push to main cancels
@@ -2086,8 +2085,7 @@ through `swarm-api`:
 | `roles/container.clusterViewer`, **conditioned** | project, to `projects/<p>/locations/<region>/clusters/swarm-autopilot` exactly | e2e [10] reads the cluster's endpoint and CA. Granted by **terraform/bootstrap**, which the owner applies ([`verify_cluster_read.tf`](../terraform/bootstrap/verify_cluster_read.tf)) |
 | Role `swarm-verify-reader`: `get`, `list` on `jobs.batch` | the `eng` and `smoke` tenant namespaces only ([`kubernetes/rbac/verify-rbac.yaml`](../kubernetes/rbac/verify-rbac.yaml)) | e2e [10] reads a GKE-backed holder's Job |
 
-**The last two are owner decisions of 2026-10-20 and 2026-10-21 (#1754,
-VERIFY-GKE-READ and VERIFY-GKE-READ-2).** e2e [10], "no task is holding
+**The last two are owner decisions of 2026-10-20 and 2026-10-21 (VERIFY-GKE-READ and VERIFY-GKE-READ-2).** e2e [10], "no task is holding
 capacity against an execution that is gone", compares every agent holding
 capacity with the backend its attempt names. Before the two grants it could
 read Cloud Run only, and the 2026-10-20 baseline reported ten eng agents
@@ -2095,7 +2093,7 @@ running on GKE as holders "not checked: no GKE read". The gate could not see a
 dead GKE Job holding a slot, which is the thing [10] exists to see.
 
 They are narrow on purpose, because this project is shared and holds the other
-team's `agents-staging` cluster:
+team's `peer-cluster` cluster:
 
 * **clusterViewer, not container.viewer.** clusterViewer is
   `container.clusters.get` and `.list`, which read the cluster's endpoint and
@@ -2118,7 +2116,7 @@ team's `agents-staging` cluster:
   and `hasOnly()` limits **which roles** a change touches, never the member or
   the condition. Had the grant been CI's, clusterViewer would have to be on
   that list, and then any CI run could grant it unconditioned, to itself or
-  anyone, and reach `agents-staging`'s endpoint and CA. So the role is not on
+  anyone, and reach `peer-cluster`'s endpoint and CA. So the role is not on
   the list, and `tests/terraform/deployer_iam.tftest.hcl` fails if any
   `roles/container.*` role joins it. `verify_gke_read.tftest.hcl` also fails
   if `terraform/infra` (or a module it calls) grants swarm-verify any
@@ -2135,7 +2133,7 @@ team's `agents-staging` cluster:
   read from Secret Manager at run time. swarm-verify can already read the task
   documents behind that metadata through `datastore.viewer`. The Role and its
   binding exist only inside swarm-autopilot, so they cannot reach
-  `agents-staging`. The binding names swarm-verify by email **and by numeric
+  `peer-cluster`. The binding names swarm-verify by email **and by numeric
   uniqueId**, because the gate authenticates with an OAuth access token and
   GKE presents a service account on that path by uniqueId
   (`dispatcher-rbac.yaml` has the 2026-09-24 measurement).
@@ -2192,11 +2190,11 @@ was never an option. What implements it, in
 | piece | value |
 |---|---|
 | log view | `swarm-verify` on the `_Default` bucket (location `global`), filter `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-verify"` |
-| grant | `roles/logging.viewAccessor` to the deployer, condition `resource.name == "projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-verify"` |
+| grant | `roles/logging.viewAccessor` to the deployer, condition `resource.name == "projects/example-project/locations/global/buckets/_Default/views/swarm-verify"` |
 | read | `gcloud logging read … --bucket _Default --location global --view swarm-verify`, which sends that view to `entries.list` as the resource read |
 | refusal | `var.deployer_roles` refuses every predefined role measured to read log entries ([`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json): 50 of 2,397 on 2026-09-24, `roles/iam.securityReviewer` and seven `roles/firebase.*` roles among them), and every role not on the reviewed list in `verify_logs.tf` |
 
-It replaces PR #50's design, which copied the job's lines through a sink into a
+It replaces the log-sink design, which copied the job's lines through a sink into a
 `swarm-verify-logs` bucket. That was never applied: on 2026-09-24 the project
 had only `_Default` and `_Required` buckets and sinks, and the owner's bootstrap
 state held no logging resource. The view keeps no second copy of a transcript,
@@ -2288,12 +2286,12 @@ exercised, and this is what was found, not proof that there is nothing else.
 
 | # | route to every log in the project | closed by a condition? |
 |---|---|---|
-| 1 | The deployer holds `roles/iam.serviceAccountUser` on `209012342332-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
-| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (#79, owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed and applied** 2026-09-28 23:21Z by the owner's bootstrap apply, which destroyed the live binding; read 2026-09-29: the deployer holds no `roles/iam.roleAdmin` ([runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates)). |
-| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
+| 1 | The deployer holds `roles/iam.serviceAccountUser` on `123456789012-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
+| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed and applied** 2026-09-28 23:21Z by the owner's bootstrap apply, which destroyed the live binding; read 2026-09-29: the deployer holds no `roles/iam.roleAdmin` ([runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates)). |
+| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `123456789012@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 15 since #1430 turned `swarmGithubHooksDedup` on (14 from 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it). None of the 15 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)), and `swarmGithubHooksDedup` holds `datastore.entities.create` alone ([`github_hooks_role.tf`](../terraform/bootstrap/github_hooks_role.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 15 since the swarmGithubHooksDedup grant change turned `swarmGithubHooksDedup` on (14 from 2026-09-25, when `swarmSecretLister` left the list because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it). None of the 15 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)), and `swarmGithubHooksDedup` holds `datastore.entities.create` alone ([`github_hooks_role.tf`](../terraform/bootstrap/github_hooks_role.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
 
 What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
@@ -2302,8 +2300,8 @@ and for 2 until the owner's bootstrap apply of 2026-09-28 closed it.
 Closing 1 means building as an account without `roles/editor`; 4 means moving
 sink management out of CI. Each changes what CI can do, none is made here,
 and which to make is the owner's decision. Route 3 was closed by the owner's
-decision on #334: `roles/iam.serviceAccountAdmin` is granted on each
-`terraform/infra` account instead of the project. Route 2 was closed by the owner's decision on #79: no
+decision on the serviceAccountAdmin-scoping decision: `roles/iam.serviceAccountAdmin` is granted on each
+`terraform/infra` account instead of the project. Route 2 was closed by the owner's decision on the roleAdmin-removal decision: no
 resource-level grant exists for `roleAdmin` to be narrowed to (a role carries
 no allow policy of its own; the project's testable permissions include no
 `iam.roles.setIamPolicy`, read 2026-09-25), so it came off the deployer and the
@@ -2337,9 +2335,9 @@ unscopable one stays wide are recorded there, with what sat in its reach.
 | `roles/serviceusage.serviceUsageAdmin` | unscopable: one set of services per project |
 
 **Not held, and refused by a validation:** `roles/owner`, `roles/editor`,
-`roles/iam.roleAdmin` (#79, 2026-09-25) and, since 2026-09-29,
+`roles/iam.roleAdmin` (2026-09-25) and, since 2026-09-29,
 **`roles/iam.workloadIdentityPoolAdmin`** (owner decision, from the security
-review of contract request 30, #314). `terraform/infra` manages no workload
+review of contract request 30). `terraform/infra` manages no workload
 identity pool or provider: the only pool it names is GKE's
 `<project>.svc.id.goog`, and only as a string inside the member of a
 service-account binding. So CI never used the role, and holding it let CI add
@@ -2349,17 +2347,17 @@ deployer itself, from outside the WIF ref pin, or to the other team's
 [`wif.tf`](../terraform/bootstrap/wif.tf), which the owner applies.
 
 **`roles/iam.serviceAccountAdmin` is also off the project** since 2026-09-29
-(owner decision on #334), and a validation refuses it in `deployer_roles`. See
+(owner decision on the serviceAccountAdmin-scoping decision), and a validation refuses it in `deployer_roles`. See
 the next section.
 
 ## The deployer's service-account grants
 
 Project-wide, `roles/iam.serviceAccountAdmin` let CI set the IAM policy of
-every service account in `saga-agents-staging` — the other team's eleven
-(`promptlab-runner` among them), `swarm-ci-fix`, and `swarm-tf-deployer`
+every service account in `example-project` — the other team's eleven
+(`peer-app-runner` among them), `swarm-ci-fix`, and `swarm-tf-deployer`
 itself — and so grant itself `serviceAccountTokenCreator` on any of them and
 act as it. That was route 3 above, and the way out of the WIF pin the review of
-contract request 30 (#314) found.
+contract request 30 found.
 
 **A condition could not narrow it.** IAM does not evaluate a resource name for
 its own resources: *"the condition `resource.name.endsWith == devResource`
@@ -2392,7 +2390,7 @@ bootstrap grants on at its next apply. The deployer's grant of `actAs` to itself
 every account in it is on the list. What admin on a listed account still
 allows — acting as `swarm-api`, say — is authority CI already had by deploying
 as it. Route 3 is closed once the owner applies this, because neither account
-it named (the compute account, `209012342332@cloudbuild`) is on the list, and
+it named (the compute account, `123456789012@cloudbuild`) is on the list, and
 no listed account reads logs.
 
 ### A new account exists before the release that adds it
@@ -2419,14 +2417,14 @@ that does not exist yet. So for a **new tenant**:
    git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars
    grep -n '<<' /tmp/pr-dev.tfvars          # expect nothing inside the tenants block
    terraform -chdir=terraform/bootstrap init -reconfigure \
-     -backend-config="bucket=swarm-tfstate-saga-agents-staging"
+     -backend-config="bucket=swarm-tfstate-example-project"
    terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars
    ```
 
    `terraform init` is needed before any bootstrap plan or targeted apply: this
    root reads `modules/service_account_ids` and `modules/custom_role_ids`, and a
    checkout that has not initialised them since they were added fails with
-   "Module not installed". The `-backend-config` is the state bucket: since #827
+   "Module not installed". The `-backend-config` is the state bucket: since the bootstrap-state-migration change
    bootstrap's state lives at `gs://<bucket>/bootstrap`, and a checkout with no
    state refuses to plan through `scripts/bootstrap.sh` but not through a bare
    `terraform plan` — check `terraform -chdir=terraform/bootstrap state list` is
@@ -2476,12 +2474,12 @@ re-runs the failed release job.
 
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 
-Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
+Once the custom-roles-to-bootstrap PR's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
-as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the 15 grantable roles (14 until #1430 turned
-`swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
+as of the grant-chunking change, chunked into two bindings rather than one: `hasOnly()` refuses a
+list over 10 elements, and the 15 grantable roles (14 until the swarmGithubHooksDedup grant change turned
+`swarmGithubHooksDedup` on, and 15 until the swarmSecretLister-removal change took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -2493,16 +2491,16 @@ chunks above are live, in this exact order:
 2. `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`,
    with the plan reading exactly "2 to add, 0 to change, 0 to destroy" --
    abort on anything else.
-3. `gcloud projects get-iam-policy saga-agents-staging --flatten=bindings --filter="bindings.role=roles/resourcemanager.projectIamAdmin AND bindings.members:serviceAccount:${DEPLOYER}" --format='value(bindings.condition.title)'`,
+3. `gcloud projects get-iam-policy example-project --flatten=bindings --filter="bindings.role=roles/resourcemanager.projectIamAdmin AND bindings.members:serviceAccount:${DEPLOYER}" --format='value(bindings.condition.title)'`,
    expecting the two chunk titles plus one empty line (the unconditioned
    grant, which carries no condition title).
-4. `gcloud projects remove-iam-policy-binding saga-agents-staging --member="serviceAccount:${DEPLOYER}" --role=roles/resourcemanager.projectIamAdmin --condition=None --format=none`.
+4. `gcloud projects remove-iam-policy-binding example-project --member="serviceAccount:${DEPLOYER}" --role=roles/resourcemanager.projectIamAdmin --condition=None --format=none`.
 5. Re-run step 3, expecting exactly the two chunk titles.
 6. Prove the admitted side with a `terraform/infra` plan or a release apply.
 
 **Why this order and not one apply that imports and destroys the old
 grant.** CI never lacks `projectIamAdmin` for any interval this way, unlike
-#275's own one-minute gap between destroying the old single condition and
+the grant-chunking change's own one-minute gap between destroying the old single condition and
 creating the chunked ones. Importing the unconditioned grant into bootstrap
 state and targeting both it and the chunks in one apply would reintroduce
 that same race -- a parallel destroy and create of the same role, on the same
@@ -2510,8 +2508,8 @@ principal, with no ordering between them.
 
 Releases then prove the **admitted** side. Every plan reads the project policy,
 and a release that adds a tenant writes it. Nothing in the pipeline asks for a
-role **off** the list. **Owner decision, 2026-09-25 (#68):** a deliberate
-probe, run once by the owner after step 3 of the order on #80.
+role **off** the list. **Owner decision, 2026-09-25:** a deliberate
+probe, run once by the owner after step 3 of the order on the probe-ordering decision.
 
 [`iam-refusal-probe.yml`](../.github/workflows/iam-refusal-probe.yml) has no
 trigger but `workflow_dispatch`, takes no inputs, and refuses any ref but
@@ -2519,7 +2517,7 @@ trigger but `workflow_dispatch`, takes no inputs, and refuses any ref but
 deployer's token for `refs/heads/main` only. As the deployer, the probe asks for
 `roles/browser` for itself. It **passes only if IAM refuses with
 PERMISSION_DENIED on the policy write**. If the grant lands, the probe removes
-exactly that binding, reads the policy back, and fails saying #68 must be
+exactly that binding, reads the policy back, and fails saying the IAM-refusal tracking issue must be
 reopened. The owner's steps, and what each outcome means, are in
 [the runbook](runbooks/iam-refusal-probe.md).
 
@@ -2529,11 +2527,11 @@ Preflight makes that the condition's refusal and nobody else's. The scoped
 bindings are the only `projectIamAdmin` grants the deployer holds, and none of
 its other roles carries `resourcemanager.projects.setIamPolicy`. That check is
 limited to the roles preflight could read, which is all of them before step 4
-(#150). `hasOnly` treats every unlisted role alike, and a role absent from
+. `hasOnly` treats every unlisted role alike, and a role absent from
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
-**It covers a self-grant of `swarmSecretLister` (#69).** #69's acceptance is
+**It covers a self-grant of `swarmSecretLister`.** The quota-broker-grant change's acceptance is
 that, with `projectIamAdmin` scoped, the deployer cannot bind itself
 `swarmSecretLister`, whose project-wide `secretmanager.secrets.setIamPolicy`
 reaches the other team's secrets. The refusal of `roles/browser` stands for that
@@ -2545,7 +2543,7 @@ never asks for `swarmSecretLister` itself: if the condition were broken, the
 deployer would hold `secrets.setIamPolicy` over the other team's secrets until
 the revert.
 
-**Preflight checks every chunk, not one binding (#276).**
+**Preflight checks every chunk, not one binding.**
 [`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
 one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
 chunk -- and refuses unless each one's expression is exactly
@@ -2554,11 +2552,11 @@ and its list names neither `roles/browser` nor `swarmSecretLister`. A grant is a
 binding admits it, so one chunk with a broader condition (a `|| true`, a
 `hasAny`) or the probe role in its list would make a grant prove nothing; the
 whole expression is matched, and the list is parsed, for that reason. Before
-#276 it asserted exactly one binding and would have stopped at two.
+the probe's two-binding update it asserted exactly one binding and would have stopped at two.
 
 **What it cannot prove:**
 
-* **That the `roleAdmin` route is closed (#79, PR #150).** That route changes a
+* **That the `roleAdmin` route is closed.** That route changes a
   custom role CI already holds so that it carries `setIamPolicy`. The write is
   then authorised by that role, and the condition is never evaluated. The probe
   asks the condition a question that route never asks. If the route has already
@@ -2590,7 +2588,7 @@ runs the script against a fake `gcloud`, and holds each case.
 ## The CI fixer
 
 A SwarmCloud pull request that goes red gets a fix attempt with no operator
-(#263). Before this, #248 and #249 each waited for the operator to start a
+. Before this, two earlier issues each waited for the operator to start a
 fixer by hand and push the fix-up from a laptop.
 
 `ci-fix.yml` runs when `application` completes with `failure` on a
@@ -2600,11 +2598,11 @@ fixer by hand and push the fix-up from a laptop.
 1. **Only the pull request's current head, at submit and again at start.** A
    red run for a commit the branch has already moved past is ignored. The
    check at submit is not enough, because a fix waits for capacity before it
-   starts and the red head can be superseded while it waits. PR #2224's two
+   starts and the red head can be superseded while it waits. The late-fix race's two
    fixes started 1.5-2 h after submission, when the owner had already fixed
    and merged the branch: one agent found nothing to change and failed
    `published_nothing`, the other reset onto the red sha and failed with
-   HEAD moved (#2276). So swarm-api signs the red head into the dispatch
+   HEAD moved. So swarm-api signs the red head into the dispatch
    block (`ci_fix_head`, `swarm_api.validation.CI_FIX_HEAD_FIELD`; the
    worker acts on no unsigned metadata), and the worker checks it again on
    the attempt's fresh clone, before any runner starts
@@ -2634,11 +2632,11 @@ fixer by hand and push the fix-up from a laptop.
    restates other jobs, comes last. The whole is 16 KiB at most
    (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
    excerpt by the same rules in Python (`swarm_api/issueci.py`,
-   `_check_section`; CIFIX-EXCERPT, part of #1914), and go further: a red
+   `_check_section`; CIFIX-EXCERPT), and go further: a red
    gate's workflow run is read and its failed leaf jobs are excerpted ahead
    of it, each section names the events it failed on, and a job red on push
    but green on pull_request at one sha is called out as a branch behind a
-   fix on main: merge main (#2937). `redact` is a pattern list
+   fix on main: merge main. `redact` is a pattern list
    and not a boundary (its own header says so); what makes a leak survivable
    is that the excerpt is stored as an agent's input, which the API serves
    masked.
@@ -2666,7 +2664,7 @@ fixer by hand and push the fix-up from a laptop.
    ([`swarm_api/cifix.py`](../apps/swarm-api/swarm_api/cifix.py)).
 
 **It stands down while a lane's merge step is live, and the API decides
-that** (CI-FIXER-ONE, CI-FIXER-GATE, part of #1822). A lane whose workflow has
+that** (CI-FIXER-ONE, CI-FIXER-GATE). A lane whose workflow has
 a merge step runs its own CI-fix rounds on its pull request
 (`mergewake._on_red`). A standalone fix submitted beside them is racing that
 round for the same branch. In 72 h to 2026-10-21 this fixer ran 91 times and
@@ -2682,12 +2680,12 @@ for every real lane. The API reads with its own access, and the fixer gains
 no read. An agent in no workflow, a workflow with no merge step, and a merge
 step that has finished are fixed as before.
 
-**An issue run owns its pull request the same way** (#2216). An issue run's
+**An issue run owns its pull request the same way**. An issue run's
 compiled workflow has no merge step, so the merge-step read never fired for
 its pull request, yet while it is CHECKING or FIXING it reads CI and submits
-its own CI-fix rounds from `issueci`. Measured 2026-10-23: on #2145 the
+its own CI-fix rounds from `issueci`. Measured 2026-10-23: on the first measured case the
 standalone fixer ran 30 minutes and its push was rejected non-fast-forward
-because the run's round had pushed first; on #2147 it started 64 s after the
+because the run's round had pushed first; on the second measured case it started 64 s after the
 run's round and published nothing while that round fixed the failure. So
 `cifix.stamp` also answers 409 `ci_fix_lane_owns_pr` while an issue run of the
 same tenant that is not terminal (any of PLANNING through FIXING: an APPROVED
@@ -2705,11 +2703,11 @@ script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
 
-**A plain continuation of the lane waits for its merge step too** (#2685).
+**A plain continuation of the lane waits for its merge step too**.
 The merge-step read above held only a request with `metadata.ci_fix`; a plain
 `continues_task` workflow (no fix mark of any kind) went straight through.
 On 2026-10-28 the plain lane task_7ff30c32 (wf_85f651ab, `CIFIX-2617`) was
-admitted onto PR #2617 while that lane's merge step task_943ec5f2 was live.
+admitted onto that lane's pull request while that lane's merge step task_943ec5f2 was live.
 The merge step then submitted its ci-fix:1 round task_99b8e1e0 beside it, the
 plain lane pushed 5bc405a first, the round's push was rejected
 non-fast-forward, and the merge step refused `head_moved` at a head none of
@@ -2732,10 +2730,10 @@ as before. A `publish_to_pr` workflow is not read here: its branch's agent is
 known only after `stamp`. The same switch turns it off
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
 
-**A CI fix waits for another live CI fix of its pull request** (#2763). The
+**A CI fix waits for another live CI fix of its pull request**. The
 claim (`ci_fix_in_flight`) keys a failure by head and run, so a red run at
 another head, or another red run at the same head, counted as another failure
-and got a second fix beside the first. On PR #2730 this fixer's attempt 1
+and got a second fix beside the first. In one measured case this fixer's attempt 1
 (task_f11210cf) was RUNNING on bb31584 when attempt 2 (task_af11c3ba) was
 admitted at 62a6fbac. Attempt 2 pushed 9e193de0 first, and attempt 1's publish
 conflicted. Why: a pull request has one writer at a time, and two CI fixes on
@@ -2755,9 +2753,9 @@ another pull request and another tenant's fix are passed over. The same
 switch turns it off (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
 
 **A request that pushes to a pull request waits while a fix holds it**
-(#2535). The gates above read only a request that carries `metadata.ci_fix`.
+. The gates above read only a request that carries `metadata.ci_fix`.
 Anything else went straight through. On 2026-10-26 an `implement` step of
-wf_3bde5fa9 was admitted onto PR #2473 with `publish_to_pr`, three seconds
+wf_3bde5fa9 was admitted onto a pull request with `publish_to_pr`, three seconds
 after this fixer (task_b0abb81d) started on the same red head 377c3010. Both
 agents fixed the same test, the fixer pushed first, and the step's publish
 was refused `head_moved` after its agent had done the whole fix. So
@@ -2775,7 +2773,7 @@ step's conflict round) holds that pull request. Two kinds of request meet it:
 The answer names the live agent, its workflow, its kind and the pull request,
 and nothing is written. Resubmit once that fix ends: its push moves the head,
 and CI runs again there. An issue run's own CI-fix round is such a
-continuation. The second step of #2535 makes it read this 409 as "wait";
+continuation. The second step of the wait-on-409 fix makes it read this 409 as "wait";
 until that lands, the refused round fails its run. A merge-only request, a
 request that is itself a fix round (each has its own gate), and a branch agent
 with no recorded pull request are admitted as before. The refusal ships
@@ -2826,7 +2824,7 @@ the same repository, and the workflow is `direct-pr` with one step and no
 `repository_ref`. A continuation of a continuation continues the original
 branch.
 
-Since #454's CI loop a tenant MEMBER may also continue an `integrate`
+Since the issue-run guardrails design's CI loop a tenant MEMBER may also continue an `integrate`
 workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
 `publish_branch` a `direct-pr` agent does, and opens the workflow's one pull
 request from it, so an issue run's fix round lands on the run's pull request.
@@ -2839,8 +2837,8 @@ request from their own branch, in its own tenant:
 * a `direct-pr` agent -- the reach contract request 30 reviewed;
 * an `integrate` workflow's **integrator**. Every SwarmCloud lane pull
   request is opened by one (the workflow's final fix step), so a fixer
-  limited to `direct-pr` agents could fix none of them: its first real run,
-  on PR #740, was refused `422 invalid_dispatch`. The fix pushes to the same
+  limited to `direct-pr` agents could fix none of them: its first real run
+  was refused `422 invalid_dispatch`. The fix pushes to the same
   `swarm/<integrator task>` branch, so that pull request updates, and the
   per-pull-request cap and the post-back above work unchanged, both keyed on
   the integrator as the continued agent. The integrator is recognised by the
@@ -2858,7 +2856,7 @@ request of its tenant as well as every `direct-pr` one; it still cannot
 merge, start new work, read what it did not submit, or reach another tenant.
 The rules are in
 [`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
-block it writes is recorded under request #6 in
+block it writes is recorded under request 6 in
 [`contract-change-requests.md`](contract-change-requests.md).
 
 ### What the owner configures, once
@@ -2904,7 +2902,7 @@ it is not configured, and submits nothing.
   LISTED on that tenant, in `tenants.<tenant>.service_accounts` in
   `terraform/environments/<env>/<env>.tfvars`, which resolves it by exact
   email and unique id (contract request 30). It is NOT added to the tenant's
-  Google group: `eng@saga.xyz` holds project-wide admin roles on this shared
+  Google group: `eng@example.com` holds project-wide admin roles on this shared
   project, and membership would hand those to a workflow. Without the listing
   its personal tenant `u-<name>` owns nothing it can fix (owner decision,
   2026-10-05; `swarm-ci-fix` is listed on `eng`). The fix step runs
@@ -2930,8 +2928,8 @@ authenticates and is refused.
 
    ```bash
    gcloud iam service-accounts describe \
-     swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com \
-     --project saga-agents-staging --format='value(email,uniqueId)'
+     swarm-ci-fix@example-project.iam.gserviceaccount.com \
+     --project example-project --format='value(email,uniqueId)'
    ```
 
 2. **Bootstrap applied** with `ci_fix_service_account` set and the same
@@ -2965,8 +2963,8 @@ authenticates and is refused.
 
    ```bash
    gh variable set SWARM_CI_FIX_SA \
-     --repo bogdan-alexandrescu/SwarmCloud \
-     --body swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+     --repo example-org/example-repo \
+     --body swarm-ci-fix@example-project.iam.gserviceaccount.com
    ```
 
    `GCP_WIF_PROVIDER` (already set for the release) names the provider;
@@ -2990,47 +2988,47 @@ authenticates and is refused.
 * A third red run on the same pull request gets `CI fixer: stopped after 2
   attempts.` and no submission; a submission forced past the cap answers 422.
 
-### Admitting the fixer through `swarm-eng-bots@saga.xyz` (owner decision 2026-10-06): NOT EFFECTIVE YET
+### Admitting the fixer through `swarm-eng-bots@example.com` (owner decision 2026-10-06): NOT EFFECTIVE YET
 
 The owner asked, on 2026-10-06, that `swarm-ci-fix` reach tenant `eng`
-through a SwarmCloud-only group, `swarm-eng-bots@saga.xyz`, rather than
-`eng@saga.xyz` (which holds project-wide admin roles on this shared
+through a SwarmCloud-only group, `swarm-eng-bots@example.com`, rather than
+`eng@example.com` (which holds project-wide admin roles on this shared
 project). Creating the group and its membership is an operator step in Cloud
 Identity, and is exactly:
 
 ```bash
-gcloud identity groups create swarm-eng-bots@saga.xyz \
-  --organization=saga.xyz \
+gcloud identity groups create swarm-eng-bots@example.com \
+  --organization=example.com \
   --display-name="SwarmCloud eng bots" \
   --description="SwarmCloud only: service accounts admitted to tenant eng. Holds no IAM role on any project."
 gcloud identity groups memberships add \
-  --group-email=swarm-eng-bots@saga.xyz \
-  --member-email=swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+  --group-email=swarm-eng-bots@example.com \
+  --member-email=swarm-ci-fix@example-project.iam.gserviceaccount.com
 ```
 
 **Running it changes nothing about which tenant the fixer reaches, and
 nothing in Terraform can register the group as `eng`'s.** A tenant's id is
 derived from its group's address by the frozen
 `swarm_common.identity.tenant_id_for_group`, so a registered
-`swarm-eng-bots@saga.xyz` is a NEW tenant, `swarm-eng-bots`, which owns none
+`swarm-eng-bots@example.com` is a NEW tenant, `swarm-eng-bots`, which owns none
 of `eng`'s pull requests -- every fix would be refused as "not a task in your
 tenant". A group member is also a full member of its tenant, able to submit
 any work, where the listing above makes the account continuation-scoped (it
 may only continue a `direct-pr` agent or an integrator; contract request 30
 and the 2026-10-06 decision above). The listing
-already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
+already keeps the account out of `eng@example.com`. Mapping a second group onto
 `eng` is a frozen-contract change, and whether to make it is the owner's
 question, not this document's: until it is answered, the listing is the
 mechanism and the group, if created, is unused.
 
 ## A ready pull request is merged by GitHub, not by a session
 
-**To be retired, owner decision 2026-10-04 (#295, contract request 47):**
+**To be retired, owner decision 2026-10-04 (contract request 47):**
 merging moves off this GitHub-side App into a workflow `merge` step, which
 squash-merges with the tenant's existing `-git` token, in whatever repository
 the workflow runs on, and closes the issues the pull request closes -- the
-App path merged #564 and #562 and left #72 and #560 open although GitHub
-listed them as closing references (#569). See
+App path merged two referenced issues and left two more open although GitHub
+listed them as closing references. See
 [workflows.md](workflows.md#ending-in-a-merge-the-merge-step) and
 [merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
 `auto-merge.yml` and the `swarmcloud-merge` App stay in place until the merge
@@ -3046,7 +3044,7 @@ merge watcher. Everything below describes the mechanism once the owner has
 followed [the merge App runbook](runbooks/merge-app.md). Remove this note when
 `vars.MERGE_APP_ID` and `secrets.MERGE_APP_PRIVATE_KEY` exist.
 
-Owner decision, 2026-09-28 (#262): **adding the `ready` label enables GitHub's
+Owner decision, 2026-09-28: **adding the `ready` label enables GitHub's
 native auto-merge**, and GitHub performs the squash merge once the base
 branch's required checks pass at the pull request's head. It used to take a
 merge watcher running in an operator's session, so a green, ready pull request
@@ -3059,7 +3057,7 @@ It refuses, with a comment on the pull request saying which and why:
 
 * **a title starting `[swarm] task_`** — the worker's placeholder. The squash
   subject is the pull request's title plus `(#N)`, set explicitly, because a
-  one-commit squash otherwise takes the commit's own message: that is how #238
+  one-commit squash otherwise takes the commit's own message: that is how one such squash merge
   put `swarm: work from task_...` on main as a headline. Retitle it as a
   fact-style headline, then remove and re-add `ready`;
 * **a base branch with no required status checks** — auto-merge would have
@@ -3070,7 +3068,7 @@ It refuses, with a comment on the pull request saying which and why:
   classic branch protection's checks, each name once. Until 2026-10-01 it read
   only classic protection (`branches/main` → `.protection`), which this
   repository does not use, so it counted zero and refused every `ready` label
-  (#412, #403). Classic protection still counts, so moving back to it works;
+ . Classic protection still counts, so moving back to it works;
 * **no merge App configured** — see the next paragraph;
 * **a check that already ran on the head commit and is failing** — even one
   that is not required, and even beside checks still running. The ruleset
@@ -3092,8 +3090,8 @@ It refuses, with a comment on the pull request saying which and why:
   messages. For each number in this repository it asks REST
   `repos/<R>/issues/<n>` whether it is a pull request and whether it is open.
   An open one refuses on the label and on a re-evaluation alike: `ready` is
-  removed and the comment says to reword the reference ("PR 840") or write
-  `part of #840`. An issue passes. So does a closed or merged pull request:
+  removed and the comment says to reword the reference ("PR N") or write
+  `part of #N`. An issue passes. So does a closed or merged pull request:
   the keyword closes, never reopens, and cannot change a merged one. If the
   check cannot tell (an error, a failed read other than a 404, more than one
   page of references or commits), the job fails and nothing is armed;
@@ -3101,11 +3099,11 @@ It refuses, with a comment on the pull request saying which and why:
   2026-10-08, owner decision, observer proposal I part 2) — see
   [Saying what a pull request depends on](#saying-what-a-pull-request-depends-on).
 
-A check **still running** is not a refusal (since 2026-10-06, #697): if it
+A check **still running** is not a refusal (since 2026-10-06): if it
 is a *required* one the pull request is queued and waits, as
 [the section after next](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)
 says; if it is not required it does not hold the merge at all (since
-2026-10-07, #815).
+2026-10-07).
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
@@ -3128,12 +3126,12 @@ depends on owner/repo#840
 depends on https://github.com/owner/repo/pull/840
 ```
 
-Any case (`Depends on PR 840`), any whitespace between the words. A bare
+Any case (`Depends on PR N`), any whitespace between the words. A bare
 number is this repository's; `owner/repo#N` and a pull request or issue link
 (`/pull/N`, `/issues/N`) are looked up in the repository they name. A number
 GitHub does not find there (a private repository reads the same) refuses the
-merge. Nothing else is read as a dependency: `see #840`, `after #840` and
-`part of #840` are not, and neither is the phrase in the title or in a commit
+merge. Nothing else is read as a dependency: `see #N`, `after #N` and
+`part of #N` are not, and neither is the phrase in the title or in a commit
 message. The pull request's own number is ignored.
 
 The phrase is read as prose. A `depends on` inside a fenced code block (to its
@@ -3170,7 +3168,7 @@ own token, does not.
 
 ### A ready label that lands while checks run is re-evaluated
 
-**Measured 2026-10-06 (observer P13):** #697 got `ready` while its CI was
+**Measured 2026-10-06 (observer P13):** the ready-while-running incident got `ready` while its CI was
 running. The gate refused it ("failing or still running") and, evaluating
 only on the label event, never looked again, so the pull request sat
 unmerged after it went green. Every pull request SwarmCloud opens with
@@ -3187,7 +3185,7 @@ Then:
   finishes`) runs on `workflow_run: completed` of every workflow that runs on
   `pull_request` — `application`, `ci-gate`, `security`, `terraform`; the test
   reads that list out of the workflow files, so a new one cannot be left
-  out. Since #815 it also runs on `check_suite: completed`, the backstop for
+  out. Since the check-suite-backstop change it also runs on `check_suite: completed`, the backstop for
   a suite another App created (code scanning's, for one). It lists the open `ready` pull requests whose head is the finished
   run's head sha (not `workflow_run.pull_requests`, which GitHub leaves empty
   for a fork) and sends a `workflow_dispatch` of `auto-merge.yml` on main for
@@ -3200,9 +3198,9 @@ Then:
   a green pull request does. The last run to finish on the head is the one
   that merges it.
 
-**Only a required check still running holds the merge (#815, 2026-10-07).**
-#811 got `ready` while code scanning's `Trivy` was still running. Trivy is
-not one of the checks ruleset 24160219 requires, and no application or
+**Only a required check still running holds the merge (2026-10-07).**
+The Trivy-stall incident got `ready` while code scanning's `Trivy` was still running. Trivy is
+not one of the checks ruleset `main-protection` requires, and no application or
 security run reports it, so the gate waited on it, nothing looked again when
 it finished, and the merge queue stalled for five hours until an operator
 dispatched the re-evaluation by hand. Now:
@@ -3210,7 +3208,7 @@ dispatched the re-evaluation by hand. Now:
 * the wait reads the same required names gate item 3 reads (the branch's
   effective rules plus classic protection), and only one of those still
   running waits. A non-required check still running does not hold the merge;
-* a check that already **failed** still refuses, required or not — #815
+* a check that already **failed** still refuses, required or not — the check-suite-backstop change
   narrows the wait, not gate item 5;
 * GitHub reports a pull request whose required checks are green but a
   non-required one is running (or red) as `UNSTABLE`, and will not *enable*
@@ -3218,7 +3216,7 @@ dispatched the re-evaluation by hand. Now:
   directly, or enqueued on a merge-queue base, exactly like `CLEAN`; the
   ruleset still decides. A non-required check that fails after the gate read
   the checks is merged past in that window — as native auto-merge would
-  have done — which #815 accepts;
+  have done — which the check-suite-backstop change accepts;
 * `check_suite: completed` dispatches the same re-evaluation for each open
   `ready` pull request at the suite's head. GitHub runs no workflow on
   `check_suite` for a suite GitHub Actions created, so it never fires for
@@ -3321,10 +3319,10 @@ holds all of that and runs the gate against a fake `gh`.
 **GitHub did not close the issues named by the pull requests the App
 merged.** Of 65 merged pull requests with a closing keyword, owner merges
 closed 77 of 77 referenced issues; the `swarmcloud-merge` App's merges left 28
-of 33 open (history analysis, 2026-10-05; #487 → #124/#125/#127/#128, #481 →
-#89–#93, #541 → #503, #490 → #307), although GraphQL `closingIssuesReferences`
-listed every one of them (#621). Owner decision, 2026-10-05: close them
-explicitly after the merge, as the workflow `merge` step does (#581), with no
+of 33 open (history analysis, 2026-10-05, sampled across four pull requests --
+one naming four issues, one naming five, and two each naming one), although GraphQL `closingIssuesReferences`
+listed every one of them. Owner decision, 2026-10-05: close them
+explicitly after the merge, as the workflow `merge` step does, with no
 change to the App's permissions.
 
 So `auto-merge.yml` also runs on `closed`, and its `close-issues` job runs
@@ -3338,9 +3336,9 @@ pull request **merged into the default branch**:
   `part of #N` — which GitHub does not list as a closing reference — is never
   closed. Write `part of #N` for a partial fix, and a closing keyword only when
   it is unconditionally true (CLAUDE.md, "Issues");
-* it **never closes a pull request**. Owner decision, 2026-10-08: #857's
-  text said `fix #840`, and #840, an open pull request, was closed two
-  seconds after #857 merged. When a closing keyword names a pull request, the
+* it **never closes a pull request**. Owner decision, 2026-10-08: the mis-worded merge's
+  text named the wrongly-closed pull request with a closing keyword, and the wrongly-closed pull request, an open pull request, was closed two
+  seconds after the mis-worded merge merged. When a closing keyword names a pull request, the
   script leaves that pull request open, whatever its state. It also posts one
   comment on the merged pull request: "#N is a pull request named by a closing
   keyword in this pull request's text; it was left open ...".
@@ -3349,11 +3347,11 @@ pull request **merged into the default branch**:
   validation error. For that reason the script reads the REST issue endpoint
   before every close: its `pull_request` key is the authoritative answer. If
   that check fails, nothing is closed for that reference and the job fails.
-  This guard covers only the script's own closes. In the #857 merge, the
-  job's log reads "#857 has no closing references", and #840's `closed`
+  This guard covers only the script's own closes. In the mis-worded merge, the
+  job's log reads "the mis-worded merge has no closing references", and the wrongly-closed pull request's `closed`
   event came at 04:16:21, nine seconds before the job ran. Its actor is
   `swarmcloud-merge[bot]`, the merging App, so GitHub's own keyword handling
-  closed #840. Nothing in this repository can stop that. The only defence is
+  closed the wrongly-closed pull request. Nothing in this repository can stop that. The only defence is
   never to put a closing keyword before a pull request's number;
 * an issue that is already closed is left alone, with no second comment, and
   one in another repository is recorded in the run summary, not touched;
@@ -3383,7 +3381,7 @@ holds the job's trigger, permissions and checkout.
 
 The issues App merges left open before this existed are not closed by it: it
 acts on the merge event only, so they are checked against main and closed by
-hand (#621).
+hand.
 
 ### What the owner applies, once
 
@@ -3406,8 +3404,8 @@ organization, never another repository.
 Then:
 
 ```bash
-gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
-gh secret set MERGE_APP_PRIVATE_KEY --env repo-secrets --repo bogdan-alexandrescu/SwarmCloud < merge-app.private-key.pem
+gh variable set MERGE_APP_ID --repo example-org/example-repo --body '<the App ID>'
+gh secret set MERGE_APP_PRIVATE_KEY --env repo-secrets --repo example-org/example-repo < merge-app.private-key.pem
 rm merge-app.private-key.pem
 ```
 
@@ -3418,8 +3416,8 @@ pull requests and is read only by `auto-merge.yml`, `merge-train.yml` and
 `runner-fallback.yml`.)
 
 **Both of this repository's GitHub-writing secrets live in the environment
-`repo-secrets`, not at repository level (BGD's decision, 2026-10-23,
-REPO-SECRETS-ENV, part of #2029).** `MERGE_APP_PRIVATE_KEY` and
+`repo-secrets`, not at repository level ([the owner]'s decision, 2026-10-23,
+REPO-SECRETS-ENV).** `MERGE_APP_PRIVATE_KEY` and
 `SWARM_SANDBOX_GITHUB_TOKEN` were repository secrets, and a repository secret
 is readable by a workflow on ANY pushed branch: the branch's own workflow file
 runs on the push, before any review, merge hold or `STOP_WORKFLOWS`, so once
@@ -3450,7 +3448,7 @@ sync failing until the merge.
 **2. Auto-merge allowed on the repository:**
 
 ```bash
-gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
+gh api --method PATCH repos/example-org/example-repo -F allow_auto_merge=true
 ```
 
 (Superseded on 2026-09-29 by the repository ruleset `main-protection`, which
@@ -3473,7 +3471,7 @@ check list may hold only checks that report on every pull request:
 
 ```bash
 gh api --method PUT \
-  repos/bogdan-alexandrescu/SwarmCloud/branches/main/protection \
+  repos/example-org/example-repo/branches/main/protection \
   -H "Accept: application/vnd.github+json" \
   --input - <<'JSON'
 {
@@ -3527,33 +3525,33 @@ required list past what always runs fails CI.
 
 ### SwarmCloud merges its own pull requests
 
-What main does as of 2026-10-10 (#295):
+What main does as of 2026-10-10:
 
 * **A workflow spec may set `merge: "on_merge_verdict"`** in its `metadata`
   (`MERGE_ON_VERDICT` in
-  [`validation.py`](../apps/swarm-api/swarm_api/validation.py), #998). That
+  [`validation.py`](../apps/swarm-api/swarm_api/validation.py)). That
   appends a re-review on the integrator's pushed head and a `merge` step,
   which merges the integrator's pull request only when that review says
   MERGE and CI is green.
 * **Merge steps on one repository take a single merge slot** and land in
   submission order, so concurrent merges no longer refuse
   `behind_too_often` behind each other
-  ([`mergeslot.py`](../apps/agent-worker/agent_worker/mergeslot.py), #1002).
+  ([`mergeslot.py`](../apps/agent-worker/agent_worker/mergeslot.py)).
 * **A repository's `merge_policy` sets the default** for a workflow whose
   `metadata.merge` says nothing (`MERGE_POLICIES` in
-  [`validation.py`](../apps/swarm-api/swarm_api/validation.py), #998;
+  [`validation.py`](../apps/swarm-api/swarm_api/validation.py), the merge-policy-default change;
   [workflows.md](workflows.md#a-repositorys-merge_policy)).
 
 ## The ruleset on main, and ci-gate
 
 **Owner decision, 2026-09-29.** `main` is protected by a repository ruleset,
-**`main-protection` (id `24160219`)**, not by the classic branch protection
+**`main-protection`**, not by the classic branch protection
 in step 3 above. It forbids deleting `main` and force-pushing to it, requires
 a pull request (no approving review: `ready` is the review decision), and
 requires five status checks: `security.yml`'s `secret scan`, `trivy (repo)`,
 `checkov (terraform + kubernetes)` and `platform policy assertions`, and
 `ci-gate` (added by the owner step below; read live on 2026-10-01 with
-`gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main`). These are
+`gh api repos/example-org/example-repo/rules/branches/main`). These are
 the checks `auto-merge.yml` waits on: its gate reads the same effective-rules
 endpoint.
 
@@ -3672,7 +3670,8 @@ is pinned to an `integration_id` (owner decision, 2026-09-29), the four
 security checks included, as today:
 
 ```bash
-gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+RULESET_ID="$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')"
+gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
   -H "Accept: application/vnd.github+json" \
   --input - <<'JSON'
 {
@@ -3721,7 +3720,7 @@ JSON
 ```
 
 Then read it back and check the list:
-`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks'`.
+`gh api "repos/example-org/example-repo/rulesets/$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')" --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks'`.
 Before sending, compare the body with a fresh read of the ruleset: a rule
 added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
@@ -3733,7 +3732,7 @@ added since 2026-09-29 that is not in this body would be removed by the PUT.
 a pull request merges only when it is up to date with `main` and green at that
 head, so exactly one pull request merges per CI cycle, and every merged pull
 request runs full CI twice (once at its own head, once after the update). On
-the night of 2026-10-07 (#754-#794) that measured:
+the night of 2026-10-07 that measured:
 
 | measure | value |
 |---|---|
@@ -3783,14 +3782,14 @@ fixer's log reads and this document name them, and `build images` still needs
 `format / unit tests`.
 
 **4. A change runs what it can reach** (`what this change reaches`, which
-grew out of the swarm-ui gate of #605):
+grew out of the swarm-ui-gate change):
 
 | the pull request changes | Python unit shards | `lock / contract / format / bridge install` | swarm-ui jobs | everything else in `application.yml` |
 |---|---|---|---|---|
 | only `docs/**` | only the test files that read `docs/` (~36 of 551) | skipped | skipped | runs |
 | only `apps/swarm-ui/**` | only the test files that read `apps/swarm-ui/` (~51) | skipped | run | runs |
 | only those two | the union (~81) | skipped | run | runs |
-| anything else in the list (the old `pull_request.paths`) | all | runs | run if the change reaches swarm-ui (as #605 decided) | runs |
+| anything else in the list (the old `pull_request.paths`) | all | runs | run if the change reaches swarm-ui (as the swarm-ui-gate change decided) | runs |
 | nothing in the list (e.g. only `terraform/infra/`) | skipped | skipped | skipped | skipped — only `ci-gate`, which waits for `terraform.yml` |
 | a push to `main`, a queue entry, a dispatch | all | runs | run | runs |
 
@@ -3835,7 +3834,7 @@ The weights go stale as tests are added and change — the split stays correct
 drifts out of balance. Every shard on `main` uploads what it measured, per
 file, as the artifact `unit-durations-<k>` (30 days).
 
-**Stale weights warn; they do not fail (#2364).** `test_unit_shards.py` used to
+**Stale weights warn; they do not fail.** `test_unit_shards.py` used to
 fail when fewer than 80 % of the test files had a weight. The file was
 refreshed only by hand, so the test files that landed between refreshes pushed
 coverage under the floor (1069 of 1337 weighted) and turned main and every
@@ -4001,7 +4000,7 @@ same two calls and correct this table.
 
 ## A lane head runs CI once, on its pull request
 
-**Owner decision, 2 November 2026 (part of #2688).** A lane branch
+**Owner decision, 2 November 2026.** A lane branch
 (`swarm/**`) no longer runs `application.yml`, `security.yml` or
 `terraform.yml` on `push`. A lane head is tested once, by its pull request's
 run; `main` keeps its own push runs (they build the images, record the tested
@@ -4091,7 +4090,7 @@ the split never disagree on what runs.
 
 ### The component-test shards are sized by measured weight
 
-**Why (owner request 2026-11-03, part of #2688).** The `ui-tests` job ran
+**Why (owner request 2026-11-03).** The `ui-tests` job ran
 vitest's own `--shard=k/4`, which splits by file **count**. The suite is
 hundreds of ~3 s files and eight `spacing.*.test.tsx` slices of 259-485 s
 each, so whichever shard drew two or three slices set the pace: on eight pull
@@ -4240,13 +4239,13 @@ vitest ids its log names. It is read-only. Then:
 
 ## The full suite runs once per change, in the merge train
 
-**BGD's pick, 2026-11-06 (part of #2688):** *"we really need to fix ci merges
+**[the owner]'s pick, 2026-11-06:** *"we really need to fix ci merges
 and streamline the ci part, its the biggest bottleneck we have right now."*
 Measured that morning: one `application.yml` run was 27 jobs and 76
 runner-minutes on a pull request and 34 jobs, all GitHub-hosted, on a push to
 main; about 200 runs a day (145 `pull_request`, merge trains included, and 55
 pushes to main); from about 04:50Z GitHub-hosted jobs waited up to 51 minutes
-(68 waiting, 2 running at 06:55Z) while the own `bogdan-ci` pool (cap 200 VMs)
+(68 waiting, 2 running at 06:55Z) while the own `swarm-ci` pool (cap 200 VMs)
 had 15 up. Two changes, both in [`scripts/ci-select.sh`](../scripts/ci-select.sh)
 and the `changes` job.
 
@@ -4366,7 +4365,7 @@ reuses nothing:
 
 ### A pull request reuses its lane push of the same tree
 
-**Owner approval 2026-10-21 (CI-TREE-REUSE, #1798).** Since LANE CI-EARLY a
+**Owner approval 2026-10-21 (CI-TREE-REUSE).** Since LANE CI-EARLY a
 lane's `swarm/**` push runs this workflow and `terraform.yml`, and its pull
 request then ran them again on the same tree. In the 24 h from 2026-10-20
 06:00 UTC, 166 (workflow, head) pairs ran both ways: 51.5 VM-hours, 18% of all
@@ -4456,7 +4455,7 @@ says the change reaches, which are
   beside one of its directories' names;
 * every test naming a doc that cites a changed path (`doc_closure`): a
   `docs/**/*.md` that names a changed non-doc path by its **full**
-  repo-relative path counts as changed, one level deep (#2299). PR #2267 moved
+  repo-relative path counts as changed, one level deep. The PushTestCell-move incident moved
   `PushTestCell` out of `Access.tsx` while `docs/onboarding.md` still cited it
   there; the tests that resolve that citation name only `onboarding.md`, so no
   rule picked them and main's push went red. Full path only, because a
@@ -4484,7 +4483,7 @@ selected pull request.
 
 ### A miss costs a red main, so the whole-tree tests always run
 
-**CI-GUARDS-ALWAYS (part of #1822, 2026-10-21).** Main's own CI was red on 78
+**CI-GUARDS-ALWAYS (2026-10-21).** Main's own CI was red on 78
 of 231 merged commits (34%) in the 72 h to 2026-10-21, and 14 of 32 failed
 releases were "CI never built" a red main's commit. The two longest
 test-caused streaks were tests no changed path names, because they read the
@@ -4506,7 +4505,7 @@ and a lane's docs-only `changed-guards.sh` run still narrows to
 cannot read or a guard that no longer exists runs the whole suite, and
 `tests/unit/scripts/test_select_unit_tests.py` holds the two equal.
 
-**What is in it is read from the array, not from here.** The set is #642's
+**What is in it is read from the array, not from here.** The set is the docs-guards change's
 docs guards, the UI route seam and `test_specsign_covers`, then the
 whole-tree tests: files that read every file of a directory -- `apps/`,
 `tests/`, `docs/`, `scripts/`, `terraform/`, `kubernetes/`, `.github/` or
@@ -4514,7 +4513,7 @@ whole-tree tests: files that read every file of a directory -- `apps/`,
 naming them. `GUARD_TESTS` lists them one path a line, with a comment naming
 the lane that added each group and why. This page named them test by test
 until CI-GUARDS-MORE added twenty in one go and the list here fell behind
-(CI-GUARDS-DOCS, part of #1822); it names none now, so it cannot drift.
+(CI-GUARDS-DOCS); it names none now, so it cannot drift.
 
 **The bound.** Every pull request and every lane pays for the set, so a file
 is in it only if its recorded weight in `unit_test_durations.json` is at most
@@ -4624,17 +4623,17 @@ What changed for this, and what did not:
   **Turning the queue on is the ruleset change below and nothing else.**
 
 > **Not available on this repository yet (read 2026-10-07, and again 2026-10-08).** GitHub offers
-> merge queues only to repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is
-> owned by a user account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints
+> merge queues only to repositories owned by an organization; `example-org/example-repo` is
+> owned by a user account (`gh api repos/example-org/example-repo --jq .owner.type` prints
 > `User`, read again 2026-10-08). On 2026-10-07 a `merge_queue` rule was refused with
 > `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset was left unchanged. Expect the operator
 > step below to be refused the same way until the repository is owned by an organization. That is
 > the owner's decision, not something a pull request can change.
 >
-> **What protects main meanwhile** (owner decision 2026-10-07): ruleset 24160219's
+> **What protects main meanwhile** (owner decision 2026-10-07): ruleset `main-protection`'s
 > `required_status_checks` sets `strict_required_status_checks_policy: true` (read 2026-10-08), so a
 > pull request must be up to date with main, and green at that head, before it merges. Two pull
-> requests that are green on their own bases but red together (#726 and #727, 2026-10-06: main red
+> requests that are green on their own bases but red together (2026-10-06: main red
 > 19:12-19:58Z) can no longer both merge: the second is behind once the first lands, and must update
 > and pass CI again. The merge step already updates a behind branch (MS3) and re-reads its checks at
 > the new head (MS2's wake). The `merge_group` triggers and both enqueue paths are inert while no
@@ -4642,9 +4641,9 @@ What changed for this, and what did not:
 > a queue.
 
 **Owner decision, 2026-10-06 (observer P26).** `main` was red from 19:12 to
-19:58Z because #726 and #727 were each green on their own base and merged
+19:58Z because two pull requests were each green on their own base and merged
 nine seconds apart. Neither had run against the other: `main-protection`
-(`24160219`) has `strict_required_status_checks_policy: false`, so a pull
+has `strict_required_status_checks_policy: false`, so a pull
 request is not required to be up to date with `main` before it merges, and
 two changes that each pass alone can fail together. Turning `strict` on would
 serialise every merge behind a manual "update branch" and a full CI run each.
@@ -4712,7 +4711,7 @@ commit on `main` for each pull request, titled by GitHub ("Merge pull request
 #N from ...") with the pull request's title in its body, where the squash put
 the title as the headline. A `[swarm] task_` title is still refused before it
 gets there. Merge commits must be allowed on the repository
-(`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .allow_merge_commit` is
+(`gh api repos/example-org/example-repo --jq .allow_merge_commit` is
 `true`), and the ruleset's `allowed_merge_methods` already lists `merge`.
 
 ### Operator step: add the merge queue rule
@@ -4722,11 +4721,12 @@ pull request has shown `ci-gate` and the four security checks green after it.
 The PUT replaces the ruleset whole, so the body restates every rule the
 [ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main) sets and adds
 only `merge_queue`. Compare it with a fresh read first
-(`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219`): a rule
+(`gh api "repos/example-org/example-repo/rulesets/$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')"`): a rule
 added since that this body leaves out would be deleted by the PUT.
 
 ```bash
-gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+RULESET_ID="$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')"
+gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
   -H "Accept: application/vnd.github+json" \
   --input - <<'JSON'
 {
@@ -4804,7 +4804,7 @@ strict on, every pull request would still need an update-branch and its own
 CI run before it could even enter the queue. That is the wait this removes,
 and the queue's group run is what tests the combination now.
 
-Then check it took: `gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main --jq '.[] | select(.type == "merge_queue") | .parameters'`.
+Then check it took: `gh api repos/example-org/example-repo/rules/branches/main --jq '.[] | select(.type == "merge_queue") | .parameters'`.
 The first queued pull request shows a `merge_group` run of `security`,
 `ci-gate`, `application` and `terraform`; if any of them is missing, roll back
 (below) before more pull requests pile into the queue.
@@ -4833,7 +4833,7 @@ the release's `deploy` still runs it, right after it has verified that every
 job runs the promoted digest and before the smoke test. The script executes
 each per-tenant worker job once with `--args=--self-test`.
 
-**Why.** The measurement of 2026-10-07 on #363 (874 claude-code attempts from
+**Why.** The cold-start measurement of 2026-10-07 (874 claude-code attempts from
 09-30 to 10-07, 497 of them with Cloud Run execution conditions): the first
 execution of each Cloud Run job after a new image digest spends **30-59 s
 importing the image** (ContainerReady "Imported container image in Xs"), and
@@ -4889,7 +4889,7 @@ job new in this release (a new tenant or profile) has no such execution and is
 warmed even when no digest changed, which comparing manifests alone would
 miss.
 
-**That skip's premise was measured on 2026-10-27 (box 94 of #888), and the
+**That skip's premise was measured on 2026-10-27 (box 94 of the CI-measurement issue), and the
 skip is kept as it is.** After a same-digest idle gap of 1 to 13.7 h, every
 timed import on a worker job read 1.0-2.5 s, never the 30-59 s of a fresh
 digest; a gap of a day or more has never occurred on a runner image, so no age
@@ -4903,7 +4903,7 @@ bound was added. The numbers, the method and when to read them again are in
 timeline](#the-release-timeline) says why it is not a release job any more). Until
 2026-10-05 its agents were submitted as swarm-verify, which resolves to `eng`,
 and cloned and opened pull requests on this platform's own public repository.
-The history analysis of that day (#628) counted 58 fixture pull requests
+The history analysis of that day counted 58 fixture pull requests
 ("Fix add()...") opened and closed there since 09-30, each one running full CI,
 and acceptance as 62% of eng's agents, so eng's success rates and failure
 classes could not be read; the `smoke` tenant had none. The owner decided the
@@ -4912,7 +4912,7 @@ and that nothing in acceptance can name the public one.
 
 **Where the target is stated.** Once, in
 [`scripts/acceptance/config.sh`](../scripts/acceptance/config.sh): the tenant
-(`smoke`), the repository (`bogdan-alexandrescu/swarmcloud-sandbox`, private,
+(`smoke`), the repository (`example-org/example-repo-sandbox`, private,
 default branch `main`), the ref, and the sandbox's fixture issue. The suite,
 the sweep and the sync all read it; none of them reads
 `GITHUB_REPOSITORY` for a target, and `config.sh` refuses a target that is the
@@ -4995,28 +4995,28 @@ in the suite too.
 
 ### What the owner applies, once, in this order
 
-1. **Create the Workspace group `smoke@saga.xyz`** and add
-   `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` as a member.
+1. **Create the Workspace group `smoke@example.com`** and add
+   `swarm-verify@example-project.iam.gserviceaccount.com` as a member.
    It must exist before step 3 is applied: `dev.tfvars` registers it as a
    directory group, and a registered group whose lookup fails 503s every
    caller in no group above it.
 2. **Re-point the tenant document.** `tenants/smoke` in Firestore still says
-   `principal: swarm-smoke@saga.xyz`, and Terraform will not change it (the
+   `principal: swarm-smoke@example.com`, and Terraform will not change it (the
    tenant documents are under `ignore_changes`). swarm-api refuses a tenant
    whose stored principal differs from the selecting group with a 409, so set
-   that one field to `smoke@saga.xyz`, for example:
+   that one field to `smoke@example.com`, for example:
 
    ```bash
    # The access token reaches curl as a config file, never in argv.
    curl -sS -X PATCH -K <(printf 'oauth2-bearer = "%s"\n' "$(gcloud auth print-access-token)") \
-     -H "x-goog-user-project: saga-agents-staging" -H "Content-Type: application/json" \
-     "https://firestore.googleapis.com/v1/projects/saga-agents-staging/databases/swarm/documents/tenants/smoke?updateMask.fieldPaths=principal" \
-     -d '{"fields": {"principal": {"stringValue": "smoke@saga.xyz"}}}'
+     -H "x-goog-user-project: example-project" -H "Content-Type: application/json" \
+     "https://firestore.googleapis.com/v1/projects/example-project/databases/swarm/documents/tenants/smoke?updateMask.fieldPaths=principal" \
+     -d '{"fields": {"principal": {"stringValue": "smoke@example.com"}}}'
    ```
 
    `smoke` has never run an agent, so no work changes hands.
 3. **Merge the `dev.tfvars` change** (the release applies it): `tenants.smoke`
-   gets `principal = "smoke@saga.xyz"`, `directory_group = true` and
+   gets `principal = "smoke@example.com"`, `directory_group = true` and
    `providers = ["anthropic"]`, and `pool_limits.providers.anthropic` goes from
    100 to 120, because three tenants now declare anthropic and the plan refuses
    a provider pool below 3 x `provider_tenant`. The live pool documents are
@@ -5154,7 +5154,7 @@ run, and the reds were mostly repo-wide guards that a lane's narrowed
 `pytest tests/unit/<area>` never collects: `test_docs_describe_what_was_built`,
 `test_docs_spec_amendments`, the route seam
 `test_every_v1_path_the_ui_calls_is_served_by_this_api`, `test_specsign_covers`
-and the contract-parity script (#591, #611, #614; issue #642). Those tests read
+and the contract-parity script. Those tests read
 source and docs **as text**, so an import graph does not find them; their text
 naming the changed file does.
 
@@ -5166,7 +5166,7 @@ changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
 half the suite. A `docs/**/*.md` that cites a changed non-doc path by its full
-path adds its own path and basename to what a test may name (#2299, the
+path adds its own path and basename to what a test may name (the
 selector's `doc_closure` above): a test that resolves a doc's citations names
 the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
@@ -5176,8 +5176,7 @@ prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
 
-**A docs-only change selects only the doc guards** (GUARDS-DEDUP, part of
-#1694). Docs-only lanes spent 44-50 min in guards on 2026-10-19/20. When every
+**A docs-only change selects only the doc guards** (GUARDS-DEDUP). Docs-only lanes spent 44-50 min in guards on 2026-10-19/20. When every
 changed path is under `docs/` or ends in `.md`, the script selects
 `DOC_GUARD_TESTS` -- `test_docs_describe_what_was_built`,
 `test_docs_spec_amendments` and `test_docs_agent_vocabulary` -- and the tests
@@ -5211,7 +5210,7 @@ prompt. The next round runs it as the parts the script advised (`--shard 1/n`
 those time out too, it is published under "Pre-publish checks failed" as
 `changed-guards timed out`.
 
-**A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
+**A heavy selection runs in parts, each under the 540 s limit** (PR
 1415). The 540 s is not raised for a selection that needs longer: lane
 GS-HOOKS's 79 files (2,603 tests) all passed in 595 s on 6 cores, and past
 600 s an agent's own command limit kills the run with no `ran past` line and
@@ -5234,7 +5233,7 @@ a CI-second), it does not make one call:
   limit is ten minutes runs the parts this way, as n separate commands: the
   warning prints the exact `--shard 1/n ... --shard n/n` lines to run.
 
-**When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
+**When it runs past 540 s it names the test** (box 102 of the CI-measurement issue: lanes SPEC-GKE
 and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
 it). The pytest call carries `--durations=10`, so a run that ends by itself
 lists its ten slowest tests. That report never prints on an overrun: measured
@@ -5325,7 +5324,7 @@ scripts/related-tests.sh --run       # run those, one after another, in the fore
 scripts/related-tests.sh --base <rev> | --files <list>|-
 ```
 
-**Why** (RELATED-TESTS, part of #1694, owner decision 2026-10-20). Agents ran
+**Why** (RELATED-TESTS, owner decision 2026-10-20). Agents ran
 whole suites and lost hours. Measured 2026-10-19/20: 36 vitest runs with no
 file filter at about 22 min each on 4 cores (2.05 h), 8 pytest runs over whole
 `tests/unit` directories (0.73 h), and both out-of-memory kills came from
@@ -5335,7 +5334,7 @@ checkout carries this script): related tests through this script; never vitest
 without file arguments; never pytest over a whole directory or with `-n auto`
 across the suite; never parallel shards or background batches polled with
 sleep. It used to end "`scripts/changed-guards.sh` once at the end". Since
-2026-11-01 (owner decision, #2981) an agent on a runner with the worker's
+2026-11-01 (owner decision) an agent on a runner with the worker's
 pre-publish gate (claude-code, `claude-code-lightpanda` included) does not run
 `scripts/changed-guards.sh`: the gate runs it after the agent's turn and hands
 back what fails, and the note says so. Measured on the code intelligence
@@ -5359,7 +5358,7 @@ changed module through relative imports (`import ... from`, `export ... from`,
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
 
-**Why one route no longer selects the suite** (RELATED-NARROW, part of #2688).
+**Why one route no longer selects the suite** (RELATED-NARROW).
 Agents reported about 1,972 files selected for a change to a handful, and
 hand-picked tests instead. Measured on main at 0409b8d (2026-11-03), a change
 to one swarm-api route, `routes/budget_settings.py`, reached 1,428 of 1,707
@@ -5422,7 +5421,7 @@ Other modules many components import (`swarm_api/store.py`, the worker's
 runners) still select hundreds by import.
 
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
-part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`
+owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`
 adds `stylesheet.gate.test.ts`, `sections.stylesheet.test.ts`,
 `letterspacing.test.ts` and `typescale.test.ts` to the vitest selection, each
 once however many sheets changed. They scan the text of **every** sheet --
@@ -5443,7 +5442,7 @@ list: the ~170 screen tests that glob the sheets to compute the cascade
 tests, and CI runs them.
 
 **A changed sheet also selects the tests that read it by name** (NAMED-SHEETS,
-part of #1914, owner decision 2026-10-22: "Yes, a name-keyed rule"). Some tests
+owner decision 2026-10-22: "Yes, a name-keyed rule"). Some tests
 read ONE sheet from disk -- `readFileSync(resolve(__dirname,
 '../styles/repograph.css'))`, `join(__dirname, '..', 'styles', 'theater.css')`,
 a helper's `css('theater.css')` -- and no import reaches them either; PR 1921
@@ -5457,15 +5456,14 @@ titled "the theater", or one that says `'styles/'`, is not selected for
 sheets changed, and every file is read once per run. This is a related-test
 rule, not a guard: `changed-guards.sh` does not run these files.
 
-**A UI change also runs the node runners** (#2455). Any change under
+**A UI change also runs the node runners**. Any change under
 `apps/swarm-ui/` adds one more run, after the vitest runs:
 `(cd apps/swarm-ui && npm run test:node)`, once however many files changed, as
 long as the package's `package.json` declares `test:node`. That script runs
 `tests/run.mjs` and `test/*.test.mjs` under `node --test`, not vitest, and they
 read the tree from disk -- `no-company-name.test.mjs` scans every source file
 for the company's name -- so no import reaches them and the import graph never
-selected them. CI's ui-build runs them. Four lanes (PRs #2429, #2430, #2433,
-#2437) published UI code naming the company after passing this script, and went
+selected them. CI's ui-build runs them. Four lanes published UI code naming the company after passing this script, and went
 red in ui-build. The node run names no files because the runner picks its own;
 it is a whole package script by design, and a cheap one.
 
@@ -5482,8 +5480,7 @@ the selection for a UI-only, a Python-only and a mixed change, that no file run
 is unfiltered, and that a UI change prints and runs `npm run test:node` once,
 last.
 
-**Vitest runs are weighted by recorded duration** (WEIGHTED-VITEST, part of
-#2362). They used to be cut by count alone, 50 files a run on the assumption of
+**Vitest runs are weighted by recorded duration** (WEIGHTED-VITEST). They used to be cut by count alone, 50 files a run on the assumption of
 ~2.9 s a file. The nine `spacing.*.test.tsx` slices take 252-485 s each in an
 agent's container, and every one is reached by any change under `App.tsx`'s
 import graph (`spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`), so
@@ -5496,7 +5493,7 @@ run over 540 s or 50 files, and a file heavier than 540 s alone. A file
 `ui_test_durations.json` does not record weighs `VITEST_DEFAULT_SECONDS` = 2.9 s
 (the whole suite, 463 files, in ~22 min on 4 cores); only files far over that
 are recorded, so the file stays a few lines. Seeded 2026-10-26 from the agent
-logs #2362 cites: `spacing.accounts` 485 s and `spacing.capacity` 259 s were
+logs this measurement cites: `spacing.accounts` 485 s and `spacing.capacity` 259 s were
 measured (the highest of each one's readings); the other six slices are an
 estimate of 300 s, the low end of the 300-485 s one lane measured for them, which
 also keeps any two slices over 540 s together.
@@ -5517,7 +5514,7 @@ and the first lane that tried this by editing `application.yml` could not
 publish.
 
 **A UI change selects only the spacing slices whose screens it reaches**
-(SPACING-NARROW, part of #2362). Weighting keeps the slices apart, but each
+(SPACING-NARROW). Weighting keeps the slices apart, but each
 still costs 252-437 s, and by import every change under `App.tsx` reached all
 of them: `spacingsweep.tsx` imports `{App, SECTIONS}` from `'../App'`. A slice
 renders `App` at its own `SPACING_GROUPS` routes only, so `related_tests.py`

@@ -306,7 +306,7 @@ def test_a_step_whose_push_met_an_outage_ends_retryably_with_its_patch_kept(db, 
 
 
 def _patch_entry() -> dict[str, Any]:
-    return {"name": PATCH_NAME, "uri": "gs://bucket/x", "bytes": 20}
+    return {"name": PATCH_NAME, "uri": "gs://swarm-artifacts-example-project/x", "bytes": 20}
 
 
 def _second_attempt(db, worker_factory, monkeypatch, origin, record):

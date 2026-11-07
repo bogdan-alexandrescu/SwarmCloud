@@ -10,7 +10,7 @@ measured again over https, against a public echo with a real certificate
 
 ## The browser, and what could not be measured
 
-**Measured 2026-10-20 01:34Z, lane QI-MEASURE-CHROMIUM (part of #1649), in
+**Measured 2026-10-20 01:34Z, lane QI-MEASURE-CHROMIUM, in
 the `agent-runtime-browser` image on `claude-code-browser`.**
 
 * **Chromium: `Chrome/153.0.8010.12`** (`Browser.getVersion`'s `product`;
@@ -95,7 +95,7 @@ live gate's method policy".
 
 ## M3 over https (2026-10-20)
 
-**Measured 2026-10-20 02:18:58Z, lane QI-MEASURE-HTTPS (part of #1649), from
+**Measured 2026-10-20 02:18:58Z, lane QI-MEASURE-HTTPS, from
 the same live browser as above: `Chrome/153.0.8010.12`** (`Browser.getVersion`'s
 `product`), reached over CDP at `$SWARM_CDP_ENDPOINT`. It closes the one gap
 QI-MEASURE-CHROMIUM left: whether Chromium sends an added `Authorization`
@@ -730,7 +730,7 @@ answered (`x-goog-iap-generated-response`).
 
 ### M1: IAP accepts a JWT signed as the QA account (PASSES)
 
-| request, JWT `aud` `https://swarm.saga.xyz/*`, 15-minute `exp` | 02:26Z, account `swarm-qa`, no workspace yet | 06:12Z, account `qa-console`, workspace ready |
+| request, JWT `aud` `https://swarm.example.com/*`, 15-minute `exp` | 02:26Z, account `swarm-qa`, no workspace yet | 06:12Z, account `qa-console`, workspace ready |
 |---|---|---|
 | `GET /`, `Proxy-Authorization: Bearer` | 200, the app | 200, the app |
 | `GET /v1/tenants/me`, `Proxy-Authorization: Bearer` | 403, the app (no workspace) | 200, the app |
@@ -766,7 +766,7 @@ from that log after QI-API deploys.
 ### How the QA workspace was made (O3)
 
 - Admin › Tenants › New workspace › Service for
-  `qa-console@saga-agents-staging.iam.gserviceaccount.com`, 2026-10-20 04:31Z.
+  `qa-console@example-project.iam.gserviceaccount.com`, 2026-10-20 04:31Z.
   It was approved at submission, because the operator acted as the platform
   owner's account.
 - Setup did A1 to A8, then held at S2 with `FRONT_DOOR_OWNER`: the setup job

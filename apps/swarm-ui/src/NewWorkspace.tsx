@@ -90,7 +90,7 @@ const STEP_WORD: Readonly<Record<StepState, string>> = {
 const KINDS: ReadonlyArray<{ kind: WorkspaceKind; tab: string; field: string; example: string }> = [
   { kind: 'personal', tab: 'Personal', field: 'Person’s email address', example: 'name@your-domain' },
   { kind: 'group', tab: 'Group', field: 'Group address', example: 'team@your-domain' },
-  { kind: 'service', tab: 'Service', field: 'Service account address', example: 'name@project.iam.gserviceaccount.com' },
+  { kind: 'service', tab: 'Service', field: 'Service account address', example: 'name@example-project.iam.gserviceaccount.com' },
 ]
 
 /** `workspaces.MAX_DISPLAY_NAME`; the API refuses a longer one as 422. */

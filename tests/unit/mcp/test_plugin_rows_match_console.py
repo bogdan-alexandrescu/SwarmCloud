@@ -246,6 +246,7 @@ def test_the_list_and_attach_rows_are_setup_rows(tmp_path):
 # --------------------------------------------------------------------------
 
 _LONG_LABEL = " ".join(["refactor"] * 40)[:300]
+_CAP_LABEL = _LONG_LABEL[:workflows.NAME_MAX_CHARS]
 
 
 def test_the_title_starts_sc_and_is_at_most_150_characters():
@@ -266,9 +267,10 @@ def test_the_kind_marks_are_one_dot_for_a_task_and_three_for_a_workflow_in_both_
     assert launch.task_run_title({"task_id": "task_a", "label": "lane-a"}) == "SC · lane-a"
 
 
-def test_a_120_character_name_is_kept_whole():
-    name = " ".join(["headline"] * 14)[:120]
-    assert len(name) == 120 and not name.endswith(" ")
+def test_a_name_at_the_cap_is_kept_whole():
+    # #2688: a name holds at most NAME_MAX_CHARS (30), and is kept whole.
+    name = " ".join(["headline"] * 4)[:workflows.NAME_MAX_CHARS]
+    assert len(name) == 30 and not name.endswith(" ")
     assert launch.workflow_run_title(name, 4) == f"SC ∴ {name} · 4 steps"
     assert len(launch.workflow_run_title(name, 4)) <= 150
 
@@ -278,7 +280,8 @@ def test_the_title_is_at_most_150_characters_and_ends_at_a_word():
     name = workflows.title_name(label=_LONG_LABEL)
     title = launch.workflow_run_title(name, 3)
     assert len(title) <= workflows.TITLE_CHARS == 150
-    assert len(title) > 100, "the cap rose to 150 on 2026-10-05"
+    # #2688: a name stored before the cap is cut at it.
+    assert len(title) <= len("SC ∴ ") + workflows.NAME_MAX_CHARS + len(" · 3 steps")
     assert title.startswith("SC ∴ refactor ") and title.endswith(" · 3 steps")
     cut = title[len("SC ∴ "):-len(" · 3 steps")]
     assert cut.endswith("refactor…"), cut
@@ -392,13 +395,14 @@ def _plugin_root(monkeypatch, tmp_path):
 
 
 def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root, tmp_path):
-    spec = {**_FIXTURE["chain"], "label": _LONG_LABEL}
+    # A longer label is refused before the launch (#2688): one at the cap.
+    spec = {**_FIXTURE["chain"], "label": _CAP_LABEL}
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec}))
     script = Path(reply["script_path"])
     meta = _meta_of(script)
     # No count before the submission: SwarmCloud may append steps the spec
     # does not hold (owner 2026-11-04: leave it out rather than show a wrong one).
-    assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(label=_LONG_LABEL), None)
+    assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(label=_CAP_LABEL), None)
     assert " step" not in meta["name"]
     assert len(meta["name"]) <= workflows.TITLE_CHARS
     # SC-DESC-DETAILS: the description leads with the run's details, then
@@ -413,7 +417,7 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     # And it runs.
     got = _run(tmp_path, {"spec": spec}, _answers(spec), script=script)
     # The result's title counts the steps SwarmCloud served.
-    assert got["result"]["title"] == launch.workflow_run_title(workflows.title_name(label=_LONG_LABEL), 3)
+    assert got["result"]["title"] == launch.workflow_run_title(workflows.title_name(label=_CAP_LABEL), 3)
 
 
 def test_a_launch_removes_run_copies_older_than_a_week_and_nothing_else(_plugin_root, tmp_path):

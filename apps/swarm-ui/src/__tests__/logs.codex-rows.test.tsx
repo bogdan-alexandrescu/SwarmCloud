@@ -1,5 +1,5 @@
 // A CODEX ATTEMPT'S USAGE AND ERRORS DRAW AS ROWS OF THEIR OWN IN THE LOGS
-// TAB (CODEX-ROWS, part of #2459; BGD, 2026-10-28, mock-up proposal B "New
+// TAB (CODEX-ROWS, part of #2459; owner, 2026-10-28, mock-up proposal B "New
 // kinds in the drawer"). The server serves a codex `turn.completed` as a
 // `usage` step whose figures are in meta, and `turn.failed` / `error` as an
 // `error` step whose text is the message (swarm_api/transcript.py,
@@ -103,7 +103,7 @@ function transcript(steps: TranscriptStep[]): TaskTranscript {
       source: 'live',
       status: 'ok',
       detail: null,
-      uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/live/agent_stdout.log`,
+      uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/live/agent_stdout.log`,
       object_updated_at: new Date().toISOString(),
       age_seconds: 3,
       total_bytes: 1000,

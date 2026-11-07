@@ -79,8 +79,8 @@ function agentRun(t: Partial<Task> = {}, input: unknown = { status: 'ok', data: 
       attempt_count: 1,
       input: { prompt: RAW_PROMPT, steps: 2 },
       result_summary: {
-        artifacts: [{ name: 'report.md', bytes: 120, uri: 'gs://swarm-artifacts/tenants/acme/tasks/tsk_charts/attempts/att_1/artifacts/report.md' }],
-        logs: { stdout: 'gs://swarm-artifacts/tenants/acme/tasks/tsk_charts/attempts/att_1/logs/stdout.log' },
+        artifacts: [{ name: 'report.md', bytes: 120, uri: 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_charts/attempts/att_1/artifacts/report.md' }],
+        logs: { stdout: 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_charts/attempts/att_1/logs/stdout.log' },
       },
       ...t,
     }),

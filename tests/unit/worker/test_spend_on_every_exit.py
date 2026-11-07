@@ -523,7 +523,7 @@ def test_a_resumed_attempt_does_not_inherit_the_previous_attempts_spend(
         timeout_seconds=3,
         termination_grace_seconds=1,
     )
-    # Stopped at its limit with its checkpoint uploaded, it continues (BGD,
+    # Stopped at its limit with its checkpoint uploaded, it continues (the owner,
     # 2026-11-02): a park, not a failure. What it was charged is the point.
     assert second.run() == ExitCode.PARKED
 

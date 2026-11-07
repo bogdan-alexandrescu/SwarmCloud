@@ -47,13 +47,13 @@ credential compromise for all of them (invariant 9).
 Verified read-only on 2026-09-22:
 
 ```
-$ gcloud secrets list --project=saga-agents-staging --filter="name~swarm-tenant" --format="value(name)"
+$ gcloud secrets list --project=example-project --filter="name~swarm-tenant" --format="value(name)"
 swarm-tenant-eng-anthropic
 swarm-tenant-eng-anthropic-refresh
 swarm-tenant-eng-openai
 swarm-tenant-eng-openai-refresh
-swarm-tenant-u-bogdan-anthropic
-swarm-tenant-u-bogdan-anthropic-refresh
+swarm-tenant-example-tenant-anthropic
+swarm-tenant-example-tenant-anthropic-refresh
 ```
 
 No `-git` secret existed for either tenant on that date. So a **private**
@@ -113,10 +113,10 @@ the permissions object rather than the `X-OAuth-Scopes` header because that
 header exists for classic PATs only, so a platform trusting it would read every
 fine-grained token as unscoped.
 
-For `bogdan-alexandrescu/SwarmCloud`, verified read-only and unauthenticated:
+For `example-org/example-repo`, verified read-only and unauthenticated:
 
 ```
-$ curl -s https://api.github.com/repos/bogdan-alexandrescu/SwarmCloud
+$ curl -s https://api.github.com/repos/example-org/example-repo
 private=False  default_branch=main  permissions=None
 ```
 
@@ -133,7 +133,7 @@ The minimum grant per strategy:
 | `collect` | nothing. A public clone, or a token with `Contents: Read` for a private one |
 | `direct-pr` | `Contents: Read and write` **and** `Pull requests: Read and write` |
 | `integrate` | the same, on the one token every step of the workflow shares |
-| issue run (#454) | the same, plus `Issues: Read and write` (the plan and status comments), `Checks: Read` and `Actions: Read and write` (the CI loop reads a failing run's log; the merge step re-runs a flaky run's failed jobs, `POST actions/runs/<run>/rerun-failed-jobs`, and without write it fails with `checks_failed`) — [docs/multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed) |
+| issue run | the same, plus `Issues: Read and write` (the plan and status comments), `Checks: Read` and `Actions: Read and write` (the CI loop reads a failing run's log; the merge step re-runs a flaky run's failed jobs, `POST actions/runs/<run>/rerun-failed-jobs`, and without write it fails with `checks_failed`) — [docs/multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed) |
 
 A fine-grained PAT scoped to that single repository is the smallest thing that
 works. A classic PAT needs `repo`, which is every repository the account can
@@ -142,9 +142,9 @@ see — a much larger blast radius for the same proof.
 **Owner decision, 2026-09-25: a classic PAT.** The owner chose a classic
 personal access token deliberately, after being told its scope, because
 SwarmCloud's agents are to reach repositories in both his personal account and
-the saga organisation. The token `eng`'s workers use therefore reaches every
+the example-org organisation. The token `eng`'s workers use therefore reaches every
 repository that account can reach with `repo` scope, not one repository.
-Neither of the following has been checked: whether the saga organisation
+Neither of the following has been checked: whether the example-org organisation
 accepts classic tokens (an organisation can restrict them), and whether it
 requires SAML SSO authorisation per token.
 
@@ -209,8 +209,8 @@ an empty diff means `commit_dirty` did not stage uncommitted work, which is the
 common agent behaviour and the reason that function exists. Check also that
 every commit on the branch is authored and committed by the worker's identity
 and carries no `Co-Authored-By` trailer or "Generated with" line. Nothing this
-platform puts on GitHub may carry Claude attribution. #209 makes the worker
-write every commit it pushes. Until #209 is deployed, the proof prompt tells the
+platform puts on GitHub may carry Claude attribution. The worker-authored-commits change makes the worker
+write every commit it pushes. Until that change is deployed, the proof prompt tells the
 agent not to commit, so the only commit is the worker's.
 
 **Run 3 — `integrate`, a workflow of at least three steps.** swarm-api requires
@@ -269,8 +269,7 @@ reset to the worker's own helper before it is added; and the transport is pinned
 (verified TLS, no proxy, no injected header). The integrator's merges happen in
 this repository too.
 
-**The leak scans and the replay run here as well** (owner decision, 2026-09-29,
-#259). Three security reviews found the per-commit and final-tree secret scans
+**The leak scans and the replay run here as well** (owner decision, 2026-09-29). Three security reviews found the per-commit and final-tree secret scans
 bypassable through state the agent writes under its clone's `.git` — replace
 refs, `info/grafts`, `shallow`, and finally a forged
 `objects/info/commit-graph`, from which `git diff` takes a commit's root tree —
@@ -292,13 +291,13 @@ all run in the clean repository, and none of that state reaches them:
 * **every worker git runs with `core.commitGraph=false`, `GIT_GRAFT_FILE=/dev/null`
   and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt. The graft file stays
   `/dev/null`, and its deprecation advice is switched off with
-  `advice.graftFileDeprecated=false` (#808). The upload side is the exception:
+  `advice.graftFileDeprecated=false`. The upload side is the exception:
   upload-pack never reads `advice.*`, so its graft file is
   `/dev/null/no-grafts`, a path that cannot open. git skips a missing graft
   file silently, and grafts are off just the same.
 
 What the agent left uncommitted is committed in the publish repository too
-(#259 M1, owner decision 2026-09-28). `git add` in the clone read the clone's
+(the live-proof design M1, owner decision 2026-09-28). `git add` in the clone read the clone's
 `.git/config` and the tree's `.gitattributes`, so a filter driver the agent
 defined (`filter.<name>.clean`) ran as the worker after the reap, and no `-c`
 list can switch that class off. So `mirror_worktree` copies the working tree
@@ -330,7 +329,7 @@ the commit list and the dirty list there; then commit and push from the same
 repository. A reap that leaves agent processes alive stops all of it, harvest
 included.
 
-**HEAD is read as data** (#259 final review, B1; owner decision 2026-09-29).
+**HEAD is read as data** (the live-proof design's final review, B1; owner decision 2026-09-29).
 The commit to fetch was resolved with `git rev-parse HEAD^{commit}` in the
 clone, after the reap. A clone the agent turned into a partial clone, with its
 branch pointing at a missing object, made that rev-parse lazy-fetch through the

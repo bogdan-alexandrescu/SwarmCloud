@@ -201,7 +201,7 @@ POST_BODIES: dict[str, dict[str, Any]] = {
     "transition": {"request_id": "t-1", "to": "RUNNING"},
     "attempt-start": {"backend": "cloud_run", "execution_name": "exec-1"},
     "checkpoint": {"checkpoint_id": "ckpt-00001",
-                   "uri": f"gs://bucket/tenants/eng/tasks/{TASK}/attempts/{ATTEMPT}/c.tar",
+                   "uri": f"gs://swarm-artifacts-example-project/tenants/eng/tasks/{TASK}/attempts/{ATTEMPT}/c.tar",
                    "size_bytes": 10, "seq": 1, "archive_sha256": "a" * 64},
     "usage": {"kind": "spend", "fields": {"input_tokens": 3}},
     "heartbeat": {},
@@ -1093,7 +1093,7 @@ def test_upstream_follows_no_merge_only_target_rewritten_after_signing(client, d
 # --------------------------------------------------------------------------
 # upstream: every id from the SIGNED copy (SIGNED-UPSTREAM, part of #2373)
 #
-# The merge rule above was the first; BGD chose on 2026-10-26 that every
+# The merge rule above was the first; the owner chose on 2026-10-26 that every
 # declared and derived read is held so. A worker still holding the Firestore
 # write role (docs/design/tenant-settings-integrity.md §1.1) can rewrite its
 # own task, or an ancestor, after signing: each test rewrites one field the

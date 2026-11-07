@@ -48,7 +48,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .errors import ApiError
+from .errors import ApiError, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -615,6 +615,18 @@ SWITCHES: dict[str, Switch] = {
         "target is saved and every flow of the workspace still renders read-only",
         default=True,
     ),
+    # A name over `schemas.NAME_MAX_CHARS` (owner, 2026-11-07, part of
+    # #2688): a workflow's or a single task's `metadata.title` or
+    # `metadata.unit`, refused, never cut, so it fits one row of the
+    # console's lists. Off, the name is stored whole and the console cuts it
+    # to one row with an ellipsis.
+    "name_too_long": Switch(
+        code="name_too_long",
+        why="a workflow or single task whose metadata.title or metadata.unit is over "
+        "schemas.NAME_MAX_CHARS characters is refused 422. On once the sc plugin that "
+        "refuses the same names before sending is released and no stored schedule's spec "
+        "carries a longer name",
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,
@@ -627,6 +639,12 @@ SWITCHES: dict[str, Switch] = {
     # They are raised with `raise`, and listed in the guard's
     # NOT_SWITCHABLE_CODES with that reason.
 }
+
+
+class NameTooLong(ValidationFailed):
+    """A name that would not fit one row of the console (`SWITCHES`)."""
+
+    code = "name_too_long"
 
 
 def _value(name: str, raw: str) -> bool | None:

@@ -66,7 +66,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-const uri = (id: string, name: string) => `gs://swarm-artifacts/tenants/eng/tasks/${id}/attempts/att_fe27/artifacts/${name}`
+const uri = (id: string, name: string) => `gs://swarm-artifacts-example-project/tenants/eng/tasks/${id}/attempts/att_fe27/artifacts/${name}`
 
 function attemptBlock(ended: boolean) {
   return {
@@ -87,7 +87,7 @@ function task(over: Partial<Task> = {}) {
     runner_profile: 'claude-code',
     started_at: iso(120_000),
     completed_at: iso(30_000),
-    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    repository_url: 'https://github.com/example-org/example-repo',
     repository_ref: 'main',
     input: { prompt: 'Audit the capacity code.\n\nSay what reserve() guarantees.' },
     result_summary: {
@@ -222,7 +222,7 @@ function logStream(name: string, over: Record<string, unknown> = {}) {
     status: 'ok',
     detail: null,
     key: `tenants/eng/tasks/${REF}/attempts/att_fe27/logs/${name}.log`,
-    uri: `gs://swarm-artifacts/tenants/eng/tasks/${REF}/attempts/att_fe27/logs/${name}.log`,
+    uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${REF}/attempts/att_fe27/logs/${name}.log`,
     content: '',
     total_bytes: 0,
     offset: 0,

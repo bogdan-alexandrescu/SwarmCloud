@@ -1,9 +1,9 @@
 # Suite gate: a repository's whole Playwright suite, sharded, in SwarmCloud
 
-Lane PLAYWRIGHT-GATE, part of #2253. BGD's decision of 2026-10-26: SwarmCloud
+Lane PLAYWRIGHT-GATE. [the owner]'s decision of 2026-10-26: SwarmCloud
 runs a repository's whole Playwright suite as a sharded gate. Then a project can
 gate a merge train in SwarmCloud instead of on a laptop. The first project is
-Product Oracle (`bogdan-alexandrescu/product-oracle`, about 1,230 mock specs).
+A peer application (`example-org/peer-app`, about 1,230 mock specs).
 Code: `apps/swarm-mcp/swarm_mcp/suitegate.py` and the bridge tool
 `swarm_suite_gate`. Tests: `tests/unit/mcp/test_suite_gate.py`.
 
@@ -20,7 +20,7 @@ It is a workflow that the bridge renders from a few named values and submits
 like any other:
 
 ```json
-{"repository": "bogdan-alexandrescu/product-oracle", "ref": "train/42",
+{"repository": "example-org/peer-app", "ref": "train/42",
  "suite": "playwright", "working_dir": "web", "shards": 8,
  "project": "chromium", "env_file": "web/.env.mock"}
 ```
@@ -128,7 +128,7 @@ So:
   input tokens (mostly cached) and 2 to 5 thousand output tokens. The model is
   a small share of the cost next to the unit-minutes.
 
-Product Oracle's 1,230 mock specs at about 2 s each on 2 workers give T ≈ 20
+A peer application's 1,230 mock specs at about 2 s each on 2 workers give T ≈ 20
 minutes:
 
 | N | wall-clock | unit-minutes | units held |

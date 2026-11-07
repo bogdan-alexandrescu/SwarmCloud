@@ -331,11 +331,11 @@ def test_a_live_log_uri_can_be_built_from_a_real_task(swarm, api, monkeypatch):
     """`swarm tail` built this from `task['task_id']` and raised KeyError --
     not a SwarmError, so it escaped every handler in the CLI as a traceback,
     after spinning forever because `task.get('state')` was never terminal."""
-    monkeypatch.setenv("SWARM_ARTIFACT_BUCKET", "bucket")
+    monkeypatch.setenv("SWARM_ARTIFACT_BUCKET", "swarm-artifacts-example-project")
     task_id = submit(api)
     uri = cli._live_log_uri(swarm.task(task_id), "attempt_1", "stdout")
     assert uri == (
-        f"gs://bucket/tenants/eng/tasks/{task_id}"
+        f"gs://swarm-artifacts-example-project/tenants/eng/tasks/{task_id}"
         "/attempts/attempt_1/logs/live/stdout.tail.log"
     )
 
@@ -436,7 +436,7 @@ def test_integrate_skips_a_task_for_the_right_reason(swarm, api, tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
     subprocess.run(
         [
-            "git", "-c", "user.name=t", "-c", "user.email=t@e.com",
+            "git", "-c", "user.name=t", "-c", "user.email=t@example.com",
             "-C", str(repo), "commit", "--quiet", "-m", "base",
         ],
         check=True,
@@ -671,7 +671,7 @@ def test_a_refused_dag_keeps_the_sentence_that_says_why(swarm, api):
 # The edge: what Google really answers
 # --------------------------------------------------------------------------
 #
-# MEASURED 2026-09-22 against https://swarm.saga.xyz -- an external ALB with
+# MEASURED 2026-09-22 against https://swarm.example.com -- an external ALB with
 # IAP in front of swarm-api, whose Cloud Run ingress is
 # internal-and-cloud-load-balancing:
 #
@@ -865,12 +865,12 @@ def test_a_truncated_json_body_says_so_rather_than_claiming_the_edge(monkeypatch
 # What the tiers claim, against what is deployed
 # --------------------------------------------------------------------------
 #
-# MEASURED 2026-09-22 against saga-agents-staging, read-only:
+# MEASURED 2026-09-22 against example-project, read-only:
 #
 #   swarm-api ingress  internal-and-cloud-load-balancing
 #   swarm-api invoker  allUsers, plus the IAP service agent and swarm-verify
 #   swarm-ui-backend   an external ALB backend with iap.enabled = true
-#   GET https://swarm-api-tonstldhta-uc.a.run.app/v1/tenants/me
+#   GET https://swarm-api-abc123-uc.a.run.app/v1/tenants/me
 #                      -> an HTML 404, WITH and WITHOUT an Authorization
 #                         header: ingress answers before any token is read.
 #
@@ -906,8 +906,8 @@ def test_doctor_names_the_missing_variable_for_a_profile_it_cannot_reach(monkeyp
     gap here is the failure this module was written to prevent."""
     for name in ("SWARM_ID_TOKEN", "SWARM_IAP_CLIENT_ID", "K_SERVICE", "CLOUD_RUN_JOB"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setattr(mcp_auth, "_metadata_available", lambda timeout=0.3: False)
     # doctor's last step is a live read, and it is allowed to fail; nothing
     # here may touch the network or shell out to gcloud.

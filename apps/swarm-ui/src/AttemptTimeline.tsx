@@ -223,7 +223,7 @@ function grouped(t: AttemptTimeline): Group[] {
 }
 
 /**
- * THE EVENTS NO ATTEMPT HOLDS, NAMED WHERE THE TOTAL IS (VQ-011, BGD's
+ * THE EVENTS NO ATTEMPT HOLDS, NAMED WHERE THE TOTAL IS (VQ-011, the owner's
  * visual QA 2026-10-26): the head read `1 attempt · 28 events` over one card
  * saying `27 events`, and nothing said the 28th was the task's `submitted`,
  * filed before any attempt. The totals say how many of them there are, in

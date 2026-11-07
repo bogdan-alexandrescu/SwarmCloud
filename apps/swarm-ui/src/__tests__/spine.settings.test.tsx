@@ -4,7 +4,7 @@
  * MCP-UI routed `/settings/mcp-servers`, and the only way in was the Submit
  * picker's link. It was the panel foot's third "Settings ›" link, then the
  * fourth page of the Profile panel (NAV-PROFILE, part of #1633); since
- * CONFIG-NAV (part of #2157, BGD 2026-10-23) it is Config's fourth page, after
+ * CONFIG-NAV (part of #2157, owner 2026-10-23) it is Config's fourth page, after
  * Secrets, at `/config/mcp-servers`, and the Profile panel lists it no more.
  *
  * MUTATION: drop the MCP servers row from PANEL_PAGES.config and the first two

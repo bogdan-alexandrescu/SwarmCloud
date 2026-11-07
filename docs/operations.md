@@ -40,10 +40,10 @@ refused to plan the bootstrap described here.
 `scripts/plan.sh` stops and names the image when state's `image_refs` output
 has no digest for an image in `terraform/infra/images.json` whose service is
 still in state, because without that digest the plan would destroy the service:
-the GitHub push receiver was nearly lost this way (#1878). The next release's
+the GitHub push receiver was nearly lost this way. The next release's
 apply records the digest.
 
-**Read the plan.** `saga-agents-staging` holds another team's live GKE cluster,
+**Read the plan.** `example-project` holds another team's live GKE cluster,
 their VPC, buckets, service accounts and Cloud Run services, every one listed
 in `SHARED_DENY_LIST` in `scripts/lib/common.sh`. A plan that proposes to change
 anything you do not recognise is a stop-and-ask, not a scroll-past.
@@ -51,7 +51,7 @@ anything you do not recognise is a stop-and-ask, not a scroll-past.
 Then register a tenant and give it a key:
 
 ```bash
-make register-tenant GROUP=eng@saga.xyz
+make register-tenant GROUP=eng@example.com
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
 make add-provider TENANT=eng PROVIDER=anthropic   # let eng's worker read it, and list it
 ```
@@ -68,7 +68,7 @@ to be labelled as this tenant's key for this provider and hold an enabled
 version before anything is granted. Add `DRY_RUN=1` to see what it would do.
 
 **A tenant terraform will manage needs the owner's bootstrap step before its
-release** (#334). The release deployer holds `roles/iam.serviceAccountAdmin`
+release**. The release deployer holds `roles/iam.serviceAccountAdmin`
 on each account `terraform/infra` manages, not on the project, and the release
 sets the new worker account's IAM in the same apply that adds the tenant. So:
 register the tenant (which creates `swarm-agent-worker-<tenant>`), add it to
@@ -105,7 +105,7 @@ kubernetes/apply.sh --policies --confirm     # cluster-scoped admission policies
 `make bootstrap` applies `terraform/bootstrap`, the root the owner applies: the
 state bucket, the WIF pool, the deployer service account
 (`swarm-tf-deployer`) and every grant it holds. **Its state lives in the state
-bucket, at `gs://swarm-tfstate-<project>/bootstrap`** (#827), next to
+bucket, at `gs://swarm-tfstate-<project>/bootstrap`**, next to
 `infra/<env>`. `terraform/bootstrap/backend.tf` fixes the prefix;
 `scripts/bootstrap.sh` passes the bucket with `-backend-config`, as it does for
 `terraform/infra`.
@@ -254,7 +254,7 @@ paused separately by another operator or by the quota broker.
 ```bash
 # First registration. A re-run rewrites the whole record (see section 1), so it
 # is not how a provider is added.
-make register-tenant GROUP=eng@saga.xyz
+make register-tenant GROUP=eng@example.com
 make register-tenant USER_EMAIL=alice@example.com
 
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
@@ -277,7 +277,7 @@ lent can run the profile. That is `claude-code` only, never `browser`: see
 ### Platform secrets: status in Admin, values only from this terminal
 
 `GET /v1/admin/platform-secrets` (Admin › Platform secrets; lane
-SSC-PLATFORM-STATUS, part of #2158; [design §5](design/secrets-scopes.md#5-admin--platform-secrets))
+SSC-PLATFORM-STATUS; [design §5](design/secrets-scopes.md#5-admin--platform-secrets))
 says, for every secret in `platform_secrets.PLATFORM_SECRETS` and for both
 halves of every quota-broker account (`swarm-account-<t>--<label>` and its
 `-refresh`): `set` (an enabled version exists), `not_set`, `not_declared`, or
@@ -391,8 +391,8 @@ silently moves that service forward again. `scripts/plan.sh` warns when
 swarm-api is serving something other than what terraform applied, which is
 what an out-of-band change looks like from there.
 
-**Not to a manifest from before PR #44, and never a revert of #44.** Any
-`swarm-api` image built before #44 cannot decode the `cancel_requested` events
+**Not to a manifest from before the cancel-requested-events PR, and never a revert of it.** Any
+`swarm-api` image built before that PR cannot decode the `cancel_requested` events
 written since. It returns 500 on those agents' event pages for as long as it
 serves, not just one rollout. Roll forward instead.
 [disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)
@@ -470,7 +470,7 @@ dead, which usually means heartbeat or lease timeouts are too tight for real
 start-up latency. It does not count the `smoke` and `u-sw-c90291`
 (swarm-verify's) tenants (`fencing_alert_excluded_tenants`): their own runs
 fence at startup by design, and they were 215 of the 270 fences in the seven
-days #1817 measured. The `generation_fenced` metric still counts them.
+days the seven-day incident-volume measurement covered. The `generation_fenced` metric still counts them.
 
 Nor does it count fences of agents submitted by the service accounts in
 `fencing_alert_excluded_submitters` (default `swarm-verify`). A tenant filter
@@ -489,13 +489,13 @@ still counted.
 
 `pr-stranded` notifies once a pull request has been reported stranded for an
 hour, as one incident per tenant and reason that stays open while any stays
-stranded and closes about seven hours after the last is merged. Before #1817
+stranded and closes about seven hours after the last is merged. Before the seven-day incident-volume measurement
 every sweep entry (520 in seven days) opened its own incident.
 
 ### Alert notification channels
 
 Until 2026-10-21 all 21 policies had an empty channel list and reached nobody
-(#1817): `alert_emails` was `[]` and nothing said so. Routing is now by
+: `alert_emails` was `[]` and nothing said so. Routing is now by
 severity, the owner's choice of 2026-10-21:
 
 | Severity | Policies | Notifies |
@@ -551,7 +551,7 @@ full local loop and for why `docker-compose.yml` is the secondary path.
 
 ## 12. Issue runs: the advance tick, and reading a stuck run
 
-An issue run (#454, [issue-runs.md](issue-runs.md)) moves when something looks
+An issue run ([issue-runs.md](issue-runs.md)) moves when something looks
 at it: every read of the run, and a Cloud Scheduler job per registered tenant,
 `swarm-issue-run-advance-<tenant>` (`google_cloud_scheduler_job.issue_run_advance`,
 every minute, `var.issue_run_advance_schedule`). It calls

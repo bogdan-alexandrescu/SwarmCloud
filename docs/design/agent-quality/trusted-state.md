@@ -1,8 +1,8 @@
 # Trusted state: what a worker and its agent may change, and through what
 
-**Status, 2026-11-03 (part of #2688, the owner's agent quality program).**
+**Status, 2026-11-03 (part of the Day One install program, the owner's agent quality program).**
 Read at `3e3a987` (main, 3 November 2026), and every citation names a symbol, not
-a line, so search for it. This package builds on #1457's design B
+a line, so search for it. This package builds on an earlier issue's design B
 ([tenant-settings-integrity.md](../tenant-settings-integrity.md)) and its cutover
 runbook ([isolation-cutover.md](../../runbooks/isolation-cutover.md)). It does not
 repeat either. It records the inventory the program asked for, the refusals that
@@ -20,7 +20,7 @@ deployment). Where a value is unknown it says **unknown**, never zero.
 | The Jev ledger over the state routes (§3) | owned by the Jev accounting pull request, not by this package (§3.2) |
 | The four refusals: another tenant, another attempt, a stale generation after a newer one, a peer or policy document (§4) | behaviourally tested in this package |
 | Checkpoint, park, resume, cancellation, publication over the routes, as one cycle (§5) | behaviourally tested in this package |
-| `state_via_api_tenants = ["u-bogdan", "eng"]` in dev | enabled in configuration (`terraform/environments/dev/dev.tfvars`); whether it is applied in dev is **unknown** here |
+| `state_via_api_tenants = ["u-member", "eng"]` in dev | enabled in configuration (`terraform/environments/dev/dev.tfvars`); whether it is applied in dev is **unknown** here |
 | `worker_firestore_off_tenants_iam = ["eng"]` in dev | enabled in configuration; applied **unknown** |
 | Any tenant's role removal in prod | not proposed for a date; no prod tfvars sets either variable |
 | Live verification of any of the above | **none done by this package** |
@@ -126,14 +126,14 @@ cap as the month's use ("an unread month counts as spent, never as free"). That
 is the correct fallback, but it means **no Jev judgment runs for a switched
 tenant whose workspace set a cap**. `judge/attempt.settle` returns None, so
 **the spend of any Jev call a switched attempt makes is never recorded**. dev
-lists `u-bogdan` and `eng` in `state_via_api_tenants`, so both apply to them
+lists `u-member` and `eng` in `state_via_api_tenants`, so both apply to them
 there. The program's rules say missing verification is not a pass and cost
 accounting covers every attempt. Both gaps break those rules.
 
 ### 3.2 Where it is built
 
 The owner decided on 3 November 2026 (answer to this package's question on
-#3110) that the **Jev accounting pull request** owns the Jev ledger's state
+An earlier issue) that the **Jev accounting pull request** owns the Jev ledger's state
 routes: it owns Jev spend and already wires `judge/attempt.py` to them. This
 package therefore adds **no** `state/jev-usage` or `state/jev-settle` route and
 no `StateCall` method for them; an earlier draft did, and it was dropped so
@@ -300,7 +300,7 @@ bound already apply.
 ## 7. Privilege removal: rollout, rollback and operator actions (a plan; NOT applied)
 
 The Firestore role's removal is already planned step by step in
-[isolation-cutover.md](../../runbooks/isolation-cutover.md) (u-bogdan, eng, every
+[isolation-cutover.md](../../runbooks/isolation-cutover.md) (u-member, eng, every
 tenant, then `worker_firestore_access = false`, then the definition in
 bootstrap). This package adds one prerequisite and leaves GCS and Secret
 Manager as they are (§2).
@@ -309,8 +309,8 @@ Manager as they are (§2).
 
 | Variable (terraform/infra) | Renders as | Default | dev at main |
 |---|---|---|---|
-| `state_via_api_tenants` | scheduler `SWARM_STATE_VIA_API_TENANTS` | `[]` | `["u-bogdan", "eng"]` |
-| `worker_firestore_off_tenants` | swarm-api `WORKER_FIRESTORE_OFF_TENANTS` (job-made workspaces) | `[]` | `["u-bogdan"]` |
+| `state_via_api_tenants` | scheduler `SWARM_STATE_VIA_API_TENANTS` | `[]` | `["u-member", "eng"]` |
+| `worker_firestore_off_tenants` | swarm-api `WORKER_FIRESTORE_OFF_TENANTS` (job-made workspaces) | `[]` | `["u-member"]` |
 | `worker_firestore_off_tenants_iam` | `module.tenancy` drops that tenant's `worker_firestore` binding | `[]` | `["eng"]` |
 | `worker_firestore_access` | `module.tenancy`, every tenant | `true` | not set (true) |
 
@@ -325,7 +325,7 @@ Plan-time guards already refuse an `*_off_*` entry that is not in
    but it should not spread to every tenant.
 1. **dev, the tenants already listed.** Confirm in the dev project that the
    state switch is applied (scheduler revision env) and that attempts of
-   `u-bogdan` and `eng` open with `state/open` (swarm-api request logs,
+   `u-member` and `eng` open with `state/open` (swarm-api request logs,
    `state_open`). Run one Jev-enabled step and read its `jev_usage` row.
 2. **dev, every remaining tenant**, per the runbook's c1 and c2.
 3. **prod**, in the runbook's order, one tenant per apply, each watched as

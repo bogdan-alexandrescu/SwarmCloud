@@ -1,6 +1,6 @@
 """Each window is held to its own floor before a NEW agent is handed an account (#2222).
 
-BGD, 2026-10-24: the 5-hour window keeps the 15% floor; the 7-day window's is
+the owner, 2026-10-24: the 5-hour window keeps the 15% floor; the 7-day window's is
 5%. Measured that morning: six of seven accounts had 2-14% of their week left
 (ai-eng-2 and devops-team 14%, devops-main 12%), so one 15% floor refused all
 six for one to four days and 28 agents waited on aieng-claude1's 5-hour reset.
@@ -63,12 +63,12 @@ def test_an_account_with_14_percent_of_its_week_left_takes_a_new_agent():
 
 
 def test_an_account_under_5_percent_of_its_week_is_refused_until_its_week_resets():
-    saga_personal = _acct("saga-personal", five_hour=0.11, seven_day=0.98,
+    org_personal = _acct("org-personal", five_hour=0.11, seven_day=0.98,
                           five_resets_in=-timedelta(hours=3), week_resets_in=timedelta(hours=47))
-    assert not saga_personal.assignable(NOW)
-    assert set(saga_personal.blocking_windows(NOW)) == {"seven_day"}
-    assert saga_personal.next_reset(NOW) == NOW + timedelta(hours=47)
-    assert choose([saga_personal], "eng", NOW) is None
+    assert not org_personal.assignable(NOW)
+    assert set(org_personal.blocking_windows(NOW)) == {"seven_day"}
+    assert org_personal.next_reset(NOW) == NOW + timedelta(hours=47)
+    assert choose([org_personal], "eng", NOW) is None
 
 
 def test_the_five_hour_window_still_needs_15_percent():
@@ -97,11 +97,11 @@ def test_the_pool_as_read_on_the_morning_of_2026_10_24_has_three_accounts_to_off
     past = -timedelta(hours=1)
     pool = [
         _acct("ai-eng-2", five_hour=0.04, seven_day=0.86, five_resets_in=past),
-        _acct("ai-eng-3", five_hour=0.48, seven_day=0.97, five_resets_in=past),
+        _acct("eng-seat-3", five_hour=0.48, seven_day=0.97, five_resets_in=past),
         _acct("aieng-claude1", five_hour=0.99, seven_day=0.39, five_resets_in=timedelta(minutes=66)),
         _acct("devops-main", five_hour=0.21, seven_day=0.88, five_resets_in=past),
         _acct("devops-team", five_hour=0.40, seven_day=0.86, five_resets_in=past),
-        _acct("saga-personal", five_hour=0.11, seven_day=0.98, five_resets_in=past),
+        _acct("org-personal", five_hour=0.11, seven_day=0.98, five_resets_in=past),
     ]
     offered = {a.label for a in pool if a.assignable(NOW)}
     assert offered == {"ai-eng-2", "devops-main", "devops-team"}

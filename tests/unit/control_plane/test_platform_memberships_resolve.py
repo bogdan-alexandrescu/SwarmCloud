@@ -40,7 +40,7 @@ from .test_group_resolution import FakeSession
 T0 = datetime(2026, 10, 25, 6, 41, tzinfo=timezone.utc)
 ALICE = "alice@example.com"
 LEE = "lee@example.com"
-SVC = "builder@proj.iam.gserviceaccount.com"
+SVC = "builder@example-project.iam.gserviceaccount.com"
 
 GOOGLE = {
     ENG_GROUP: set(),
@@ -177,7 +177,7 @@ def test_switch_off_is_the_default_and_answers_as_before_join_requests(key):
 
 
 def test_the_switch_is_read_from_the_environment(monkeypatch):
-    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("ENVIRONMENT", "dev")
     assert ApiSettings.from_env().platform_memberships is False
     monkeypatch.setenv("PLATFORM_MEMBERSHIPS", "true")
@@ -251,15 +251,15 @@ def test_the_mine_route_says_platform_member(store, key):
 
 def test_a_membership_for_a_replaced_group_admits_nobody(store, key):
     join(store)
-    # `eng@partner.com` also slugs to `eng` and is now registered first, so the
+    # `eng@example.org` also slugs to `eng` and is now registered first, so the
     # id selects it; the grant names `eng@example.com`, the group it replaced.
-    replaced = ("eng@partner.com", ENG_GROUP, RESEARCH_GROUP)
+    replaced = ("eng@example.org", ENG_GROUP, RESEARCH_GROUP)
     auth, _ = build(store, key, tenant_groups=replaced)
     ctx = auth.authenticate("Bearer t-lee")
     assert ctx.tenant_choices == ()
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-lee", None, tenant="eng")
-    assert auth.is_tenant_member(LEE, group_tenant("eng", "eng@partner.com"), fresh=True) is False
+    assert auth.is_tenant_member(LEE, group_tenant("eng", "eng@example.org"), fresh=True) is False
 
 
 def test_a_membership_for_a_group_no_longer_registered_admits_nobody(store, key):
@@ -400,10 +400,10 @@ def test_no_cloud_identity_call_is_added(store, key):
                 if c["url"].endswith(":checkTransitiveMembership")]) == 1
 
 
-# -- the join rate limits are settings (BGD, 2026-10-25) -------------------------------
+# -- the join rate limits are settings (the owner, 2026-10-25) -------------------------------
 
 def test_the_join_limits_are_read_from_the_environment(monkeypatch):
-    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("ENVIRONMENT", "dev")
     defaults = ApiSettings.from_env()
     assert (defaults.join_open_per_person, defaults.join_daily_per_person,

@@ -1,4 +1,4 @@
-// THE CHANGES VIEW DRAWS AN AGENT'S MOCK-UP (BGD, 2026-11-06: "see the
+// THE CHANGES VIEW DRAWS AN AGENT'S MOCK-UP (owner, 2026-11-06: "see the
 // mockups produced by the workflow agents in here ... and not just the file
 // name").
 //
@@ -322,7 +322,7 @@ describe('an image', () => {
   })
 })
 
-// A CHANGED image (BGD, 2026-11-06): the patch holds it as a delta against
+// A CHANGED image (owner, 2026-11-06): the patch holds it as a delta against
 // bytes it does not carry, so its bytes are the checkpoint's, through the file
 // route's `format=image` read with the tenant header. MUTATION: read the
 // patch alone for an image (this block goes red).

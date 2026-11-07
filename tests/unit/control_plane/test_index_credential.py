@@ -3,8 +3,8 @@ use (INDEX-CRED; part of #1041).
 
 Owner report 2026-10-13 ~20:10 PDT: "it says all tests pass for
 /repositories/tokens but it can't index the repo in my personal workspace?"
-Measured 2026-10-14 ~03:10 UTC in u-bogdan: Try it passed for
-sagaxyz/ai-studio through the owner's GitHub connection slot
+Measured 2026-10-14 ~03:10 UTC in u-owner: Try it passed for
+peer-org/peer-app through the owner's GitHub connection slot
 (`-git-u-<hex>`), while the index run task_57773968e37d4d6d8300 ran with
 `forge_credential` "git" -- the tenant `-git` slot, which a personal
 workspace does not have -- and failed "Repository not found". Server-side
@@ -20,7 +20,7 @@ Held here, over the in-memory Firestore with no credentials:
   * with no credential, a private registered repository is refused up front
     with `no_github_credential`, and nothing is stored; a public one is not;
   * the index poll's back-off mark moves when the slot it would clone with
-    moves, so ai-studio resumes on its own after the release -- and a tenant
+    moves, so peer-app resumes on its own after the release -- and a tenant
     still on `-git` keeps its mark;
   * the repositories routes serve which credential indexing uses.
 """
@@ -54,7 +54,7 @@ from .spec_signer import LocalSpecSigner
 
 OWNER = "alice@example.com"
 PERSONAL = tenant_id_for_user(OWNER)
-PRIVATE = ("sagaxyz", "ai-studio")
+PRIVATE = ("peer-org", "peer-app")
 NOW = datetime(2026, 10, 14, 3, 10, tzinfo=timezone.utc)
 
 
@@ -134,7 +134,7 @@ def test_a_personal_tenants_service_submission_runs_on_its_owners_connection(con
 
     task = result.tasks[0]
     assert task.forge_credential == provider_suffix(Scope.USER, user=OWNER)
-    assert task.forge_credential != "git", "the tenant -git slot u-bogdan never had"
+    assert task.forge_credential != "git", "the tenant -git slot u-owner never had"
     assert task.forge_access == "write"
     assert task.metadata[FORGE_SOURCE_METADATA_KEY] == "owner"
     served = task_to_api(task)
@@ -199,8 +199,8 @@ def test_no_credential_and_a_private_repository_is_refused_before_anything_is_qu
     text = str(refused.value)
     assert text.startswith(f"No GitHub credential for {PERSONAL}: connect GitHub under "
                            "Setup › Git tokens")
-    assert "sagaxyz/ai-studio" in text
-    assert refused.value.detail["repositories"] == ["sagaxyz/ai-studio"]
+    assert "peer-org/peer-app" in text
+    assert refused.value.detail["repositories"] == ["peer-org/peer-app"]
     assert _stored(db) == []
 
 
@@ -212,10 +212,10 @@ def test_a_revoked_connection_is_no_credential(context, db):
 
 
 def test_no_credential_and_a_public_repository_still_runs(context, db):
-    # Public repositories indexed fine in u-bogdan: no token is needed.
-    _register(db, PERSONAL, "bogdan-alexandrescu", "claudeswitch", "public")
+    # Public repositories indexed fine in u-owner: no token is needed.
+    _register(db, PERSONAL, "example-user", "claudeswitch", "public")
     result = context.submissions.submit_tasks(
-        _personal_auth(), [_spec("bogdan-alexandrescu", "claudeswitch")],
+        _personal_auth(), [_spec("example-user", "claudeswitch")],
         service_submission=True)
     assert result.tasks[0].forge_credential == "git"
 
@@ -251,7 +251,7 @@ def test_the_new_slot_counts_as_a_credential_change(db):
 
     assert mark is not None
     assert indexfailure.credential_changed(backoff, mark), (
-        "ai-studio must resume on its own once its runs clone with the owner's slot")
+        "peer-app must resume on its own once its runs clone with the owner's slot")
     # And once recorded under the new rule, an unchanged slot holds it.
     assert not indexfailure.credential_changed({"credential": mark}, mark)
 
@@ -269,13 +269,13 @@ def test_a_tenant_still_on_its_git_slot_keeps_its_mark(db):
 # --------------------------------------------------------------------------
 
 def test_the_view_names_the_owners_connection_and_its_login(db):
-    _user_slot(db, PERSONAL, OWNER, login="bogdan-alexandrescu")
+    _user_slot(db, PERSONAL, OWNER, login="example-user")
     tenant = Tenant(tenant_id=PERSONAL, kind="user", principal=OWNER, created_at=NOW)
     view = forge.service_credential_view(tenant, forge.FirestoreSlotIndex(db))
     assert view == {
         "source": "owner",
         "secret_name": f"swarm-tenant-{PERSONAL}-{provider_suffix(Scope.USER, user=OWNER)}",
-        "login": "bogdan-alexandrescu",
+        "login": "example-user",
     }
 
 

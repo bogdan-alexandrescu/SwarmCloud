@@ -44,7 +44,7 @@ function ok<T>(data: T): Result<T> {
 function run(id: string, by: string, at: string, title: string | null): IssueRun {
   return {
     id, tenant_id: 'eng', state: 'DONE', terminal: true, created_by: by, created_at: at, updated_at: at,
-    issue: { ref: 'bogdan-alexandrescu/SwarmCloud#454', owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454, url: 'https://github.com/x', repository_url: 'https://github.com/y' },
+    issue: { ref: 'example-org/example-repo#454', owner: 'example-org', repo: 'SwarmCloud', number: 454, url: 'https://github.com/x', repository_url: 'https://github.com/y' },
     issue_read: title === null ? null : { title },
   } as unknown as IssueRun
 }
@@ -77,8 +77,8 @@ describe('R15: the issue preview\'s meta never ends on a dot', () => {
   it('dots between the issue\'s facts and puts when it was read on its own line', () => {
     const read = {
       issue: {
-        ref: 'bogdan-alexandrescu/SwarmCloud#454', owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454,
-        url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/454', repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+        ref: 'example-org/example-repo#454', owner: 'example-org', repo: 'SwarmCloud', number: 454,
+        url: 'https://github.com/example-org/example-repo/issues/454', repository_url: 'https://github.com/example-org/example-repo',
         title: 'A title', body: '', body_truncated: false, body_redacted: false, labels: [], state: 'open', comments: 3,
       },
       tenant_id: 'eng',

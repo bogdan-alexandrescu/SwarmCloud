@@ -1,5 +1,5 @@
 """`GET /v1/admin/people` sends a platform admin's EFFECTIVE role in the grid
-(lane ROLE-ROUTE, part of #2391; BGD 2026-10-26, "Wire it in a follow-up lane").
+(lane ROLE-ROUTE, part of #2391; the owner 2026-10-26, "Wire it in a follow-up lane").
 
 `people.role_cell` applies `RoleStore.resolve`'s platform-admin rule since
 ROLE-EFFECTIVE-CELL (PR 2499), but the route passed it no platform admins, so

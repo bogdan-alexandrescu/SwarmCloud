@@ -1,6 +1,6 @@
 """A re-review whose agent will not run is readied on claude-code, not the browser.
 
-BGD, 2026-11-05: tasks that start on the browser runtime and barely use it.
+the owner, 2026-11-05: tasks that start on the browser runtime and barely use it.
 In an implement -> review -> fix -> re-review -> merge lane, on MERGE no fix
 runs and the re-review runs NO agent: the worker re-publishes the staged
 verdict byte for byte (`agent_worker.lifecycle.Worker._republish_staged_verdict`).

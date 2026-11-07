@@ -666,12 +666,12 @@ describe('G3-26: the drawer’s `took` and the table’s `ran` print one run onc
 })
 
 // ---------------------------------------------------------------------------
-// G3-27, reversed on the workflow page (VQ-014, BGD 2026-10-26)
+// G3-27, reversed on the workflow page (VQ-014, owner 2026-10-26)
 // ---------------------------------------------------------------------------
 
 describe('VQ-014: a linear chain’s cards keep their tier’s own width', () => {
   // G3-27 drew a chain's cards at up to twice NODE_W (about 510px), so a
-  // five-step chain showed one and a half steps at a time. BGD's decision
+  // five-step chain showed one and a half steps at a time. the owner's decision
   // (VQ-014, "Drop the chain widening on the page"): the tier's own width, and
   // a long input_from name wraps inside its card.
   // One line at the doubled card, more than one at the tier's.

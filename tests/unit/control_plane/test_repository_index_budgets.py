@@ -2,7 +2,7 @@
 
 Until lane INDEX-BUDGETS every full run got 1,800 s whatever the repository's
 size (`FULL_TIMEOUT_SECONDS`), the worker gave the language-server pass 540 s
-of it and the driver split that equally, so pyright had 270 s on ai-studio
+of it and the driver split that equally, so pyright had 270 s on peer-app
 (1,447 Python files, >= 86,805 call sites) against the ~680-890 s it needed,
 and timed out in 16 of 16 sampled full runs. What is held here:
 
@@ -43,7 +43,7 @@ def _record(**index: object) -> dict:
     (0, 1_800, 900),
     (1_999, 1_800, 900),
     (2_000, 3_600, 1_200),
-    (3_795, 3_600, 1_200),  # ai-studio, 2026-10-20
+    (3_795, 3_600, 1_200),  # peer-app, 2026-10-20
     (10_000, 3_600, 1_200),
     (10_001, 7_200, 1_800),
     (250_000, 7_200, 1_800),
@@ -131,7 +131,7 @@ def test_indexer_task_sizes_its_timeout_from_the_promoted_count():
     incremental = repoindex.indexer_task(_record(source_files=3_795), ONE, "incremental",
                                          base_sha=sha("base"))
     # MUTATION: keep `FULL_TIMEOUT_SECONDS if kind == "full" else ...` in
-    # indexer_task() and ai-studio's 3,795 files read 1,800 again.
+    # indexer_task() and peer-app's 3,795 files read 1,800 again.
     assert big.timeout_seconds == 3_600
     assert incremental.timeout_seconds == 1_200
     assert small.timeout_seconds == unknown.timeout_seconds == 1_800

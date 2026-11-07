@@ -82,8 +82,8 @@ def test_the_design_doc_exists_and_is_dated():
     assert DESIGN.is_file(), "docs/onboarding.md is this lane's deliverable"
     head = "\n".join(_text(DESIGN).splitlines()[:12])
     assert "**Status:" in head, "the status line leads, as in docs/git-tokens.md"
-    assert "2026-10-07" in head and "#780" in head
-    # Built since (OB10, #780): the status says so, and which lanes is held by
+    assert "proposed 2026-10-07 as a design" in head and "lane C4T" in head
+    # Built since (OB10): the status says so, and which lanes is held by
     # test_onboarding_migration.py against §5.
     assert "BUILT" in head and "PROPOSED" not in head, "every lane of §5 has shipped"
 

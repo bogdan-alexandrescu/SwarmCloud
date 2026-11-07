@@ -41,16 +41,16 @@ already routing through them were excluded rather than reported.
 ## Re-checked against `b0fff1b`, 2026-09-24
 
 Every one of the 55 findings below was read again against the code at `b0fff1b`
-(main after #17), at the line it now lives on, and its state recorded here with
+(main after an earlier issue), at the line it now lives on, and its state recorded here with
 the commit that settled it. **By reading, not by running**: the suites these
 findings live in run against a deployed platform, and nothing here was.
 
 Where a fix commit is named without a PR, it is on
 `fix/silent-failures-env-parity-and-audits` and reached main in the squash
-`0857b46` (#1). `a1239b5` and `da6bf54` are on `lane/docs-ci`, PR #25.
+`0857b46`. `a1239b5` and `da6bf54` are on `lane/docs-ci`, an earlier pull request.
 
 **Summary: 55 findings. 46 were fixed before this re-check and 2 are moot
-(`account.sh`, deleted). 7 were not fixed, and are fixed in PR #25:**
+(`account.sh`, deleted). 7 were not fixed, and are fixed in an earlier pull request:**
 register-tenant.sh's three -- the one file the 2026-09-19 fan-out never landed;
 its agent was reclaimed three times -- and four that an earlier fix had
 narrowed but not closed (`failure-test.sh:111` and `:125`, `smoke-test.sh:100`,
@@ -101,7 +101,7 @@ generation check, which still passed `0 == 0` over zero attempts read.
 | `status.sh:129` | fixed | `86b161f` -- reachable, listing-failed and unreachable are separate states |
 | **medium** | | |
 | `configure-kubectl.sh:64` | fixed | `1c1a762` |
-| `configure-kubectl.sh:134` | PARTIAL → fixed | `1c1a762` showed the real error but still ended "ok kubectl configured", exit 0 -- the harm this finding names. `a1239b5` exits 1. Residual in the same file: both `use-context` calls behind `\|\| true` could leave the previous context current (under `--merge`, the operator's own -- on the reference workstation, agents-staging) and the `/readyz` probe then ran through it; now checked with `kube_context_is_swarm` -- `a1239b5` |
+| `configure-kubectl.sh:134` | PARTIAL → fixed | `1c1a762` showed the real error but still ended "ok kubectl configured", exit 0 -- the harm this finding names. `a1239b5` exits 1. Residual in the same file: both `use-context` calls behind `\|\| true` could leave the previous context current (under `--merge`, the operator's own -- on the reference workstation, peer-cluster) and the `/readyz` probe then ran through it; now checked with `kube_context_is_swarm` -- `a1239b5` |
 | `configure-kubectl.sh:137` | fixed | `1c1a762` |
 | `create-secrets.sh:246` | fixed | `1c1a762` |
 | `failure-test.sh:125` | PARTIAL → fixed | as `:111` -- `1c1a762`, then `a1239b5` |
@@ -157,7 +157,7 @@ state of each is in the table above.**
 
 * also caused by: pool_doc -> fs_get -> fs_request, which never checks an HTTP status. Any error body decodes to null, and effective_limit over null is `[0] | min` = 0 — indistinguishable from a real pool whose hard_limit is 0. Causes: access-token expiry, datastore.entities.get denied, the wrong FIRESTORE_DATABASE, 
 
-* leads to: Runs `make infra` — a terraform apply against the shared saga-agents-staging project — to create a pool configuration that already exists and is correct.
+* leads to: Runs `make infra` — a terraform apply against the shared example-project project — to create a pool configuration that already exists and is correct.
 
 **`scripts/concurrency-test.sh:82`** — No failure message. VIOLATIONS stays 0, so assert_eq "0" "${VIOLATIONS}" "pool-over-limit samples" (106) PASSes, as do peak global usage (111), global active at end (120) and peak holding capacity (12
 
@@ -223,7 +223,7 @@ state of each is in the table above.**
 
 * also caused by: api_reachable (scripts/lib/common.sh:529-531) is `curl -sS -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(id_token)" "$(api_url)/readyz" 2>/dev/null | grep -q '^2'` -- stderr discarded, every outcome collapsed to one boolean. Non-2xx also comes from: the caller lacking roles/run.in
 
-* leads to: Runs `make deploy` -- a real terraform apply or `gcloud run services update` roll of the control plane in the shared saga-agents-staging project -- against a deployment that is healthy; or edits API_URL to point away from the correct service. The actual fix in most of these cases is `gcloud auth log
+* leads to: Runs `make deploy` -- a real terraform apply or `gcloud run services update` roll of the control plane in the shared example-project project -- against a deployment that is healthy; or edits API_URL to point away from the correct service. The actual fix in most of these cases is `gcloud auth log
 
 **`scripts/lib/testlib.sh:107`** — POST /v1/tasks returned HTTP <API_STATUS> — a code this shell never set
 

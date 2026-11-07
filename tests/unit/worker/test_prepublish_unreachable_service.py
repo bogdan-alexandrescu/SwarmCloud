@@ -1,6 +1,6 @@
 """graph-pytest is `skipped`, not failed, when every test errors because a service is unreachable.
 
-Issue #1605, lane PREPUB-SERVICES. Measured 2026-10-19 on four product-oracle
+Issue #1605, lane PREPUB-SERVICES. Measured 2026-10-19 on four peer-service
 lanes: the agent container has no Postgres, so every selected test errored at
 setup with `Connect call failed ('127.0.0.1', 5432)`, the check reported
 FAILED, and a paid fix round started that could not succeed and was not about

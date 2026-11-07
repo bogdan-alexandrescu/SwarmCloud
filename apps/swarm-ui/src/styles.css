@@ -499,7 +499,7 @@ body {
 
 /* THE CONFIG LEAD'S BUTTONS (CONFIG-LEAD-TINT; part of #2157). config.css
    draws every Config page's lead (`.ac-lead`) on the --sk-acs info tint, where
-   --ctl-bd measures 2.89:1 dark and 2.96:1 light, under 3:1 (BGD 2026-10-24:
+   --ctl-bd measures 2.89:1 dark and 2.96:1 light, under 3:1 (owner 2026-10-24:
    keep the tint, give the buttons a border that clears it). Mixed 10% toward
    --text the border moves away from the tint in both themes: 3.49:1 dark,
    3.47:1 light (contrast.config-lead.test.tsx, every lead state). A mix
@@ -8331,8 +8331,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   /* THE RAW ID UNDER THE NAME NEEDS ITS OWN LEADING BACK. `.ctl-sub` is set at
      `--lh-flush`, which is chosen so that a name and an id together come to
      exactly `--row-h` inside a 30px table row. The record's name is at
-     `--t-lead` here, so that flush line-height paints `tenant:u-bogdan` on top
-     of `u-bogdan` above it -- seen at 390pt on `pools/holders`. */
+     `--t-lead` here, so that flush line-height paints `tenant:u-owner` on top
+     of `u-owner` above it -- seen at 390pt on `pools/holders`. */
   .is-stacked > table > tbody > tr > th[scope='row'] .ctl-sub,
   .is-stacked > table > tbody > tr > th[scope='row'] .raw {
     line-height: var(--lh-micro);
@@ -8423,7 +8423,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     white-space: normal;
   }
   /* THE KEY IS A LABEL, IN THE LABELS' FACE (QA-044, part of #1680). It was
-     mono, and beside sans column heads a mono key read as a value. BGD decided
+     mono, and beside sans column heads a mono key read as a value. owner decided
      on 2026-10-23 (QA-044, task_7f0095fb2fd9481790cc q0): sans, console-wide,
      so Pool limits' own override (QAFIX5, styles/admin.css) is gone. Only the
      face moved: size, weight, colour and the key column are as they were, and
@@ -8470,8 +8470,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
   /* AN IDENTITY BREAKS RATHER THAN RUNS OFF THE CARD (CH-12). A service
-     account or a principal is one unbroken token -- `swarm-agent-worker-u-bogdan@example-
-     agents-staging.iam.gserviceaccount.com` -- and in a 200px value column it
+     account or a principal is one unbroken token -- `swarm-agent-worker-u-owner@example-
+     project.iam.gserviceaccount.com` -- and in a 200px value column it
      ran past the card's edge with the `.com` cut off. It has no spaces to
      break at, so it breaks anywhere; a cut identity is a different identity.
      A LOCATION IS THE EXCEPTION, AND IT ELLIPSIZES (CH-13). An attempt's
@@ -8912,7 +8912,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    than a constant because the keys differ in KIND between callers: the
    catalogue card's are words this product chose (`ws of mem`, 9ch, the longest
    of them), while Pool limits' are POOL NAMES off the response
-   (`anthropic · u-bogdan`, 20ch). One value would either wrap the second set
+   (`anthropic · u-owner`, 20ch). One value would either wrap the second set
    mid-token or indent the first set by half a card.
 
    THE DEFAULT IS THE FALLBACK IN THE `var()`, NOT A DECLARATION ON `:root`.
@@ -8926,8 +8926,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   flex: 0 0 var(--fact-key, 9ch);
 }
 /* Pool limits' operand list: the key is a pool label off the response, and the
-   longest this platform produces is `anthropic · u-bogdan`. At the 9ch default
-   it wrapped to `claude-` / `code` and `anthropic · u-` / `bogdan`, which
+   longest this platform produces is `anthropic · u-owner`. At the 9ch default
+   it wrapped to `claude-` / `code` and `anthropic · u-` / `owner`, which
    breaks an identifier across a line -- the one thing §B17 says must not
    happen to a string a reader may need to paste. */
 /* THE CEILINGS ARE A COLUMN OF FIGURES, SO THEY ALIGN LIKE ONE (AH-19). The
@@ -10947,8 +10947,8 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-bar > i { display: block; height: 100%; background: var(--sk-ac); }
 .sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
 /* ANOTHER POOL'S LABEL IS NEVER BROKEN INSIDE A NAME (visual QA run 2,
-   admin-007, part of #1680): `u-bogdan` broke at its hyphen, `u-` ending one
-   line and `bogdan` alone on the next. Each part between the `·` is one
+   admin-007, part of #1680): `u-owner` broke at its hyphen, `u-` ending one
+   line and `owner` alone on the next. Each part between the `·` is one
    unbreakable span; a part wider than the card (the raw-key fallback) is cut
    with an ellipsis, whole in the note's title. */
 .sk-mws { white-space: nowrap; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
@@ -11195,7 +11195,7 @@ span.sk-ttile { cursor: default; }
      label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
   .sk-pbar b { font-size: var(--t-body); min-width: 5.5em; font-weight: 650; }
   /* A LONG PAGE NAME WRAPS ONTO A SECOND LINE, NEVER CUT (PHONE-BAR-LABEL,
-     part of #2391; BGD, 2026-10-26): one `nowrap` line read `People an…`,
+     part of #2391; owner, 2026-10-26): one `nowrap` line read `People an…`,
      and `Pe…` beside the admin's workspace chip. The name breaks at a space
      only (`overflow-wrap`/`word-break` left normal, so never mid-word), at
      the same 14px. Two lines at `--lh-figure` (1.10, the scale's tight
@@ -11208,7 +11208,7 @@ span.sk-ttile { cursor: default; }
      (`flex-shrink: 100`) was squeezed to pay for it. The floor stays. */
   .sk-pbar b { flex: 1 1 0%; white-space: normal; text-overflow: clip; line-height: var(--lh-figure); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   /* BESIDE THE ADMIN'S CHIP, ONE STEP DOWN, AND THE CHIP KEEPS ITS WIDTH
-     (PHONE-BAR-LABEL review and PHONE-BAR-CHIP, part of #2391; BGD,
+     (PHONE-BAR-LABEL review and PHONE-BAR-CHIP, part of #2391; owner,
      2026-10-26, "Room left, then wrap"). In the admin's own workspace the
      chip reads `Your workspace`, and at 14px `Submit from a GitHub issue`
      needed four lines and `Workspaces` lost its last letter. Beside the
@@ -11223,7 +11223,7 @@ span.sk-ttile { cursor: default; }
      (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
      the member's bar, whose plain label is short. A platform admin's bar
      also carries the admin tag, and with the title holding 5.5em the chip
-     took the whole cut: `Bo…` on every admin route at 390, a workspace
+     took the whole cut: `Al…` on every admin route at 390, a workspace
      nobody could name. The title is the page the reader just chose and the
      drawer names it again; the workspace is named nowhere else on a phone.
      The bar's gaps close by 2px for the same reason. `has-chip` is set by

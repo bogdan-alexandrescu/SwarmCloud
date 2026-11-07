@@ -322,7 +322,7 @@ The peer grids are Pools' pool tiles (occupancy), Pool limits' profile cards
 (agent ceiling) and Platform counts' scope cards (agent total per scope). A
 smaller step used eight times on a summary still reads as a KPI wall; no
 reference screen shows its largest size more than once on one. *(Amended
-2026-09-25, AH-22 in #86, so this section and §6.2 agree;
+2026-09-25, AH-22 in an earlier issue, so this section and §6.2 agree;
 `honesty.admin.test.tsx` holds the per-card half on Pool limits.)*
 `apps/swarm-ui/src/__tests__/typescale.test.ts` states the six values and was
 re-pointed, not worked around.
@@ -345,10 +345,10 @@ unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
 heading that ties with the h1 is a defect.** The in-page headings the sheet
 used to draw at `--t-title` — `.section > h2` and `.section > .ctl-toolbar > h2`
 (§B4.1 of the sheet), `.sbf-move-h`, `.state h3`, `.ctl-empty > h3`,
-`.art-head h3` and `.ckb-head h3` — are TS-18's (epic #84), which moves them to
+`.art-head h3` and `.ckb-head h3` — are TS-18's (an earlier epic), which moves them to
 `--t-lead`/600 (`timeline.submit.rules.test.ts`). TS-18's first draft kept
 `.ov-lead-title` at `--t-title` as an exception; OV-15 wins on that element
-(resolved on #84, 2026-09-25). A rendered document's own h1
+(resolved on an earlier issue, 2026-09-25). A rendered document's own h1
 (`.art-md .art-h[data-level="1"]`) follows the document's ladder, not the
 console's.
 
@@ -540,7 +540,7 @@ off `.ctl-metric`.**
 | `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. *(Amended below: no edge passes under a node any more.)* |
 | `--ctl-shadow-pop` | `0 8px 24px rgb(31 35 40 / .12)` / `0 8px 24px rgb(0 0 0 / .28)` | a surface **over** the page: the help card, a menu, a drawer edge |
 
-> **Amended 2026-09-25 (WF-4, epic #83): an edge never passes under a card.**
+> **Amended 2026-09-25 (WF-4, an earlier epic): an edge never passes under a card.**
 > The row above let a DAG edge run *under* a node, and on the workflow canvas
 > that is what happened to every edge that skips a level: one straight curve
 > from its parent to its child, crossing the level between wherever the line
@@ -754,7 +754,7 @@ untouched — they are the one place on a proportion where colour earns its keep
 and `test_state_colour_discriminability.py` holds the textures apart in
 greyscale.
 
-> **The workflow Timeline's part of the ruling (WF-11, epic #83; the #122 hue
+> **The workflow Timeline's part of the ruling (WF-11, an earlier epic; the earlier issue's hue
 > ruling), 2026-09-25.** The Timeline outlined every wait in `--warn-ink` and
 > filled every successful run `--ok`, so a screen of healthy work was a screen
 > of caution and success hues. Now: **a wait (waited or still waiting) is a 1px
@@ -773,7 +773,7 @@ greyscale.
 > because jsdom computes no pseudo-element.
 
 > **A finished workflow row draws its outcome composition, not a progress
-> meter (WF-1, settled on #83, 2026-09-25).** `9/30 done` as a 30% bar said the
+> meter (WF-1, settled on an earlier issue, 2026-09-25).** `9/30 done` as a 30% bar said the
 > work was still going. In the same 8px track, a terminal row draws one `.wf-seg`
 > per outcome at its share of the steps: succeeded solid in the meter's
 > `--text-dim`, failed and dead-lettered TS-4's solid `--bad` with the 2px rule,
@@ -785,7 +785,7 @@ greyscale.
 > is the cut plus 2px of `--bad`; the other segments shrink to give it up.
 > Succeeded in `--text-dim` rather than TS-4's `--ok`, and dead-lettered in the
 > failed form, are this build's reading of "TS-4's vocabulary" and are open for
-> the owner's confirmation (#83).
+> the owner's confirmation.
 
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
@@ -846,7 +846,7 @@ greyscale.
 > current".
 >
 > It was spelled `var(--ctl-absent)` while `--ctl-absent` was
-> `var(--text-faint)`. The ui-hygiene lane (PR #26) then split `--ctl-absent`
+> `var(--text-faint)`. The ui-hygiene lane then split `--ctl-absent`
 > into its own warm stone so an absence no longer matches the CANCELLED fill,
 > and on merge that would have turned this bar warm: a colour picked to differ
 > from grey by its hue, on a fill this decision says is grey.
@@ -860,7 +860,7 @@ greyscale.
 > information" and "no information" are opposite facts. `--ctl-absent` now
 > means only "nobody measured this", so the projection glyph was drawn dE76 0
 > from the em dash on a never-polled row in the same column. The tilde now
-> paints the same grey as its bar, which is the pixel both had before #26.
+> paints the same grey as its bar, which is the pixel both had before an earlier issue.
 > `test_a_projected_reading_is_not_drawn_in_the_absence_colour` holds every
 > mark of a projected reading at least dE76 10 from `--ctl-absent`, in both
 > themes. It finds the marks the way the fill guard finds a fill: the element
@@ -897,8 +897,8 @@ greyscale.
 > currently renders a bare `<i>` inside `.ctl-track`). They shared the
 > `background: var(--info)` rule in `styles.css`.
 >
-> **Decided (#122, recorded here 2026-10-06 for #74): the rule extends to
-> both, grey, always.** The owner chose option 1 of #74's three. `.sr-bar > i`
+> **Decided (recorded here 2026-10-06 for an earlier issue): the rule extends to
+> both, grey, always.** The owner chose option 1 of an earlier issue's three. `.sr-bar > i`
 > and `.coverage > i` take `--text-dim`, as every other proportion does, and
 > `.sr-bar > i.bad` keeps `--bad`: that is the only verdict hue either bar has.
 > `.coverage` has no verdict at all, so its fill never takes a hue. Option 2
@@ -908,13 +908,13 @@ greyscale.
 > Timeline no longer renders a `.sr-bar` (Admin › Platform counts is the one
 > screen that does). The shared rule in `styles.css` now paints
 > `.ctl-track > i, .ctl-util-fill, .sr-bar > i` in `--text-dim`, so
-> `.ctl-track > i` went grey under the same #122 rule. Two guards hold it.
-> PR #722 added `proportion.verdict.test.tsx` (vitest), which renders Platform
-> counts and reads every fill it draws. #74's Python half extends
+> `.ctl-track > i` went grey under the same an earlier issue rule. Two guards hold it.
+> An earlier pull request added `proportion.verdict.test.tsx` (vitest), which renders Platform
+> counts and reads every fill it draws. An earlier issue's Python half extends
 > `test_a_proportion_fill_takes_a_hue_only_from_a_verdict`: it tries every
 > `<i>` in a `.sr-bar` or `.coverage` against every background rule in every
 > shipped sheet and fails on any hue that is not `.sr-bar > i.bad`.
-> `test_the_bar_fill_check_fails_on_a_hued_bar` puts the #74 rule back on each
+> `test_the_bar_fill_check_fails_on_a_hued_bar` puts the earlier issue's rule back on each
 > bar, tries five other ways in, and requires the check to fail on every one.
 > A `.sr-bar > i.bad` verdict must still pass. One consequence of the corrected guard: if a screen ever
 > renders a `.ctl-util-fill` as an `<i>` inside `.ctl-track`, then
@@ -986,7 +986,7 @@ only their geometry is linear instead of angular:
 
 The `aria-label` route to the sentence is the caller's and is unchanged.
 
-**Amended by the 2026-09-25 QA decisions (epic #81).**
+**Amended by the 2026-09-25 QA decisions (an earlier epic).**
 
 * **The track draws the figure itself (OV-2).** It drew coverage — usable
   accounts over all accounts, checks that ran over all checks — under a figure
@@ -997,7 +997,7 @@ The `aria-label` route to the sentence is the caller's and is unchanged.
   partial, as the kit's `.ctl-mark.is-partial` under the track**; a complete
   population draws no coverage at all.
 * **A partial track hatches only what was not measured** (OV-2, corrected in
-  review of #157). `.is-partial` is three segments now: the figure filled to
+  review of an earlier issue). `.is-partial` is three segments now: the figure filled to
   `--pct`, the plain track on to `--measured`, the hatch from `--measured` to
   the end. The attention lead sets `--measured` to the checks that ran, so a
   check that came back clear is plain track and only a blind one is hatched:
@@ -1115,7 +1115,7 @@ two words, in `--text-faint` rather than this paragraph's "plain or
 does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
 and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
 with redesign-v2 §5.5 Tier 1's 2px left rule.
-*Workflows' two, settled on #87 (2026-09-25):* the graph's `.node.ok` and the
+*Workflows' two, settled on an earlier issue (2026-09-25):* the graph's `.node.ok` and the
 row's `.wf-state.ok` are neutral too — a succeeded node keeps the node's own
 `--text-faint` rule and a succeeded row's word is `--text-dim` — because WF-11,
 named above as their owner, ruled only the Timeline.
@@ -1143,7 +1143,7 @@ screen to reuse rather than extend:
 a chip whose modifier matched no rule draws the unknown mark, never the ok disc,
 and every other state declares its own fill.
 
-> **Owner ruling, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok mark
+> **Owner ruling, 2026-09-25 (CP-14): healthy carries no hue.** The ok mark
 > keeps its filled disc and its word at full ink, and paints a text grey, not
 > `--ok`, on `.ctl-chip.is-ok`, `.ctl-dot.is-ok` and the legacy `.tag.ok`. Hue
 > on a state mark is left to the verdicts (warn, bad, paused) and to live.
@@ -1158,7 +1158,7 @@ and every other state declares its own fill.
 > `--text-faint` (the hue ruling above), so the later ruling sets the grey of
 > `.ctl-chip.is-ok` and `.ctl-dot.is-ok`. `.tag.ok`, which CH-17 leaves to
 > CP-14, is a word and stays `--text-dim` (§6.6's "plain or `--text-dim`" for
-> a word), as does Accounts' success heading; the 2026-09-25 follow-up on #85
+> a word), as does Accounts' success heading; the 2026-09-25 follow-up on an earlier issue
 > gives `--text-faint` to marks and fills only (§15.7). CP-14's ruling — no
 > hue on a healthy mark — holds under either grey, and
 > `test_the_ok_mark_is_a_text_grey` accepts both.
@@ -1226,7 +1226,7 @@ layer of its own. `shell.test.tsx` holds that no `thead th` rule is sticky, and
 that any positioned table cell with a z-index (CH-13's sticky first column)
 ranks under the drawer's band.
 
-**The head's fill is on `thead`, not on each `th` (WF-21, #178, 2026-09-26) —
+**The head's fill is on `thead`, not on each `th` (WF-21, 2026-09-26) —
 and that does not remove the seams.** Taking the stickiness off did not remove
 them either. Checked on dev at release 350c244, at 1440, the Workflows Table's
 head still showed a 1px line of ground at four fractional column edges in light
@@ -1236,7 +1236,7 @@ Where a column edge falls inside a device pixel and the cell fills are drawn
 anti-aliased, neither neighbouring fill covers that pixel whole, so the ground
 shows through.
 
-#178's prepared fix moved the fill from each `th` to `thead`, on the reasoning
+An earlier issue's prepared fix moved the fill from each `th` to `thead`, on the reasoning
 that `thead` is one box with no internal edge to seam at. **That premise is
 false in Chrome.** Chrome paints a row group's background into each cell's rect
 (the CSS table-layer model), so the `thead` fill uses exactly the per-cell
@@ -1258,7 +1258,7 @@ with this stylesheet on a nine-column copy of the Workflows Table (2026-09-26):
   checked.
 
 **So `thead` paints its fill twice, and one of the two is one rectangle**
-(#178, owner decision 2026-09-26, recorded on #178 and #223).
+(owner decision 2026-09-26, recorded on earlier issues).
 `.ctl-table thead` and `table.pools thead` carry
 `background: var(--surface-2)` and
 `box-shadow: inset 0 0 0 100vmax var(--surface-2)`. The shadow is what
@@ -1361,7 +1361,7 @@ is a different and worse thing than a row. **Cells do not wrap** — `nowrap` pl
 `text-overflow: ellipsis` is what makes the row height a constant, which is what
 makes the drops clean.
 
-**A cell's contents must be able to shrink, or the ellipsis never fires** (#222,
+**A cell's contents must be able to shrink, or the ellipsis never fires** (an earlier issue,
 2026-09-26). This came up on the Workflows row at 1440 on dev, release 350c244.
 The census sentence was a `flex: 0 0 auto` item, so it could not shrink, and
 "10/30 done · 1 failed · 19 cancelled" painted over the stage shape beside it.
@@ -1379,7 +1379,7 @@ worked case, and `workflow.board.test.tsx` checks each of the four on its own
 at every width that draws the sentence.
 
 **`[progress]`'s floor is 33ch in a row at least 620px wide, and 12ch in a
-narrower one** (owner decisions 2026-09-26, on #223).
+narrower one** (owner decisions 2026-09-26, on an earlier issue).
 
 At 24ch the floor was 196.5px, and the 54px meter and its 8px gap left the
 sentence 134.5px. So once the sentence was contained, every census with a tail
@@ -1472,10 +1472,10 @@ explanation is a `#help/<topic>` link, never a second paragraph.
 §15.6)*. `Absent` draws the mark inside the heading; a heading or a sentence that
 says `real zero` again, or a hand-drawn `.ctl-mark` span in the body, is a
 second silhouette with no sentence behind it. Five screens shipped one each
-until #170; `emptystate.onemark.test.tsx` holds all five to one.
+until an earlier issue; `emptystate.onemark.test.tsx` holds all five to one.
 
 **`Screen`'s empty state ends in its `Checked …` line, and it ticks**
-*(CH-1/CH-10, settled on #87, 2026-09-25)*: the primitive's foot at the micro
+*(CH-1/CH-10, settled on an earlier issue, 2026-09-25)*: the primitive's foot at the micro
 step, on the shared clock, reading the sub-line's instant so the two never
 disagree; and a screen's way out is `empty.link`, never an anchor typed into
 the sentence (CP-21).
@@ -1498,9 +1498,9 @@ it survives both themes without a fill that has to be re-tuned for each.
 
 ### 6.12 Page header — `PageHead` (`.c-phead`: `.head` + `.c-acts`), and `.ctl-page-head`
 
-*(Amended 2026-10-07, owner ruling on #138, #98 and #117: title left, actions
+*(Amended 2026-10-07, owner ruling on an earlier issue, earlier issues: title left, actions
 right, nothing under the title. This reverses the 2026-09-25 amendment (AH-25 in
-#86), which had made "a title, then one line of provenance" the house head.
+An earlier issue), which had made "a title, then one line of provenance" the house head.
 That line is gone: its count moved onto the first card and its age moved onto
 the refresh control.)*
 
@@ -1514,7 +1514,7 @@ reads", a range and its lane count) renders as `CountNote` (`p.c-count-note`)
 over the screen's first card. It renders from `Screen`'s `summary`, so the
 figure sits beside the data it counts.
 
-**Refresh is a quiet head control that carries the screen's own age (#98).**
+**Refresh is a quiet head control that carries the screen's own age.**
 `RefreshControl` (`Shell.tsx`) is the one read-now control:
 - `⟳ 12 s` on a screen read once;
 - `⟳ every 30 s · read 4 s ago` on a screen that polls;
@@ -1533,7 +1533,7 @@ freshness only when stale (`staleFoot`: `from 6 min ago`) and say nothing while
 fresh. They read the head's instant through `PageClock` (`useNow.ts`), so a foot
 and the refresh control never disagree by a tick.
 
-**Cadences (#117).** Each cadence is one named constant whose comment cites the
+**Cadences.** Each cadence is one named constant whose comment cites the
 ruling:
 - the Timeline polls every 60 s (`TIMELINE_POLL_MS`);
 - Pools, Holders, Accounts and Provider quota poll every 30 s, and every 60 s
@@ -1543,11 +1543,11 @@ ruling:
 Polling pauses while `document.hidden` and reads at once on return. It stops
 after 15 minutes without input (`IDLE_STOP_MS`, `useIdleStop`).
 
-**A control that costs something carries its cost on itself** (#138): Platform
+**A control that costs something carries its cost on itself**: Platform
 counts' `Run the count · 24 count()` sits in `.c-acts` with its provenance, and
 nothing sits beside the `<h1>` (AH-25).
 
-**The breadcrumb is the trail to the page (#138).** `crumbsOf` in `App.tsx`
+**The breadcrumb is the trail to the page.** `crumbsOf` in `App.tsx`
 builds it:
 - every segment is a link back: the section links to its first page, and with an
   agent open, the list link closes it;
@@ -1624,7 +1624,7 @@ route; what separates the two regions now is `--ctl-gutter`, undivided. §13.1.
 
 ### 6.15 Mobile nav
 
-*(Rewritten 2026-10-08, #139, to describe the Sky shell as built. The two-row
+*(Rewritten 2026-10-08, to describe the Sky shell as built. The two-row
 strip this section used to specify — `.ctl-rail-main` / `.ctl-rail-sub`, drawn
 by `RailTabs`, CH-21 — was retired when the Sky shell (`SkyShell` in
 `Spine.tsx`) replaced the rail; none of those classes is in `styles.css` any
@@ -1713,7 +1713,7 @@ media query.
 
 | | At 390px |
 |---|---|
-| Frame | below 760px the spine and panel become the phone header and the drawer (§6.15, rewritten 2026-10-08 for #139); `--app-pad` 16px. **The header is one 44px row that does not wrap (`.sk-pbar`, CH-20 as rebuilt in the Sky shell):** in order, the menu button, the mark (`SwarmMark`; the wordmark is not drawn), the page title, the tenant, the env pill (`EnvPill`, `mini`) and, for an admin, the admin tag. **Past its own height of scroll it compacts to 36px** (`.sk-app.is-scrolled`, `scrollBand` and `COMPACT_AFTER_PX` in `Spine.tsx`), easing over 120ms unless `prefers-reduced-motion` asks otherwise; the mark, the env pill and the tenant all stay, because only the padding was spent on nothing. Only the title and then the tenant give way: the title has `flex: 1` and yields first, then a plain tenant label (`.sk-tn`) ellipsizes at 40vw, whole in its `title`; someone who can switch tenants gets the switchable chip (`.sk-tchip`, the same 40vw cap), which opens the bottom sheet. The menu, the mark and the env pill never shrink, so the row never widens the page. The admin tag is a grey hairline tag (`.sk-adm`: a 1px hairline, dim ink, unfilled, the env badge's box, never the accent), `flex: none` and `nowrap`, last in the row, so it can never wrap onto a line of its own. The sections are in the drawer (`.sk-side`), the open section's pages in their own scrolling column (the panel's `pscroll` column, §6.15), so no section moves when one opens; past one scrollport a sticky `Top` control (`.sk-top`) appears above the dock. **The tenant id's copy control is no longer in the header.** CH-20 made the header's tenant id its own copy button (`.brand-id`) because at 390 the id kept only 60–70px, which a separate 44px control would take; the Sky header shows the tenant's name instead, and the copy is the tenant block's `copy id` button (`.sk-cp`) in the drawer's panel, which copies the whole id and says in a status whether the copy landed or the browser refused it. Pending is the panel's tenant block reading "reading…"; failed reads "not read"; until the caller is read, the header draws no tenant at all rather than a guess. |
+| Frame | below 760px the spine and panel become the phone header and the drawer (§6.15, rewritten 2026-10-08 for an earlier issue); `--app-pad` 16px. **The header is one 44px row that does not wrap (`.sk-pbar`, CH-20 as rebuilt in the Sky shell):** in order, the menu button, the mark (`SwarmMark`; the wordmark is not drawn), the page title, the tenant, the env pill (`EnvPill`, `mini`) and, for an admin, the admin tag. **Past its own height of scroll it compacts to 36px** (`.sk-app.is-scrolled`, `scrollBand` and `COMPACT_AFTER_PX` in `Spine.tsx`), easing over 120ms unless `prefers-reduced-motion` asks otherwise; the mark, the env pill and the tenant all stay, because only the padding was spent on nothing. Only the title and then the tenant give way: the title has `flex: 1` and yields first, then a plain tenant label (`.sk-tn`) ellipsizes at 40vw, whole in its `title`; someone who can switch tenants gets the switchable chip (`.sk-tchip`, the same 40vw cap), which opens the bottom sheet. The menu, the mark and the env pill never shrink, so the row never widens the page. The admin tag is a grey hairline tag (`.sk-adm`: a 1px hairline, dim ink, unfilled, the env badge's box, never the accent), `flex: none` and `nowrap`, last in the row, so it can never wrap onto a line of its own. The sections are in the drawer (`.sk-side`), the open section's pages in their own scrolling column (the panel's `pscroll` column, §6.15), so no section moves when one opens; past one scrollport a sticky `Top` control (`.sk-top`) appears above the dock. **The tenant id's copy control is no longer in the header.** CH-20 made the header's tenant id its own copy button (`.brand-id`) because at 390 the id kept only 60–70px, which a separate 44px control would take; the Sky header shows the tenant's name instead, and the copy is the tenant block's `copy id` button (`.sk-cp`) in the drawer's panel, which copies the whole id and says in a status whether the copy landed or the browser refused it. Pending is the panel's tenant block reading "reading…"; failed reads "not read"; until the caller is read, the header draws no tenant at all rather than a guess. |
 | Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7). A paused or draining note leads the reading word rather than giving way to it (`paused · stale 3h ago`), so a stale, cleared or never-polled reading cannot hide it |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
@@ -1795,7 +1795,7 @@ that did not:
   is cut instead of wrapped: API reads' `lastUrl` (up to 110 characters for a
   checkpoint file) is one line, ellipsized, whole in its `title`, and adds
   nothing to the column's width (`width: 0; min-width: 100%`).
-- **…and the ceiling is also its floor: `min-width: min(45vw, 20ch)`** (#222,
+- **…and the ceiling is also its floor: `min-width: min(45vw, 20ch)`** (an earlier issue,
   2026-09-26). On its own, the width did not hold the column. On dev at release
   350c244 (390×844), the held column of Capacity › Runtimes, Admin › Tenants
   and the Timeline's three tables resolved to 24–29px. That is the cell's
@@ -1826,7 +1826,7 @@ that did not:
   held rule's head branch, the corner's fill (§6.7) and the CP-18
   restatements on Pools and Profile headroom. So `Max active` is not held,
   takes no width or floor, and paints no fill of its own, and neither does a
-  group cell that spans columns. Until #223 a reset rule un-held it and
+  group cell that spans columns. Until an earlier issue a reset rule un-held it and
   undid every declaration but one, the corner's `--surface-2`.
   `tables.held.test.tsx` renders the five
   tables that showed the squeeze. It asks the cascade at 390 for every held
@@ -1929,7 +1929,7 @@ Six places, in order of commitment. Nothing outside this list.
    `showing <title>` line. "One page of events, oldest first" was false of the
    Timeline, which reads newest first; the title is "Paged reads: a page of
    events, a window of tasks" and claims no order, and the topic opens by
-   naming both reads. *(Superseded by #185, §16: the Timeline no longer reads
+   naming both reads. *(Superseded by an earlier issue, §16: the Timeline no longer reads
    a window of agents, so nothing links it to `event-paging`, and the topic is
    written for the attempt timeline alone again, titled "One page of events,
    not the whole history". The rule this paragraph states is unchanged.)*
@@ -1937,7 +1937,7 @@ Six places, in order of commitment. Nothing outside this list.
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
 
-> **Recorded 2026-09-25 (WF-5, epic #83; corrected on #160's review): a
+> **Recorded 2026-09-25 (WF-5, an earlier epic; corrected on an earlier issue's review): a
 > figure's source is a qualifier, and where there is no room in its slot the
 > node gives it a line.** A workflow step's cost or tokens may be its result
 > summary's rather than its attempt telemetry's. That happens only for a
@@ -2117,7 +2117,7 @@ build` — and the build lives in `scripts/` and `.github/`, which is Track D.
 Reported, not made.
 
 **Both halves have since landed.** The build passes `VITE_SWARM_ENV`
-(`scripts/build-images.sh`), and PR #19 made `/v1/tenants/me` serve
+(`scripts/build-images.sh`), and an earlier pull request made `/v1/tenants/me` serve
 `environment` and `environment_declared`. `Brand.tsx` now believes a DECLARED
 API environment first, then the build, then a loopback host: the API is the one
 source that says where the requests go, which is what the badge is for (a
@@ -2741,7 +2741,7 @@ rather than inventing a metric that would have moved.
    elements were spent outlining a 5×10px mark whose whole shape is its fill.
    The unfilled cell is `--line-soft`, the repeated-separator weight.
 
-   > **Collapsed, 2026-09-25 (owner decision, CP-25, #85).** The five-cell bar
+   > **Collapsed, 2026-09-25 (owner decision, CP-25).** The five-cell bar
    > is gone: `Bar`, `barFilled`, `BAR_CELLS` and the `.acct-bar` rules were
    > deleted, and the 5h and 7d cells draw §6.4's shared `UtilTrack` — the
    > exact, unrounded percentage (the cells rounded 42% to three fifths), the
@@ -2752,7 +2752,7 @@ rather than inventing a metric that would have moved.
    > track is a fixed 40px inline beside the figure (`.acct-window >
    > .ctl-util-track`), and at 560px and below the phone block hides it as it
    > hides every track but a pool tile's and the Overview Pools list's (the
-   > latter, `.ov-pools .ov-pl > .ctl-util-track`, drawn since BGD's
+   > latter, `.ov-pools .ov-pl > .ctl-util-track`, drawn since the owner's
    > 2026-10-23 reversal of Q3 of 2026-10-11, PR 2137); there the figure, the
    > `~` and the em dash carry every state. Unmeasured cells are unchanged:
    > the em dash, `not measured`, no track. **What remains of the `cs status`
@@ -2779,7 +2779,7 @@ rather than inventing a metric that would have moved.
    `.cap-families > .ctl-card`; the primitive is untouched for its nine other
    callers.
 
-   > **Amended 2026-09-25 (owner decision, CP-2, #85): the scope moved from the
+   > **Amended 2026-09-25 (owner decision, CP-2): the scope moved from the
    > family head to every row.** The note was computed from the family's first
    > row, and a family is not one scope — an admin's Tenants family printed
    > "this tenant" above four tenants' pools, and Providers printed
@@ -3059,7 +3059,7 @@ WF-17)*:
 nothing, and a deep-linked topic takes the §1.3 selection treatment — a
 `--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
 every topic, so marking one moves nothing. A deep link to **any** topic lands with its group
-heading in view (AH-16, settled against AH-18 on #86, 2026-09-25). The group
+heading in view (AH-16, settled against AH-18 on an earlier issue, 2026-09-25). The group
 heading is the sticky head: `.help-group > h2` sticks to the top of the
 scroller while its group is in view, in the page ground `--bg`, because no
 scroll margin can bring back a heading a screenful above a topic halfway down
@@ -3205,7 +3205,7 @@ move every neighbour by a pixel at the moment the strip most needs to hold still
 ## 14. The 2026-09-25 visual QA pass — the stylesheet's half
 
 The QA pass of the live console at `ea1355d` (1440 and 390, light and dark)
-filed its findings as boxes on epics #81–#87. Forty-two of them were the
+filed its findings as boxes on epics a run of earlier issues. Forty-two of them were the
 sheet's, and this section records what each changed and the constraint behind
 it, so that none of them is quietly reverted. Every one carries its box id in a
 comment beside the rule, and an assertion in `shell.test.tsx`'s *"the
@@ -3292,7 +3292,7 @@ block.
   not have to agree on a spelling.
 * **`HelpCard.tsx`'s `CARD_TITLE` no longer shouts.** It carried
   `textTransform: 'uppercase'` and `letterSpacing: '.04em'`; the shell/help
-  lane (#145) removed both and emptied the pending list in
+  lane removed both and emptied the pending list in
   `typescale.test.ts` that excused them, so CH-3's inline-style scan now
   excuses nothing.
 * **`.scope.platform` is still an `--info` tint.** CP-13 named the tenant pill;
@@ -3307,11 +3307,11 @@ block.
 
 ## 15. The 2026-09-25 QA decisions: the shared vocabulary, and the agents and inspector lane
 
-The owner decided the QA pass's decision boxes on 2026-09-25 (#81–#87). Two
-lanes record theirs here. The chrome-shared lane (#162) built the ones every
+The owner decided the QA pass's decision boxes on 2026-09-25 (a run of earlier issues). Two
+lanes record theirs here. The chrome-shared lane built the ones every
 screen draws on, and this section is where a later screen finds them rather
 than inventing a second answer (15.1–15.5). The agents and inspector lane
-(#170) delivered four boxes on #82 and two merged leftovers, and 15.6 records
+ delivered four boxes on an earlier issue and two merged leftovers, and 15.6 records
 what each changed and the constraint behind it, so none of them is quietly
 reverted. Each box is recorded where it lives above; the table is the index,
 plus the sub-sections that have no other home.
@@ -3319,11 +3319,11 @@ plus the sub-sections that have no other home.
 | Box | The primitive | Where |
 |---|---|---|
 | CH-17 | the hue ruling: ok and info marks are grey; hue only on warn, bad, paused, live | §1.2, §1.3, §6.6, §6.7 |
-| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, `--text-faint`, for marks and fills; `.tag.ok` and the Accounts success heading are words and take `--text-dim`, §6.6 and §15.7); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane (#159) | §6.6, §6.7 |
+| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, `--text-faint`, for marks and fills; `.tag.ok` and the Accounts success heading are words and take `--text-dim`, §6.6 and §15.7); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane | §6.6, §6.7 |
 | CH-22 | `stateTone`'s `ended` tone for CANCELLED, drawn as the grey flat bar (`is-info`) | §6.6 |
 | CH-23 | a link's resting underline is `--line` at 1px | §1.3 |
 | CH-19 | the live pulse's `.8` floor; reduced motion rests the pulse | §5.4 |
-| CH-21 | the two-row phone strip, so a section keeps its position; retired with the Sky shell, its constraints (no bottom bar, the 25% budget, a position means one thing) kept and the sections moved to a drawer with the pages in their own column; #139 delivered the sticky navigation (`.sk-pbar`) and the `Top` control (`.sk-top`) | §6.15 (rewritten 2026-10-08) |
+| CH-21 | the two-row phone strip, so a section keeps its position; retired with the Sky shell, its constraints (no bottom bar, the 25% budget, a position means one thing) kept and the sections moved to a drawer with the pages in their own column; an earlier issue delivered the sticky navigation (`.sk-pbar`) and the `Top` control (`.sk-top`) | §6.15 (rewritten 2026-10-08) |
 | CH-20 | the one-row phone header, rebuilt as the Sky shell's `.sk-pbar`: 44px compacting to 36px on scroll, the admin as a grey hairline `.sk-adm` tag; the id's copy control moved to the panel (`.sk-cp`) | §7.2, §6.15 |
 | CH-13 | one rule for tables below 900px: `is-scroll` for data, `is-stacked` for records | §7.3 |
 | TS-4 | the outcome stack's four forms | 15.3 |
@@ -3333,7 +3333,7 @@ plus the sub-sections that have no other home.
 | AG-14 | a why line is ink, and `--warn` only when a person has to act | 15.6 |
 | AG-20 | an inspector chart is drawn twice, at 640 and 300 units, and its own width picks one | §7.2, 15.6 |
 | AG-23 | a checkpoint or log panel is a facts strip and one table: one level of box | 15.6 (§13.3) |
-| #170 leftovers | one mark per empty state; the events route pages and this screen does not follow its token | §6.9, 15.6 |
+| An earlier issue leftovers | one mark per empty state; the events route pages and this screen does not follow its token | §6.9, 15.6 |
 
 ### 15.1 The head's read age is the screen's own (CH-2)
 
@@ -3417,7 +3417,7 @@ alone: failed against cancelled 1.01:1 in dark, succeeded against cancelled
 | succeeded | solid `--ok` |
 | failed | solid `--bad` with a 2px left rule — redesign-v2 §5.5 Tier 1's "solid fill + a 2px left rule", as written. The rule is drawn in `--surface`, the panel's own ground: a 2px cut down the segment's left edge, because it must show against solid `--bad` and only the grounds do — `--surface` 5.32:1 (dark), 12.49:1 (light), where `--bad` is 1:1, `--bad-ink` 1.28:1 / 1.68:1 and `--text` 2.83:1 / 1.26:1 |
 | cancelled | flat bars — `repeating-linear-gradient(to bottom, --text-faint 0 3px, transparent 3px 5px)`, CH-22's grey "ended" bar stacked |
-| open | the 45° hatch — **retired 2026-09-25** with the row-window Timeline, the only thing that drew an open segment (#185, decision 7). The ledger places work by the bucket it ended in, so it draws no open work; the "Not finished yet" card counts it in words |
+| open | the 45° hatch — **retired 2026-09-25** with the row-window Timeline, the only thing that drew an open segment (decision 7). The ledger places work by the bucket it ended in, so it draws no open work; the "Not finished yet" card counts it in words |
 
 Every segment and its legend key are one rule (TS-22's construction), so a key
 cannot drift from its bar. `encoding.hues.test.ts` holds the four apart with
@@ -3453,9 +3453,9 @@ account's width in a desktop window narrower than 900px with a classic
 scrollbar, where `100vw` counts the scrollbar and the detail would overhang
 the scrollport by its width (a phone's overlay scrollbar takes none).
 
-### 15.6 The agents and inspector lane (#170)
+### 15.6 The agents and inspector lane
 
-Four boxes on #82 were the owner's to decide; the decisions are recorded on
+Four boxes on an earlier issue were the owner's to decide; the decisions are recorded on
 the epic, and this sub-section records what each changed and the constraint
 behind it, so none of them is quietly reverted. Two merged leftovers rode
 along. Every one has a test that states the mutation turning it red, and the
@@ -3468,13 +3468,13 @@ red run is in the pull request.
 | AG-20 | Every inspector chart root — peak memory, phase bars, retry lollipop, checkpoint strip, diffstat **and the token-spend line** (`TimeSeries`) — drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px. The checkpoint strip's off-page tray takes at most half of each drawing's plot and counts what it has no room to draw as `+N` | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended); a tray sized by its count left the 300 drawing no axis at 21 off-page checkpoints | `chart.narrow`, `inspector.charts` (every chart root in the inspector, not a list) |
 | AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each, **three columns**: Checkpoint · Size · Age, and Stream · Size · Age. Whether a retry would restore from a checkpoint is a `resume` line under its name; a checkpoint's objects open from its Size cell as rows of the same table, with a name, a size and an age. No `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash. The strip's `restore` fact is what a retry would restore from | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
 | leftover A | `Agents`, `AttemptTimeline`, `Capacity`, `Holders`, `Runtimes`: the second `real zero` in each empty state removed | one mark per empty state (§6.9 amended) | `emptystate.onemark` |
-| leftover B | Every string that said the events route "returns no page token" now says this screen reads one page and does not follow the token | `GET /v1/tasks/{id}/events` has returned `next_page_token` since #19; the limit is the screen's (help topic `event-paging`) | `eventpaging.strings` |
+| leftover B | Every string that said the events route "returns no page token" now says this screen reads one page and does not follow the token | `GET /v1/tasks/{id}/events` has returned `next_page_token` since an earlier issue; the limit is the screen's (help topic `event-paging`) | `eventpaging.strings` |
 
 **Where the decisions and the code did not line up exactly**, recorded rather
 than smoothed over:
 
 * **AG-5 names "the credential-names help topic".** The `?` beside `masked N`
-  opened `credential-names-not-values` when the box was filed; AG-19 (#152)
+  opened `credential-names-not-values` when the box was filed; AG-19
   moved it to `masking-is-serve-time`, because the credential-names topic is
   about how the runtime catalogue names secrets, not about a value found in an
   artifact. The two decisions cannot both hold for one `?`. The count keeps
@@ -3487,11 +3487,11 @@ than smoothed over:
   sentence as a `--warn` why line. The **Agents list** cannot: a row is a task
   document, and a worker's heartbeat is written to its lease, which no
   tenant-scoped route serves (the admin leases route is the only reader). That
-  half is a backend change, #179, and the list draws no line for a silent
+  half is a backend change, and the list draws no line for a silent
   worker until it lands. The list also counts `MANUAL_PAUSE` and
   `BUDGET_EXHAUSTED` parks as "can never be admitted": nothing ends either one
   but a person, exactly as for a pool paused or set to zero.
-* **AG-23's log age.** The route serves no per-object time (#172 asks for
+* **AG-23's log age.** The route serves no per-object time (an earlier issue asks for
   it), so a `final` stream's age is its attempt's end — when the worker
   uploads it — and the em dash with `not measured` when that end is not
   recorded. The word `live` is shown only while the attempt has no end **and**
@@ -3515,7 +3515,7 @@ the cells carry and which rule wins; whether the 300-unit drawings, the
 tray's `+N` and the object rows read well at 390 and 1440 in each theme is
 for the next release's screenshots.
 
-### 15.7 The consistency sweep (#85 and #87 follow-ups, 2026-09-25)
+### 15.7 The consistency sweep (earlier issues follow-ups, 2026-09-25)
 
 Three follow-ups the epics recorded after the decision PRs merged, one line
 each. Each is held by a test committed red first.
@@ -3526,7 +3526,7 @@ each. Each is held by a test committed red first.
   a provider nobody read as one that is fine; `.state.acct-ok` is the plain
   `.state` box; its heading and `.tag.ok` are words, so they take
   `--text-dim`, §6.6's word grey. The follow-up's `--text-faint` is for marks
-  and fills (the primitives), not words; this was clarified on #85 after a
+  and fills (the primitives), not words; this was clarified on an earlier issue after a
   first cut painted both words `--text-faint` (`encoding.hues.test.ts`, one
   case each for the fill, the heading and the tag). So `.tag.ok` stays one
   step apart from `.tag.unknown`, and the success heading matches its own
@@ -3538,13 +3538,13 @@ each. Each is held by a test committed red first.
   (`runfiles.flat.test.tsx`).
 * **The workflow node between attempts.** `stepDuration` gives a step whose
   earlier attempt ran, and which is not STARTING or RUNNING, its state word
-  and no figure — `elapsed()`'s wording for the same agent (#145) — because
+  and no figure — `elapsed()`'s wording for the same agent — because
   its age includes that run and nothing records when its current state began
   (`workflow.views.test.tsx`).
 
 ---
 
-## 16. The Timeline as an outcome ledger (#185, owner decisions 2026-09-25)
+## 16. The Timeline as an outcome ledger (owner decisions 2026-09-25)
 
 The Timeline read the newest 200–2,000 agents and labelled whatever span they
 happened to cover ("bound by rows, label by the span"), because the agent list
@@ -3559,18 +3559,18 @@ section records what each part must keep, so none of it is quietly reverted.
 | Part | What it keeps | Why | Test |
 |---|---|---|---|
 | **The span** | 24h · 7d · **14d (default)** · 30d · 90d · from–to, applied by the server; the server buckets (hour ≤ 48h, day ≤ 60d, week beyond) unless overridden; month only at ≥ 60 days; hourly never past 2,000 buckets | the Rows control's premise (the list cannot filter by time) is gone; a combination the route refuses (422) is one the page never sends | `outcomes.view`, `activity.timeline` "the read" |
-| **The address** | every filter is the hash's query (`#work/timeline?span=30d&table=1`); the last view is remembered per browser inside try/catch; a filter change is a route change with `replaceState` | a link reproduces the page; `fromHash` splits the query off first, because `timeline?span=30d` otherwise matched no tab and opened an **agent drawer** named after it | `route.test.ts` #185 |
+| **The address** | every filter is the hash's query (`#work/timeline?span=30d&table=1`); the last view is remembered per browser inside try/catch; a filter change is a route change with `replaceState` | a link reproduces the page; `fromHash` splits the query off first, because `timeline?span=30d` otherwise matched no tab and opened an **agent drawer** named after it | `route.test.ts` an earlier issue |
 | **One figure** | the success rate at `--t-figure`, `k of n decided`, the Wilson 95 % interval **printed beside it** (`95 % interval 86.8–93.5 %`) as well as in its accessible name, `excludes N cancelled` in the card-note; `no finished work` (never 0 %) at a measured n = 0; the partial mark and `k of n days` when a bucket is unread; **the not-read mark and no digit when no bucket was read**; the previous-span delta **dropped, with the reason**, when that span is partial or decided nothing | cancels are left out of the denominator (owner decision); a delta over part of a span compares two different things; an interval only in an aria-label is one no sighted reader sees, and under Table the readout that also carries it is not drawn | `activity.timeline` "the headline" |
-| **Four lanes, one axis** | rate (`--series-1`, y fixed 0–100 %, Wilson band on `--surface-2` with ruled edges, hollow under 5 decided, a gap at n = 0); decided (succeeded up in TS-4's solid `--ok`, failed and dead-lettered down in solid `--bad` with the 2px `--surface` cut, ≥ 4px, one scale through zero); cancelled (its own scale, max printed; requested and other as TS-4's flat bars, the cancels a failure caused as a 1px `--text-dim` outline, and the cancels a CANCEL caused -- "after a cancel", #185 decision 2 -- as the flat bars inside that outline, stacked between the two); throughput (submitted as a `--series-2` step line over finished as `--series-5` columns, **labelled as the only lane on the submission-time basis**) | small multiples, never a dual axis; failures hang from a common zero; cancels stop drowning them; throughput answers "are we keeping up" | `activity.timeline` "the ledger" |
+| **Four lanes, one axis** | rate (`--series-1`, y fixed 0–100 %, Wilson band on `--surface-2` with ruled edges, hollow under 5 decided, a gap at n = 0); decided (succeeded up in TS-4's solid `--ok`, failed and dead-lettered down in solid `--bad` with the 2px `--surface` cut, ≥ 4px, one scale through zero); cancelled (its own scale, max printed; requested and other as TS-4's flat bars, the cancels a failure caused as a 1px `--text-dim` outline, and the cancels a CANCEL caused -- "after a cancel", an earlier issue decision 2 -- as the flat bars inside that outline, stacked between the two); throughput (submitted as a `--series-2` step line over finished as `--series-5` columns, **labelled as the only lane on the submission-time basis**) | small multiples, never a dual axis; failures hang from a common zero; cancels stop drowning them; throughput answers "are we keeping up" | `activity.timeline` "the ledger" |
 | **Every bucket** | a column per bucket from `since` to `until`; a measured zero is the axis tick in each lane; the current bucket has a dashed right edge and reads `so far`; a just-ended one reads `settling`; an unread bucket is one hatched band across all four lanes with no mark and no digit | an absence is never a zero, and a zero is never an absence (§8.6) | same |
 | **Drawn three times** | 1080, 640 and 300 units, each with its own geometry and label stride; `.ol-chart` is the size container; `@container ol-chart (min-width: 640px / 1080px)` shows the drawing whose authored width the box holds; the narrow drawing's column floor is 26px, past which it grows and scrolls, opening at the newest end | AG-20's mechanism plus a page-width entry: the 640 drawing scaled across a 1,144px column would carry ~21px ticks, and scaled into a phone ~6px ones | `timeline.ledger.rules` |
 | **The scale does not scroll** | each drawing is a positioned frame of three layers: `.ol-gutter` (an SVG as wide as the left margin, every tick), the lane labels (HTML over the plot's left edge, on `--bg`, `pointer-events: none`, one line), and `.ol-plot`, the only layer in the scroller; each drawing has its own scroller, opened at its newest end the first time it is shown | wireframe_390 pins `100┤ … 0┤ … ok ┤ … cx ┤` with older days behind the fade. Drawn as one SVG inside the scroller, the ticks scrolled off on open (at 390 and 14 days the plot opens 52px in) and, at 24h or 30d, every lane label with them, the throughput lane's `by created_at` among them | `activity.timeline` "keeps each lane's scale…", `timeline.ledger.rules` "pins the scale column…" |
 | **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>`. **One number per key, and it is the number the key's mark draws**: the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep (`incl. workflow sweep N`), the outlined bars' `after a cancel` its own count, and the cancelled total, which no single mark draws, stands unkeyed; the column names and the Table's `requested or other / after a failure / after a cancel` use the same three sums. The span's totals carry the partial mark and `read of n` when a bucket is unread, and the not-read mark with no count when none was | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count. The readout printed 5 beside the outline on 22 Sep while the outline, the column name and the Table said 8 | `activity.timeline` "the readout" |
 | **Table** | the same buckets as a `.ctl-table.is-scroll`, with `Submitted · by <basis.submitted>` | the keyboard and screen-reader route to every value; under Table no lane label is drawn, so the one submission-time column names its basis itself | "the Table toggle" |
-| **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in workspace scope and `workspace-days` in platform scope (VQ-056: a reader's word is workspace; the rollup is still one document per tenant per day); the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise, and on a cache hit names the kept read by its time (`N UTC days built by the 14:10:02 read`) rather than saying `built by this read` beside `0 reads this request` (epic #222); a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read #196's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
-| **Eight cards** | Why agents failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by agent end) · Not finished yet (live, span not applied) · Why agents were cancelled | every card but the live one draws the same fold on the same basis under the same filters. *Amended 2026-09-30 (#377, the review of #391): the cards no longer share one payload. Each reads its own sections of `GET /v1/outcomes` when it scrolls into view (`CARD_SECTIONS` in `Activity.tsx`), and the route caches the fold, keyed by the query without its sections, so every card of one query in the same minute is a projection of one scan: the same figures the one payload carried, at one full read's cost for the whole page (`test_outcomes_sections.py`, counted at the store)* | "the eight cards" |
+| **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in workspace scope and `workspace-days` in platform scope (VQ-056: a reader's word is workspace; the rollup is still one document per tenant per day); the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise, and on a cache hit names the kept read by its time (`N UTC days built by the 14:10:02 read`) rather than saying `built by this read` beside `0 reads this request` (an earlier epic); a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read an earlier issue's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
+| **Eight cards** | Why agents failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by agent end) · Not finished yet (live, span not applied) · Why agents were cancelled | every card but the live one draws the same fold on the same basis under the same filters. *Amended 2026-09-30 (the review of an earlier issue): the cards no longer share one payload. Each reads its own sections of `GET /v1/outcomes` when it scrolls into view (`CARD_SECTIONS` in `Activity.tsx`), and the route caches the fold, keyed by the query without its sections, so every card of one query in the same minute is a projection of one scan: the same figures the one payload carried, at one full read's cost for the whole page (`test_outcomes_sections.py`, counted at the store)* | "the eight cards" |
 | **Every card says what it covers** | the route sums every card over the buckets it READ. One unread: each card-note carries the partial mark and `read of n <unit>` (§8.6's coverage note; the card head wraps rather than overflow), and an empty list is the partial empty state `… in the 13 of 14 days read`, never `a real zero`. None read: every card draws the not-read mark and the reason, and **no digit** — no count, no real-zero tick, no `$`, and no lane prints a `max` | a zero summed over no bucket is not a measurement; drawn as the real-zero tick it is the absence-as-zero this system exists to prevent | `activity.timeline` "partial and not read" |
-| **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind`. **Park reasons are the caller's own tenant's in platform scope** (`GET /v1/tasks` is tenant-scoped; #185 decision 8), so there the card says `park reasons: tenant <id> only` wherever it draws a reason, `… · none parked there` when that tenant has none, and counts `reasons for k of n` in that tenant, not over the platform | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
+| **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind`. **Park reasons are the caller's own tenant's in platform scope** (`GET /v1/tasks` is tenant-scoped; an earlier issue decision 8), so there the card says `park reasons: tenant <id> only` wherever it draws a reason, `… · none parked there` when that tenant has none, and counts `reasons for k of n` in that tenant, not over the platform | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
 | **Strips only where they fit** | a mini strip is 6px a bucket beside a row of 220px (name ≥ 104 · track ≥ 48 · count 44 · three 8px gaps); the card body is the `ol-card` size container and each strip carries its band (`is-n14` … `is-n60`), shown at ≥ 900px once the body is 220 + 6 × band wide: 304, 364, 406, 490, 580px | at 1440 the cards are 3-up and a body is ~329px: a 24-hour or 30-day strip spilled 20–70px over the card's border into the next card; 14 days fits | `timeline.ledger.rules` "a card's mini strips…" |
 | **One glyph** | the only `?` is after "Success rate"; the cards publish their topics through `explain` (a `HelpNote`, no glyph) and the screen ends in a `Reading this screen:` index | B7.4's ceiling is twenty glyphs and two per screen; the console was at nineteen | `tests/help.test.ts` |
 
@@ -3579,7 +3579,7 @@ Flow concept drew `submitted` as the 1px outline column that lane 3 already
 uses for "after a failure" cancels, so one mark would have meant two things on
 one chart. The contract's recommended option — a `--series-2` step line over
 neutral `--series-5` columns, because these are counts and not outcomes — is
-what shipped; it is surfaced on #185 for the owner's confirmation.
+what shipped; it is surfaced on an earlier issue for the owner's confirmation.
 
 **TS-4's forms on an SVG.** The segments of §15.3 are CSS backgrounds, which an
 SVG shape cannot take, so the ledger restates them as fills (`.ol-m-ok`,
@@ -3587,12 +3587,12 @@ SVG shape cannot take, so the ledger restates them as fills (`.ol-m-ok`,
 legend keys and the cards' outcome tracks (`.ol-k.is-*`, `.ol-meter > .ol-seg.*`)
 are added to TS-4's own rules by selector, so those cannot drift.
 
-**After a cancel, in the same vocabulary (#185, decision 2).** The scheduler
+**After a cancel, in the same vocabulary (decision 2).** The scheduler
 writes one sentence after a failed parent and after a cancelled one, so lane 3
 drew both as the failure's outline. The route splits them now -- by the agent's
 typed `end_cause`, or, for an agent that ended before the field existed, by what
 each parent's own end sent down, up the chain (a CANCELLED parent is often a
-failure's cascade itself; the review of #217) -- and lane 3 draws the new cause
+failure's cascade itself; the review of an earlier issue) -- and lane 3 draws the new cause
 with no new form: it IS a cancel (TS-4's flat bars) AND a cascade (the 1px
 `--text-dim` outline), so it is both marks at once, stacked between the plain
 bars below and the bare outline above. No hue on any of the three. Its key,
@@ -3600,7 +3600,7 @@ bars below and the bare outline above. No hue on any of the three. Its key,
 outline beside `.ol-k.is-after`. `timeline.causes.test.tsx` holds the marks, the
 key, the words and the Table.
 
-**The bars are the mark's own, and it is never under 7px (the review of #217).**
+**The bars are the mark's own, and it is never under 7px (the review of an earlier issue).**
 The first cut filled the outline with the page-anchored `-flat` pattern. Lane 3's
 baseline sits at y ≡ 1 (mod 5) in all three drawings (366, 306, 266), so a 3-4px
 mark on it had its only interior rows in the pattern's 2px gap, and drew as the
@@ -3615,7 +3615,7 @@ each outline in the wide, mid and narrow drawings, and every lane-3 mark
 against the lane's top and base.
 
 **The plain flat bars stand on the baseline, and the scale's labels keep a gap
-(the post-deploy QA of #197, epic #222).** The "requested (and other)" mark kept
+(the post-deploy QA of an earlier issue, an earlier epic).** The "requested (and other)" mark kept
 the `-flat` pattern, anchored to the SVG's origin, so on lane 3's y ≡ 1 (mod 5)
 baseline a 3px mark painted its bottom row alone, against the baseline rule --
 a thicker baseline, not a bar. The pattern now starts 3px above lane 3's
@@ -3633,7 +3633,7 @@ and the readout, the column name and the Table carry every count.
 bar's `Last N tasks` / `All N tasks`; the People table (grouping by person is
 now server-side over the whole span, in Reliability); the metric strip; AG-19's
 link from the window to `event-paging`, whose topic is written for the attempt
-timeline alone again (§8.4 item 5 describes the state before #185). **And,
+timeline alone again (§8.4 item 5 describes the state before an earlier issue). **And,
 since 2026-09-25 (decision 7), the old Activity rules**: `.window-bar` and its
 `.wb-*` parts, `.chart` and `.chart .col` with the day-start, pick, focus and
 `has-older` fade, `.col-label` and its thinning, `.stackcol`, and `.chart-legend`
@@ -3659,7 +3659,7 @@ itself. The pull request names every run.
 
 **The page is held to the route, not only to a fixture.**
 `tests/unit/control_plane/test_outcomes_ui_field_contract.py` reads
-`outcomes.ts` as text and checks it against the payloads that #196's real
+`outcomes.ts` as text and checks it against the payloads that an earlier issue's real
 route serves over its own fixture week: tenant scope with every filter the
 page sends, platform scope with an exclusion and with an include list, an
 explicit range, and a read past its derive budget. It checks every field in

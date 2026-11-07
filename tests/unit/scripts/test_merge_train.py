@@ -1275,7 +1275,8 @@ def test_a_train_decision_arms_nothing():
 
 def test_the_runbook_carries_the_ruleset_change_and_says_it_is_not_applied():
     text = RUNBOOK.read_text()
-    assert "gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219" in text
+    assert "select(.name==\"main-protection\") | .id" in text
+    assert 'gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID"' in text
     assert '"strict_required_status_checks_policy": false' in text
     assert '{"context": "merge-train"}' in text
     assert re.search(r"not applied", text, flags=re.I)

@@ -9,7 +9,7 @@
 // incidents" -- the rule must say which, and this file holds it there.
 //
 // THE RULE ITSELF is accountHealth.ts's `incidentsOf`, shared with the account
-// sheet (BGD, 2026-10-25) and tested there, in accountHealth.test.ts. This
+// sheet (owner, 2026-10-25) and tested there, in accountHealth.test.ts. This
 // file holds the page to it: `incidents` is that rule with each incident named
 // for its account, the cases below still read the rule through the page, and
 // the pool's ordering and its event-less re-auth card are the page's own.

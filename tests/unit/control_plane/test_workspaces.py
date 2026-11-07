@@ -263,7 +263,7 @@ def test_a_service_account_cannot_request_a_workspace(api_context, db) -> None:
     from swarm_api.errors import WorkspaceNotForServiceAccounts
     from swarm_api.routes.workspaces import _own
 
-    caller = SimpleNamespace(email="swarm-verify@example-proj.iam.gserviceaccount.com",
+    caller = SimpleNamespace(email="swarm-verify@example-project.iam.gserviceaccount.com",
                              member_scope="", is_rollup_sweeper=False, tenant_member="")
     with pytest.raises(WorkspaceNotForServiceAccounts):
         _own(caller, api_context)  # type: ignore[arg-type]
@@ -456,14 +456,14 @@ def test_gate_on_a_group_tenant_is_never_judged(api_context, client, db) -> None
 
 
 @pytest.mark.parametrize("caller", [
-    SimpleNamespace(email="swarm-verify@example-proj.iam.gserviceaccount.com",
+    SimpleNamespace(email="swarm-verify@example-project.iam.gserviceaccount.com",
                     member_scope="", is_rollup_sweeper=False, tenant_member=""),
     SimpleNamespace(email="bot@example.com", member_scope="continuation",
                     is_rollup_sweeper=False, tenant_member=""),
     SimpleNamespace(email="rollup@example.com", member_scope="", is_rollup_sweeper=True,
                     tenant_member=""),
     SimpleNamespace(email="member@example.com", member_scope="", is_rollup_sweeper=False,
-                    tenant_member="sa@example-proj.iam.gserviceaccount.com"),
+                    tenant_member="sa@example-project.iam.gserviceaccount.com"),
 ])
 def test_gate_on_service_accounts_and_listed_identities_are_exempt(caller) -> None:
     # A database of None fails on any read: an exempt caller must not reach it.
@@ -557,7 +557,7 @@ def test_a_sighting_keeps_first_seen(api_context, db) -> None:
 
 
 def test_no_sighting_is_recorded_for_a_service_account(api_context, db) -> None:
-    caller = SimpleNamespace(email="swarm-verify@example-proj.iam.gserviceaccount.com",
+    caller = SimpleNamespace(email="swarm-verify@example-project.iam.gserviceaccount.com",
                              member_scope="", is_rollup_sweeper=False, tenant_choices=())
     api_context.submissions.workspaces.touch_person(caller)
     assert not _top(db, "people")

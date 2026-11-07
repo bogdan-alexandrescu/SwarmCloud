@@ -1,6 +1,6 @@
 """A merge held on owner questions ends when its pull request ends outside the workflow.
 
-MERGE-OUTSIDE-ENDS, part of #2441 (BGD 2026-10-26). JOIN-UI-ADMIN's merge step
+MERGE-OUTSIDE-ENDS, part of #2441 (the owner 2026-10-26). JOIN-UI-ADMIN's merge step
 parked PARKED(HUMAN_REQUIRED) on one owner question; its PR 2387 was merged by
 hand, and the step stayed parked: only an answer wakes that park, and the
 scheduler's human-wait expiry spares it. Now:

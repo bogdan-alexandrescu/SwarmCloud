@@ -118,7 +118,7 @@ def dispatch(error: BaseException) -> DispatchError:
     tenant = Tenant(
         tenant_id=TENANT, kind="group", principal=f"{TENANT}@example.com", created_at=NOW,
         service_account=f"swarm-agent-worker-{TENANT}@p.iam.gserviceaccount.com",
-        gcs_prefix=f"gs://p-swarm-artifacts/tenants/{TENANT}", namespace=NAMESPACE,
+        gcs_prefix=f"gs://swarm-artifacts-example-project/tenants/{TENANT}", namespace=NAMESPACE,
     )
     batch = RefusingBatch(error)
     dispatcher = GkeJobDispatcher(scheduler_settings(), target=GkeTarget("https://k8s", "/ca.pem"),

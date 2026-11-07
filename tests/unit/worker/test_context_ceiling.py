@@ -1,6 +1,6 @@
 """The context ceiling: a session past 200k tokens or 150 tool calls goes on in a fresh one (TOKEN-CEILING, part of #2524).
 
-BGD, 2026-10-27 (#2524 item 3): the runner stops the CLI at the turn boundary
+the owner, 2026-10-27 (#2524 item 3): the runner stops the CLI at the turn boundary
 after a turn whose `cache_read + input` passes 200,000 tokens, or once the
 session has made more than 150 tool calls, commits the tree, writes a handoff
 and starts a NEW session with it as the prompt's prefix -- never `--resume`.

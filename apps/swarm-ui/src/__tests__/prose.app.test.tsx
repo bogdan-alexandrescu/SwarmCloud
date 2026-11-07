@@ -1,5 +1,5 @@
 // THE PROSE RATCHET'S OWN RULES: what it counts, what it compares with, and
-// that it is merge-safe (BGD's pick, 2026-11-06, part of #2688).
+// that it is merge-safe (the owner's pick, 2026-11-06, part of #2688).
 //
 // The slices (prose.app.<group>.test.tsx) render every page twice, on the
 // change's base and on its head, and fail a page whose visible words or arrow

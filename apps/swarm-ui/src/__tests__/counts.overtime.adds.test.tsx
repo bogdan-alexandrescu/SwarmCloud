@@ -1,5 +1,5 @@
 // ADMIN › PLATFORM COUNTS, OVER TIME, REDRAWN TO THE ROUTE'S ADDITIONS
-// (COUNTS-VIEW-ADDS, #2149). BGD's answers to the view's questions,
+// (COUNTS-VIEW-ADDS, #2149). the owner's answers to the view's questions,
 // 2026-10-24 17:26-17:30Z, each held here:
 //
 //   1. Per-bucket group rows: with a breakdown picked, the agents chart is

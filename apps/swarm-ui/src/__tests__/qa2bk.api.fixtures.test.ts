@@ -59,27 +59,27 @@ describe('runs2-36 (QA2-FIX-16): a workflow read carries its steps\' own tasks',
 })
 
 describe('runs2 tenant (QA2-FIX-16): runs and Outcomes are the signed-in workspace\'s', () => {
-  it('the runs page and every run on it are u-bogdan\'s, as the capacity fixture is', async () => {
+  it('the runs page and every run on it are u-owner\'s, as the capacity fixture is', async () => {
     const a = await api()
     const page = ok(await a.loadRuns(), 'runs')
     // MUTATION: `tenant_id: 'eng'` back in fixtureRuns or fixtureIssueRun -> fails.
-    expect(page.tenant_id).toBe('u-bogdan')
+    expect(page.tenant_id).toBe('u-owner')
     expect(page.runs.length).toBeGreaterThan(0)
-    for (const run of page.runs) expect(run.tenant_id).toBe('u-bogdan')
+    for (const run of page.runs) expect(run.tenant_id).toBe('u-owner')
   })
 
-  it('the Outcomes ledger\'s scope and failed workflows are u-bogdan\'s', async () => {
+  it('the Outcomes ledger\'s scope and failed workflows are u-owner\'s', async () => {
     const a = await api()
     const out = ok(await a.loadOutcomes(new URLSearchParams()), 'outcomes') as unknown as {
       scope: { tenant_id?: string }
       failed_workflows?: { rows: { tenant_id: string }[] }
     } & Record<string, unknown>
     // MUTATION: `tenant_id: 'eng'` back in ledgerFixture's scope -> fails.
-    expect(out.scope.tenant_id).toBe('u-bogdan')
+    expect(out.scope.tenant_id).toBe('u-owner')
     const rows = JSON.stringify(out).match(/"workflow_id":"wf_[^"]+","tenant_id":"[^"]+"/g) ?? []
     expect(rows.length).toBeGreaterThan(0)
     // MUTATION: `tenant_id: 'eng'` back on a failed-workflow row -> fails.
-    for (const r of rows) expect(r).toMatch(/"tenant_id":"u-bogdan"$/)
+    for (const r of rows) expect(r).toMatch(/"tenant_id":"u-owner"$/)
   })
 })
 

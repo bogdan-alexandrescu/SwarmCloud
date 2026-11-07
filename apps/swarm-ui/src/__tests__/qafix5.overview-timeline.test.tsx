@@ -114,7 +114,7 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     // MUTATION: draw the workflow link anywhere but beside 'Agents · FAILED →'.
     expect(acts).not.toBeNull()
     expect(within(acts as HTMLElement).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([`/workflows/${WF_A}`, FAILED_LIST])
-    // A BUTTON, NOT AN ARROW LINK (BGD's standing rule, 2026-11-05).
+    // A BUTTON, NOT AN ARROW LINK (the owner's standing rule, 2026-11-05).
     // MUTATION: put the arrow back, or draw the link without the theme's button class.
     expect(text(wf)).toBe(`Workflow ${WF_A}`)
     expect(wf.classList.contains('c-btn')).toBe(true)
@@ -157,7 +157,7 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     expect(wf.classList.contains('ov-att-go')).toBe(true)
     expect(wf.classList.contains('c-btn') && list.classList.contains('c-btn')).toBe(true)
     expect(painted(wf, 'white-space', WIDE)).toBe(painted(list, 'white-space', WIDE))
-    // THE WORKFLOW'S LINK COVERS THE CARD (BGD's decision of 2026-10-23,
+    // THE WORKFLOW'S LINK COVERS THE CARD (the owner's decision of 2026-10-23,
     // #1680 box 6343766999): a click on the card's empty space opens the
     // failed workflow. It reversed "only the list's link covers the card".
     // MUTATION: leave the cover on the list's link, so a click on the card opens the list.

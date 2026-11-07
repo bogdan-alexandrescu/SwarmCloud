@@ -12,7 +12,7 @@ import type { Me, Stats, Tenant } from '../types'
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
 // The workspace roster, read once on mount to price the Over time read
-// (COUNTS-PAGE, BGD 2026-10-24: "Roster on mount").
+// (COUNTS-PAGE, owner 2026-10-24: "Roster on mount").
 const loadTenants = vi.hoisted(() => vi.fn<() => Promise<Result<{ tenants: Tenant[] }>>>())
 vi.mock('../api', () => ({ loadStats, loadMe, loadTenants }))
 // The over-time read, which the page's one Run starts for an admin

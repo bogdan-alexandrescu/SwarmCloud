@@ -1,8 +1,8 @@
 """`swarm_suite_gate` renders a repository's Playwright suite as a sharded gate (PLAYWRIGHT-GATE, part of #2253).
 
-BGD's decision of 2026-10-26: SwarmCloud runs a repository's whole Playwright
+the owner's decision of 2026-10-26: SwarmCloud runs a repository's whole Playwright
 suite as N shard steps on `claude-code` and one `report` step that merges their
-blob reports, so a project (first: Product Oracle, ~1,230 mock specs) can gate
+blob reports, so a project (first: A peer application, ~1,230 mock specs) can gate
 a merge train in SwarmCloud instead of on a laptop. The caller names a
 registered repository, a ref and a few parameters; the bridge renders the
 workflow (invariant 10: a runner profile by name, never an image, a command

@@ -294,7 +294,7 @@ EXTERNAL_APP: dict[str, str] = {
 
 def test_a_site_naming_nothing_in_the_repository_or_its_imports_is_not_asked(
         tool: Any, lsp: Any, tmp_path: Path) -> None:
-    # #1693: pyright had >=86,805 sites on ai-studio and asked every one, a
+    # #1693: pyright had >=86,805 sites on peer-app and asked every one, a
     # call on a list or into the standard library included, though no
     # answer to those could ever become an edge.
     repo = fx.build_repo(tmp_path / "repo", EXTERNAL_APP)
@@ -491,7 +491,7 @@ def _file_rows(index: dict) -> dict[str, dict]:
 
 def test_a_phase_1_budget_cut_keeps_the_files_it_finished(tool: Any, lsp: Any, tmp_path: Path) -> None:
     # #1693: pyright, healthy, ran out of its 270 s share inside phase 1 on
-    # ai-studio and `_stop` threw away 7,106 resolved sites. A cut is the
+    # peer-app and `_stop` threw away 7,106 resolved sites. A cut is the
     # driver's own decision, taken while the server was still answering, so
     # every file whose sites were all asked is complete and kept.
     repo = fx.build_repo(tmp_path / "repo", CUT_APP)
@@ -647,7 +647,7 @@ def _bad_base(tool: Any, lsp: Any, tmp_path: Path, repo: Path, scenario: dict,
 def test_an_incremental_run_on_a_base_that_covered_nothing_asks_every_file(
         tool: Any, lsp: Any, tmp_path: Path, scenario: dict, options: dict,
         status: str) -> None:
-    # #1693: every full run of ai-studio timed out, and every incremental run
+    # #1693: every full run of peer-app timed out, and every incremental run
     # between them asked its server about a handful of files, got `ok`, and
     # the banner flipped to "partial" and back with each run. Since #2991 a
     # run asks the never-covered files too, so on a base that covered
@@ -821,7 +821,7 @@ def test_with_no_history_every_server_needs_an_equal_share(lsp: Any) -> None:
 
 def test_a_measured_server_needs_its_cost_and_an_unmeasured_one_the_equal_share(lsp: Any) -> None:
     # MUTATION: ignore `costs` in planned_needs() and pyright needs 420
-    # again, the share it ran out of on ai-studio.
+    # again, the share it ran out of on peer-app.
     assert lsp.planned_needs(["gopls", "pyright", "tsserver"], {"pyright": 890, "tsserver": 120},
                              1_260.0) == [420.0, 890.0, 120.0]
 
@@ -1585,7 +1585,7 @@ def test_a_carried_only_language_with_no_recorded_install_starts_its_server_once
 
 
 # --------------------------------------------------------------------------
-# A server that runs out before it reports its version (BGD's pick after the
+# A server that runs out before it reports its version (the owner's pick after the
 # code intelligence report, 2026-11-06). Index builds reused 56-85% of files
 # and carried only 0-3.8% of the servers' answers: the most expensive server
 # goes last (`run_order`), its grant often runs out before initialize

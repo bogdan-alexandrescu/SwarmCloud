@@ -708,6 +708,6 @@ def test_completions_ci_gate_waits_for_do_not_start_a_run(workflow: dict):
 
 def test_the_runbook_says_why_the_app_turns_auto_merge_off():
     text = RUNBOOK.read_text()
-    assert "#795" in text
+    assert "## The App also turns auto-merge off" in text
     assert "--disable-auto" in text and "Resource not accessible by integration" in text
     assert "pure base merge" in text.lower()

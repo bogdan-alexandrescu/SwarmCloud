@@ -26,7 +26,7 @@ The release and the hotfix lane run it with `--tf-init --get-credentials
 --confirm` after the tenant network policies, before the smoke test. With
 `enable_live_browser` off it prints a notice and exits 0; enabled with no
 swarm-live digest in `image_refs` it fails. It refuses the shared
-`agents-staging` cluster (the deny-list in `scripts/lib/common.sh`) whether it
+`peer-cluster` cluster (the deny-list in `scripts/lib/common.sh`) whether it
 arrives as `--cluster`, as the context's cluster entry or as terraform's
 `gke_cluster_name`, before get-credentials and before anything is applied.
 
@@ -37,21 +37,21 @@ StatefulSet whose `updateStrategy` was changed to `OnDelete` by hand would
 explain it, and is not what `kubernetes/swarm-system/swarm-live.yaml` renders.
 
 **The TypeSafe forwarder rolls the same way.** `scripts/roll-typesafe-fwd.sh`
-(lane TS-ROLL, part of #1347) does for the Deployment
+(lane TS-ROLL) does for the Deployment
 `swarm-system/swarm-typesafe-fwd` what `scripts/roll-graph.sh` does for
 `swarm-graph`: it applies `terraform output -raw swarm_typesafe_fwd_manifest`
 (terraform/infra/typesafe_fwd.tf) through `kubernetes/apply.sh
 --swarm-typesafe-fwd`, which refuses an unfilled `__PLACEHOLDER__`, Kubernetes
 RBAC, a Secret and any namespace but `swarm-system`, then waits for `rollout
 status` and fails unless its pod runs the manifest's digest. Same flags, same
-`agents-staging` refusal; the release and hotfix run it after the swarm-graph
+`peer-cluster` refusal; the release and hotfix run it after the swarm-graph
 roll. Until `typesafe_forwarder.serve` is set the output is null, and
 terraform leaves a null output out of state, so the named read fails "not
 found": the script tells that apart with one unnamed `terraform output -json`,
 prints a notice and exits 0 without asking gcloud or the cluster anything. A
 state terraform cannot read at all is still a failure.
 
-**swarm-voice rolls the same way** (lane VOICE-ROLL, part of #2688; Voice
+**swarm-voice rolls the same way** (lane VOICE-ROLL; Voice
 it's phase one, docs/design/voice-it.md §3.4). `scripts/roll-voice.sh` does
 for the one-replica StatefulSet `swarm-system/swarm-voice` what
 `scripts/roll-graph.sh` does for `swarm-graph`: it applies `terraform output
@@ -60,7 +60,7 @@ for the one-replica StatefulSet `swarm-system/swarm-voice` what
 `__PLACEHOLDER__`, Kubernetes RBAC, a Secret and any namespace but
 `swarm-system`, then waits for `rollout status statefulset/swarm-voice` and
 fails unless its pod runs the manifest's digest. Same flags, same
-`agents-staging` refusal, and one more: it applies to `swarm-autopilot`
+`peer-cluster` refusal, and one more: it applies to `swarm-autopilot`
 (`GKE_CLUSTER`) only, because only that cluster's workload pool holds the
 binding that lets the swarm-voice KSA act as `swarm-voice@`; any other
 `swarm-` cluster is refused before its credentials are fetched. The release

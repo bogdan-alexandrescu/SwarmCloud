@@ -136,7 +136,7 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
 
 
 /**
- * A label whose explanation is its tooltip (BGD's standing rule, 2026-11-05:
+ * A label whose explanation is its tooltip (the owner's standing rule, 2026-11-05:
  * no explanatory prose on the surface). The `title` is the hover; the same
  * words are the label's accessible description, through a hidden node beside
  * it (HelpNote's way: `hidden` keeps them out of the label's name, and
@@ -163,7 +163,7 @@ const TERMINAL_BAND: readonly TaskState[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTER
 
 /** The three cells, each with the states under it in lifecycle order. A null `small` is the day's start, in the person's zone. */
 /**
- * `tip` is a definition, said behind the cell's name (BGD's standing rule,
+ * `tip` is a definition, said behind the cell's name (the owner's standing rule,
  * 2026-11-05: no explanatory prose on the surface); a cell with a tip draws
  * no `small`. "costs nothing" stays drawn: it says who pays.
  */
@@ -365,7 +365,7 @@ export function waitGroups(
     } else if (t.state === 'READY') {
       const line = whyAgent(t)
       key = `R:${line}`
-      // THE POOL IN WORDS (QA2 ovag2-04): 'waiting for: anthropic · u-bogdan
+      // THE POOL IN WORDS (QA2 ovag2-04): 'waiting for: anthropic · u-owner
       // 5/5 units', as Headroom writes it, never the raw key, which broke
       // mid-word at 390; the key is the title's hover.
       const lead = t.waiting_for?.lead?.pool
@@ -375,7 +375,7 @@ export function waitGroups(
     } else if (t.state === 'QUEUED') {
       const deps = (t.depends_on?.length ?? 0) > 0
       key = deps ? 'Q:deps' : 'Q:line'
-      // THE STATE'S WORD, ITS REASON BEHIND THE TICK (BGD's standing rule,
+      // THE STATE'S WORD, ITS REASON BEHIND THE TICK (the owner's standing rule,
       // 2026-11-05): "In line for the scheduler" was a sentence on the row.
       title = deps ? 'Waiting on earlier workflow steps' : 'Queued'
     } else {
@@ -401,7 +401,7 @@ export function waitGroups(
       // counting 7 named three workflows of 2 each and dropped the seventh --
       // a fourth workflow, or a task in none. What the names leave is said.
       const rest = g.n - ranked.slice(0, 3).reduce((n, [, k]) => n + k, 0)
-      // WHAT THE STATE HOLDS IS THE TICK'S TOOLTIP (BGD's standing rule,
+      // WHAT THE STATE HOLDS IS THE TICK'S TOOLTIP (the owner's standing rule,
       // 2026-11-05): the sentence ended every row's detail line.
       const why =
         g.state === 'PARKED'
@@ -832,7 +832,7 @@ function failureTable(
                     </>
                   )}
                   {/* EVERY ROW ENDS IN ITS TASK ID (visual QA 5b:ff-desktop-02,
-                      #1680 box 6343791868; BGD's decision of 2026-10-23): a
+                      #1680 box 6343791868; the owner's decision of 2026-10-23): a
                       lone agent's name ends in its short id, `agentName`'s,
                       but a workflow step's read 'title · checkpoints' and
                       could not be matched to its row on Agents without

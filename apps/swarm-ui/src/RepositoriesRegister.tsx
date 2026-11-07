@@ -39,7 +39,7 @@ import { timeAgo } from './types'
  * registration narrows what may run in the repository and never says what a
  * profile is.
  *
- * OPENED WITH A REPOSITORY PICKED (REPOS-FOLLOWUPS; BGD, 2026-10-25): Config ›
+ * OPENED WITH A REPOSITORY PICKED (REPOS-FOLLOWUPS; owner, 2026-10-25): Config ›
  * Repositories' dashed "chosen, not registered" card links here with
  * `repo=owner/name`. When that repository is in the reader's reach list
  * (`GET /v1/access`, case-insensitively, as GitHub compares names) the page
@@ -339,7 +339,7 @@ function ScheduleStep({
   const [trigger, setTrigger] = useState<ChangeTrigger>('poll')
   const [firstIndex, setFirstIndex] = useState(true)
   // WORKFLOW FILES: OFF BY DEFAULT, CHOSEN WHEN THE REPO IS ADDED, BY THE
-  // WORKSPACE'S ADMIN ONLY (#2029; BGD, 2026-10-22). A branch workflow runs with
+  // WORKSPACE'S ADMIN ONLY (#2029; owner, 2026-10-22). A branch workflow runs with
   // the repository's secrets before any merge hold, so nothing turns it on but
   // the admin's tick. Below admin the box is not offered; the API refuses it too.
   const workflowGate = useRoleGate('admin', 'set whether agents may push workflow files')

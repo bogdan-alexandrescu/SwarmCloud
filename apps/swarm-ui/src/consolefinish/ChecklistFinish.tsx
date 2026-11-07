@@ -319,7 +319,7 @@ function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; now
   let tone: 'ok' | 'live' | 'bad' | 'warn' = 'live'
   let head: ReactNode
   let line: ReactNode
-  // What the head means, behind it (BGD's no-prose rule, 2026-11-05).
+  // What the head means, behind it (the owner's no-prose rule, 2026-11-05).
   let headTip: string | null = null
   if (ready !== null && host !== null) {
     tone = 'ok'

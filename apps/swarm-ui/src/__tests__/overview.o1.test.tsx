@@ -226,7 +226,7 @@ describe('O1: Needs a look is a row of check cards', () => {
       expect(c.querySelector('.sk-st[data-mark]'), 'a check card has no mark').not.toBeNull()
       expect(text(c.querySelector('.ov-att-t b')).length).toBeGreaterThan(0)
       expect(text(c.querySelector('.ov-att-t small')).length).toBeGreaterThan(0)
-      // A button in the theme's style, never an arrow link (BGD's standing rule, 2026-11-05).
+      // A button in the theme's style, never an arrow link (the owner's standing rule, 2026-11-05).
       // MUTATION: put the `&rarr;` back after the card's link words.
       expect(text(c.querySelector('.ov-att-go'))).not.toMatch(/→/)
       expect(c.querySelector('.ov-att-go')!.classList.contains('c-btn'), 'the card’s way out is not drawn as a button').toBe(true)

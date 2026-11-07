@@ -298,6 +298,19 @@ _RETRY_OF_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: A task's name and its description (#2688): the name fits one row of the
+#: console, the detail goes in the description.
+_LABEL_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": f"A short name, for the UI: at most {workflows.NAME_MAX_CHARS} characters.",
+}
+_DESCRIPTION_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "What this task is for, and the detail its short `label` leaves out: plain text, at most "
+        f"{workflows.DESCRIPTION_MAX_CHARS} characters, shown on the console's agent page."),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -314,7 +327,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "ref": {"type": "string", "description": "As `ref` for one task."},
         "infer": {"type": "boolean", "default": False, "description": "As `infer` for one task."},
         "strategy": {"type": "string", "enum": list(_DISPATCH_STRATEGIES), "default": "collect"},
-        "label": {"type": "string", "description": "A short name, for the UI."},
+        "label": _LABEL_SCHEMA,
+        "description": _DESCRIPTION_SCHEMA,
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
@@ -326,7 +340,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
-_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "description",
+                     "inputs", "files",
                      "mcp_credentials", "additional_repositories", "model_class", "retry_of")
 
 #: Why `tasks` takes no `publish_to_pr` (#2183, PTP-DISPATCH): a pull request's
@@ -491,7 +506,8 @@ TOOLS: list[dict[str, Any]] = [
                         "`integrate` is a workflow strategy; use swarm_workflow."
                     ),
                 },
-                "label": {"type": "string", "description": "A short name, for the UI."},
+                "label": _LABEL_SCHEMA,
+                "description": _DESCRIPTION_SCHEMA,
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
@@ -4152,6 +4168,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         if not isinstance(prompt, str) or not prompt.strip():
             raise SwarmError(f"{where} has no prompt. Nothing was sent")
         profile = catalogue.check(item.get("runner_profile") or "claude-code", where=where)
+        workflows.check_name(item.get("label"), field="label", where=where)
+        description = workflows.check_description(item.get("description"), where=where)
         inputs = catalogue.check_inputs(profile, item.get("inputs"), where=where)
         credentials = check_mcp_credentials(
             item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
@@ -4195,6 +4213,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             strategy=strategy,
             additional_repositories=additional,
             model_class=model_class,
+            description=description,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -5508,6 +5527,10 @@ def _call(
         # `claude-code` is told which names exist instead of reading a 4xx. See
         # `profiles.check` for why a local check here is not a second opinion.
         profile = catalogue.check(args.get("profile") or "claude-code", where="swarm_dispatch")
+        # ITS NAME AND ITS DESCRIPTION (#2688): a label that fits one row of
+        # the console, and the workflow's description rule, before any send.
+        workflows.check_name(args.get("label"), field="label", where="swarm_dispatch")
+        description = workflows.check_description(args.get("description"), where="swarm_dispatch")
         # The inputs this profile DECLARES, and nothing else, refused by name
         # before anything travels (#142).
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
@@ -5569,6 +5592,7 @@ def _call(
             **({"additional_repositories": additional} if additional is not None else {}),
             **({"model_class": model_class} if model_class is not None else {}),
             **({"publish_to_pr": publish_to_pr} if publish_to_pr is not None else {}),
+            **({"description": description} if description is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:

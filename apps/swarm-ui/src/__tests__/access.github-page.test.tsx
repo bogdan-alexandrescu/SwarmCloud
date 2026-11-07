@@ -1,4 +1,4 @@
-// CONFIG › GITHUB ACCESS (GITHUB-ACCESS-PAGE; part of #2157, BGD's pick of
+// CONFIG › GITHUB ACCESS (GITHUB-ACCESS-PAGE; part of #2157, the owner's pick of
 // 2026-10-24, proposal E, docs/web-ui/mockups/config-e.html S2a-S2f).
 //
 // WHAT EACH CASE HOLDS:

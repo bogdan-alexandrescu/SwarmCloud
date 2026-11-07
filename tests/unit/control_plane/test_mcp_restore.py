@@ -1,7 +1,7 @@
 """A workflow's caller re-stores its per-run MCP credentials (MCP-KEY-PARK).
 
-Design: docs/design/registered-mcp-servers.md §4.10, and BGD's decision of
-2026-10-26 (~22:55Z), for Product Oracle's stalled runs: five Code map runs
+Design: docs/design/registered-mcp-servers.md §4.10, and the owner's decision of
+2026-10-26 (~22:55Z), for a peer application's stalled runs: five Code map runs
 waited about 4.7 h on an account, were promoted at 22:45Z and FAILED
 `mcp_credential_expired` at once, because their 7200 s credentials had lapsed
 at 20:00Z. Now such a step parks CREDENTIAL_MISSING with `credential: "mcp"`

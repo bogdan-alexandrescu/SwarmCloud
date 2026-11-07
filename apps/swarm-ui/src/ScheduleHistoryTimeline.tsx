@@ -1,6 +1,6 @@
 /**
  * A SCHEDULE'S HISTORY AS A TIMELINE (#1109; schedules.html detail A's History
- * pane, BGD 2026-10-25 "build it now"). One lane per firing, a bar per task
+ * pane, owner 2026-10-25 "build it now"). One lane per firing, a bar per task
  * each of its work items ran, over the time since that firing: solid while an
  * attempt held capacity, hatched while the work waited holding nothing, a
  * fenced generation drawn cut. The table it replaced (S7) stays behind the
@@ -256,7 +256,7 @@ function profileOf(t: SpanTask): string | null {
 
 /**
  * WHAT A WORK ITEM IS, IN WORDS (schedules.html detail A; VQ-028): an issue
- * run by its issue, a task by its title (its `metadata.title`, BGD 2026-10-26),
+ * run by its issue, a task by its title (its `metadata.title`, owner 2026-10-26),
  * anything else -- and a task with no title -- by what the firing's type made:
  * "docs-drift task", "issue-sweep workflow". Every row was its runner profile
  * ("claude-code"), which named no firing apart from another.

@@ -193,7 +193,7 @@ paths through it, and that is the risk this choice accepts deliberately:
   be within its reach: a token in hand mid-run is a token the agent can read,
   and with `branches` it is a token with write scope. So a checkpoint taken
   with the runner alive pushes nothing and logs that it did not: the periodic
-  ones, and the control-plane-outage one (#70 orders it checkpoint, THEN stop
+  ones, and the control-plane-outage one (an earlier issue orders it checkpoint, THEN stop
   the runner). The branch is pushed at the **park, cancel, SIGTERM and finish**
   checkpoints, each taken after the runner has stopped
   (`Worker._carrier_push` returns early while the child is alive). What this

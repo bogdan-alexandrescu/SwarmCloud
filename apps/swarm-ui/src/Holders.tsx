@@ -136,7 +136,7 @@ function coverageSay(rows: number, c: LeaseCoverage, what: string): string {
  */
 export function HoldersScreen() {
   // THE HEAD NAMES THE TENANT FILTER (visual QA capacity-17, 2026-10-28):
-  // under `?tenant=u-bogdan` it read "4 unreleased leases · 4 units held ·
+  // under `?tenant=u-owner` it read "4 unreleased leases · 4 units held ·
   // every tenant". The table applies the filter only when a loaded row is that
   // tenant's (`HolderTable`), and the head follows the same rule.
   const linkedTenant = useLinkedParam('tenant')
@@ -158,7 +158,7 @@ export function HoldersScreen() {
         const rows = b.page.leases.length
         const tenant = linkedTenant !== null && b.page.leases.some((l) => l.tenant_id === linkedTenant) ? linkedTenant : null
         // AND THE POOL FILTER (visual QA cap2-08, 2026-10-29): under
-        // `?pool=provider:anthropic:tenant:u-bogdan` the head still said
+        // `?pool=provider:anthropic:tenant:u-owner` the head still said
         // `every tenant`. Not the tenant's rule: `HolderTable` applies a pool
         // filter whatever it matches (its empty state says no lease holds
         // it), so the head follows the pool whenever the address names one,
@@ -406,8 +406,8 @@ function DriftCallout({
           return (
             <p key={r.name}>
               {/* THE TABLE'S NAME FOR THE POOL (capacity-16): the banner said
-                  `provider:anthropic:tenant:u-bogdan` above a row that says
-                  `anthropic · u-bogdan`. The raw id is the title. */}
+                  `provider:anthropic:tenant:u-owner` above a row that says
+                  `anthropic · u-owner`. The raw id is the title. */}
               <b title={r.name}>{poolLabel(r.name)}</b> counts {Math.abs(d)} {d > 0 ? 'more' : 'fewer'} than its leases.
             </p>
           )

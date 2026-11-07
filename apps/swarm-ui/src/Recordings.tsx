@@ -3,7 +3,7 @@
  * LB-L12, part of #1030).
  *
  * The relay records the frames the person watching saw -- the screen as
- * Chromium drew it, since the gate redacts no part of it (BGD, 2026-10-25;
+ * Chromium drew it, since the gate redacts no part of it (owner, 2026-10-25;
  * part of #2298) -- as one-minute VP8 segments at
  * `tenants/<t>/tasks/<task>/attempts/<a>/live/rec-<seq>.live.webm`, and a
  * lifecycle rule deletes them after 7 days whatever else the bucket keeps.

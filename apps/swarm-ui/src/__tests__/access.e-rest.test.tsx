@@ -1,5 +1,5 @@
 // CONFIG › GITHUB ACCESS, THE REST OF PROPOSAL E (GH-ACCESS-E-REST; part of
-// #2157, BGD's pick of 2026-10-24, docs/web-ui/mockups/config-e.html S2a-S2f).
+// #2157, the owner's pick of 2026-10-24, docs/web-ui/mockups/config-e.html S2a-S2f).
 //
 // WHAT EACH CASE HOLDS:
 //   * S2a: not connected, the Connection tab draws "What comes after", a

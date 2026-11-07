@@ -577,7 +577,7 @@ def test_the_index_holds_the_graph_summary_not_the_graph(tool: Any, tmp_path: Pa
 def test_the_index_documents_routes_are_in_the_index_shape(tool: Any, tmp_path: Path) -> None:
     """repo-index.extract.json's routes validate as `RepoIndexSpec`'s (#1693).
 
-    Measured on ai-studio, 2026-10-20: its 538 routes carried `id`,
+    Measured on peer-app, 2026-10-20: its 538 routes carried `id`,
     `language`, `start_line` and `end_line`, no `kind`, and 9 a null handler,
     so the agent re-mapped them by hand every run and 3 of 19 runs were
     refused at promotion. The graph keeps the extractor's own route rows."""

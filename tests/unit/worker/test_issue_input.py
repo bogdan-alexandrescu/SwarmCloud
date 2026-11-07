@@ -73,7 +73,7 @@ def _issue_doc(**overrides: Any) -> dict[str, Any]:
         "number": 265,
         "title": "A step cannot be pointed at an issue",
         "state": "open",
-        "user": {"login": "bogdan"},
+        "user": {"login": "octocat"},
         "created_at": "2026-09-28T10:00:00Z",
         "html_url": "https://github.com/octo/widgets/issues/265",
         "body": "Steps restate their issue by hand.\n\nReproduce on the Agents screen.",
@@ -353,7 +353,7 @@ def test_no_redirect_is_followed_by_the_issue_fetch_on_any_host():
 def test_the_file_says_what_it_is_then_carries_the_issue_and_its_comments():
     issue = issue_mod.Issue(
         repository="octo/widgets", number=265, title="Broken\nthing", state="open",
-        author="bogdan", created_at="2026-09-28", url="https://github.com/octo/widgets/issues/265",
+        author="octocat", created_at="2026-09-28", url="https://github.com/octo/widgets/issues/265",
         body="The body.", labels=("bug",),
         comments=(issue_mod.Comment("ana", "2026-09-29", "A comment."),), comments_total=1,
     )
@@ -641,7 +641,7 @@ def test_the_agent_reads_the_issue_and_never_the_token(
         asked.append({"url": repository_url, "number": number, "token": token})
         return issue_mod.Issue(
             repository="octo/widgets", number=number, title="Point a step at an issue",
-            state="open", author="bogdan", created_at="", url="",
+            state="open", author="octocat", created_at="", url="",
             body=f"The body names the token {TOKEN} by mistake.",
         )
 
@@ -695,7 +695,7 @@ def test_the_fetched_issue_title_names_the_pull_request(
     def fetch(*, repository_url, number, token, on_request=None):
         return issue_mod.Issue(
             repository="octo/widgets", number=number, title=title,
-            state="open", author="bogdan", created_at="", url="", body="The body.",
+            state="open", author="octocat", created_at="", url="", body="The body.",
         )
 
     _seed(db)
@@ -755,7 +755,7 @@ def test_a_timeout_then_a_success_is_retried_in_process_and_the_agent_runs(
             raise issue_mod.IssueUnreachable("could not reach api.github.com: timed out")
         return issue_mod.Issue(
             repository="octo/widgets", number=number, title="Point a step at an issue",
-            state="open", author="bogdan", created_at="", url="", body="the body",
+            state="open", author="octocat", created_at="", url="", body="the body",
         )
 
     _seed(db, number=72)

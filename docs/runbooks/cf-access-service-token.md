@@ -1,11 +1,11 @@
 # Let browser agents reach a site behind Cloudflare Access with a service token
 
-CF-ACCESS-TOKEN, part of #2442. Decided by BGD on 2026-10-26 (08:5xZ), at the
-AI Studio session's request. For the **workspace admin** who owns a site
+CF-ACCESS-TOKEN, part of the 2026-10-26 epic. Decided by [the owner] on 2026-10-26 (08:5xZ), at the
+A peer application session's request. For the **workspace admin** who owns a site
 behind Cloudflare Access and wants `claude-code-browser` steps (visual QA,
-rendered review) to open it. The first site is the Galatia platform admin:
-staging `staging-platformadmin-agents.pages.dev`, production
-`platform.galatia.saga.xyz`.
+rendered review) to open it. The first site is a peer application's platform admin:
+staging `peer-admin.example.net`, production
+`admin.peer.example.com`.
 
 Design: [docs/design/workspace-secrets.md](../design/workspace-secrets.md),
 "The cf-access slot". Code: `apps/agent-worker/agent_worker/livegate/cfaccess.py`
@@ -36,7 +36,7 @@ admits through a **Service Auth** rule instead of a sign-in.
   admitted request. Read-only is the site's own rule, or the QA target's
   read-only guard when the step runs against a QA target
   ([visual-qa-any-app.md](../design/visual-qa-any-app.md) §3). For the platform
-  admin, BGD approved read-only access: give the token to a policy on an
+  admin, [the owner] approved read-only access: give the token to a policy on an
   application that serves read-only views, or rely on the visual-QA steps
   that use it being read-only.
 * It expires on the date you choose when you make it (one year by default).
@@ -97,7 +97,7 @@ shell history nor `/proc/<pid>/cmdline`:
 read -r -p 'Paste the Client ID and press Enter ' CF_ID
 read -r -s -p 'Paste the Client Secret and press Enter ' CF_SECRET; echo
 printf 'header = "%s: %s"\n' CF-Access-Client-Id "$CF_ID" CF-Access-Client-Secret "$CF_SECRET" \
-  | curl -sS -K - -o /dev/null -w '%{http_code}\n' https://staging-platformadmin-agents.pages.dev/
+  | curl -sS -K - -o /dev/null -w '%{http_code}\n' https://peer-admin.example.net/
 unset CF_ID CF_SECRET
 ```
 
@@ -107,7 +107,7 @@ to `*.cloudflareaccess.com` or a `403` means it does not.
 ## 3. Store it in the workspace, with its hosts
 
 You need `admin` in the workspace whose agents will open the site (eng, for
-the AI Studio lanes).
+A peer application lanes).
 
 1. **Store the value.** Console › **Config › Secrets**, **Add a secret**
    (or mint a one-time link to that form with `swarm_secret_set_link`):
@@ -118,15 +118,15 @@ the AI Studio lanes).
      `client_secret`. The form is the only place the value is typed.
 2. **Grant it to the browser runner, with its hosts.** `claude-code-browser`
    declares the `cf-access` slot (contract request 117), and the console's
-   grant matrix gives that slot its own column (CF-ACCESS-HOSTS-UI, PR 2465).
+   grant matrix gives that slot its own column (CF-ACCESS-HOSTS-UI).
    In **Config › Secrets**, on the **For agents** card, choose **Open the
    grant matrix**. Under **Profiles**, the column headed
    `claude-code-browser` with **cf-access · hosts** beneath it is the one;
    in the `platform-admin` row:
    1. type each host into the cell's field (its placeholder reads
       `admin.example.com`) and choose **Add**: here
-      `staging-platformadmin-agents.pages.dev`, then
-      `platform.galatia.saga.xyz`. Each joins the cell's list with a
+      `peer-admin.example.net`, then
+      `admin.peer.example.com`. Each joins the cell's list with a
       **×** to remove it, and the cell counts them ("2 of 16 hosts, matched
       exactly");
    2. tick the cell's box ("Grant platform-admin to profile:claude-code-browser
@@ -159,7 +159,7 @@ the AI Studio lanes).
    ```bash
    scripts/api.sh PUT /workspace/secrets/platform-admin/grants/profile:claude-code-browser \
      '{"enabled": true, "slot": "cf-access",
-       "hosts": ["staging-platformadmin-agents.pages.dev", "platform.galatia.saga.xyz"]}'
+       "hosts": ["peer-admin.example.net", "admin.peer.example.com"]}'
    ```
 
    The answer lists the grant with its `hosts`, sorted and without

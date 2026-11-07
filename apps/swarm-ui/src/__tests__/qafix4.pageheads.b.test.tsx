@@ -153,7 +153,7 @@ describe('N3: one gap under every admin page head (run-4 admin-012)', () => {
       document.body.innerHTML = ''
       const head = await people()
       expect(head, 'People draws its head in a .ur-page').not.toBeNull()
-      // BGD's no-prose rule (2026-11-05): the intro is the title's (i), so the page's content follows the head.
+      // the owner's no-prose rule (2026-11-05): the intro is the title's (i), so the page's content follows the head.
       expect(head.nextElementSibling?.classList.contains('ur-sub'), 'no intro line under the head').toBe(false)
       // MUTATION: drop `.ur-page > .c-phead { margin-bottom: 0 }` from repositories.css (the head's 12 px margin and the page's 12 px gap add up to 24).
       expect(headGap(head, env)).toBe(screenGap)

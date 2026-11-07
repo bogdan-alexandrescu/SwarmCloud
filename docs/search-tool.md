@@ -1,7 +1,7 @@
 # The search tool: live-browser agents search through an API
 
 **Status: built, switched OFF.** Lane SEARCH-TOOL, owner decision 2026-10-13
-(~21:30 PDT), part of #1030. Nothing changes for any agent until an operator
+(~21:30 PDT). Nothing changes for any agent until an operator
 stores the provider key and swarm-api runs with `SEARCH_TOOL_ENABLED=true`.
 
 ## 1. Why this exists

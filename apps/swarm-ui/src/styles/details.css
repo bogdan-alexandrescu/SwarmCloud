@@ -24,7 +24,7 @@
 .dt > .dt-top { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 
 /* --- Building, Now and Resources: three lines, then the cards ------------ */
-/* BGD 2026-10-27 (DETAILS-BUILDING): "too much prose on this page ... more
+/* owner 2026-10-27 (DETAILS-BUILDING): "too much prose on this page ... more
    useful to quickly understand exactly what the agent is currently doing and
    building". The page opens with what it is building (one line at desktop,
    two at most on a phone), the Now card leads with one line of what it is
@@ -263,7 +263,7 @@
 @container ag-pane (min-width: 480px) and (max-width: 639px) {
   @media (min-height: 700px) {
     .dt-res-body > .dt-strip { position: sticky; top: 0; z-index: 2; }
-    /* UNDER THE STUCK TAB STRIP, IN THE SPLIT (AGENT-HEAD-B, BGD's pick AH1 B,
+    /* UNDER THE STUCK TAB STRIP, IN THE SPLIT (AGENT-HEAD-B, the owner's pick AH1 B,
        2026-10-28, part of #2596). There the column, not the pane, is the
        scroller (agents.css), and a sticky inset is measured from its content
        edge, 18px inside its top: at `top: 0` the strip stuck behind the tabs.

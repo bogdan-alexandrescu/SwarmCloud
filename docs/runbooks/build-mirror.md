@@ -55,7 +55,7 @@ digest or file enters the mirror, not on every build.
 * **A missing object fails the build and names it.** The build does not fall
   back to upstream:
 
-      build mirror object gs://swarm-build-mirror-saga-agents-staging/github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz is missing or unreadable: run scripts/refresh-build-mirror.sh
+      build mirror object gs://swarm-build-mirror-<project>/github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz is missing or unreadable: run scripts/refresh-build-mirror.sh
 
 * **A pull request's build** (`--build-only --local`, on a GitHub runner)
   has no Google identity, by the owner's decision of 2026-10-05, so it cannot

@@ -1,6 +1,6 @@
 """Every frame the live gate captures is published as Chromium drew it (LIVE-NOMASK; part of #2298).
 
-docs/design/live-browser.md §5.3. Owner decision, BGD 2026-10-25: "Stop
+docs/design/live-browser.md §5.3. Owner decision, the owner 2026-10-25: "Stop
 redacting elements or sections of the visual content that a browser agent or
 session displays via the live browser. There is no need to redact parts of the
 screen in any situation." So the gate paints nothing: no box over a password
