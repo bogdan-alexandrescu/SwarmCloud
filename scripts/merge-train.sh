@@ -1124,7 +1124,11 @@ merge_one() {
 land_train() {
   # Lands a green train. Sets LANDED to the pull requests it merged. Returns 0
   # when every one landed, 1 when nothing landed because something changed
-  # under the train, 2 when it stopped part-way.
+  # under the train, 2 when it stopped part-way, 3 when nothing landed because
+  # a member could not be read even after gh_read's retries: nothing is known
+  # to have changed, so the caller keeps the green train for the next tick.
+  # (6 November 2026, 22:06Z: one GraphQL i/o timeout on this read was taken
+  # for "changed", and a train of 29 green pull requests was closed unlanded.)
   local base="$1" head="$2" pairs="$3" id="$4"
   LANDED=""
   git -C "${REPO_DIR}" fetch -q --no-tags origin "+refs/heads/main:refs/merge-train/main"
@@ -1138,7 +1142,10 @@ land_train() {
   for pair in ${pairs}; do
     n="${pair%%:*}"
     sha="${pair#*:}"
-    gh pr view "${n}" --repo "${GH_REPO}" --json state,headRefOid,labels >"${view}"
+    if ! gh_read "pull request #${n}" "${view}" gh pr view "${n}" --repo "${GH_REPO}" --json state,headRefOid,labels; then
+      LAND_REASON="#${n} could not be read before landing: $(head -c 200 "${view}.err" | tr '\n' ' ')"
+      return 3
+    fi
     if ! jq -e --arg sha "${sha}" '.state == "OPEN" and .headRefOid == $sha and any(.labels[]; .name == "ready")' \
       "${view}" >/dev/null; then
       LAND_REASON="#${n} changed after the train was built (closed, pushed to, or no longer \`ready\`)"
@@ -1156,7 +1163,10 @@ land_train() {
   for pair in ${pairs}; do
     n="${pair%%:*}"
     sha="${pair#*:}"
-    gh pr view "${n}" --repo "${GH_REPO}" --json title >"${view}"
+    if ! gh_read "the title of #${n}" "${view}" gh pr view "${n}" --repo "${GH_REPO}" --json title; then
+      LAND_REASON="the title of #${n} could not be read: $(head -c 200 "${view}.err" | tr '\n' ' ')"
+      return 2
+    fi
     title="$(jq -r .title "${view}")"
     merge_one "${n}" "${sha}" "${title} (#${n})" || return 2
     LANDED="${LANDED:+${LANDED} }${n}"
@@ -1611,6 +1621,13 @@ handle_train() {
           ;;
         1)
           finish_train "${number}" "${branch}" "Green, but nothing landed: ${LAND_REASON}. The next train is built from scratch."
+          ;;
+        3)
+          # A read that failed is not a change: the train stays open, still
+          # green, and the next tick lands it (MAX_AGE_MINUTES still applies).
+          echo "::warning::merge train ${id}: ${LAND_REASON}; kept open for the next tick"
+          summary "train ${id} ($(hash_list "${train_prs}")) is green, but ${LAND_REASON}; it stays open and lands on the next tick"
+          return 0
           ;;
         *)
           finish_train "${number}" "${branch}" "Green, and landed only $(hash_list "${LANDED}") before stopping: ${LAND_REASON}. The rest stay \`ready\` and board a new train."
