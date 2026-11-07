@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Automate proposal B, "One inbox, decision first" (AUTOMATE-MOCKS-B, part of #2417).
+ * Automate proposal B, "One inbox, decision first" (AUTOMATE-MOCKS-B).
  * The tokens, type scale, spine, panel, lead, cards, tables, chips, buttons and phone
  * rules below are Config E's (config-e.html, #2157) copied unchanged, so the four
  * Automate proposals differ in layout and flow only. This proposal's own pieces (the
@@ -518,9 +518,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">AUTOMATE-MOCKS-B · part of #2417 · drawn 2026-10-26 · not picked</p>
+<p class="kick">AUTOMATE-MOCKS-B · drawn 2026-10-26 · not picked</p>
 <h1>Automate: proposal B, One inbox, decision first</h1>
-<p class="lede">One of four competing proposals (A to D) for BGD's redesign of Automate. BGD picks frames across the four. Every frame below has the same id in every proposal (A1 to A7). The theme control at the top repaints the page and every frame light, dark or as the system says, and so does the toggle in each frame's panel foot.</p>
+<p class="lede">One of four competing proposals (A to D) for the owner's redesign of Automate. The owner picks frames across the four. Every frame below has the same id in every proposal (A1 to A7). The theme control at the top repaints the page and every frame light, dark or as the system says, and so does the toggle in each frame's panel foot.</p>
 
 <section class="idea" aria-label="Proposal B: idea, how it differs, risks">
   <div><h4>Idea</h4><p>Automate opens on <b>Waiting on you</b>. That is one list of everything that needs a person: approvals to decide, schedules their spend tripwire paused, and schedules that are failing. It is ordered by urgency: anything expiring within a day, then anything that has stopped work, then the rest by time to expiry. The schedules follow underneath. Every waiting row opens a <b>decision page</b> laid out in one order: first the question in one sentence, then the evidence in numbered cards, then <b>Approve / Deny with a reason</b> in a bar pinned to the bottom of the screen. You cannot reach the buttons without the evidence above them.</p></div>
@@ -531,7 +531,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   </ul></div>
   <div><h4>Risks</h4><ul>
     <li>The inbox shows waiting approvals on Schedules as well as on Approvals. That is the same data twice. It is kept because each page serves a different need: the inbox is the to-do list, Approvals is the record.</li>
-    <li>The urgency order is a rule this proposal invents. A tripwire pause can outrank a merge that expires in two days. BGD may want approvals always first.</li>
+    <li>The urgency order is a rule this proposal invents. A tripwire pause can outrank a merge that expires in two days. The owner may want approvals always first.</li>
     <li>A merge's check counts are not served today (see the new fields at the end).</li>
   </ul></div>
 </section>
@@ -696,7 +696,7 @@ function phone(x,hd,body){
 /* ---------- the example data, read 2026-10-26 09:12Z ---------- */
 const MERGE_ID='apr_31f74dc3dc84349da9b83697';
 const RUN_ID='run_682b9c60673341fdaa8e';
-const REPO='bogdan-alexandrescu/SwarmCloud';
+const REPO='example-org/example-repo';
 const left=(pct,cls)=>`<span class="left ${cls||''}" title="time left"><i style="width:${pct}%"></i></span>`;
 
 /* the inbox: urgency first. Expiring within a day, then work that stopped or will stop, then by time to expiry */
@@ -793,7 +793,7 @@ function a3(edit){
     const type=edit?CARD('1 · Type','',`<p><b style="color:var(--text)"><code>issue-sweep</code></b>: find open issues that match and start an issue run for each. The type is fixed once a schedule exists. Make a new schedule to change it.</p>`)
       :CARD('1 · Type and template',`<span class="dim sm12">from GET /v1/schedule-types</span>`,`<div class="tiles">${tile('issue-sweep','Open issues that match become issue runs. Shortest every 15 min.',1)}${tile('issue-plan-only','Plans only; each plan waits for approval.')}${tile('pr-shepherd','Keep open pull requests green and current.')}${tile('docs-drift','Find docs the code has moved past.')}${tile('ci-flake-hunter','Find tests that fail and pass on the same code.')}${tile('custom-prompt','Your own prompt; every run is approved.')}</div><p style="margin-top:8px">Template: <b style="color:var(--text)">tier R2</b> · gate run auto, plan auto, merge approve · caps $15 a run, $120 a day, 8 live · shortest interval 15 minutes. ${B('All 17 types ›','q s')}</p>`);
     const name=F('Name',edit?'Bug sweep':'Flaky test sweep','v');
-    const target=CARD('2 · Target','',`<div class="col" style="gap:10px">${name}<span class="fld"><span>Scope</span>${SG(['Chosen repositories','Every registered repository'],0)}</span><span class="fld"><span>Repositories (1 of at most 25)</span><span class="acts">${CHK(REPO,1)}${CHK('bogdan-alexandrescu/saga-prompt-lab',0)}</span></span>${F('Issues that match','label:bug is:open','v')}</div>`);
+    const target=CARD('2 · Target','',`<div class="col" style="gap:10px">${name}<span class="fld"><span>Scope</span>${SG(['Chosen repositories','Every registered repository'],0)}</span><span class="fld"><span>Repositories (1 of at most 25)</span><span class="acts">${CHK(REPO,1)}${CHK('example-org/peer-app',0)}</span></span>${F('Issues that match','label:bug is:open','v')}</div>`);
     const cron=edit?'0 * * * *':'*/10 * * * *';
     const cad=CARD('3 · Cadence','',`<div class="col" style="gap:10px"><span class="fld"><span>Presets</span>${SG(['Every hour','Weekdays at 09:00','Nightly','Weekly on Monday','Custom'],edit?0:4)}</span><div class="g2">${F('Cron expression',`<span class="mn">${cron}</span>`,edit?'v':'v bad',edit?'':ERR('Every 10 minutes is shorter than issue-sweep’s shortest interval, 15 minutes.'))}${F('Timezone','UTC','v')}</div><span class="hint">${edit?'Every hour, at minute 0.':'Try <code>*/15 * * * *</code>: every 15 minutes, the shortest issue-sweep allows.'}</span><div class="g2">${F('If the last firing is still running','skip the firing','v')}${F('After an outage','skip what was missed','v')}</div></div>`);
     const gates=CARD('4 · Gates and approvers','',`<div class="col" style="gap:10px"><div class="g3"><span class="fld"><span>Run</span>${SG(['automatic','approve'],0)}</span><span class="fld"><span>Plan</span>${SG(['automatic','approve'],0)}</span><span class="fld"><span>Merge</span>${SG(['off','approve'],1)}</span></div><span class="hint">Merge off is below the type’s default and needs a platform admin. Merge automatically is the audited switch on the schedule’s page, never this form.</span><span class="fld"><span>Who may approve</span>${SG(['any member','the owner only','named people'],0)}</span><div class="g2">${F('Approval expires after (hours)','72','v')}<span></span></div><span class="hint">Hard stops stay on whatever is chosen here: a fix touching IAM, the contract, secrets, tenancy, shared files, workflows or cost is held for the owner.</span></div>`);
@@ -854,7 +854,7 @@ function a5(st){
   return ph=>{
     const q=`<section class="qcard"><div class="acts">${C('merge approval','in','pr')}${A5S[st].chip}<span class="dim sm12 mn">${MERGE_ID}</span></div>`+
       `<div class="sent">Merge pull request <em>#2392</em> into <em>${REPO}</em> at <em>dbd00f06c5cd</em>?</div>`+
-      `<p class="say">Its request reads: “bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge”.</p>`+
+      `<p class="say">Its request reads: “example-org/example-repo#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge”.</p>`+
       `<div class="qfacts"><span><small>Asked</small>26 Oct 02:40Z by Failure review</span><span><small>${st==='pending'||st==='member'?'Expires':st==='expired'?'Expired':'Was due to expire'}</small>29 Oct 02:40Z${st==='pending'||st==='member'?' · in 2 d 17 h':''}</span><span><small>Who decides</small>the platform owner alone</span></div></section>`;
     const pr=CARD('1 · The pull request',B('Open on GitHub','q s','ext'),`<dl class="kv"><dt>Pull request</dt><dd><a>#2392</a> into <code>main</code></dd><dt>Head</dt><dd><code>dbd00f06c5cd</code>${st==='superseded'?' '+C('now 7a3e19c04b2d','wn'):''}</dd></dl>`+
       `<div class="cbar" role="img" aria-label="10 passed, 0 failed, 0 pending">${'<i></i>'.repeat(10)}</div><div class="rlab"><span><b style="color:var(--ok-ink)">10 passed</b> · 0 failed · 0 pending</span><span>at dbd00f06c5cd</span></div>`+

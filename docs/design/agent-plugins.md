@@ -6,13 +6,13 @@ section) instead of a contract request of their own, that the plugin catalogue i
 entry, and that the question bridge builds on the program's trusted park and resume. The packaging and question
 bridge spikes run now; the build order below follows the program's work-contract and trusted-state packages.
 
-The owner (BGD) asked on 3 November 2026 for agents to
+The owner (the owner) asked on 3 November 2026 for agents to
 use Claude Code plugins chosen per runtime and per agent, starting with gstack, whose planner, designer and reviewer
 skills "could be super useful in making sc agents a lot more powerful and capable", and for a plan to build it as
 soon as possible. Every fact below was read on 3 November 2026 on `origin/main`; files are named, lines are not,
 because they move.
 
-## Decisions (BGD, 3 November 2026)
+## Decisions (the owner, 3 November 2026)
 
 * **Chosen per step from the start.** A workflow step (and a single agent) names the plugins it uses and, for each,
   its mode and skills. There is no workflow-wide switch first. Per-step names need a frozen-contract change
@@ -101,7 +101,7 @@ swarm-api against the catalogue, the workspace setting and the step's runner pro
 spec format bump in `specsign`), so the worker trusts only what was signed. The frozen-contract change request also
 asks for the workspace settings block and, if needed, a profile marker for runners that can load plugins.
 
-**As built (the owner's pick on PR #3264, 5 November 2026): a per-step `plugins` field.** A single agent and a workflow step
+**As built (the owner's pick on an earlier pull request, 5 November 2026): a per-step `plugins` field.** A single agent and a workflow step
 carry `plugins` themselves (`swarm_api.schemas.StepPluginCreate`); the console's builder sends that field and never
 writes a work contract. Why no spec format bump: swarm-api checks the field (`plugins.check_step`, its refusals pointing
 at `plugins`) and carries it in the step's work contract, the caller's own when it sent one (naming no plugins or the
@@ -173,7 +173,7 @@ Each item is a SwarmCloud lane (build, review, fix, merge) unless it says otherw
 
 | Lane | Needs | Gives |
 |---|---|---|
-| **The contract change request:** per-step `plugins`, the signed workspace block, the spec format bump | nothing | the request, for BGD to accept |
+| **The contract change request:** per-step `plugins`, the signed workspace block, the spec format bump | nothing | the request, for the owner to accept |
 | **The packaging spike:** gstack built into a test image stage, sizes and start time measured, every offered skill's smoke run in a container in unattended mode | nothing | the measured numbers and what breaks |
 | **The question bridge spike:** prove a headless agent can capture a question through the hook, park, and resume the same Claude session with the answer | nothing | a yes or no on the core mechanism, before the build |
 | **The catalogue and the start of a step:** the catalogue, the worker module above, swarm-api validation and signing, the workspace setting | the contract request accepted, the packaging spike | unattended mode without the bridge (open questions end as owner questions until the bridge lands) |

@@ -19,7 +19,7 @@ CLAUDE.md says, of any change to admission, dispatch or reconciliation:
 `make smoke` exits 2 with:
 
 ```
-fail the API at https://swarm-api-tonstldhta-uc.a.run.app/readyz answered
+fail the API at https://swarm-api-<hash>-uc.a.run.app/readyz answered
 HTTP 404, not 2xx. Rule out auth/IAM before running 'make deploy' -- this was
 not a transport failure and not a 401/403.
 ```
@@ -52,7 +52,7 @@ Not auth, not IAM, not a missing deploy, not an expired session. Verified:
 gcloud run services describe swarm-api --format='value(...ingress)'
   -> internal-and-cloud-load-balancing
 
-curl https://swarm.saga.xyz/v1/capacity            (no credential)
+curl https://swarm.example.com/v1/capacity            (no credential)
   -> 302 to accounts.google.com          (IAP is working)
 
 browser with an IAP session -> /v1/capacity
@@ -64,12 +64,12 @@ that was deliberately locked.
 
 ## Why the front door is not a one-line substitute
 
-Setting `API_URL=https://swarm.saga.xyz` is honoured by `api_url()`, but IAP
+Setting `API_URL=https://swarm.example.com` is honoured by `api_url()`, but IAP
 then refuses the request:
 
 ```
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-     https://swarm.saga.xyz/readyz
+     https://swarm.example.com/readyz
   -> 401
 ```
 
@@ -113,7 +113,7 @@ That makes the minimum fix: surface the frontend `url` as a root output so
 `tf_output api_url` resolves, and record the IAP OAuth client id so
 `API_AUDIENCE` has a value. The first is Track C's file. The second needs
 someone who can read the brand — `gcloud iap oauth-clients list
-projects/209012342332/brands/209012342332` is PERMISSION_DENIED for an
+projects/123456789012/brands/123456789012` is PERMISSION_DENIED for an
 ordinary project editor.
 
 ## Options, none of which is free

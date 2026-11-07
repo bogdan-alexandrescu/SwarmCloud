@@ -1,8 +1,8 @@
-# The agent inspector's Artifacts pane, and CPU in Details (#184)
+# The agent inspector's Artifacts pane, and CPU in Details
 
 What the agent drawer shows about what an agent took in and produced, where each
 figure comes from, and the constraints behind the choices. The owner's
-decisions of 2026-09-25 are on issue #184; this file records how the UI keeps
+decisions of 2026-09-25 are on an earlier issue; this file records how the UI keeps
 them and why, so they are not quietly undone.
 
 ## Why it exists
@@ -119,7 +119,7 @@ window is described before the first row:
 `show records` re-reads with `include_raw=true` for each step's redacted source
 record.
 
-**Fixed after the post-deploy QA** (epic #222, 2026-09-26):
+**Fixed after the post-deploy QA** (an earlier epic, 2026-09-26):
 
 * The facts row (source, format, masked, the object's location, `show
   records`) is drawn only over a **published** stream. It was drawn whatever
@@ -145,7 +145,7 @@ record.
 nulls are two unknowns, not a call and its result, so each is drawn on its own
 (`no result in this window`, `its call is not in this window`).
 
-**A capture cut at its cap, and a line longer than the window** (#188's review
+**A capture cut at its cap, and a line longer than the window** (an earlier issue's review
 fix-up, read here since the parity pass):
 
 * When the agent's output passed the worker's capture cap, the capture keeps the
@@ -172,14 +172,14 @@ sentences are how the server says a window is less than it looks.
 `absent`, `unreadable`, `not_applicable` and a measured-empty `''` are four
 different marks. A window that is not the whole object says so. A read that
 failed is drawn with the error it came back with. A route this deployment does
-not serve yet (an API older than #184) reads `not served by this API`, never
+not serve yet (an API older than an earlier issue) reads `not served by this API`, never
 "none". JSON is pretty-printed only when the window is the whole file. A part
 of a JSON document does not parse, so it is shown as served and marked
 `partial, not pretty-printed`.
 
 Bytes that are not UTF-8 cannot travel in JSON. `/artifacts/content`, `/logs`
 and the checkpoint member read (`/v1/tasks/{id}/checkpoints/{n}/files/{path}`,
-since #207) show each one as U+FFFD and count them in `invalid_utf8_bytes`,
+since an earlier issue) show each one as U+FFFD and count them in `invalid_utf8_bytes`,
 with a sentence in `detail`. The file viewer draws the count as `not utf-8 N`
 with the `partial` mark, and draws nothing at zero. The log rows already draw
 the server's `detail`. On the Artifacts tab the raw route serves those bytes
@@ -217,7 +217,7 @@ never goes back to `task.input`:
   its own `masked N`. It says `nothing else submitted` when the prompt is the
   whole input. It draws the full input only when there is no prompt string.
   It used to draw the full input under the prompt, which put the prompt on
-  screen twice, and the full input was the block where the PR #210 review
+  screen twice, and the full input was the block where the earlier pull request's review
   found a quoted secret in clear.
 * The count is drawn as the artifact viewer's is: no mark, plain ink at zero,
   and `--warn` above zero.
@@ -250,11 +250,11 @@ blocks.
 
 ## CPU in Details
 
-**The figures are typed attempt fields.** Contract request #15 was accepted
-on #184 (2026-09-25). Every attempt row carries `cpu_seconds`,
+**The figures are typed attempt fields.** Contract request 15 was accepted
+on an earlier issue (2026-09-25). Every attempt row carries `cpu_seconds`,
 `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`, and the worker
 writes them on the attempt with each periodic reading and when each runner is
-reaped. They replaced #188's interim path, `attempts?include=usage` and its
+reaped. They replaced an earlier issue's interim path, `attempts?include=usage` and its
 `usage` block read off HEARTBEAT events, which Details no longer asks for or
 reads.
 
@@ -264,10 +264,10 @@ the limit the worker wrote.
 
 | limit | ceiling label |
 |---|---|
-| source `cgroup` (request #26) | `cgroup limit`: the kernel's `cpu.max`, whatever the class says |
+| source `cgroup` (request 26) | `cgroup limit`: the kernel's `cpu.max`, whatever the class says |
 | source `resource_class` | the class's name (`standard limit`) when the class read here has that cpu, else `class limit` |
 | no source recorded, the class read here has that cpu | the class's name (`standard limit`) |
-| no source recorded, any other figure | `reported limit`: an attempt from before request #26, which does not say whether the cgroup or the catalogue supplied it |
+| no source recorded, any other figure | `reported limit`: an attempt from before request 26, which does not say whether the cgroup or the catalogue supplied it |
 | none written | the task's class read here, by name (`requests == limits`) |
 
 The `by` column says what the figures are, from what is known about the
@@ -276,7 +276,7 @@ attempt's end (`attemptEnd`, the same evidence the memory row reads):
 | attempt | by |
 |---|---|
 | finish recorded | `at exit` |
-| running | `live reading` (strip: `live reading · 20s ago`, the API's age; `live reading · age not recorded` for an attempt from before request #26) |
+| running | `live reading` (strip: `live reading · 20s ago`, the API's age; `live reading · age not recorded` for an attempt from before request 26) |
 | ended with no recorded finish (kill, reclaim) | `last written` (strip: `last written · 3m ago` when the reading is dated) |
 | ran before the typed fields, with a reading on this page | `heartbeat event` (strip: `heartbeat event · cpu-seconds only` when the event has no cores, and `· page full; newer readings may exist` on a full page when the reading is not the one at exit) |
 | ran before the typed fields, and the event read failed | `events not read` |
@@ -289,18 +289,18 @@ With nothing measured there is one `cpu` row, not two identical hatched ones.
 An absent figure is never drawn as zero, and a figure over the limit takes the
 track's over-ceiling hatch.
 
-**A live reading's age is the API's** (contract request #26, accepted on
-#184, 2026-09-26). The worker stamps `cpu_measured_at` on every write, and the
+**A live reading's age is the API's** (contract request 26, accepted on
+An earlier issue, 2026-09-26). The worker stamps `cpu_measured_at` on every write, and the
 attempt routes serve `cpu_reading_age_seconds` against their own `read_at`, as
-#187 aged the interim reading on the server's clock. Details draws that age
+An earlier issue aged the interim reading on the server's clock. Details draws that age
 and never computes one from `cpu_measured_at` on the browser's clock, which
-would reintroduce what the #187 review removed. An attempt from before #26
+would reintroduce what the earlier issue's review removed. An attempt from before an earlier issue
 records no time, and its strip still says `age not recorded`.
 
 **The legacy reader.** Two kinds of attempt carry their CPU only on HEARTBEAT
-events. Attempts from #188's window have peak, mean and cpu-seconds there.
-Attempts from before #188 have the cpu-seconds only, because every heartbeat
-before #188 carried `cpu_seconds` and no cores. For an attempt whose typed
+events. Attempts from an earlier issue's window have peak, mean and cpu-seconds there.
+Attempts from before an earlier issue have the cpu-seconds only, because every heartbeat
+before an earlier issue carried `cpu_seconds` and no cores. For an attempt whose typed
 fields are all null, Details takes the newest heartbeat of that attempt on the
 drawer's own event page that carries a figure (`interimReading`) and labels it
 `heartbeat event`. A heartbeat with the key and no value is not a reading.
@@ -313,7 +313,7 @@ failed there is no page to look at, and the row says `events not read`, not
 `never measured`. The reader does nothing for an attempt with typed fields.
 
 The first version of this reader asked for `peak_cpu_cores` only, and the PR
-#210 review found that every attempt from before #188 then read
+An earlier issue review found that every attempt from before an earlier issue then read
 `never measured` while the page held its cpu-seconds.
 
 ### At phone width
@@ -361,7 +361,7 @@ And by the owner's decisions of 2026-09-26:
   location of the agent stdout object it is parsed from (`object`, whole in its
   title and in the copy).
 * **The card foot's index** listed `CPU is never sampled` directly under the
-  two CPU rows (#222). The entry is `CPU is peak and mean cores of the limit`
+  two CPU rows. The entry is `CPU is peak and mean cores of the limit`
   now, and says what the rows are.
 
 ## What this pane does not show, said plainly
@@ -369,7 +369,7 @@ And by the owner's decisions of 2026-09-26:
 * **Only the final attempt's files are listed.** The manifest lives in
   `result_summary`, which is written once and holds only the last attempt's
   upload. The logs, transcript and answer are the latest attempt's. There is
-  no attempt picker yet (open question on #184).
+  no attempt picker yet (open question on an earlier issue).
 * **The live transcript is a bounded tail**, the newest 256 KiB, whole lines.
   The complete transcript appears when the attempt ends.
 * **The runner log is here only**, under `runner (platform)`. The Details

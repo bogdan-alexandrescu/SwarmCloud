@@ -345,7 +345,7 @@ svg.dag{display:block}
 <div class="wrap">
 <p class="kicker">SwarmCloud · Work · Lanes · design lane LQD · 2026-10-05</p>
 <h1>Lanes: the queue, a lane, adding lanes, and the ledger</h1>
-<p class="lede">The owner decided on 2026-10-05 (history V1, epic #640) that the implement → review → fix lane becomes a platform object: it waits for another lane's pull request to merge, holds a file-territory lock, runs the CI-fix loop on its pull request, labels <code>ready</code> when green and reviewed, and closes or comments on its issue. The lane outcome ledger (#639) is designed with it. These are the screens, in two or three variants each, for the owner to pick. The design behind them is <a href="../../lane-queue.md">docs/lane-queue.md</a>. <b>Nothing here is built</b>, and the section is not in the live console.</p>
+<p class="lede">The owner decided on 2026-10-05 (history V1, epic #640) that the implement → review → fix lane becomes a platform object: it waits for another lane's pull request to merge, holds a file-territory lock, runs the CI-fix loop on its pull request, labels <code>ready</code> when green and reviewed, and closes or comments on its issue. The lane outcome ledger is designed with it. These are the screens, in two or three variants each, for the owner to pick. The design behind them is <a href="../../lane-queue.md">docs/lane-queue.md</a>. <b>Nothing here is built</b>, and the section is not in the live console.</p>
 <p class="sub" style="color:var(--mute)">All data is <span class="exd">example data</span>: the tenant is <code>eng</code>, the user is Operator, the host is <code>swarm.example.com</code>, the repository is <code>example-org/example-api</code>, the group is <code>wave-8</code>, and every number, sha and pull request is invented.</p>
 <div class="themebar" role="group" aria-label="Theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
 <ul class="toc"><li><a href="#today">1 · Today</a></li><li><a href="#board">2 · Queue board</a></li><li><a href="#detail">3 · A lane</a></li><li><a href="#add">4 · Add lanes</a></li><li><a href="#ledger">5 · Lane ledger</a></li><li><a href="#rec">6 · Recommendation</a></li><li><a href="#map">7 · Every element, mapped to data</a></li><li><a href="#pick">8 · All screens to pick</a></li></ul>
@@ -353,7 +353,7 @@ svg.dag{display:block}
 <h2 id="today"><span class="n">1</span>Today, measured from the code and the history</h2>
 <p>There is no lane screen because there is no lane record. What exists:</p>
 <div class="tw"><table class="doc"><thead><tr><th>Where</th><th>What it shows</th><th>Source</th></tr></thead><tbody>
-<tr><td>Work › Runs</td><td>issue runs (#454): one issue, its plan, its workflow, its pull request's CI and fix rounds. A run knows nothing about any other run.</td><td class="src"><code>apps/swarm-api/swarm_api/routes/runs.py</code></td></tr>
+<tr><td>Work › Runs</td><td>issue runs: one issue, its plan, its workflow, its pull request's CI and fix rounds. A run knows nothing about any other run.</td><td class="src"><code>apps/swarm-api/swarm_api/routes/runs.py</code></td></tr>
 <tr><td>Work › Workflows</td><td>the implement → review → fix workflow a lane compiles to, with no idea what it waits for or what files it holds</td><td class="src"><code>apps/swarm-api/swarm_api/issueruns.py</code></td></tr>
 <tr><td>Work › Timeline</td><td>task outcomes by the day they ended (<code>GET /v1/outcomes</code>); nothing per lane</td><td class="src"><code>apps/swarm-api/swarm_api/outcomes.py</code></td></tr>
 <tr><td>The operator's laptop</td><td>141 lanes in the 2026-10-05 history: a spec generator, PR watchers, a merge watcher, a watchdog and a launch queue in memory notes; claude-code peaked at 12 of 40</td><td class="src">sc-history-analysis.md (not in this repository)</td></tr>
@@ -482,7 +482,7 @@ svg.dag{display:block}
 <div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span><code>integration tests (emulator)</code></span><span class="mu">green</span></div>
 </div>
 <div class="card"><div class="ch"><b>CI fix round 1 of 3</b><div class="r"><a class="more">Workflow</a></div></div>
-<div class="meta col"><span>continues the integrator's branch, as issue runs do (#545)</span><span>started 3 min ago · <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>running</span></span></span><span>CI reds by job so far: <code>format / unit tests</code> 1</span></div>
+<div class="meta col"><span>continues the integrator's branch, as issue runs do</span><span>started 3 min ago · <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>running</span></span></span><span>CI reds by job so far: <code>format / unit tests</code> 1</span></div>
 <p class="sub">When it pushes, CI is read at the new head. Ready needs green, the final review's MERGE (the re-review when the fix ran), and the keyword block on the pull request.</p>
 </div>
 </div>
@@ -567,7 +567,7 @@ svg.dag{display:block}
 
 <!-- ================================================================== -->
 <h2 id="ledger"><span class="n">5</span>Lane ledger</h2>
-<p>One record per lane (#639): cost summed over every attempt, wall and waiting time, the review, the pull request, CI reds by job, the merge, the issues closed or left. Not the task outcome ledger of Timeline. A null is a dash with its reason, never 0.</p>
+<p>One record per lane: cost summed over every attempt, wall and waiting time, the review, the pull request, CI reds by job, the merge, the issues closed or left. Not the task outcome ledger of Timeline. A null is a dash with its reason, never 0.</p>
 
 <div class="variant" id="ledger-a">
 <div class="vh"><span class="vn">Variant A</span><h3>A table with a totals row</h3><span class="rec">Recommended</span></div>

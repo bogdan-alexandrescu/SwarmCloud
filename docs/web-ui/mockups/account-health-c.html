@@ -373,9 +373,9 @@ html.embed .frow{margin-top:0}
 </defs></svg>
 <div class="topbar"><div class="in"><span>Proposal C of four · every frame follows this toggle</span><div class="tseg" role="group" aria-label="Theme"><button type="button" data-set="light">Light</button><button type="button" data-set="dark">Dark</button><button type="button" data-set="system">System</button></div></div></div>
 <div class="wrap">
-<p class="kick">SwarmCloud · Capacity › Accounts · account health · proposal C · 2026-10-25 · part of #2302</p>
+<p class="kick">SwarmCloud · Capacity › Accounts · account health · proposal C · 2026-10-25</p>
 <h1>Account health: C, a health strip over the list</h1>
-<p class="lede">BGD asked on 2026-10-25 for “more details about rate limit hits, error rates, error logs and other potential issues with the subscription accounts used and their health overall”. ACCOUNT-429-SCOPE serves a health record per account; this is <b>C</b> of four places to show it. A strip of one small cell per account sits on the Accounts page, between the answer and the ranked list. Each cell has its status, its last 24 hours as 24 bars, and its counts by family. Clicking a cell opens that account’s health in place, under the strip. A 7-day switch turns the strip into a heat map of the week.</p>
+<p class="lede">The owner asked on 2026-10-25 for “more details about rate limit hits, error rates, error logs and other potential issues with the subscription accounts used and their health overall”. ACCOUNT-429-SCOPE serves a health record per account; this is <b>C</b> of four places to show it. A strip of one small cell per account sits on the Accounts page, between the answer and the ranked list. Each cell has its status, its last 24 hours as 24 bars, and its counts by family. Clicking a cell opens that account’s health in place, under the strip. A 7-day switch turns the strip into a heat map of the week.</p>
 <p>Every figure is an <span class="ex">example</span>: one invented pool (tenant eng, 7 accounts, read 2026-10-25 07:10Z) and one invented 7-day record, the same in all four proposals so they can be compared frame by frame. The account names are the real pool’s. 04:40:57Z is when #2302 measured a 429; which account it came from is the example’s choice. Every count, bar and cell on this page is computed from that one event list, so a total always agrees with what is drawn under it.</p>
 <ul class="toc"><li><a href="#idea">Idea, pros, risks</a></li><li><a href="#reads">What it reads</a></li><li><a href="#f1">F1 The pool at a glance</a></li><li><a href="#f2">F2 One account</a></li><li><a href="#f3">F3 The week, pool-wide</a></li><li><a href="#f4">F4 Empty and honest states</a></li><li><a href="#f5">F5 Phone</a></li><li><a href="#decided">Decided and open</a></li></ul>
 
@@ -402,12 +402,12 @@ html.embed .frow{margin-top:0}
 <figure class="fr" data-frame="f2"><div class="scroller" data-f="c-f2"></div><figcaption><b>F2 · desktop 1440 · aieng-claude1’s cell pressed.</b> The panel opens in place under the strip. The status and its reset are in its head, with one sentence of why. The counts are turned on their side: the three windows down, the four kinds that happened across. The 7-day series sits beside them, with the limited stretches shaded. The events are a table in a box of their own, so the list below stays one scroll away. The record’s 22 events all fit.</figcaption></figure>
 
 <h2 id="f3"><span class="n">F3</span>The week, pool-wide</h2>
-<figure class="fr" data-frame="f3"><div class="scroller" data-f="c-f3"></div><figcaption><b>F3 · desktop 1440 · the strip switched to 7 days.</b> Each account is three thin rows (errors, limits, credential), one cell per hour, stronger in colour for more. Every rate-limit hit is named under its row by window and time. aieng-claude1 hit its 5-hour window on Oct 21, 23 and 25, and saga-personal its 7-day window on Oct 24. The blue column at 14:00Z–16:00Z on Oct 22 crosses five accounts. The orange run on saga-personal after Oct 24 is its refusals, every three hours, while the window stays shut.</figcaption></figure>
+<figure class="fr" data-frame="f3"><div class="scroller" data-f="c-f3"></div><figcaption><b>F3 · desktop 1440 · the strip switched to 7 days.</b> Each account is three thin rows (errors, limits, credential), one cell per hour, stronger in colour for more. Every rate-limit hit is named under its row by window and time. aieng-claude1 hit its 5-hour window on Oct 21, 23 and 25, and org-personal its 7-day window on Oct 24. The blue column at 14:00Z–16:00Z on Oct 22 crosses five accounts. The orange run on org-personal after Oct 24 is its refusals, every three hours, while the window stays shut.</figcaption></figure>
 
 <h2 id="f4"><span class="n">F4</span>Empty and honest states</h2>
 <figure class="fr" data-frame="f4"><div class="scroller" data-f="c-f4a"></div><figcaption><b>F4a · no events yet.</b> devops-team’s cell says “no events in 24 h” where its bars would be. Its panel says, once, that the 7-day record was read and is empty.</figcaption></figure>
 <figure class="fr" data-frame="f4"><div class="scroller" data-f="c-f4b"></div><figcaption><b>F4b · the record not served.</b> The strip collapses to one line that says why, so seven dashes do not take a strip’s room. The answer card and the list do not depend on the record and are drawn as usual.</figcaption></figure>
-<figure class="fr" data-frame="f4"><div class="scroller" data-f="c-f4c"></div><figcaption><b>F4c · needs re-auth.</b> ai-eng-3’s cell sorts first and has a red top edge. Its panel leads with Sign in again (the action the built sheet has), then the record of how it got there.</figcaption></figure>
+<figure class="fr" data-frame="f4"><div class="scroller" data-f="c-f4c"></div><figcaption><b>F4c · needs re-auth.</b> eng-pool-3’s cell sorts first and has a red top edge. Its panel leads with Sign in again (the action the built sheet has), then the record of how it got there.</figcaption></figure>
 
 <h2 id="f5"><span class="n">F5</span>Phone, 390</h2>
 <div class="frow" data-frame="f5">
@@ -422,17 +422,17 @@ html.embed .frow{margin-top:0}
 <li>A cell opens its account’s health in place. The side sheet keeps its facts and actions and does not repeat health.</li>
 <li>The week is the same strip at 7 days: a heat map with an hour per cell, three families per account, each hit named.</li>
 <li>Not served collapses the strip to one line with its reason. A real zero is said in words.</li></ul>
-<p><b>Open, for BGD</b></p>
+<p><b>Open, for the owner</b></p>
 <ul class="dl2">
 <li>Past about twelve accounts the strip wraps. Should it then show only the accounts that are not healthy, plus a count of the rest?</li>
 <li>Should the strip remember being folded, for an operator who only wants capacity?</li>
 <li>Is the heat map’s three-rows-per-account readable enough, or should it show one row (all kinds) with the hits marked?</li></ul>
-<p>This is a proposal: nothing is built until BGD picks.</p>
+<p>This is a proposal: nothing is built until the owner picks.</p>
 
 </div>
 <script>
 (function(){
-/* ---------- shared by account-health-a..d (ACCOUNT-HEALTH-MOCKS, part of #2302) ----------
+/* ---------- shared by account-health-a..d (ACCOUNT-HEALTH-MOCKS) ----------
    One example pool, one example record: every proposal draws the SAME events, so
    the four can be compared frame by frame. Every count, bar and list on the page
    is computed from the one event list below, so a total can never disagree with
@@ -488,13 +488,13 @@ var BANDKEY='<span><i class="bandk"></i>limited: from the hit to the window’s 
 
 /* ---------- the pool: eng, 7 accounts, read 2026-10-25 07:10Z (example) ---------- */
 var ACCTS=[
- {id:'eng:saga-team',name:'saga-team',status:'healthy',holds:5,max:6,w5:{left:61,resets:T(25,9,40)},w7:{left:39,resets:T(28,12,0)},lent:[]},
+ {id:'eng:org-team',name:'org-team',status:'healthy',holds:5,max:6,w5:{left:61,resets:T(25,9,40)},w7:{left:39,resets:T(28,12,0)},lent:[]},
  {id:'eng:aieng-claude1',name:'aieng-claude1',status:'limited',holds:0,max:6,w5:{left:2,resets:T(25,9,10)},w7:{left:41,resets:T(30,14,0)},lent:['smoke'],until:T(25,9,10),uwin:'five_hour'},
  {id:'eng:ai-eng-2',name:'ai-eng-2',status:'erroring',holds:4,max:6,w5:{left:48,resets:T(25,10,59)},w7:{left:22,resets:T(25,18,59)},lent:[]},
- {id:'eng:ai-eng-3',name:'ai-eng-3',status:'reauth_needed',holds:0,max:6,w5:null,w7:null,lent:[]},
+ {id:'eng:eng-pool-3',name:'eng-pool-3',status:'reauth_needed',holds:0,max:6,w5:null,w7:null,lent:[]},
  {id:'eng:devops-main',name:'devops-main',status:'healthy',holds:6,max:6,w5:{left:35,resets:T(25,8,59)},w7:{left:27,resets:T(26,14,59)},lent:[]},
- {id:'eng:devops-team',name:'devops-team',status:'healthy',holds:2,max:6,w5:{left:88,resets:T(25,11,20)},w7:{left:31,resets:T(28,12,0)},lent:['smoke','u-bogdan']},
- {id:'eng:saga-personal',name:'saga-personal',status:'limited',holds:0,max:6,w5:{left:100,reset:1},w7:{left:1,resets:T(26,7,59)},lent:[],until:T(26,7,59),uwin:'seven_day'}];
+ {id:'eng:devops-team',name:'devops-team',status:'healthy',holds:2,max:6,w5:{left:88,resets:T(25,11,20)},w7:{left:31,resets:T(28,12,0)},lent:['smoke','u-member']},
+ {id:'eng:org-personal',name:'org-personal',status:'limited',holds:0,max:6,w5:{left:100,reset:1},w7:{left:1,resets:T(26,7,59)},lent:[],until:T(26,7,59),uwin:'seven_day'}];
 var BY={};ACCTS.forEach(function(a){BY[a.name]=a;a.ev=[]});
 var ALL=[];
 var SERR=['500 api_error: Internal server error','502 Bad Gateway from upstream','503 service unavailable, retry later'];
@@ -523,7 +523,7 @@ function ev(name,at,kind,o){o=o||{};var e={acct:BY[name],at:at,kind:kind,fam:KIN
  [[17,20],[18,45]].forEach(function(x){ev(a,T(23,x[0],x[1],11),'refused',{w:'five_hour',r:r})});
  r=T(25,9,10);ev(a,T(25,4,40,57),'rate_limit',{w:'five_hour',r:r});ev(a,T(25,4,41,2),'exhausted');ev(a,T(25,4,41,30),'rate_limit',{w:'five_hour',r:r,t:'smoke'});ev(a,T(25,4,44,12),'rate_limit',{w:'five_hour',r:r});
  [[5,2],[5,31],[6,5],[6,40],[7,2]].forEach(function(x){ev(a,T(25,x[0],x[1],44),'refused',{w:'five_hour',r:r})});
- a='saga-personal';
+ a='org-personal';
  ev(a,T(20,9,15,40),'network');ev(a,T(22,14,20,6),'overloaded');ev(a,T(22,15,5,51),'overloaded');
  r=T(26,7,59);ev(a,T(24,10,12,31),'rate_limit',{w:'seven_day',r:r});ev(a,T(24,10,12,40),'exhausted');ev(a,T(24,10,15,2),'rate_limit',{w:'seven_day',r:r});
  [[24,11],[24,14],[24,17],[24,20],[24,23],[25,2],[25,5]].forEach(function(x){ev(a,T(x[0],x[1],0,9),'refused',{w:'seven_day',r:r})});
@@ -532,11 +532,11 @@ function ev(name,at,kind,o){o=o||{};var e={acct:BY[name],at:at,kind:kind,fam:KIN
  [[14,5],[14,18],[14,33],[15,2],[15,40]].forEach(function(x){ev(a,T(22,x[0],x[1],12),'overloaded')});
  for(var i=0;i<44;i++){var t=T(25,5,50,0)+Math.round(i*(78*60000)/43)+Math.floor(RNG()*40000);ev(a,t,'overloaded')}
  ev(a,T(25,6,20,40),'server_error');ev(a,T(25,6,41,7),'server_error');ev(a,T(25,7,5,33),'server_error');
- a='ai-eng-3';
+ a='eng-pool-3';
  ev(a,T(20,18,30,2),'network');ev(a,T(24,22,0,4),'refresh_failed');
  ev(a,T(25,6,10,0),'refresh_failed');ev(a,T(25,6,11,0),'refresh_failed');var e401=ev(a,T(25,6,12,4),'auth');ev(a,T(25,6,12,5),'reauth',{task:e401.task});
  ev(a,T(25,6,30,15),'refused');ev(a,T(25,7,0,15),'refused');
- a='saga-team';
+ a='org-team';
  ev(a,T(18,21,40,0),'network');ev(a,T(21,3,15,22),'network');ev(a,T(24,19,5,9),'network');
  ev(a,T(22,14,9,40),'overloaded');ev(a,T(22,14,51,3),'overloaded');ev(a,T(22,15,30,30),'overloaded');ev(a,T(25,6,58,12),'overloaded');
  a='devops-main';
@@ -717,8 +717,8 @@ function phone(title,body,o){o=o||{};return '<div class="phone"'+(o.h?' style="m
 function winTxt(w){if(!w)return '<span class="dash" title="No reading since the credential was refused">—</span><small>no reading since 06:12Z</small>';if(w.reset)return 'reset<small>nothing read since</small>';return '<b>'+w.left+'% left</b><small>resets '+when(w.resets)+'</small>'}
 function block(a){if(a.status==='limited')return '<b>'+(a.uwin==='five_hour'?'5-hour':'7-day')+' window</b> under its floor';if(a.status==='reauth_needed')return '<b>Credential refused</b>: sign in again';if(a.holds>=a.max)return '<b>Full</b>: '+a.holds+' of '+a.max+' agents';return '<span class="mu">nothing</span>'}
 function canChip(a){if(can(a))return '<span class="chip yes">Yes · '+(a.max-a.holds)+' free</span>';if(a.holds>=a.max&&a.status==='healthy')return '<span class="chip full">Full · '+a.holds+' of '+a.max+'</span>';return '<span class="chip no">No</span>'}
-var ORDER=['devops-team','ai-eng-2','saga-team','devops-main','aieng-claude1','saga-personal','ai-eng-3'];
-var GRP={'devops-team':'Can take now','ai-eng-2':'Can take now','saga-team':'Can take now','devops-main':'Frees when an agent finishes','aieng-claude1':'Waits for a window','saga-personal':'Waits for a window','ai-eng-3':'Needs someone to sign in'};
+var ORDER=['devops-team','ai-eng-2','org-team','devops-main','aieng-claude1','org-personal','eng-pool-3'];
+var GRP={'devops-team':'Can take now','ai-eng-2':'Can take now','org-team':'Can take now','devops-main':'Frees when an agent finishes','aieng-claude1':'Waits for a window','org-personal':'Waits for a window','eng-pool-3':'Needs someone to sign in'};
 function acctTable(o){o=o||{};var extra=o.col;
   var h='<div class="card"><div class="chd"><h4>Accounts, by when each can take a new agent</h4><span class="cnote">'+(o.note||'7 accounts · readings 1–9 min old')+'</span>'+(o.right||'')+'</div><table class="tbl"><colgroup><col style="width:30px"><col style="width:140px"><col style="width:104px"><col style="width:186px"><col style="width:100px"><col style="width:100px"><col style="width:60px">'+(extra?'<col style="width:'+extra.w+'px">':'')+'<col></colgroup>'+
   '<thead><tr><th class="rk">#</th><th>Account</th><th>Can take</th><th>What blocks it</th><th>5-hour</th><th>7-day</th><th>Agents</th>'+(extra?'<th>'+extra.h+'</th>':'')+'<th>Lent to</th></tr></thead><tbody>',g=null,n=0;
@@ -771,7 +771,7 @@ function sideCounts(a){var ws=[['1 h',counts(a,1)],['24 h',counts(a,24)],['7 d',
   return h+'</tbody></table>'+(none.length?'<p class="cap">None in 7 days: '+none.join(', ')+'.</p>':'');}
 function drill(a,o){o=o||{};
   var h='<div class="drill"><div class="dh"><h4>'+a.name+'</h4>'+stFull(a)+'<span class="cnote">'+a.id+' · read 07:10Z</span><span style="margin-left:auto;display:flex;gap:8px">'+(o.reauth?'':'<a class="btn sm">Open in the list ↓</a>')+'<button type="button" class="btn sm" aria-label="Close">Close</button></span></div>';
-  if(o.reauth) h+='<div class="callout"><b>Needs re-auth since 06:12Z</b><p>A 401 after two failed refreshes. The broker assigns ai-eng-3 nothing until someone signs in again.</p><div class="acts"><button type="button" class="btn primary sm">Sign in again</button></div></div>';
+  if(o.reauth) h+='<div class="callout"><b>Needs re-auth since 06:12Z</b><p>A 401 after two failed refreshes. The broker assigns eng-pool-3 nothing until someone signs in again.</p><div class="acts"><button type="button" class="btn primary sm">Sign in again</button></div></div>';
   else if(why(a)) h+='<p class="lead">'+why(a)+'</p>';
   if(!a.ev.length) return h+'<p class="realzero">'+STI.healthy+'No events in 7 days</p><p class="cap" style="margin-top:2px">The record was read at 07:10Z and is empty: no rate-limit hits, refusals, provider errors or credential trouble since Oct 18 08:00Z.</p></div>';
   h+='<div class="dgrid"><div>'+sideCounts(a)+'</div><div>'+hourlyChart(a.ev,{w:470,h:140,bands:bands(a),bandRow:true,label:a.name+' events per hour'})+legend(bands(a).length?BANDKEY:'')+'</div></div>';
@@ -784,7 +784,7 @@ RC['c-f2']=function(){return app(page({sel:'aieng-claude1',cut:1}))};
 RC['c-f3']=function(){return app(page({week:1,cut:1}))};
 RC['c-f4a']=function(){return app(page({sel:'devops-team',cut:1}))};
 RC['c-f4b']=function(){return app(page({ns:1}))};
-RC['c-f4c']=function(){return app(page({sel:'ai-eng-3',reauth:1,cut:1}))};
+RC['c-f4c']=function(){return app(page({sel:'eng-pool-3',reauth:1,cut:1}))};
 RC['c-p1']=function(){return phone('Accounts','<div class="crumb">Capacity › <b>Accounts</b></div>'+answerCard()+strip()+'<div class="cut">the accounts, as cards, continue below</div>')};
 RC['c-p2']=function(){var a=BY['aieng-claude1'];return phone('Accounts','<div class="crumb">Capacity › <b>Accounts</b></div>'+'<div class="card strip open">'+stripHead()+'<div class="cells">'+STRIP.map(function(x){return cell(x,{sel:'aieng-claude1'})}).join('')+'</div>'+
   '<div class="drill"><div class="dh"><h4>'+a.name+'</h4>'+stFull(a)+'<button type="button" class="btn sm" style="margin-left:auto">Close</button></div><p class="lead">'+why(a)+'</p>'+countsTable(a,{hideZero:true})+'<div style="margin-top:10px">'+hourlyChart(a.ev,{w:330,h:130,bands:bands(a),bandRow:true,sparseDays:true,short:true})+legend(BANDKEY)+'</div><div class="sec-h" style="margin-top:12px"><h5>Events</h5><span class="cnote">'+recordNote(a)+'</span></div>'+eventsList(last50(a),{max:10})+'</div></div>')};

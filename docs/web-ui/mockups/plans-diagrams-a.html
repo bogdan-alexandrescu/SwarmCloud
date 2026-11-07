@@ -6,9 +6,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Plan diagrams, proposal A, "Diagrams as a section of the plan" (PLANS-DIAG-A, part of #2585).
+ * Plan diagrams, proposal A, "Diagrams as a section of the plan" (PLANS-DIAG-A).
  * Tokens, chrome, the plan document, its margin, the revision bar and the decision bar are
- * plans-d.html's (PR 2587, BGD's pick for the plan and its conversation, 2026-10-28), copied
+ * plans-d.html's (PR 2587, the owner's pick for the plan and its conversation, 2026-10-28), copied
  * whole; the diagram figure, the diagram cards, the chat section, the large view and the
  * switch below are this proposal's.
  * PICKS.md rules: 12px type floor, no all-caps, a theme toggle, an unknown figure is a dash.
@@ -574,12 +574,12 @@ p.alt,.alt{font-size:12.5px;color:var(--text-dim);margin:10px 0 0}
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-DIAG-A · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-DIAG-A · drawn 2026-10-28 · not picked</p>
 <h1>Plan diagrams, proposal A: Diagrams as a section of the plan</h1>
-<p class="lede">One of three competing proposals (A to C) for diagrams in plans, each drawn on proposal D's decision page as merged (PR 2587, BGD's pick for the plan and its conversation). This one makes a diagram <b>part of the plan document</b>: a <b>How it works</b> section right after the summary holds the plan's overview diagram, each step carries its own small diagram, folded, and a diagram asked for in the thread or the chat arrives as a card with <b>Add to plan</b>, which makes a new revision. The switch is a card in Config › Workspace Settings, with an override on each schedule's Gates and approvers card.</p>
+<p class="lede">One of three competing proposals (A to C) for diagrams in plans, each drawn on proposal D's decision page as merged (PR 2587, the owner's pick for the plan and its conversation). This one makes a diagram <b>part of the plan document</b>: a <b>How it works</b> section right after the summary holds the plan's overview diagram, each step carries its own small diagram, folded, and a diagram asked for in the thread or the chat arrives as a card with <b>Add to plan</b>, which makes a new revision. The switch is a card in Config › Workspace Settings, with an override on each schedule's Gates and approvers card.</p>
 
 <div class="idea">
-  <div><h4>What BGD asked for, 2026-10-28</h4>
+  <div><h4>What the owner asked for, 2026-10-28</h4>
     <p class="quote" style="margin-bottom:8px">“generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform … by default on but toggleable from the automation settings”</p>
     <p class="quote" style="margin-bottom:8px">“the interactive conversational part of the plan review … to also be able to provide on demand schematics and diagrams during the plan review process”</p>
     <p class="quote">On-demand diagrams must work “even if the plan reviewer / approver asks this in chat with the agent that takes part in the plan review conversation, interactively in a chat section on the plan review page”.</p></div>
@@ -618,7 +618,7 @@ p.alt,.alt{font-size:12.5px;color:var(--text-dim);margin:10px 0 0}
   <div class="flabel"><span class="fid">D2</span><h2>A plan where the planner drew none, and says why</h2></div>
   <p>A one-line change to <code>terraform/environments/dev/dev.tfvars</code>. The switch is on, so the planner decided, and the section says what it decided: no diagram, in one line, with its reason. The section is never removed, so every plan reads the same way, and <b>Draw one</b> is still there for a reviewer who wants one.</p>
   <figure class="sub" id="D2a" data-frame="D2a"><div class="sl"><span class="sid">D2a</span><b>“No diagram: a one-line value change”</b><span class="dim">desktop 1440 · example plan</span></div><div class="scroller" data-f="d2a"></div>
-  <figcaption>The plan, its issue (#2590) and its run are <b>examples</b>; the line it changes is real (<code>artifact_retention_days = 14</code>, dev.tfvars line 90). The planner's rule, in its prompt: draw when the plan has a flow, a sequence, a state change or more than one moving part; say why not when it has none. <b>Draw one</b> asks the planner in the thread (D3) and costs one planner turn.</figcaption></figure>
+  <figcaption>The plan, its issue and its run are <b>examples</b>; the line it changes is real (<code>artifact_retention_days = 14</code>, dev.tfvars line 90). The planner's rule, in its prompt: draw when the plan has a flow, a sequence, a state change or more than one moving part; say why not when it has none. <b>Draw one</b> asks the planner in the thread (D3) and costs one planner turn.</figcaption></figure>
 </section>
 
 <section class="frame" id="D3" data-frame="D3">
@@ -725,7 +725,7 @@ function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu'
 const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:100%;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
 
 /* ---------- the canonical plan, in its own words ---------- */
-const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
+const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='example-org/example-repo#2583';
 const DIG='sha256:be162b53886ee2620…';
 const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
 const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
@@ -746,7 +746,7 @@ function blkWhy(){
 const blkSum=()=>`<section class="blk"><h5>Summary</h5><p>${SUMMARY}</p><div class="fold">${I('chevd')}Show the whole summary</div></section>`;
 const blkReq=(extra)=>`<section class="blk"><h5>Requirements <small>7 · what the review checks, and what decides Closes</small></h5><ol><li>${REQ1}</li>${extra||''}</ol><div class="fold">${I('chevd')}Requirements 2 to 7</div></section>`;
 const blkOv=()=>`<section class="blk"><h5>Overlaps with work in flight <small>5</small></h5>`+
-  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>bogdan-alexandrescu</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
+  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>example-org</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
   `<div class="fold">${I('chevd')}Overlaps 2 to 5</div><p class="hint" style="margin-top:6px">The plan’s action is <i>none</i> when it does nothing about the overlap and <i>required</i> when it must; a comment on an overlap asks the planner to change that.</p></section>`;
 const RISKS=['credentials and secrets','IAM','.github/workflows','the frozen apps/common/swarm_common/','the shared deny-list','tenancy','cost'];
 const blkRisk=()=>`<section class="blk"><h5>Risk paths <small>what the step’s files touch</small></h5><div class="risk">${RISKS.map(r=>`<span>${I('check')}${r}: not touched</span>`).join('')}</div></section>`;
@@ -878,7 +878,7 @@ function d2a(){
     LEAD('Waiting on you · expires in 46 h','Plan revision 1, from the nightly issue sweep','1 step, 2 requirements, no overlaps. No diagram: a one-line value change.')+
     revbar('<span class="on">revision 1 · planner · 02:10Z · no diagram</span>',DIGT,`<span style="margin-left:auto">${CHATLINK}</span>`)+decideA(1,DIGT,', the plan on this page')+
     `<div class="pdoc">`+
-    `<div class="row"><section class="blk"><h5>Why it exists <small>source</small></h5><dl class="kv"><dt>Source</dt><dd>the nightly issue sweep (example)</dd><dt>Issue</dt><dd><a href="#D2">bogdan-alexandrescu/SwarmCloud#2590</a> (example)</dd><dt>Run</dt><dd><span class="mn">run_… (example)</span> · mode single</dd></dl></section><div class="mg"></div></div>`+
+    `<div class="row"><section class="blk"><h5>Why it exists <small>source</small></h5><dl class="kv"><dt>Source</dt><dd>the nightly issue sweep (example)</dd><dt>Issue</dt><dd><a href="#D2">example-org/example-repo#2590</a> (example)</dd><dt>Run</dt><dd><span class="mn">run_… (example)</span> · mode single</dd></dl></section><div class="mg"></div></div>`+
     `<div class="row"><section class="blk"><h5>Summary</h5><p>Keep dev’s build artifacts for 30 days instead of 14: one value in <code>terraform/environments/dev/dev.tfvars</code>. Example plan.</p></section><div class="mg"></div></div>`+
     `<div class="row">${blkHow(`<div class="nodg">${I('diagram')}<div><b>No diagram: a one-line value change</b><span class="dim sm12">The planner’s reason, in the plan. Diagrams are on for this workspace; the planner decided this plan has no flow to draw.</span></div>${B('Draw one','s','diagram')}</div>`,{small:'no diagram in this revision'})}`+
       `<div class="mg">${why('Planner’s rule, from its prompt','Draw when a plan has a flow, a sequence, a state change or more than one moving part. Otherwise say why not, in one line.')}</div></div>`+

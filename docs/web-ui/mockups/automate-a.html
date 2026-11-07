@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Proposal A, "List and side sheet" (AUTOMATE-MOCKS-A, part of #2417).
+ * Proposal A, "List and side sheet" (AUTOMATE-MOCKS-A).
  * Tokens, type scale, lead strip, tables, cards, chips and buttons are Config E's
  * (config-e.html, #2157), which are the console's own (apps/swarm-ui/src/styles.css);
  * the side sheet over its list is Subscription accounts A's (accounts-a.html, #2222).
@@ -381,9 +381,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">AUTOMATE-MOCKS-A · part of #2417 · drawn 2026-10-26 · not picked</p>
+<p class="kick">AUTOMATE-MOCKS-A · drawn 2026-10-26 · not picked</p>
 <h1>Automate, proposal A: List and side sheet</h1>
-<p class="lede">One of four competing proposals (A to D) for BGD's redesign of the console's Automate section. Each draws every Automate screen under the same frame ids (A1 to A7), so the picks page can mix frames across them. This one pushes Subscription accounts A's pattern further: the list is the page, and one schedule or one approval opens in a side sheet over it.</p>
+<p class="lede">One of four competing proposals (A to D) for the owner's redesign of the console's Automate section. Each draws every Automate screen under the same frame ids (A1 to A7), so the picks page can mix frames across them. This one pushes Subscription accounts A's pattern further: the list is the page, and one schedule or one approval opens in a side sheet over it.</p>
 
 <div class="idea">
   <div><h4>Idea</h4><p>Automate keeps its two tabs, <b>Schedules</b> and <b>Approvals</b>. Each opens on a one-sentence lead that names what needs the reader, with one button, and then one dense house table. A schedule (A2) or an approval (A5) opens in a <b>right side sheet</b> over its list, as an account does on Subscription accounts, so the list stays in view and the next row is one click away. Creating or editing a schedule (A3) is the same sheet, stepped: type, target, cadence, gates, budget, then review, with each step's refusal shown where the server would raise it.</p></div>
@@ -468,7 +468,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
     <figure class="sub" id="A5e" data-frame="A5e"><div class="sl"><span class="sid">A5e</span><b>Superseded: the head moved after the request</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5e"></div></figure>
   </div>
   <figure class="sub" id="A5f" data-frame="A5f"><div class="sl"><span class="sid">A5f</span><b>Pending, seen by a member who is not an approver</b><span class="dim">the sheet alone</span></div><div class="scroller solo" data-f="a5f"></div>
-  <figcaption><b>Deny is the API's reject.</b> The brief says "deny"; the API's state is <code>rejected</code> and its route <code>:reject</code>, and the built page says Reject, so the frames do too. <b>A5f hides Reject as well as Approve</b>, as the brief asks, but today any member may reject (<code>approvals.py</code> <code>reject()</code>, docs/schedules.md §4.5). Building A5f as drawn means the server's rule changes too; that is a question for BGD in the PR.</figcaption></figure>
+  <figcaption><b>Deny is the API's reject.</b> The brief says "deny"; the API's state is <code>rejected</code> and its route <code>:reject</code>, and the built page says Reject, so the frames do too. <b>A5f hides Reject as well as Approve</b>, as the brief asks, but today any member may reject (<code>approvals.py</code> <code>reject()</code>, docs/schedules.md §4.5). Building A5f as drawn means the server's rule changes too; that is a question for the owner in the PR.</figcaption></figure>
 </section>
 
 <section class="frame" id="A6" data-frame="A6">
@@ -643,7 +643,7 @@ function a1body(o){
   return A1LEAD+schedList(o)+
   `<div class="g2">`+
   CARD('Approvals · 3 waiting',B('Open Approvals','s'),T(['What','From','Expires in'],WAIT.map((a,i)=>({cls:i===0?'need':'',c:[`<b class="nm">${a.what}</b><small>${KW[a.k]}</small>`,a.from,`<b>${a.exp}</b>`]})))+`<p class="sm12 dim" style="margin:8px 0 0">Decided in the last 7 days: 2 approved, 1 rejected. Ended undecided: 1 expired, 1 superseded.</p>`)+
-  CARD('Built-in recurring work','',`<p>Repository index refreshes run on each repository’s own schedule and are not edited here.</p>`+T(['Built in','When','Next run'],[['Index refresh · SwarmCloud','every 6 hours, on change','12:00Z today'],['Index refresh · saga-prompt-lab','every day at 03:00 UTC','Oct 27 03:00Z']])+`<p class="sm12" style="margin:8px 0 0"><a>Set on Config › Repositories</a></p>`)+
+  CARD('Built-in recurring work','',`<p>Repository index refreshes run on each repository’s own schedule and are not edited here.</p>`+T(['Built in','When','Next run'],[['Index refresh · SwarmCloud','every 6 hours, on change','12:00Z today'],['Index refresh · peer-app','every day at 03:00 UTC','Oct 27 03:00Z']])+`<p class="sm12" style="margin:8px 0 0"><a>Set on Config › Repositories</a></p>`)+
   `</div>`;
 }
 
@@ -666,8 +666,8 @@ function schedSheet(o){
   (ph?`<span class="back">${I('back')}Schedules</span>`:'')+
   `<div class="shh"><div class="tt">${ph?'':'<span class="cr">Schedules ›</span>'}<h4>Nightly issue sweep</h4><span class="meta">${C('waiting on approval','in')}<span>issue-sweep · R2</span><span class="mn">sch_1a2b3c4d5e6f</span></span></div>${ph?'':B(I('x'),'s x')}</div>`+
   `<div class="acts">${B('Run now','p','play')}${B('Dry run','')}${B('Pause','','pause')}${B('Edit','','edit')}${B('Delete…','q d')}</div>`+
-  `<div class="shs"><h5>What it does</h5><p>Starts an issue run for each ready open issue in <b>bogdan-alexandrescu/SwarmCloud</b> labelled <code>ready</code>, at most 3 a night: plan, execute, review, and merge behind the merge gate.</p>`+
-  `<dl class="kv"><dt>Type</dt><dd>issue-sweep · risk tier R2</dd><dt>Target</dt><dd>bogdan-alexandrescu/SwarmCloud <span class="dim">· 1 repository</span></dd><dt>Owner</dt><dd>Operator · created Oct 2, edited Oct 20 by Operator</dd></dl></div>`+
+  `<div class="shs"><h5>What it does</h5><p>Starts an issue run for each ready open issue in <b>example-org/example-repo</b> labelled <code>ready</code>, at most 3 a night: plan, execute, review, and merge behind the merge gate.</p>`+
+  `<dl class="kv"><dt>Type</dt><dd>issue-sweep · risk tier R2</dd><dt>Target</dt><dd>example-org/example-repo <span class="dim">· 1 repository</span></dd><dt>Owner</dt><dd>Operator · created Oct 2, edited Oct 20 by Operator</dd></dl></div>`+
   `<div class="shs"><h5>Cadence <small>every day at 02:00 UTC · <span class="mn">0 2 * * *</span> · UTC</small></h5>${fires}<p class="sm12 dim">Each firing starts up to 5 minutes after its slot (jitter). A slot missed in an outage is skipped. A firing while the last one is still running is skipped.</p></div>`+
   `<div class="shs"><h5>Firings <small>last 50 · ${ph?4:7} drawn, newest first</small></h5>${hist}<div class="acts"><span class="sm12 dim">‹ Newer · firings 1–${ph?4:7} of 24 · Older ›</span><span style="margin-left:auto">${B('Timeline','q s')}</span></div></div>`+
   `<div class="shs"><h5>Spend today <small>Oct 26 · UTC day</small></h5>`+
@@ -744,7 +744,7 @@ function a3eSheet(){
 function a3fSheet(){
   return stepSheet('New schedule · docs-drift',5,[0,1,2,3,4],
   `<div class="shs"><h5>Check it before you create it</h5>${F('Name','Docs drift · SwarmCloud')}`+
-  `<dl class="kv"><dt>Type</dt><dd>docs-drift · R1 <a>Change</a></dd><dt>Target</dt><dd>bogdan-alexandrescu/SwarmCloud · paths docs/**, README.md <a>Change</a></dd><dt>Cadence</dt><dd>every day at 03:30 UTC <a>Change</a></dd><dt>Gates</dt><dd>run and plan by themselves · merge waits for any member · expires after 72 h <a>Change</a></dd><dt>Budget</dt><dd>$5.00 a run tripwire · $20.00 a day · 1 live · pauses after 3 failures <a>Change</a></dd></dl></div>`+
+  `<dl class="kv"><dt>Type</dt><dd>docs-drift · R1 <a>Change</a></dd><dt>Target</dt><dd>example-org/example-repo · paths docs/**, README.md <a>Change</a></dd><dt>Cadence</dt><dd>every day at 03:30 UTC <a>Change</a></dd><dt>Gates</dt><dd>run and plan by themselves · merge waits for any member · expires after 72 h <a>Change</a></dd><dt>Budget</dt><dd>$5.00 a run tripwire · $20.00 a day · 1 live · pauses after 3 failures <a>Change</a></dd></dl></div>`+
   `<div class="shs"><h5>Its next five firings</h5><div class="fires"><span>Oct 27 03:30Z</span><span>Oct 28 03:30Z</span><span>Oct 29 03:30Z</span><span>Oct 30 03:30Z</span><span>Oct 31 03:30Z</span></div></div>`+
   `<div class="shs"><h5>Start it</h5><div class="opt"><span class="rd"></span><span><b>Active</b><small>Fires at the next slot</small></span></div><div class="opt on"><span class="rd"></span><span><b>Dry run first</b><small>Fires, starts nothing, and records what it would have done</small></span></div><div class="opt"><span class="rd"></span><span><b>Paused</b><small>Saved, and fires once someone resumes it</small></span></div></div>`,
   `${B('Back','q')}<span class="grow"></span>${B('Create schedule','p')}`);
@@ -773,7 +773,7 @@ function aprSheet(st,o){
   (ph?`<span class="back">${I('back')}Approvals</span>`:'')+
   `<div class="shh"><div class="tt">${ph?'':'<span class="cr">Approvals ›</span>'}<h4>Merge PR #2392</h4><span class="meta">${C(stw[0],stw[1])}<span>merge</span>${metaR}</span></div>${ph?'':B(I('x'),'s x')}</div>`+
   top+
-  `<p class="quote">bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge</p>`+
+  `<p class="quote">example-org/example-repo#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge</p>`+
   `<div class="shs"><h5>Held for the owner <small>reasons: workflows, shared</small></h5><p>Two of its files match the owner’s hard stops:</p>`+
   `<ul class="files"><li>${C('workflows','wn')}<span class="mn">.github/workflows/unit-weights-refresh.yml</span></li><li>${C('shared','wn')}<span class="mn">scripts/lib/common.sh</span></li></ul>`+
   `<dl class="kv"><dt>Who may decide</dt><dd>the platform owner alone, who may decide even as the schedule’s last editor; that is recorded as an owner waiver</dd></dl></div>`+

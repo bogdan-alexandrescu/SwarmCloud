@@ -26,9 +26,9 @@ is sound and should not be undone.
 granted at the project level.** A custom role's permissions apply to every
 secret in the project the role is bound on. So the grant is not "create the two
 secrets an account pool entry needs" — it is *write a new version onto any
-secret in `saga-agents-staging`*.
+secret in `example-project`*.
 
-`saga-agents-staging` is shared with another team. Their `agents-*` secrets are
+`example-project` is shared with another team. Their `agents-*` secrets are
 in scope of that grant today.
 
 **Why this is worth writing down even though nothing has exercised it.** The
@@ -63,7 +63,7 @@ minutes.
 
 It fails *safe* — a failed read records nothing rather than recording a wrong
 number — so this is not a correctness bug. But the consequence is that
-`record_reading` has never been called for the two older `u-bogdan` accounts,
+`record_reading` has never been called for the two older `u-member` accounts,
 which means:
 
 * headroom for those accounts has read **full**, always, for the life of the
@@ -103,7 +103,7 @@ The reasoning, so this is not silently reverted later:
 * It self-corrects going forward. Since `6b7a3dd` (2026-09-20) `_provision`
   grants the broker accessor on the base secret at registration.
   `swarm-account-eng--team` has that binding and has **1 version**. Only the two
-  `u-bogdan` secrets, which predate it, lack it.
+  `u-member` secrets, which predate it, lack it.
 
 **The cheaper cure, if zero is ever wanted:** `scripts/create-secrets.sh
 --subscription` writes only the `-refresh` half, by design. That asymmetry is
@@ -123,7 +123,7 @@ stops being acceptable.
 
 Closing the leak (`7fe7660`) stopped the platform writing *identical* versions.
 It did not expire anything. Every LEGITIMATE refresh still appends a version and
-nothing has ever destroyed or disabled one: `swarm-tenant-u-bogdan-anthropic`
+nothing has ever destroyed or disabled one: `swarm-tenant-team-a-anthropic`
 held **1,816 versions, all ENABLED, zero destroyed** on 2026-09-22.
 
 Only `latest` is ever read — `agent_worker.secrets.SecretManagerClient.access`
@@ -159,11 +159,11 @@ Read from the live policies on 2026-09-22 (read-only; nothing was changed):
 
 | Grant | Where | Permissions relevant here |
 |---|---|---|
-| `projects/saga-agents-staging/roles/swarmSecretLister` | project | `secrets.create/get/list/getIamPolicy/setIamPolicy`, `versions.add` |
+| `projects/example-project/roles/swarmSecretLister` | project | `secrets.create/get/list/getIamPolicy/setIamPolicy`, `versions.add` |
 | `roles/secretmanager.secretVersionAdder` | per secret, both halves | `versions.add`, `secrets.rotate` |
 | `roles/secretmanager.secretAccessor` | per secret, `-refresh` half only | `versions.access` |
 
-`swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com` therefore holds
+`swarm-quota-broker@example-project.iam.gserviceaccount.com` therefore holds
 **neither `secretmanager.versions.list` nor `secretmanager.versions.destroy`**,
 anywhere. Both are needed: the retention pass lists the versions of the secret it
 just wrote and destroys the ones past the newest three.

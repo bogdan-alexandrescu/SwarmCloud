@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Proposal C, "Pipeline board" (PLANS-MOCKS-C, part of #2585).
+ * Proposal C, "Pipeline board" (PLANS-MOCKS-C).
  * Tokens, type scale, lead strip, tables, cards, side sheet, chips and buttons are
  * Config E's (config-e.html, #2157) and Subscription accounts A's (accounts-a.html,
  * #2222), as Automate A (automate-a.html, #2417) carries them; copied, not restyled.
@@ -471,7 +471,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-MOCKS-C · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-MOCKS-C · drawn 2026-10-28 · not picked</p>
 <h1>Plans, proposal C: Pipeline board</h1>
 <p class="lede">One of four competing proposals (A to D) for how the console shows what automatic runs propose, and how a plan is judged and approved. Each draws the same frames (P1 to P7). This one draws the whole road from an automatic finding to a merged fix as one board of stages, so the reader sees every proposal at once and sees where the flow stalls.</p>
 
@@ -495,7 +495,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <ul>
     <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, a light / dark / system toggle (top of this page and in every frame's panel foot), an unknown figure is a dash with its reason, never 0. State words are lower case (waiting, approved, rejected, expired, superseded), never the API's enums.</li>
     <li>The V2 Sky spine, Config E's tokens, lead strip, cards, chips and buttons, Subscription accounts A's side sheet, Automate A's landing and B's one-approval decision. The board's columns are the only new layout.</li>
-    <li><b>The canonical plan</b> is the real <code>run_fba2dc8f6ec9494dae2f</code> on <code>bogdan-alexandrescu/SwarmCloud#2583</code>, quoted from its plan comment. Its schedule's gate approved it automatically at 00:06:03Z; P2 draws it as it would wait if that gate said <code>plan: approve</code>. Every other card is example data. The board is read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner, unless a frame says otherwise.</li>
+    <li><b>The canonical plan</b> is the real <code>run_fba2dc8f6ec9494dae2f</code> on <code>example-org/example-repo#2583</code>, quoted from its plan comment. Its schedule's gate approved it automatically at 00:06:03Z; P2 draws it as it would wait if that gate said <code>plan: approve</code>. Every other card is example data. The board is read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner, unless a frame says otherwise.</li>
   </ul>
 </div>
 
@@ -649,7 +649,7 @@ const SRC={
   review:{l:'Failure review',ic:'bug',sub:'sch_54e9828e6772'},
   observer:{l:'Observer',ic:'eye',sub:'platform observer'},
   flake:{l:'CI flake hunter',ic:'eye',sub:'flake proposal'},
-  hand:{l:'By hand',ic:'person',sub:'submitted by BGD'}
+  hand:{l:'By hand',ic:'person',sub:'submitted by the owner'}
 };
 const SRCF={sweep:'sweep',review:'review',observer:'obs',flake:'obs',hand:'hand'};
 /* stage: 0 found, 1 waiting, 2 running, 3 pr, 4 ended. st: [word, tone]. me: waits on a person */
@@ -737,7 +737,7 @@ function why(o){
     `<dt>Source</dt><dd>${I('bug')} Failure review, <code>sch_54e9828e6772</code></dd>`+
     `<dt>Firing</dt><dd><code>sch_54e9828e6772:29885760</code> <span class="dim">· Oct 28 00:00Z</span></dd>`+
     `<dt>Failure</dt><dd>fingerprint <code>fr-043100d00dae</code>, first filed from firing <code>…:29885400</code> <span class="dim">· 1 failure: agent task_8017fba2e38a41a591fe, publish refused head moved</span></dd>`+
-    `<dt>Issue</dt><dd><a>bogdan-alexandrescu/SwarmCloud#2583</a> <span class="dim">· bug · S1, filed by the schedule in the bug form</span></dd>`+
+    `<dt>Issue</dt><dd><a>example-org/example-repo#2583</a> <span class="dim">· bug · S1, filed by the schedule in the bug form</span></dd>`+
     `<dt>Run</dt><dd><code>run_fba2dc8f6ec9494dae2f</code> · mode single (one agent)</dd></dl></section>`;
 }
 function reqs(all,add){

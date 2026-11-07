@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Automate proposal D, "Config E sections" (AUTOMATE-MOCKS-D, part of #2417), drawn in Config E's house style (#2157).
+ * Automate proposal D, "Config E sections" (AUTOMATE-MOCKS-D), drawn in Config E's house style.
  * The tokens are the console's own (apps/swarm-ui/src/styles.css): --bg, --surface,
  * --surface-2, --line, --line-soft, --text, --text-dim, --text-faint, the five state
  * colours and their -ink variants, --ctl-bd and --ctl-onac, light and dark. The page
@@ -501,9 +501,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">AUTOMATE-MOCKS-D · part of #2417 · drawn 2026-10-26 · not picked</p>
+<p class="kick">AUTOMATE-MOCKS-D · drawn 2026-10-26 · not picked</p>
 <h1>Automate: proposal D, Config E's sections</h1>
-<p class="lede">One of four competing proposals (A to D) for BGD's redesign of the console's Automate section. BGD picks frames across the four on the picks page, so every proposal draws the same frames under the same ids, A1 to A7. This one draws Automate the way Config E draws Config: a setup strip, then sections, then detail pages that open with a lead and stack their cards. Every desktop frame is drawn at 1440 wide (or this page's width when the window is narrower) with the console's nav open; the phone frames are drawn 390 wide. The theme control at the top repaints the page and every frame light, dark or as the system says, and so does the control in each frame's panel foot.</p>
+<p class="lede">One of four competing proposals (A to D) for the owner's redesign of the console's Automate section. The owner picks frames across the four on the picks page, so every proposal draws the same frames under the same ids, A1 to A7. This one draws Automate the way Config E draws Config: a setup strip, then sections, then detail pages that open with a lead and stack their cards. Every desktop frame is drawn at 1440 wide (or this page's width when the window is narrower) with the console's nav open; the phone frames are drawn 390 wide. The theme control at the top repaints the page and every frame light, dark or as the system says, and so does the control in each frame's panel foot.</p>
 
 <div class="rules">
   <b>What every frame obeys</b>
@@ -613,7 +613,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2 id="open">Open questions, and what this proposal decided</h2>
 <ul>
   <li><b>"Denied" or "rejected".</b> The brief says denied; the API's state is <code>rejected</code>, its route <code>:reject</code>, and the built console says Reject… and Rejected. The frames draw "rejected" so as not to rename a built word; A5c is labelled denied so the picks line up.</li>
-  <li><b>The merge App step.</b> Drawn as the strip's fourth step, as the brief asks, and as the next step in A1. If BGD agrees the App is the platform's CI identity rather than a workspace's, the step shows only to a platform admin and a workspace's strip has three.</li>
+  <li><b>The merge App step.</b> Drawn as the strip's fourth step, as the brief asks, and as the next step in A1. If the owner agrees the App is the platform's CI identity rather than a workspace's, the step shows only to a platform admin and a workspace's strip has three.</li>
   <li><b>"Active" for <code>enabled</code>.</b> The cards say active, paused, paused by its spend tripwire (<code>auto_paused</code> with <code>RUN_OVER_BUDGET</code>), waiting on you (enabled with a pending approval), failing (enabled with failures in a row) and never fired: the state a person acts on, not the stored enum. Disabled (a platform admin's) would read "turned off by a platform admin".</li>
   <li><b>Two pages, kept.</b> Automate keeps Schedules and Approvals: the landing summarises approvals, but the inbox's filter and history are a page.</li>
 </ul>
@@ -705,7 +705,7 @@ const ST={
   wait:C('waiting on you','wn'),fail:C('failing','bd'),never:C('never fired','ln')
 };
 const SCH={
-  fr:{id:'sch_54e9828e6772',name:'Failure review',type:'failure-review',k:'wait',repo:'bogdan-alexandrescu/SwarmCloud',scope:'the platform',when:'every 6 hours, on the hour, UTC',
+  fr:{id:'sch_54e9828e6772',name:'Failure review',type:'failure-review',k:'wait',repo:'example-org/example-repo',scope:'the platform',when:'every 6 hours, on the hour, UTC',
     next:['12:00Z · in 2 h 40 m','skipped while the 00:00Z run is live'],last:['06:00Z · skipped','the 00:00Z run is still live'],
     spend:['$38.12 today','tripwire $200 a run · $1,000 a day'],wait:'merge of PR #2392 waits for the owner · 2&nbsp;d&nbsp;17&nbsp;h left',acts:B('Open approval','p s')+B('Open','s')},
   vq:{name:'Visual QA, console',type:'visual-qa',k:'fail',repo:'example-org/example-web',scope:'QA target Console staging',when:'daily at 04:00 UTC',
@@ -797,7 +797,7 @@ function runsChart(){
 }
 function oneSchedule(ph){
   const what=CARD('What it does',C('failure-review','ln'),`<p>Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.</p>`+
-    KV([['Type','failure-review'],['Target repository','bogdan-alexandrescu/SwarmCloud'],['Scope','the platform (a platform admin’s schedule)'],['Owner','Operator'],['Tier','R2: it opens pull requests and merges behind approval'],['Id','<span class="mn">sch_54e9828e6772</span>']]));
+    KV([['Type','failure-review'],['Target repository','example-org/example-repo'],['Scope','the platform (a platform admin’s schedule)'],['Owner','Operator'],['Tier','R2: it opens pull requests and merges behind approval'],['Id','<span class="mn">sch_54e9828e6772</span>']]));
   const when=CARD('When it fires',`<span class="mn">0 */6 * * *</span>`,`<p>Every 6 hours, on the hour, UTC. Catch-up: skip a missed slot. Overlap: skip while a run is live.</p><ul class="nf">`+
     [['26 Oct 12:00Z','in 2 h 40 m · skipped if 00:00Z’s run is live'],['26 Oct 18:00Z','in 8 h 40 m'],['27 Oct 00:00Z','in 14 h 40 m'],['27 Oct 06:00Z','in 20 h 40 m'],['27 Oct 12:00Z','in 1 d 2 h']].map(n=>`<li><span class="mn">${n[0]}</span><small>${n[1]}</small></li>`).join('')+`</ul>`);
   const hist=CARD('Firing history',`<span class="dim sm12">the last 6 of 41</span>${B('Every firing','s q')}`,frHistory());
@@ -887,8 +887,8 @@ function oneApproval(state,ph){
     member:LEAD('Waiting on the owner · expires in 2 d 17 h','Only the workspace owner can decide this','It is held for the owner because it changes a workflow and a shared file. Operator owns Example Team. You can read everything here.',B('Copy link','s'),'nu')
   }[state];
   const chip={pending:C('waiting','wn'),approved:C('approved','ok'),rejected:C('rejected','bd'),expired:C('expired','ln'),superseded:C('superseded','ln'),member:C('waiting','wn')}[state];
-  const asks=CARD('What it asks',C('merge','ln'),`<p class="quote" style="border-color:var(--info);color:var(--text)">bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge</p>`+
-    KV([['Pull request','<a>#2392 ↗</a> · bogdan-alexandrescu/SwarmCloud'],['Head',state==='superseded'?'<span class="mn">dbd00f06c5cd</span><small>now 7a3e51c09b2f</small>':'<span class="mn">dbd00f06c5cd</span>'],['Checks at dbd00f0',`${S('ok','10 passed')} · 0 failed · 0 pending`],['Verdict','merge, at head dbd00f06c5cd']]));
+  const asks=CARD('What it asks',C('merge','ln'),`<p class="quote" style="border-color:var(--info);color:var(--text)">example-org/example-repo#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge</p>`+
+    KV([['Pull request','<a>#2392 ↗</a> · example-org/example-repo'],['Head',state==='superseded'?'<span class="mn">dbd00f06c5cd</span><small>now 7a3e51c09b2f</small>':'<span class="mn">dbd00f06c5cd</span>'],['Checks at dbd00f0',`${S('ok','10 passed')} · 0 failed · 0 pending`],['Verdict','merge, at head dbd00f06c5cd']]));
   const held=CARD('Why it is held',C('held for the owner','wn'),`<p>Every hold category stops a merge whatever the schedule’s gate. This one matched two:</p>`+
     `<div class="rl"><div class="ri">${C('workflows','ln')}<span class="tx"><b>It changes a GitHub Actions workflow</b><small><code>.github/workflows/unit-weights-refresh.yml</code></small></span></div>`+
     `<div class="ri">${C('shared','ln')}<span class="tx"><b>It changes a file every component shares</b><small><code>scripts/lib/common.sh</code></small></span></div></div>`);

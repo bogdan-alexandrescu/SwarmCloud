@@ -29,33 +29,33 @@ move.
 | Panel 4 | **Checkpoint list** | `GET /v1/tasks/{id}/checkpoints` at `routes/tasks.py:246`, across attempts and read-only. UI: `RunFiles.tsx:96` through `api.ts:408` `loadCheckpoints` |
 | Panel 1 | **Fencing fields** | `task_to_api` serves `current_generation` and `current_lease_id` (`codec.py:168-199`), typed at `types.ts:406-427`. `gen N` is drawn per attempt (`AgentDetail.tsx:1187`) and per event (`AgentDetail.tsx:2962`, `AttemptTimeline.tsx:324`). No screen reads `current_generation` itself yet |
 | §4, §5.8, Panel 7 | **visx charts and TokenSpend** | `charts/TimeSeries.tsx:94` is the only module that imports visx. It uses four `@visx/*` 4.0.0 packages from `package.json`. `charts/TokenSpend.tsx:86` is mounted at `AgentDetail.tsx:1058` |
-| §4 #5, Panel 6 | **Requested vs peak memory** | a `Util` bar with the resource class's `memory_gib` as its ceiling, at `AgentDetail.tsx:1430-1438` |
+| §4 item 5, Panel 6 | **Requested vs peak memory** | a `Util` bar with the resource class's `memory_gib` as its ceiling, at `AgentDetail.tsx:1430-1438` |
 | §9 | **Help section and `?` cards** | `HelpSection.tsx:33` is mounted at `App.tsx:772`; `HelpCard.tsx:813`; the topics are in `help.ts` |
 | (not in the body) | **StopRun** | `StopRun.tsx:101`, on an agent (`AgentDetail.tsx:575`) and on a workflow (`Workflows.tsx:1990`) |
 | Panel 3 | **ArtifactViewer** | `ArtifactViewer.tsx:42` (`Markdown` at `:361`, `Transcript` at `:563`), opened from `AgentDetail.tsx:2000` |
 | (not in the body) | **Brand** | `Brand.tsx` `ProductHeader`, mounted at `App.tsx:760`: the mark, the wordmark, an environment badge that is measured rather than hardcoded, and the identity |
 | (not in the body) | **Submit form inputs** | `Submit.tsx:543` `InputFields` and `:340` `buildInput` replace the JSON textarea; `SubmitWorkflow.tsx:530` reuses them |
 | §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
-| §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
+| §4 item 1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
 | §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
-| §2.4 Admin | **Admin's read-only pane** | Admin took one read-only pane, Platform counts (a platform-wide count behind a button that prints its cost), so §2.4's "No read-only data at all" no longer holds; the current question is in App.tsx and redesign.md §2. *(Added 2026-09-25, AH-23 in #86.)* |
+| §2.4 Admin | **Admin's read-only pane** | Admin took one read-only pane, Platform counts (a platform-wide count behind a button that prints its cost), so §2.4's "No read-only data at all" no longer holds; the current question is in App.tsx and redesign.md §2. *(Added 2026-09-25, AH-23 in an earlier issue.)* |
 
 **Still open at `b0fff1b`**
 
-- **The workflow timeline and table views** (§2.3; §4 #2). The board offers
+- **The workflow timeline and table views** (§2.3; §4 item 2). The board offers
   Rows and Graph only (`Workflows.tsx:350-365`). `Work ▸ Timeline`
   (`App.tsx:275`) is the history of past runs, not §2.3's timeline mode.
-- **The duration bar** (§4 #3; §9's measured example). No screen has the
+- **The duration bar** (§4 item 3; §9's measured example). No screen has the
   queued → leased → dispatched → starting → running segmented bar. Durations
   are shown as figures.
-- **Peak RSS over time** (§4 #4). No step line has been built. Peak RSS is shown as a
+- **Peak RSS over time** (§4 item 4). No step line has been built. Peak RSS is shown as a
   figure per attempt (`AttemptTimeline.tsx:286`) and as the requested-vs-peak
   bar listed above.
-- **The checkpoint strip** (§4 #6). Checkpoints are a list in `RunFiles.tsx`,
+- **The checkpoint strip** (§4 item 6). Checkpoints are a list in `RunFiles.tsx`,
   not a dot strip on the attempt timeline.
-- **The diffstat** (§4 #7). Per-commit `+N −M` is printed as table figures
+- **The diffstat** (§4 item 7). Per-commit `+N −M` is printed as table figures
   (`AgentDetail.tsx:2413`), not as diverging bars.
-- **`input_from` edges** (§4 #1, #9). The DAG draws edges from `depends_on`
+- **`input_from` edges** (§4 item 1). The DAG draws edges from `depends_on`
   only (`dag.ts:1290`).
 - **Scrubbers** (§2.3). Not built.
 - **Events paging** (§6 S1). `GET /v1/tasks/{id}/events` takes `limit` and
@@ -79,16 +79,16 @@ move.
 Added when this block was merged with main at `56a5cab`. The rows above are
 left as they were checked at `b0fff1b`; this list is what changed after.
 
-- **Events paging** (§6 S1), in #19. `GET /v1/tasks/{id}/events` now takes
+- **Events paging** (§6 S1), in an earlier issue. `GET /v1/tasks/{id}/events` now takes
   `page_token` and `order=asc|desc` and returns `next_page_token`
   (`routes/tasks.py:138`). With neither parameter it returns what it always
   did. The route is paged; no screen asks for `order=desc` yet, so the UI's
   event lists still read the oldest page.
-- **Cross-agent attempts** (§6 S4), in #19. `GET /v1/attempts`
+- **Cross-agent attempts** (§6 S4), in an earlier issue. `GET /v1/attempts`
   (`routes/attempts.py:36`) lists every attempt of the caller's tenant, newest
   first, paged, with a per-page `coverage` count of rows that carry a reported
   cost. No screen calls it yet.
-- **Checkpoint content** (§6 S3, the checkpoint half), in #29. A listing, one
+- **Checkpoint content** (§6 S3, the checkpoint half), in an earlier issue. A listing, one
   member as text, and the whole archive: `routes/checkpoints.py:53`, `:83` and
   `:114`. The UI is `CheckpointBrowser.tsx:297`, opened from each checkpoint
   row in `RunFiles.tsx:222`. The constraints behind that shape are recorded
@@ -100,20 +100,20 @@ Added on 2026-10-02 in the same form as the list above: the rows checked at
 `b0fff1b` stay as they were. Each item of the "Still open" list is here, in
 its order.
 
-- **The workflow timeline and table views** (§2.3; §4 #2): shipped. The board
+- **The workflow timeline and table views** (§2.3; §4 item 2): shipped. The board
   offers graph, timeline and table (`apps/swarm-ui/src/stepviews.ts` (`export const WORKFLOW_VIEWS: readonly WorkflowView[] = ['graph', 'timeline', 'table']`)), rendered at
   `apps/swarm-ui/src/Workflows.tsx` (`<WorkflowTable`) and `apps/swarm-ui/src/Workflows.tsx` (`<WorkflowTimeline`).
-- **The duration bar** (§4 #3): partly shipped. `apps/swarm-ui/src/charts/AttemptPhases.tsx` (`PHASE BARS (redesign-v2 §4 viz #3)`)
+- **The duration bar** (§4 item 3): partly shipped. `apps/swarm-ui/src/charts/AttemptPhases.tsx` (`PHASE BARS (redesign-v2 §4 viz #3)`)
   draws queue, cold start and run on one axis per attempt, with a `dispatched`
   tick, mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<AttemptDurations task={task}`). It has three segments, not the
   five-state queued → leased → dispatched → starting → running bar.
-- **Peak RSS over time** (§4 #4): shipped, a step line
+- **Peak RSS over time** (§4 item 4): shipped, a step line
   (`apps/swarm-ui/src/charts/PeakMemory.tsx` (`<StepLine points={points}`)), mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<PeakMemoryChart attempt={a}`).
-- **The checkpoint strip** (§4 #6): shipped (`apps/swarm-ui/src/charts/CheckpointStrip.tsx` (`export function CheckpointStrip({`)),
+- **The checkpoint strip** (§4 item 6): shipped (`apps/swarm-ui/src/charts/CheckpointStrip.tsx` (`export function CheckpointStrip({`)),
   on the attempt at `apps/swarm-ui/src/AgentDetail.tsx` (`<CheckpointStrip attempt={a}`).
-- **The diffstat** (§4 #7): shipped as diverging bars
+- **The diffstat** (§4 item 7): shipped as diverging bars
   (`apps/swarm-ui/src/charts/Diffstat.tsx` (`export function DiffstatChart({`)), mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<DiffstatChart commits={commits}`).
-- **`input_from` edges** (§4 #1, #9): partly shipped. Edges are still laid out
+- **`input_from` edges** (§4 item 1): partly shipped. Edges are still laid out
   from dependencies, because every data edge is also a `depends_on`
   (`apps/swarm-ui/src/dag.ts` (`(validation.py, check 5), so every data edge is an`)). Each drawn edge is now marked data or ordering
   (`apps/swarm-ui/src/dag.ts` (`export function edgeProvenance(`)).
@@ -125,7 +125,7 @@ its order.
 - **Cross-agent attempts** (§6 S4): the route shipped (above), and the UI half
   is still open. No screen calls `GET /v1/attempts`; attempts are read per
   agent (`apps/swarm-ui/src/api.ts` (`export async function loadAgentRun(`)).
-- **Checkpoint content** (§6 S3): shipped in #29 (above).
+- **Checkpoint content** (§6 S3): shipped in an earlier issue (above).
 - **§1.1(b), the duplicate `@keyframes pulse`**: fixed. No `@keyframes pulse`
   is left. The two are `ctl-placeholder-pulse` (.5 → .85,
   `apps/swarm-ui/src/styles.css` (`@keyframes ctl-placeholder-pulse`)) and `ctl-live-pulse` (`apps/swarm-ui/src/styles.css` (`@keyframes ctl-live-pulse`)).
@@ -168,11 +168,11 @@ The "Fencing fields" row's last sentence still holds: no screen reads
   listing, per-file content, and a whole-checkpoint download.** At `b0fff1b`
   only the list of checkpoints existed (`GET /v1/tasks/{id}/checkpoints`),
   which names each checkpoint and says nothing of what is inside it. All three
-  parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
+  parts of the decision shipped in an earlier issue (see "Since `b0fff1b`" above).
 
 **2026-09-25:** §5.5 Tier 2's "links are underline-on-hover" is superseded by
 design-system.md §1.3's resting underline: a link is ink plus an underline at
-rest, and the accent is the hover and focus state (OV-8, epic #81).
+rest, and the accent is the hover and focus state (OV-8, an earlier epic).
 
 ---
 
@@ -341,7 +341,7 @@ the work a chart layer would do: `.bar` (5px), `.stack` (12px), `.stackcol` (120
 `.coverage` (4px), `.sr-bar` (9px), `.acct-bar` (10px cells), `.ctl-util-track`
 (10px). Seven implementations of one idea is why the same fact has three different
 visual weights on three screens. *(2026-09-25: `.acct-bar` is gone — Accounts'
-windows draw the shared `.ctl-util-track` since CP-25, #85.)*
+windows draw the shared `.ctl-util-track` since CP-25, an earlier issue.)*
 
 ### 1.4 Meaning is carried by prose, and prose is what you read when you cannot see
 
@@ -813,17 +813,17 @@ drops it, and the fix is five lines.
 | 6 | **Checkpoint cadence** | `/v1/tasks/{id}/attempts` → `checkpoints[]`; `/v1/tasks/{id}/events` → `checkpoint_completed.detail{uri,size_bytes,seq}` | Dot strip along the attempt timeline; dot area = `size_bytes`; hollow dot = `uriKnown === false` | That a hollow dot is a broken checkpoint — it means the describing event is off this page (`types.ts:894-900`). That the strip shows what is *inside* a checkpoint; contents are recorded nowhere. |
 | 7 | **Work produced, per commit** | `task.result_summary.git.commits[]` → `insertions`, `deletions`, `files_changed`, `binary_files` | Diverging diffstat bars, one row per commit | That a binary change is 0/0 — `binary_files` exists precisely so it does not read as "changed nothing". That `patch_omitted` means no patch; it means a patch existed and was discarded at the cap. |
 | 8 | **Publish / integrate outcome** | `result_summary.git` → `published`, `publish_reason`, `pull_request{}`, `integrated{merged, conflicted, missing, complete}` | Status chip with the reason on the chip, not behind it | That a missing PR is "none" — `types.ts:494-500` names six distinct causes and each is a different operator response. |
-| 9 | **Input provenance** | `result_summary.staged_inputs[]` → `task_id`, `filename`, `bytes`, `from_checkpoint` | Edges drawn back into viz #1, one per staged file | That an input with no `task_id` came from nowhere — it came from the submission. |
+| 9 | **Input provenance** | `result_summary.staged_inputs[]` → `task_id`, `filename`, `bytes`, `from_checkpoint` | Edges drawn back into viz 1, one per staged file | That an input with no `task_id` came from nowhere — it came from the submission. |
 | 10 | **Pool saturation** | `/v1/pools` → `in_use`, `hard_limit`, `adaptive_target`, `enabled` | Bullet bar, two ceiling markers (adaptive and hard), **hatched when `enabled == false`** | That a paused pool is at its ceiling. Compare `.enabled == false` explicitly — `false // true` is `true` in jq and has already broken this exact column once (CLAUDE.md). |
 | 11 | **Concurrency by pool** | `/v1/leases` → `pools[]`, `units`, `state` | Stacked bar by pool | That it counts RUNNING. Concurrency counts from **LEASED** (CONTRACT invariant 3). |
 | 12 | **Account quota windows** | `/v1/accounts` → `utilization` (0.0–1.0), `resets_at`, `observed_at`, `stale`, `state` | Radial gauge — the **only** genuinely 0..1 quantity in the platform — with an explicit staleness marker | That a stale reading is live. `usage.py:72-81` distinguishes `UsageUnavailable` from a zero on purpose and `usagepoll.py` refuses to record a failed poll; rendering a stale 12% as a live 12% undoes all of it. Also: never join an account to an agent — `Lease` and `Attempt` carry no account field, so "this account's quota is being burned by that agent" is unanswerable. |
 | 13 | **Agent state distribution** | `/v1/stats` → `tasks_by_state`, `platform_tasks_by_state` | Horizontal bars, tenant and platform in **separate blocks** | That the two scopes are comparable in one row (`PlatformCounts.tsx:18-22`). That `QUEUED`/`PARKED`/`READY` are demand — only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand (CONTRACT invariant 1). |
 | 14 | **Outcome mix over history** | `/v1/tasks` → `state` | Stacked bar by day | That failed and cancelled are the same thing. They currently render identically in greyscale (§1.5) and must not. |
 | 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the agent's start — it is overwritten per attempt (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). Only the sum of per-attempt intervals is agent work. |
-| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the agent and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for #72: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
+| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the agent and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for an earlier issue: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
 
-Two rows of that table (#4, #6) depend on the event page not truncating, and one
-(#3) is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
+Two rows of that table depend on the event page not truncating, and one
+ is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
 events + ~48 heartbeats (30s × `HEARTBEAT_EVENT_EVERY = 5` = one per 150s) + ~120
 checkpoint events (`checkpoint_interval_seconds = 120`) ≈ 175, and past 200 the
 route drops the **tail** — the terminal event, the last checkpoints, the last
@@ -897,7 +897,7 @@ Fix the inversion: `.section > h2` becomes 16px/600 in `--text`, above body text
   colour on `.row .why`, the blocked-reason line the CSS itself calls the whole
   point. It needs darkening; the earlier audit fixed `--text-faint` and did not
   re-check `--warn`.
-  *(Amended by the owner, 2026-09-25, AG-14 on #82: `.row .why` is no longer
+  *(Amended by the owner, 2026-09-25, AG-14 on an earlier issue: `.row .why` is no longer
   `--warn` on every row. It is plain ink, and `--warn` only on a why line that
   needs a person to act — a failure; work that can never be admitted until
   someone acts (a pool paused or set to zero, as a blocker or a `MANUAL_PAUSE`
@@ -940,14 +940,14 @@ bar — terminal, not a verdict — where it used to borrow `wait`'s triangle.
 Then retune luminance so the six occupy at least **three** distinct greyscale steps
 instead of two: lift `ok`, darken `bad`, pull `paused` toward blue-grey.
 
-> **Owner amendment, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok
+> **Owner amendment, 2026-09-25 (CP-14): healthy carries no hue.** The ok
 > mark's colour is a text grey, not `--ok`; its second channel — the solid fill,
 > the filled dot — is unchanged. Hue on a state mark is left to warn, bad, paused
 > and live. CP-14 chose `--text-dim`; CH-17, decided after it, draws the chip
 > and dot primitives' ok disc in `--text-faint`, and the later ruling sets that
 > grey. `.tag.ok`, which CH-17 leaves to CP-14, stayed `--text-dim` until the
-> 2026-09-25 follow-up on #85 ("The primitives paint `--text-faint` per CH-17,
-> which is later than #159's `--text-dim`") moved it, with Accounts' success
+> 2026-09-25 follow-up on an earlier issue ("The primitives paint `--text-faint` per CH-17,
+> which is later than an earlier issue's `--text-dim`") moved it, with Accounts' success
 > heading, to `--text-faint` too (design-system.md §15.7). The cost is
 > recorded in design-system.md §6.6 as well as here: in greyscale an ok mark is
 > told from bad and warn by its silhouette alone, because `--text-faint` is
@@ -1041,7 +1041,7 @@ Not a seam; a bug (§1.0). Add the five fields to `attempt_from_dict`
 (`codec.py:211-229`) and add a test asserting they are **present** when the document
 carries them — the existing test only asserts they are null when it does not.
 
-Unblocks viz #16 and Panel 7 entirely. Also delete the now-false comment at
+Unblocks viz 16 and Panel 7 entirely. Also delete the now-false comment at
 `codec.py:330-332` blaming the worker image, and the `AgentDetail.tsx` omission that
 was justified by it. **Track A's file — this is a request, not a change.**
 
@@ -1059,7 +1059,7 @@ Two options, and they are not exclusive:
 - add `order=desc`, so a caller who wants the *end* of a long run can get it in one
   page.
 
-Without this, §4 rows #3, #4 and #6 are built on a page that silently drops the tail,
+Without this, §4 rows an earlier issue, earlier issues are built on a page that silently drops the tail,
 and a long agent renders as one that never finished. `types.ts:894-900` already
 documents the consequence, which means the UI has been working around it rather than
 it being fixed.
@@ -1230,7 +1230,7 @@ that path is closed regardless.
 
 The `HEARTBEAT` event series (`{elapsed_seconds, peak_rss_bytes, checkpoints}`, one
 per 150s) is the *only* time series the platform has, and it is a monotonic peak, not
-usage. Row #4 of §4 is honest about that by labelling it "peak reached by T+n"; a
+usage. Row 4 of §4 is honest about that by labelling it "peak reached by T+n"; a
 genuine utilisation curve needs sample retention.
 
 **CPU is a separate and larger ask:** there is no CPU sampler at all, so
@@ -1247,7 +1247,7 @@ is **frozen**. Per CLAUDE.md this is raised here as a request. It belongs in
 `docs/contract-change-requests.md` if the owner wants it pursued.
 
 > **Filed 2026-09-24** as
-> [request #13](../contract-change-requests.md#13-modelspy-attempt-does-not-record-which-pool-account-it-ran-on),
+> [request 13](../contract-change-requests.md#13-modelspy-attempt-does-not-record-which-pool-account-it-ran-on),
 > open. One correction it makes to the paragraph above: the worker DOES record the
 > assignment, as an untyped `RUNNING` event (`cause: account_assigned`) on the agent's
 > events subcollection. It is not queryable, and an attempt can be offered more than

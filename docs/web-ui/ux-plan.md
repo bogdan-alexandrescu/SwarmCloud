@@ -26,8 +26,8 @@ reader can tell the sweep's own words from the corrections:
   and a thing shipped are read differently and this document would otherwise
   invite a second lane onto the same file. **As of 2026-09-24 none of the three
   is in flight**: §1.1 is `DONE` on both counts (stage-collapsing, then semantic
-  zoom), §1.3 is `DONE` (#5), and the overflow list is done in source for eleven
-  of its twelve findings and partly for the twelfth (#4, #3). What each did NOT
+  zoom), §1.3 is `DONE`, and the overflow list is done in source for eleven
+  of its twelve findings and partly for the twelfth. What each did NOT
   verify is said where it is marked.
 * One number was corrected rather than re-measured: §1.4 said "four top-level
   sections", and `SECTIONS` in `App.tsx` holds **six**. The 21 rail elements and
@@ -137,7 +137,7 @@ primary creation flow. It is already rebuilt in the structural pass; what
 remains is verifying the rebuilt flow against the required-keys path, which
 that lane reported it could not reach because the fixture does not serve it.
 
-> **The fixture serves it now (PR #25, 2026-09-24).** `fixtureCapacity` carried
+> **The fixture serves it now (2026-09-24).** `fixtureCapacity` carried
 > no `input_contract` on any runner profile, so `requiredInputKeys` read null for
 > all of them and a fixture session could only ever show the *unread* mark.
 > `FIXTURE_INPUT_CONTRACTS` in `api.ts` is `swarm_api.runnerinputs.input_contract()`
@@ -168,7 +168,7 @@ concept that belongs in docs with a link.
 
 Target: **under 20**, by fixing (a) and (b) and linking (c).
 
-> `DONE` — #5 (`350c2e1`, merged 2026-09-23). **139 help anchors in the source
+> `DONE` — an earlier issue (`350c2e1`, merged 2026-09-23). **139 help anchors in the source
 > became 16**, at most two in any one file; the 82 `?` widgets on screen are what
 > those 139 anchors drew across the fifteen routes, and 82 remains the baseline —
 > do not re-derive it from a later HEAD and conclude the finding was wrong. The
@@ -305,13 +305,13 @@ density argument the whole header is held to.
    [`overflow-inventory.md`](../audits/2026-09-23/overflow-inventory.md), of
    which the worst truncate measurements — `mock · 15 can start` rendering
    `mock · 1…` is a prefix of a number standing where the number was. Ten were
-   closed by #4 (`9d23b82`), F9 by #3 (`c440e68`), and F11's escape and its
-   progress string by #3 and `styles.css`; whether F11's `state not derived`
+   closed by an earlier issue (`9d23b82`), F9 by an earlier issue (`c440e68`), and F11's escape and its
+   progress string by an earlier issue and `styles.css`; whether F11's `state not derived`
    still ellipses is open. The inventory's §7 is the per-finding record. **Not
    re-measured**: every row was established by reading source, and
    `overflow/probe.js` has not been re-run against any of it.
 2. Verify the rebuilt submit flow against the required-keys path. **Unblocked,
-   not done** — the fixture serves the required-keys path as of PR #25 (§1.2);
+   not done** — the fixture serves the required-keys path as of an earlier pull request (§1.2);
    the form has not been driven against it.
 
 **Next, the decision above:**

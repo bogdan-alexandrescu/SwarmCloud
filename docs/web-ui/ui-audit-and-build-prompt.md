@@ -67,7 +67,7 @@ INPUT 6 · OUTPUT 214 · CACHE READ 73.2k · CACHE WRITE 9.1k`.
 `09-history-timeline.png` shows `TOKENS & SPEND 1 of 7 — 14% of rows carry
 usage; the rest predate the capture, so any total would understate.`
 
-**Consequence for the build.** Visualisation #16 (cost and tokens) is no longer
+**Consequence for the build.** Visualisation an earlier issue (cost and tokens) is no longer
 blocked. It moves into the first buildable batch. The coverage caveats in
 `redesign-v2.md` §Panel 7 all still hold and are restated in §B6.4 — in
 particular that a run whose runner reported no usage records nothing, and those
@@ -241,7 +241,7 @@ footer, or matched against the drawer title. The full id exists only as a native
 `title=` tooltip.
 
 **What does work is the step chip.** `22-detail-research.png` shows the row as
-`• DISPATCHED  claude-code / 40158851   bogdan   (RESEARCH)`. The
+`• DISPATCHED  claude-code / 40158851   owner    (RESEARCH)`. The
 RESEARCH / DRAFT / REVIEW chips are the one usable handle on the list and are a
 good decision. But the chip carries only `step_id`; the workflow id is again
 hover-only (`Agents.tsx:305`, `title={`workflow ${task.workflow_id}`}`), so with
@@ -307,7 +307,7 @@ It is a layout change, not a rewrite.
 That is the honest answer to "what will this produce", stated once, at the top.
 Keep it.
 
-> *Note, 2026-09-25 (WF-13, epic #83):* since WF-13 the card reads
+> *Note, 2026-09-25 (WF-13, an earlier epic):* since WF-13 the card reads
 > `dispatch collect · opens no pull request and pushes nothing` — the same
 > answer as a phrase that reads after its key, from the same switch in
 > `consequenceOf` (its `opens` field). The full sentence, "No pull request.
@@ -358,7 +358,7 @@ and an attempt block. `22-detail-research.png` cuts off mid-row on the
 `workspace peak` line.
 
 **(c) `Execution` eats three of the drawer's ~20 fact lines** with
-`projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-eng-claude-code/executions/swarm-job-eng-claude-code-sq2l6`.
+`projects/example-project/locations/us-central1/jobs/swarm-job-eng-claude-code/executions/swarm-job-eng-claude-code-sq2l6`.
 The longest string in the drawer is the one a user has no use for.
 
 **The Attempts tab cannot answer the timing question.** `23-attempts-research.png`
@@ -2028,7 +2028,7 @@ GET /v1/attempts?since=<iso8601>&until=<iso8601>&limit=&page_token=
 a second pass, and without it the N+1 loop gets written in the browser by
 whoever builds History.
 
-**What a row without a cost means (#72).** "2 of 7" alone cannot say what the
+**What a row without a cost means.** "2 of 7" alone cannot say what the
 other 5 are, so every row without a `cost_usd` is counted in exactly one of four
 buckets, and `with_spend + in_flight_unreported + not_reported_by_profile +
 not_recorded + profile_unknown == attempts`:
@@ -2326,7 +2326,7 @@ not an engineering one.
 # HALF THREE — what the screenshots show (2026-09-22, signed in, live data)
 
 Half one was written against screenshots taken while a workflow was mid-flight.
-This half was captured after it finished, against `https://swarm.saga.xyz`, all
+This half was captured after it finished, against `https://swarm.example.com`, all
 15 routes, with the probe in `scratchpad/uiaudit/probe.js` running in-page on
 each. It supersedes nothing; it adds what only became visible once there was
 completed work to render.
@@ -2735,7 +2735,7 @@ an agent burn tokens on the wrong thing cannot stop it from the console.
   every component carry no branding at all.
 * **B31 — Sub-agents, as a contract request.** Write the request; do not build a
   fake hierarchy from `depends_on`. **Filed 2026-09-24** as
-  [request #14](../contract-change-requests.md#14-modelspy-a-sub-agent-has-nowhere-to-name-its-parent),
+  [request 14](../contract-change-requests.md#14-modelspy-a-sub-agent-has-nowhere-to-name-its-parent),
   open.
 
 ## Correction to half one

@@ -294,7 +294,7 @@ of every step pays that cost, before any answer (§7.7).
     bytes a symbol-or-edge of its index's counts): 20 s + 1.5 s a MB, at
     most half the extract budget (180 s of an incremental run's 360), the
     bound an index without counts also gets. The flat quarter it replaced,
-    90 s, was measured running past on a 63 MB base (#1469).
+    90 s, was measured running past on a 63 MB base.
 
   The agent then writes the judgement fields: purposes, territory, notes
   and `test_layout`.
@@ -550,7 +550,7 @@ joins repo-index.md §4.1's `REPO INDEX` section inside the same
 | **where the issue lands** | symbol search (C's BM25) over the issue's title, body and named paths and identifiers → top 20 symbols with file, module and community | The planner today clones and greps. Estimate: one fewer exploration round of 5-15 tool calls per plan, based on the turn counts behind CLAUDE.md's "8.9 billion cached tokens" lane measurement. **Measure:** planner turns and tokens before and after. |
 | **impact of each candidate** | `impact(symbol, upstream, depth 2)`: callers, modules and tests; the fan-in count is the risk | Steps name their `tests` from the map instead of guessing. **Measure:** fraction of a plan's `tests` that exist and cover the changed symbols. |
 | **overlap with open PRs** | for every open PR in the snapshot `planner_prompt` already reads (`apps/swarm-api/swarm_api/issueruns.py::_open_work_section`): changed files → changed symbols → upstream depth 1; intersect with the candidates | The overlap list is evidence, not the planner's guess. Today `PlanOverlap` is filled from titles and file lists. |
-| **step splitting by territory** | the communities that contain the candidates; propose one step per community, and put steps that share a file or a seam in one dependency line | This is the #1 conflict cause. §4.9's validator makes it a guarantee for *declared* files. The graph extends it to *undeclared* ones: the call sites a signature change forces. |
+| **step splitting by territory** | the communities that contain the candidates; propose one step per community, and put steps that share a file or a seam in one dependency line | This is the earlier issue's conflict cause. §4.9's validator makes it a guarantee for *declared* files. The graph extends it to *undeclared* ones: the call sites a signature change forces. |
 | **seams** | file fan-in plus co-change rank; replaces lane-queue.md §4.1's "seeded from the index's `hot_spots`" | `hot_spots` counts edits, not dependants. `main.py`, `App.tsx` and `schemas.py` are seams because everything *registers* there, which fan-in sees and edit counts may not. |
 
 ### 4.2 Implementers (claude-code steps)
@@ -570,7 +570,7 @@ Hook:
 | callers and callees before changing a function | `context(symbol)` | A direct-caller question is a wash against grep: grep found all 31 `compile_plan` lines in 3.5 KB. **Graph answers win at depth ≥ 2 and on test coverage**, where grep needs one round per level. |
 | blast radius | `impact(symbol, depth ≤ 3)` with tests and modules | Fewer missed call sites. **Measure:** review findings of the form "call site not updated". |
 | conventions of neighbouring code | `neighbours(symbol)`: same file and same community, same kind, with their docstrings, decorators and test files | The agent copies the local idiom (CLAUDE.md: "match the surrounding code"). |
-| which tests to run before pushing | `tests_for(files or symbols)`, the same engine as `tests:select` | Runs the right tests first, not "the area". Basis: 25% of lane PRs were red on first CI run (#642), and 2 of 6 SwarmCloud fix PRs were red on failures a unit run would have caught (#248, #249). |
+| which tests to run before pushing | `tests_for(files or symbols)`, the same engine as `tests:select` | Runs the right tests first, not "the area". Basis: 25% of lane PRs were red on first CI run, and 2 of 6 SwarmCloud fix PRs were red on failures a unit run would have caught. |
 | "am I about to collide?" | `territory(files)` → other in-flight steps and lanes holding them (phase 3, from §4.8) | The step learns of a conflict before it writes, not at integration. |
 
 ### 4.3 Reviewers
@@ -668,7 +668,7 @@ The rule: two steps that are **not** on one dependency line and whose
 §4.1 defines it, make the plan **invalid**.
 
 This is pure, offline and graph-free. It is the cheapest change in this
-document and goes straight at the #1 conflict cause. The graph later widens
+document and goes straight at the earlier issue's conflict cause. The graph later widens
 `files` with forced call sites and seams. Whether to refuse such a plan or
 auto-chain the steps was owner question Q4. **Owner decision 2026-10-08: refuse
 the plan, with the reason (§9 Q4).** A plan whose parallel steps list the same
@@ -681,7 +681,7 @@ the reason goes back to the planner so it re-plans. Nothing is auto-chained.
 
 ### 5.1 How the graph reaches a step
 
-Proposed replacement for the per-step snapshot row below: one shared graph service and a local shim, [graph-service.md](graph-service.md) (#1384).
+Proposed replacement for the per-step snapshot row below: one shared graph service and a local shim, [graph-service.md](graph-service.md).
 
 | path | for | built on |
 |---|---|---|
@@ -762,7 +762,7 @@ Rules:
 | **KG2** | 1 | extractor version 3: communities, BM25 term index, signature fingerprints, module-object call resolution (§2.2 item 6), entry-point flows; new shard layers | `images/agent-runtime-indexer/repo-index/repo_index_extract.py`, `images/agent-runtime-indexer/repo-index/repo_graph_shards.py`, new `tests/unit/worker/test_repo_index_communities.py` | — | extract time within +10% of version 2; test→application edges ≥ 4,438 and covering the 6 `planner_prompt` tests; community stability across incremental runs (Jaccard ≥ 0.9) |
 | **KG3** | 2 | read routes: `POST .../search`, `GET .../communities`, `POST .../territory` (files → expanded territory, seams, overlap with open PRs and in-flight lanes) | new `apps/swarm-api/swarm_api/territory.py`, `apps/swarm-api/swarm_api/routes/repositories.py`, new tests | KG2 | p95 latency; ETag hit rate |
 | **KG4** | 2 | `swarm-graph` MCP server, read-only, stdio, ≤ 6 tools (`search`, `context`, `impact`, `tests_for`, `neighbours`, `territory`), freshness block on every answer, 4 KiB answer cap with paging | new `apps/agent-worker/agent_worker/graphmcp/` package and new tests | KG2 | schema ≤ 2k tokens; answer p95 < 300 ms on this repo's snapshot |
-| **KG5** | 3 | worker staging of the snapshot (request A amended, §7.4), `--mcp-config` for claude-code, one prompt line | new `apps/agent-worker/agent_worker/graphstage.py`, `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/cliagent.py`; the frozen-contract edit **by the owner** | KG4, request A' accepted | tokens per agent; first-push CI red rate (baseline 25%, #642); tool calls per step |
+| **KG5** | 3 | worker staging of the snapshot (request A amended, §7.4), `--mcp-config` for claude-code, one prompt line | new `apps/agent-worker/agent_worker/graphstage.py`, `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/cliagent.py`; the frozen-contract edit **by the owner** | KG4, request A' accepted | tokens per agent; first-push CI red rate (baseline 25%); tool calls per step |
 | **KG6** | 3 | review impact block and fixer test→symbol context | `apps/swarm-api/swarm_api/issueci.py`, new `apps/swarm-api/swarm_api/reviewcontext.py`, `issueruns.py` (review step prompt only; KG1 has merged by then) | KG1, KG3 | review findings that name a missed call site or test; fix rounds per run |
 | **KG7** | 3 | orchestrator `swarm_territory` tool and the dispatch-time warning | `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/client.py`, new tests | KG3 | parallel lanes dispatched with overlapping territory, unannounced → 0 |
 | **KG8** | 4 | console community layer, issue and lane overlays | `apps/swarm-ui/src/RepoGraph.tsx`, `apps/swarm-ui/src/RepoGraphData.ts`, `apps/swarm-ui/src/api.ts` | KG3; never beside another `apps/swarm-ui` lane on `api.ts` | owner's pick from a mock-up first, as RI13 did |
