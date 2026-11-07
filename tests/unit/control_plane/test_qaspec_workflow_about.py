@@ -3,7 +3,8 @@
 Every leg of one target was titled `Visual QA: <target>`, so in the console
 the reviewer and moderator legs read alike, and none said what it was meant
 to deliver. Each leg is now titled with its role and environment (`Visual QA:
-ai-studio, moderator, staging`), and carries `metadata.description` -- the
+moderator, staging`; the target's name follows while the title holds at most
+30 characters, owner 2026-11-07), and carries `metadata.description` -- the
 target, the leg's role and environment, how many capture groups, what the
 report is -- and `metadata.feature`, `Quality check of <target>`, which the
 API accepts as any submitter's (`schemas.check_workflow_about`).
@@ -48,9 +49,9 @@ def _leg(name: str, target: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(("leg", "title"), [
-    ("stg-moderator", "Visual QA: ai-studio, moderator, staging"),
-    ("stg-reviewer", "Visual QA: ai-studio, reviewer, staging"),
-    ("production", "Visual QA: ai-studio, production"),
+    ("stg-moderator", "Visual QA: moderator, staging"),
+    ("stg-reviewer", "Visual QA: reviewer, staging"),
+    ("production", "Visual QA: production"),
 ])
 def test_each_leg_is_titled_with_its_role_and_environment(leg, title):
     assert qaspec.render(_leg(leg), file="issues")["title"] == title
@@ -59,7 +60,7 @@ def test_each_leg_is_titled_with_its_role_and_environment(leg, title):
 def test_a_target_that_is_its_own_one_leg_names_its_environment():
     flat = {k: v for k, v in _target().items() if k != "environments"}
     flat.update(base_url="https://staging.example.com", environment="non_production", sign_in={"kind": "none"})
-    assert qaspec.render(flat, file="none")["title"] == "Visual QA: ai-studio, staging"
+    assert qaspec.render(flat, file="none")["title"] == "Visual QA: staging, ai-studio"
 
 
 def test_two_legs_of_one_target_read_apart():
@@ -83,7 +84,7 @@ def test_a_discovery_run_is_titled_and_described_by_its_leg():
     target["environments"][1]["discover"] = {"max_pages": 50, "max_depth": 3}
     target["discover"] = {"max_pages": 50, "max_depth": 3}
     spec = qaspec.render_discovery(_leg("stg-moderator", target))
-    assert spec["title"] == "Visual QA discovery: ai-studio, moderator, staging"
+    assert spec["title"] == "Discovery: moderator, staging"
     assert "lists the same-origin screens" in spec["description"]
     assert spec["feature"] == {"title": "Quality check of ai-studio"}
 
@@ -91,7 +92,7 @@ def test_a_discovery_run_is_titled_and_described_by_its_leg():
 def test_the_run_body_carries_them_and_the_api_accepts_it():
     body, _mark, _browser = render_run(_leg("stg-moderator"), screens=None, file="none")
     metadata = body["metadata"]
-    assert metadata["title"] == "Visual QA: ai-studio, moderator, staging"
+    assert metadata["title"] == "Visual QA: moderator, staging"
     assert metadata["feature"] == {"title": "Quality check of ai-studio"}
     created = WorkflowCreate.model_validate(body)
     assert created.metadata["description"] == metadata["description"]
