@@ -709,7 +709,7 @@ RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
 
 
 #: The providers a pool account may be of: Claude subscriptions and, since
-#: 2026-11-01 (#2688, BGD: codex runs on ChatGPT plans from a shared pool),
+#: 2026-11-01 (#2688, the owner: codex runs on ChatGPT plans from a shared pool),
 #: ChatGPT plans. Each is a credential pair this service can refresh; a
 #: provider outside this list has no refresh path, so filing one would be a
 #: pool entry that dies at its first expiry.
@@ -786,7 +786,7 @@ def credential_from_token_response(payload: dict[str, Any]) -> Credential:
 
 
 #: What a reader is told of the other side of a pair it does not own (#2222;
-#: BGD, 2026-10-24 17:26Z, "Name it only within the same tenant"): that there
+#: the owner, 2026-10-24 17:26Z, "Name it only within the same tenant"): that there
 #: is one, and nothing about it -- no label, owner, account id or organisation.
 #: A tenant learns nothing about another tenant's pool.
 ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
@@ -936,7 +936,7 @@ def account_to_api(
         })
     # A LATER REGISTRATION OF A SUBSCRIPTION ANOTHER ACCOUNT HOLDS (#2222):
     # one subscription, handed out once, through the older registration.
-    # NAMED ONLY TO ITS OWN TENANT (BGD, Q2): another workspace's account
+    # NAMED ONLY TO ITS OWN TENANT (the owner, Q2): another workspace's account
     # reads as "already registered in another workspace", and nothing else.
     # ONLY ON A RECORDED IDENTITY (#3046): a stored mark on an account whose
     # organisation or seat is not recorded is one an older rule wrote, which
@@ -957,7 +957,7 @@ def account_to_api(
     if proven is not None and withheld_mark(account):
         blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason,
                            "matched_on": DUPLICATE_MATCHED_ON})
-    # IDENTICAL READINGS ON TWO POLLS (#2222, BGD Q1): an inferred pair,
+    # IDENTICAL READINGS ON TWO POLLS (#2222, the owner Q1): an inferred pair,
     # shown here and in `blocked_by` the way a proven one is, but ADVISORY --
     # `choose()` still hands it out, so it does not make `can_take_new_agent`
     # false. Readings can coincide; withholding on an inference would take a
@@ -1125,7 +1125,7 @@ def _organisation_to_api(account: Any) -> dict[str, Any] | None:
 def organisation_line(account_id: str, organisation: Organisation | None) -> str:
     """What an add or replace answer says it registered (#2222).
 
-    "registered eng:saga-team: organisation Personal (Max)" -- so a sign-in
+    "registered eng:example-team: organisation Personal (Max)" -- so a sign-in
     that authorised the wrong organisation shows at once, in the answer, not
     two days later in the week's figures.
     """
@@ -1151,7 +1151,7 @@ def refuse_duplicate_organisation(
     re-sign-in of the same seat onto the same account is the normal way to
     replace a credential. Raised before any secret is written.
 
-    ONLY THE SAME SEAT (BGD, 2026-10-25): a second seat of a Team
+    ONLY THE SAME SEAT (the owner, 2026-10-25): a second seat of a Team
     organisation has its own limits and registers normally. A sign-in whose
     seat the provider did not name, or an existing account whose seat is not
     recorded yet, is never refused on the organisation alone, and is never
@@ -1160,7 +1160,7 @@ def refuse_duplicate_organisation(
     (`accounts.duplicates`) if it is one; until then identical readings only
     flag it (`possible_duplicate`).
 
-    THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (BGD, 2026-10-24
+    THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (the owner, 2026-10-24
     17:26Z, "Name it only within the same tenant"). Another tenant's is
     "already registered in another workspace": no label, owner, account id or
     organisation, so an add cannot be used to probe another tenant's pool.

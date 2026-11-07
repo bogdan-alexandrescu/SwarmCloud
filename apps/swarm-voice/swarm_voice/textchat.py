@@ -9,7 +9,7 @@ conversation: the browser turns each spoken turn into text and posts it, and
 this module answers it from the plan. There is no SDP and no WebRTC; the
 captions are the turns themselves.
 
-THE WIRE, AS AI STUDIO MEASURED IT (2026-08-10, against a live ChatGPT Plus
+THE WIRE, AS A PEER APPLICATION MEASURED IT (2026-08-10, against a live ChatGPT Plus
 token; copied, not re-derived):
 
 * `POST https://chatgpt.com/backend-api/codex/responses` with

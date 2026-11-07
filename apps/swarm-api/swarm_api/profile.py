@@ -218,7 +218,7 @@ def workspaces(
     workspace as a non-selectable row while it is not ready yet, so the page
     can say "requested" instead of hiding it.
 
-    A GROUP ROW IS NAMED AS THE SWITCHER NAMES IT (BGD, 2026-11-04; part of
+    A GROUP ROW IS NAMED AS THE SWITCHER NAMES IT (the owner, 2026-11-04; part of
     #2688): `display_name` is the workspace record's stored name, read by
     `GET /v1/tenants/mine`'s own rule (`routes.tenants._stored_names`: ONE
     batched `get_all` of the group rows' `tenants/{id}` documents, never a

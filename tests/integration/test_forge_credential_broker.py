@@ -64,7 +64,7 @@ from swarm_api.repositories import repo_id_for  # noqa: E402
 from swarm_api.settings import ApiSettings  # noqa: E402
 from swarm_api.waker import NullWaker  # noqa: E402
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 ENG_GROUP = "eng@example.com"
 ALICE = "alice@example.com"
 BOB = "bob@example.com"
@@ -72,7 +72,7 @@ CHILD_KEY = "emulator-child-key-not-a-real-secret"
 #: The static verifier's name for eng's worker identity, built at runtime.
 WORKER_ID_TOKEN_NAME = "-".join(("token", "worker", "eng"))
 KEY_VERSION = (
-    "projects/swarm-test/locations/us-central1/keyRings/swarm-test-specs/"
+    "projects/example-project/locations/us-central1/keyRings/swarm-test-specs/"
     "cryptoKeys/step-spec/cryptoKeyVersions/1"
 )
 PATH = "/v1/attempts/forge-credential"

@@ -105,7 +105,7 @@ MAX_HAVES = 16
 #: merged-in line of history; each costs a depth-1 fetch.
 MAX_PREREQUISITES = 16
 #: Fetches of one push bundle's base before its failure means anything: the
-#: first, then one fresh one (AI Studio's report, 2026-11-06). Both run within
+#: first, then one fresh one (a peer application's report, 2026-11-06). Both run within
 #: the call's one deadline, so the second adds no time the call did not have.
 PREREQUISITE_FETCHES = 2
 #: A base the remote could not be asked about, after the fresh fetch too: a
@@ -642,7 +642,7 @@ class GitExec:
 
         A base whose fetch fails is fetched once more, with the same
         credential and within the same call deadline, before anything is
-        concluded from it (AI Studio's report, 2026-11-06: two bases that were
+        concluded from it (a peer application's report, 2026-11-06: two bases that were
         on GitHub were refused `bad_bundle` while GitHub was failing). Only
         git's own answer that the remote lacks the sha (`_ABSENT`) is
         `bad_bundle`; any other failure of the second fetch is

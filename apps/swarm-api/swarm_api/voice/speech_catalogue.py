@@ -11,16 +11,16 @@ THE ENTRIES, and where each figure came from:
 
 * MACHINES are the single-L4 g2 types only (one NVIDIA L4 each; the speech
   machine holds Qwen3-ASR and Kokoro on one GPU). g2-standard-4 at $0.71 an
-  hour is BGD's figure (2026-11-05, pick 1) and the default. The others are
+  hour is the owner's figure (2026-11-05, pick 1) and the default. The others are
   Compute Engine's on-demand us-central1 list price, machine plus its L4,
   priced from the G2 components (vCPU $0.024988, memory $0.002927 per GB,
-  one L4 $0.5599, per hour) that reproduce BGD's $0.71 for g2-standard-4;
+  one L4 $0.5599, per hour) that reproduce the owner's $0.71 for g2-standard-4;
   `price_read_at` says when. Not yet read through the Cloud Billing Catalog
   API, which needs a billing credential this service does not hold.
 * MODELS are pinned to one Hugging Face revision each, with the SHA-256 of
   every weight file the speech machine fetches (§5.2: the boot checks them
   and refuses a mismatch). Read from the Hugging Face API on 2026-11-05.
-* THE CONVERSATION MODEL (BGD's answer 3, 2026-11-05): on the own-speech
+* THE CONVERSATION MODEL (the owner's answer 3, 2026-11-05): on the own-speech
   engine a small, fast Claude model from the pool answers each spoken
   sentence at once and hands planning and actions to the Claude planner,
   acting as the signed-in person. No OpenAI model is ever listed here.
@@ -30,13 +30,13 @@ THE ENTRIES, and where each figure came from:
   prices (`modelprices.SEED`), so every pick runs on the pool's accounts and
   is costed like any other turn. The default is the haiku class's pin,
   `local.runner_models.haiku` (claude-haiku-5-5), the model swarm-voice's
-  front runs with no setting (VOICE_FRONT_MODEL; BGD, 6 November 2026); the
+  front runs with no setting (VOICE_FRONT_MODEL; the owner, 6 November 2026); the
   older claude-haiku-4-5 is no longer listed, so a stored pick of it reads as
   this default. The two Sonnets trade a slower first word for a stronger
   reply. swarm-voice holds the same ids (`claudefront.FRONT_MODELS`, held
   equal by a test) and refuses any other in a start body; a session reads the
   pick at its start, so a change reaches the next session, never a running one.
-* THE PLANNER MODEL (BGD, 2026-11-05: the planner runs the planning class,
+* THE PLANNER MODEL (the owner, 2026-11-05: the planner runs the planning class,
   "make it configurable as well"): the model the planner turns of BOTH
   engines run, picked by CLASS, never by id. The names are the frozen
   `swarm_common.profiles.MODEL_CLASSES`, the classes Terraform's
@@ -48,7 +48,7 @@ THE ENTRIES, and where each figure came from:
   reaches the next session, never one already running.
 * ZONES are the deployment's provisioned speech machines, one each
   (`SWARM_SPEECH_ZONES`, from Terraform's `voice_speech.zones`). One zone
-  by default (BGD's answer 1): a stock-out falls back to text mode, and no
+  by default (the owner's answer 1): a stock-out falls back to text mode, and no
   second machine is tried.
 """
 
@@ -143,11 +143,11 @@ ENGINES: tuple[Engine, ...] = (
     Engine(ENGINE_GPT_LIVE, "GPT-Live", uses_machine=False),
 )
 
-_BGD = "BGD's figure, 2026-11-05"
+_OWNER_FIGURE = "the owner's figure, 2026-11-05"
 _LIST = "Compute Engine on-demand list price, us-central1, machine plus one L4"
 
 MACHINES: tuple[Machine, ...] = (
-    Machine("g2-standard-4", vcpu=4, memory_gb=16, gpus=1, usd_per_hour=0.71, price_source=_BGD),
+    Machine("g2-standard-4", vcpu=4, memory_gb=16, gpus=1, usd_per_hour=0.71, price_source=_OWNER_FIGURE),
     Machine("g2-standard-8", vcpu=8, memory_gb=32, gpus=1, usd_per_hour=0.85, price_source=_LIST),
     Machine("g2-standard-12", vcpu=12, memory_gb=48, gpus=1, usd_per_hour=1.00,
             price_source=_LIST),
@@ -217,7 +217,7 @@ IDLE: tuple[Idle, ...] = (
     Idle("15m", 900),
 )
 
-#: The one zone a deployment has when Terraform names none (BGD's answer 1).
+#: The one zone a deployment has when Terraform names none (the owner's answer 1).
 DEFAULT_ZONES: tuple[str, ...] = ("us-central1-a",)
 ZONES_ENV = "SWARM_SPEECH_ZONES"
 

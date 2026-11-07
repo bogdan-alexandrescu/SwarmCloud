@@ -5,9 +5,9 @@ are used, and the flag itself is read-only.
 
 THE PROPERTY, and why it is worth a file of its own:
 
-    saga-agents-staging holds a live GKE cluster, a VPC and its subnets, buckets,
-    Cloud Run services and service accounts that belong to promptlab, crawler,
-    aipipeline, external-secrets, tournament-digest, ai-studio and oracle --
+    The shared project holds a live GKE cluster, a VPC and its subnets, buckets,
+    Cloud Run services and service accounts that belong to other teams' peer
+    applications --
     every one listed in `SHARED_DENY_LIST` in scripts/lib/common.sh. The last
     thing `make destroy` does is assert they all survived. Every one of those
     lookups was
@@ -18,7 +18,7 @@ THE PROPERTY, and why it is worth a file of its own:
     expired session, a disabled API, a missing permission, a network blip and a
     wrong --location produce. The script then printed
 
-        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/agents-staging network/...
+        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/peer-cluster network/...
         This should be impossible -- the plan assertions passed. Escalate immediately.
 
     naming fifteen of another team's resources as deleted, with the real reason
@@ -31,6 +31,8 @@ present (0), provably gone (3), could not look (4).
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
 import shutil
 import subprocess
@@ -38,14 +40,35 @@ from pathlib import Path
 
 import pytest
 
+from destroy_plan_recording import shared_project_id  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "destroy.sh"
 
 # The shared project, by name: common.sh keys SHARED_DENY_LIST by project
-# (DAYONE-DESAGA-2) -- whole for saga-agents-staging, empty for any other -- and
+# (DAYONE-GENERIC-2) -- whole for the shared project, empty for any other -- and
 # these neighbours exist only there. Named in any other project the check has
 # nobody's resources to look at, and the cases below would test nothing.
-PROJECT = "saga-agents-staging"
+PROJECT = shared_project_id()
+
+#: The deny-list as common.sh holds it, and each entry's kind by the first rule
+#: of the shared classification table destroy.sh's proof reads -- so the cases
+#: below name the neighbours common.sh names, never a restatement of them.
+_COMMON = (REPO / "scripts" / "lib" / "common.sh").read_text()
+DENY_ENTRIES = [
+    line.strip().strip('"')
+    for line in _COMMON.split("SHARED_DENY_LIST=(", 1)[1].split("\n)", 1)[0].splitlines()
+    if line.strip().startswith('"')
+]
+_CLASSIFY = json.loads((REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json").read_text())["classify"]
+
+
+def _kind(entry: str) -> str | None:
+    return next((rule["kind"] for rule in _CLASSIFY if fnmatch.fnmatchcase(entry, rule["glob"])), None)
+
+
+CLUSTER = next(entry for entry in DENY_ENTRIES if _kind(entry) == "cluster")
+BUCKET = next(entry for entry in DENY_ENTRIES if _kind(entry) == "bucket")
 
 pytestmark = pytest.mark.skipif(
     not SCRIPT.exists() or shutil.which("jq") is None,
@@ -59,10 +82,10 @@ GCLOUD_ALL_PRESENT = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
@@ -86,18 +109,23 @@ GCLOUD_ONE_BUCKET_DELETED = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"saga-agents-files-staging"*)
-    echo "ERROR: (gcloud.storage.buckets.describe) gs://saga-agents-files-staging not found: 404." >&2
+  *"@BUCKET@"*)
+    echo "ERROR: (gcloud.storage.buckets.describe) gs://@BUCKET@ not found: 404." >&2
     exit 1
     ;;
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
 """
+
+GCLOUD_ALL_PRESENT = GCLOUD_ALL_PRESENT.replace("@CLUSTER@", CLUSTER)
+GCLOUD_ONE_BUCKET_DELETED = (
+    GCLOUD_ONE_BUCKET_DELETED.replace("@CLUSTER@", CLUSTER).replace("@BUCKET@", BUCKET)
+)
 
 
 def _verify(tmp: Path, fake_gcloud: str) -> subprocess.CompletedProcess:
@@ -179,7 +207,7 @@ def test_a_resource_that_really_is_gone_still_escalates(tmp_path) -> None:
 
     assert proc.returncode == 3, transcript
     assert "ARE GONE" in transcript, transcript
-    assert "bucket/saga-agents-files-staging" in transcript, transcript
+    assert f"bucket/{BUCKET}" in transcript, transcript
     assert "Escalate immediately" in transcript, transcript
     # ... and it must not be confused with the "could not look" case.
     assert "COULD NOT VERIFY" not in transcript, transcript
@@ -207,7 +235,7 @@ def test_the_verification_names_every_deny_listed_neighbour(tmp_path) -> None:
     # Subnets are covered by the PLAN guard (destroy-guard.jq matches them on the
     # network field), not by a post-apply describe, and `default` is the shared
     # network already checked under its own name.
-    skip = {"agents-staging-subnet", "gke-agents-staging-88280d02-pe-subnet"}
+    skip = {entry for entry in entries if _kind(entry) == "subnet"}
     missing = []
     for entry in entries:
         if entry in skip:

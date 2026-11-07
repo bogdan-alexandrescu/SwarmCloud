@@ -1,5 +1,5 @@
 """`swarm_browse`: the four compact reads the sc plugin's SwarmCloud pane
-makes, one MCP call per click (SC-BROWSER-BUILD, #2318; BGD picked proposal
+makes, one MCP call per click (SC-BROWSER-BUILD, #2318; the owner picked proposal
 B, Two columns, on 2026-10-25, PR 2328).
 
 THE PANE SPENDS NO MODEL TOKENS. plugin/hooks/pane.tsx calls this tool
@@ -16,7 +16,7 @@ slower, and the existing tools were each shaped for a model reader.
   `levelsOf`), its duration, tokens and cost; and this session's running
   single tasks. `swarm_workflows` lists the whole tenant's RUNNING
   workflows with no tokens and no parents, which is not this level. With
-  `project: true` (SC-BROWSER-FOLLOWUP, BGD 2026-10-25: session start tracks
+  `project: true` (SC-BROWSER-FOLLOWUP, the owner 2026-10-25: session start tracks
   the project's running work), also every workflow and single task still
   RUNNING that clones this checkout's origin repository, whichever session
   started it, marked `this_session: false`; the pane asks for it after

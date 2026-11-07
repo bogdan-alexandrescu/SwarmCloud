@@ -16,7 +16,7 @@ tenant-scoped route in this service makes, and never the raw `auth.tenant_id`.
 The difference is two guards that only exist on that path:
 
   * THE COLLISION CHECK. The frozen `tenant_id_for_group` slugs the LOCAL PART
-    only, so `eng@example.com` and `eng@partner.com` are two different Google
+    only, so `eng@example.com` and `eng@example.org` are two different Google
     groups that both derive tenant `eng`. `Store.ensure_tenant` compares the
     calling group against the one the tenant document was created for and
     answers 409 when they differ, because serving it would hand one group
@@ -212,7 +212,7 @@ def _owned(pool: AccountPool, tenant_id: str, account_id: str) -> dict[str, Any]
 
 
 #: What a caller is told of the other side of a duplicate pair that another
-#: tenant owns (#2222; BGD, 2026-10-24 17:26Z, "Name it only within the same
+#: tenant owns (#2222; the owner, 2026-10-24 17:26Z, "Name it only within the same
 #: tenant"). The broker's own wording, so the two never read differently.
 ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
 _ANOTHER_WORKSPACE_READINGS = (
@@ -566,7 +566,7 @@ def _registered(result: dict) -> dict[str, Any]:
     """WHICH ORGANISATION THE ADD REGISTERED (#2222), by allow-list.
 
     A sign-in authorises whichever organisation is selected on claude.ai, so
-    an answer that says only "registered eng:saga-team" hid that it was the
+    an answer that says only "registered eng:example-team" hid that it was the
     Personal subscription a second time. The broker's sentence and the
     organisation's name and plan -- never its identity -- pass through; an
     older broker that sends neither reads as not reported.

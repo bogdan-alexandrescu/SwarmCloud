@@ -79,7 +79,7 @@ project among the caller's own projects in the selected workspace, so
 another tenant's session id, or another person's, is the same 404 as a
 missing one.
 
-WHO. Version one is BGD's only (§1): the caller's verified email must be in
+WHO. Version one is the owner's only (§1): the caller's verified email must be in
 `voice_people` (VOICE_IT_PEOPLE, else the platform owner), or the answer is
 403 `forbidden` before anything is read. The workspace is the one the
 console has selected, through `tenant_scope`, the same guard every
