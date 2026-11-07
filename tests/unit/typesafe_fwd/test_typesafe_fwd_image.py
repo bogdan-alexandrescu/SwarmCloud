@@ -22,6 +22,7 @@ job (application.yml) builds it, because apps/** reaches that job.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -33,6 +34,17 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
+placeholder_deployment = _P.deployment()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    yield from placeholder_deployment.activate(tmp_path_factory)
+
+
 APP = REPO / "apps" / "swarm-typesafe-fwd"
 DOCKERFILE = APP / "Dockerfile"
 MANIFEST = REPO / "kubernetes" / "swarm-system" / "swarm-typesafe-fwd.yaml"
@@ -47,7 +59,9 @@ def _targets(script: str) -> list[str]:
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
-    return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(tmp_path),
+    # Built from scratch: common.sh has no default zone and reads the project's never-touch list.
+    return {**placeholder_deployment.child_env("swarm-test-project"),
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(tmp_path),
             "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
             "REGION": "us-central1", "ENVIRONMENT": "dev", "NO_COLOR": "1", "TMPDIR": str(tmp_path)}
 

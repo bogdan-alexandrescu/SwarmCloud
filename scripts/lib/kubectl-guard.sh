@@ -19,6 +19,11 @@ done
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+# The never-touch list the self-test judges by: the placeholder one, through
+# the same loader and rules as a deployment's (deny_list_use_example).
+SELF_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kubectl-guard.XXXXXX")"
+trap 'rm -rf -- "${SELF_TEST_DIR:?}"' EXIT
+
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "${SELF_TEST}" -eq 1 ]] || die "this script only runs as --self-test"
+deny_list_use_example "${SELF_TEST_DIR}"
 
 PASS=0
 FAIL=0
@@ -61,18 +67,27 @@ allowed "the gcloud-generated name for our cluster" \
   "gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
 
 # --- the ones that matter --------------------------------------------------
-# This is the context that was actually current on the reference workstation,
-# and the one a bare kubectl reached on 2026-09-18.
+# The shape of the context that was actually current on the reference
+# workstation, and the one a bare kubectl reached on 2026-09-18: another team's
+# cluster in the shared project, and that team's production one.
 refused "another team's staging cluster" \
-  "gke_saga-agents-staging_us-central1-a_agents-staging"
+  "gke_example-shared-project_us-central1-a_peer-cluster"
 refused "another team's PRODUCTION cluster" \
-  "gke_saga-agents-prod_us-central1_agents-prod"
+  "gke_example-shared-project_us-central1_peer-prod"
 
 # A context renamed to look like ours is still that cluster underneath. The
 # trailing segment is what gcloud derives from the cluster name, so it is what
 # the deny-list checks -- a rename cannot launder it.
 refused "a foreign cluster renamed to look like ours" \
-  "swarm-dev_gke_saga-agents-staging_us-central1-a_agents-staging"
+  "swarm-dev_gke_example-shared-project_us-central1-a_peer-cluster"
+
+# GKE_CLUSTER pointed at the other team's cluster: the context then matches
+# "ours" by name, and only the list stands between it and their cluster.
+SAVED_CLUSTER="${GKE_CLUSTER}"
+GKE_CLUSTER="peer-cluster"
+refused "GKE_CLUSTER set to a cluster on the list" \
+  "gke_${PROJECT_ID}_${GKE_LOCATION}_peer-cluster"
+GKE_CLUSTER="${SAVED_CLUSTER}"
 
 refused "an empty context" ""
 refused "docker-desktop" "docker-desktop"

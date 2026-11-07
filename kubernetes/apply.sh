@@ -142,14 +142,10 @@ REPO="$(cd -- "${HERE}/.." && pwd)"
 # nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
 COMMON="${REPO}/scripts/lib/common.sh"
 # THE PROJECT IS THE CALLER'S, NEVER A DEFAULT (DAYONE-K8S-1, design §7).
-# common.sh's load_env fills an unset PROJECT_ID with the live project, so a
-# caller in any other project that forgot it would read that project's cluster
-# context check, uniqueIds and network, and render its identities. Marked here,
-# before load_env runs: the environment or the env file replaces the mark, and
-# a mark that survives is a project nobody gave, refused below once --help has
-# had its chance. "(none given)" is no project id, so load_env's `:-` keeps it.
-PROJECT_NOT_GIVEN="(none given)"
-[[ -n "${PROJECT_ID:-}" ]] || PROJECT_ID="${PROJECT_NOT_GIVEN}"
+# common.sh's load_env refuses an unset PROJECT_ID ("PROJECT_ID is not set")
+# as this file is sourced, before anything is contacted: there is no default
+# project to read a cluster context, uniqueIds or a network from. That refusal
+# runs before --help too, as it does for every script that sources common.sh.
 [[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
@@ -310,12 +306,6 @@ while [[ $# -gt 0 ]]; do
       RENDER_ARGS+=("$1"); shift ;;
   esac
 done
-
-# --- 0. the project, before anything is contacted ------------------------------
-[[ "${PROJECT_ID}" != "${PROJECT_NOT_GIVEN}" ]] \
-  || die "PROJECT_ID is not set (in the environment or ${SWARM_ENV_FILE:-.env}); refusing to render.
-       Every object here names its project's identities, and there is no default project.
-       Run: PROJECT_ID=<your project> $0 ..."
 
 # --- 0. the workspace label, before anything is contacted ---------------------
 # Checked here as well as in render.py so a refused id costs no cluster read,

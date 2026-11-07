@@ -28,6 +28,7 @@ migrated, no credentials are used, and the real repository is never written to.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pty
@@ -40,6 +41,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 PROJECT = "swarm-test-project"
 BUCKET = f"swarm-tfstate-{PROJECT}"
@@ -133,6 +138,15 @@ class Sandbox:
         tfvars = self.repo / "terraform" / "environments" / "dev"
         tfvars.mkdir(parents=True)
         (tfvars / "dev.tfvars").write_text("")
+        # The deployment's configuration, as config_fetch reads it offline: the
+        # placeholder never-touch list written for PROJECT, and an empty
+        # dev.tfvars beside it (common.sh reads the tfvars from config/<env>/,
+        # not from the checkout). A directory and a cache of this sandbox's own.
+        self.config_dir = tmp / "config"
+        placeholder_deployment.write_deny_list(self.config_dir, PROJECT)
+        (self.config_dir / "dev" / "dev.tfvars").write_text("")
+        (self.config_dir / "dev" / "dev.tfvars").chmod(0o600)
+        (tmp / "cache").mkdir(mode=0o700)
 
         bin_dir = tmp / "bin"
         bin_dir.mkdir()
@@ -163,6 +177,8 @@ class Sandbox:
             FAKE_DEPLOYER="present",
             FAKE_REMOTE_STATE="absent",
             NO_COLOR="1",
+            SWARM_DEPLOY_CONFIG_DIR=str(self.config_dir),
+            XDG_CACHE_HOME=str(tmp / "cache"),
         )
 
     def remote_state(self, addresses: list[str] | None) -> None:

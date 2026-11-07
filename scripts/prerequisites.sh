@@ -221,13 +221,15 @@ else
 fi
 
 step "Shared-project guard rails"
-# The deny-list is keyed by project (common.sh): it is whole in the shared
-# project and empty in any other, so the banner says which this run is.
-if [[ "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
-  dim "${PROJECT_ID} is SHARED. These belong to other teams and nothing in this repo may touch them:"
-  dim "  GKE cluster agents-staging | VPC agents-staging-vpc | ${#SHARED_DENY_LIST[@]} deny-listed resources in scripts/lib/common.sh"
+# The never-touch list is this deployment's config object,
+# config/<env>/deny-list.json (deny_list_load in common.sh), loaded when
+# common.sh was sourced: a list that cannot be read has already stopped this
+# script. The banner says whether the project shares anything, by count only.
+deny_list_require
+if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
+  dim "${PROJECT_ID} is SHARED: ${#SHARED_DENY_LIST[@]} resources on its never-touch list (config/${ENVIRONMENT}/deny-list.json) belong to other teams, and nothing in this repo may touch them"
 else
-  dim "${PROJECT_ID} is not the shared project (${SHARED_PROJECT_ID}); its deny-list is empty"
+  dim "${PROJECT_ID}'s never-touch list (config/${ENVIRONMENT}/deny-list.json) is written empty and reviewed: it shares nothing"
 fi
 if is_shared_resource "${GKE_CLUSTER}"; then
   fail "GKE_CLUSTER=${GKE_CLUSTER} is a deny-listed shared resource; the swarm needs its own cluster"

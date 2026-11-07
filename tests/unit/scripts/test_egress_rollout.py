@@ -15,7 +15,7 @@ shared-project deny-list exist once. These tests hold:
     run the digest the manifest names; a stale pod fails it; egress switched
     off (enable_browser_egress false) is a notice, not a failure; enabled with
     no manifest (no swarm-egress digest) is a failure; and the shared
-    `agents-staging` cluster -- by flag, by context, or by terraform's own
+    cluster on the never-touch list (PEER_CLUSTER) -- by flag, by context, or by terraform's own
     output -- is refused before anything is written;
   * the WORKFLOW: release.yml's deploy job runs it after the relay's roll and
     before the smoke test. SwarmCloud lanes cannot push .github/workflows/, so
@@ -27,6 +27,7 @@ No cluster, no credentials, no network: every binary is a fake on PATH.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -40,14 +41,25 @@ from .test_live_relay_rollout import FAKE_GCLOUD
 from .test_release_reuses_ci_images import _workflow
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
 SCRIPT = REPO / "scripts" / "roll-egress.sh"
 TEMPLATE = REPO / "kubernetes" / "swarm-system" / "swarm-egress.yaml"
 
-PROJECT = "saga-agents-staging"
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 LOCATION = "us-central1"
 CLUSTER = "swarm-autopilot"
 CLUSTER_REF = f"gke_{PROJECT}_{LOCATION}_{CLUSTER}"
-FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_agents-staging"
+FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 
 #: Built rather than written out as one literal.
 DIGEST = "sha256:" + "8" * 64
@@ -180,6 +192,7 @@ class Cluster:
 
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if k not in (*LEAKY, "PYTHON_BIN", "TF_STATE_BUCKET")}
+        env.update(placeholder_deployment.child_env(PROJECT))
         env.update(
             PATH=os.pathsep.join([str(self.bin), str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
             FAKE_CLUSTER_DIR=str(self.dir),
@@ -300,20 +313,20 @@ def test_enabled_without_a_manifest_is_a_failure(tmp_path):
 
 @pytest.mark.parametrize("how", ["flag", "context", "terraform"])
 def test_the_shared_agents_staging_cluster_is_refused_before_anything_is_written(tmp_path, how):
-    """agents-staging is another team's live cluster (CLAUDE.md rule 2),
+    """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's live cluster (CLAUDE.md rule 2),
     refused by common.sh's deny-list whichever way it arrives."""
     cluster = Cluster(tmp_path)
     if how == "flag":
-        result = cluster.run("--cluster", "agents-staging", "--confirm")
+        result = cluster.run("--cluster", PEER_CLUSTER, "--confirm")
     elif how == "context":
         (cluster.dir / "cluster-entry").write_text(FOREIGN_REF)
         result = cluster.run("--confirm")
     else:
-        (cluster.dir / "gke-cluster").write_text("agents-staging")
+        (cluster.dir / "gke-cluster").write_text(PEER_CLUSTER)
         result = cluster.run("--tf-init", "--get-credentials", "--confirm")
     out = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "agents-staging" in out and "deny-list" in out, out
+    assert PEER_CLUSTER in out and "deny-list" in out, out
     assert not cluster.applied()
     assert not (cluster.dir / "applied-dry-run.yaml").exists()
     assert "get-credentials" not in cluster.log("gcloud")
@@ -323,8 +336,8 @@ def test_the_shared_agents_staging_cluster_is_refused_before_anything_is_written
 
 def test_an_unknown_component_is_refused():
     proc = subprocess.run(
-        ["bash", str(REPO / "scripts" / "roll-live-relay.sh"), "--component", "agents-staging"],
-        env={**{k: v for k, v in os.environ.items() if k not in LEAKY}, "PROJECT_ID": PROJECT, "NO_COLOR": "1"},
+        ["bash", str(REPO / "scripts" / "roll-live-relay.sh"), "--component", "no-such-component"],
+        env={**{k: v for k, v in os.environ.items() if k not in LEAKY}, **placeholder_deployment.child_env(PROJECT), "PROJECT_ID": PROJECT, "NO_COLOR": "1"},
         capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode != 0

@@ -39,7 +39,12 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 CALLS = REPO / "scripts" / "lib" / "workspace-calls.json"
 
-PROJECT = "saga-agents-staging"
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
+placeholder_deployment = _P.deployment()
+
+PROJECT = _P.PROJECT
 SCHEDULER_UID = "117405034245659033603"
 RECONCILER_UID = "108023754768362642341"
 #: Shaped like a uniqueId; not any real account's.
@@ -472,7 +477,7 @@ def test_every_personal_namespace_the_contract_derives_is_in_scope(policy_docs, 
         "swarm-tenant-u-",
         "swarm-tenant-u--",
         "xswarm-tenant-u-alice",
-        "agents-staging",
+        _P.PEER["cluster"],
         "",
     ],
 )
@@ -1104,7 +1109,7 @@ def test_a_terraform_tfvars_that_names_no_tenant_is_refused(tmp_path):
         _render("policies", "--terraform-tfvars", str(empty))
 
 
-@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", "agents-staging", "swarm-tenant-"])
+@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", _P.PEER["cluster"], "swarm-tenant-"])
 def test_no_namespace_outside_the_prefix_is_admitted_even_with_the_label(dev_policy_docs, name):
     namespace = _namespace(name, LABELLED)
     namespace["metadata"]["labels"]["swarm-tenant"] = name.removeprefix(render.NAMESPACE_PREFIX)
@@ -1126,12 +1131,19 @@ def test_the_policies_judge_nobody_but_the_deployer(dev_policy_docs):
 APPLY = KUBERNETES / "apply.sh"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    yield from placeholder_deployment.activate(tmp_path_factory)
+
+
 def _apply(*args: str) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GOOGLE_", "CLOUDSDK_"))}
     # apply.sh has no default project (DAYONE-K8S-1) and refuses an unset one
     # first; these refusals are the next ones, so a project is given.
     env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig",
                PROJECT_ID=PROJECT)
+    # SWARM_* is stripped above, so the placeholder region, zone and never-touch list go back in.
+    env.update(placeholder_deployment.child_env(PROJECT))
     return subprocess.run(
         ["bash", str(APPLY), *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False
     )

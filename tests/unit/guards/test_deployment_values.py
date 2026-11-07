@@ -37,6 +37,12 @@ _spec = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / 
 assert _spec and _spec.loader
 ph = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ph)
+placeholder_deployment = ph.deployment()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    yield from placeholder_deployment.activate(tmp_path_factory)
 
 
 def _word(prefix: str = "w") -> str:

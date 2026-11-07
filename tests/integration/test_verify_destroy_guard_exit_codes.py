@@ -20,6 +20,7 @@ script that exits 2 for everything.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -31,6 +32,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "verify-destroy-guard.sh"
 FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not SCRIPT.exists() or not FIXTURE.exists(),
@@ -43,6 +47,16 @@ exit 0
 """
 
 
+def _placeholder_plan(tmp_path: Path) -> Path:
+    """The recorded plan with the project it was recorded in replaced by the
+    placeholder one, so the script runs for a placeholder deployment only."""
+    text = FIXTURE.read_text()
+    recorded = json.loads(text)["_recording"]["project"]
+    plan = tmp_path / FIXTURE.name
+    plan.write_text(text.replace(recorded, _P.PROJECT))
+    return plan
+
+
 def _copy(tmp_path: Path, *, broken_guard: bool) -> tuple[Path, dict[str, str]]:
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
@@ -50,9 +64,8 @@ def _copy(tmp_path: Path, *, broken_guard: bool) -> tuple[Path, dict[str, str]]:
         guard = root / "scripts" / "lib" / "plan-guard.sh"
         guard.write_text(GUARD_THAT_ALLOWS_EVERYTHING)
         guard.chmod(0o755)
-    project = json.loads(FIXTURE.read_text())["_recording"]["project"]
     env_file = tmp_path / "env"
-    env_file.write_text(f"PROJECT_ID={project}\nREGION=us-central1\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n")
+    env_file.write_text(f"PROJECT_ID={_P.PROJECT}\nREGION={_P.REGION}\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n")
     env_file.chmod(0o600)
     env = dict(os.environ)
     env["SWARM_ENV_FILE"] = str(env_file)
@@ -74,7 +87,7 @@ def _run(root: Path, env: dict[str, str], plan: Path) -> subprocess.CompletedPro
 
 def test_a_guard_that_refuses_nothing_exits_2(tmp_path: Path) -> None:
     root, env = _copy(tmp_path, broken_guard=True)
-    proc = _run(root, env, FIXTURE)
+    proc = _run(root, env, _placeholder_plan(tmp_path))
     transcript = proc.stdout + proc.stderr
     assert "the destroy guard does not behave as required" in transcript, transcript
     assert proc.returncode == 2, (

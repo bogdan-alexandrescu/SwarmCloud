@@ -5,10 +5,10 @@ are used, and the flag itself is read-only.
 
 THE PROPERTY, and why it is worth a file of its own:
 
-    saga-agents-staging holds a live GKE cluster, a VPC and its subnets, buckets,
-    Cloud Run services and service accounts that belong to promptlab, crawler,
-    aipipeline, external-secrets, tournament-digest, ai-studio and oracle --
-    every one listed in `SHARED_DENY_LIST` in scripts/lib/common.sh. The last
+    A shared project holds a live GKE cluster, a VPC and its subnets, buckets,
+    Cloud Run services and service accounts that belong to other teams --
+    every one on the project's never-touch list (config/<env>/deny-list.json,
+    read by deny_list_load in scripts/lib/common.sh). The last
     thing `make destroy` does is assert they all survived. Every one of those
     lookups was
 
@@ -18,7 +18,7 @@ THE PROPERTY, and why it is worth a file of its own:
     expired session, a disabled API, a missing permission, a network blip and a
     wrong --location produce. The script then printed
 
-        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/agents-staging network/...
+        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/<their-cluster> network/...
         This should be impossible -- the plan assertions passed. Escalate immediately.
 
     naming fifteen of another team's resources as deleted, with the real reason
@@ -31,6 +31,8 @@ present (0), provably gone (3), could not look (4).
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -41,11 +43,17 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "destroy.sh"
 
-# The shared project, by name: common.sh keys SHARED_DENY_LIST by project
-# (DAYONE-DESAGA-2) -- whole for saga-agents-staging, empty for any other -- and
-# these neighbours exist only there. Named in any other project the check has
-# nobody's resources to look at, and the cases below would test nothing.
-PROJECT = "saga-agents-staging"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
+
+# The shared project, by name: common.sh reads the never-touch list of the
+# project named (DAYONE-DESAGA-2), and the placeholder deployment serves the
+# placeholder list (PEER's entries) for it. These neighbours are on that list.
+PROJECT = _P.SHARED_PROJECT
+PEER_CLUSTER = _P.PEER["cluster"]
+PEER_BUCKET = _P.PEER["bucket"]
 
 pytestmark = pytest.mark.skipif(
     not SCRIPT.exists() or shutil.which("jq") is None,
@@ -59,7 +67,7 @@ GCLOUD_ALL_PRESENT = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
   *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
@@ -86,11 +94,11 @@ GCLOUD_ONE_BUCKET_DELETED = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"saga-agents-files-staging"*)
-    echo "ERROR: (gcloud.storage.buckets.describe) gs://saga-agents-files-staging not found: 404." >&2
+  *"storage buckets describe"*"@PEER_BUCKET@"*)
+    echo "ERROR: (gcloud.storage.buckets.describe) gs://@PEER_BUCKET@ not found: 404." >&2
     exit 1
     ;;
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
   *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
@@ -105,7 +113,9 @@ def _verify(tmp: Path, fake_gcloud: str) -> subprocess.CompletedProcess:
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     path = bin_dir / "gcloud"
-    path.write_text(fake_gcloud)
+    path.write_text(
+        fake_gcloud.replace("@PEER_CLUSTER@", PEER_CLUSTER).replace("@PEER_BUCKET@", PEER_BUCKET)
+    )
     path.chmod(0o755)
 
     # common.sh refuses to source a group- or world-writable env file, and it is
@@ -113,7 +123,7 @@ def _verify(tmp: Path, fake_gcloud: str) -> subprocess.CompletedProcess:
     env_file = tmp / "env"
     env_file.write_text(
         f"PROJECT_ID={PROJECT}\n"
-        "REGION=us-central1\n"
+        f"REGION={_P.REGION}\n"
         "ENVIRONMENT=dev\n"
         "FIRESTORE_DATABASE=swarm\n"
     )
@@ -179,7 +189,7 @@ def test_a_resource_that_really_is_gone_still_escalates(tmp_path) -> None:
 
     assert proc.returncode == 3, transcript
     assert "ARE GONE" in transcript, transcript
-    assert "bucket/saga-agents-files-staging" in transcript, transcript
+    assert f"bucket/{PEER_BUCKET}" in transcript, transcript
     assert "Escalate immediately" in transcript, transcript
     # ... and it must not be confused with the "could not look" case.
     assert "COULD NOT VERIFY" not in transcript, transcript
@@ -188,29 +198,24 @@ def test_a_resource_that_really_is_gone_still_escalates(tmp_path) -> None:
 def test_the_verification_names_every_deny_listed_neighbour(tmp_path) -> None:
     """A check that silently stopped covering a resource is a check that lies.
 
-    The deny-list in scripts/lib/common.sh is the inventory of what belongs to
-    other teams; the post-destroy proof has to speak about all of it, or the
+    The never-touch list is the inventory of what belongs to other teams; the post-destroy proof has to speak about all of it, or the
     resources it dropped are the ones nobody would notice losing.
     """
     proc = _verify(tmp_path, GCLOUD_ALL_PRESENT)
     transcript = proc.stdout + proc.stderr
     assert proc.returncode == 0, transcript
 
-    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
-    deny_block = common.split("SHARED_DENY_LIST=(", 1)[1].split(")", 1)[0]
-    entries = [
-        line.strip().strip('"')
-        for line in deny_block.splitlines()
-        if line.strip().startswith('"')
-    ]
+    # The list the placeholder deployment serves for PROJECT, entry by entry. An
+    # empty read would make this loop vacuous, so it is asserted first.
+    entries = json.loads(DENY_LIST_EXAMPLE.read_text())["entries"]
+    assert entries, f"{DENY_LIST_EXAMPLE} holds no entries; this case would check nothing"
 
     # Subnets are covered by the PLAN guard (destroy-guard.jq matches them on the
     # network field), not by a post-apply describe, and `default` is the shared
     # network already checked under its own name.
-    skip = {"agents-staging-subnet", "gke-agents-staging-88280d02-pe-subnet"}
     missing = []
     for entry in entries:
-        if entry in skip:
+        if "subnet" in entry:
             continue
         # Service accounts are listed by full email; the check names the local part.
         name = entry.split("@", 1)[0]

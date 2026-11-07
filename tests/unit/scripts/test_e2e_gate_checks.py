@@ -24,6 +24,7 @@ The functions are lifted from the shipped script and run with every read stubbed
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 from pathlib import Path
@@ -31,6 +32,16 @@ from pathlib import Path
 import pytest
 
 from .gate_script_functions import SCRIPTS, firestore_document, functions, lines, run_bash
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location(
+    "placeholders", Path(__file__).resolve().parents[2] / "placeholders.py"
+)
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The placeholder deployment: its project is the one the never-touch list is served
+#: for, and its PEER entries are the names on that list (never a real resource).
+placeholder_deployment = _PLACEHOLDERS.deployment()
+PROJECT = placeholder_deployment.PROJECT
 
 SUITE = SCRIPTS / "e2e-test.sh"
 
@@ -308,7 +319,7 @@ def test_a_refused_cluster_read_is_a_refusal_naming_the_grant(tmp_path: Path) ->
     log = tmp_path / "curl.log"
     r = run_bash(
         CURL_403 + functions(SUITE, "gke_cluster_access")
-        + '\nGKE_ACCESS=""\nPROJECT_ID=p\nGKE_LOCATION=us-central1\nGKE_CLUSTER=swarm-autopilot\n'
+        + f'\nGKE_ACCESS=""\nPROJECT_ID={PROJECT}\nGKE_LOCATION=us-central1\nGKE_CLUSTER=swarm-autopilot\n'
         + 'gke_cluster_access\nprintf "%s\\n" "${GKE_ACCESS}"\n',
         env={"CURL_LOG": str(log), "TMPDIR": str(tmp_path)},
     )
@@ -387,7 +398,8 @@ def test_the_shared_cluster_is_never_read(tmp_path: Path) -> None:
     log = tmp_path / "curl.log"
     r = run_bash(
         CURL_403 + functions(SUITE, "gke_cluster_access")
-        + '\nGKE_ACCESS=""\nPROJECT_ID=p\nGKE_LOCATION=us-central1\nGKE_CLUSTER=agents-staging\n'
+        + f'\nGKE_ACCESS=""\nPROJECT_ID={PROJECT}\nGKE_LOCATION=us-central1\n'
+        + f'GKE_CLUSTER={placeholder_deployment.PEER["cluster"]}\n'
         + 'gke_cluster_access\nprintf "%s\\n" "${GKE_ACCESS}"\n',
         env={"CURL_LOG": str(log), "TMPDIR": str(tmp_path)},
     )

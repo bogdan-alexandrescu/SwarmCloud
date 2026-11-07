@@ -716,9 +716,19 @@ def test_the_report_script_is_a_script_this_repository_accepts():
     assert os.access(REPORT_SH, os.X_OK)
 
 
-def test_list_names_every_group_and_its_checks_without_touching_anything():
+def _without_api_or_swarm_settings() -> dict[str, str]:
+    """This process's environment less every API_ and SWARM_ setting, but for
+    the placeholder deployment's never-touch list (conftest.py): common.sh
+    reads it for the project as it is sourced, and stops without it."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("API_", "SWARM_"))}
+    if "SWARM_DEPLOY_CONFIG_DIR" in os.environ:
+        env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
     env["NO_COLOR"] = "1"
+    return env
+
+
+def test_list_names_every_group_and_its_checks_without_touching_anything():
+    env = _without_api_or_swarm_settings()
     result = subprocess.run(
         ["bash", str(ACCEPTANCE / "run.sh"), "--list"],
         cwd=ROOT,
@@ -760,8 +770,7 @@ def test_a_mid_run_crash_still_exits_nonzero_and_reports_how_far_it_got():
     variable (`${var:?...}`) after recording one check, and does no platform
     work, so this needs no deployment and no credentials.
     """
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("API_", "SWARM_"))}
-    env["NO_COLOR"] = "1"
+    env = _without_api_or_swarm_settings()
     result = subprocess.run(
         ["bash", str(ACCEPTANCE / "run.sh"), "--only", "_selftest_crash"],
         cwd=ROOT,

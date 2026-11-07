@@ -74,6 +74,10 @@ def _run(tmp_path: Path, root: Path) -> subprocess.CompletedProcess[str]:
         'exit "${FAILED}"\n'
     )
     env = {k: v for k, v in os.environ.items() if not k.startswith("SWARM_")}
+    # Except the placeholder deployment's never-touch list (conftest.py):
+    # common.sh reads it for the project as it is sourced, and stops without it.
+    if "SWARM_DEPLOY_CONFIG_DIR" in os.environ:
+        env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
     env["NO_COLOR"] = "1"
     return subprocess.run(
         ["bash", str(harness)], capture_output=True, text=True, env=env, timeout=120, check=False

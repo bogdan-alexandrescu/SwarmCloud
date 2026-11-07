@@ -57,6 +57,23 @@ TAILNET: str = ALL["tailnet"]
 INSTALLER_CIDR: str = ALL["installer_cidr"]
 
 
+def deployment():
+    """tests/unit/scripts/placeholder_deployment.py: the placeholder deployment a test runs a
+    script against (REGION, ZONE and a never-touch list served for its project). Loaded by
+    path once per process, under one name, so every directory shares its state."""
+    import importlib.util
+    import sys
+
+    name = "swarm_tests_placeholder_deployment"
+    if name not in sys.modules:
+        path = Path(__file__).resolve().parent / "unit" / "scripts" / "placeholder_deployment.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
 def service_account(role: str, project: str = PROJECT) -> str:
     """`<role>@<project>.iam.gserviceaccount.com`, with the placeholder project."""
     return f"{role}@{project}.iam.gserviceaccount.com"

@@ -17,6 +17,7 @@ otherwise share.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -27,13 +28,16 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 LIB = REPO / "scripts" / "lib"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
 ADDRESS = 'module.monitoring.google_logging_metric.events["generation_fenced"]'
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 
 def _metric(actions: list[str], *, address: str = ADDRESS, rtype: str = "google_logging_metric") -> dict:
-    values = {"name": "swarm/generation-fenced", "project": "saga-agents-staging",
+    values = {"name": "swarm/generation-fenced", "project": _P.PROJECT,
               "filter": 'jsonPayload.event="generation_fenced"'}
     return {
         "address": address, "type": rtype,
@@ -49,7 +53,9 @@ def _guard(tmp_path: Path, *changes: dict, mode: str = "apply") -> subprocess.Co
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"format_version": "1.2", "resource_changes": list(changes)}))
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GCP_", "PROJECT"))}
-    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"), PROJECT_ID="saga-agents-staging")
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"), PROJECT_ID=_P.PROJECT)
+    # The scrub above drops SWARM_DEPLOY_CONFIG_DIR: serve the placeholder list again.
+    env.update(_P.deployment().child_env(_P.PROJECT))
     return subprocess.run([str(root / "scripts" / "lib" / "plan-guard.sh"), "--plan", str(plan), "--mode", mode],
                           capture_output=True, text=True, timeout=60, env=env, check=False)
 
