@@ -27,9 +27,11 @@ test_qa_target_signin's scripted Chromium:
     default port, no fragment), but the record cannot tell a query string
     apart: it keeps the path and never the query, so a refused POST with a
     query reads exactly like the record above.
-(d) THE LANDING RACE: the gate sends the agent's tab to the base URL before
-    it records its sign-in's outcome, so the first landing's token POST is
-    refused even on a sign-in that succeeds. That explains one load, not 15.
+(d) THE LANDING RACE: ruled in for the first load, and fixed. The gate used
+    to send the agent's tab to the base URL before it recorded its sign-in's
+    outcome, so the first landing's token POST was refused even on a sign-in
+    that succeeded. That explained one load, not 15. `CdpProxy.qa_sign_in`
+    now records the outcome first, so the landing meets `signed_in`.
 
 THE FIX THAT FOLLOWS (b): the run must say which state the gate's sign-in is
 in, or the refusal reads as the gate's rule and not as the sign-in it
@@ -246,11 +248,11 @@ def test_c_the_url_chromium_sends_matches_and_a_query_reads_the_same_in_the_reco
 
 
 # --------------------------------------------------------------------------
-# (d) The landing race: the first load only
+# (d) The landing race: the first load only, fixed
 # --------------------------------------------------------------------------
 
 
-def test_d_the_first_landing_runs_before_the_sign_in_is_recorded(tmp):
+def test_d_the_first_landing_runs_after_the_sign_in_is_recorded(tmp):
     async def body() -> None:
         rig = Rig(tmp)
         rig.fake.start(rig.sink)
@@ -267,8 +269,9 @@ def test_d_the_first_landing_runs_before_the_sign_in_is_recorded(tmp):
         await gate_qt.handle_ctl(rig.target, rig.proxy, _gate_args())
         await rig.finished()
         assert rig.target.state == gate_qt.STATE_SIGNED_IN
-        # The landing ran while the state still read signing_in: its token POST is refused.
-        assert seen == [gate_qt.STATE_SIGNING_IN]
+        # The landing runs once the outcome is recorded: its token POST meets
+        # signed_in, not signing_in with the sign-in already over.
+        assert seen == [gate_qt.STATE_SIGNED_IN]
         await rig.fake.stop()
 
     run(body)
