@@ -14,6 +14,7 @@ call. No cloud call, no credential.
 from __future__ import annotations
 
 import os
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -29,7 +30,7 @@ BUCKET = f"swarm-tfstate-{PROJECT}"
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_GCS_LOG}"
-[[ -z "${FAKE_GCS_FAIL:-}" ]] || { echo "ERROR: (gcloud.storage) 503 backend error" >&2; exit 1; }
+[[ -z "${FAKE_GCS_FAIL:-}" ]] || { echo "${FAKE_GCS_FAIL_TEXT:-ERROR: (gcloud.storage) 503 backend error}" >&2; exit 1; }
 if [[ "$1 $2 $3" == "storage objects list" ]]; then
   url="${4#gs://}"; prefix="${url%\*}"; bucket="${prefix%%/*}"; path="${prefix#*/}"
   for f in "${FAKE_GCS}/${bucket}/${path}"*; do
@@ -158,6 +159,16 @@ def test_a_failed_listing_never_serves_the_cache(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "fetched" not in proc.stdout and "reached" not in proc.stdout
     assert "could not list" in proc.stderr
+
+
+def test_a_failed_listing_is_printed_through_redact(tmp_path: Path) -> None:
+    # MUTATION: drop `| redact` from _config_list's error line and this fails.
+    _, env = _setup(tmp_path)
+    value = secrets.token_hex(16)
+    proc = _run(env, "config_fetch dev", FAKE_GCS_FAIL="1", FAKE_GCS_FAIL_TEXT=f"ERROR: 403 access_token={value}")
+    assert proc.returncode != 0
+    assert "could not list" in proc.stderr, proc.stderr
+    assert value not in proc.stderr, proc.stderr
 
 
 def test_a_cache_file_another_user_could_write_is_refused(tmp_path: Path) -> None:
