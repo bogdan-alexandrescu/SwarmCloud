@@ -152,6 +152,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 142 | `profiles.py`: `runtime_capabilities` `("claude_plugins", "node", "bun", "python3", "bash")` on the five claude-code profiles (managed plugins P4, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
 | 143 | `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review` (managed plugins P5, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
 | 145 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
+| 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 
 ---
 
@@ -17246,3 +17247,70 @@ filed by the pull request that adds it, for #2505, and awaits the owner's
 acceptance.
 
 ---
+
+## 146. `admission.py`: a batched admission, `acquire_leases_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026, answering question 0
+of PR 3493 with "frozen-batch-function", and APPLIED by PR 3493, the pull
+request that adds this section. The option the owner rejected,
+"scheduler-copy", kept the batch in `SchedulerStore.acquire_leases`, which
+restated the frozen function's per-agent checks and lease document.
+
+### What is true today
+
+Read on PR 3493's branch on 2026-11-06. `acquire_lease_in_transaction` admits
+one agent per transaction. It reads, then writes, so it cannot run twice in one
+transaction: Firestore refuses a read after a write. Each agent's transaction
+writes `pools/global` and the other shared pools. The load analysis counted
+52 such writes in the busiest minute, against Firestore's sustained ceiling of
+about one write per second per document.
+
+### The change
+
+* `AdmissionRequest(task, units, backend)`, a frozen dataclass. The scheduler
+  imports it and no longer defines its own.
+* `acquire_leases_in_transaction(txn, *, db, requests, config, now=None,
+  before_writes=None)`. It reads every agent and each pool once, then judges
+  each request in order against the pools as the batch has left them, using
+  `evaluate_capacity`. It returns one `Lease` or `AdmissionDenied` per request
+  (denials are returned, not raised), and writes each changed pool once with
+  the batch's sum. `before_writes` is called with the outcomes after every
+  read and before the first write. The scheduler uses it to read its
+  workflows' derived state in the same transaction.
+* `acquire_lease_in_transaction` behaves exactly as before. Its readiness
+  check, pool reads, lease minting and the lease document plus the agent's write are
+  now private helpers (`_readiness_denial`, `_read_pools`, `_mint_lease`,
+  `_write_lease_and_task`), shared with the batch, so the two cannot drift.
+
+### What it would break if accepted
+
+Nothing a caller sees. The single-agent function keeps its signature, its
+denials and its writes field for field.
+
+### If it is declined
+
+The scheduler keeps its own copy of the per-agent rules, and a change to the
+frozen function has to be repeated there by hand.
+
+### Invariants
+
+Invariant 2 (all-or-nothing): each admitted agent takes its share in every
+pool it needs, and a denied agent takes nothing. Firestore commits the batch
+whole or not at all. Invariant 3: concurrency still counts from the LEASED
+agent. Invariant 5: each lease's generation is `current_generation + 1`, written
+to the agent in the same transaction. Invariant 1: only LEASED agents reserve
+anything.
+
+### How it is tested
+
+`tests/unit/scheduler/test_admission_batched.py` runs the scheduler's batch
+through this function. It checks one write per pool, a denied agent left READY,
+an agent crowded out by the rest of its batch, a repeat denied, workflow state
+written once, two schedulers racing, priority and fairness order, and an
+aborted batch writing nothing. `tests/unit/common/test_admission_batch_contract.py`
+calls the frozen function directly: lease and agent documents equal to the
+single function's, and `before_writes` called before any write.
+
+### Who decided
+
+The owner (BGD), 6 November 2026: "frozen-batch-function" on PR 3493.
