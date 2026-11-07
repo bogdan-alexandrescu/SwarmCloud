@@ -50,7 +50,7 @@
  * $300, as swarm-api's ledger computes them.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
 import { Button, buttonClass, Segmented, ToneMark } from '../components'
@@ -63,7 +63,7 @@ import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
-import { TalkStage, TalkTip } from './Stage'
+import { stageFeed, TalkStage, TalkTip } from './Stage'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
@@ -185,6 +185,8 @@ export function TalkPane() {
   const turnSeq = useRef(0)
   const mounted = useRef(true)
   const audio = useRef<HTMLAudioElement | null>(null)
+  // The card list reads the session's one stream and hands the stage its visual, note and focus events through this.
+  const feed = useMemo(stageFeed, [])
   // The Resume's project: undefined until the first start takes it, then the
   // id until a start succeeds, then null.
   const resumed = useRef<string | null | undefined>(undefined)
@@ -420,7 +422,7 @@ export function TalkPane() {
       {USE_FIXTURES && sessionId === null ? (
         <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live />
       ) : (
-        <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} />
+        <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={feed} />
       )}
 
       <div className="vt-presence" aria-label="Voice it">
@@ -491,7 +493,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} />
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}
