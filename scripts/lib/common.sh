@@ -306,15 +306,15 @@ load_env() {
 # config_fetch copies that prefix into a cache OUTSIDE the clone, so nothing
 # fetched can ever be staged, and never falls back to a tracked file.
 #
-# SWARM_CONFIG_DIR names a local directory read in place of the bucket prefix,
+# SWARM_DEPLOY_CONFIG_DIR names a local directory read in place of the bucket prefix,
 # as <dir>/<env>/<file>: for a project whose state bucket does not exist yet
 # (bootstrap creates it) and for the offline self-tests. Its files are held to
 # the same owner and mode rule, and the list in it to the same rules.
 
 # config_source ENV -> where config_fetch reads ENV's files from.
 config_source() {
-  if [[ -n "${SWARM_CONFIG_DIR:-}" ]]; then
-    printf '%s/%s' "${SWARM_CONFIG_DIR}" "$1"
+  if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
+    printf '%s/%s' "${SWARM_DEPLOY_CONFIG_DIR}" "$1"
   else
     printf 'gs://%s/config/%s' "${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID:-}}" "$1"
   fi
@@ -370,7 +370,7 @@ _config_gcloud() {
 _config_list() {
   local env="$1" src out f gen
   src="$(config_source "${env}")"
-  if [[ -n "${SWARM_CONFIG_DIR:-}" ]]; then
+  if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
     [[ -d "${src}" ]] || { err "${src} does not exist"; return 1; }
     for f in "${src}"/*; do
       [[ -f "${f}" ]] || continue
@@ -451,9 +451,8 @@ config_fetch() {
 # shares nothing says so in writing: "entries": [] with every floor zero, and
 # who reviewed that and when (scripts/lib/deny-list.example.json).
 #
-# Loaded by the first guard that needs it, so a script that guards nothing
-# never reaches the bucket, and kept for the rest of the shell once loaded. A
-# script that iterates SHARED_DENY_LIST itself calls deny_list_require first.
+# Loaded when this library is sourced (the end of this file says which callers
+# defer it), and by every guard, and kept for the rest of the shell once loaded.
 
 # shellcheck disable=SC2034  # read by the scripts that source this library
 SHARED_DENY_LIST=()
@@ -561,7 +560,7 @@ deny_list_floors() {
 
 # deny_list_use_example DIR: FOR A --self-test ONLY. Points this shell at
 # scripts/lib/deny-list.example.json as the list of PROJECT_ID (example-project
-# when none is named), through a SWARM_CONFIG_DIR and a cache inside DIR (the
+# when none is named), through a SWARM_DEPLOY_CONFIG_DIR and a cache inside DIR (the
 # caller's own temporary directory, which it removes), so a self-test proves
 # its guard against the placeholder list with no bucket and no deployment
 # value. Every rule of deny_list_load still applies to it.
@@ -571,13 +570,13 @@ deny_list_use_example() {
   ( umask 077 && mkdir -p "${root}/config/${env}" "${root}/cache" ) || die "could not create ${root}/config"
   ( umask 077 && jq --arg p "${project}" '.project = $p' "${SWARM_LIB_DIR}/deny-list.example.json" \
       >"${root}/config/${env}/deny-list.json" ) || die "could not write the example list"
-  SWARM_CONFIG_DIR="${root}/config"
+  SWARM_DEPLOY_CONFIG_DIR="${root}/config"
   XDG_CACHE_HOME="${root}/cache"
   PROJECT_ID="${project}"
   ENVIRONMENT="${env}"
   REGION="${REGION:-us-central1}"
   GKE_LOCATION="${GKE_LOCATION:-${REGION}}"
-  export SWARM_CONFIG_DIR XDG_CACHE_HOME PROJECT_ID ENVIRONMENT REGION GKE_LOCATION
+  export SWARM_DEPLOY_CONFIG_DIR XDG_CACHE_HOME PROJECT_ID ENVIRONMENT REGION GKE_LOCATION
   DENY_LIST_KEY=""
   deny_list_require
 }
@@ -3133,3 +3132,25 @@ redact() {
 }
 
 load_env
+
+# The never-touch list is read HERE, as the library is sourced, and not first by
+# the guard that needs it. A script that walks SHARED_DENY_LIST itself
+# (destroy.sh, the roll-*.sh pre-checks, verify-destroy-guard.sh) would
+# otherwise walk an empty array, and a guard first reached inside $(...) loads
+# the list only in that subshell. So a named project whose list cannot be read
+# stops every script here, read-only ones included (design section 2.4, rule 7).
+# Two callers defer it to the guards, which still refuse: a script that touches
+# no project (SWARM_NO_PROJECT=1), and scripts/lib/resolve.sh, through which the
+# Makefile resolves its settings when it is parsed -- so `make help` and
+# `make test` stay offline -- and whose `tfvars` and `deny-list` commands fetch
+# for themselves. resolve.sh is told apart by the path of the file sourcing this
+# one, never by a variable, so nothing in the environment can switch this off.
+_deny_list_deferred=0
+if [[ -n "${BASH_SOURCE[1]:-}" \
+      && "$(cd -- "$(dirname -- "${BASH_SOURCE[1]}")" 2>/dev/null && pwd)/${BASH_SOURCE[1]##*/}" == "${SWARM_LIB_DIR}/resolve.sh" ]]; then
+  _deny_list_deferred=1
+fi
+if [[ -n "${PROJECT_ID}" && "${SWARM_NO_PROJECT:-}" != "1" && "${_deny_list_deferred}" == "0" ]]; then
+  deny_list_require
+fi
+unset _deny_list_deferred

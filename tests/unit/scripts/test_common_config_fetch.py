@@ -78,7 +78,7 @@ def _setup(tmp_path: Path) -> tuple[Bucket, dict[str, str]]:
     fake.chmod(0o755)
     env = {
         k: v for k, v in os.environ.items()
-        if k not in ("PROJECT_ID", "SWARM_ENV_FILE", "SWARM_CONFIG_DIR", "TF_STATE_BUCKET", "KUBECONFIG")
+        if k not in ("PROJECT_ID", "SWARM_ENV_FILE", "SWARM_DEPLOY_CONFIG_DIR", "TF_STATE_BUCKET", "KUBECONFIG")
     }
     env.update(
         PATH=f"{bindir}:{env.get('PATH', '/usr/bin:/bin')}",
@@ -88,6 +88,10 @@ def _setup(tmp_path: Path) -> tuple[Bucket, dict[str, str]]:
         HOME=str(tmp_path),
         FAKE_GCS=str(tmp_path / "gcs"),
         FAKE_GCS_LOG=str(tmp_path / "gcloud.log"),
+        # These tests are about the fetch alone. Sourcing common.sh with a
+        # project loads the never-touch list at once (test_shared_deny_list.py
+        # holds that), which would fetch before the test's own call does.
+        SWARM_NO_PROJECT="1",
     )
     return Bucket(tmp_path / "gcs"), env
 

@@ -15,7 +15,7 @@ forgets would silently empty the live guard"; the object keeps that property:
 6. with no object, `kube_context_allowed` refuses a context naming the shared
    cluster, even with GKE_CLUSTER pointed at it.
 
-Offline: sources common.sh with SWARM_CONFIG_DIR, the local stand-in for the
+Offline: sources common.sh with SWARM_DEPLOY_CONFIG_DIR, the local stand-in for the
 bucket prefix, and every name from the placeholder set. No cloud call.
 """
 
@@ -43,12 +43,12 @@ def _example() -> dict:
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     env = {
         k: v for k, v in os.environ.items()
-        if k not in ("PROJECT_ID", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER", "SWARM_CONFIG_DIR")
+        if k not in ("PROJECT_ID", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER", "SWARM_DEPLOY_CONFIG_DIR")
     }
     env.update(
         PROJECT_ID=PROJECT, REGION="us-central1", ZONE="us-central1-a", ENVIRONMENT="dev",
         SWARM_ENV_FILE=str(tmp_path / "no-env-file"),
-        SWARM_CONFIG_DIR=str(tmp_path / "config"),
+        SWARM_DEPLOY_CONFIG_DIR=str(tmp_path / "config"),
         XDG_CACHE_HOME=str(tmp_path / "cache"),
         HOME=str(tmp_path),
     )
@@ -273,3 +273,47 @@ def test_no_deployment_value_is_written_in_common_sh() -> None:
     assert "SHARED_DENY_LIST=(\n" not in text, "the literal list is back in common.sh"
     assert "SHARED_PROJECT_ID=" not in text
     assert "gserviceaccount.com\"\n" not in text
+
+
+WALK = 'for e in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do :; done; echo "reached ${#SHARED_DENY_LIST[@]}"'
+
+
+def test_sourcing_with_a_project_and_no_object_stops_before_the_script(tmp_path: Path) -> None:
+    # destroy.sh and the roll-*.sh pre-checks walk SHARED_DENY_LIST themselves.
+    # MUTATION: load the list only inside the guards and this walks an empty
+    # array: "reached 0" is printed.
+    (tmp_path / "config" / "dev").mkdir(parents=True, mode=0o700)
+    _refused(_run(tmp_path, WALK))
+
+
+def test_a_script_walking_the_list_itself_sees_every_entry(tmp_path: Path) -> None:
+    # Loaded in the sourcing shell, so a guard first reached inside $(...) is
+    # not the only shell that holds it.
+    _write(tmp_path, _example())
+    proc = _run(tmp_path, f'x="$(guard_deny_json)"; {WALK}')
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == f"reached {len(_example()['entries'])}"
+
+
+def test_resolve_defers_the_list_so_the_makefile_parses_offline(tmp_path: Path) -> None:
+    # The Makefile resolves PROJECT_ID through resolve.sh when it is parsed;
+    # `make help` and `make test` must not need the bucket.
+    proc = subprocess.run(
+        [str(REPO / "scripts" / "lib" / "resolve.sh"), "env", "PROJECT_ID"],
+        capture_output=True, text=True, timeout=60, check=False, env=_env(tmp_path),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == PROJECT
+
+
+def test_only_the_real_resolve_sh_defers(tmp_path: Path) -> None:
+    # Told apart by the sourcing file's path, so a file merely NAMED resolve.sh
+    # elsewhere still loads the list, and nothing in the environment can.
+    (tmp_path / "config" / "dev").mkdir(parents=True, mode=0o700)
+    fake = tmp_path / "scripts" / "lib" / "resolve.sh"
+    fake.parent.mkdir(parents=True)
+    fake.write_text(f'#!/usr/bin/env bash\nset -euo pipefail\nsource "{COMMON}"\n{WALK}\n')
+    fake.chmod(0o755)
+    proc = subprocess.run([str(fake)], capture_output=True, text=True, timeout=60, check=False,
+                          env=_env(tmp_path, _deny_list_deferred="1"))
+    _refused(proc)
