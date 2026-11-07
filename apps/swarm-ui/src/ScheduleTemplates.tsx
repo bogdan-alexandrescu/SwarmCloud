@@ -170,7 +170,7 @@ export function StartChoice({ value, onChange }: { value: Start; onChange: (s: S
 
 /**
  * "workspace eng · 6 of 25 used", from the workspace's own list. The console
- * says workspace, never tenant (VQ-056, BGD 2026-10-26); `tenant_id` is the
+ * says workspace, never tenant (VQ-056, owner 2026-10-26); `tenant_id` is the
  * API's field and keeps its name.
  */
 export function TenantRoom() {

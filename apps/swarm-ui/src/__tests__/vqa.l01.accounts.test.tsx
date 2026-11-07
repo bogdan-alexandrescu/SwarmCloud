@@ -92,8 +92,8 @@ function ok<T>(data: T): Result<T> {
 
 function account(over: Partial<Account> = {}): Account {
   return {
-    account_id: 'u-bogdan:laptop',
-    owner_tenant: 'u-bogdan',
+    account_id: 'u-owner:laptop',
+    owner_tenant: 'u-owner',
     label: 'laptop',
     provider: 'anthropic',
     state: 'AVAILABLE',
@@ -114,7 +114,7 @@ function account(over: Partial<Account> = {}): Account {
 
 function board(accounts: Account[]): AccountsBoard {
   return {
-    page: { accounts, tenant_id: 'u-bogdan', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
+    page: { accounts, tenant_id: 'u-owner', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
     tenants: [],
     tenantsDetail: null,
     readAt: Date.now(),
@@ -170,7 +170,7 @@ describe('V004/V014: a panel styles its own buttons, not every button inside it'
   it('lets the tenant give way before the task reference', () => {
     const host = html(
       '<table class="acct-hist"><tbody><tr><td class="acct-hist-who"><span class="acct-hist-whoin">' +
-        '<span class="mono">u-bogdan</span><span class="task-ref"><a class="ctl-link task-ref-link mono">task_…12345678</a></span>' +
+        '<span class="mono">u-owner</span><span class="task-ref"><a class="ctl-link task-ref-link mono">task_…12345678</a></span>' +
         '<span class="ctl-mark is-partial">unverified</span></span></td></tr></tbody></table>',
     )
     const [tenant, ref, mark] = [...host.querySelector('.acct-hist-whoin')!.children]
@@ -198,8 +198,8 @@ describe('V015: the phone hides History\'s When by name', () => {
 describe('V016: two Sign in again buttons are separated', () => {
   it('puts each on its own row', async () => {
     await accounts([
-      account({ account_id: 'u-bogdan:a', label: 'a', state: 'REAUTH_REQUIRED' }),
-      account({ account_id: 'u-bogdan:b', label: 'b', state: 'REAUTH_REQUIRED' }),
+      account({ account_id: 'u-owner:a', label: 'a', state: 'REAUTH_REQUIRED' }),
+      account({ account_id: 'u-owner:b', label: 'b', state: 'REAUTH_REQUIRED' }),
     ])
     // One row per account, each its own button (no prose on the surface,
     // 2026-11-05): the rows keep them apart where a middot used to.
@@ -214,12 +214,12 @@ describe('V016: two Sign in again buttons are separated', () => {
 describe('V017: Holding now and History answer from the development fixture', () => {
   it('serves as many holds as the row says, and every ending in the history', async () => {
     const a = account({ assigned: 2, lend_to: ['eng'] })
-    const now = await loadAccountHolders(a.account_id, { account: a, viewer: 'u-bogdan' })
+    const now = await loadAccountHolders(a.account_id, { account: a, viewer: 'u-owner' })
     expect(now.status).toBe('ok')
     if (now.status !== 'ok') return
     expect(now.data.total).toBe(2)
-    expect(now.data.holders.map((h) => h.tenant)).toEqual(['u-bogdan', 'eng'])
-    const hist = await loadAccountHistory(a.account_id, null, { account: a, viewer: 'u-bogdan' })
+    expect(now.data.holders.map((h) => h.tenant)).toEqual(['u-owner', 'eng'])
+    const hist = await loadAccountHistory(a.account_id, null, { account: a, viewer: 'u-owner' })
     expect(hist.status).toBe('ok')
     if (hist.status !== 'ok') return
     expect(hist.data.spans.map((s) => s.end)).toEqual([null, 'released', 'unusable', 'expired'])
@@ -279,7 +279,7 @@ describe('V066: a re-auth\'s steps start at 1', () => {
 describe('V067: a phone marks no row it did not open', () => {
   it('highlights the default only beside its pane', async () => {
     atPhone()
-    await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
+    await accounts([account(), account({ account_id: 'u-owner:b', label: 'b' })])
     // A phone draws a card per account (#2222, mock-up A P1).
     expect(document.querySelector('.acct-card.is-chosen')).toBeNull()
     fireEvent.click(document.querySelectorAll('button.acct-open')[1]!)
@@ -287,7 +287,7 @@ describe('V067: a phone marks no row it did not open', () => {
   })
 
   it('marks no row on a desktop either until one is opened (#2222: no default sheet)', async () => {
-    await accounts([account(), account({ account_id: 'u-bogdan:b', label: 'b' })])
+    await accounts([account(), account({ account_id: 'u-owner:b', label: 'b' })])
     expect(document.querySelectorAll('.acct-rank-row.is-chosen').length).toBe(0)
     fireEvent.click(document.querySelectorAll('button.acct-open')[1]!)
     expect(document.querySelectorAll('.acct-rank-row.is-chosen').length).toBe(1)
@@ -336,7 +336,7 @@ describe('V070: an id never breaks at its hyphen', () => {
     await accounts([account({ lend_to: ['eng-platform'] })])
     fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
     const ids = [...document.querySelectorAll('.acct-pane .acct-id')].map((e) => e.textContent)
-    expect(ids).toContain('u-bogdan')
+    expect(ids).toContain('u-owner')
     expect(ids).toContain('eng-platform')
     for (const el of document.querySelectorAll('.acct-pane .acct-id')) {
       expect(painted(el, 'white-space', PHONE)).toBe('nowrap')
@@ -474,7 +474,7 @@ function quota(over: Partial<QuotaState> = {}): QuotaState {
 }
 
 describe('V005/V020/V013: Provider quota cuts ids in the middle and keeps the 429 mark in its column', () => {
-  const LONG = 'u-bogdan-alexandrescu-research'
+  const LONG = 'u-owner-research'
 
   async function quotaRow(): Promise<HTMLElement> {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota({ tenant_id: LONG, rate_limit_count: 2 })] }))

@@ -65,13 +65,13 @@ function pool(name: string, active: number, limit: number, over: Partial<Pool> =
 const POOLS: Pool[] = [
   pool('global', 1, 40),
   pool('tenant:eng', 0, 10, { effective_limit: 6, adaptive_target: 6, enabled: false }),
-  pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+  pool('provider:anthropic:tenant:u-owner', 5, 5),
   pool('provider:openai:tenant:eng', 0, 5, { effective_limit: 0, quota_derived_limit: 0 }),
   pool('resource:standard', 5, 20),
 ]
 
 function capacity(): Capacity {
-  return { generated_at: '2026-10-29T10:00:00Z', tenant_id: 'u-bogdan', pools: POOLS, pools_complete: true } as unknown as Capacity
+  return { generated_at: '2026-10-29T10:00:00Z', tenant_id: 'u-owner', pools: POOLS, pools_complete: true } as unknown as Capacity
 }
 
 function leases(): LeasePage {

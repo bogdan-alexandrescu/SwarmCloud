@@ -72,7 +72,7 @@ describe('V062: the Submit pages ask their own question behind the title `?`', (
     expect(new Set(visited).size).toBe(4)
   })
 
-  // ACCOUNTS, WHICH ALSO CARRIES ITS OWN TOPICS (VQ-033, BGD 2026-10-26).
+  // ACCOUNTS, WHICH ALSO CARRIES ITS OWN TOPICS (VQ-033, owner 2026-10-26).
   // Its title `?` opens the footer's topics now, and it is still the head's
   // one `?`: the section's question leads the same card (Q2).
   // MUTATION: drop `lead` from PageHead's `<HelpCard>` and Accounts' head

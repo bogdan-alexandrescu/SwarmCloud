@@ -1,11 +1,11 @@
 // AN ACCOUNT'S NAME ON PEOPLE AND PROFILE (ACCOUNT-NAME-2; part of #1913).
 //
 // ACCOUNT-NAME gave an account an editable Name, shown in place of its label
-// "everywhere the console names the account" (owner decision 2026-10-22, BGD,
+// "everywhere the console names the account" (owner decision 2026-10-22, owner,
 // "Editable display name"). Its implement and fix steps both found two screens
 // still printing the label: Admin › People (the Claude account section, the
 // lend and reclaim picker and its confirmation) and Settings › Profile ('Your
-// Claude accounts'). BGD, 2026-10-22: "Yes, one small follow-up lane".
+// Claude accounts'). owner, 2026-10-22: "Yes, one small follow-up lane".
 //
 // WHAT EACH CASE HOLDS:
 //   * a named account shows its Name where the label was, and its id stays

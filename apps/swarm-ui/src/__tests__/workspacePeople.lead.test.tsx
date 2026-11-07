@@ -1,4 +1,4 @@
-// CONFIG › PEOPLE AND ROLES' LEAD (CONFIG-S5-LEADS; part of #2157, BGD's
+// CONFIG › PEOPLE AND ROLES' LEAD (CONFIG-S5-LEADS; part of #2157, the owner's
 // pick of proposal E, docs/web-ui/mockups/config-e.html S5b, S5e, S5g, S5h).
 //
 // WHAT EACH CASE HOLDS:

@@ -16,7 +16,7 @@
 //   * one person: "Your workspace", and no team step or invites;
 //   * Hand over is offered only once the smoke agent has succeeded, and Send
 //     is locked until verify passes;
-//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     what the panel follows, what verify prints at the end, which checks the
 //     console runs, how the add-ons are turned on and where every mark comes
 //     from are tooltips or an (i), never a sentence on the page, and "Follow

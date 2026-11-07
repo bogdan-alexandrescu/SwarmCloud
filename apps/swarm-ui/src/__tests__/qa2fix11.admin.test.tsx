@@ -70,7 +70,7 @@ function capacity(): Capacity {
     pools: [
       pool('global', { hard_limit: 40, effective_limit: 40, available: 36 }),
       pool('tenant:eng'),
-      pool('provider:anthropic:tenant:u-bogdan'),
+      pool('provider:anthropic:tenant:u-owner'),
     ],
     runner_profiles: { 'claude-code': profile(['global', 'tenant:eng']) },
     tenant_id: 'eng',
@@ -92,7 +92,7 @@ describe('admin2-20: a control is named as its row reads, not by its raw key', (
   it('builds the spoken name from the row label and its kind', () => {
     // MUTATION: return `name` from poolSpoken -- `tenant:eng` again.
     expect(poolSpoken('tenant:eng')).toBe('eng (workspace)')
-    expect(poolSpoken('provider:anthropic:tenant:u-bogdan')).toBe('anthropic · u-bogdan')
+    expect(poolSpoken('provider:anthropic:tenant:u-owner')).toBe('anthropic · u-owner')
     expect(poolSpoken('global')).toBe('global')
     expect(poolSpoken('resource:browser')).toBe('browser (resource class)')
     expect(poolSpoken('runner:browser')).toBe('browser (runner profile)')
@@ -110,10 +110,10 @@ describe('admin2-20: a control is named as its row reads, not by its raw key', (
   })
 
   it('names a provider tenant pool by its two names', async () => {
-    const r = await row('provider:anthropic:tenant:u-bogdan')
-    fireEvent.click(within(r).getByRole('button', { name: 'Edit ceiling for anthropic · u-bogdan' }))
+    const r = await row('provider:anthropic:tenant:u-owner')
+    fireEvent.click(within(r).getByRole('button', { name: 'Edit ceiling for anthropic · u-owner' }))
     const side = document.querySelector<HTMLElement>('aside.adm-side')!
-    expect(within(side).getByLabelText('Hard limit for anthropic · u-bogdan')).toBeTruthy()
+    expect(within(side).getByLabelText('Hard limit for anthropic · u-owner')).toBeTruthy()
   })
 })
 
@@ -148,7 +148,7 @@ describe('admin2-19: an out-of-range ceiling says what is wrong', () => {
 describe('admin2-21: a link to a pool row is a path, and focus lands on the row', () => {
   it('writes the path, its colons encoded, not the legacy hash', () => {
     // MUTATION: return `#admin/limits?pool=${pool}` from rowHref.
-    expect(rowHref('tenant:u-bogdan')).toBe('/admin/limits?pool=tenant%3Au-bogdan')
+    expect(rowHref('tenant:u-owner')).toBe('/admin/limits?pool=tenant%3Au-owner')
   })
 
   it('focuses the row the link named once it is drawn', async () => {

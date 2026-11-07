@@ -1,4 +1,4 @@
-// AN ACCOUNT CAN BE RENAMED (#1913; owner decision 2026-10-22, BGD,
+// AN ACCOUNT CAN BE RENAMED (#1913; owner decision 2026-10-22, owner,
 // "Editable display name").
 //
 // An account's label is its id (`<owner>:<label>`), built into its Secret

@@ -131,8 +131,8 @@ afterEach(() => {
 
 describe('VQ-052: the Claude account cell is one short line', () => {
   it('counts seven loans from one workspace, the lender said once, the accounts folded', async () => {
-    await mount(platform([borrower('bogdan@example.com', SEVEN, { display_name: 'Bogdan Alexandrescu' })]))
-    const td = claudeOf('bogdan@example.com')
+    await mount(platform([borrower('member@example.com', SEVEN, { display_name: 'Alex Example' })]))
+    const td = claudeOf('member@example.com')
     const fold = td.querySelector<HTMLDetailsElement>('details.pp-loans')
     // MUTATION: join every loan with '; ' again -> no fold, and "lent by" seven times.
     expect(fold).not.toBeNull()
@@ -164,24 +164,24 @@ describe('VQ-052: the Claude account cell is one short line', () => {
   })
 
   it('keeps every account in the Manage drawer, behind the same one line', async () => {
-    await mount(platform([borrower('bogdan@example.com', SEVEN)]))
-    fireEvent.click(within(rowOf('bogdan@example.com')).getByRole('button', { name: 'Manage' }))
-    const drawer = await screen.findByRole('dialog', { name: 'Manage bogdan@example.com' }, WAIT)
+    await mount(platform([borrower('member@example.com', SEVEN)]))
+    fireEvent.click(within(rowOf('member@example.com')).getByRole('button', { name: 'Manage' }))
+    const drawer = await screen.findByRole('dialog', { name: 'Manage member@example.com' }, WAIT)
     const items = [...drawer.querySelectorAll<HTMLElement>('[data-section="claude"] .pp-loan-list > li')].map((li) => visible(li))
     expect(items).toHaveLength(7)
     expect(items[6]).toBe('ai-eng-7 (eng 7)')
   })
 
   it('reads the name whole at 1440: the name over the address, the avatar on its line, the cell two lines', async () => {
-    await mount(platform([borrower('bogdan@example.com', SEVEN, { display_name: 'Bogdan Alexandrescu' })]))
-    const cell = rowOf('bogdan@example.com').querySelector('.pp-person')!
+    await mount(platform([borrower('member@example.com', SEVEN, { display_name: 'Alex Example' })]))
+    const cell = rowOf('member@example.com').querySelector('.pp-person')!
     const who = cell.querySelector('.pp-who')!
     const card = who.querySelector('.person-name')!
     // The cell holds the avatar, the who and the GitHub mark, in that order.
     expect([...cell.children].map((c) => c.className)).toEqual(['pp-avatar', 'pp-who', 'pp-gh'])
     // The name and the address are separate boxes; nothing else prints between them.
-    expect(who.querySelector('.person-name-name')?.textContent).toBe('Bogdan Alexandrescu')
-    expect(who.querySelector('.person-name-email')?.textContent).toBe('bogdan@example.com')
+    expect(who.querySelector('.person-name-name')?.textContent).toBe('Alex Example')
+    expect(who.querySelector('.person-name-email')?.textContent).toBe('member@example.com')
     // MUTATION: draw the name and the address on one line -> together they pass
     // the 15rem cap, the address does not shrink, and the name is cut.
     expect(painted(card, 'flex-direction', WIDE)).toBe('column')
@@ -197,8 +197,8 @@ describe('VQ-052: the Claude account cell is one short line', () => {
   })
 
   it('spaces the wide Person cell at 4px, so the grid fits its 1009px pane at 1440 (render review of FIX2)', async () => {
-    await mount(platform([borrower('bogdan@example.com', SEVEN, { display_name: 'Bogdan Alexandrescu' })]))
-    const cell = rowOf('bogdan@example.com').querySelector('.pp-person')!
+    await mount(platform([borrower('member@example.com', SEVEN, { display_name: 'Alex Example' })]))
+    const cell = rowOf('member@example.com').querySelector('.pp-person')!
     // MUTATION: put back the 8px gap -> the nowrap cell (avatar, gap, who, gap,
     // GitHub mark) is 8px wider, and with the seven-loan row the table's least
     // width is 1010.8px in a 1009px pane: a 2px sideways scroll under the grid.

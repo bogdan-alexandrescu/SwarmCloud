@@ -173,7 +173,7 @@ describe('poolKind', () => {
     ['global', 'global'],
     ['tenant:eng', 'tenant'],
     ['provider:anthropic', 'provider'],
-    ['provider:anthropic:tenant:u-bogdan', 'provider'],
+    ['provider:anthropic:tenant:u-owner', 'provider'],
     ['resource:large', 'resource'],
     ['runner:claude-code', 'runner'],
     ['backend:cloudrun', 'backend'],
@@ -191,7 +191,7 @@ describe('poolLabel', () => {
     ['global', 'global'],
     ['tenant:eng', 'eng'],
     ['resource:large', 'large'],
-    ['provider:anthropic:tenant:u-bogdan', 'anthropic · u-bogdan'],
+    ['provider:anthropic:tenant:u-owner', 'anthropic · u-owner'],
     // Three segments: the fourth is absent, so the third stands in rather than
     // the label reading "anthropic · undefined".
     ['provider:anthropic:tenant', 'anthropic · tenant'],
@@ -214,7 +214,7 @@ describe('poolScope', () => {
     ['tenant:eng', 'tenant'],
     // Trap E: the per-tenant slice of a provider pool is TENANT scope. Putting
     // it beside a platform figure is a scope error dressed as a comparison.
-    ['provider:anthropic:tenant:u-bogdan', 'tenant'],
+    ['provider:anthropic:tenant:u-owner', 'tenant'],
   ] as ReadonlyArray<[string, string]>)('%s -> %s', (name, scope) => {
     expect(poolScope(name)).toBe(scope)
   })

@@ -13,7 +13,7 @@
 // an option that served none; count an answer with no `via` as the
 // console's; say a time left the wait did not serve; send the answer without
 // `via: 'console'` or to another question; approve without the digest; drop
-// the route or the links to it. The planner's design doc and diagrams (BGD,
+// the route or the links to it. The planner's design doc and diagrams (owner,
 // 6 November 2026: "Serve them on the run"): draw the doc as live markup or
 // from its raw HTML, give a frame `allow-*`, link a diagram the API did not
 // list, or drop the "not known here" line for a run whose planner wrote none.

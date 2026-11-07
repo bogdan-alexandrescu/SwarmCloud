@@ -1,4 +1,4 @@
-// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// THE APP-WIDE RATCHET IS proseapp.tsx (THE OWNER'S RULE, 2026-11-05): every
 // page the nav reaches shows no more words or arrowed links than it did on the
 // change's base. This file keeps its own screen-level budget.
 //
@@ -106,7 +106,7 @@ function task(over: Partial<Task> = {}): Task {
     input: { prompt: 'Summarise the incident.' },
     last_error: null,
     result_summary: null,
-    latest_checkpoint: 'gs://acme/ckpt/ck_9',
+    latest_checkpoint: 'gs://swarm-artifacts-example-project/ckpt/ck_9',
     current_generation: 3,
     current_lease_id: 'lse_3',
     ...over,
@@ -163,7 +163,7 @@ const EVENTS: TaskEvent[] = [
     attempt_id: 'att_3',
     lease_id: 'lse_3',
     generation: 3,
-    detail: { checkpoint_id: 'ck_9', uri: 'gs://acme/ckpt/ck_9', bytes: 4096 },
+    detail: { checkpoint_id: 'ck_9', uri: 'gs://swarm-artifacts-example-project/ckpt/ck_9', bytes: 4096 },
   },
 ]
 
@@ -199,11 +199,11 @@ function artifact(over: Partial<ArtifactContent> = {}): ArtifactContent {
     task_id: 'tsk_0123456789abcdef',
     tenant_id: 'acme',
     attempt_id: 'att_3',
-    artifact: { name: 'synthesis.md', bytes: 8192, uri: 'gs://acme/art/synthesis.md' },
+    artifact: { name: 'synthesis.md', bytes: 8192, uri: 'gs://swarm-artifacts-example-project/art/synthesis.md' },
     status: 'ok',
     detail: null,
     key: null,
-    uri: 'gs://acme/art/synthesis.md',
+    uri: 'gs://swarm-artifacts-example-project/art/synthesis.md',
     content: '# Findings\n\nOne short paragraph of the agent’s own output.\n',
     total_bytes: 8192,
     offset: 0,
@@ -217,7 +217,7 @@ function artifact(over: Partial<ArtifactContent> = {}): ArtifactContent {
   }
 }
 
-const REF: ArtifactRef = { name: 'synthesis.md', bytes: 8192, uri: 'gs://acme/art/synthesis.md' }
+const REF: ArtifactRef = { name: 'synthesis.md', bytes: 8192, uri: 'gs://swarm-artifacts-example-project/art/synthesis.md' }
 
 // ---------------------------------------------------------------------------
 // The measure
@@ -344,7 +344,7 @@ describe('the run group carries data, not prose', () => {
    * Those are labels the owner asked for, not prose growing back.
    *
    * 390 became 405 with DETAILS-BUILDING (part of #2391), which measured 397:
-   * BGD asked for a Building line, a one-line Now and one Resources row
+   * the owner asked for a Building line, a one-line Now and one Resources row
    * (2026-10-27), and the strip and Resources card they replace are still on
    * the page, folded under the row's `details`, so the total grew by the three
    * lines. What he asked to shrink is what shows before anything is opened,
@@ -845,8 +845,8 @@ describe('ArtifactViewer', () => {
     api.loadArtifactContent.mockResolvedValue({
       status: 'ok',
       data: artifact({
-        artifact: { name: 'final.png', bytes: 5120, uri: 'gs://acme/art/final.png' },
-        uri: 'gs://acme/art/final.png',
+        artifact: { name: 'final.png', bytes: 5120, uri: 'gs://swarm-artifacts-example-project/art/final.png' },
+        uri: 'gs://swarm-artifacts-example-project/art/final.png',
         status: 'binary',
         content: null,
         total_bytes: 5120,
@@ -860,7 +860,7 @@ describe('ArtifactViewer', () => {
     const { container } = render(
       <ArtifactViewer
         taskId="tsk_0123456789abcdef"
-        artifact={{ name: 'final.png', bytes: 5120, uri: 'gs://acme/art/final.png' }}
+        artifact={{ name: 'final.png', bytes: 5120, uri: 'gs://swarm-artifacts-example-project/art/final.png' }}
         onClose={() => {}}
       />,
     )
@@ -868,7 +868,7 @@ describe('ArtifactViewer', () => {
     expect(container.querySelector('.ctl-mark'), 'a measured binary carries an absence mark').toBeNull()
     expect(container.textContent).not.toContain('not measured')
     // The way to the bytes stays.
-    expect(container.textContent).toContain('gs://acme/art/final.png')
+    expect(container.textContent).toContain('gs://swarm-artifacts-example-project/art/final.png')
   })
 
   // AG-22. A TABLE, OR ANY BLOCK THE RENDERER DOES NOT PARSE, KEEPS ITS LINES.

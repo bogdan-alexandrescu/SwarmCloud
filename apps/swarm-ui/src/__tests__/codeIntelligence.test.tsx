@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 type Json = Record<string, unknown>
 
@@ -100,7 +100,7 @@ describe('the Code intelligence switch', () => {
     // Where it goes: the workspace's judgment backend, by name.
     await waitFor(() => expect(visible(document.body)).toMatch(/Internal Jev.*stays inside your network/i))
     // The company is not named on the card (#1647).
-    expect(document.body.textContent).not.toMatch(COMPANY_NAME)
+    expect(listedIn(document.body.textContent ?? '')).toEqual([])
     // Local context is a separate switch and sends nothing.
     expect(text).toMatch(/repository context.*nothing leaves the platform/i)
   })
@@ -111,7 +111,7 @@ describe('the Code intelligence switch', () => {
     render(<CodeIntelligenceCard />)
     await toggle()
     await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe.*outside your network/i))
-    expect(document.body.textContent).not.toMatch(COMPANY_NAME)
+    expect(listedIn(document.body.textContent ?? '')).toEqual([])
   })
 
   it('is enabled for the owner or an admin, and turning it on is one PUT to the workspace', async () => {

@@ -1,6 +1,6 @@
 /**
  * THE ADMIN AND CONFIG PANELS, FINISHED (CONFIG-ADMIN-POLISH; part of #2157,
- * BGD's pick of 2026-10-24, proposal E, docs/web-ui/mockups/config-e.html
+ * the owner's pick of 2026-10-24, proposal E, docs/web-ui/mockups/config-e.html
  * S1a-S1g, S10a).
  *
  *   * Each Admin row carries its served count (S1b): People and roles the
@@ -250,7 +250,7 @@ describe('no stale place names in this lane\'s files', () => {
 })
 
 /**
- * CONFIG-ADMIN-POLISH-2 (part of #2157; BGD, 2026-10-25): a worded count
+ * CONFIG-ADMIN-POLISH-2 (part of #2157; owner, 2026-10-25): a worded count
  * draws as a small amber chip, the way config-e.html S1b's `C('1 waiting',
  * 'wn')` does; a plain number stays a bare count. And the feed's two platform
  * counts are declared on `NotificationFeed`, so Spine reads them uncast.

@@ -31,7 +31,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -200,7 +200,7 @@ describe('the page states what SwarmCloud may do as you', () => {
     // Config › GitHub access since CONFIG-NAV (part of #2157).
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
     const d9 = visible(document.querySelector('[data-rule="D9"]'))
-    // That SwarmCloud enforces it is the card's (i) since BGD's no-prose rule (2026-11-05).
+    // That SwarmCloud enforces it is the card's (i) since the owner's no-prose rule (2026-11-05).
     expect(visible(document.querySelector('.ac-policy [role="tooltip"]'))).toContain('SwarmCloud enforces it')
     expect(d9).toContain('held by SwarmCloud, not by GitHub')
     expect(d9).toContain('GitHub itself would let the push through')
@@ -557,7 +557,7 @@ describe('connected but not installed (#780)', () => {
     expect(visible(document.querySelector('.ac-chooser'))).toContain(
       'Install the SwarmCloud GitHub App on an owner on the left',
     )
-    expect(visible(document.body)).not.toMatch(COMPANY_NAME)
+    expect(listedIn(visible(document.body))).toEqual([])
   })
 
   it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {

@@ -23,17 +23,17 @@ afterEach(() => {
 
 describe('the fixture build’s recordings', () => {
   it('the fixture live-browser agent lists one attempt of twelve parts; any other task is unserved', async () => {
-    const { container } = render(<RecordingsPanel task={{ id: FIXTURE_RECORDED_TASK, tenant_id: 'u-bogdan' }} />)
+    const { container } = render(<RecordingsPanel task={{ id: FIXTURE_RECORDED_TASK, tenant_id: 'u-owner' }} />)
     await waitFor(() => expect(container.querySelectorAll('.rec-take')).toHaveLength(1))
     expect(container.querySelectorAll('[data-recording]')).toHaveLength(12)
-    const other = render(<RecordingsPanel task={{ id: 'task_8ea5c26d', tenant_id: 'u-bogdan' }} />)
+    const other = render(<RecordingsPanel task={{ id: 'task_8ea5c26d', tenant_id: 'u-owner' }} />)
     await waitFor(() => expect(other.container.textContent).toMatch(/not served/i))
   })
 
   it('its player fetches nothing and says the fixture build serves no recording', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const { container } = render(<RecordingsPanel task={{ id: FIXTURE_RECORDED_TASK, tenant_id: 'u-bogdan' }} />)
+    const { container } = render(<RecordingsPanel task={{ id: FIXTURE_RECORDED_TASK, tenant_id: 'u-owner' }} />)
     await waitFor(() => expect(container.querySelector('.rec-take')).not.toBeNull())
     fireEvent.click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Play')!)
     expect(container.querySelector('video.rec-player')).not.toBeNull()

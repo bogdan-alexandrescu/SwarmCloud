@@ -4,7 +4,7 @@
 // Since #2152 `GET /v1/stats` carries the platform half -- twelve count()s
 // over every tenant -- only on `?scope=platform` from an admin, so the card's
 // plain 60 s poll no longer brings it, and in platform scope the card told an
-// admin "platform counts not served", the words written for a non-admin. BGD
+// admin "platform counts not served", the words written for a non-admin. owner
 // decided on 2026-10-23 (~20:39Z, task_875ae68942a241a899f2): "Platform scope
 // stops polling the platform half" -- read once per scope pick. So:
 //

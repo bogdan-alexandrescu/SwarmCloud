@@ -25,10 +25,10 @@
  * drawn while either read is in flight. It reverses the rule written here
  * until then, "Admin is SHOWN to a non-admin, with a lock": a person who
  * administers nothing was shown four pages they could never use. The routes
- * stay, but since CONFIG-NAV (part of #2157, BGD 2026-10-23: "Admin is shown
+ * stay, but since CONFIG-NAV (part of #2157, owner 2026-10-23: "Admin is shown
  * only to admins") a direct link from someone who administers nothing goes
  * to Overview once both reads say so (`onAdminRedirect`), and since
- * ADMIN-REDIRECT (part of #2157, BGD 2026-10-24: "Redirect, in a later lane")
+ * ADMIN-REDIRECT (part of #2157, owner 2026-10-24: "Redirect, in a later lane")
  * a workspace admin who is not a platform admin, on a platform Admin page, goes
  * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
  * roles is theirs too, scoped by the API to the workspaces they administer, so
@@ -109,10 +109,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // link at all. The person's own pages first, then the selected workspace's.
   // Not SECTIONS entries (App.tsx): the addresses stay `settings/*`, and the
   // issue forms already name each page as Settings › <page>. THE PERSON'S OWN
-  // PAGES ONLY since CONFIG-NAV (part of #2157, BGD 2026-10-23): Workspace,
+  // PAGES ONLY since CONFIG-NAV (part of #2157, owner 2026-10-23): Workspace,
   // MCP servers and People and roles are Config's.
   // API keys left this list for Config › Secrets' Keys for agents and MCP
-  // (SSC-UI, part of #2158; BGD 2026-10-23 23:57Z, proposal E S1: Settings
+  // (SSC-UI, part of #2158; owner 2026-10-23 23:57Z, proposal E S1: Settings
   // keeps only Profile). `/settings/keys` still lands there (paths.ts).
   profile: [
     { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
@@ -172,7 +172,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: API_READS_KEY, label: 'API reads', icon: 'api', to: `capacity/${API_READS_KEY}` },
   ],
   // CONFIG (CONFIG-NAV; part of #2157, proposal E S1a): App.tsx SECTIONS'
-  // tabs in BGD's order. People and roles and Workspace Settings left this
+  // tabs in the owner's order. People and roles and Workspace Settings left this
   // list for the workspace's own page (admin routes lane, part of #2688: the
   // owner picked a page per workspace), Admin › Workspaces › <workspace>,
   // whose tabs People, Roles, Settings and Setup they are; their addresses
@@ -255,7 +255,7 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
  *
  * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here refuses a
  * workspace admin in place, with a link to Workspaces you admin (admin2-01). People and roles joined it with
- * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
+ * ADMIN-PEOPLE-ROLES (part of #2157, owner "Both, by scope"): its read
  * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
  * they administer, so /admin/people is a page of theirs, not one to send them
  * away from.
@@ -263,7 +263,7 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
 export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
 
 /**
- * A MEMBER REACHES ADMIN › WORKSPACES (admin routes lane, part of #2688; BGD,
+ * A MEMBER REACHES ADMIN › WORKSPACES (admin routes lane, part of #2688; owner,
  * 3 November): `member` is someone in at least one group workspace
  * (`memberWorkspaces`), who administers none. Their Admin is that one page --
  * their group workspaces, each page read only -- and nothing else: Platform
@@ -318,7 +318,7 @@ export function adminGroups(pages: readonly PanelPage[]): AdminGroup[] {
 }
 
 /**
- * "IN AUTOMATE": LINKS, NOT ADMIN PAGES (BGD, 2026-10-23T23:57Z, answer 1).
+ * "IN AUTOMATE": LINKS, NOT ADMIN PAGES (owner, 2026-10-23T23:57Z, answer 1).
  * Every workspace's schedules and approvals stay in Automate; Admin only links
  * there (S1b, S1c). A platform admin's Schedules link opens the All
  * workspaces scope (Schedules.tsx ALL_TENANTS_SCHEDULES; the address
@@ -538,7 +538,7 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
  * THE ONE NAME THE SHELL DRAWS FOR THE WORKSPACE IN FORCE, at every width
  * (visual QA 5b:QA-059 and run 6's 6:admin-015, box 6343790327, part of
  * #1680). The panel's switcher said `Your workspace` while the phone header's
- * pill said `Bogdan`, the personal tenant document's own name: one workspace,
+ * pill said `Alex`, the personal tenant document's own name: one workspace,
  * two names, depending on the window. The caller's own personal workspace
  * (`kind: user` in `/v1/tenants/mine`) is `OWN_WORKSPACE_LABEL` everywhere;
  * any other is its `/v1/tenants/me` name, or its id.
@@ -546,7 +546,7 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
  * A PERSONAL WORKSPACE IN FORCE IS THE CALLER'S OWN, LISTED OR NOT (visual QA
  * pass 2, admin-shell-21; part of #2694). Someone in no group is served an
  * empty `/v1/tenants/mine`, so the test above found nothing and the member's
- * switcher and Admin refusal drew the tenant document's own name (`Bogdan`)
+ * switcher and Admin refusal drew the tenant document's own name (`Alex`)
  * where the platform admin's drew `Your workspace`. `/v1/tenants/me` only
  * answers `kind: user` for the caller's own (a platform admin's reach is
  * group workspaces only, §4.2.2), so that kind is the own workspace too.
@@ -592,7 +592,7 @@ export const PROFILE_PATH = '/settings/profile'
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`;
  * another's as `/v1/tenants/mine` served it when it read the stored name
- * (`group` present: BGD, 2026-10-25, a rename shows in everyone's switcher at
+ * (`group` present: owner, 2026-10-25, a rename shows in everyone's switcher at
  * once), else as `me` last gave it in this browser, and the group email only
  * for a tenant never acted as here. The caller's own personal workspace
  * (`kind: user`) is always "Your workspace". The id is always the secondary line.
@@ -997,7 +997,7 @@ function dataOf<T>(r: Result<T>): T | null {
  * The global pool for the meter, and the first pool that is full or paused.
  *
  * ANOTHER POOL IS SAID TO BE ANOTHER POOL (QA-040, part of #1680). The line
- * sits under the global meter, so `provider:anthropic:tenant:u-bogdan full`
+ * sits under the global meter, so `provider:anthropic:tenant:u-owner full`
  * under a quarter-full `5 / 20` read as the global pool being full, in a raw
  * key. It now says whether it is this pool or another, names another by its
  * label (`poolLabelAmong`, so `resource:browser` and `runner:browser` stay
@@ -1760,12 +1760,12 @@ export function SkyShell({
   // (ADMIN-REDIRECT): an Admin page that is not among theirs. Only a page the
   // panel has: an address that is no page at all keeps its 404.
   // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1,
-  // admin-shell-23; part of #2596; BGD 2026-10-28, reversing CONFIG-NAV's
+  // admin-shell-23; part of #2596; owner 2026-10-28, reversing CONFIG-NAV's
   // redirect for this case): Overview in its place was the link silently
   // becoming another page. The page's own address stays; the refusal names
   // the page, the role and the workspace, and links Overview.
   // A WORKSPACE ADMIN ON A PLATFORM PAGE IS REFUSED IN PLACE TOO (visual QA
-  // pass 2, admin2-01; part of #2694; BGD 2026-10-28's rule for admin-shell-23,
+  // pass 2, admin2-01; part of #2694; owner 2026-10-28's rule for admin-shell-23,
   // "a link must not silently become another page"): ADMIN-REDIRECT swapped
   // /admin/limits for Workspaces you admin with no word said. The refusal
   // names the page and links Workspaces you admin. Only the bare /admin --
@@ -2844,7 +2844,7 @@ function TenantBlock({
       </button>
     )
   // THE NAME STARTS WITH THE WORDS ON THE BUTTON (QA-028, part of #1680):
-  // `Copy tenant id u-bogdan` did not contain the visible `copy id`, so a
+  // `Copy tenant id u-owner` did not contain the visible `copy id`, so a
   // speech user saying "click copy id" matched nothing (axe
   // label-content-name-mismatch). The tenant still follows, for a reader.
   const copyId = (
@@ -2858,7 +2858,7 @@ function TenantBlock({
     </>
   )
   // A WORKSPACE, IN EVERY WORD A PERSON READS (visual QA VQ-056, part of
-  // #2391; BGD on #2157): the tile said `tenant · 1 of 3` and its list `3
+  // #2391; owner on #2157): the tile said `tenant · 1 of 3` and its list `3
   // tenants you are a member of` beside Config's Workspace Settings.
   if (choices.length > 1) {
     const at = choices.findIndex((c) => c.tenant_id === id)
@@ -3111,7 +3111,7 @@ function TenantPicker({
     const on = c.tenant_id === current
     // ONE LABEL, IN THE GRID'S THIRD COLUMN (PICKER-LABELS): two `.sk-ck`
     // spans wrapped the second into the next grid row's 24px column, over
-    // the tenant id -- "defaultu-bogdan" (live, 2026-10-19).
+    // the tenant id -- "defaultu-owner" (live, 2026-10-19).
     const marks = [on ? 'current' : null, c.is_default ? 'default' : null].filter((m) => m !== null)
     return (
       <button
@@ -3260,8 +3260,8 @@ function Meter({ meter, read }: { meter: ReturnType<typeof meterOf>; read: 'load
         <i style={{ width: `${pct}%` }} />
       </div>
       {/* THE POOL'S LABEL IS NEVER BROKEN INSIDE A NAME (visual QA run 2,
-          admin-007, part of #1680): `anthropic · u-bogdan` wrapped at the
-          tenant id's hyphen, `u-` ending one line and `bogdan` alone on the
+          admin-007, part of #1680): `anthropic · u-owner` wrapped at the
+          tenant id's hyphen, `u-` ending one line and `owner` alone on the
           next. Each part between the `·` is one unbreakable span
           (styles.css `.sk-mws`), so the line breaks after `full:` or at the
           dot, never in a provider or tenant id. */}

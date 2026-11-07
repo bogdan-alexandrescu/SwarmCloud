@@ -1,4 +1,4 @@
-// APPROVALS MOVES UNDER AUTOMATE (APPROVALS-MOVE, part of #2391; BGD's
+// APPROVALS MOVES UNDER AUTOMATE (APPROVALS-MOVE, part of #2391; the owner's
 // decision of 2026-10-26 on VQ-030, "Move it, and redirect /approvals").
 //
 // WHAT EACH CASE HOLDS:

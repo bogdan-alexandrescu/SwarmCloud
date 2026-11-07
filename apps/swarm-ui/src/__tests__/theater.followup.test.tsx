@@ -21,7 +21,7 @@
 //   QA12-21 one m:ss countdown; in control, the idle timer says so.
 //   Owner decision "Neutral wording": steps that fit any hand-off, the
 //   agent's own reason as the headline. Nothing says a password is masked:
-//   the live view shows the page as drawn (BGD, 2026-10-25; part of #2298).
+//   the live view shows the page as drawn (owner, 2026-10-25; part of #2298).
 //
 // MUTATIONS, one per block: drop the 55vh floor from the phone media block;
 // drop the phone `.th-bottom .live-ask` rule; put the top chips back; drop the

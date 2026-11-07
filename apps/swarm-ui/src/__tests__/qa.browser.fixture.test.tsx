@@ -81,7 +81,7 @@ describe('the fixture build has one live-browser agent', () => {
     expect(ordinary?.state).toBe('RUNNING')
   })
 
-  // FIXTURE-BROWSER-DONE (part of #2423, BGD 2026-10-26 "Convert one"): the
+  // FIXTURE-BROWSER-DONE (part of #2423, owner 2026-10-26 "Convert one"): the
   // fixture build also carries a FINISHED browser agent, so the finished
   // Browser tab (BT-006, BT-007) can be rendered from fixtures. It is
   // task_f523c160 converted, not a row added: the fixture totals stand.

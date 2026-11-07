@@ -1,5 +1,5 @@
 /**
- * ADMIN IS SHOWN ONLY TO ADMINS (ADMIN-ONLY; part of #2157, BGD 2026-10-23:
+ * ADMIN IS SHOWN ONLY TO ADMINS (ADMIN-ONLY; part of #2157, owner 2026-10-23:
  * "Members and viewers see no Admin"; docs/web-ui/mockups/config-e.html S1b
  * platform admin, S1c workspace admin, S1g member with no Admin item).
  *
@@ -13,7 +13,7 @@
  * test_admin_surface_refuses_non_admins.py); this is the console not drawing
  * what it would refuse.
  *
- * Since the admin routes lane (part of #2688; BGD 3 November) someone in a
+ * Since the admin routes lane (part of #2688; owner 3 November) someone in a
  * group workspace reaches Admin › Workspaces -- their group workspaces, each
  * page read only -- and nothing else there; a viewer is in one, so their Admin
  * is that one page, never a platform page.
@@ -53,7 +53,7 @@ async function app(path: string) {
 }
 
 const adminItem = () => document.querySelector('.sk-spine a[data-sec="admin"]')
-// A viewer's Admin is Admin › Workspaces alone (BGD 3 November): the item opens it.
+// A viewer's Admin is Admin › Workspaces alone (owner 3 November): the item opens it.
 const workspacesOnly = (label: string) => expect(adminItem()?.getAttribute('href'), label).toBe('/admin/workspaces')
 // The foot's second line is the role since CONFIG-ADMIN-POLISH (S1a); the email is its title.
 const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com')
@@ -76,7 +76,7 @@ describe('a viewer sees no Admin (ADMIN-ONLY)', () => {
     await waitFor(() => workspacesOnly('a viewer was shown a platform Admin page'))
   })
 
-  // admin-shell-23 (BGD 2026-10-28, part of #2596) keeps the address and says
+  // admin-shell-23 (owner 2026-10-28, part of #2596) keeps the address and says
   // the refusal in its place, where CONFIG-NAV sent them to Overview.
   it('refuses a viewer in place at every platform Admin address', async () => {
     for (const path of ['/admin/limits', '/admin/runner-sizes', '/admin/tenants', '/admin/counts', '/admin/people']) {

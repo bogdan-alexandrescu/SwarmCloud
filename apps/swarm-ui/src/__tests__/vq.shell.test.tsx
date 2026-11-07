@@ -1,5 +1,5 @@
 /**
- * VISUAL QA, THE CONSOLE'S FRAME (lane VQ-SHELL, part of #2391; BGD's full
+ * VISUAL QA, THE CONSOLE'S FRAME (lane VQ-SHELL, part of #2391; the owner's full
  * visual QA of 2026-10-26 against the decided mock-ups).
  *
  *   VQ-001  At 390 the phone header held the menu, the mark, the page name,

@@ -3,7 +3,7 @@
 //
 // The raw patch is offered to a task's submitter only (artifacts.rawpatch).
 // Every fixture agent was submitted by the signed-in fixture user, so the
-// fixture console only ever showed the offer. BGD, 2026-10-27: one agent a
+// fixture console only ever showed the offer. owner, 2026-10-27: one agent a
 // different user submitted, reached by id and kept off the lists, so the
 // console shows your own agent's `diff.patch` with "Download raw patch" and
 // someone else's with the redacted download alone.

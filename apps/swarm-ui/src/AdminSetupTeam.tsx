@@ -63,7 +63,7 @@ function teamFact(t: SetupTeam): Fact {
 }
 
 /**
- * One field of the form. ITS HINT IS ITS TOOLTIP (BGD's no-prose rule,
+ * One field of the form. ITS HINT IS ITS TOOLTIP (the owner's no-prose rule,
  * 2026-11-05): it opens over the label and the input on hover, and when the
  * input takes focus, and it stays the input's description for a screen reader.
  */

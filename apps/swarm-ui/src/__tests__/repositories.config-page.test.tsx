@@ -1,5 +1,5 @@
 // CONFIG › REPOSITORIES IS REPOSITORY MANAGEMENT (REPOS-PAGE; part of #2157,
-// BGD's decisions of 2026-10-23 and his pick of proposal E, config-e.html S3a
+// the owner's decisions of 2026-10-23 and their pick of proposal E, config-e.html S3a
 // to S3c).
 //
 // WHAT EACH CASE HOLDS:

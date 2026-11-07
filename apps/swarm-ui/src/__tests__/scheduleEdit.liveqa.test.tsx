@@ -494,14 +494,14 @@ describe('live QA: automate, the form', () => {
   it('names the approvers group "Who may approve", proposal B’s words (A3-LABEL)', async () => {
     await mount('schedule=new', routes(() => null))
     await waitFor(() => seg('Merge'), WAIT)
-    // MUTATION: label the group "Approvers" again and it is found by that name, not by BGD’s pick of 2026-10-28.
+    // MUTATION: label the group "Approvers" again and it is found by that name, not by owner’s pick of 2026-10-28.
     const group = screen.getByRole('radiogroup', { name: 'Who may approve' })
     expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual(['any member', 'the owner only'])
     expect(screen.queryByRole('radiogroup', { name: 'Approvers' })).toBeNull()
   })
 })
 
-// A3-SEGMENTED (part of #2417): BGD picked proposal B's segmented controls
+// A3-SEGMENTED (part of #2417): owner picked proposal B's segmented controls
 // over dropdowns for Scope, Run, Plan, Merge and Approvers, 2026-10-28
 // (docs/web-ui/mockups/automate-b.html #A3a, cards 2 and 4).
 describe('A3: the five choices are segmented controls', () => {

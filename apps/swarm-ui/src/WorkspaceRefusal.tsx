@@ -104,7 +104,7 @@ export function WorkspaceRefusalBanner({ error }: { error: ApiError | null | und
  * shown to a workspace admin who is not a platform admin (`WORKSPACE_ADMIN_PAGE_KEYS`), so titling their refusal
  * "for platform admins" was wrong: `audience="workspace"` titles it "for workspace admins" and says the reader
  * administers no group workspace. And the owner of a personal workspace is its admin only in the
- * data's sense: "You are an admin of Bogdan" read as if the reader qualified, so `personal` says it is their own
+ * data's sense: "You are an admin of Alex" read as if the reader qualified, so `personal` says it is their own
  * workspace instead of naming a role.
  */
 export function AdminRoleRefusal({

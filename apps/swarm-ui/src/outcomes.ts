@@ -79,9 +79,9 @@ export type FailureClassKey =
   | 'merge_refused'
   | 'merge_failed'
   | 'publish_refused'
-  /** Contract request 118 (BGD 2026-10-27): the worker stopped the agent on its budget. */
+  /** Contract request 118 (owner 2026-10-27): the worker stopped the agent on its budget. */
   | 'budget_exceeded'
-  /** Contract request 126 (BGD 2026-10-27): a fix loop's rounds ended without a MERGE. */
+  /** Contract request 126 (owner 2026-10-27): a fix loop's rounds ended without a MERGE. */
   | 'fix_loop_exhausted'
   | 'other'
   | 'no_reason'

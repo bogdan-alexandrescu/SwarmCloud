@@ -6,7 +6,7 @@
 //             `silent_seconds` as of the read's `evaluated_at`, never aged.
 //             It is aged to now, as Holders ages it, and drawn whole.
 //   ovag2-04  the Pools card listed raw keys ('provider:anthropic:tenant:
-//             u-bogdan', 'backend:CLOUD_RUN_JOB'); each pool is named as
+//             u-owner', 'backend:CLOUD_RUN_JOB'); each pool is named as
 //             Headroom names it, the key on hover.
 //
 // Fixtures only; no network.
@@ -43,7 +43,7 @@ const SEC = 1000
 const DAY = 24 * 3600 * SEC
 const HOUR = 3600 * SEC
 
-const STATS: Stats = { tenant_id: 'u-bogdan', tasks_by_state: {}, dispatch_paused: false, limits: {}, generated_at: '2026-10-29T10:00:00Z' }
+const STATS: Stats = { tenant_id: 'u-owner', tasks_by_state: {}, dispatch_paused: false, limits: {}, generated_at: '2026-10-29T10:00:00Z' }
 
 function pool(name: string, active: number, limit: number | null): Pool {
   return {
@@ -65,7 +65,7 @@ function pool(name: string, active: number, limit: number | null): Pool {
 function stalePage(now: number): LeasePage {
   const read = now - (9 * DAY + 20 * HOUR)
   const lease: LeaseRow = {
-    lease_id: 'c1', task_id: 'task_8ea5c26d', attempt_id: 'att_c1', tenant_id: 'u-bogdan', generation: 1,
+    lease_id: 'c1', task_id: 'task_8ea5c26d', attempt_id: 'att_c1', tenant_id: 'u-owner', generation: 1,
     pools: ['global'], units: 1, dispatch_state: 'DISPATCHED',
     created_at: new Date(read - 600 * SEC).toISOString(),
     dispatch_deadline: new Date(read - 300 * SEC).toISOString(),
@@ -79,15 +79,15 @@ function stalePage(now: number): LeasePage {
     thresholds: { heartbeat_grace_seconds: 90, lease_timeout_seconds: 120 },
     evaluated_at: new Date(read).toISOString(),
     active_only: true,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     units_held: 1,
   } as unknown as LeasePage
 }
 
 async function mount(tasks: Task[], leases: Result<LeasePage>, pools: Pool[] = []): Promise<HTMLElement> {
-  const capacity: Capacity = { pools, runner_profiles: {}, tenant_id: 'u-bogdan', generated_at: '2026-10-29T10:00:00Z' }
+  const capacity: Capacity = { pools, runner_profiles: {}, tenant_id: 'u-owner', generated_at: '2026-10-29T10:00:00Z' }
   api.loadCapacity.mockResolvedValue(ok(capacity))
-  api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'u-bogdan' } as TaskPage))
+  api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'u-owner' } as TaskPage))
   api.loadLeases.mockResolvedValue(leases)
   api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
@@ -103,7 +103,7 @@ describe('ovag2-02: Running now says how long the worker has been silent, now', 
   it('ages the read’s 140s by the 9d 20h since the read, and draws the figure whole', async () => {
     const now = Date.now()
     const t = task({
-      id: 'task_8ea5c26d', tenant_id: 'u-bogdan', state: 'RUNNING',
+      id: 'task_8ea5c26d', tenant_id: 'u-owner', state: 'RUNNING',
       created_at: new Date(now - 10 * DAY).toISOString(), started_at: new Date(now - 10 * DAY).toISOString(),
       updated_at: new Date(now - 10 * DAY).toISOString(),
     })
@@ -121,7 +121,7 @@ describe('ovag2-02: Running now says how long the worker has been silent, now', 
 describe('ovag2-04: a pool is named in words, its key on hover', () => {
   it('writes Headroom’s labels on the Pools card, with the raw key as the title', async () => {
     const el = await mount([], { status: 'empty', fetchedAt: Date.now() }, [
-      pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+      pool('provider:anthropic:tenant:u-owner', 5, 5),
       pool('backend:CLOUD_RUN_JOB', 1, 10),
       pool('runner:claude-code', 2, 10),
       pool('resource:browser', 0, 4),
@@ -130,7 +130,7 @@ describe('ovag2-04: a pool is named in words, its key on hover', () => {
     const names = [...el.querySelectorAll('.ov-pools .ov-pl .ov-idc')]
     const by = (key: string) => names.find((n) => n.getAttribute('title') === key)
     // MUTATION: draw `{p.name}` in PoolRow again -> the raw keys: red.
-    expect(text(by('provider:anthropic:tenant:u-bogdan'))).toBe('anthropic · u-bogdan')
+    expect(text(by('provider:anthropic:tenant:u-owner'))).toBe('anthropic · u-owner')
     expect(text(by('backend:CLOUD_RUN_JOB'))).toBe('Cloud Run')
     expect(text(by('runner:claude-code'))).toBe('claude-code')
     // MUTATION: pass no `among` from PoolsBody -> 'browser' twice, two ceilings under one name: red.
@@ -140,7 +140,7 @@ describe('ovag2-04: a pool is named in words, its key on hover', () => {
   })
 
   it('says the label in the row’s spoken summary too', () => {
-    const { container } = render(<Overview.PoolRow pool={pool('provider:anthropic:tenant:u-bogdan', 5, 5)} />)
-    expect(container.querySelector('.ov-pl')!.getAttribute('title')).toBe('anthropic · u-bogdan: 5 of 5 units in use, full')
+    const { container } = render(<Overview.PoolRow pool={pool('provider:anthropic:tenant:u-owner', 5, 5)} />)
+    expect(container.querySelector('.ov-pl')!.getAttribute('title')).toBe('anthropic · u-owner: 5 of 5 units in use, full')
   })
 })

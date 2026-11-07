@@ -51,7 +51,7 @@ describe('the capture persona (F4 admin-004, F5 admin-005)', () => {
     // MUTATION: make fixtureMe answer is_admin true for every persona -> fails.
     expect(me.principal.is_admin).toBe(false)
     expect(me.principal.email).toBe('alice@example.com')
-    expect(me.tenant.tenant_id).toBe('u-bogdan')
+    expect(me.tenant.tenant_id).toBe('u-owner')
     const mine = await api.loadMyTenants()
     // MUTATION: serve the admin's group workspace to the member -> fails.
     expect(mine.status, 'the member picks no tenant').toBe('empty')
@@ -74,7 +74,7 @@ describe('the capture persona (F4 admin-004, F5 admin-005)', () => {
     const me = ok(await api.loadMe(), 'GET /v1/tenants/me')
     // MUTATION: leave fixtureMe's is_admin false for the platform-admin persona -> fails.
     expect(me.principal.is_admin).toBe(true)
-    expect(me.tenant.tenant_id, 'the acting workspace is the same personal one').toBe('u-bogdan')
+    expect(me.tenant.tenant_id, 'the acting workspace is the same personal one').toBe('u-owner')
     const mine = ok(await api.loadMyTenants(), 'GET /v1/tenants/mine')
     const groups = mine.filter((c) => c.kind === 'group')
     // MUTATION: serve no group workspace, or two, to the admin persona -> fails.
@@ -204,9 +204,9 @@ describe('the Schedules list is served (F6, overview-automate-001)', () => {
     const api = await apiAs(null)
     const list = ok(await api.loadSchedules(), 'GET /v1/schedules')
     // MUTATION: drop the fixture branch of loadSchedules -> it reads the dev server's 404.
-    expect(list.tenant_id).toBe('u-bogdan')
+    expect(list.tenant_id).toBe('u-owner')
     expect(list.schedules.length).toBeGreaterThan(0)
-    for (const s of list.schedules) expect(s.tenant_id, s.schedule_id).toBe('u-bogdan')
+    for (const s of list.schedules) expect(s.tenant_id, s.schedule_id).toBe('u-owner')
     // The built-in rows are one per registered repository.
     expect(ok(await api.loadRepositories(), 'GET /v1/repositories').length).toBeGreaterThan(0)
   })
@@ -246,9 +246,9 @@ describe('the Settings pages\' reads are served (F7, overview-automate-009..012)
     const api = await apiAs(null)
     const keys = ok(await api.loadProviderKeys('typesafe'), 'GET /v1/provider-keys/typesafe')
     // MUTATION: leave readAs answering repoNotServed for every fixture read -> fails.
-    expect(keys.resolution.tenant_id).toBe('u-bogdan')
+    expect(keys.resolution.tenant_id).toBe('u-owner')
     const judgment = ok(await api.loadJudgment(), 'GET /v1/judgment')
-    expect(judgment.tenant_id).toBe('u-bogdan')
+    expect(judgment.tenant_id).toBe('u-owner')
     const ci = ok(await api.loadCodeIntelligence(), 'GET /v1/code-intelligence')
     // "The switch below…": the switch is drawn only for a workspace that read, and editable for its owner.
     expect(ci.can_edit).toBe(true)
@@ -262,9 +262,9 @@ describe('the Settings pages\' reads are served (F7, overview-automate-009..012)
     expect(profile.identity.email).toBe('alice@example.com')
     expect(profile.identity.is_admin).toBe(false)
     expect(profile.revision).not.toBeNull()
-    expect(profile.workspaces.map((w) => w.tenant_id)).toEqual(['u-bogdan'])
+    expect(profile.workspaces.map((w) => w.tenant_id)).toEqual(['u-owner'])
     const roles = ok(await api.loadWorkspaceRoles(), 'GET /v1/workspace/roles')
-    expect(roles.tenant_id).toBe('u-bogdan')
+    expect(roles.tenant_id).toBe('u-owner')
     expect(roles.me.email).toBe('alice@example.com')
   })
 
