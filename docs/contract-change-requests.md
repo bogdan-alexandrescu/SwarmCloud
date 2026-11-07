@@ -17425,3 +17425,48 @@ None is touched: comments decide nothing.
 
 The owner, 7 November 2026, accepting the generic-repository design's two
 frozen-contract requests.
+
+## 149. `models.py`: the frozen model's comments name the owner by role instead of initials (generic repository, part of #2688)
+
+**Status:** ACCEPTED by the owner on 7 November 2026 and APPLIED by the change
+that adds this section. Comments only.
+
+### What is true today
+
+Three comments in `apps/common/swarm_common/models.py` named the person who
+accepted contract request 123 by their initials: the `Task.platform_refusals`
+comment and two lines of the `PLATFORM_REFUSED_MAX_PARKS` comment. Nothing
+reads them. The deployment-values guard reports each one as category C5, and
+the Day One release ships this package to every company that installs
+SwarmCloud.
+
+### The change
+
+Each set of initials becomes "the owner"; every other word, the dates and
+the meaning stay.
+
+    # models.py, Task.platform_refusals -- before
+    #: by <initials> 2026-10-28. Last in the class, after `budget`, so no positional
+    # after
+    #: by the owner 2026-10-28. Last in the class, after `budget`, so no positional
+
+    # models.py, PLATFORM_REFUSED_MAX_PARKS -- before
+    #: STAYS PARKED and keeps being retried at the longest backoff -- <initials>'s
+    #: it, and <initials>'s 2026-10-28 brief applies that to the platform's refusals.
+    # after
+    #: STAYS PARKED and keeps being retried at the longest backoff -- the owner's
+    #: it, and the owner's 2026-10-28 brief applies that to the platform's refusals.
+
+### What it would break
+
+Nothing: comments only. No type, field, default, docstring or document shape
+moves, and `scripts/lib/check-contract-parity.sh` reads no comment.
+
+### Invariants
+
+None is touched: comments decide nothing.
+
+### Who decided
+
+The owner, 7 November 2026, accepting the third, comments-only request this
+pull request's implement step asked about.
