@@ -28,8 +28,11 @@ each time it is read from facts other code already keeps:
 
   Speech machine the own-speech machine's minutes from the start call to
                 the stop, at the catalogue's price, per session
-                (`speech_machine_lines`, own-speech §13): read by Voice it ›
-                Telemetry; not yet one of LINES, so not against the caps
+                (`speech_machine_lines`, own-speech §13), spent against
+                both caps on the day the session started, as talk is; a
+                session whose stop carries no price is
+                `unpriced_machine_sessions` (null is not zero). Voice it ›
+                Telemetry reads the same line
 
 A second running total is the kind of mirrored value that has drifted here
 before; the start rows hold only what was reserved for them, which is a fact
@@ -106,7 +109,7 @@ TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED"})
 
 SESSION = "session"
 DAY = "day"
-LINES = ("talk", "planner", "work_running", "work_finished", "followups")
+LINES = ("talk", "planner", "speech_machine", "work_running", "work_finished", "followups")
 NOT_COUNTED = ("pod compute for lanes", "CI runner minutes", "deploys")
 
 #: `detail.reason` of a refusal; the code is the established `conflict`
@@ -340,7 +343,7 @@ class _Totals:
         self.cap = cap
         self.lines = {name: {"spent_usd": 0.0, "reserved_usd": 0.0} for name in LINES}
         self.notes = {"unpriced_turns": 0, "subscription_turns": 0, "unmeasured_items": 0, "running_items": 0,
-                      "finished_items": 0, "followup_tasks": 0}
+                      "finished_items": 0, "followup_tasks": 0, "unpriced_machine_sessions": 0}
 
     def add(self, line: str, *, spent: float = 0.0, reserved: float = 0.0) -> None:
         self.lines[line]["spent_usd"] += spent
@@ -420,16 +423,21 @@ class VoiceLedger:
         session = _Totals(SESSION_CAP_USD)
         day = _Totals(DAY_CAP_USD)
         found = False
+        #: {session_id: (in this session, on this day)} for the Speech machine line.
+        machine_owners: dict[str, tuple[bool, bool]] = {}
 
         for project_id, _project in self._projects(tenant_id, person):
             sessions = self._children(project_id, vs.SESSIONS, tenant_id, person)
             found = found or any(sid == session_id for sid, _ in sessions)
             for sid, doc in sessions:
                 cost = modelprices.per_minute_cost(TALK_MODEL, talk_seconds(doc, now)) or 0.0
-                if sid == session_id:
+                mine, today_session = sid == session_id, day_of(doc.get("created_at"), tz) == today
+                if mine:
                     session.add("talk", spent=cost)
-                if day_of(doc.get("created_at"), tz) == today:
+                if today_session:
                     day.add("talk", spent=cost)
+                if mine or today_session:
+                    machine_owners[sid] = (mine, today_session)
 
             for _tid, turn in self._children(project_id, vstore.TURNS, tenant_id, person):
                 cost = turn_cost(turn.get("usage"), prices)
@@ -489,6 +497,19 @@ class VoiceLedger:
 
         if not found:
             raise NotFound(f"voice session {session_id!r} not found")
+        # A read that fails raises: a start is refused rather than admitted
+        # past a cap the ledger could not compute.
+        machine = speech_machine_lines(self._db, {sid: tenant_id for sid in machine_owners},
+                                       now=lambda: now)
+        for sid, (mine, today_session) in machine_owners.items():
+            line = machine[sid]
+            for totals, counts in ((session, mine), (day, today_session)):
+                if not counts:
+                    continue
+                if line["usd"] is None:
+                    totals.notes["unpriced_machine_sessions"] += 1
+                else:
+                    totals.add("speech_machine", spent=line["usd"])
         return {
             "session_id": session_id,
             "date": today,
