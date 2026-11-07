@@ -352,7 +352,9 @@ _config_path_is_private() {
 _config_gcloud() {
   local guard_dir dir cand
   local -a dirs=()
-  guard_dir="$(cd -- "${SWARM_LIB_DIR}/guard-bin" 2>/dev/null && pwd -P || true)"
+  if ! guard_dir="$(cd -- "${SWARM_LIB_DIR}/guard-bin" 2>/dev/null && pwd -P)"; then
+    guard_dir=""
+  fi
   IFS=':' read -r -a dirs <<<"${PATH}"
   for dir in ${dirs[@]+"${dirs[@]}"}; do
     cand="${dir}/gcloud"

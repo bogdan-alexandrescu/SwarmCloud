@@ -26,6 +26,11 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
+# It proves what common.sh does with no list, or with its own: none is served for it.
+pytestmark = pytest.mark.no_placeholder_deployment
+
 REPO = Path(__file__).resolve().parents[3]
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
