@@ -822,3 +822,182 @@ def test_budget_create_denied_and_never_made_fails_naming_the_right(tmp_path: Pa
     assert result.exit_code == ExitCode.FAIL
     assert "billing.budgets.create" in result.message
     assert [url for url, _ in opened] == [foundations.budgets_page(ACCOUNT, PROJECT)]
+
+
+# -- foundations.config: the never-touch list (generic-repository design §2.4) --
+
+DENY_OBJECT = "config/dev/deny-list.json"
+OTHER_SA = f"peer-runner@{PROJECT}.iam.gserviceaccount.com"
+
+
+def _configured(tmp_path: Path, deny_list: list[str] | None = None) -> Rig:
+    """A rig whose bucket is the attached state bucket, holding the state stage
+    0 records (the signed-in account reviews the list)."""
+    rig = Rig(tmp_path)
+    earlier = InstallState(project=PROJECT, environment="dev", region="us-central1",
+                           outputs={"installer": "admin@example.com"}, deny_list=list(deny_list or []))
+    rig.bucket.write(STATE_OBJECT, earlier.to_bytes(), if_generation_match=0)
+    return rig
+
+
+def _neighbourly(gcp: FakeGcp) -> None:
+    """A project another team already uses, beside what the platform owns."""
+    gcp.held = {
+        "clusters": [{"name": "peer-cluster"},
+                     {"name": "swarm-dev"},
+                     {"name": "ops", "resourceLabels": {"managed-by": "swarm-terraform"}}],
+        "networks": [{"name": "default"}, {"name": "peer-vpc"}, {"name": "swarm-dev-vpc"}],
+        "subnetworks": [{"name": "default", "network": f"projects/{PROJECT}/global/networks/default"},
+                        {"name": "peer-subnet", "network": f"projects/{PROJECT}/global/networks/peer-vpc"},
+                        {"name": "swarm-dev-subnet", "network": f"projects/{PROJECT}/global/networks/swarm-dev-vpc"}],
+        "buckets": [{"name": "peer-bucket"}, {"name": "logs-archive", "labels": {"managed-by": "swarm-bootstrap"}}],
+        "service_accounts": [{"email": OTHER_SA},
+                             {"email": f"swarm-api@{PROJECT}.iam.gserviceaccount.com"},
+                             {"email": f"{NUMBER}-compute@developer.gserviceaccount.com"}],
+    }
+
+
+def test_existing_project_list_is_what_it_holds_and_written_after_approval(tmp_path: Path) -> None:
+    """Design §2.3: for a project that existed, the list is what preflight
+    finds that the deployment does not own, approved by typing the project id;
+    written with each kind's floor at the count found, then read into the state."""
+    gcp = FakeGcp()
+    _neighbourly(gcp)
+    ask = Answers(foundations_config=[PROJECT])
+    rig = _configured(tmp_path)
+    step = foundations.ConfigStep(lambda: gcp, ask)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+
+    ((asked_step, question),) = ask.asked
+    assert asked_step == "foundations.config"
+    for name in ("peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket", OTHER_SA, DENY_OBJECT):
+        assert name in question, name
+    for owned in ("swarm-dev", "ops", "swarm-api@", "-compute@", "logs-archive"):
+        assert owned not in question, owned
+
+    data, generation = rig.bucket.read(DENY_OBJECT)
+    assert (DENY_OBJECT, 0) in rig.bucket.writes, "written create-only"
+    doc = json.loads(data)
+    entries = ["peer-bucket", "peer-cluster", "default", "peer-vpc", OTHER_SA, "peer-subnet"]
+    assert doc["project"] == PROJECT
+    assert doc["entries"] == entries
+    assert {r["glob"]: r["kind"] for r in doc["classify"]} == {
+        "peer-bucket": "bucket", "peer-cluster": "cluster", "default": "default-network",
+        "peer-vpc": "network", OTHER_SA: "sa", "peer-subnet": "subnet"}
+    assert doc["floors"] == {"total": 6, "cluster": 1, "network": 1, "default-network": 1, "subnet": 1,
+                             "bucket": 1, "sa": 1}
+    assert doc["reviewed_by"] == "admin@example.com" and doc["reviewed_at"]
+    assert rig.store.load().deny_list == entries
+    assert foundations.deny_list_entries(data, PROJECT) == entries
+
+    # A second run finds it written and read: no question, no write.
+    again = Answers()
+    result = rig.engine([foundations.ConfigStep(lambda: gcp, again)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert again.asked == [] and rig.bucket.read(DENY_OBJECT)[1] == generation
+
+
+def test_existing_project_list_refused_writes_nothing(tmp_path: Path) -> None:
+    gcp = FakeGcp()
+    _neighbourly(gcp)
+    rig = _configured(tmp_path)
+    step = foundations.ConfigStep(lambda: gcp, Answers(foundations_config=["yes"] * preflight.CONFIRM_TRIES))
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert "no never-touch list was written" in result.message
+    assert rig.bucket.read(DENY_OBJECT) is None
+    assert rig.store.load().deny_list == []
+
+
+def test_existing_project_holding_nothing_still_asks_and_writes_an_explicit_empty_list(tmp_path: Path) -> None:
+    """An existing project with nothing of anyone else's is still approved:
+    the empty list is a statement someone made, never a default."""
+    gcp = FakeGcp()
+    ask = Answers(foundations_config=[PROJECT])
+    rig = _configured(tmp_path)
+    result = rig.engine([foundations.ConfigStep(lambda: gcp, ask)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert len(ask.asked) == 1 and "(nothing)" in ask.asked[0][1]
+    doc = json.loads(rig.bucket.read(DENY_OBJECT)[0])
+    assert doc["entries"] == [] and set(doc["floors"].values()) == {0}
+
+
+def test_created_project_gets_an_explicitly_empty_reviewed_list(tmp_path: Path) -> None:
+    """Design §2.3: a project the installer created holds nobody else's
+    resources; the list is written empty with every floor zero, unasked."""
+    gcp = FakeGcp()
+    gcp.projects[PROJECT]["labels"] = {"managed-by": "swarm-install", "environment": "dev"}
+    _neighbourly(gcp)  # never listed: the project is the installer's own
+    ask = Answers()
+    rig = _configured(tmp_path)
+    result = rig.engine([foundations.ConfigStep(lambda: gcp, ask)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert ask.asked == []
+    assert not gcp.called("clusters") and not gcp.called("buckets")
+    doc = json.loads(rig.bucket.read(DENY_OBJECT)[0])
+    assert doc["entries"] == [] and doc["classify"] == []
+    assert doc["floors"] == {"total": 0, **{kind: 0 for kind in foundations.DENY_LIST_KINDS}}
+    assert doc["reviewed_by"] == "admin@example.com"
+    assert rig.store.load().deny_list == []
+
+
+def test_a_list_already_there_is_read_never_replaced(tmp_path: Path) -> None:
+    """The owner's list (or an earlier run's) is the one read into the state."""
+    gcp = FakeGcp()
+    rig = _configured(tmp_path)
+    owner = {"project": PROJECT, "entries": ["peer-cluster"], "floors": {"total": 1},
+             "reviewed_by": "owner@example.com", "reviewed_at": "2026-11-07"}
+    rig.bucket.write(DENY_OBJECT, json.dumps(owner).encode(), if_generation_match=0)
+    before = rig.bucket.read(DENY_OBJECT)
+    step = foundations.ConfigStep(lambda: gcp, Answers())
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert rig.bucket.read(DENY_OBJECT) == before
+    assert rig.store.load().deny_list == ["peer-cluster"]
+    assert not gcp.called("clusters")
+
+
+@pytest.mark.parametrize("written, why", [
+    (b"{not json", "not valid JSON"),
+    (b"[]", "not a JSON object"),
+    (json.dumps({"project": "another-project", "entries": [], "floors": {},
+                 "reviewed_by": "o@example.com", "reviewed_at": "2026-11-07"}).encode(), "another-project"),
+    (json.dumps({"project": PROJECT, "floors": {}, "reviewed_by": "o@example.com",
+                 "reviewed_at": "2026-11-07"}).encode(), "entries is not a list"),
+    (json.dumps({"project": PROJECT, "entries": [], "floors": {"total": -1},
+                 "reviewed_by": "o@example.com", "reviewed_at": "2026-11-07"}).encode(), "whole numbers"),
+    (json.dumps({"project": PROJECT, "entries": [], "floors": {}}).encode(), "who reviewed it"),
+    (json.dumps({"project": PROJECT, "entries": ["peer-cluster"], "floors": {"total": 2},
+                 "reviewed_by": "o@example.com", "reviewed_at": "2026-11-07"}).encode(), "fewer entries"),
+])
+def test_an_unusable_list_stops_the_step_and_is_never_read_as_empty(tmp_path: Path, written: bytes,
+                                                                    why: str) -> None:
+    gcp = FakeGcp()
+    rig = _configured(tmp_path, deny_list=["kept"])
+    rig.bucket.write(DENY_OBJECT, written, if_generation_match=0)
+    step = foundations.ConfigStep(lambda: gcp, Answers())
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert why in result.message and "never replaces a never-touch list" in result.message
+    assert rig.bucket.read(DENY_OBJECT)[0] == written
+    assert rig.store.load().deny_list == ["kept"]
+
+
+def test_a_listing_refused_stops_the_step_but_an_api_that_is_off_lists_nothing(tmp_path: Path) -> None:
+    """A list that missed a kind is never offered as the whole one; with the
+    Kubernetes Engine API off there is simply no cluster."""
+    gcp = FakeGcp()
+    _neighbourly(gcp)
+    gcp.held["buckets"] = ApiError(403, "PERMISSION_DENIED", "storage.buckets.list denied")
+    rig = _configured(tmp_path)
+    result = rig.engine([foundations.ConfigStep(lambda: gcp, Answers())]).run()
+    assert result.exit_code == ExitCode.FAIL
+    assert rig.bucket.read(DENY_OBJECT) is None
+
+    _neighbourly(gcp)
+    gcp.held["clusters"] = ApiError(403, "PERMISSION_DENIED",
+                                    "Kubernetes Engine API has not been used in project 1 before or it is disabled")
+    found = preflight.neighbours(gcp, PROJECT)
+    assert "cluster" not in {item["kind"] for item in found}
+    assert {"name": "peer-bucket", "kind": "bucket"} in found

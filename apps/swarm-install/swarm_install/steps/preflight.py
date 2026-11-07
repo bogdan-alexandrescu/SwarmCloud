@@ -320,7 +320,7 @@ class Gcp:
 
         return GcsObjectStore(bucket)
 
-    # What an existing project holds (preflight.neighbours) ------------------
+    # What an existing project holds (foundations.config) ---------------------
 
     def clusters(self, project: str) -> list[dict[str, Any]]:
         found = self._call("GET", f"{CONTAINER}/projects/{project}/locations/-/clusters") or {}
@@ -342,10 +342,10 @@ class Gcp:
                 return found
             params["pageToken"] = token
 
-    def buckets(self, project: str) -> list[dict[str, Any]]:
+    def project_buckets(self, project: str) -> list[dict[str, Any]]:
         return self._pages(f"{STORAGE}/b", "items", {"project": project})
 
-    def service_accounts(self, project: str) -> list[dict[str, Any]]:
+    def project_service_accounts(self, project: str) -> list[dict[str, Any]]:
         return self._pages(f"{IAM}/projects/{project}/serviceAccounts", "accounts")
 
     # Edge ----------------------------------------------------------------------
@@ -2144,7 +2144,7 @@ class SizingQuotaStep(SizingStep):
                                "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
 
 
-# -- preflight.neighbours (generic-repository design §2.3, §2.4) ---------------
+# -- what an existing project already holds (generic-repository design §2.3, §2.4)
 
 #: What marks a resource as this deployment's own: the platform's name prefix
 #: (`guard_name_prefix` in scripts/lib/common.sh) or the managed-by label one of
@@ -2209,11 +2209,11 @@ def neighbours(gcp: Gcp, project: str) -> list[dict[str, str]]:
             continue
         if not _owned(str(subnet.get("name", "")), None):
             add(str(subnet.get("name", "")), "subnet")
-    for bucket in gcp.buckets(project):
+    for bucket in gcp.project_buckets(project):
         if not _owned(str(bucket.get("name", "")), bucket.get("labels")):
             add(str(bucket.get("name", "")), "bucket")
     own_domain = f"@{project}.iam.gserviceaccount.com"
-    for account in gcp.service_accounts(project):
+    for account in gcp.project_service_accounts(project):
         email = str(account.get("email", ""))
         # Only accounts made in the project: Google's own service agents and
         # default accounts live under other domains and are no one's to list.
@@ -2222,45 +2222,7 @@ def neighbours(gcp: Gcp, project: str) -> list[dict[str, str]]:
     return [{"name": name, "kind": kind} for name, kind in sorted(found.items(), key=lambda i: (i[1], i[0]))]
 
 
-class NeighboursStep(_Base):
-    """For a project that already exists and that this installer did not
-    create, what it holds that the deployment does not own: other teams'
-    clusters, networks, subnets, buckets and service accounts. Recorded as
-    `neighbours` ({project, created, found}); foundations.config shows it at an
-    approval and writes it as config/<env>/deny-list.json, the never-touch list
-    every script and this engine honour. A project still to be created, or one
-    this installer created, holds nothing of anyone else's."""
-
-    id = "preflight.neighbours"
-    _explain = (
-        "A deployment in a project that already exists must never touch what others keep there. The "
-        "installer lists the project's clusters, networks, subnets, buckets and service accounts, keeps "
-        "those that are not the platform's own, and asks you to approve that list in stage 1, where it "
-        "becomes the deployment's never-touch list."
-    )
-
-    def check(self, ctx: Any) -> Observation:
-        recorded = ctx.outputs.get("neighbours")
-        if isinstance(recorded, Mapping) and recorded.get("project") == ctx.project:
-            if recorded.get("created"):
-                return Observation(MET, f"project {ctx.project} is new or the installer's own: nobody else's "
-                                        "resources are in it", {"neighbours": dict(recorded)})
-            count = len(recorded.get("found") or [])
-            return Observation(MET, f"project {ctx.project} holds {count} resource(s) the deployment does not own",
-                               {"neighbours": dict(recorded)})
-        return Observation(UNMET, f"what project {ctx.project} already holds is not read yet")
-
-    def plan(self, ctx: Any) -> Plan:
-        return Plan("read what the project already holds that this deployment does not own",
-                    ("clusters, networks, subnets, buckets and service accounts",))
-
-    def apply(self, ctx: Any, plan: Plan) -> None:
-        found = self.gcp.project(ctx.project)
-        if found is None or project_created_by_install(found):
-            recorded: dict[str, Any] = {"project": ctx.project, "created": True, "found": []}
-        else:
-            recorded = {"project": ctx.project, "created": False, "found": neighbours(self.gcp, ctx.project)}
-        remember(ctx, outputs={"neighbours": recorded})
+# -- preflight.release (lesson 27) -------------------------------------------------
 
 
 @dataclass(frozen=True)
