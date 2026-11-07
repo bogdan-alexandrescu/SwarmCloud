@@ -1,7 +1,7 @@
 {
   "title": "Console visual QA: every page at 1440 and 390, light and dark",
   "label": "console-qa",
-  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_url": "https://github.com/example-org/example-repo",
   "repository_ref": "main",
   "strategy": "collect",
   "merge": "off",

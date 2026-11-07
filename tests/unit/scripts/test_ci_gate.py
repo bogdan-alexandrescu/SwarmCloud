@@ -9,7 +9,7 @@ terraform.yml alone -- `CI_GATE_WORKFLOWS`, read below from the workflow, so
 the script is tested here in the configuration CI runs it in.
 
 WHY IT EXISTS. Owner decision, 2026-09-29: main's ruleset (main-protection,
-id 24160219) requires only security.yml's four checks, because application.yml
+looked up by name) requires only security.yml's four checks, because application.yml
 and terraform.yml carry a `pull_request` path filter, and GitHub treats a
 required check whose workflow was filtered out as PENDING FOREVER, not as
 passed. So nothing required held a pull request on its unit tests. `ci-gate`
@@ -49,6 +49,7 @@ the real API -- this pull request's own `ci-gate` run is the first.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -70,7 +71,11 @@ GATE_WORKFLOW = WORKFLOWS / "application.yml"
 CI_DOC = REPO / "docs" / "ci.md"
 OWNER_REPO = "owner/swarm"
 SHA = "c0ffee" * 6 + "abcd"
-RULESET_ID = "24160219"
+RULESET_NAME = "main-protection"
+
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(placeholders)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
@@ -740,7 +745,10 @@ def test_docs_carry_the_ruleset_put_that_adds_ci_gate():
     ruleset has, or pin a check the owner decided to leave unpinned."""
     text = CI_DOC.read_text()
     match = re.search(
-        r"```bash\n(gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/" + RULESET_ID + r".*?)```",
+        r"```bash\n(RULESET_ID=\"\$\(gh api repos/" + re.escape(placeholders.GITHUB_REPOSITORY)
+        + r"/rulesets --jq '\.\[\] \| select\(\.name==\"" + re.escape(RULESET_NAME)
+        + r"\"\) \| \.id'\)\"\n"
+        r"gh api -X PUT repos/" + re.escape(placeholders.GITHUB_REPOSITORY) + r"/rulesets/\"\$RULESET_ID\".*?)```",
         text,
         re.DOTALL,
     )

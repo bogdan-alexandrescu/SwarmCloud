@@ -8,7 +8,7 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 |---|---|---|---|
 | `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `claude-code-medium`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
-| `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
+| `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 | `agent-runtime-lightpanda` | `agent-runtime-base` by digest | the Lightpanda 1.0.2 headless browser, at `/opt/swarm/lightpanda/lightpanda`, and its licence notices; no Chromium | `claude-code-lightpanda` (contract request 127, accepted by the owner 2026-10-31), on GKE Autopilot ([below](#the-agent-runtime-lightpanda-image-contract-request-127)) |
 
 The three derived images are built only after the base has finished in the same
@@ -17,7 +17,7 @@ beside their Dockerfile that pulls `agent-runtime-base:<tag>` and passes its
 digest as `BASE_IMAGE`. The indexer's and the Lightpanda image's Dockerfiles
 have no default `BASE_IMAGE` and refuse one without a digest.
 
-## Why the repository index has its own image (#625)
+## Why the repository index has its own image
 
 **What the image's size costs a start, and what it does not.** The move was
 argued, on 2026-10-05, from image weight: a Cloud Run Job execution pulls its
@@ -66,9 +66,9 @@ the image:
 | | gke-gcloud-auth-plugin | 4.0 | 10 |
 | | shellcheck 0.11.0 | 3.8 | |
 | | **total** | **~202** | |
-| trivy (2026-10-06, #442) | trivy 0.75.0 | 51.0 | 165 |
+| trivy (2026-10-06) | trivy 0.75.0 | 51.0 | 165 |
 
-**The registry bisect (the operator, 2026-10-05 ~11:05Z, #625).** Run with
+**The registry bisect (the operator, 2026-10-05 ~11:05Z).** Run with
 `scripts/image-sizes.sh` over 101 releases of agent-runtime-base:
 
 | when | compressed | what |
@@ -80,7 +80,7 @@ the image:
 So the toolbox explains 71 s → ~115 s, but **the ~115 s → ~167 s step of
 10-04/05 happened with no change in the image's size**: the toolchain never
 reached a deployed base. The estimate above that tied that step to the
-toolchain is not supported; the step is investigated in #667, and the
+toolchain is not supported; the step is investigated in the image-size provisioning-delay investigation, and the
 measurement of 2026-10-07 below found it in Cloud Run's provisioning. The move
 still stands, because it keeps +188 MB out of every start that runs the base.
 
@@ -100,8 +100,8 @@ so a later growth shows on the release that brought it.
 
 ### Where DISPATCHED -> STARTING goes (measured 2026-10-07)
 
-Measured read-only by the operator on 2026-10-07 (#625's second comment, and
-#667): 874 claude-code attempts from 09-30 to 10-07, 497 of them with Cloud
+Measured read-only by the operator on 2026-10-07 (the execution-to-container-start measurement's second comment, and
+the image-size provisioning-delay investigation): 874 claude-code attempts from 09-30 to 10-07, 497 of them with Cloud
 Run execution conditions, against controls of 811 `mock`, 446 swarm-verify and
 313 `browser` attempts on GKE Autopilot.
 
@@ -141,7 +141,7 @@ owner to file in
 [`docs/runbooks/cloud-run-start-support-case.md`](runbooks/cloud-run-start-support-case.md).
 
 This is the start, not the clone: the time to connect and clone after STARTING
-(#721) is not part of DISPATCHED -> STARTING.
+ is not part of DISPATCHED -> STARTING.
 
 **What returns claude-code toward 70 s is the backend, not the image.**
 claude-code runs on GKE Autopilot since contract request 53, applied
@@ -172,17 +172,17 @@ fails when a profile's backend moves and this table does not.
 | `claude-code-medium` | `GKE_AUTOPILOT` | none: born on GKE (contract request 147, 2026-11-06), `claude-code` on the `medium` class (6 CPU, 16 GiB), so it has no rollback Job |
 | `claude-code-lightpanda` | `GKE_AUTOPILOT` | none: born on GKE (contract request 127, 2026-10-31), `claude-code` on the `agent-runtime-lightpanda` image and the `standard` class, so it has no rollback Job |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
-| `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |
-| `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
-| `merge` | `GKE_AUTOPILOT` | none used: since contract request 66 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `git`, contract request 47) is kept idle as the rollback. Until then every MERGE verdict paid a Cloud Run start (#748) |
-| `codex` | `GKE_AUTOPILOT` | none used: since contract request 65 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `openai`) is kept idle as the rollback; the profile is available again since contract request 130 (2026-11-02), on the tenant's key or a pool ChatGPT plan |
+| `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |
+| `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for the GKE Autopilot migration); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
+| `merge` | `GKE_AUTOPILOT` | none used: since contract request 66 (2026-10-10); each tenant's old Job (one per tenant that registers `git`, contract request 47) is kept idle as the rollback. Until then every MERGE verdict paid a Cloud Run start |
+| `codex` | `GKE_AUTOPILOT` | none used: since contract request 65 (2026-10-10); each tenant's old Job (one per tenant that registers `openai`) is kept idle as the rollback; the profile is available again since contract request 130 (2026-11-02), on the tenant's key or a pool ChatGPT plan |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 | `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); available since request D (contract request 105, HW-ENABLE) |
 | `fix-loop` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): the second `control_plane` profile, on the same terms as `await-input` (contract request 124, docs/design/fix-loop.md); shipped unavailable until FL-ACCEPT passes |
 
 So `mock` is the one enabled profile still started on Cloud Run: it reaches no
-internet, so #939's option A left it there, and `post-verdict` and
+internet, so the GKE Autopilot migration's option A left it there, and `post-verdict` and
 `claude-code-review` stay because each was designed to run as an account of its
 own, which a GKE pod cannot be (contract request 66). `scripts/warm-jobs.sh`
 warms every per-tenant worker Job it lists: mock's, and the idle rollback Jobs
@@ -194,7 +194,7 @@ Accepted by the owner 2026-10-05. `indexer` was `claude-code` in every field
 but its name and its image: the same runner, resource class, backend,
 timeouts, provider, secrets and inputs. Contract request 53 moved
 `claude-code` to GKE Autopilot (2026-10-08); contract request 63 (owner,
-2026-10-10) moved `indexer` after it, as the canary for #939: a new Cloud Run
+2026-10-10) moved `indexer` after it, as the canary for the GKE Autopilot migration: a new Cloud Run
 instance's internet path opens a median 20.2 s after start against GKE's
 1.17 s, through the same NAT, and every index run clones. Its tenants' Cloud
 Run Jobs stay, idle, as the rollback (`cloud_run_fallback_profiles` in
@@ -213,17 +213,16 @@ claude-code agent on a bigger image, by name, with no image or command of
 their own (invariant 10). Making it platform-only needs a catalogue field, a
 contract change of its own.
 
-**terraform-ls is back in the image (2026-10-20, lane INDEX-LANGS, part of
-#1693).** It was out from 2026-10-05, when its source build answered 0
+**terraform-ls is back in the image (2026-10-20, lane INDEX-LANGS).** It was out from 2026-10-05, when its source build answered 0
 references in the LSP self-test. Like gopls it is compiled from module source
-with the golang.org/x modules trivy flagged raised (#661), and its module zip
+with the golang.org/x modules trivy flagged raised, and its module zip
 is checked against a sha256 pinned in the Dockerfile; HashiCorp's prebuilt
 zip is not used. The build's `--lsp-self-test` now requires an `lsp` edge for
 HCL, as for Python, TypeScript, JavaScript and Go, so a terraform-ls that
 resolves nothing fails the build instead of shipping.
 
-**trivy joined the base on 2026-10-06 (#442).** BUILD_PROMPT_V2 §2.12 and the
-owner's decision on #442 put all eleven toolbox tools in agent-runtime-base;
+**trivy joined the base on 2026-10-06.** BUILD_PROMPT_V2 §2.12 and the
+owner's decision on the toolbox-tools change put all eleven toolbox tools in agent-runtime-base;
 three were held back on 2026-10-01 because every release of each failed the
 promote scan. trivy 0.75.0 scanned clean, so it is in the default build, and
 it costs every agent start its 51 MB layer (measured as above: the pinned
@@ -316,7 +315,7 @@ on the self-test, the probe tests and a rerun of the design's `bench.py`.
 
 **Why.** On 2026-10-15 three claude-code agents were evicted twice each with
 `Usage of EmptyDir volume "workspace" exceeds the limit "5Gi"` and were not
-retried: task_41ae250f and task_c6a07695 (CI-fix rounds on PR 1338) and
+retried: task_41ae250f and task_c6a07695 (CI-fix rounds on an in-flight pull request) and
 task_44c61c77 (BROWSER-CLASS implement). The 5 GiB workspace volume held the
 clone and the outputs, and also every cache the agent's tools fill, because the
 agent's HOME (`work/`) and TMPDIR were both inside it: uv's cache, npm's cache,
@@ -373,7 +372,7 @@ anything a tool writes under HOME regardless.
 ## CodeRabbit
 
 `agent-runtime-base` carries the CodeRabbit CLI (CODERABBIT-IMAGE, part of
-#2442; owner decision 2026-10-26), so every image built on it has it too:
+the 2026-10-26 epic; owner decision 2026-10-26), so every image built on it has it too:
 `claude-code`, `codex`, `claude-code-browser` and the rest. A lane whose
 repository's rules ask for a local CodeRabbit review on a risky change runs
 it itself, in its checkout, before it finishes:

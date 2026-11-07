@@ -30,13 +30,13 @@ For a fleet of coding agents, **provider tokens usually exceed all cloud costs
 combined**. Optimise the number of agent-hours before optimising the price of an
 agent-hour.
 
-### Provider tokens: the prompt-cache TTL (#323)
+### Provider tokens: the prompt-cache TTL
 
 **Today no TTL is set: Claude Code's default is in force.** Nothing below is
 built. The section records a measurement, the owner's decision not to act on it
 yet, and where the knob would go, so the question is not re-measured from
 scratch. The full working, with the per-agent table, is in
-[issue #323](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/323).
+the prompt-cache TTL measurement write-up.
 `tests/unit/scripts/test_prompt_cache_ttl_doc.py` fails if the runner starts
 setting a TTL while this section still says the default is in force.
 
@@ -104,7 +104,7 @@ comes from the profile catalogue. There are three routes, cheapest first:
    `apps/agent-worker/agent_worker/runners/claude_code.py::write_headless_settings`.
    The runner already writes that file and passes it as `--settings` after any
    `CLAUDE_CODE_ARGS`. That needs no passthrough change and no restated argv.
-   (#323's measurement comment says the child has no settings file. That is
+   (the prompt-cache TTL measurement write-up's comment says the child has no settings file. That is
    wrong: `HOME` is a fresh `work/` with no user settings, but this
    platform-written file is passed on every run.)
 2. Add `CLAUDE_CODE_PROMPT_CACHE_TTL` to `cliagent._PLAIN_PASSTHROUGH` and set
@@ -288,7 +288,7 @@ cost per checkpoint   ≈ compress + upload (typically a few hundred MB)
 storage               ≈ retained checkpoints x archive size x retention days
 ```
 
-Since #637 (2026-10-05) the second line is the cost of an attempt's FIRST
+Since the incremental-checkpoint change (2026-10-05) the second line is the cost of an attempt's FIRST
 checkpoint only. The history analysis that day measured 247 GB uploaded, a
 median of 66 MB every 120 s, of which 1.25% was ever restored. Now dependency
 and build directories are left out, every later checkpoint uploads only what

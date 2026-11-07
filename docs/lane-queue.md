@@ -1,18 +1,18 @@
 # The lane queue: implement → review → fix as a platform object
 
 **Status: PROPOSED 2026-10-05, design and mock-ups only (functionality wave
-8, lane LQD, epic #640; the lane outcome ledger of #639 is folded in, owner
+8, lane LQD, the lane-queue epic; the lane-outcome-ledger design is folded in, owner
 decision 2026-10-05).** Nothing described here is built. Owner decision
 2026-10-05 (history V1): design first, no product code. The screens are
 drawn, in two or three variants each, in
 [web-ui/mockups/lane-queue.html](web-ui/mockups/lane-queue.html). The one
 frozen-contract consequence is written out in §14 for filing; it is not
-filed by this lane. Build lanes are filed on #640 after the owner's picks.
+filed by this lane. Build lanes are filed on the lane-queue epic after the owner's picks.
 
 What the design settles, in one line each:
 
 * **A lane is a tenant's Firestore document** that generalises an issue run
-  (#454): the same planner-or-brief → implement → review → fix workflow, the
+ : the same planner-or-brief → implement → review → fix workflow, the
   same CI loop after the pull request opens, plus what the laptop did by
   hand (§2).
 * **A lane may wait for another lane's pull request to MERGE**, not merely
@@ -21,7 +21,7 @@ What the design settles, in one line each:
   files, with seam files (`swarm_api/main.py`, `App.tsx`) handled by a
   policy the owner picks (§4).
 * **After its pull request opens, a lane runs the existing CI-fix loop
-  (#545), labels `ready` when green and reviewed, and closes or comments
+ , labels `ready` when green and reviewed, and closes or comments
   on its issue** (§5).
 * **A verify-only lane succeeds with an empty diff** (`allow_empty_diff`,
   §6), and **review minors go to a sink**, not to the fix step (§7).
@@ -49,7 +49,7 @@ cost, measured in the same analysis:
 * **Watchers died on network errors.** A watcher is a loop in a session; a
   dropped connection ended it, and the lane it watched sat green and
   unmerged, or red and unfixed, until someone looked.
-* **Sibling lanes conflicted on shared files.** #588 and #589 both edited
+* **Sibling lanes conflicted on shared files.** The first router PR and the second router PR both edited
   `apps/swarm-api/swarm_api/main.py` (router registration), and the second to
   merge needed a hand rebase. Nothing knew both lanes were in the same file.
 * **Dependencies were re-typed after every restart.** "Launch X after PR Y
@@ -57,7 +57,7 @@ cost, measured in the same analysis:
   restart re-typed them, and a mistyped one launched X against a main that
   did not have Y yet.
 
-Issue runs (#454) already do a third of a lane natively: plan, compile,
+Issue runs already do a third of a lane natively: plan, compile,
 run, watch CI, fix, merge. None of the four costs above is something an issue
 run addresses, because an issue run knows nothing about any other run. The
 lane queue is that missing knowledge: what this lane waits for, what it is
@@ -69,7 +69,7 @@ holding, and what to do when its pull request is green.
 
 ### 2.1 What it generalises
 
-An issue run (#454) is `issue_runs/{run_id}` (`apps/swarm-api/swarm_api/issueruns.py::IssueRun`,
+An issue run is `issue_runs/{run_id}` (`apps/swarm-api/swarm_api/issueruns.py::IssueRun`,
 `IssueRun`), moved by `RunState` (`apps/swarm-api/swarm_api/issueruns.py::RunState`)
 through PLANNING → PLANNED → APPROVED → RUNNING → CHECKING ⇄ FIXING → DONE.
 Its routes are `apps/swarm-api/swarm_api/routes/runs.py`; every read advances
@@ -229,7 +229,7 @@ touch to register what it built: in this repository
 (`export const SECTIONS`), plus `apps/swarm-api/swarm_api/schemas.py`. The list lives on
 the repository's registration (docs/repo-index.md §1), seeded from the
 index's `hot_spots`, and a lane's `seams` are its territory's entries that
-are on it. A seam is the reason #588 and #589 conflicted, and the reason a
+are on it. A seam is the reason the first router PR and the second router PR conflicted, and the reason a
 plain exclusive lock would serialise almost every lane.
 
 ### 4.2 Acquiring and releasing
@@ -256,7 +256,7 @@ the tick releases it in the visit that reads the pull request closed or
 merged. `POST :cancel` closes the lane's pull request with a comment, then
 releases. Not at `READY`: until GitHub merges, the branch can still go
 red and be fixed, and a sibling that started on the same file in the
-meantime would conflict exactly as #589 did.
+meantime would conflict exactly as the second router PR did.
 
 **The plan is not a fence.** When the pull request opens, the lane reads its
 changed files (the same read `forge.read_open_work` makes) and compares them
@@ -279,8 +279,8 @@ every other holder of that seam whose pull request GitHub now reports
 unmergeable gets a **rebase round**: one continuation of its integrator, the
 same mechanism as a CI fix round (§5.1), whose prompt is "merge the base
 branch into this branch and resolve the conflict keeping both sides' intent;
-run the tests of the files you touched". Under T2, #589 would have been given
-its rebase round the minute #588 merged, with nobody watching. Rebase rounds
+run the tests of the files you touched". Under T2, the second router PR would have been given
+its rebase round the minute the first router PR merged, with nobody watching. Rebase rounds
 are capped separately (`rebase_rounds`, default 2), because a conflict that
 two rounds could not resolve needs a person.
 
@@ -299,7 +299,7 @@ contract.
 
 ## 5. After the pull request opens
 
-### 5.1 The CI-fix loop (#545), on the lane's pull request
+### 5.1 The CI-fix loop, on the lane's pull request
 
 The lane does not grow a second CI loop. `issueci`
 (`apps/swarm-api/swarm_api/issueci.py`) already reads the pull request's
@@ -377,7 +377,7 @@ Then the lane acts on its `merge` setting:
   A label added by a PAT or an App starts `pull_request_target`; one added by
   a `GITHUB_TOKEN` would not, and the lane never holds one.
 * **`step`** — submits the one merge-only continuation `issueci._merge`
-  submits (#295, contract request 47), pinned to `green_sha`.
+  submits (contract request 47), pinned to `green_sha`.
 * **`none`** — stops at `READY`; a person merges.
 
 A lane created without saying takes the platform's `merge_by_default`, as
@@ -715,7 +715,7 @@ entry is a path the lock compares, never something executed.
 
 ## 13. The lane outcome ledger
 
-#639, folded into this design (owner decision 2026-10-05). It answers "what
+The lane outcome ledger, folded into this design (owner decision 2026-10-05). It answers "what
 did this lane cost, how long did it take, where did it wait, and what came
 of it", one record per lane, and "what did this wave cost and where did its
 time go" by summing them.

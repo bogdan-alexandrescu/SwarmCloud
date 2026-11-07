@@ -1,6 +1,6 @@
 # Browser benchmark: Playwright MCP vs dev-browser
 
-Owner decision, 2026-10-14 (part of #1030): dev-browser v1 is built in
+Owner decision, 2026-10-14: dev-browser v1 is built in
 attach mode, CLI flavour, **opt-in** beside the Playwright MCP, and the
 Playwright MCP **stays the default**. "A benchmark decides any default flip
 later." This is that benchmark: the same ten real browser prompts, run with
@@ -119,7 +119,7 @@ default is the owner's decision.
 
 Its first consequence (batch `bench3-2026-10-23`, 10 prompts x 3 tools x 3
 repeats, 83 runs measured: Playwright MCP 8/10 at a median $0.14 and 44.5 s a
-run, dev-browser 7/10, Jev 6/10 at $0.17 and 51.3 s): BGD decided on
+run, dev-browser 7/10, Jev 6/10 at $0.17 and 51.3 s): [the owner] decided on
 2026-10-23 that Visual QA's goal-driven flows default to Playwright, and a
 target or one run may choose Jev
 ([visual-qa-any-app.md §4.1](design/visual-qa-any-app.md#41-the-steps)).
@@ -139,8 +139,7 @@ target or one run may choose Jev
 | `google_sorry_live` | Google `/sorry` navigations in the action log, by `scripts/live_report.py`'s rule |
 | `challenges` | challenge pages the run met: each `human_handoff_requested` event whose `detail.origin` is `gate` (the gate saw a challenge on the agent's page and raised the hand-off itself), plus each Google `/sorry` page among the action log's visited URLs |
 
-`challenges` is how CAPTCHA-AVOID is measured (BGD, 2026-10-23; part of
-#2058): the browser note now tells an agent to search with the WebSearch tool
+`challenges` is how CAPTCHA-AVOID is measured ([the owner], 2026-10-23): the browser note now tells an agent to search with the WebSearch tool
 rather than a search engine's page, to prefer a site's official API to
 scraping it, and to keep to about one navigation a second on any one site.
 Fewer challenge pages per batch is what that should buy. It is read only from

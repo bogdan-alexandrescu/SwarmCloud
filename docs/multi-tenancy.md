@@ -8,7 +8,7 @@ production data already exists in the single-tenant shapes.
 a quota budget, provider keys and artifacts. A user in no registered group falls
 back to a personal tenant `u-<local-part>`, so nobody is ever hard-blocked from
 the platform. A person whose personal workspace is **ready** acts in it by
-default, and their groups are what they switch to (#1200; see the switcher
+default, and their groups are what they switch to (see the switcher
 below).
 
 ---
@@ -74,7 +74,7 @@ lease ids are `<prefix>_<20 hex>`). **It keeps `update`, and update does the
 damage delete would have:** a worker that cannot delete `pools/global` can set
 its `active` to 0, and one that cannot delete `tenants/<id>` can rewrite the
 service account that tenant's next attempt runs as. Section 4 lists what a
-worker can write today, what phase 0 of #1457 closes and what design B closes;
+worker can write today, what phase 0 of the tenant-settings-integrity design closes and what design B closes;
 the residual is stated there rather than implied.
 
 ```bash
@@ -83,7 +83,7 @@ the residual is stated there rather than implied.
 ```
 
 For a tenant that `terraform/environments/dev/dev.tfvars` will also name, the
-order matters (#334): the script creates the worker account, the owner applies
+order matters: the script creates the worker account, the owner applies
 terraform/bootstrap's per-account `serviceAccountAdmin` grant on it to the
 release deployer from `main`, reading the pull request's `dev.tfvars` as data
 (the script checks for the grant and prints the commands), and
@@ -115,10 +115,10 @@ it is done.
 
 ## 2. Group resolution — the constraint that shapes the API
 
-Tested live against `saga-agents-staging` on 2026-09-15:
+Tested live against `example-project` on 2026-09-15:
 
 ```
-groups:lookup?groupKey.id=eng@saga.xyz                      WORKS
+groups:lookup?groupKey.id=eng@example.com                      WORKS
 groups/{id}/memberships:checkTransitiveMembership           WORKS
 groups/-/memberships:searchTransitiveGroups                 403 Error(4013)
                               "Insufficient permissions to retrieve memberships"
@@ -154,7 +154,7 @@ stay fast, so answers are cached per `(caller, group)` with a short TTL
 ### Membership is the Google group, or a platform membership while `PLATFORM_MEMBERSHIPS` is on
 
 A group workspace's members are its Google group's members. Join requests
-([design/join-requests.md](design/join-requests.md), #2325) add exactly one
+([design/join-requests.md](design/join-requests.md)) add exactly one
 other way in: a **platform membership**, written when that workspace's admin or
 a platform admin approves a person's request. It is a signed, append-only row in
 Firestore's `workspace_memberships` beside the group, never a change to the
@@ -224,7 +224,7 @@ swarm-api serves its last good read for 10 minutes and then answers 503
 
 A person in more than one registered tenant group can work in any of them
 (owner decision 2026-10-01), and in their own personal workspace beside them
-(#1200, 2026-10-12). A request may carry
+(2026-10-12). A request may carry
 
     X-Swarm-Tenant: <tenant_id>
 
@@ -237,7 +237,7 @@ caller's **choices**:
    `tenants/u-<you>` is `kind: user` with your email as its principal **and**
    `workspaces/u-<you>` is `ready` with that same principal. Both principal
    checks matter: the frozen slug keeps only the local part, so
-   `bob@example.com` and `bob@partner.com` derive the same `u-bob`, and only the
+   `bob@example.com` and `bob@example.org` derive the same `u-bob`, and only the
    principal says whose it is. `approved` is not enough: the build has not made
    the service account, namespace and secrets yet, and the workspace gate
    refuses a submit there anyway. A service identity, the schedule tick, the
@@ -350,7 +350,7 @@ entry, by being the one person its documents name. So:
 * **Tenant id and tenant principal move together.** The header replaces both
   from one entry, so they still describe the same tenant and the store's
   collision check (`assert_tenant_scope`, `ensure_tenant`) keeps working. Two
-  groups whose ids collide (`eng@example.com`, `eng@partner.com`) appear once, as
+  groups whose ids collide (`eng@example.com`, `eng@example.org`) appear once, as
   the first in admin order — the one the id selects.
 * **Admin is unaffected.** `is_admin`, `is_pool_admin` and the caller's groups
   are about the person, not the tenant, and the header does not touch them. An
@@ -393,7 +393,7 @@ a tenant on a JSON route. A header and a query parameter that disagree are a
 **A switch is a fresh screen, except for an unsent form.** The shell keys the
 page on the chosen tenant, so switching remounts it and every read runs again
 under the new tenant. A half-filled submit form is KEPT instead (owner's pick,
-intake-tenants.html 2A, 2026-10-02; this replaces #501's deliberate discard):
+intake-tenants.html 2A, 2026-10-02; this replaces the earlier deliberate discard):
 what it was drawn from — the runner profiles and pools — is read again as the
 new tenant, a banner over it says it will now submit as that tenant with a way
 back, and its submit button names the tenant ("Submit as platform"). The
@@ -406,7 +406,7 @@ the new tenant's catalogue on submit.
 ### `GET /v1/tenants/me` says which features are on for the workspace
 
 `GET /v1/tenants/me` answers the tenant, the principal, the environment, the
-role and (FEATURES-READ, part of #1748; owner decision 2026-10-20)
+role and (FEATURES-READ; owner decision 2026-10-20)
 `features`:
 
 ```json
@@ -419,7 +419,7 @@ role and (FEATURES-READ, part of #1748; owner decision 2026-10-20)
 | `await_input` | the frozen catalogue's `RUNNER_PROFILES["await-input"].available` | a workflow may carry an await-input step ([human-steps.md](design/human-steps.md)) |
 | `service_answer` | `awaitinput.service_principal`, for the workspace this request acts in | this is a service workspace and the caller is its own principal, so it may answer its waits (human-steps §4.2.1); a group or personal workspace is `false` |
 
-**Why it exists.** Product Oracle (`u-or-9a0792`) learned each of the three
+**Why it exists.** A peer application (`team-a`) learned each of the three
 only at submit or answer time, and after a deploy its New run form told its
 users agents could not read Oracle when caller MCP was on (2026-10-20). Each
 value is the one the serving process ACTS on, read through the same call the
@@ -501,8 +501,7 @@ Three independent mechanisms, all in `swarm_api/credentials.py` and
    expose one.
 
 **One exception to "exactly one accessor": `swarm-tenant-<tenant>-git` has two.**
-swarm-api's issue preview (`swarm_api/forge.py` `preview`, `routes/issues.py`,
-#511) reads the tenant's forge token to show an issue before an agent is filed,
+swarm-api's issue preview (`swarm_api/forge.py` `preview`, `routes/issues.py`) reads the tenant's forge token to show an issue before an agent is filed,
 and the owner accepted swarm-api as that secret's second reader on 2026-10-02.
 Terraform grants it through `forge_readers` in `terraform/infra/main.tf`, but
 only on a `-git` secret Terraform manages, and no tenant's is: they are
@@ -528,7 +527,7 @@ worker's binding, `forge_slot_reader` in
 `tests/terraform/forge_app.tftest.hcl`, run
 `the_tenant_worker_reads_only_its_tenants_base_user_slots`, to its tenant's
 base slots. The owner decided on 2026-10-11 that secrets are user-scoped
-(#1041). Built, behind the `forge_broker` switch (FORGE_BROKER,
+. Built, behind the `forge_broker` switch (FORGE_BROKER,
 `terraform/infra/child_tasks.tf`), off by default and off in dev
 ([design/user-scoped-secrets.md](design/user-scoped-secrets.md)); with it on:
 
@@ -564,7 +563,7 @@ refused and every user-slot agent would fail closed
 #### What the forge credential must be allowed
 
 `swarm-tenant-<tenant>-git` is no longer only the token an agent pushes with.
-An issue run (#454) also **writes back to the issue** with it, from swarm-api
+An issue run also **writes back to the issue** with it, from swarm-api
 (`swarm_api/forgewrite.py`, `swarm_api/issuesync.py`): the plan as a comment,
 one status comment edited in place, and the `Closes #N` / `part of #N` block
 in the pull request's body (and, when the title carries a closing keyword --
@@ -693,9 +692,9 @@ two independent mechanisms to fail together:
 | Name another tenant's secret in a request | secret name comes from the frozen contract, never from input |
 | Read another tenant's secret from a worker | worker runs as the tenant GSA; secret IAM names one accessor |
 | Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix, listing included |
-| Hand another agent **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per agent, so an agent can write under a sibling agent's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore (#347; [checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the agent and attempt documents is not stopped: see the Firestore row below, and #342 |
+| Hand another agent **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per agent, so an agent can write under a sibling agent's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore ([checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the agent and attempt documents is not stopped: see the Firestore row below, and signed step specs |
 | Reach another tenant's pod | per-tenant namespace + default-deny NetworkPolicy |
-| Have work dispatched under another tenant's identity | **not today.** The Job and the pod take the identity and namespace from the tenant's own `tenants/<id>` document, which that tenant's worker can rewrite: see "Today" below. Phase 0 of #1457 closes it by deriving both from the tenant id |
+| Have work dispatched under another tenant's identity | **not today.** The Job and the pod take the identity and namespace from the tenant's own `tenants/<id>` document, which that tenant's worker can rewrite: see "Today" below. Phase 0 of the tenant-settings-integrity design closes it by deriving both from the tenant id |
 | Escalate via a runner profile | callers name profiles; images and commands are catalogue-only |
 | Spoof a tenant claim | tenant is derived from a verified ID token, never from a header or body field |
 | **Read or write another tenant's control-plane documents** | **partially. See below — this row is the one that does not have two mechanisms.** |
@@ -755,7 +754,7 @@ The worst rows, each with the reader that acts on the forged value:
 | `pools/<any>` `.hard_limit`, `.enabled` | Raise A's own ceiling past the admin's; disable `pools/global` (every tenant parks) or B's pool. | `apps/common/swarm_common/admission.py::evaluate_capacity` |
 | `leases/<new id>` created with chosen `pools[]` and `units`, then released | The release decrements every pool the lease names, so a worker can free capacity other tenants hold. It holds every permission that takes; the reconciler's stale-lease release does it too if the worker leaves it. | `apps/common/swarm_common/admission.py::release_lease_in_transaction` |
 | `control/dispatch` `.dispatch_paused: true` | **All dispatch stops, for every tenant.** | `apps/scheduler/scheduler/store.py::SchedulerStore.dispatch_paused` |
-| `workspace_settings/B.judgment_backend` (#1457) | B's judgments go to TypeSafe on B's key; with B listed in `TYPESAFE_FORWARDER_TENANTS`, B's live-browser pods get the inject label and swarm-api mints B's forwarder ticket. Two readers take the top-level field and one takes `code_intelligence.judgment_backend` first, so a forger can also make them disagree. | `apps/scheduler/scheduler/judgment.py::read_backend`, `apps/scheduler/scheduler/dispatch.py::judge_backend`, `apps/swarm-api/swarm_api/judgment.py::JudgmentSettings.read` (read by `apps/swarm-api/swarm_api/typesafe_ticket.py::TypesafeTicketService.mint`) |
+| `workspace_settings/B.judgment_backend` | B's judgments go to TypeSafe on B's key; with B listed in `TYPESAFE_FORWARDER_TENANTS`, B's live-browser pods get the inject label and swarm-api mints B's forwarder ticket. Two readers take the top-level field and one takes `code_intelligence.judgment_backend` first, so a forger can also make them disagree. | `apps/scheduler/scheduler/judgment.py::read_backend`, `apps/scheduler/scheduler/dispatch.py::judge_backend`, `apps/swarm-api/swarm_api/judgment.py::JudgmentSettings.read` (read by `apps/swarm-api/swarm_api/typesafe_ticket.py::TypesafeTicketService.mint`) |
 | `workspace_settings/B` `.merge.*`, `.code_intelligence.*`; `tenant_settings/B` | B's merge mode and train, B's graph tickets, Jev and context delivery. | swarm-api merge and code-intelligence settings; the worker's graph stage |
 
 The same role reads, too: `tenants/<B>` (its principal), `workspace_settings/<B>`,
@@ -769,7 +768,7 @@ server ([security.md](security.md#cloud-metadata-abuse)) and call Firestore with
 `curl`. Every write above is a direct Firestore call, not a call through the
 worker.
 
-#### Phase 0 of #1457: what it closes once its lanes merge
+#### Phase 0 of the tenant-settings-integrity design: what it closes once its lanes merge
 
 **Not built on 2026-10-17.** The owner approved the design on 2026-10-17
 (design B, phase 0 interim). Phase 0 is three lanes, and each changes nothing a
@@ -787,7 +786,7 @@ running worker can do; it changes what the control plane believes:
   fields the control plane acts on (`judgment_backend`, `merge.*`,
   `code_intelligence.*`) with a key no worker holds, and the scheduler and
   swarm-api treat a missing or bad MAC as unset. Unset `judgment_backend` is
-  `internal-jev`, which fails closed. **This closes #1457's instance** and the
+  `internal-jev`, which fails closed. **This closes the tenant-settings-integrity design's instance** and the
   other `workspace_settings` rows.
 
 **What phase 0 leaves open, stated so nobody reads it as closed:** every other
@@ -1025,10 +1024,10 @@ already has (below). The two:
 
 | Tenant | Principal | Why it is its own tenant |
 |---|---|---|
-| `u-sw-c90291` | `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | The verification gate's suites (smoke, e2e, race) run on the `mock` profile and need a tenant with jobs to dispatch to. |
-| `u-or-9a0792` | `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | The oracle-api client application submits workflows on its own behalf (owner decision 2026-10-18, #1568). |
+| `u-sw-c90291` | `swarm-verify@example-project.iam.gserviceaccount.com` | The verification gate's suites (smoke, e2e, race) run on the `mock` profile and need a tenant with jobs to dispatch to. |
+| `team-a` | `peer-api@example-project.iam.gserviceaccount.com` | The peer-api client application submits workflows on its own behalf (owner decision 2026-10-18). |
 
-**oracle-api is never a member of `eng@saga.xyz`, and never a
+**peer-api is never a member of `eng@example.com`, and never a
 `service_accounts` listing under it.** Either would file its work in eng, under
 eng's worker account, eng's provider keys, eng's GCS prefix and eng's
 namespace (invariant 9), and against eng's ceiling. As its own tenant it
@@ -1045,7 +1044,7 @@ agree:
    that layer. The committed line is the record of the apply, because a `-var`
    not written there makes the next bootstrap plan remove the grant.
 2. **swarm-api's domain check.** A service account's domain is never
-   `saga.xyz`, so it is listed in `ALLOWED_USERS`
+   `example.com`, so it is listed in `ALLOWED_USERS`
    (`terraform/infra/locals.tf`). That list widens which verified identities are
    admitted, never whether the token was verified.
 3. **The tenant.** It is declared in `dev.tfvars` under the id the frozen
@@ -1077,8 +1076,8 @@ The three agree because one record drives all three, and the inner gate,
 swarm-api's, opens last: only once A9 has read every object back.
 
 Both tenants declare **no providers** and run at 4/8. swarm-verify's suites
-need no key. oracle-api is lent a pool Claude account by the owner instead of
-holding a key of its own. Its forge token is `swarm-tenant-u-or-9a0792-git`,
+need no key. peer-api is lent a pool Claude account by the owner instead of
+holding a key of its own. Its forge token is `swarm-tenant-team-a-git`,
 stored with `scripts/create-secrets.sh --stdin` and never in the repository.
 
 ### Tenant ids are capped at 11 characters
@@ -1107,15 +1106,15 @@ that share a long prefix still get different ids.
 | `eng.team@example.com` | `eng-585e84` |
 | `alice@example.com` | `u-alice` |
 | `alice.smith@example.com` | `u-al-7dcd3a` |
-| `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | `u-sw-c90291` |
-| `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | `u-or-9a0792` |
+| `swarm-verify@example-project.iam.gserviceaccount.com` | `u-sw-c90291` |
+| `peer-api@example-project.iam.gserviceaccount.com` | `team-a` |
 
 The cost is readability: past 11 characters an id is mostly digest. This
 section used to record an unresolved conflict here — the frozen module capped
 ids at 22, sized for register-tenant.sh's old `swarm-t-` prefix, so ids of 12 to
 22 characters resolved and could not be provisioned. The frozen module has
 since moved to the one prefix that exists, and `swarm-t-` is gone from every
-provisioning path and from the quota broker's allow-list (#176).
+provisioning path and from the quota broker's allow-list.
 
 ---
 
@@ -1124,7 +1123,7 @@ provisioning path and from the quota broker's allow-list (#176).
 A person's `u-<you>` tenant is a **workspace**: the same boundaries a group
 tenant has (worker account, artifact prefix, forge slot, namespace, tenant and
 pool documents), made for one person after an admin approves it. The design,
-with every owner decision, is [workspaces.md](workspaces.md) (#847); this
+with every owner decision, is [workspaces.md](workspaces.md); this
 section is what exists and how it is operated.
 
 **Why it is not Terraform and not first-sight creation.** Two things failed
@@ -1171,7 +1170,7 @@ People shows live):
 | A4 | Workload Identity for the namespace's two Kubernetes service accounts; act-as for the scheduler and the reconciler |
 | A5 | the two `tenants/u-<you>/`-conditioned bucket grants, the `.tenant` marker (create-only, `ifGenerationMatch=0`), and, on the WD9 fallback, the worker's Firestore, telemetry and bucket-metadata roles |
 | A6 | the empty forge slot and its `-refresh` twin; the worker reads the slot, never the twin. A group's slot is the team slot `swarm-tenant-<g>-git`; a service's has no twin |
-| A7 | the namespace, `kubernetes/apply.sh`, with the record's quota; a group's or service's carries `swarm.saga.xyz/workspace: <w-id>` |
+| A7 | the namespace, `kubernetes/apply.sh`, with the record's quota; a group's or service's carries `swarm.example.com/workspace: <w-id>` |
 | A8 | the tenant and pool documents with the record's limits |
 | S2 | a service only: admit the account at the front door, on the API backend only |
 | A9 | re-read every object made; only then `ready` |
@@ -1197,7 +1196,7 @@ instead, and each was needed on the first real run:
   `swarm-workspace-deployer-scope` and its `-namespaces`, `-roles` and
   `-rolebindings` companions. Server-side, the deployer may only create or
   update a `swarm-tenant-u-*` namespace, or one it created carrying the
-  `swarm.saga.xyz/workspace` label, and the kinds and names the tenant render
+  `swarm.example.com/workspace` label, and the kinds and names the tenant render
   produces in it, with Roles carrying exactly the rendered rules. It refuses
   by name every namespace Terraform declares, and an update that adds the
   label to an unlabelled namespace. This is what turns the deployer's cluster
@@ -1216,7 +1215,7 @@ Cloud Run writes the execution's output to Cloud Logging as
 `resource.type="cloud_run_job"`, `resource.labels.job_name="swarm-workspace-apply"`.
 The bootstrap's sink routes those entries to the **restricted log bucket
 `swarm-workspace-apply`**, and a project exclusion of the same name keeps them
-out of `_Default`. Why: `saga-agents-staging` is shared, and anyone with log
+out of `_Default`. Why: `example-project` is shared, and anyone with log
 viewing there reads `_Default`. The bucket is readable by the project's owners
 and logging admins and by `workspace_log_readers`. Log lines name the workspace
 id only; the record holds a failure **code**, and the console serves the copy
@@ -1252,7 +1251,7 @@ link on the person's row in People.
 
 The evidence that the path above works, read live on 2026-10-13:
 
-* `devops@saga.xyz` requested `w-7f9285` (tenant `u-devops`) at
+* `devops@example.com` requested `w-7f9285` (tenant `u-devops`) at
   2026-10-12 22:31Z, and an admin approved it at 2026-10-13 00:02Z.
 * The first executions stopped, each on something only a real run could show,
   and each was fixed: the deployer's Firestore `datastore.databases.get`

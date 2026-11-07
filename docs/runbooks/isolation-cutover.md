@@ -1,11 +1,11 @@
-# Runbook: cut tenant workers over off direct Firestore (#1457, design B)
+# Runbook: cut tenant workers over off direct Firestore (design B)
 
 **When to use this.** The owner is taking tenant workers off direct Firestore,
 one tenant at a time, and then removing the worker's Firestore role: the cutover
-that closes #1457 (a tenant's worker can write another tenant's
+that closes the cross-tenant workspace-settings write issue (a tenant's worker can write another tenant's
 `workspace_settings`). The design is
 [`docs/design/tenant-settings-integrity.md`](../design/tenant-settings-integrity.md)
-§4.6, §4.7 and §6. The order is owner decision Q7: dev first, **u-bogdan, then
+§4.6, §4.7 and §6. The order is owner decision Q7: dev first, **example-tenant, then
 eng, then every tenant**, and only then is the role removed.
 
 **Who runs it.** The owner. Every step below either changes IAM or is a
@@ -40,7 +40,7 @@ rather than failing workers:
 `state_via_api_env.tftest.hcl` hold all of that.
 
 **What it does not do.** Nothing here touches the other team's resources in
-`saga-agents-staging`: every member named below is a `swarm-agent-worker-*`
+`example-project`: every member named below is a `swarm-agent-worker-*`
 account and every role is the swarm's own `swarmTenantWorkerFirestore`.
 
 ---
@@ -57,7 +57,7 @@ its next create run; swarm-api rewrites the field from its list at every admin
 action that starts a run, which narrows that to a race, not nothing
 ([`docs/workspaces.md` §2.7](../workspaces.md), "A forged value").
 
-So #1457 is closed **only at the end of step c**, when no worker holds the role.
+So the cross-tenant workspace-settings write issue is closed **only at the end of step c**, when no worker holds the role.
 Steps a and b prove the path one tenant at a time; they are not the fix.
 
 ---
@@ -73,7 +73,7 @@ none of the numbers below is a baseline anyone has measured yet.
    ```bash
    gcloud logging read \
      'resource.type="cloud_run_revision" AND resource.labels.service_name="swarm-api" AND httpRequest.requestUrl:"/state/" AND httpRequest.status>=400' \
-     --project saga-agents-staging --freshness=1h --format='value(timestamp,httpRequest.status,httpRequest.requestUrl)' | redact
+     --project example-project --freshness=1h --format='value(timestamp,httpRequest.status,httpRequest.requestUrl)' | redact
    ```
 
    (`redact` is `scripts/lib/common.sh`'s; the URL carries an attempt id and no
@@ -126,9 +126,9 @@ none of the numbers below is a baseline anyone has measured yet.
 
 ---
 
-## a. u-bogdan
+## a. example-tenant
 
-u-bogdan is not a Terraform tenant (lane W9: `terraform/infra/removed.tf`
+example-tenant is not a Terraform tenant (lane W9: `terraform/infra/removed.tf`
 forgot its instances with `destroy = false`), so its binding is live but
 unmanaged, and its switch is swarm-api's list, not the tenancy module's.
 
@@ -136,8 +136,8 @@ unmanaged, and its switch is swarm-api's list, not the tenancy module's.
 
 **Before a1: `tenant_job_vpc_egress = true` is released, and the
 scheduler-made Jobs are refreshed.** The first a1, on 2026-10-21, was rolled
-back (PR 1892, #1893). u-bogdan is not a Terraform tenant, so its Cloud Run
-Jobs (`swarm-job-u-bogdan-*`) are the ones swarm-scheduler creates, and those
+back (the VPC-egress rollback PR). example-tenant is not a Terraform tenant, so its Cloud Run
+Jobs (`swarm-job-example-tenant-*`) are the ones swarm-scheduler creates, and those
 had no `vpc_access`. Its switched workers called swarm-api from the public
 internet, and swarm-api's `internal-and-cloud-load-balancing` ingress answered
 `state/open` with a 404 before the app saw the request. Its GKE attempts passed
@@ -153,9 +153,9 @@ on the same release. So, in this order:
    any other subnet, or at project level, is a stop.
 2. A new scheduler revision checks each Job it made once, at that Job's next
    dispatch, and rebuilds one that lacks the block (`_refresh_image`). Dispatch
-   one `mock` agent in u-bogdan for each `swarm-job-u-bogdan-*`. The log reads
+   one `mock` agent in example-tenant for each `swarm-job-example-tenant-*`. The log reads
    `workspace, identity or network changed: vpc_access`.
-3. For each Job, `gcloud run jobs describe swarm-job-u-bogdan-<profile>`
+3. For each Job, `gcloud run jobs describe swarm-job-example-tenant-<profile>`
    must show `run.googleapis.com/vpc-access-egress: all-traffic` and the
    `swarm-worker` tag, the same as `swarm-job-eng-mock`. A Job without them is
    a stop: its switched worker is refused exactly as on 2026-10-21.
@@ -166,14 +166,14 @@ In `terraform/environments/dev/dev.tfvars` (`enable_child_tasks = true` is
 already set there):
 
 ```hcl
-state_via_api_tenants = ["u-bogdan"]
+state_via_api_tenants = ["example-tenant"]
 ```
 
 Merge it; the release applies it.
 
 **The plan must show** exactly one in-place update:
 `module.cloud_run.google_cloud_run_v2_service.this["swarm-scheduler"]`, whose
-environment gains `SWARM_STATE_VIA_API_TENANTS = "u-bogdan"`. Nothing
+environment gains `SWARM_STATE_VIA_API_TENANTS = "example-tenant"`. Nothing
 created or destroyed, and no IAM change (so the release does not stop at
 `dev-iam`). Anything else in the plan is someone else's change: hold.
 
@@ -187,34 +187,34 @@ make verify-remote
 2026-10-20 at `4589544`: `scripts/verify-remote.sh` passes no environment to
 the `swarm-verify` job (it runs `gcloud run jobs execute swarm-verify --args
 scripts/<target>.sh`), and the suites it runs do not send `X-Swarm-Tenant`. The
-job runs in its own identity's tenant (eng, by #1457's 2026-10-20 baseline
+job runs in its own identity's tenant (eng, by the cross-tenant workspace-settings write issue's 2026-10-20 baseline
 comment; read it from the job's transcript before relying on it), and that
 identity could not select a personal tenant even if the header were sent: the
 tenant switcher selects only among the caller's memberships. So this run is the
 regression check on admission, concurrency and fencing for the release that
-switched u-bogdan, **not** a run of u-bogdan's switched path.
+switched example-tenant, **not** a run of example-tenant's switched path.
 
-**u-bogdan's gate (owner decision, 2026-10-20).** verify-remote cannot run as
-a personal tenant, so it is not u-bogdan's evidence. u-bogdan's evidence is
+**example-tenant's gate (owner decision, 2026-10-20).** verify-remote cannot run as
+a personal tenant, so it is not example-tenant's evidence. example-tenant's evidence is
 these four, every one required:
 
-1. **one agent to SUCCEEDED**: an agent of u-bogdan's own, submitted as the
+1. **one agent to SUCCEEDED**: an agent of example-tenant's own, submitted as the
    owner, whose worker's log shows no Firestore client was built and whose
    `state/open` answered 200 in swarm-api's request log (watch item 1);
 2. **one park and resume**: an agent that parks on a long provider wait and
    resumes, its `park` going through the routes and releasing the lease
    (invariant 4);
-3. **one cancel**: a cancellation of a running u-bogdan agent, its `release`
+3. **one cancel**: a cancellation of a running example-tenant agent, its `release`
    going through the routes and releasing the lease;
-4. **the tenant-isolation probe run from a u-bogdan pod** (watch item 4),
+4. **the tenant-isolation probe run from a example-tenant pod** (watch item 4),
    with that pod's own credential. It can pass only once the role is gone, so
    it is taken at a2 step 5, and all three checks must PASS there.
 
 Items 1-3 come before a2 starts; item 4 closes a2. The regression check is the
 verify-remote run above, as eng, after each of a1 and a2: it must be green, and
-a red one is a stop whatever u-bogdan's four say.
+a red one is a stop whatever example-tenant's four say.
 
-**Rollback.** Remove `u-bogdan` from `state_via_api_tenants`; release. Its role
+**Rollback.** Remove `example-tenant` from `state_via_api_tenants`; release. Its role
 is still bound, so its next attempt takes the direct path as before. An
 attempt dispatched switched keeps its environment and finishes through the
 routes.
@@ -226,21 +226,21 @@ Only after a1's agents are green and watch items 1-2 are quiet.
 **Before you start, drain the attempts dispatched before a1's release.** An
 attempt that was dispatched unswitched keeps the direct path for its whole
 life and would fail with `PermissionDenied` the moment the role goes. Wait until
-no u-bogdan attempt that was LEASED before the a1 release's deploy time is
+no example-tenant attempt that was LEASED before the a1 release's deploy time is
 still LEASED, DISPATCHED, STARTING or RUNNING. PARKED attempts hold nothing
 (invariant 1) and resume as new, switched attempts.
 
 1. In `dev.tfvars`:
 
    ```hcl
-   worker_firestore_off_tenants = ["u-bogdan"]
+   worker_firestore_off_tenants = ["example-tenant"]
    ```
 
    **The plan must show** one in-place update:
    `module.cloud_run.google_cloud_run_v2_service.this["swarm-api"]`, whose
-   environment gains `WORKER_FIRESTORE_OFF_TENANTS = "u-bogdan"`. No IAM change.
+   environment gains `WORKER_FIRESTORE_OFF_TENANTS = "example-tenant"`. No IAM change.
 
-2. **An admin action, so the record takes the switch.** u-bogdan's workspace is
+2. **An admin action, so the record takes the switch.** example-tenant's workspace is
    `ready`, so the one admin action that writes the record is a ceiling
    change. Read its current `max_active` (and its workspace id; it is private,
    so not here) from **Admin › People**, and set the ceiling to the **same**
@@ -258,7 +258,7 @@ still LEASED, DISPATCHED, STARTING or RUNNING. PARKED attempts hold nothing
    ```
 
    A9 must fail `VERIFY_FAILED` on object `project grant`, printing that the
-   worker still holds `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore`
+   worker still holds `projects/example-project/roles/swarmTenantWorkerFirestore`
    and that its record says `worker_firestore_access false`. That red is the
    proof the record took the switch. If it passes instead, the record did not:
    stop and read the record before removing anything.
@@ -266,9 +266,9 @@ still LEASED, DISPATCHED, STARTING or RUNNING. PARKED attempts hold nothing
 4. **Remove the binding by hand** (rule C9: the job never removes one):
 
    ```bash
-   gcloud projects remove-iam-policy-binding saga-agents-staging \
-     --member=serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com \
-     --role=projects/saga-agents-staging/roles/swarmTenantWorkerFirestore \
+   gcloud projects remove-iam-policy-binding example-project \
+     --member=serviceAccount:swarm-agent-worker-example-tenant@example-project.iam.gserviceaccount.com \
+     --role=projects/example-project/roles/swarmTenantWorkerFirestore \
      --condition=None
    ```
 
@@ -280,21 +280,21 @@ still LEASED, DISPATCHED, STARTING or RUNNING. PARKED attempts hold nothing
 
 5. **Verify again, expecting green**, with the same `--mode verify` command:
    `verified: …` and the workspace `ready`. Then run the ISO-ACCEPT probe from a
-   u-bogdan pod (watch item 4): all three checks PASS. Then `make
+   example-tenant pod (watch item 4): all three checks PASS. Then `make
    verify-remote` again, the regression check run as eng (a1 says why it is
-   not u-bogdan's evidence): green.
+   not example-tenant's evidence): green.
 
 **Rollback.** Re-grant first, then unswitch, never the other way round: a
 switched list with no role is safe, an unswitched worker with no role is not.
 
 ```bash
-gcloud projects add-iam-policy-binding saga-agents-staging \
-  --member=serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com \
-  --role=projects/saga-agents-staging/roles/swarmTenantWorkerFirestore \
+gcloud projects add-iam-policy-binding example-project \
+  --member=serviceAccount:swarm-agent-worker-example-tenant@example-project.iam.gserviceaccount.com \
+  --role=projects/example-project/roles/swarmTenantWorkerFirestore \
   --condition=None
 ```
 
-then remove `u-bogdan` from `worker_firestore_off_tenants`, release, and make
+then remove `example-tenant` from `worker_firestore_off_tenants`, release, and make
 the same-value ceiling change so the record reads `true` again (the `limits`
 run grants nothing; the hand grant above is what restores access). Only after
 that, a1's rollback if it is wanted.
@@ -308,10 +308,10 @@ eng **is** a Terraform tenant, and that changes step b2.
 ### b1. Switch its state path
 
 ```hcl
-state_via_api_tenants = ["u-bogdan", "eng"]
+state_via_api_tenants = ["example-tenant", "eng"]
 ```
 
-The plan, the release and the rollback are a1's, with `"u-bogdan,eng"` as the
+The plan, the release and the rollback are a1's, with `"example-tenant,eng"` as the
 rendered value. Then:
 
 ```bash
@@ -348,8 +348,8 @@ any name that is not a key of `tenants` are refused too.
 **The plan must show exactly one row**, a destroy:
 
 * `module.tenancy.google_project_iam_member.worker_firestore["eng"]` — role
-  `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore`, member
-  `serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com`.
+  `projects/example-project/roles/swarmTenantWorkerFirestore`, member
+  `serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com`.
 
 Nothing else: `worker_firestore["smoke"]` (and in prod `["research"]`) is not
 in the plan at all, neither destroyed nor replaced, because its key does not
@@ -369,7 +369,7 @@ change, so the dev release stops at `dev-iam` for the owner's approval
   command that did not run is not an empty policy):
 
   ```bash
-  gcloud projects get-iam-policy saga-agents-staging --format=json \
+  gcloud projects get-iam-policy example-project --format=json \
     | jq -r '.bindings[] | select(.role | endswith("/roles/swarmTenantWorkerFirestore")) | .members[]'
   ```
 
@@ -403,7 +403,7 @@ switch.
 Then, for every **job-made** tenant, a2 in full: list it in
 `worker_firestore_off_tenants`, the same-value ceiling change, the red verify,
 the hand removal with its own member
-`serviceAccount:swarm-agent-worker-<tenant>@saga-agents-staging.iam.gserviceaccount.com`,
+`serviceAccount:swarm-agent-worker-<tenant>@example-project.iam.gserviceaccount.com`,
 the green verify. Drain each first, as a2 says.
 
 ### c2. `worker_firestore_access = false`
@@ -426,7 +426,7 @@ and `["eng"]` if prod's eng was not taken through b2. Leave
 `worker_firestore_off_tenants_iam` as it is in this change: emptying it at the
 same time is harmless while `worker_firestore_access` is false, but it makes
 c2's rollback re-grant eng too.
-Each is role `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore`
+Each is role `projects/example-project/roles/swarmTenantWorkerFirestore`
 on `serviceAccount:swarm-agent-worker-<tenant>@…`. Every other
 `module.tenancy` resource — the accounts, the object grants, the telemetry
 grants — is unchanged; a plan that touches one of them is wrong. It is an IAM
@@ -439,7 +439,7 @@ gone), and the gate runs once more:
 the role:
 
 ```bash
-gcloud projects get-iam-policy saga-agents-staging --format=json \
+gcloud projects get-iam-policy example-project --format=json \
   | jq -r '.bindings[] | select(.role | endswith("/roles/swarmTenantWorkerFirestore")) | .members[]'
 ```
 

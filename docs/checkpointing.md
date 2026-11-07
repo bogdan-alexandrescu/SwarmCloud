@@ -65,7 +65,7 @@ does not checkpoint a copy of the archive it just restored, doubling its size on
 every cycle.
 
 `work/artifacts` is left out too, when it is the link the worker makes to
-`artifacts/` (#149, see [workflows.md](workflows.md#artifacts-pass-by-reference)).
+`artifacts/` (see [workflows.md](workflows.md#artifacts-pass-by-reference)).
 Archived, it would fail every resume: it points outside `work/`, and a restore
 refuses an archive holding such a link. It also names this attempt's directory,
 and a resumed attempt makes its own. What is behind the link is not archived
@@ -87,7 +87,7 @@ that exists in no checkpoint — irreproducible, and silently wrong.
 
 ### What is left out, and what rebuilds it
 
-The 2026-10-05 history analysis (#637) measured 247 GB of checkpoints uploaded
+The 2026-10-05 history analysis measured 247 GB of checkpoints uploaded
 over the platform's history, 88.5 GB of it on 2026-10-02 alone from 1,732
 checkpoints: a median of 66 MB every 120 s. Only 1.25% of those bytes were ever
 restored. Most of them were directories the agent's next command recreates, so
@@ -97,7 +97,7 @@ they are not archived (owner decision 2026-10-05):
 |---|---|---|
 | `.cache`, `.npm`, `.local/share/uv`, `.local/share/pnpm`, `.yarn/cache` | HOME (`work/`) only | the next `uv run` / `uv sync`, `npm ci`, `pnpm install`, `yarn install` fetches them again |
 | `node_modules/` | anywhere in `work/` | `npm ci` (or `pnpm install`, `yarn install`) |
-| `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` | anywhere in `work/` (#1808) | the next `pytest`, `mypy` or `ruff` run; a resumed `pytest --lf` runs everything once |
+| `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` | anywhere in `work/` | the next `pytest`, `mypy` or `ruff` run; a resumed `pytest --lf` runs everything once |
 | `.venv/` | anywhere, unless git tracks a file in it | `uv sync` (`uv run` syncs first) |
 | `__pycache__/` | anywhere, unless tracked | the interpreter, on the next import |
 | `dist/` | anywhere, unless tracked | the project's build: `npm run build`, `uv build` |
@@ -158,13 +158,13 @@ the marker and is not pushed.
 
 Beside it is `start_branch`: the branch the clone left HEAD on
 (`refs/heads/<name>`, or detached), read by the worker before any agent process
-existed (#2094). A resumed attempt reads it back to tell whether HEAD left the
+existed. A resumed attempt reads it back to tell whether HEAD left the
 step's branch before it publishes, for the reason `clone_base` is here: the
 archived tree is the agent's to write. A manifest without it skips that branch
 check, and the start sha still decides whether the work is the step's own.
 
 A HEAD that moved publishes nothing, but it is no longer lost (reported by
-Product Oracle's session, 5 November 2026: an agent merged a train branch into
+A peer application's session, 5 November 2026: an agent merged a train branch into
 its own, checked out another branch, and the merge had to be rebuilt by hand).
 Under the claude-code pre-publish gate the moved HEAD is handed back to the
 agent once, while its session can still be continued, naming the step's branch
@@ -177,7 +177,7 @@ brings the work back.
 ### Incremental archives after the first
 
 **An attempt's first checkpoint is a full archive; each one after it holds only
-what changed since the one before** (#637). The worker remembers, per entry,
+what changed since the one before**. The worker remembers, per entry,
 what it archived last time — for a file its mode, size, mtime, ctime and inode;
 for a link its target; for a directory its mode — and archives the entries that
 differ. Deletions, and entries that changed kind (a file that became a
@@ -199,8 +199,7 @@ cannot collide with an agent's file, and every gzip reader skips it — the
 console's checkpoint browser lists an incremental archive's own members, which
 are the changes; its manifest says `"kind": "incremental"`.
 
-**A chain never crosses an attempt, and a resume continues it** (CHECKPOINT-FAST,
-#1822). A resume is a new attempt. Its restore copies every layer it replayed
+**A chain never crosses an attempt, and a resume continues it** (CHECKPOINT-FAST). A resume is a new attempt. Its restore copies every layer it replayed
 under the new attempt's own prefix, at the same id and with the same bytes, with
 a manifest labelled `restored` that names the attempt it came from, and seeds the
 incremental index from the restored tree. The copy is server-side
@@ -239,11 +238,11 @@ still restore. "checkpoint written" logs `walk_s`, `archive_s`, `upload_s` and
 ## 3. Restore
 
 **A restore takes only the checkpoint an earlier attempt of this agent
-recorded, and an agent's first attempt restores nothing** (#347, owner decision
+recorded, and an agent's first attempt restores nothing** (owner decision
 2026-09-29). A resume is by definition a new attempt with a new id, so the
 checkpoint worth restoring was written by an earlier attempt. The worker does
 **not** find it by listing the agent's prefix for the newest manifest, which is
-what it did until #347: the tenant's worker account can write anywhere under
+what it did until the tenant-prefix write bug was fixed: the tenant's worker account can write anywhere under
 `tenants/<tenant>/`, so any agent of the tenant — an implement step, say —
 could put a checkpoint under another agent's prefix before that agent ran.
 HOME is `work/` and `.claude/` is kept in every checkpoint, so the planter's
@@ -284,7 +283,7 @@ also writes Firestore: Firestore has no document-level IAM
 ([multi-tenancy.md](multi-tenancy.md)), so an agent that knows this task's id
 can raise `attempt_count`, repoint `latest_checkpoint` and write an attempt
 document of an id it chose, and pass every check above. Closing that needs a
-record the tenant cannot write, which is the signed step specs' work (#342).
+record the tenant cannot write, which is the signed step specs' work.
 
 Extraction is hostile-input handling, because a checkpoint contains a tenant's
 working tree and an agent can put anything in it:
@@ -293,7 +292,7 @@ working tree and an agent can put anything in it:
   and named in one log line per restore (at most 20 names, scrubbed, then a
   count), while the rest of the archive restores. uv leaves
   `bin/python -> /usr/local/bin/python3.11` in every build environment, and
-  refusing the archive over it failed every later resume of the agent (#286);
+  refusing the archive over it failed every later resume of the agent;
 * **an archive inconsistent with itself is refused whole**, before a byte is
   extracted: a member path that is absolute, holds `..` or appears twice; a
   member whose path passes through a symlink member (`d -> .`, `c -> d/..`,
@@ -326,7 +325,7 @@ The interval is per runner profile (`RunnerProfile.checkpoint_interval_seconds`)
 and is *mandatory* — there is no profile-level switch to turn it off, because a
 profile with it off would be a profile whose long runs are unrecoverable.
 
-**The periodic checkpoint backs off while the tree is unchanged** (#637, owner
+**The periodic checkpoint backs off while the tree is unchanged** (owner
 decision 2026-10-05). At each tick the worker walks `work/` with `stat` only; if
 nothing differs from the last checkpoint it writes nothing — no archive, no
 `checkpoint_started` event, no id — and waits twice as long for the next look:
@@ -342,8 +341,8 @@ the one the next attempt restores (invariant 8).
 ### The lease while a checkpoint is written
 
 A checkpoint runs on the loop that heartbeats the lease, so the lease is beaten
-from a thread for as long as it lasts (`Worker._heartbeat_meanwhile`, #286),
-counted from the loop's last beat rather than the checkpoint's start (#426). That
+from a thread for as long as it lasts (`Worker._heartbeat_meanwhile`),
+counted from the loop's last beat rather than the checkpoint's start. That
 thread is **bounded**: `heartbeat_meanwhile_max_seconds`, three lease timeouts
 (360 s at the default 120 s). An unbounded thread would keep a wedged
 checkpoint's lease — and the capacity reserved behind it — alive for ever while
@@ -352,7 +351,7 @@ lease timeout later and the reconciler reclaims the attempt as it would a silent
 worker.
 
 **Past the bound it keeps beating only while the checkpoint provably advances**
-(#1808, owner decision 2026-10-21). On 2026-10-21 a checkpoint of a growing tree
+(owner decision 2026-10-21). On 2026-10-21 a checkpoint of a growing tree
 (238,819 files, 291 MB, about 7.5 min, an agent running Postgres, `pytest -n 3`
 and a web build) was still archiving at 360 s; the thread stopped, and a live
 agent was reclaimed three attempts in a row. The checkpoint writer now keeps a
@@ -501,7 +500,7 @@ and in the agent's event stream, `checkpoint_started` / `checkpoint_completed` /
 | `checkpoint_started` with no matching `completed` | upload interrupted; the manifest was never written | none needed — that checkpoint is invisible to restore, by design |
 | Resume restores an old checkpoint | newer ones never committed | check worker logs for upload errors and GCS permissions on the tenant prefix |
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
-| Resume starts from scratch with "no checkpoint is restored; starting from an empty workspace" | a check in section 3 refused the recorded checkpoint; the log line's `reason` names which | expected on a first attempt; on a retry, an error line just before it says what did not match. A checkpoint under the prefix that no attempt recorded is never restored, by design (#347) |
+| Resume starts from scratch with "no checkpoint is restored; starting from an empty workspace" | a check in section 3 refused the recorded checkpoint; the log line's `reason` names which | expected on a first attempt; on a retry, an error line just before it says what did not match. A checkpoint under the prefix that no attempt recorded is never restored, by design |
 | "stopped heartbeating the lease during a long operation: it outlasted its bound", then a reclaim, during `checkpoint (...)` | the checkpoint made no progress for a lease timeout past the bound (a wedge), or no counter was passed | a wedge is reclaimed by design; the `heartbeat_extended` event, if any, shows the progress seen (section 4) |
 | "...reached its hard ceiling while still making progress", then a reclaim | a checkpoint longer than `heartbeat_meanwhile_ceiling_seconds`: a tree too big to archive in that time | shrink the tree: data and build output out of `work/`, caches left out (section 1); do not raise the ceiling on a guess |
 | Checkpoints growing every cycle | build output inside `work/` that is not in `TOOL_CACHES` or `BUILD_DIRS`, or a build directory the checkout tracks (section 1) | fix the runner; do not raise `max_bytes` |
