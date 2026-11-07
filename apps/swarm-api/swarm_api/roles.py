@@ -113,6 +113,9 @@ SOURCE_OVERRIDE = "override"
 SOURCE_DEFAULT = "default"
 SOURCE_PERSONAL = "personal"
 SOURCE_PLATFORM_ADMIN = "platform_admin"
+#: A service account the workspace lists (contract request 30): its listing,
+#: not a grant, decides its role (§4.6).
+SOURCE_LISTING = "listing"
 
 #: `TenantChoice.via` (§4.2.2 step 5).
 VIA_MEMBER = "member"
@@ -520,6 +523,16 @@ class RoleStore:
 
     def resolve(self, auth: AuthContext, *, fresh: bool = False) -> Resolution:
         """The caller's role in the tenant the request selected."""
+        if auth.tenant_member:
+            # A SERVICE ACCOUNT THE WORKSPACE LISTS (contract request 30; the
+            # GitHub CI fixer, swarm-ci-fix) is a member inside its scope and
+            # never more. No grant can name it (`subject_for_write` refuses a
+            # service account), so the workspace's default -- a person's
+            # setting -- must not narrow it either: under a `viewer` default
+            # the fixer was refused every submit (2026-11-06). Its routes are
+            # still the ones `member_scope` lets it reach, checked before this
+            # gate, and it is never admin.
+            return Resolution(role=MEMBER, source=SOURCE_LISTING)
         if is_personal(auth):
             return Resolution(role=ADMIN, source=SOURCE_PERSONAL)
         if auth.is_admin:

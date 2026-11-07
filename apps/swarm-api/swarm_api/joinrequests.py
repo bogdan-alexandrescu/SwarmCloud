@@ -72,7 +72,6 @@ from .memberships import (
     at_text,
     clean_person,
     clean_text,
-    counter,
     is_person,
     offered_tenant,
     parse_at,
@@ -331,10 +330,7 @@ class JoinStore:
         self._db = db
         self._settings = settings
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self._invalid = counter(
-            metrics or ApiMetrics(), "join_request_invalid", "swarm_api_join_request_invalid_total",
-            "Join requests, decisions and links the reader skipped, by reason (mac, shape, "
-            "decision_mac, decision_shape, link_mac, link_shape).")
+        self._invalid = (metrics or ApiMetrics()).join_request_invalid
         self._open_per_person = self._limit("join_open_per_person")
         self._daily_per_person = self._limit("join_daily_per_person")
         self._denied_hold_days = self._limit("join_denied_hold_days")

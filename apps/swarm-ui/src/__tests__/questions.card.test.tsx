@@ -441,6 +441,7 @@ describe('the Details tab badge', () => {
 
   it('counts the agent’s questions on the Details tab', async () => {
     api.loadTask.mockResolvedValue(ok(asked({ questions: 2 })))
+    api.loadQuestions.mockResolvedValue(ok({ ...QUESTIONS, count: 2, questions: [QUESTIONS.questions[0]!, QUESTIONS.questions[0]!] }))
     render(split())
     await waitFor(() => expect(detailsTab().querySelector('em')?.textContent).toBe('2'))
   })

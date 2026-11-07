@@ -861,5 +861,142 @@ Also in this lane's `questions.json`. The recommendation comes first in each.
 
 ## 8. What was built
 
-Nothing yet. The lane that builds the last part (lane 8 of §6) records here
-what each lane landed and where the code departs from this design.
+BGD answered §7 on 2026-10-25 with every recommended option: design A behind
+`platform_memberships`, off; a join link; that workspace's admins and platform
+admins decide; the default role, or `viewer` below it; open 14 days, kept 90,
+the audit row permanent; no end date. The lanes, read from the code on
+2026-11-05. Where a PR number is not given, #2325 does not name it; `git log
+-- <file>` finds the commit.
+
+**JOIN-STORE (PR #2345).** `swarm_api/joinrequests.py` (`JoinStore`: the
+link, its code hashed at rest, rotation, `lookup`, `ask` with the four rate
+limits in its transaction, `decide`, `mine`, `open_for`; every record MAC'd
+under its own domain) and `swarm_api/memberships.py` (`MembershipStore`:
+signed, append-only `workspace_memberships`, newest valid row wins, `removed`
+over `member`, `counts_for` the group the workspace has now; `is_person`), the
+codes of §4.9 in `errors.py`, and their `NOT_SWITCHABLE_CODES` entries
+([api-refusals.md](../api-refusals.md#join-requests-refusals-with-no-switch-and-why)).
+
+**JOIN-RESOLVE (PR #2371, security-reviewed).** `auth.py`'s
+`_platform_memberships` appends counted memberships to `tenant_choices` after
+the groups; `settings.platform_memberships` (`PLATFORM_MEMBERSHIPS`, off);
+`routes/tenants.py` says `via: "platform_member"`. The four rate limits became
+settings here, as BGD answered on 2026-10-25 (`JOIN_OPEN_PER_PERSON` 3,
+`JOIN_DAILY_PER_PERSON` 10, `JOIN_DENIED_HOLD_DAYS` 7,
+`JOIN_OPEN_PER_WORKSPACE` 50, each with its reason beside it in `settings.py`).
+
+**JOIN-API (PR #2372).** `routes/join_requests.py`: lookup and ask (the code
+only in a body, both routes in `main.UNCAPTURED_ROUTES`), mine, withdraw, the
+link's GET and PUT, the members list and removal, approve and deny;
+`people.py`'s `join_requests`, `pending` and the grid's `requested` cell;
+`routes/people.py`'s `join_scope`. `RoleStore.write` gained a `writer`, so the
+decision, the membership, a lowered role and every audit row are one
+transaction (BGD, 2026-10-25).
+
+**JOIN-BELL (PR #2381).** `notifications.py`'s `join_requests_to_decide`
+(`admin:join:<ref>`) and `own_join_requests` (`join:<ref>:<state>`),
+`Viewer.administers` and `Reading.joins`
+([notifications.md](../notifications.md)).
+
+**JOIN-UI-PERSON (PR #2390).** `JoinWorkspace.tsx` and the `/join` route: the
+code is read from the URL's fragment and posted in a body; the person's
+requests and their states; Workspace › People's link card (shown once) and
+its joined-by-request list.
+
+**JOIN-UI-ADMIN.** `People.tsx`: the lead's sentence naming who waits for an
+admin, the Waiting for you row with Approve and Deny (a denial needs a reason),
+the grid's `requested` cell, and `admitted: false` showing the group command.
+The grid's "joined by request" mark is drawn from `GET /v1/workspace/members`
+(BGD, 2026-10-26); the People read is unchanged.
+
+**JOIN-WIRE.** `deps.py` hands the authenticator a `MembershipStore`, so
+resolution reads memberships at all; `roles.tenant_via` says
+`platform_member`, so `GET /v1/workspace/roles` `me.via` does too (BGD,
+2026-10-26: a label only). `tests/unit/control_plane/test_join_wire.py`.
+
+**JOIN-ONE-STORE.** `routes/people.membership_store` returns the
+authenticator's own store, so an approval's or a removal's eviction is the
+cache the person's next request reads (BGD, 2026-10-26).
+
+**JOIN-INDEX.** `terraform/modules/firestore/indexes.tf`:
+`workspace-memberships-subject-at`, `join-requests-tenant-requested` and
+`join-requests-requester-requested`. Its `dev.tfvars` switch was moved out
+(below).
+
+**JOIN-BELL-WIRE (this lane's branch).** `routes/notifications.py` hands
+`Notifications` the app's one join store and the reader's administered
+workspaces, read fresh; a platform admin needs no such read; a failed read is
+`partial: true`, never "administers nothing" (BGD, 2026-10-26T01:02Z: until
+this, the join sources read nothing).
+`tests/unit/control_plane/test_notifications_join_wire.py`.
+
+**The invalid-record counters.** `swarm_api_membership_invalid_total` and
+`swarm_api_join_request_invalid_total` are declared in `ApiMetrics` beside
+`swarm_api_role_grant_invalid_total`, no longer registered lazily by the
+first store (BGD, 2026-10-25: "a later lane").
+
+**JOIN-DOCS-ACCEPT (this lane).** [multi-tenancy.md](../multi-tenancy.md) §2
+and §3, [workspace-roles.md](workspace-roles.md)'s Q3 amendment,
+[notifications.md](../notifications.md), [api-refusals.md](../api-refusals.md),
+this section, and the acceptance probe `scripts/acceptance/groups/join.sh`,
+run by `.github/workflows/accept.yml`'s smoke job beside the roles probe and
+held offline by `tests/unit/scripts/test_join_acceptance_probe.py`. With a
+platform admin and a person outside the test workspace's group, it turns the
+link on and reads the code once, asks as the person with the code in a body,
+approves, checks the person's next request selects the workspace
+(`via: platform_member`), checks the API's own fresh per-group check does not
+find the person in the group, removes the membership and checks the next
+request is refused, and turns the link off. With the switch off it checks
+approval answers `admitted: false` with the group command and admits nobody.
+
+### 8.1 Where the code departs from §4
+
+* **A failed membership read is `memberships_unread`, and a 503 only where it
+  matters.** §4.5 step 5 had a failed read raise `UpstreamUnavailable` as a
+  failed group lookup does. The resolver instead leaves the choices as they
+  are and sets `AuthContext.memberships_unread`; `_select_tenant` turns it into
+  503 `membership_unavailable` only for an `X-Swarm-Tenant` naming a non-`u-`
+  id, any such id so the outage does not say which ids exist. A group member
+  without the header is never stopped. A read that reached its bound
+  (`cut_short`) offers what it found and is marked unread too.
+* **`membership_unavailable` has its own code**, not the generic
+  `upstream_unavailable`, so a client can tell "retry, your memberships were
+  not read" from a directory outage; and never `tenant_not_member`, because
+  the unread row could have changed the answer.
+* **`via: "platform_member"`** reaches `GET /v1/workspace/roles` through
+  `roles.tenant_via` (JOIN-WIRE), not through `TenantChoice` alone.
+* **Each store is cached per app context, not built per request.**
+  `routes/people.join_store` keeps one `JoinStore` on the `AppContext`;
+  `membership_store` is the authenticator's own (JOIN-ONE-STORE). §4.4 assumed
+  one store; two had left a removed person selecting the workspace for up to
+  `role_cache_seconds` on the instance that wrote. Another instance still
+  serves its cached read for up to that long (15 s by default), which is why
+  the acceptance probe waits up to 30 s for a removal to show.
+* **The bell's route wiring is its own lane** (JOIN-BELL-WIRE), not part of
+  JOIN-BELL: until it landed the join sources read nothing.
+* **The asker in the acceptance probe is a person, signed in from Secret
+  Manager.** The join routes refuse a service account (`_person`), so the
+  person cannot be minted by impersonation as the roles probe's identities
+  are: the probe reads an OAuth `authorized_user` credential from the secret
+  `SWARM_ACCEPTANCE_JOIN_PERSON_SECRET` names and exchanges it for an ID token
+  at run time. Its OAuth client must be one the API accepts. The probe is
+  `scripts/acceptance/groups/join.sh`, not under `tests/acceptance/` as §6
+  row 8 said: that is where every live probe this platform runs lives.
+* **No Google group is read by the probe directly.** "No Google group was
+  written" is shown read only, through the API's own fresh per-group check
+  (`still_in_group`) and the person's refusal after removal; the probe calls
+  no Cloud Identity API and no `gcloud`, so it could not write a group either.
+
+### 8.2 What is left
+
+The dev switch-on, in its own change after this lane (BGD, 2026-10-25):
+`PLATFORM_MEMBERSHIPS` is read by `settings.py` but no Terraform variable
+renders it yet (`install/manifest.yaml` lists it as internal), so approval
+admits nobody in a deployed environment. That change adds the variable
+(default off), renders it into swarm-api's environment, and sets it on in
+`dev.tfvars`; prod's stays absent, so off. Until it is applied, the
+acceptance probe in dev runs the off path. Its settings (`JOIN_TENANT`,
+`JOIN_ADMIN_SA`, `JOIN_PERSON`, `JOIN_PERSON_SECRET`), the person's
+credential in Secret Manager and the swarm-verify identity's
+`secretAccessor` on it are the owner's to provision; until then every check
+SKIPs and names what is missing.

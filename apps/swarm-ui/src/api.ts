@@ -6665,6 +6665,36 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
         steps: [step('implement', [], 'task_f278adec')],
       },
   ]
+  // WHAT SWARM-API SERVES ABOUT EACH WORKFLOW (`routes/workflows.py`
+  // `workflow_about`; the facts card's follow-up, part of #2688): read off its
+  // first step task, so the title is the one its steps carry and the
+  // repository is theirs. wf_audit_01 carries a submitted description and
+  // every fact. wf_5e5ad3b6f7da4299a839 carries its title alone: the prose
+  // ratchet's workflow pages (proseapp.tsx) and the overscroll test render it,
+  // and its facts card stays as main draws it, so a fixture adds no words and
+  // no box to those pages. wf_bcdc9180e4fb4a209f31 stands for an API older
+  // than the route and carries none of the keys, so the card's 'not recorded'
+  // is still drawn.
+  const repositoryUrl = 'https://github.com/example-org/agent-swarm-infra'
+  const about: Record<string, Record<string, unknown>> = {
+    wf_audit_01: {
+      title: FIXTURE_WORKFLOW_TITLES.wf_audit_01,
+      description:
+        'Read every operator script and the Terraform root against the contract, list what breaks a rule, and publish one report with each finding at its file and line.',
+      description_source: 'submitted',
+      feature: { title: 'Operator tooling audit', url: 'https://github.com/example-org/agent-swarm-infra/issues/42' },
+      started_from: 'console',
+      repository_url: repositoryUrl,
+    },
+    wf_5e5ad3b6f7da4299a839: {
+      title: FIXTURE_WORKFLOW_TITLES.wf_5e5ad3b6f7da4299a839,
+    },
+  }
+  for (let i = 0; i < workflows.length; i++) {
+    const w = workflows[i]!
+    const served = about[w.workflow_id]
+    if (served !== undefined) workflows[i] = { ...w, ...served } as Workflow
+  }
   // THE ROLLUP COUNTS ITS OWN STEPS (QAFIX6-FIXTURE i, run 5b QA-042, box
   // 6343779183): Workflows' Steps done reads `rollup.counts.SUCCEEDED`, and
   // wf_audit_01's were typed as one succeeded beside two step tasks the
