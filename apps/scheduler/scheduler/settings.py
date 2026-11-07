@@ -314,6 +314,19 @@ class SchedulerSettings:
     #: cost of a pass stays bounded however many tenants exist.
     max_topup_tenants: int = 50
 
+    #: Ready tasks admitted per reservation transaction (BGD, 2026-11-06).
+    #: Each transaction reads every pool document once and writes it once, so
+    #: the shared `pools/global` takes one write per batch instead of one per
+    #: task: the busiest minute measured 52 single-task writes against
+    #: Firestore's sustained ceiling of about one per second per document. 10
+    #: cuts that to about 6 while keeping the transaction small (at most ~3
+    #: writes a task plus one per pool, against Firestore's 500) and the wait
+    #: short between a batch's lease and the dispatch of its last task, which
+    #: is dispatched after the nine before it (480 s dispatch deadline). A
+    #: larger batch also re-runs more work whenever a worker's release touches
+    #: a pool it read. 1 is the single-task frozen transaction, as before.
+    admission_batch_size: int = 10
+
     #: Hard stops on the drain loop.
     max_leases_per_run: int = 200
     max_passes_per_run: int = 25
@@ -608,6 +621,7 @@ class SchedulerSettings:
             candidate_batch_size=_int("CANDIDATE_BATCH_SIZE", 200),
             tenant_topup_candidates=_int("TENANT_TOPUP_CANDIDATES", 8),
             max_topup_tenants=_int("MAX_TOPUP_TENANTS", 50),
+            admission_batch_size=_int("ADMISSION_BATCH_SIZE", 10),
             max_leases_per_run=_int("MAX_LEASES_PER_RUN", 200),
             max_passes_per_run=_int("MAX_PASSES_PER_RUN", 25),
             max_run_seconds=_float("MAX_RUN_SECONDS", 45.0),
@@ -677,6 +691,11 @@ class SchedulerSettings:
             raise ValueError("tenant_topup_candidates cannot be negative")
         if self.max_topup_tenants < 0:
             raise ValueError("max_topup_tenants cannot be negative")
+        # 50 tasks is at most 150 writes (a lease, a task, a workflow each)
+        # plus one per distinct pool -- global, the few shared ones and two
+        # per tenant at most -- inside Firestore's 500 writes a transaction.
+        if not 1 <= self.admission_batch_size <= 50:
+            raise ValueError("admission_batch_size must be between 1 and 50")
         if self.max_leases_per_run <= 0 or self.max_passes_per_run <= 0:
             raise ValueError("the drain loop must be bounded by a positive number of passes")
         if self.max_run_seconds <= 0:
