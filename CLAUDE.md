@@ -45,15 +45,8 @@ and service accounts, every one in `SHARED_DENY_LIST` (once, in
 `NotImplementedError` in a dispatch path is a production outage with a comment
 attached.
 
-**4. SwarmCloud is generic: nothing in it may identify a company, a person or a
-real deployment.** No commit, commit message, PR title or body, issue, code,
-test, doc or comment may carry a real service account, domain, project id or
-number, bucket or secret name, email address, company or product name, or a
-person's name. A deployment's own values come from configuration and
-environment variables at run time; the repository holds only placeholders
-(`example-project`, `example.com`, roles such as "the owner"). Never add a new
-real value, even to a file that still holds old ones: a cleanup program is
-removing those, and a CI guard will refuse them (owner, 7 November 2026).
+**4. Nothing may identify a company, a person or a real deployment**
+([in full](docs/working-in-this-repository.md#generic-content)).
 
 ## Track ownership
 
@@ -67,9 +60,7 @@ more. When the owner asks for something, do it, wherever it lives, and say in
 the commit which track's files you crossed into and why. Reclassify the area if
 that is what the work needs. Never answer a request with "that belongs to
 another track"; never quietly narrow a task to the part that sits inside your
-own area. Owner's instruction, 2026-09-23: *"I dont care what track it is... I
-want to make sure this is done and we never refuse or circumvent work that we
-said we will do."*
+own area ([the owner's words](docs/working-in-this-repository.md#track-ownership)).
 
 ## Invariants to check before you claim a change is done
 
