@@ -1,6 +1,6 @@
 """Config › Secrets from the sc plugin: links and reads only (lane SSC-SC, part of #2158).
 
-docs/design/secrets-scopes.md §6.4, with BGD's answer Q8 of its §11: a value
+docs/design/secrets-scopes.md §6.4, with the owner's answer Q8 of its §11: a value
 arrives only through the console form a one-time link opens, or a terminal's
 --stdin. The routes are on main and used exactly as they are:
 

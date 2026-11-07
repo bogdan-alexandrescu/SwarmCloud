@@ -1,6 +1,6 @@
 """Admin › Platform secrets: what is set, how old, and who writes it. STATUS ONLY.
 
-docs/design/secrets-scopes.md §5, with BGD's Q7 answer of 2026-10-23 (§11):
+docs/design/secrets-scopes.md §5, with the owner's Q7 answer of 2026-10-23 (§11):
 the status comes from Secret Manager METADATA, read under a metadata-only
 custom role, `swarmSecretStatusViewer` (terraform/bootstrap/
 platform_secret_status.tf), which holds exactly `secretmanager.secrets.get`
@@ -14,8 +14,8 @@ WHAT IT NEVER DOES, each held by tests/unit/control_plane/test_platform_secrets.
   SECRET_PAYLOAD_READERS. A row carries no value, no length and no last
   characters -- only whether an enabled version exists, how many, and the
   newest one's `create_time`. The role could not read a value if this code asked.
-* **It never names a secret outside `swarm-`.** saga-agents-staging is shared
-  (CLAUDE.md rule 2): the other team's secrets are agents-* and promptlab-*.
+* **It never names a secret outside `swarm-`.** example-project is shared
+  (CLAUDE.md rule 2): the other team's secrets are agents-* and peer-app-*.
   Every name is checked by `_full_name` before a call is built, a broker
   account document whose recorded secret is not `swarm-account-*` is refused
   and counted, and nothing is LISTED -- the role carries no `secrets.list`,

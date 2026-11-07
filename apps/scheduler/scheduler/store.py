@@ -174,7 +174,7 @@ _EVENT_FOR_RETURN = {
 }
 
 #: The first PLATFORM_REFUSED park's wait, and the longest any park waits
-#: (BGD's brief, 2026-10-28): 30 s, doubling per consecutive refusal, held at
+#: (the owner's brief, 2026-10-28): 30 s, doubling per consecutive refusal, held at
 #: ten minutes. A quota slot frees when a finished Job's ten-minute TTL runs
 #: out (`dispatch.FINISHED_JOB_TTL_SECONDS`), so a longer cap would leave work
 #: parked behind a quota that has already freed; a shorter first wait would
@@ -1003,7 +1003,7 @@ class SchedulerStore:
         writer writes None.
 
         A fix loop's person-park that nobody answered within 7 days is the
-        other source (docs/design/fix-loop.md §4.5, BGD Q3 (c)): PARKED ->
+        other source (docs/design/fix-loop.md §4.5, the owner Q3 (c)): PARKED ->
         FAILED with `end_cause` FIX_LOOP_EXHAUSTED, as a person's "stop"
         ends it. The loop is `control_plane` and never held a lease either.
         """
@@ -1199,7 +1199,7 @@ class SchedulerStore:
         says nothing about the agent, so it spends no attempt),
         `platform_refusals` goes up by one and `next_eligible_at` is
         `platform_refusal_backoff(platform_refusals)` away. It is NEVER FAILED
-        for this cause (BGD, 2026-09-14: "never fail workflows when quotas are
+        for this cause (the owner, 2026-09-14: "never fail workflows when quotas are
         reached. just pause them and resume them when new quota is
         refreshed"); past `PLATFORM_REFUSED_MAX_PARKS` it stays parked, at
         the longest backoff, and is logged as trouble. A requested cancel
@@ -2055,7 +2055,7 @@ class SchedulerStore:
     ) -> list[Lease | AdmissionDenied]:
         """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
 
-        WHY (BGD, 2026-11-06, after the load analysis). `acquire_lease` is one
+        WHY (the owner, 2026-11-06, after the load analysis). `acquire_lease` is one
         transaction per task, and every one of them writes `pools/global` and
         the other shared pools: 52 writes in the busiest minute against
         Firestore's sustained ceiling of about one write per second per

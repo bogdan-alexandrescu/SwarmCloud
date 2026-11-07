@@ -1,6 +1,6 @@
 """A lane that publishes onto an existing pull request's branch (`publish_to_pr`, #2183).
 
-WHY (owner approval, BGD, 2026-10-24): a follow-up lane -- a re-review, a fix
+WHY (owner approval, 2026-10-24): a follow-up lane -- a re-review, a fix
 round, the owner's answers applied to a mock-up -- had to start from main,
 merge the old branch, and open a REPLACEMENT pull request, which someone then
 closed by hand. Ten lanes did that on 2026-10-23 for PRs 2164-2168 and

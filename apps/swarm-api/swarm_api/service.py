@@ -602,7 +602,7 @@ class SubmissionService:
         # That validation can only see tenants DECLARED in var.tenants. This
         # method creates one for any allowed-domain caller who has never been
         # seen before, which is the path that actually fired: on 2026-09-21
-        # admin@saga.xyz signed in to the web UI and tenant u-admin was written,
+        # admin@example.com signed in to the web UI and tenant u-admin was written,
         # with the platform's secret admin as its principal.
         #
         # 403 rather than a silent skip: the caller is authenticated and known,
@@ -1693,7 +1693,7 @@ class SubmissionService:
         # runs it writes requirements.json, and when the review runs it runs
         # no agent and pushes nothing at all.
         not_integrated |= requirements_check_steps(spec.steps)
-        # Every review step names a gate by default (#2524, BGD 2026-10-28):
+        # Every review step names a gate by default (#2524, the owner 2026-10-28):
         # one that names none is stored with the platform's default block,
         # which swarm-api resolves against the workspace's setting.
         default_gated = default_review_gate_steps(spec.steps, spec.metadata)
@@ -1939,7 +1939,7 @@ class SubmissionService:
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         # A workflow submitted without a description gets one written for it,
-        # marked generated (BGD, 2026-11-04), on a thread of its own: this
+        # marked generated (the owner, 2026-11-04), on a thread of its own: this
         # returns at once and never raises, so it delays and fails nothing.
         wfdescription.after_submission(getattr(self._store, "db", None), tasks,
                                        settings=self._settings)
@@ -2046,7 +2046,7 @@ class SubmissionService:
             step, on such a host is still refused at submission.
 
         With a `fix-loop` step (`fix_loop`, docs/design/fix-loop.md §4.6,
-        BGD Q8 (a)) the merge reads the loop, whose last re-review is the
+        the owner Q8 (a)) the merge reads the loop, whose last re-review is the
         latest verdict, and "on_merge_verdict" appends ONLY the merge: the
         loop's `re-review:1` is the re-review it would have appended
         (`rereview_step_for` is skipped).

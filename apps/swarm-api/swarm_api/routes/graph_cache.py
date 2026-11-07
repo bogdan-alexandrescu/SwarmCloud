@@ -557,7 +557,7 @@ class Replicas:
             "carried": carried,
             "miss": totals["miss"] if read else None,
             "hit_rate": (hits / answers) if answers else None,
-            # A dash until carry forward exists (BGD Q4), never 0%.
+            # A dash until carry forward exists (the owner Q4), never 0%.
             "reused_share": (carried / hits) if carried is not None and hits else None,
             "served_p95_ms": p95(histogram),
             "last_warm": slowest,

@@ -3361,7 +3361,7 @@ def _refuse_a_repeat_dispatch(client: Any, signature: tuple, *,
     TWO REPEATS ARE LET THROUGH, and each is answered as a retry: the dict
     returned names the earlier task and is recorded on the new one.
       * The earlier task ended FAILED or CANCELLED before any attempt started
-        (the Product Oracle session, 6 November 2026: the reconciler failed
+        (a peer application's session, 6 November 2026: the reconciler failed
         its task before it ran, and re-sending the work was refused). Nothing
         of it ran, so sending it again is not a duplicate.
       * The caller names the earlier task in `retry_of`: a deliberate retry.
@@ -3569,7 +3569,7 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]], rows: Any
     reply hands it back so a dispatched task gets a row without anyone asking
     for one. `sent` is `(task_id, label, task)` per task.
 
-    THE ROW MODE IS THE ATTACH'S (Product Oracle, 2026-11-06: a dispatch's
+    THE ROW MODE IS THE ATTACH'S (a peer application, 2026-11-06: a dispatch's
     rows said `summary` in a per-step project): `rows`, the call's own,
     outranks this project's saved layout and the plugin's `rows` option,
     exactly as `swarm_workflow_launch`'s does (`layout.row_mode`).
@@ -4706,7 +4706,7 @@ def _workflow_spec_tool(args: dict[str, Any]) -> dict[str, Any]:
     answered as its OUTLINE, digest and ref -- never every prompt
     (LAUNCH-LARGE-SPEC, #2875).
 
-    Measured 2026-10-31 (product-oracle-2f): a 24-step spec with ~90 KB of
+    Measured 2026-10-31 (peer-app-2f): a 24-step spec with ~90 KB of
     prompts answered 86,506 characters here, over Claude Code's tool-output
     limit, and the /sc:swarmcloud run that asked ended NOT_SUBMITTED. The
     bridge holds the spec under `spec_ref`; the reply names each step's prompt
@@ -6200,10 +6200,10 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
-            # Nor a description or a feature (BGD, 2026-11-04).
+            # Nor a description or a feature (the owner, 2026-11-04).
             description=fields.get("description"),
             feature=fields.get("feature"),
-            # Nor its three-part about (BGD, 2026-11-06).
+            # Nor its three-part about (the owner, 2026-11-06).
             about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
@@ -6212,7 +6212,7 @@ def _call(
                                   name=fields["title"] or fields["label"],
                                   publish_to_pr=publish_to_pr)
         # A step on claude-code-large is sent as written and answered with a
-        # warning naming the medium profile (BGD, 2026-11-06); no key without one.
+        # warning naming the medium profile (the owner, 2026-11-06); no key without one.
         warnings = workflows.large_step_warnings(fields["steps"])
         if not territory and not checks and not warnings:
             return reply

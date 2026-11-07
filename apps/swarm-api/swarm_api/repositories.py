@@ -77,7 +77,7 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     workspace's admin (as for `context`; the route checks), and each change
     is an `admin_audit` entry (`agents_may_file_issues_set`) in the same
     transaction.
-  * `workflow_files` (#2029, WF-APP-TOKEN; BGD's decision 2, 2026-10-22:
+  * `workflow_files` (#2029, WF-APP-TOKEN; the owner's decision 2, 2026-10-22:
     "self-serve, per-repo opt-in"): whether swarm-api may push a branch whose
     new commits touch `.github/workflows/**` or `.github/actions/**`, with a
     token the GitHub App mints for this one repository
@@ -186,10 +186,10 @@ ON_CHANGE_PUSHED = "webhook"
 #: pushes that nothing delivers (§6.2: it "becomes the default ... once the
 #: receiver is live").
 ON_CHANGE_DEFAULT = "poll"
-#: 120 since #2524 (BGD, 2026-10-27; was 30): the index runs of one week
+#: 120 since #2524 (the owner, 2026-10-27; was 30): the index runs of one week
 #: (2026-10-20..27) were 845, most of them change-triggered on the platform's
 #: own busy repository, and an index up to two hours behind its head was
-#: accepted as the price. Reads stay LITERAL (BGD, 2026-10-28): a stored 30
+#: accepted as the price. Reads stay LITERAL (the owner, 2026-10-28): a stored 30
 #: reads 30. Every registration before #2524 stored 30 at creation
 #: (`_index_defaults`); those are moved to 120 by the one-time
 #: `scripts/migrate-index-interval.sh`, not by a read-time rule.
@@ -441,7 +441,7 @@ def keep_versions_of(index: Mapping[str, Any] | None) -> int:
 def min_change_interval_of(index: Mapping[str, Any] | None) -> int:
     """The registration's `index.min_change_interval_minutes`, read literally:
     the stored value, or the default only where none (or a non-integer) is
-    stored. A stored 30 reads 30 (BGD, 2026-10-28: the old default is moved
+    stored. A stored 30 reads 30 (the owner, 2026-10-28: the old default is moved
     by `scripts/migrate-index-interval.sh`, never reinterpreted on read)."""
     value = (index or {}).get("min_change_interval_minutes")
     if isinstance(value, int) and not isinstance(value, bool):

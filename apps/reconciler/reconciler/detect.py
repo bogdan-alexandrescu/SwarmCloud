@@ -806,7 +806,7 @@ def detect_orphan_executions(
         # five minutes seventeen: the one run that would have proved the
         # platform works was killed by the platform.
         #
-        # It is worse than an own goal. saga-agents-staging is SHARED, and the
+        # It is worse than an own goal. example-project is SHARED, and the
         # only things between this loop and another team's Cloud Run job are a
         # name prefix and a label neither of which they are obliged to avoid. A
         # reconciler that cannot attribute compute to a task must not terminate

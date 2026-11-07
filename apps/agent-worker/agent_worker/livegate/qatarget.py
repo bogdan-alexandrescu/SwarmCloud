@@ -82,7 +82,7 @@ by `QaTarget.judge`:
   worker marked `mutating` on a `non_production` target;
 * anything but `GET` and `HEAD` to any other origin is refused the same way,
   ALWAYS: nothing lifts it, a mutating flow included;
-* ONE EXCEPTION, the IdP token refresh (QA-IDP-POST; BGD decided
+* ONE EXCEPTION, the IdP token refresh (QA-IDP-POST; the owner decided
   2026-10-23, part of #2067): a target whose platform admin approved an
   `idp_token_path` with its `extra_origin` has exactly `POST
   <extra_origin><idp_token_path>` continued, compared as the whole URL
@@ -120,7 +120,7 @@ target is held, the proxy refuses the agent's `Fetch.continueRequest` that
 rewrites a request's `url`, `method` or `postData` (`agent_refusal`).
 
 A CHALLENGE BYPASS ITS OWNER CONFIGURED, APPLIED BY THE GATE ALONE, ON THE
-TARGET'S OWN ORIGINS ALONE (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23, part
+TARGET'S OWN ORIGINS ALONE (§2.5; lane CAPTCHA-BYPASS, the owner 2026-10-23, part
 of #2058). The hand-off may carry `challenge_bypass: {kind, name, value}`:
 a header or a cookie the app's owner set up to skip their own CAPTCHA or
 WAF challenge for this platform's runs. The gate never solves a challenge

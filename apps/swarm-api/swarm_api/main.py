@@ -136,7 +136,7 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks/batch",
     "/v1/workflows",
     # A workflow's per-run MCP credentials, re-stored by its caller
-    # (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+    # (registered-mcp-servers.md §4.10, the owner 2026-10-26).
     workflows.MCP_CREDENTIALS_ROUTE,
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
@@ -149,7 +149,7 @@ UNCAPTURED_ROUTES = frozenset({
     qatargets.CREDENTIAL_ROUTE,
     qatargets.ISSUE_ROUTE,
     # A QA target's challenge bypass value (§2.5, lane CAPTCHA-BYPASS): the
-    # PUT's body is the value itself (BGD, 2026-10-23).
+    # PUT's body is the value itself (the owner, 2026-10-23).
     qatargets.BYPASS_ROUTE,
     # The rest take a credential in their body and were missing until
     # test_uncaptured_routes_cover_credential_bodies.py read the routes
@@ -345,6 +345,19 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
     )
 
 
+#: Why swarm-api will not start when both sign-in lists are empty: the hosted
+#: domains (`settings.core.allowed_domains`, ALLOWED_DOMAINS) and the exact
+#: addresses (`settings.allowed_users`, ALLOWED_USERS) are who may
+#: authenticate, and the deployment names its own
+#: (docs/design/generic-repository.md section 2). Either one alone is enough:
+#: a one-person deployment has one allowed user and no domain (owner's rule,
+#: 2026-11-07). Fixed, so the operator's log search finds it.
+SIGN_IN_LIST_REQUIRED = (
+    "ALLOWED_DOMAINS and ALLOWED_USERS are both empty: set at least one; "
+    "swarm-api refuses to start with open authentication"
+)
+
+
 def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None,
                access_service: AccessService | None = None,
                input_writer: InputWriter | None = None) -> FastAPI:
@@ -360,6 +373,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         openapi_url="/openapi.json",
     )
     app.state.ctx = ctx if ctx is not None else build_context()
+    if (not app.state.ctx.settings.core.allowed_domains
+            and not app.state.ctx.settings.allowed_users):
+        raise RuntimeError(SIGN_IN_LIST_REQUIRED)
     # The submission gate applies a ready workspace's pending loans before it
     # refuses for want of an account (LOAN-ON-READ, part of #2688).
     people.wire_ready_loans(app)

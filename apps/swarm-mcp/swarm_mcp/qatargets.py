@@ -50,7 +50,7 @@ TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
 FILES = ("issues", "none")
 
 #: `RunBody.browser_tool` in routes/qatargets.py (`qaspec.FLOW_BROWSER_TOOLS`,
-#: lane VQ9-TOOL): the flows' tool for one run. BGD, 2026-10-23: Playwright by
+#: lane VQ9-TOOL): the flows' tool for one run. The owner, 2026-10-23: Playwright by
 #: default, Jev when a target or a run chooses it. Left out of the body when
 #: the caller names none, so the target's `flows_browser_tool` decides.
 BROWSER_TOOLS = ("playwright", "jev")

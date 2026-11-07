@@ -160,7 +160,7 @@ UNTRUSTED_LANGUAGE_STATUSES = frozenset({"unsupported", "failing", "timed_out", 
 #: server whose budget ran out kept the files it had answered whole
 #: (images/agent-runtime-indexer/repo-index/lsp/driver.py, "the fallbacks"),
 #: and an incremental run carries a covered file's edges from its base. On
-#: ai-studio on 2026-10-20 pyright had answered most of the Python files and
+#: peer-app on 2026-10-20 pyright had answered most of the Python files and
 #: every Python change still answered the full suite (#1693). `failing` is
 #: not here: a server that crashed or ran out of memory may have answered
 #: from a half-built program, so its status speaks for every file.

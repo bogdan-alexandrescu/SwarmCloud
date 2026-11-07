@@ -39,7 +39,7 @@ accepted and the CLI initializes and lists the server's tools through the
 relay. 0.154.0 offers MCP tools to the model as deferred nested tools of its
 `exec` tool (found through `ALL_TOOLS`), not in the first request's tool list.
 
-ON A CHATGPT PLAN FROM THE SHARED POOL (part of #2688; BGD, 2026-11-01: codex
+ON A CHATGPT PLAN FROM THE SHARED POOL (part of #2688; the owner, 2026-11-01: codex
 runs on a pool of ChatGPT-plan accounts the way claude-code runs on the pool of
 Claude subscriptions). The worker leases a provider "openai" account and hands
 this runner the plan's ACCESS token (about an hour) and its account id as
@@ -81,7 +81,7 @@ does with them, each measured against the pinned 0.154.0 in agent-runtime-base:
 
 What is ASSUMED, not measured (no live plan login in this image): the exact
 text of a live usage-limit and model refusal, taken from the strings in the
-0.154.0 binary and AI Studio's first-hand record; and that a plan access token
+0.154.0 binary and a peer application's first-hand record; and that a plan access token
 is a JWT with `exp` -- one that is not runs to its 401 instead.
 """
 
@@ -145,7 +145,7 @@ _ROLLOUT_NAME = re.compile(
 def rollout_files(home: Path) -> list[Path]:
     """Every rollout under `home`, by the name codex gives one. The budget
     watcher reads the `token_count` records each gains while a start runs
-    (`budgetwatch`; BGD's pick "Also read the rollout", 2026-10-27): codex's
+    (`budgetwatch`; the owner's pick "Also read the rollout", 2026-10-27): codex's
     `--json` stream reports usage only when the start's one turn ends."""
     return [path for path in home.glob(_ROLLOUT_GLOB) if _ROLLOUT_NAME.match(path.name)]
 
@@ -183,7 +183,7 @@ SPEC = CliAgentSpec(
     binary_env="CODEX_BIN",
     binary_default="codex",
     args_env="CODEX_ARGS",
-    # `--json` (CODEX-JSON, BGD's answer to BUDGET-CAP question 6, 2026-10-26):
+    # `--json` (CODEX-JSON, the owner's answer to BUDGET-CAP question 6, 2026-10-26):
     # stdout is codex's event stream, whose `turn.completed` usage the budget
     # meter counts. The capture is rendered readable when the run is done
     # (`codex_events.finish_capture`); the raw stream is kept beside it.
@@ -238,7 +238,7 @@ EXPIRY_MARKER = PLAN_EXPIRY_MARKER
 #: The marker of a 403, which cliagent's credential markers do not name.
 FORBIDDEN_MARKER = "403 forbidden"
 
-#: The plan's refusal of a model by name, as AI Studio recorded it live
+#: The plan's refusal of a model by name, as a peer application recorded it live
 #: ("The 'gpt-4o' model is not supported when using Codex with a ChatGPT
 #: account"): the step fails with this sentence, not as a credential.
 _MODEL_REFUSAL = re.compile(
@@ -699,7 +699,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A new dict on the same context: `run_runner` holds this object.
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
-    # Where to look a symbol up (`contextpack.lookup_line`, BGD 2026-11-06):
+    # Where to look a symbol up (`contextpack.lookup_line`, the owner 2026-11-06):
     # codex lists the graph's loaded tools, so the line names `context`.
     if served or snapshot:
         from .. import contextpack  # lazy, as `run_cli_agent` imports it

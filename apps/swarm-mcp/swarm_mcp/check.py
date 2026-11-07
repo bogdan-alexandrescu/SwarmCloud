@@ -961,7 +961,7 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         # §4.4-§4.5, §6.4), on any of its phases: its rounds are spent, a fix
         # changed nothing, a round failed or was refused, or a verdict did not
         # read. Nobody signs in (`human-ready` refuses a loop); any member adds
-        # a round, up to the ceiling of 10 (BGD Q4 (a)), or stops it. The park
+        # a round, up to the ceiling of 10 (the owner Q4 (a)), or stops it. The park
         # expires after 7 days as FAILED fix_loop_exhausted (Q3 (c)).
         return _fix_loop_flag(task, evidence, age)
     elif _question_wait(task) is not None:
@@ -1883,7 +1883,7 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
-    # A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06): each
+    # A DISPATCH WHOSE ROWS NEVER STARTED (a peer application, 2026-11-06): each
     # running task this session dispatched that no row followed, by a line
     # naming it and the launch that starts its row. `new_only` leaves these
     # out (the launch was written), so only this line catches a skipped one.

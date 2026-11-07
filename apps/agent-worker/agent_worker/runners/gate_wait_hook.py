@@ -6,7 +6,7 @@ writes, where `<spool>` is the attempt's `$SWARM_HANDOFF`. Standard library
 only, and nothing imported from the worker: `-I` drops the package's path,
 and a hook must not depend on it.
 
-WHY (BGD, 2026-10-23; part of #2058; docs/design/live-browser.md §4.1). When
+WHY (the owner, 2026-10-23; part of #2058; docs/design/live-browser.md §4.1). When
 the gate sees a CAPTCHA on the agent's page it raises the hand-off itself
 (`HandoffPath._raise_for_gate`, `agent_worker/handoff.py`) and pauses the
 agent's browser. The agent's next tool result must then say that a person has

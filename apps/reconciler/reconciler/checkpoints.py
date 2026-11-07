@@ -54,7 +54,7 @@ A reference that can leak needs a floor, and this one leaks three ways:
   is already terminal. `ControlPlane.finish` writes the task's terminal state
   BEFORE calling `record_attempt_end`, so a worker killed between those two
   writes leaves that shape permanently. A read-only dry run of this collector
-  against saga-agents-staging on 2026-09-22 found 19 such checkpoints across 6
+  against example-project on 2026-09-22 found 19 such checkpoints across 6
   tasks -- checkpoints an unfloored reference rule would have kept for ever.
 
 Age decides those three, and age decides NOTHING else. Every KEEP in `classify`
@@ -207,7 +207,7 @@ def parse_checkpoint_key(key: str) -> CheckpointRef | None:
 def pointer_to_prefix(pointer: Any) -> str | None:
     """Normalise `task.latest_checkpoint` to a bucket-relative checkpoint prefix.
 
-    The pointer is written as a store URI (`gs://bucket/tenants/...` in
+    The pointer is written as a store URI (`gs://swarm-artifacts-example-project/tenants/...` in
     production, `file:///tmp/.../tenants/...` under `LOCAL_ARTIFACT_ROOT`), so
     slicing from `tenants/` turns any flavour into the key without this module
     needing to know which store wrote it -- the same trick
@@ -309,7 +309,7 @@ def classify(
         # attempt whose completion was never written: `ControlPlane.finish`
         # transitions the task BEFORE calling `record_attempt_end`, so a worker
         # killed between those two writes leaves exactly this shape, for ever.
-        # A dry run against saga-agents-staging on 2026-09-22 found 19 such
+        # A dry run against example-project on 2026-09-22 found 19 such
         # checkpoints across 6 tasks.
         #
         # So the reference is honoured, but it is given a floor. No worker winds
@@ -406,7 +406,7 @@ class SweepReport:
     #: number of objects a dry run would have taken. Counted separately because
     #: a dry run reporting `reclaimed: 0, kept: 142` beside a list of 123
     #: reclaimable outcomes is a report that contradicts itself -- caught by
-    #: running this collector against saga-agents-staging before shipping it.
+    #: running this collector against example-project before shipping it.
     reclaimable: int = 0
     reclaimed: int = 0
     #: True when `checkpoint_scan_limit` cut the listing short. Never silent:

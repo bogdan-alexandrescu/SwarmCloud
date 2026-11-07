@@ -60,7 +60,7 @@ page is `secure`, served over https, and not at an IP literal; and control
 ENDS if the state leaves `secure` while held. An unknown state is not secure:
 the check fails closed.
 
-LOOPBACK IS SECURE (GATE-LOOPBACK, part of #1333). BGD decided on 2026-10-22
+LOOPBACK IS SECURE (GATE-LOOPBACK, part of #1333). The owner decided on 2026-10-22
 that a page whose origin is exactly loopback -- scheme `http`, host
 `127.0.0.1`, `::1` or `localhost`, any port, no userinfo -- counts as secure,
 as Chromium counts it a secure context; the live-browser acceptance fixture
@@ -1658,7 +1658,7 @@ def _https_host(url: str) -> bool:
     return parts.scheme == "https" and bool(parts.hostname) and not _is_address(parts.hostname or "")
 
 
-#: Exactly the loopback hosts BGD decided on 2026-10-22, as `urlsplit` gives
+#: Exactly the loopback hosts the owner decided on 2026-10-22, as `urlsplit` gives
 #: `.hostname` (lower-cased, brackets stripped). Not 127/8, not `*.localhost`.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 

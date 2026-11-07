@@ -1,6 +1,6 @@
 """The GitHub pull request a claude-code, codex or review step works on.
 
-Product Oracle's report of 2026-11-06 (part of #2688): its review lanes could
+A peer application's report of 2026-11-06 (part of #2688): its review lanes could
 not run `gh pr view` -- an agent holds no GitHub token, by design -- so they
 fell back to the checked-out head and never read the pull request's body or
 its comments. The issue path already solved this for issues (`issue.py`,

@@ -1,6 +1,6 @@
 """codex's `--json` event stream, rendered as a log a person reads (CODEX-JSON, part of #2459).
 
-WHY THE STREAM IS JSON NOW. BGD, 2026-10-26 (BUDGET-CAP question 6): the
+WHY THE STREAM IS JSON NOW. The owner, 2026-10-26 (BUDGET-CAP question 6): the
 codex profile runs `codex exec --json`, so its stdout carries the usage the
 budget meter counts (`turn.completed`). Without it the stdout was the final
 answer in prose and a codex step's budget was pinned but enforced by nothing
