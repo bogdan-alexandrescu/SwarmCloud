@@ -220,3 +220,18 @@ def test_the_makefile_asks_resolve_for_its_tfvars() -> None:
     for target in ("tf-plan", "status", "prerequisites"):
         block = text.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
         assert "$(RESOLVE) deny-list $(ENVIRONMENT)" in block, target
+
+
+def test_fetches_running_at_once_never_collide(tmp_path: Path) -> None:
+    # A plan guard and a kubectl call can source common.sh at the same moment.
+    # MUTATION: one shared `.<name>.part` file for every process and this goes
+    # red: a copy fails with "File exists" or a reader sees half a file.
+    bucket, env = _setup(tmp_path)
+    body = 'project_id = "example-project"\n' * 200
+    bucket.put("dev.tfvars", body, "11")
+    script = ('pids=(); for i in 1 2 3 4 5 6 7 8 9 10 11 12; do config_fetch dev & pids+=("$!"); done; '
+              'bad=0; for p in "${pids[@]}"; do wait "$p" || bad=$((bad + 1)); done; echo "failed=${bad}"')
+    proc = _run(env, script)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "failed=0", proc.stderr
+    assert (_cache(tmp_path) / "dev.tfvars").read_text() == body
