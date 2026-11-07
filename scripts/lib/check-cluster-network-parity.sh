@@ -42,6 +42,11 @@
 # not be read.
 set -euo pipefail
 
+# With no gcloud credentials this touches no project: it skips, and the
+# shell job runs it that way. It says so, so common.sh (no default project,
+# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID, and it requires one
+# below, once it has credentials and before it reaches for a cluster.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -105,6 +110,7 @@ command -v gcloud >/dev/null 2>&1 || skip "gcloud is not installed"
 ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | sed -n '1p' || true)"
 [[ -n "${ACCOUNT}" ]] || skip "no active gcloud credentials"
 info "account  ${ACCOUNT}"
+require_project
 
 # --- the swarm cluster, and only it -----------------------------------------
 KUBECTL="$(kubectl_bin)"

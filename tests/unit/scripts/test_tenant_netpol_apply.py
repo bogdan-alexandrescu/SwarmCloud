@@ -80,6 +80,8 @@ def tenant_policy_files_on_disk() -> set[str]:
 
 def clean_env(**extra: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+    # common.sh has no default project any more: name the one the suite models.
+    env["PROJECT_ID"] = "saga-agents-staging"
     env.update(PYTHON_BIN=sys.executable, NO_COLOR="1")
     env.update(extra)
     return env

@@ -31,6 +31,12 @@
 #   scripts/destroy.sh --verify-shared        # re-check the neighbours only
 
 set -euo pipefail
+# --self-test judges fixtures with the deny-list and destroys nothing: that mode touches no project and says so, so common.sh
+# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# Every other mode still needs one.
+for arg in "$@"; do
+  [[ "${arg}" != "--self-test" ]] || SWARM_NO_PROJECT=1
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
@@ -277,7 +283,7 @@ verify_shared_resources() {
   # three until 2026-10-21, and the three buckets added to the deny-list that
   # day were exactly the three it never looked at.
   local entry kind
-  for entry in "${SHARED_DENY_LIST[@]}"; do
+  for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     kind="$(shared_resource_kind "${entry}")" || kind=""
     case "${kind}" in
       sa)

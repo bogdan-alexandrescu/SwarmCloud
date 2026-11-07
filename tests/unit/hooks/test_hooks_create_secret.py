@@ -170,6 +170,10 @@ def test_an_empty_or_implausible_value_is_refused(tmp_path, stdin):
 
 
 def test_the_help_names_the_flag():
-    proc = subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True, text=True, timeout=30, check=False)
-    assert proc.returncode == 0
+    # common.sh has no default project (DAYONE-DESAGA-2), so --help too needs
+    # one named; the same one _run names.
+    env = {**os.environ, "PROJECT_ID": "swarm-test-project"}
+    proc = subprocess.run(["bash", str(SCRIPT), "--help"], env=env, capture_output=True, text=True, timeout=30,
+                          check=False)
+    assert proc.returncode == 0, proc.stderr
     assert f"{FLAG} --stdin" in proc.stdout

@@ -112,7 +112,7 @@ notice() {
 refuse_cluster() {
   local what="$1" ref="$2" cluster foreign
   cluster="${ref##*_}"
-  for foreign in "${SHARED_DENY_LIST[@]}"; do
+  for foreign in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     case "${foreign}" in *@*|default) continue ;; esac
     case "${cluster}" in
       *"${foreign}"*) die "${what} names cluster '${cluster}', which matches '${foreign}' on the shared

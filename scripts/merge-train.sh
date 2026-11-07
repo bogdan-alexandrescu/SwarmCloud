@@ -149,6 +149,10 @@
 #       WORKFLOW_RUN_HEAD_BRANCH (the finished run's head branch: a `train/`
 #       one only judges). Neither token is ever printed.
 set -euo pipefail
+# This script touches no project: it reads and writes GitHub only. It says
+# so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on an
+# unset PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
