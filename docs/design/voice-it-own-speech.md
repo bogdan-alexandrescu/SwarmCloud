@@ -19,7 +19,7 @@ BGD's picks; they are settled and this design builds to them.
 
 | # | BGD picked | Where it lands |
 |---|---|---|
-| 1 | Speech-to-text on **our own machine**: one `g2-standard-4` (4 vCPU, 16 GB, one NVIDIA L4), **on-demand**, kept **stopped, not deleted**, between sessions. Qwen3-ASR-0.6B (`qwen-asr[vllm]`, streaming through vLLM), Silero voice detection. Starts on Start, stops on Stop or after 5 minutes without speech or tool activity. About $0.71 an hour while running; chosen over Cloud Run with an L4 (about $1.05 an hour plus up to 15 idle minutes) and over a hosted service | §3, §4, §5 |
+| 1 | Speech-to-text on **our own machine**: one `g2-standard-4` (4 vCPU, 16 GB, one NVIDIA L4), **on-demand**, kept **stopped, not deleted**, between sessions. Qwen3-ASR-0.6B (vLLM's own Qwen3-ASR model, streaming through vLLM), Silero voice detection. Starts on Start, stops on Stop or after 5 minutes without speech or tool activity. About $0.71 an hour while running; chosen over Cloud Run with an L4 (about $1.05 an hour plus up to 15 idle minutes) and over a hosted service | §3, §4, §5 |
 | 2 | Voice it **speaks** its replies: Kokoro (82M) on the same L4. The Presence layout's voice trace stays | §3.3, §9 |
 | 3 | A spoken command that **cancels, merges, deploys, deletes or approves is read back first**; everything else acts as heard. Autonomy otherwise unchanged | §7 |
 | 4 | **GPT-Live stays** as a second engine. Settings choose the engine and hold the OpenAI key's status; the key is set only through the existing one-time link, which moves from Admin › Accounts into Voice it's Settings. Default engine: our own speech. Text mode stays the fallback | §10 |
@@ -260,7 +260,7 @@ fall back instead), each in `voice_audit` with the machine minutes.
 | GPU | 1 × `nvidia-l4`, attached by the g2 type | |
 | Scheduling | `provisioning_model = "STANDARD"`, `on_host_maintenance = "TERMINATE"`, `automatic_restart = false` | Invariant 6: Spot is off platform-wide. GPU VMs cannot live-migrate; `automatic_restart = false` so a host event leaves it stopped, never running with no session |
 | Boot disk | 150 GB `pd-balanced`, kept | Image (about 50 GB with the driver), the server image (about 20 GB), weights (0.6B about 2 GB, 1.7B about 5 GB, Kokoro under 1 GB), with room for one old image during an update |
-| Image | Deep Learning VM, Ubuntu 22.04 with NVIDIA driver and the container toolkit, pinned to one image name in tfvars | Drivers stay on the disk; nothing compiles at boot |
+| Image | Deep Learning VM, Ubuntu 22.04 with NVIDIA driver **580 or later** and the container toolkit, pinned to one image name in tfvars | Drivers stay on the disk; nothing compiles at boot. vLLM 0.31 and later are built on CUDA 13, which needs a 580 driver on the host; the driver is the `-nvidia-<driver>` suffix of the image's family, the installer pins nothing older, and its tfvars rendering refuses an older recorded image |
 | Ops Agent | Google's Ops Agent, installed by the first boot's startup script from Google's package repository through NAT and kept on the disk; its config (`/etc/google-cloud-ops-agent/config.yaml`) is written by L2's unit: the `swarm-speech` container and units' journal, host metrics and the NVML GPU receiver, nothing else | Q2: logs and host metrics without a session (I5, I6) |
 | Network | swarm-vpc subnet, reserved internal address, **no external IP**, tag `swarm-speech` | §3.2 |
 | Shielded VM | secure boot off (the NVIDIA module is unsigned on that image), vTPM and integrity monitoring on | Measured by the machine lane (M1) |
@@ -276,7 +276,7 @@ explained next to it in `variables.tf`.
 
 ### 5.2 The speech server container
 
-`apps/swarm-speech/` (new): a Python 3.11 server (`uv`) with `qwen-asr[vllm]` for Qwen3-ASR's
+`apps/swarm-speech/` (new): a Python 3.11 server (`uv`) with vLLM's own Qwen3-ASR model for Qwen3-ASR's
 streaming path, `kokoro` for synthesis, and `websockets`/FastAPI for `/v1/stream`, `/v1/health`,
 `/v1/metrics`. One container, one process, one GPU; `--gpus all`. The image `swarm-speech` is built
 by the release into the platform's Artifact Registry repository and pinned by digest. **Weights are
@@ -680,7 +680,7 @@ three UI files.
 the stopped g2-standard-4 to `RUNNING` and to the socket answering (assumed 1-2 minutes); secure
 boot with the driver. **M2** GPU memory of Qwen3-ASR-0.6B under vLLM with Kokoro beside it on 24 GB,
 and vLLM's `gpu_memory_utilization` that leaves Kokoro room. **M3** the exact permissions `start`
-and `setMachineType` need (I2). **M4** the streaming route `qwen-asr[vllm]` exposes for the 0.6B
+and `setMachineType` need (I2). **M4** the streaming route vLLM's own Qwen3-ASR model exposes for the 0.6B
 model and its partial cadence. **M5** Kokoro's time to first audio on the L4. **M6** echo
 cancellation of the played-back path. **M7** swarm-api CPU during a 10-minute session. **M8** (L12)
 the front's first reply, final words to first audio, haiku against sonnet, warm child against one
