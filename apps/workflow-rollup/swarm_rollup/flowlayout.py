@@ -1,6 +1,6 @@
 """A QA flow step's tar names and its stray-tar rule, stated once for the brief and the worker.
 
-Two legs of the AI Studio session's QA re-run 8 (2026-11-06), told to bundle
+Two legs of a peer application's QA re-run 8 (2026-11-06), told to bundle
 their batch as `flows-1.tar`, wrote `flow-1.tar`; the flow report stages a
 flow step's output by its step id, so the missing-output check failed the leg
 after every flow had spent its browser time. PR #3521 wrote the rule that reads

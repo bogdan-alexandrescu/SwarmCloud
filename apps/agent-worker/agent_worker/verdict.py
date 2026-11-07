@@ -114,7 +114,7 @@ VERIFY_BEFORE_ACTING = "verify before acting"
 P_REAL_KEY = "p_real"
 TRIAGE_KEY = "triage"
 
-#: The no-op precheck's check (b) (#2524, BGD 2026-10-28): a review writes the
+#: The no-op precheck's check (b) (#2524, the owner 2026-10-28): a review writes the
 #: head it judged under `commit`, and a NOT_YET-gated step whose checkout
 #: already contains a commit a review gave MERGE runs no agent. Lowercase hex,
 #: 7 to 40 characters, as `git rev-parse` prints it; anything else is no commit.
@@ -711,7 +711,7 @@ def pull_request_lines(record: dict[str, Any]) -> list[str]:
 # A UI lane's MERGE counts only from a review that saw the pages (#2184)
 # ---------------------------------------------------------------------------
 #
-# BGD's decision, 2026-10-24 (~00:30Z). On 2026-10-23 ten mock-up lanes'
+# The owner's decision, 2026-10-24 (~00:30Z). On 2026-10-23 ten mock-up lanes'
 # review steps ran on `claude-code`, with no browser, and gave MERGE; two
 # said "No browser was available here, so I reviewed the static HTML". The
 # pages had clipped frames, crushed text and contradictory counts, found only

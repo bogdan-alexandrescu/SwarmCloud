@@ -1,6 +1,6 @@
 """The live gate's watch on the page on screen: challenges, and a closed browser (§4.1, §5.3).
 
-docs/design/live-browser.md §5.3. THE GATE PAINTS NOTHING. Owner decision, BGD
+docs/design/live-browser.md §5.3. THE GATE PAINTS NOTHING. Owner decision,
 2026-10-25: "Stop redacting elements or sections of the visual content that a
 browser agent or session displays via the live browser. There is no need to
 redact parts of the screen in any situation." Every frame the gate captures
@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 #: stops 2-12 s later. Said to every viewer as the RFB desktop name, one
 #: sentence (rfb.py `desktop_name`). MEASURED 2026-10-23 (batch
 #: mask1344-2026-10-23): the grey tail lasted up to 12.3 s. Owner decision
-#: (BGD, 2026-10-23): "Say the agent finished."
+#: (the owner, 2026-10-23): "Say the agent finished."
 REASON_BROWSER_CLOSED = "The agent has finished; its browser is closed."
 
 #: The challenge frames a person must see to get past them (issue #1340):
@@ -62,7 +62,7 @@ SHOWN_IN_CONTROL = (
     ("challenges.cloudflare.com", "/"),
 )
 
-#: CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the most pages whose
+#: CAPTCHA-HANDOFF (the owner, 2026-10-23; part of #2058): the most pages whose
 #: hand-off was raised are remembered, so one load raises one request.
 CHALLENGED_PAGES = 64
 

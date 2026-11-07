@@ -31,7 +31,7 @@ runs (`deps.current_auth`), and never anyone's personal workspace. The rules
 below are unchanged and still apply on top of the role, to them as to anyone:
 a gate's `approvers` list, a hold, the last-editor rule and the `spec` rule.
 
-A PLATFORM-SCOPE SCHEDULE'S ITEMS ARE A PLATFORM ADMIN'S (BGD, 2026-10-24,
+A PLATFORM-SCOPE SCHEDULE'S ITEMS ARE A PLATFORM ADMIN'S (the owner, 2026-10-24,
 "Platform admins only"; PLATFORM-SCHED-APPROVALS, part of #2157). Approving
 a gated run has the effect of `:run`, which `schedule_routes._platform_only`
 refuses to anyone else, so `:approve` and `:reject` of an item whose STORED
@@ -61,7 +61,7 @@ a firing gains its `run_approval`, a run its `merge_approved`, a plan its
 approval -- whose workflow `_approve` submits through `SubmissionService`,
 QUEUED until admission leases it, exactly as an approval in Work › Runs.
 
-WHO MAY REJECT IS WHO MAY APPROVE (BGD 2026-10-26, #2417 A5f). `:reject`
+WHO MAY REJECT IS WHO MAY APPROVE (the owner 2026-10-26, #2417 A5f). `:reject`
 runs the same who-checks `:approve` does -- the gate's `approvers`, the
 hold, the last-editor rule, the `spec` rule (`_who_refusal`) -- and a caller
 they refuse is 403 `reject_approver_required`, through its switch, which
@@ -249,7 +249,7 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     now -- the role floor, the platform-scope rule, and `_who_refusal`. A
     one-person workspace's own hold counts as yes: the approve passes once
     the matched paths are typed. `reject`: the same, while the
-    `reject_approver_required` switch is on (BGD 2026-10-26); off, any
+    `reject_approver_required` switch is on (the owner 2026-10-26); off, any
     member past the role floor and the platform-scope rule. `why`: one
     sentence when either is false, else None. `deciders`: `approvals.deciders`.
 
@@ -304,7 +304,7 @@ def _record_run(ctx: AppContext, tenant_id: str, doc: Mapping[str, Any]) -> Issu
 def _reject_rule(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any], *,
                  run: IssueRun | None, schedule: Mapping[str, Any] | None) -> None:
     """403 `reject_approver_required` when the caller may not approve `item`
-    (BGD 2026-10-26), through its switch: off, the rejection goes ahead and
+    (the owner 2026-10-26), through its switch: off, the rejection goes ahead and
     the log names the refusal it would have made."""
     found = _who_refusal(ctx, auth, tenant_id, item, run=run, schedule=schedule)
     if found is None:
@@ -584,7 +584,7 @@ def reject(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Only someone who may approve an item may reject it (BGD 2026-10-26,
+    """Only someone who may approve an item may reject it (the owner 2026-10-26,
     §4.5): `_reject_rule`, 403 `reject_approver_required` through its switch,
     on by default; off, any member rejects, as before. A `viewer` may not
     (workspace-roles §4.1), nor anyone but a platform admin an item of a
@@ -651,7 +651,7 @@ def merge_mode(
     approvals.require_decider(ctx, auth)
     stored = schedule_routes._read(ctx, tenant_id, schedule_id)
     # A platform-scope schedule is a platform admin's to change, either
-    # direction (BGD, 2026-10-24; `schedule_routes._platform_only`).
+    # direction (the owner, 2026-10-24; `schedule_routes._platform_only`).
     schedule_routes._platform_only(auth, stored, "merge_mode")
     entry = scheduletypes.get(str(stored.get("type")))
     if entry is None:

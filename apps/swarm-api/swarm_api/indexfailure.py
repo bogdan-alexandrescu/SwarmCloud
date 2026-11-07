@@ -1,7 +1,7 @@
 """Why a repository's index runs fail, and when the poll stops re-running them.
 
-Operator QA p14 (2026-10-13, lane INDEX-FAIL): in tenant u-bogdan the poll
-re-queued an index run of sagaxyz/ai-studio every 15 minutes, and every one
+Operator QA p14 (2026-10-13, lane INDEX-FAIL): in tenant example-tenant the poll
+re-queued an index run of example-org/peer-app every 15 minutes, and every one
 ended "repository clone failed ... remote: Repository not found. fatal:
 Authentication failed", while the Repositories card said only "no index" or
 "indexing now". Two things were missing, and both live here:
@@ -182,7 +182,7 @@ def credential_mark(records: Iterable[Any], *, slot: str | None = None) -> str:
 
     `slot` is the slot an index run would clone with (`forge.service_slot`,
     INDEX-CRED), so a change of WHICH credential the poll uses lifts the
-    back-off even when no record moved: in u-bogdan the owner's connection
+    back-off even when no record moved: in example-tenant the owner's connection
     already existed, and the runs failed only because they cloned with a
     `-git` slot the workspace never had. The tenant's `-git` slot adds
     nothing to the digest: every mark recorded before INDEX-CRED was taken

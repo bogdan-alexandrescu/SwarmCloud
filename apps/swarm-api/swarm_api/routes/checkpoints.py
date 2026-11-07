@@ -8,7 +8,7 @@ Owner decision 2026-09-24 (redesign-v2 S3, item A3) -- all three of:
     GET /v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path}
         one member as text: content-type allowlist, redacted, windowed under
         the artifact-content route's own size cap -- or, with `?format=image`
-        (BGD, 2026-11-06), a png, jpeg, webp or gif member as its own bytes
+        (the owner, 2026-11-06), a png, jpeg, webp or gif member as its own bytes
         when its signature says it is one;
     GET /v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content
         the whole archive, streamed, `Content-Disposition: attachment`.

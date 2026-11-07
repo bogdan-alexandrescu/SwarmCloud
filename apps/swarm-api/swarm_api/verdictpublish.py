@@ -114,7 +114,7 @@ ended, `CLAIM_TIMEOUT_SECONDS` after a claim) and the step is promoted as
 before. The worker then finds the pull request this module may already have
 opened and adopts it (`forge.open_pull_request`'s 422 path).
 
-A GATED REVIEW IS HELD AND DECIDED HERE TOO (#2524, BGD 2026-10-28). A step
+A GATED REVIEW IS HELD AND DECIDED HERE TOO (#2524, the owner 2026-10-28). A step
 carrying `metadata.review_gate` is held by the scheduler under the same rule
 and claimed under the same marker; `_consider_review` decides it
 (`reviewgate.resolve`) and either ends it SUCCEEDED with an inline MERGE

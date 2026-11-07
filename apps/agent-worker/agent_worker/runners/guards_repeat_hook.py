@@ -6,7 +6,7 @@ writes, where `<state>` is a file beside that settings file, outside the
 checkout. Standard library only, and nothing imported from the worker: `-I`
 drops the package's path, and a hook must not depend on it.
 
-WHY (BGD, 2026-10-27; #2524 item 6). `scripts/changed-guards.sh` is the one
+WHY (the owner, 2026-10-27; #2524 item 6). `scripts/changed-guards.sh` is the one
 pre-finish run, about a minute and a long transcript every time. The week's
 transcripts showed lanes running it again with nothing changed in between,
 re-reading the same result and paying for it on every later turn. Its answer

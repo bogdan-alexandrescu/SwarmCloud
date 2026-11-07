@@ -1,6 +1,6 @@
 """A QA flow step's tar, normalised by the worker before the upload (QA-FLOW-CAPTURE, part of #2688).
 
-Two legs of the AI Studio session's QA re-run 8 (2026-11-06), told to bundle
+Two legs of a peer application's QA re-run 8 (2026-11-06), told to bundle
 their batch as `flows-1.tar`, wrote `flow-1.tar`. The flow report stages a
 flow step's output by its step id (`swarm_api.qaspec.FLOW_LAYOUT`'s
 `batch_tar`, `<step>.tar`), so the missing-output check failed the leg after

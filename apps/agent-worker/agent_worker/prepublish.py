@@ -145,7 +145,7 @@ A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
 is `skipped` (or `error`) with the reason, recorded, and never sent to the
 agent as something to fix. So is graph-pytest when the container lacks a
-service the tests need (#1605: product-oracle's fixtures migrate into a
+service the tests need (#1605: peer-app's fixtures migrate into a
 Postgres at 127.0.0.1:5432, and every test errored at setup): read from
 pytest's junitxml report, when no test passed or failed on its own and every
 error is a setup or collection error naming a refused connection to a local
@@ -216,7 +216,7 @@ address a running declared service owns is the tests connecting wrongly,
 file nothing here runs, and the check is exactly as PR 1606 made it.
 
 THE CHECKS LEAVE THE TREE AS THEY FOUND IT (PREPUB-UV-OUTSIDE, part of #1964).
-Measured 2026-10-22 on sagaxyz/ai-studio (task_2df71fc1d5d34997957a,
+Measured 2026-10-22 on example-org/peer-app (task_2df71fc1d5d34997957a,
 task_65d0f0328cc6464f8358): graph-pytest's `uv run pytest`, run from
 `runner/` inside the clone, created `runner/.venv` and -- that project had no
 lock -- `runner/uv.lock`, and the publish's `git add --all` committed the
@@ -297,7 +297,7 @@ PR_SECTION_HEADING = "## Pre-publish checks failed"
 FIX_TURNS = 1
 CONFLICT_TURNS = 1
 #: One turn to bring a moved HEAD back (`Gate._moved_head`; reported by
-#: Product Oracle's session, 5 November 2026): a second moved HEAD ends as the
+#: a peer application's session, 5 November 2026): a second moved HEAD ends as the
 #: harvest's rule ends it (#2094), with the line kept as a bundle.
 MOVED_HEAD_TURNS = 1
 #: Below this much of the step's budget the gate does not start: a check set
@@ -2531,7 +2531,7 @@ def conflict_prompt(ref: str, onto: str, conflicts: Sequence[str]) -> str:
 def moved_head(repo: Path, env: Mapping[str, str], *, runner: Runner = run_command
                ) -> str | None:
     """Where HEAD went when it left this step's work, or None (the gate's
-    moved-HEAD finding; reported by Product Oracle's session, 5 November 2026).
+    moved-HEAD finding; reported by a peer application's session, 5 November 2026).
 
     The worker's harvest refuses such a line and publishes nothing
     (`lifecycle.Worker._head_moved`, #2094); task_884a993427ce44feb7a6's agent

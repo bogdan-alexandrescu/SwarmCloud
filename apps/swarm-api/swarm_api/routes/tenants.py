@@ -176,7 +176,7 @@ def get_me(
 
 def _features(ctx: AppContext, auth: AuthContext) -> dict[str, FeatureState]:
     """Whether three features are on for this workspace (FEATURES-READ, part
-    of #1748), so a caller such as Product Oracle need not learn it by
+    of #1748), so a caller such as a peer application need not learn it by
     submitting. Each is read where the feature itself reads it -- CALLED, not
     restated -- and each separately, so one failed read leaves the other two.
     """
@@ -247,7 +247,7 @@ def get_mine(
     default member does.
 
     THEIR NAMES ARE READ (MINE-NAMES, part of #2157). A workspace's admins
-    rename it (`PUT /v1/workspaces/{id}/name`), and BGD decided on
+    rename it (`PUT /v1/workspaces/{id}/name`), and the owner decided on
     2026-10-25 that everyone's switcher shows the new name at once, not only
     after they next act there -- which `/me` alone could not do, since it
     names only the workspace in force. So every group entry's

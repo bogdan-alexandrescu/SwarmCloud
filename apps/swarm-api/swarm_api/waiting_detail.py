@@ -404,7 +404,7 @@ def _pool_other(label: Any) -> str:
     """The other side of a duplicate pair, as the park recorded it (#2222).
 
     `scheduler.loop.pool_blockers` writes the label only for the waiting
-    agent's own workspace (BGD, Q2: "only within the same tenant"), and null
+    agent's own workspace (the owner, Q2: "only within the same tenant"), and null
     for another workspace's account, which the line names without one.
     """
     return _str(label) or "an account in another workspace"
@@ -763,7 +763,7 @@ def _ci_stuck(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     """A merge step whose CI wait no re-check will end: its one line leads.
 
     The step re-checked CI for hours, its repair rounds spent or the same
-    check failing after one (BGD, 2026-11-06: 28 attempts over 8 hours, and
+    check failing after one (the owner, 2026-11-06: 28 attempts over 8 hours, and
     the page listed them one by one). The summary is the worker's line --
     how long, how many re-checks, what fails, the rounds, main -- and a
     person's "I'm ready" re-reads the pull request with a fresh clock."""
@@ -831,7 +831,7 @@ def _credential(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     resumes = "the workspace registers the credential and the scheduler's credential sweep finds it"
     if facts.get("credential") == MCP_PARK_CREDENTIAL:
         # A workflow's per-run MCP credential lapsed while the step waited
-        # (registered-mcp-servers.md §4.10, BGD 2026-10-26): its caller
+        # (registered-mcp-servers.md §4.10, the owner 2026-10-26): its caller
         # re-stores it. What a caller reads, by name and never a value:
         # `credential`, `code`, `server` (the name its re-store keys by) and
         # `expired_at`, as the park's `blocked_by[]` entry holds them.

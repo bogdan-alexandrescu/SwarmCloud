@@ -234,7 +234,7 @@ def health_message(raw: Any) -> str:
     """An event's message: redacted, one line, at most `HEALTH_MESSAGE_MAX`
     characters.
 
-    REDACTED HERE, ON WRITE, AND AGAIN ON READ (`_event_to_api`; BGD,
+    REDACTED HERE, ON WRITE, AND AGAIN ON READ (`_event_to_api`; the owner,
     2026-10-25, "Yes, add it"). A worker's report is redacted before it is
     sent (`agent_worker.control`) and swarm-api redacts on the way out
     (`routes/accounts.py`), but a record that relied on every sender being

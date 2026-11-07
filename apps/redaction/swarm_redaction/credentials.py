@@ -111,11 +111,11 @@ class CredentialHit(NamedTuple):
 # scheme, whatever its case. A `${name}` slot holds no value, so it adds no
 # risk. CI's trivy secret scan still runs after the push.
 #
-# Since 2026-10-23 (#2030, BGD), NEITHER tier reads a comment line or a
+# Since 2026-10-23 (#2030, the owner), NEITHER tier reads a comment line or a
 # template literal of runtime slots with the generic rules
 # (`_on_a_comment_line`, `_runtime_template`); the vendor and key rules do.
 #
-# Since 2026-10-23 (#2030, SCAN-IDENT, BGD), an UNQUOTED word-segment
+# Since 2026-10-23 (#2030, SCAN-IDENT, the owner), an UNQUOTED word-segment
 # identifier holding one short digit run (`sessionToken2`, `api_key_v2`) is
 # not a literal either, outside password names (`_is_an_identifier`).
 
@@ -422,7 +422,7 @@ _VOWELS = frozenset("aeiouyAEIOUY")
 
 def _is_an_identifier(value: str) -> bool:
     """True when an UNQUOTED bare `value` is a code identifier holding a digit
-    run, not a credential (SCAN-IDENT, #2030; BGD's decision of 2026-10-23,
+    run, not a credential (SCAN-IDENT, #2030; the owner's decision of 2026-10-23,
     on SCAN-FP's question): `sessionToken2`, `api_key_v2`, `MockUser01`,
     `token2fa`. `_assigns_a_literal` asks it only for a bare value; a quoted
     value is a literal whatever its shape, and this is never asked of one.
@@ -438,7 +438,7 @@ def _is_an_identifier(value: str) -> bool:
     So `aB3xQ9` (three digit runs), a five-digit run, and a long run of
     distinct letters are still refused.
 
-    RESIDUAL RISK, accepted by BGD on 2026-10-23: a short real value shaped
+    RESIDUAL RISK, accepted by the owner on 2026-10-23: a short real value shaped
     like words plus digits (`hunterHorse42`), assigned bare to a credential
     name in YAML or in an environment file, publishes. There is no dictionary;
     "word-like" is the vowel and length test above. CI's trivy secret scan
@@ -596,8 +596,8 @@ def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
 
 # -- what the GENERIC rules do not read (SCAN-FP, #2030) ----------------------
 #
-# BGD's decision, 2026-10-23: fix the false positives and the advice, add no
-# setting. Product Oracle's task was refused three attempts in a row over a
+# The owner's decision, 2026-10-23: fix the false positives and the advice, add no
+# setting. A peer application's task was refused three attempts in a row over a
 # doc comment that quoted its fixture's name in prose (the reference was
 # followed by more words, so `_ends_the_value` read it as the first word of a
 # passphrase) and over a template literal whose one slot calls `mockUuid()`, a
@@ -925,7 +925,7 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     string -- the rule's group 1 ends with the opening quote, or the value
     opens with a single quote the rule's value class takes as a character --
     or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`) that
-    is not a code identifier (`_is_an_identifier`; BGD, 2026-10-23, #2030),
+    is not a code identifier (`_is_an_identifier`; the owner, 2026-10-23, #2030),
     or that sits under a password name, where an identifier-shaped value is a
     plausible password. The specific families (AWS keys, private keys, JWTs, provider tokens) and the
     registered literals count wherever they appear.

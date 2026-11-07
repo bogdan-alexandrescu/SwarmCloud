@@ -5,7 +5,7 @@ display name (§4.4), default workspace (§4.5), bell settings (§4.6) and time
 zone, and nothing the scheduler, reconciler or worker reads. It holds no email
 and no credential.
 
-THE TIME ZONE (lane TIMEZONE-SERVER, part of #2391). BGD decided on 2026-10-26
+THE TIME ZONE (lane TIMEZONE-SERVER, part of #2391). The owner decided on 2026-10-26
 that a person's zone is kept here, so it follows them to every browser and
 survives sign-out; before, the console kept it in one browser's local storage.
 It is an IANA name `zoneinfo` knows, or absent: absent reads as UTC, and is
