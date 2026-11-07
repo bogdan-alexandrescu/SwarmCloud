@@ -38,8 +38,8 @@ import { timeAgo, type OnboardingDoc, type Profile, type WorkspaceRoles } from '
 import './styles/workspace-settings.css'
 
 /**
- * CONFIG › WORKSPACE SETTINGS (WS-SETTINGS-PAGE; part of #2157, BGD's
- * decisions of 2026-10-23 and his pick of proposal E,
+ * CONFIG › WORKSPACE SETTINGS (WS-SETTINGS-PAGE; part of #2157, the owner's
+ * decisions of 2026-10-23 and their pick of proposal E,
  * docs/web-ui/mockups/config-e.html S6a-S6f). ONE PAGE, IN PARTS, each at its
  * own address so a link reproduces it:
  *
@@ -51,7 +51,7 @@ import './styles/workspace-settings.css'
  *     mounted as a part (Onboarding.tsx), so the setup strip above every
  *     Config page has its long form here;
  *   * Add a new workspace (`/config/workspace?part=new`): A PLATFORM ADMIN'S
- *     PART ONLY (BGD, 2026-10-23T23:57Z), the rule of Admin › Tenants › New
+ *     PART ONLY (owner, 2026-10-23T23:57Z), the rule of Admin › Tenants › New
  *     workspace: drawn when `GET /v1/profile` says `is_admin`, never while it
  *     is unread. A workspace admin sees two parts; members keep Request your
  *     workspace in the setup checklist.
@@ -449,7 +449,7 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
   const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
   // ONE NAME FOR THE PERSON'S OWN WORKSPACE (visual QA pass 2, admin-shell-21;
   // part of #2694): the switcher's `Your workspace`, the id on its own row
-  // below, never `Your workspace (u-…)` here and `Bogdan` in the refusal.
+  // below, never `Your workspace (u-…)` here and `Alex` in the refusal.
   const name = ws?.kind === 'user' ? OWN_WORKSPACE_LABEL : (renamed ?? stored ?? ws?.display_name ?? '')
   const mayRename = ws !== null && ws.kind === 'group' && role?.name === 'admin'
   return (
@@ -518,7 +518,7 @@ function servedRefresh(read: UrRead<unknown>): ReactNode {
 }
 
 /**
- * VISUAL QA (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26): the workspace's `qa_flows_per_step`,
+ * VISUAL QA (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; owner, 2026-10-26): the workspace's `qa_flows_per_step`,
  * how many of a QA run's read-only flows one live-browser step runs when the run names none of its own (a run may,
  * beside Run on the QA targets page). Its default and its 1-30 bound are the API's, served with it. Its owner or admin,
  * or a platform admin, changes it (`can_edit`); the API is the gate, and anyone else sees it read-only, as Code
@@ -637,7 +637,7 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
 }
 
 /**
- * WRITING FLOWS (part of #2688; BGD, 2026-11-05, "declared writes plus a switch, on by default"): the workspace's
+ * WRITING FLOWS (part of #2688; owner, 2026-11-05, "declared writes plus a switch, on by default"): the workspace's
  * `writing_flows`. One toggle, its reason in the (i)'s tooltip and no visible prose. Off, every QA flow of the
  * workspace reads only and a target with a mutating flow is refused at save (422 `qa_writing_flows_off`). The same
  * gate as the batch size: its owner or admin, or a platform admin; anyone else sees the toggle disabled.
@@ -686,7 +686,7 @@ function QaWritingFlows({ read }: { read: QaSettings }) {
 /**
  * PER-AGENT BUDGET (BUDGET-UI-SETTINGS; part of #2459, docs/design/agent-budget.md §2, §4). The most one agent may
  * spend on one attempt in this workspace, in dollars OR tokens, the unit chosen here for the whole workspace. OFF
- * UNTIL A WORKSPACE ADMIN SETS ONE (BGD, 2026-10-26): Off is drawn as the default, and a workspace that sets nothing
+ * UNTIL A WORKSPACE ADMIN SETS ONE (owner, 2026-10-26): Off is drawn as the default, and a workspace that sets nothing
  * runs as it always has. A step may ask for less in its spec, never more.
  *
  * The platform ceiling is drawn as the most it can be. A default above it is refused 422 `budget_above_ceiling` with

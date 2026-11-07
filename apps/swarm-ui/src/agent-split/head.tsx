@@ -66,7 +66,7 @@ export function stepTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>)
  * class · workflow · account · the whole task id with its copy button -- and
  * the dispatch as plain-language chips.
  *
- * THE ID IS ON THE META LINE, NOT A LINE OF ITS OWN (VQ-010, BGD's visual QA
+ * THE ID IS ON THE META LINE, NOT A LINE OF ITS OWN (VQ-010, the owner's visual QA
  * 2026-10-26): with it under the title the header was three lines where v3 A
  * draws two. It is still printed whole, in mono, with its copy
  * (`TaskIdLine`, #94 -- it was once only the button's tooltip).

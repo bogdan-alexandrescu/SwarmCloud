@@ -226,7 +226,7 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
     expect(painted(menu, 'top', PHONE)).toBe('auto')
     // MUTATION: keep `bottom` unset and the menu has no edge to open from.
     expect((painted(menu, 'bottom', PHONE) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')
-    // On desktop the column scrolls on Logs too (AGENT-HEAD-B, BGD's pick AH1
+    // On desktop the column scrolls on Logs too (AGENT-HEAD-B, the owner's pick AH1
     // B, 2026-10-28): the head may be gone from above the stuck strip, so the
     // menu drops, over the log's bar (the strip's layer is above it).
     expect((painted(menu, 'top', WIDE) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')

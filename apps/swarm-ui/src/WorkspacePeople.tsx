@@ -176,7 +176,7 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
 }
 
 /**
- * MEMBERS' GITHUB, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * MEMBERS' GITHUB, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, owner
  * 2026-10-24: "Members to Config › People and roles"). It was GitHub access'
  * Members view: every member's GitHub connection state, the owners they
  * enabled and how many repositories they chose, moved whole. Its address is
@@ -287,7 +287,7 @@ type NoteAt = 'roster' | 'person' | 'default'
 type Note = { at: NoteAt; text: string; bad: boolean }
 
 /**
- * THE ROLES TAB AS S5b'S CARDS (CONFIG-PEOPLE-S5; part of #2391, BGD
+ * THE ROLES TAB AS S5b'S CARDS (CONFIG-PEOPLE-S5; part of #2391, owner
  * 2026-10-26: apply config-e.html S5b, S5e, S5g, S5h). The lead; then
  * "Roles in this workspace", which holds the roster table (the caller's own
  * row included) and what S5b's caption calls "as built" -- what each role

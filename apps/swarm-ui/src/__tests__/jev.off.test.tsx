@@ -1,6 +1,6 @@
 // LANE JEV-OFF (part of #1345): JEV'S UNAVAILABILITY IS VISIBLE, NOT SILENT.
 //
-// Measured 2026-10-15 on u-bogdan, whose judgment backend is internal-jev:
+// Measured 2026-10-15 on u-owner, whose judgment backend is internal-jev:
 // the tailnet egress to your internal decision API is off, so the dispatcher sends no
 // JEV_API_URL, the jev wrapper refuses, and the agent drove Playwright. The
 // Submit picker had offered Jev and the live chip read "Jev". Measured here:
@@ -55,7 +55,7 @@ function ok<T>(data: T): Result<T> {
 function judgment(backend: JevBackend, available: boolean, reason: string | null): Judgment {
   const label = backend === 'typesafe' ? 'Jev (TypeSafe)' : backend === 'internal-laya' ? 'Jev (Internal Laya)' : 'Jev (Internal)'
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     can_edit: true,
     jev: { backend, label, available, reason, default: 'internal-jev', set_at: null, set_by: null, options: [] },
   }

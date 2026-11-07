@@ -4,7 +4,7 @@
  *   admin-shell-12  A 404 in no section drew an empty panel under the
  *                   switcher. It now lists the rail's sections, headed `Go to`.
  *   admin-shell-21  The member's personal workspace (an empty `/mine`) was
- *                   named by its document (`Bogdan`), the platform admin's
+ *                   named by its document (`Alex`), the platform admin's
  *                   `Your workspace`: one workspace, two names.
  *   admin2-01       A workspace admin on /admin/limits was swapped to
  *                   Workspaces you admin with no word; refused in place now.
@@ -224,7 +224,7 @@ describe('admin2-15: a full pool is called full', () => {
     const cap = (pools: Json[]) => ({ status: 'ok' as const, fetchedAt: 0, data: { pools, read_at: '2026-10-29T10:00:00Z' } as never })
     const mine = { status: 'ok' as const, fetchedAt: 0, data: [] }
     // MUTATION: say `near ceiling` for a full pool again -> '1 near ceiling'.
-    expect(adminPanelCounts(true, null, cap([pool('global', 2, 20), pool('provider:anthropic:tenant:u-bogdan', 5, 5)]), mine).limits?.text).toBe('1 full')
+    expect(adminPanelCounts(true, null, cap([pool('global', 2, 20), pool('provider:anthropic:tenant:u-owner', 5, 5)]), mine).limits?.text).toBe('1 full')
     expect(adminPanelCounts(true, null, cap([pool('global', 2, 20), pool('tenant:eng', 4, 5)]), mine).limits?.text).toBe('1 near ceiling')
     const both = adminPanelCounts(true, null, cap([pool('a', 5, 5), pool('tenant:eng', 4, 5)]), mine).limits
     expect(both?.text).toBe('1 full')
@@ -233,9 +233,9 @@ describe('admin2-15: a full pool is called full', () => {
 
   it('says `a pool is full`, not `another pool`, under the global meter', async () => {
     const { meterOf } = await import('../Spine')
-    const m = meterOf({ pools: [pool('global', 2, 20), pool('provider:anthropic:tenant:u-bogdan', 5, 5)] } as never)
+    const m = meterOf({ pools: [pool('global', 2, 20), pool('provider:anthropic:tenant:u-owner', 5, 5)] } as never)
     // MUTATION: put `another pool is` back -> fails.
-    expect(m?.warn).toBe('a pool is full: anthropic · u-bogdan')
+    expect(m?.warn).toBe('a pool is full: anthropic · u-owner')
   })
 })
 

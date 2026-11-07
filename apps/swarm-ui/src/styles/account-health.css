@@ -39,7 +39,7 @@
 .ah-fm.is-cred { fill: var(--series-3); }
 .ah-kd { display: inline-flex; align-items: center; gap: 6px; }
 
-/* ---- what a label means, behind the label (BGD's no-prose rule, 5 November 2026) ---- */
+/* ---- what a label means, behind the label (the owner's no-prose rule, 5 November 2026) ---- */
 /* A label whose explanation is its tooltip: focusable, so a keyboard opens it. */
 .ah-tipt { display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; cursor: help; }
 .ah-tipt:focus-visible,

@@ -9,7 +9,7 @@
  * with its why behind it, and, after the table, when the pool goes dark at
  * this pace.
  *
- * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 5 November 2026):
+ * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 5 November 2026):
  * a sentence that explains a label is that label's tooltip (`Info`), a reason
  * for a status is its tick's, and only a must-stay line (lent to you, so
  * another workspace fixes it) is drawn.
@@ -370,7 +370,7 @@ interface Pair {
   proven: boolean
 }
 
-/** The pairs to say, each once. Another workspace's account is never named (BGD, Q2). */
+/** The pairs to say, each once. Another workspace's account is never named (owner, Q2). */
 export function duplicatePairs(accounts: readonly PoolAccount[]): Pair[] {
   const byId = new Map(accounts.map((a) => [a.account_id, a]))
   const out: Pair[] = []
@@ -507,7 +507,7 @@ function Tile({ k, v, small }: { k: string; v: ReactNode; small?: ReactNode }) {
 
 /**
  * WHEN THE POOL GOES DARK, AND WHEN IT COMES BACK: "From today's readings"
- * (BGD). Each subscription's 7-day pace is its used share over the hours since
+ * (owner). Each subscription's 7-day pace is its used share over the hours since
  * its week opened; a withheld duplicate is counted once. No new API field.
  *
  * AN ACCOUNT WITH NO 7-DAY READING IS LEFT OUT AND NAMED, NOT ALLOWED TO BLANK

@@ -388,7 +388,7 @@ export function PatchChanges({
     onFileChange: onFile,
     ...(pullRequest === undefined ? {} : { pullRequest }),
   }
-  // THE OPEN FILE, RENDERED WHEN IT IS A PAGE, AN SVG OR AN IMAGE (BGD,
+  // THE OPEN FILE, RENDERED WHEN IT IS A PAGE, AN SVG OR AN IMAGE (owner,
   // 2026-11-06), as the matrix's file pane draws it; Diff is the viewer below.
   const rendered = file !== null && renderKind(file) !== null
   const sections = rendered ? patchSections(w === null ? data.content : w.patch).sections : null
@@ -1503,7 +1503,7 @@ function FileByStep({
       ))}
     </div>
   )
-  // A PAGE, AN SVG OR AN IMAGE OPENS RENDERED (BGD, 2026-11-06), as the last
+  // A PAGE, AN SVG OR AN IMAGE OPENS RENDERED (owner, 2026-11-06), as the last
   // shown step that changed it left it: its checkpoint, else its patch.
   let source: RenderSource | null = null
   let framesSource: RenderSource | null = null

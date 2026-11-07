@@ -3,7 +3,7 @@
  *
  * One table on a desktop, one card per account on a phone, in the same order
  * and the same groups: Can take now -> Clears at a known time (soonest first)
- * -> Frees when an agent finishes (BGD's "Known clock first"), and, only when
+ * -> Frees when an agent finishes (the owner's "Known clock first"), and, only when
  * one exists, the accounts a person holds. Each row says in words what blocks
  * it, with its floor, and when that clears, and draws both windows against
  * their floors as a tick on the bar.
@@ -447,7 +447,7 @@ function lentOf(a: PoolAccount, scope: string | null): string {
   return a.lend_to.length === 0 ? 'not lent' : a.lend_to.join(', ')
 }
 
-/** Each tenant whole: `u-bogdan` never breaks at its hyphen (V070). */
+/** Each tenant whole: `u-owner` never breaks at its hyphen (V070). */
 function LentCell({ a, scope }: { a: PoolAccount; scope: string | null }) {
   if ((scope !== null && a.owner_tenant !== scope) || a.lend_to.length === 0) return <>{lentOf(a, scope)}</>
   return (
@@ -462,7 +462,7 @@ function LentCell({ a, scope }: { a: PoolAccount; scope: string | null }) {
   )
 }
 
-/** The card's form: `lent to smoke, u-bogdan`, `not lent`, `lent to you by eng`. */
+/** The card's form: `lent to smoke, u-owner`, `not lent`, `lent to you by eng`. */
 function lentPhrase(a: PoolAccount, scope: string | null): string {
   const l = lentOf(a, scope)
   return l === 'not lent' || l.startsWith('lent to you') ? l : `lent to ${l}`

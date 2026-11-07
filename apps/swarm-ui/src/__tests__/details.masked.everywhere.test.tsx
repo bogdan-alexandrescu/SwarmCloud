@@ -40,7 +40,7 @@ const WAIT = { timeout: 5000 }
 
 /** Shaped like values `redaction.RULES` masks. Not real credentials. */
 const META_SECRET = 'correct-horse-battery-staple-8812'
-const LOG_URI = 'gs://swarm-artifacts/tenants/acme/tasks/tsk_charts/attempts/att_1/logs/stdout.log'
+const LOG_URI = 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_charts/attempts/att_1/logs/stdout.log'
 
 function inputCopy(over: Record<string, unknown> = {}) {
   return {

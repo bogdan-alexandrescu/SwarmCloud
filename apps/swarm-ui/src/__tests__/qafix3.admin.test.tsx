@@ -8,7 +8,7 @@
 //   admin-004  In use's figure sat mid-column and Ceiling's were ragged under
 //              their left-aligned heads (a regression of ticked QA-045)
 //   admin-002  the Additional repositories and Model prices cards touched
-//   admin-003  `provider:anthropic:tenant:u-bogdan` wrapped after `tenant:`,
+//   admin-003  `provider:anthropic:tenant:u-owner` wrapped after `tenant:`,
 //              leaving the tenant's own name alone on the next line
 //   admin-007  a locked `edit` was ~2.3:1 in dark: `--text-dim` at 40% opacity
 //   admin-009  at 390 `edit` moved with the figure and the `/hard` slot before it
@@ -155,15 +155,15 @@ describe('admin-002: the admin cards under the ceilings are spaced, not touching
 })
 
 describe('admin-003: a pool id wraps between its kind:name pairs, never after a bare kind', () => {
-  it('keeps `tenant:u-bogdan` whole, with the one break after `provider:anthropic:`', async () => {
+  it('keeps `tenant:u-owner` whole, with the one break after `provider:anthropic:`', async () => {
     viewport(1440)
-    const id = 'provider:anthropic:tenant:u-bogdan'
+    const id = 'provider:anthropic:tenant:u-owner'
     await limits([pool(id), pool('tenant:eng')])
     const sub = document.getElementById(`limit-${id}`)!.querySelector('th .ctl-sub')!
     expect(sub.textContent).toBe(id)
     // MUTATION: put the `<wbr>` back after every colon: the greedy line takes
-    // `provider:anthropic:tenant:` and leaves `u-bogdan` alone under it.
-    expect([...sub.querySelectorAll('.adm-key-seg')].map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-bogdan'])
+    // `provider:anthropic:tenant:` and leaves `u-owner` alone under it.
+    expect([...sub.querySelectorAll('.adm-key-seg')].map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-owner'])
     expect(sub.querySelectorAll('wbr')).toHaveLength(1)
     // A one-pair id offers no break at all.
     const plain = document.getElementById('limit-tenant:eng')!.querySelector('th .ctl-sub')!

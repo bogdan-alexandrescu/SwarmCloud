@@ -8,7 +8,7 @@
  * nothing here is marked done by hand, every row is re-derived on every read.
  *
  * THE ORDER IS Sign-in client -> GitHub App -> first team -> Claude pool
- * accounts -> verify -> Send to your team (BGD, 2026-10-29; plan review-fix
+ * accounts -> verify -> Send to your team (owner, 2026-10-29; plan review-fix
  * finding 1; the sign-in client first, owner's pick 2026-11-01, issue #2964).
  * The P1-B frames drew the accounts before the team; a pool account is filed
  * into the first team's tenant and its owner must be a member there, so the

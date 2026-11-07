@@ -313,7 +313,7 @@ ol.sc-pobj { padding-left: 18px; }
 .sht-none { margin: 0; padding: 10px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .sht-skel { position: absolute; top: 50%; left: 10px; transform: translateY(-50%); }
 /* The list under the lanes is schedules.html's History frame (`.used`,
-   SCHED-HISTORY-CSS, BGD 2026-10-25): 12px under the last lane, the words in
+   SCHED-HISTORY-CSS, owner 2026-10-25): 12px under the last lane, the words in
    one column and the cost right-aligned in its own, so the figures line up
    down the page. It keeps the Audit list's type and rule (`.sc-audit`). A
    cost never recorded is a dash whose reason is its title; the reason stays

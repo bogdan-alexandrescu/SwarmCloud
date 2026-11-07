@@ -51,8 +51,8 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'ab'.repeat(32)
-const REF = 'bogdan-alexandrescu/SwarmCloud#454'
-const URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/454'
+const REF = 'example-org/example-repo#454'
+const URL = 'https://github.com/example-org/example-repo/issues/454'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 const WF = 'wf_9c4be0e52b3a4cbe9f1f'
 const LONG_TITLE =
@@ -63,8 +63,8 @@ const FILE_ID = 'apps/swarm-api/swarm_api/routes/runs.py'
 function run(over: Record<string, unknown> = {}) {
   return {
     id: RUN_ID, tenant_id: 'eng', state: 'PLANNED', terminal: false,
-    issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454, url: URL,
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud' },
+    issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 454, url: URL,
+      repository_url: 'https://github.com/example-org/example-repo' },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_7f3e2c9a1b8d4e6f0a5c',
     plan: {
       summary: 'Wire the write-back so `Closes #454` lands in the PR body. Keep `apps/swarm-api` untouched.',
@@ -144,7 +144,7 @@ describe('R1/A: the side cards stack each label above its value', () => {
 
   for (const env of [WIDE, PHONE]) {
     it(`keeps every value inside its card at ${env.width}px`, async () => {
-      const { container } = await mount(run({ workflow_id: WF, state: 'RUNNING', pull_request: { number: 545, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/545' } }))
+      const { container } = await mount(run({ workflow_id: WF, state: 'RUNNING', pull_request: { number: 545, url: 'https://github.com/example-org/example-repo/pull/545' } }))
       const cards = [...container.querySelectorAll('.rn-side > .rn-card')]
       expect(cards.length).toBe(3)
       let seen = 0
@@ -195,15 +195,15 @@ describe('R1/A: the side cards stack each label above its value', () => {
   })
 
   it('makes the pull request a link', async () => {
-    const { container } = await mount(run({ state: 'CHECKING', workflow_id: WF, pull_request: { number: 545, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/545' } }))
+    const { container } = await mount(run({ state: 'CHECKING', workflow_id: WF, pull_request: { number: 545, url: 'https://github.com/example-org/example-repo/pull/545' } }))
     const linked = within(container).getByRole('region', { name: 'Linked' })
     const pr = [...linked.querySelectorAll('.ctl-fact')].find((f) => visible(f.querySelector('b')) === 'Pull request')!
-    expect(pr.querySelector('a')?.getAttribute('href')).toBe('https://github.com/bogdan-alexandrescu/SwarmCloud/pull/545')
+    expect(pr.querySelector('a')?.getAttribute('href')).toBe('https://github.com/example-org/example-repo/pull/545')
   })
 
   it('breaks a reference only at `/`, `#`, `_`, `::` or a space', () => {
     const pieces = (s: string) => breakAt(s).map((p) => (typeof p === 'string' ? p : '|')).join('')
-    expect(pieces(REF)).toBe('bogdan-alexandrescu/|SwarmCloud#|454')
+    expect(pieces(REF)).toBe('example-org/|SwarmCloud#|454')
     expect(pieces('a::b_c')).toBe('a::|b_|c')
     expect(pieces('plain')).toBe('plain')
   })
@@ -324,8 +324,8 @@ describe('D: a PLANNED run\'s actions are at the top and at the foot of the plan
 })
 
 describe('E: the overlaps card follows how many need action', () => {
-  const NO = (n: number) => ({ ref: `bogdan-alexandrescu/SwarmCloud#${500 + n}`, kind: 'issue', note: `No action: touches a different file (${n}).` })
-  const NEEDS = { ref: 'bogdan-alexandrescu/SwarmCloud#540', kind: 'pull_request', note: 'Edits the same route; rebase onto it before step impl.' }
+  const NO = (n: number) => ({ ref: `example-org/example-repo#${500 + n}`, kind: 'issue', note: `No action: touches a different file (${n}).` })
+  const NEEDS = { ref: 'example-org/example-repo#540', kind: 'pull_request', note: 'Edits the same route; rebase onto it before step impl.' }
 
   it('is neutral when every overlap is no action, with the count in its heading', async () => {
     const overlaps = [1, 2, 3, 4, 5].map(NO)

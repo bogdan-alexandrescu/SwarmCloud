@@ -143,7 +143,7 @@ describe('a plan’s decision page (automate-06, automate-07, automate-08)', () 
     expect(li).toHaveLength(2)
     expect(visible(li[0]!)).toContain('Split the parser')
     expect(steps.tagName).toBe('OL')
-    // The plan as a brief (BGD, 6 November 2026): each step's prompt is its raw brief, folded under the page.
+    // The plan as a brief (owner, 6 November 2026): each step's prompt is its raw brief, folded under the page.
     const raw = within(d).getByTestId('ab-rawbriefs')
     expect(raw.tagName).toBe('DETAILS')
     expect(raw.textContent).toContain('Move the tokenizer out of parse.py.')
@@ -176,7 +176,7 @@ describe('a plan’s decision page (automate-06, automate-07, automate-08)', () 
     await mount('approval=apr_plan', routes(INBOX, detail()))
     const d = await page()
     await waitFor(() => expect(visible(d.querySelector('.ad-sent'))).toBe('Start the run on this plan?'), WAIT)
-    // What Approve does rides behind the decision's (i), not as a card of prose (BGD, 5 November 2026).
+    // What Approve does rides behind the decision's (i), not as a card of prose (owner, 5 November 2026).
     const tip = within(d).getByRole('button', { name: 'About the decision' })
     expect(document.getElementById(tip.getAttribute('aria-describedby')!)!.textContent).toContain('Approving starts the run on this plan.')
   })

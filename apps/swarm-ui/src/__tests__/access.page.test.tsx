@@ -200,7 +200,7 @@ describe('the page states what SwarmCloud may do as you', () => {
     // Config › GitHub access since CONFIG-NAV (part of #2157).
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
     const d9 = visible(document.querySelector('[data-rule="D9"]'))
-    // That SwarmCloud enforces it is the card's (i) since BGD's no-prose rule (2026-11-05).
+    // That SwarmCloud enforces it is the card's (i) since the owner's no-prose rule (2026-11-05).
     expect(visible(document.querySelector('.ac-policy [role="tooltip"]'))).toContain('SwarmCloud enforces it')
     expect(d9).toContain('held by SwarmCloud, not by GitHub')
     expect(d9).toContain('GitHub itself would let the push through')

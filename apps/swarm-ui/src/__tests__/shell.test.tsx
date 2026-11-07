@@ -1894,7 +1894,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(td, 'display', WIDE), 'with no container in play, a 1440 page keeps its tables').not.toBe('grid')
 
     // The prefix line: a path has no spaces, so it breaks anywhere or overflows.
-    const p = fragment('<div class="drawer"><p class="muted small">Prefix <code class="mono">gs://bucket/t/tsk_0123/checkpoints/</code></p></div>')
+    const p = fragment('<div class="drawer"><p class="muted small">Prefix <code class="mono">gs://swarm-artifacts-example-project/t/tsk_0123/checkpoints/</code></p></div>')
     expect(won(pick(p, 'code'), 'overflow-wrap', WIDE)).toBe('anywhere')
   })
 
@@ -2216,7 +2216,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '<div class="table-wrap is-stacked"><table class="pools"><tbody><tr>' +
         '<td data-label="Scope"><span class="scope tenant">this tenant</span></td>' +
         '<td data-label="Status"><span class="tag full">none registered</span></td>' +
-        '<td data-label="Identity" class="mono">swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com</td>' +
+        '<td data-label="Identity" class="mono">swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com</td>' +
         '</tr></tbody></table></div>',
     )
     // MUTATION: take `.tag` or `.scope` out of the justify-self list.

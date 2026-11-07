@@ -274,7 +274,7 @@ export const BACKEND_POOL_WORD: Readonly<Record<string, string>> = {
   GKE_AUTOPILOT: 'GKE Autopilot',
 }
 
-/** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
+/** `provider:anthropic:tenant:u-owner` -> `anthropic · u-owner`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
   // The raw key stays in each table's mono sub-line.
@@ -609,7 +609,7 @@ export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
  * the capacity board, where every other row is `Workspaces`, `Backends` or
  * `Providers`.
  *
- * `tenant` IS TITLED `Workspaces` (BGD, 2026-10-26, TENANT-WORDING-C's
+ * `tenant` IS TITLED `Workspaces` (owner, 2026-10-26, TENANT-WORDING-C's
  * question 0): the console calls a tenant a workspace everywhere a reader
  * meets it, so the family reads `Workspaces` and its tables `Workspaces
  * ceilings`. Only the title moved: the `tenant:` pool key, the PoolKind and
@@ -3277,7 +3277,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
  * That is why the field is surfaced verbatim rather than collapsed to "busy".
  *
  * The keys keep the contract's enum names (`TENANT_LIMIT`); the sentences say
- * "workspace", the console's word for a tenant (BGD, 2026-10-26, VQ-056).
+ * "workspace", the console's word for a tenant (owner, 2026-10-26, VQ-056).
  */
 export const REASON_COPY: Readonly<Record<string, string>> = {
   GLOBAL_CONCURRENCY_LIMIT: 'The platform is at its overall limit. Waiting is the answer.',
@@ -4519,7 +4519,7 @@ export function ageSpan(ms: number): string {
  * missing or unparseable value: the caller says what the absence means
  * ("never started"), this never invents a time.
  *
- * THE ZONE, NOT THE BROWSER'S CLOCK (VQ-023; BGD, 2026-10-26, lane
+ * THE ZONE, NOT THE BROWSER'S CLOCK (VQ-023; owner, 2026-10-26, lane
  * TZ-CLOCKTIME, part of #2391). This read `getHours()` until then: the
  * browser's zone, unlabelled, beside an Overview and a Timeline that say UTC
  * or the person's zone, so one instant read as two times a page apart.

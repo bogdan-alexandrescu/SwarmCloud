@@ -35,7 +35,7 @@ import './styles/onboarding.css'
  * plugin's `/sc:setup` prints the same sentence), and its button is the next
  * action: Connect GitHub, Enable orgs and Choose repositories link to
  * Config › GitHub access, where the App is connected and OB4's routes act
- * (BGD, #2157: GitHub access is connect and disconnect), and Verify access to
+ * (owner, #2157: GitHub access is connect and disconnect), and Verify access to
  * Config › Repositories, which holds Verify (visual QA config-10). Connect
  * GitHub started the authorisation in place until WS-SETTINGS-PAGE; one page
  * does it now, so the two cannot drift. Re-check is a fresh read, which is a

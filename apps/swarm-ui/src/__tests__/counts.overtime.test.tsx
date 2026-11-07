@@ -1,4 +1,4 @@
-// ADMIN › PLATFORM COUNTS, OVER TIME (COUNTS-TIME-VIEW, #2149). BGD's
+// ADMIN › PLATFORM COUNTS, OVER TIME (COUNTS-TIME-VIEW, #2149). the owner's
 // decisions, 2026-10-23: the unit is agents counted on the day they were
 // SUBMITTED, with their retries a second figure in the same bucket; the
 // breakdowns are agent type, model, workspace and pool account; cost is
@@ -276,7 +276,7 @@ describe('Platform counts over time: the table', () => {
     expect(cost('claude-code')).toContain('4 estimated from a stopped run ($3.10)')
   })
 
-  it('labels cost with exactly BGD’s words', async () => {
+  it('labels cost with exactly owner’s words', async () => {
     loadPlatformTime.mockResolvedValue(WEEKS)
     render(<PlatformOverTime workspaces={3} />)
     await run()

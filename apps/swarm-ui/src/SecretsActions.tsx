@@ -20,8 +20,8 @@ import './styles/secrets-actions.css'
 
 /**
  * CONFIG › SECRETS › REPOSITORY › GITHUB ACTIONS (lane SSC-UI-ACTIONS, part of
- * #2158; docs/design/secrets-scopes.md §3 and §6.1, changed by BGD's answers in
- * §11; drawn as config-e.html S4b2, S4f and S4c's Actions branch, BGD's pick of
+ * #2158; docs/design/secrets-scopes.md §3 and §6.1, changed by the owner's answers in
+ * §11; drawn as config-e.html S4b2, S4f and S4c's Actions branch, the owner's pick of
  * 2026-10-24). The repository scope's second destination: what SwarmCloud
  * writes into the repository's own GitHub Actions, read live from GitHub over
  * SSC-ACTIONS-API's routes. The scope picker, the repository picker and the

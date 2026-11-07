@@ -1,7 +1,7 @@
 // THE COMMIT THE PROSE RATCHET COMPARES WITH, and a copy of the console as it
 // was there (proseapp.tsx renders both and fails a page whose words went up).
 //
-// WHY A BASE AND NOT A TABLE (BGD's pick, 2026-11-06, part of #2688). The
+// WHY A BASE AND NOT A TABLE (the owner's pick, 2026-11-06, part of #2688). The
 // ratchet used to hold each page to a ceiling in a JSON table that lanes
 // edited. Two green changes could then fail together: one lowered a ceiling,
 // the other added words that the old ceiling allowed. A check of a change

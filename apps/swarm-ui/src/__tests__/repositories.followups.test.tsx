@@ -1,5 +1,5 @@
 // CONFIG › REPOSITORIES, THE FOLLOW-UPS (REPOS-FOLLOWUPS; part of #2157).
-// BGD answered REPOS-PAGE's four questions on 2026-10-25 (recorded on
+// The owner answered REPOS-PAGE's four questions on 2026-10-25 (recorded on
 // task_cd6e6330782746178574), and config-e.html S3a-S3c is the frame:
 //
 //   1. Remove on each registered card, behind a typed owner/name, saying

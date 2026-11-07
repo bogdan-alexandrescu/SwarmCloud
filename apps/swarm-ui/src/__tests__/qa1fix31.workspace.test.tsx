@@ -1,5 +1,5 @@
 /**
- * VISUAL QA PASS 1, LANE QA1-FIX-31 (part of #2596 and #2391; BGD 2026-10-28).
+ * VISUAL QA PASS 1, LANE QA1-FIX-31 (part of #2596 and #2391; owner 2026-10-28).
  *
  *   * admin-shell-23: a role refusal said in place of an Admin page
  *     (`AdminRoleRefusal`), naming the page, the role and the workspace, with
@@ -31,11 +31,11 @@ afterEach(() => {
 describe('admin-shell-23: an Admin page refused by role', () => {
   it('names the page, the role and the workspace, and links to Overview', async () => {
     const { AdminRoleRefusal } = await import('../WorkspaceRefusal')
-    const { container } = render(<AdminRoleRefusal page="Pool limits" role="member" workspace="Bogdan" />)
+    const { container } = render(<AdminRoleRefusal page="Pool limits" role="member" workspace="Alex" />)
     // MUTATION: drop AdminRoleRefusal (or its title) and this is not found.
     expect(screen.getByText('Pool limits is for platform admins')).toBeTruthy()
     // MUTATION: say the role without its article ("You are member") and this fails.
-    expect(visible(container)).toContain('You are a member of Bogdan.')
+    expect(visible(container)).toContain('You are a member of Alex.')
     const link = screen.getByRole('link', { name: 'Open Overview' })
     // MUTATION: point the link anywhere but Overview and this fails.
     expect(link.getAttribute('href')).toBe('/overview')

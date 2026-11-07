@@ -211,7 +211,7 @@ describe('a retry waiting for its worker (DISPATCHED, started_at left by an earl
 // still null. For those, "nothing has run" is true, and the guard below holds
 // it there.
 const CHECKPOINT =
-  'gs://swarm-artifacts/tenants/eng/tasks/task_2a417cb24edb4d2cb59e/attempts/att_9b1d/checkpoints/ckpt-17'
+  'gs://swarm-artifacts-example-project/tenants/eng/tasks/task_2a417cb24edb4d2cb59e/attempts/att_9b1d/checkpoints/ckpt-17'
 
 /** The stop dialog's long form: the accessible name of the facts strip. */
 function longForm(dialog: HTMLElement): string {

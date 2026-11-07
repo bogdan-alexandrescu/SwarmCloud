@@ -1,7 +1,7 @@
 /**
  * LANE BROWSER-USE-UI (part of #2322). BROWSER-USE-FLAG records, on every
  * task, whether a browser runtime used its browser (`browser_used`, true,
- * false or null, and `browser_use`, its counts); BGD decided on 2026-10-25
+ * false or null, and `browser_use`, its counts); owner decided on 2026-10-25
  * that the Agents page draws it:
  *
  *   * a task on a browser runtime shows "browser used" (its call and image

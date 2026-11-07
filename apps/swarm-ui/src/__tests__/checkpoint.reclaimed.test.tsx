@@ -49,7 +49,7 @@ vi.mock('../api', async (importOriginal) => {
 const { RunFiles } = await import('../RunFiles')
 
 const PREFIX = 'tenants/eng/tasks/tsk_charts/attempts/'
-const POINTER = `gs://swarm-artifacts/${PREFIX}att_1/checkpoints/ckpt-00001/`
+const POINTER = `gs://swarm-artifacts-example-project/${PREFIX}att_1/checkpoints/ckpt-00001/`
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' }
@@ -274,7 +274,7 @@ function record(attemptId: string, checkpointId: string): CheckpointRecord {
     attempt_created_at: null,
     attempt_completed_at: null,
     prefix: `${PREFIX}${attemptId}/checkpoints/${checkpointId}/`,
-    uri: `gs://swarm-artifacts/${PREFIX}${attemptId}/checkpoints/${checkpointId}/`,
+    uri: `gs://swarm-artifacts-example-project/${PREFIX}${attemptId}/checkpoints/${checkpointId}/`,
     is_latest_pointer: false,
     objects: [],
     stored_bytes: 0,

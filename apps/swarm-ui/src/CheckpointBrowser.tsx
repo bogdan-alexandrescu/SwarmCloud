@@ -988,7 +988,7 @@ async function fixtureFiles(
 ): Promise<Result<CheckpointFiles>> {
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }), 60, true)
-  const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
+  const prefix = `tenants/u-owner/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
   // ONE AGE FOR ONE ARCHIVE (QA1-FIX-09, overview-agents-47): the archive was
   // stamped `now - 4m` while the checkpoint listing dated the same checkpoint
@@ -1016,13 +1016,13 @@ async function fixtureFiles(
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: attemptId,
       checkpoint_id: checkpointId,
       prefix,
       archive: {
         key: `${prefix}/archive.tar.gz`,
-        uri: `gs://swarm-artifacts/${prefix}/archive.tar.gz`,
+        uri: `gs://swarm-artifacts-example-project/${prefix}/archive.tar.gz`,
         bytes: absent ? null : 18_442_240,
         object_updated_at: absent ? null : writtenAt,
       },
@@ -1064,7 +1064,7 @@ async function fixtureFile(
     30,
     true,
   )
-  const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
+  const prefix = `tenants/u-owner/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const bodies: Record<string, string> = {
     'progress/step-0001.md': '# Step one\n\nRead the repository and listed the modules.\n',
     'progress/step-0002.md': '',
@@ -1073,13 +1073,13 @@ async function fixtureFile(
   const binary = filePath.endsWith('.png')
   const content = binary ? null : (bodies[filePath] ?? `fixture checkpoint file ${filePath}\n`)
   const bytes = content === null ? 48_211 : new TextEncoder().encode(content).length
-  const uri = `gs://swarm-artifacts/${prefix}/archive.tar.gz`
+  const uri = `gs://swarm-artifacts-example-project/${prefix}/archive.tar.gz`
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: attemptId,
       checkpoint_id: checkpointId,
       path: filePath,

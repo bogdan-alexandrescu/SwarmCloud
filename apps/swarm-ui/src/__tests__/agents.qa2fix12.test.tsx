@@ -99,7 +99,7 @@ describe('QA2-FIX-12: the Agents list', () => {
   })
 
   it('overview-agents-56: a ready row with only `waiting_for` names its pool, the raw key in its title', async () => {
-    const lead = { pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }
+    const lead = { pool: 'provider:anthropic:tenant:u-owner', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }
     const bare = row(4, 'READY', {
       waiting_for: { as_of: '2026-10-29T11:00:00Z', admissible_now: false, holds_capacity: false, lead, pools: [lead], complete: true },
     } as Partial<Task>)
@@ -109,9 +109,9 @@ describe('QA2-FIX-12: the Agents list', () => {
     expect(idsIn(screen.getByRole('heading', { name: /^No room/ }))).toEqual([bare.id])
     const why = rowOf(bare)!.querySelector('.why')!
     // MUTATION: drop the READY `waitingLine` branch in `rowReason` and the
-    // line reads `waiting for: provider:anthropic:tenant:u-bogdan 5/5 units`.
-    expect(flat(why)).toBe('waiting for: anthropic · u-bogdan 5/5 units')
-    expect(why.getAttribute('title') ?? '').toContain('provider:anthropic:tenant:u-bogdan')
+    // line reads `waiting for: provider:anthropic:tenant:u-owner 5/5 units`.
+    expect(flat(why)).toBe('waiting for: anthropic · u-owner 5/5 units')
+    expect(why.getAttribute('title') ?? '').toContain('provider:anthropic:tenant:u-owner')
   })
 
   it('overview-agents-56: poolWords names the capacity line’s pool and leaves every other line alone', () => {

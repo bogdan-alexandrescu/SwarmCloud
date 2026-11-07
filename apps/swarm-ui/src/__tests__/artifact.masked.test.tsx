@@ -38,7 +38,7 @@ vi.mock('../api', async (importOriginal) => {
 
 import { ArtifactViewer } from '../ArtifactViewer'
 
-const REF: ArtifactRef = { name: 'transcript.json', bytes: 2048, uri: 'gs://acme/art/transcript.json' }
+const REF: ArtifactRef = { name: 'transcript.json', bytes: 2048, uri: 'gs://swarm-artifacts-example-project/art/transcript.json' }
 
 function artifact(over: Partial<ArtifactContent>): ArtifactContent {
   return {

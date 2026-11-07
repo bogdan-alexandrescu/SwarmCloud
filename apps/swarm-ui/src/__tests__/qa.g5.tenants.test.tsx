@@ -73,12 +73,12 @@ function pool(name: string, effective: number | null, hard: number | null = effe
 const ROSTER: Tenant[] = [
   tenant({}),
   tenant({
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     kind: 'user',
     principal: 'alice@example.com',
     max_active: 4,
     capacity_units: 8,
-    service_account: `swarm-agent-worker-u-bogdan@${DOMAIN}`,
+    service_account: `swarm-agent-worker-u-owner@${DOMAIN}`,
   }),
   tenant({ tenant_id: 'smoke', max_active: 10, capacity_units: 4, service_account: null }),
 ]
@@ -94,7 +94,7 @@ function capacity(pools: Pool[]): Result<Capacity> {
 
 async function roster(): Promise<HTMLElement> {
   const { container } = render(<TenantsScreen />)
-  await screen.findByText('u-bogdan', undefined, WAIT)
+  await screen.findByText('u-owner', undefined, WAIT)
   return container
 }
 
@@ -119,8 +119,8 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
   it('keeps the tenant suffix of a service account whole and cuts the shared prefix and the domain', async () => {
     serve(capacity([]))
     const c = await roster()
-    const ident = row(c, 'u-bogdan').querySelector('td[data-label="Identity"] .ten-ident')!
-    const full = `swarm-agent-worker-u-bogdan@${DOMAIN}`
+    const ident = row(c, 'u-owner').querySelector('td[data-label="Identity"] .ten-ident')!
+    const full = `swarm-agent-worker-u-owner@${DOMAIN}`
     // The whole value is still the element's text and its title: a selection
     // copies all of it, and a hover shows all of it.
     expect(ident.textContent).toBe(full)
@@ -129,7 +129,7 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     const key = ident.querySelector('.ten-ident-key')
     const tail = ident.querySelector('.ten-ident-tail')
     expect(head?.textContent).toBe('swarm-agent-worker-')
-    expect(key?.textContent).toBe('u-bogdan@')
+    expect(key?.textContent).toBe('u-owner@')
     expect(tail?.textContent).toBe(DOMAIN)
     // MUTATION: let the key shrink with the others, or cut the whole value at
     // its end again. The key gives way LAST (VQA V026), and then with an
@@ -159,7 +159,7 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
   it('keeps a principal’s local part whole and cuts only its domain', async () => {
     serve(capacity([]))
     const c = await roster()
-    const ident = row(c, 'u-bogdan').querySelector('td[data-label="Principal"] .ten-ident')!
+    const ident = row(c, 'u-owner').querySelector('td[data-label="Principal"] .ten-ident')!
     expect(ident.textContent).toBe('alice@example.com')
     expect(ident.querySelector('.ten-ident-head')).toBeNull()
     expect(ident.querySelector('.ten-ident-key')?.textContent).toBe('alice@')
@@ -171,12 +171,12 @@ describe('G5-13: Enforced is the tenant pool’s effective limit, as /v1/capacit
   it('prints the served figure, not the smaller of the two configured values', async () => {
     // The served figures differ from min(max_active, units) on purpose: the
     // screen must print what the pool says, whatever the registry says.
-    serve(capacity([pool('tenant:eng', 30, 40), pool('tenant:u-bogdan', 8), pool('global', 100)]))
+    serve(capacity([pool('tenant:eng', 30, 40), pool('tenant:u-owner', 8), pool('global', 100)]))
     const c = await roster()
     const enforced = (id: string) => row(c, id).querySelector('td[data-label="Enforced"]')!
     // MUTATION: put `Math.min(t.max_active, t.capacity_units)` back: eng reads 40.
     await waitFor(() => expect(enforced('eng').textContent).toBe('30'), WAIT)
-    expect(enforced('u-bogdan').textContent).toBe('8')
+    expect(enforced('u-owner').textContent).toBe('8')
     expect(api.loadCapacity).toHaveBeenCalledTimes(1)
     // The registry values are the explanation, on the figure.
     const link = enforced('eng').querySelector('a')!
@@ -192,9 +192,9 @@ describe('G5-13: Enforced is the tenant pool’s effective limit, as /v1/capacit
     )
     const unset = row(c, 'eng').querySelector('td[data-label="Enforced"] .ctl-em')!
     expect(unset.textContent).toBe('—')
-    const absent = row(c, 'u-bogdan').querySelector('td[data-label="Enforced"] .ctl-em')!
+    const absent = row(c, 'u-owner').querySelector('td[data-label="Enforced"] .ctl-em')!
     expect(absent.textContent).toBe('—')
-    expect(absent.getAttribute('title')).toBe('no tenant:u-bogdan pool in /v1/capacity')
+    expect(absent.getAttribute('title')).toBe('no tenant:u-owner pool in /v1/capacity')
   })
 
   it('keeps the roster when /v1/capacity fails, and says the figure was not read', async () => {

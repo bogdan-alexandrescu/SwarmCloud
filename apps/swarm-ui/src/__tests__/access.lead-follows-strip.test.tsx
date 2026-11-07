@@ -197,7 +197,7 @@ describe('the Connection tab is S2b’s two columns', () => {
     expect(painted(body!, 'grid-template-columns', { width: 1440 })).toBe('minmax(0, 2fr) minmax(0, 1fr)')
     expect(painted(body!, 'grid-template-columns', { width: 390 })).toBe('minmax(0, 1fr)')
     // The rules are a checklist of three headlines (S2b); their short lines are
-    // the (i) beside the card's title (BGD's no-prose rule, 2026-11-05).
+    // the (i) beside the card's title (the owner's no-prose rule, 2026-11-05).
     const rules = [...side!.querySelectorAll<HTMLElement>('[data-rule]')]
     expect(rules.map((r) => r.querySelector('.ac-rule-t > b')?.textContent)).toEqual([
       'Read means read.',

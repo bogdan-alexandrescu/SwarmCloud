@@ -22,7 +22,7 @@ const WF = 'wf_c6o1b2c3d4e5f6071829'
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
 function issueRunDoc() {
-  const owner = 'bogdan-alexandrescu'
+  const owner = 'example-org'
   return {
     id: RUN_ID, tenant_id: 'eng', state: 'FAILED', terminal: true,
     issue: { ref: `${owner}/SwarmCloud#72`, owner, repo: 'SwarmCloud', number: 72, url: `https://github.com/${owner}/SwarmCloud/issues/72`,

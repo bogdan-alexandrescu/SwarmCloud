@@ -1,5 +1,5 @@
 /**
- * CONFIG › WORKSPACE SETTINGS › VISUAL QA: WRITING FLOWS (part of #2688; BGD, 2026-11-05, "declared writes plus a
+ * CONFIG › WORKSPACE SETTINGS › VISUAL QA: WRITING FLOWS (part of #2688; owner, 2026-11-05, "declared writes plus a
  * switch, on by default").
  *
  *   * The Visual QA card draws the workspace's `writing_flows` as one toggle, on by default, its reason in the (i)'s

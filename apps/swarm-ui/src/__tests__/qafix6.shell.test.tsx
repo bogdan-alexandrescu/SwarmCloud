@@ -10,7 +10,7 @@
  *   b  6343768697  The 'partial' and 'none' marks drew a dashed bracket off
  *      the right side and a doubled left edge: one even 1px border now.
  *   c  6343761666, 6:admin-007, 6343790327  The admin phone header cut the
- *      workspace to 'Bo…', and named it 'Bogdan' where the desktop switcher
+ *      workspace to 'Al…', and named it 'Alex' where the desktop switcher
  *      says 'Your workspace'.
  *   d  6343760052  An unticked checkbox or radio in dark is a 3:1 ring.
  *   e  6298219747  HelpCard's '?' takes the app's 2px focus ring.
@@ -141,7 +141,7 @@ describe('c: the admin phone header names the workspace as the desktop does, and
   }
 
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
-  const OWN = { tenant_id: 'u-bogdan', display_name: 'Your workspace (u-bogdan)', kind: 'user' as const }
+  const OWN = { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user' as const }
   const ENG = { tenant_id: 'eng', display_name: 'eng@example.com', kind: 'group' as const }
 
   it('draws the desktop switcher’s own label in the phone pill', async () => {
@@ -154,9 +154,9 @@ describe('c: the admin phone header names the workspace as the desktop does, and
         const id = chosen ?? OWN.tenant_id
         return json({
           // The tenant document's name for a personal workspace is the
-          // person's (fixtureMe's 'Bogdan'): the shell never prints it for one.
-          tenant: { tenant_id: id, display_name: id === OWN.tenant_id ? 'Bogdan' : 'Engineering' },
-          principal: { email: 'bogdan@example.com', domain: 'example.com', groups: [], is_admin: true },
+          // person's (fixtureMe's 'Alex'): the shell never prints it for one.
+          tenant: { tenant_id: id, display_name: id === OWN.tenant_id ? 'Alex' : 'Engineering' },
+          principal: { email: 'owner@example.com', domain: 'example.com', groups: [], is_admin: true },
           environment: 'dev',
           environment_declared: true,
         })
@@ -177,7 +177,7 @@ describe('c: the admin phone header names the workspace as the desktop does, and
       return c!
     }, WAIT)
     // MUTATION: name the pill from `who.tenant.display_name` again and it says
-    // 'Bogdan' where the desktop switcher says 'Your workspace'.
+    // 'Alex' where the desktop switcher says 'Your workspace'.
     await waitFor(() => expect(chip.querySelector('.sk-tcn')?.textContent).toBe(OWN_WORKSPACE_LABEL), WAIT)
     // The header that holds the chip is marked, so the title can give way first.
     expect(chip.parentElement?.classList.contains('has-chip')).toBe(true)
