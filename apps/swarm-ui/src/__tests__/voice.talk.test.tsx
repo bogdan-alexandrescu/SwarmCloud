@@ -45,12 +45,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
-const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn() }))
+const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn(), loadVoiceVisuals: null as null | ReturnType<typeof vi.fn> }))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
+  // The stage's list read, passed through to api.ts: a test reads which project it asked for.
+  apiMock.loadVoiceVisuals = vi.fn(actual.loadVoiceVisuals)
   return {
     ...actual,
+    loadVoiceVisuals: apiMock.loadVoiceVisuals,
     get USE_FIXTURES() {
       return apiMock.fixtures
     },
@@ -76,6 +79,7 @@ import { CardList, FIXTURE_CARDS, applyStreamEvent, EMPTY_LIST, type VoiceCard }
 import { CARD_KINDS } from '../voice/cards'
 import { TalkPane } from '../voice/Talk'
 import { applyCaption, captionEvent, type CaptionLine } from '../voice/captions'
+import { connectTalk } from '../voice/rtc'
 
 const SESSION = 'vs-0001'
 
@@ -215,6 +219,23 @@ describe('the Talk pane', () => {
     await settle(act)
     await start()
     expect(starts()[1]?.[2]).toEqual({ offer_sdp: 'v=0 fake-offer' })
+  })
+
+  it("keeps a new session's project_id on the call, and the stage reads that project's visuals", async () => {
+    const project = 'vp_' + '9'.repeat(32)
+    fetchMock.write.mockImplementation(async (target: { url: string }) =>
+      target.url === '/v1/voice/sessions'
+        ? { status: 'ok', data: { project_id: project, session_id: SESSION, answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+        : { status: 'ok', data: null, fetchedAt: Date.now() },
+    )
+    const call = await connectTalk({ onEvent: () => undefined, onVoice: () => undefined, onDropped: () => undefined })
+    expect(call.projectId).toBe(project)
+    call.hangUp()
+
+    apiMock.loadVoiceVisuals?.mockClear()
+    render(<TalkPane />)
+    await start()
+    expect(apiMock.loadVoiceVisuals?.mock.calls.map(([p]) => p)).toContain(project)
   })
 
   it('keeps the resumed project for the next try when the first start is refused', async () => {
