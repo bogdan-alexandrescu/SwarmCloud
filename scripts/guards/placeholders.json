@@ -1,0 +1,83 @@
+{
+  "_about": "The one placeholder set for tests and docs (docs/design/generic-repository.md section 3.1). scripts/guards/deployment_values.py allowlists exactly these values; tests/placeholders.py reads this file. `allowlist` holds what the shape rules let through that is not a placeholder: reserved names and public product hosts.",
+  "projects": {
+    "deployment": "example-project",
+    "shared": "example-shared-project"
+  },
+  "project_numbers": {
+    "deployment": "123456789012",
+    "shared": "210987654321"
+  },
+  "region": "us-central1",
+  "zone": "us-central1-a",
+  "domains": {
+    "org": "example.com",
+    "outside": "example.org"
+  },
+  "hosts": {
+    "console": "swarm.example.com",
+    "api": "api.swarm.example.com"
+  },
+  "people": {
+    "owner": "owner@example.com",
+    "admin": "admin@example.com",
+    "member": "member@example.com",
+    "outsider": "outsider@example.org"
+  },
+  "groups": {
+    "admins": "swarm-admins@example.com",
+    "team": "team-a@example.com"
+  },
+  "service_accounts": {
+    "swarm-api": "swarm-api@example-project.iam.gserviceaccount.com"
+  },
+  "tenants": ["example-tenant", "team-a"],
+  "buckets": ["swarm-tfstate-example-project", "swarm-artifacts-example-project"],
+  "secrets": {
+    "tenant_git": "swarm-tenant-example-tenant-git"
+  },
+  "oauth_client_id": "123456789012-example.apps.googleusercontent.com",
+  "github": {
+    "owner": "example-org",
+    "repository": "example-org/example-repo",
+    "app_id": "123456",
+    "installation_id": "12345678",
+    "repository_id": "100000001"
+  },
+  "shared_project_resources": {
+    "cluster": "peer-cluster",
+    "network": "peer-vpc",
+    "subnet": "peer-subnet",
+    "bucket": "peer-bucket",
+    "service_account": "peer-runner@example-shared-project.iam.gserviceaccount.com"
+  },
+  "product": "a peer application",
+  "tailnet": "example-tailnet.ts.net",
+  "installer_cidr": "203.0.113.7/32",
+  "allowlist": {
+    "domains": ["example.com", "example.org", "example.net"],
+    "reserved_tlds": ["test", "invalid", "localhost", "example", "internal", "local"],
+    "email_domains": ["users.noreply.github.com", "github.com"],
+    "public_addresses": ["noreply@anthropic.com"],
+    "public_projects": ["deeplearning-platform-release", "cos-cloud", "debian-cloud", "ubuntu-os-cloud", "gke-node-images"],
+    "public_hosts": [
+      "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "googlesource.com",
+      "withgoogle.com", "cloud.goog", "pkg.dev", "gcr.io", "goo.gl", "g.co",
+      "github.com", "githubusercontent.com", "github.io", "githubassets.com", "ghcr.io", "github.blog",
+      "pypi.org", "pythonhosted.org", "python.org", "readthedocs.io", "astral.sh",
+      "npmjs.org", "npmjs.com", "nodejs.org", "yarnpkg.com", "jsdelivr.net", "unpkg.com",
+      "docker.com", "docker.io", "k8s.io", "kubernetes.io", "sigs.k8s.io", "helm.sh",
+      "hashicorp.com", "terraform.io", "releases.hashicorp.com",
+      "anthropic.com", "claude.ai", "claude.com", "openai.com", "modelcontextprotocol.io",
+      "tailscale.com", "go.dev", "golang.org", "rust-lang.org", "crates.io",
+      "mozilla.org", "w3.org", "whatwg.org", "ietf.org", "rfc-editor.org", "schema.org",
+      "json-schema.org", "spdx.org", "semver.org", "opensource.org", "sigstore.dev",
+      "letsencrypt.org", "debian.org", "ubuntu.com", "alpinelinux.org", "microsoft.com",
+      "apple.com", "wikipedia.org", "shellcheck.net", "kernel.org", "gnu.org", "cncf.io",
+      "opentelemetry.io", "playwright.dev", "vitest.dev", "vitejs.dev", "nextjs.org",
+      "reactjs.org", "react.dev", "typescriptlang.org", "pydantic.dev", "fastapi.tiangolo.com",
+      "pytest.org", "mypy-lang.org", "checkov.io", "aquasec.com", "trivy.dev", "chromium.org",
+      "gitlab.com", "bitbucket.org", "httpbin.org", "opencollective.com"
+    ]
+  }
+}

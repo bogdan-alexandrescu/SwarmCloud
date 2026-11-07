@@ -22,7 +22,7 @@ runs, in order:
 | `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `internal_decision_api_enabled` (swarm-api's INTERNAL_DECISION_API_URL), `tailscale_egress_target` (asked; no default); the `deployment/decision-api-egress` workload, whose `decision-api-egress-ingress` is judged against swarm-api's live egress range (`network_parity.check_jev_egress_ingress`) |
 | `typesafe` | `swarm-typesafe-fwd-key` (generated) | `enable_typesafe_forwarder_read` (bootstrap), `enable_typesafe_forwarder`, `typesafe_forwarder.serve`, `.enabled` and `.tenants` (an optional choice); the `deployment/swarm-typesafe-fwd` workload |
 | `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled`; on only once swarm-api's probe (`POST /v1/admin/setup/addons/brave-search/probe`) runs one real search with the key |
-| `ci` | none: Workload Identity and the merge App | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the `dev` and `prod` environments (created through the API after a typed approval); the runner label and the sandbox as repository variables |
+| `ci` | `swarm-deployment-patterns` (the container only, created by the engine; its version is the owner's, from `scripts/guards/sync-patterns.sh`) | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the `dev` and `prod` environments (created through the API after a typed approval); the runner label and the sandbox as repository variables |
 
 **The person stays in the terminal.** A vendor page with no API is opened in
 the browser (`steps.open_page`) with what to do there; gcloud is the one the
@@ -131,6 +131,11 @@ CI_PROTECTED = ("prod",)
 #: The repository variables the CI add-on writes (the runner label the
 #: workflow patch reads, and the acceptance sandbox scripts/acceptance/config.sh reads).
 CI_VARIABLES = {"runner_label": "SWARM_CI_RUNNER_LABEL", "sandbox": "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"}
+#: The deployment-values guard's pattern list for the worker's pre-publish gate
+#: (scripts/guards/deployment_values.py SECRET_SLOT; install/manifest.d/generic-guard.yaml).
+#: The CI add-on creates the container; the list itself is never the engine's to
+#: write: scripts/guards/sync-patterns.sh adds each version from the owner's source.
+CI_PATTERNS_SLOT = "swarm-deployment-patterns"
 
 #: A tenant id (swarm_common.identity: lower-case letters, digits and hyphens,
 #: at most 11 so `swarm-agent-worker-<tenant>` fits a service account id).
@@ -342,7 +347,8 @@ ADDONS: dict[str, Addon] = {
         satisfies=("api.cloudbuild", "api.sts", "switch.enable_github_wif", "other.wif-github-pool-and-provider",
                    "declared-value.github_repository", "switch.enable_acceptance_fixture",
                    "bucket.acceptance-fixture", "iam-binding.acceptance-fixture-allusers",
-                   "sa.ci-build", "other.ci-runner-label", "other.ci-environments-protected", "addon.ci"),
+                   "sa.ci-build", "other.ci-runner-label", "other.ci-environments-protected",
+                   "secret.swarm-deployment-patterns.container", "addon.ci"),
         overlays={
             ON: lambda c: (("bootstrap", {"enable_github_wif": True,
                                           "github_repository": c["github_repository"]}),
@@ -767,6 +773,8 @@ class Flow:
         if addon.name == "ci":
             if self.world.service_account(build_account(self.world.project)) is None:
                 return UNMET, f"{build_account(self.world.project)} does not exist"
+            if not self.world.secret_exists(CI_PATTERNS_SLOT):
+                return UNMET, f"{CI_PATTERNS_SLOT} does not exist"
             missing_apis = [a for a in addon.apis if a not in self.world.enabled_services()]
             if missing_apis:
                 return UNMET, f"{', '.join(missing_apis)} not enabled"
@@ -816,6 +824,16 @@ class Flow:
         if self.world.service_account(email) is None:
             self.world.create_service_account(CI_BUILD_ACCOUNT, "SwarmCloud CI builds (the CI add-on, lesson 6)")
         self.events.emit("step_done", step="addon.ci.build-account", detail=email)
+        # The container only: an empty one leaves the gate failing closed, as
+        # an absent one does, until the owner's sync adds the list.
+        if not self.world.secret_exists(CI_PATTERNS_SLOT):
+            self.world.create_secret(CI_PATTERNS_SLOT, {"managed-by": "swarm-install", "addon": "ci"})
+            self.events.emit("step_apply", step=f"addon.ci.{CI_PATTERNS_SLOT}",
+                             detail=f"created the container {CI_PATTERNS_SLOT}")
+        detail = (f"{CI_PATTERNS_SLOT} exists" if self.world.has_version(CI_PATTERNS_SLOT) else
+                  f"{CI_PATTERNS_SLOT} exists with no version yet: the owner writes "
+                  f"gs://<state-bucket>/config/deployment-patterns.tsv and runs scripts/guards/sync-patterns.sh")
+        self.events.emit("step_done", step=f"addon.ci.{CI_PATTERNS_SLOT}", detail=detail)
         for key, variable in CI_VARIABLES.items():
             code, _, err = self.world.github("variable", "set", variable, "--repo", chosen["github_repository"],
                                              "--body", self._ci_variable(key, chosen))
@@ -871,7 +889,7 @@ class Flow:
         self.apply_phase(addon, OFF, chosen)
         if addon.workload is not None:
             self.world.kube("delete", addon.workload[0], "--namespace=swarm-system", "--ignore-not-found")
-        kept = [s.name for s in addon.secrets]
+        kept = [s.name for s in addon.secrets] + ([CI_PATTERNS_SLOT] if addon.name == "ci" else [])
         self.events.emit("step_done", step=f"addon.{addon.name}", detail=f"{addon.name} is off")
         if not delete_secrets:
             if kept:
