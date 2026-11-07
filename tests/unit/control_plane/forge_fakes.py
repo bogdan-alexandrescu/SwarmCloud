@@ -166,6 +166,12 @@ class GitHubWrites:
         #: issues/<n>/labels` in order as `(number, labels)` (FR3-HOLDLABEL).
         self.labels: list[str] = ["bug", "enhancement", "needs-owner"]
         self.labelled: list[tuple[int, list[str]]] = []
+        #: The repository's Actions variables (`GET actions/variables/<name>`),
+        #: by name: an absent one answers 404, and `variables_answer`, when
+        #: set, is the status every variable read answers instead (#3312: a
+        #: token without *Variables: Read* is a 403).
+        self.variables: dict[str, str] = {}
+        self.variables_answer: int | None = None
         #: The commits `GET commits/<sha>` serves (#3315). Any other sha
         #: answers `missing_commit`: 404 by default, which the auto-merge head
         #: walk reads as "not this run's"; 422 is GitHub's "No commit found
@@ -325,6 +331,12 @@ class GitHubWrites:
             return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
         if rest[:2] == ["rules", "branches"]:
             return 200, json.dumps(self.rules).encode()
+        if rest[:2] == ["actions", "variables"] and len(rest) == 3:
+            if self.variables_answer is not None:
+                return self.variables_answer, json.dumps({"message": "refused"}).encode()
+            if rest[2] not in self.variables:
+                return 404, json.dumps({"message": "Not Found"}).encode()
+            return 200, json.dumps({"name": rest[2], "value": self.variables[rest[2]]}).encode()
         if rest[:1] == ["commits"] and len(rest) == 2 and method == "GET":
             if rest[1] not in self.commits:
                 if self.missing_commit == 422:

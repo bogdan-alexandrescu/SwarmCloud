@@ -177,6 +177,21 @@ def test_a_silent_dispatch_with_no_started_attempt_goes_back_to_ready(db, config
     assert "never started" in detail["why"], detail
 
 
+def test_the_reconciler_still_writes_the_count_swarm_api_refuses_from_callers(db, config):
+    """Reserving the key at the API (part of #2688) leaves the reconciler's own write alone."""
+    from swarm_api.validation import RESERVED_METADATA_KEYS
+
+    # MUTATION: leave the key out of RESERVED_METADATA_KEYS and this is red.
+    assert NEVER_STARTED_REQUEUES_KEY in RESERVED_METADATA_KEYS
+    seed_silent_dispatch(db)
+
+    reconcile(db, config, scheduled_execution())
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task
+    assert task["metadata"][NEVER_STARTED_REQUEUES_KEY] == 1, task
+
+
 def test_the_fourth_silence_fails_the_task_saying_it_never_started(db, config):
     generation = 1
     metadata: dict[str, Any] = {}

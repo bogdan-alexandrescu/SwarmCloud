@@ -41,7 +41,7 @@ vi.mock('../fetch', async (importOriginal) => ({
   write: fetchMock.write,
 }))
 
-import { TalkStage } from '../voice/Stage'
+import { stageFeed, TalkStage, type StageFeed } from '../voice/Stage'
 
 const ok = (data: unknown) => ({ status: 'ok', fetchedAt: Date.now(), data })
 
@@ -311,11 +311,17 @@ describe('on a phone nothing is wider than 390 and nothing pans', () => {
 // resolved (swarm_api/voice/stream.py `STAGE_TYPES`); the stage applies each
 // without waiting for its next read.
 //
+// ONE STREAM (the owner's pick, 7 November 2026): the stage opens none of
+// its own. The card list reads the session's one stream and passes the
+// stage's events up (`onStageEvent`); Talk.tsx hands them to the stage
+// through a `stageFeed()`.
+//
 // MUTATIONS: listen for none of the three; draw a visual.upsert without
 // re-reading it; leave the stage on its tab after a focus; band no focused
 // line; re-read nothing on a note.upsert; open a stream of the stage's own
-// beside the card list's; band the focus with an inline style instead of
-// talk-stage.css's rule.
+// beside the card list's; drop the card list's hand-up of the stage's
+// events; band the focus with an inline style instead of talk-stage.css's
+// rule; leave the focus caption with no rule.
 
 /** The session's stream, driven by the test. */
 class FakeEventSource extends EventTarget {
@@ -355,12 +361,22 @@ describe('the stage applies the session stream live', () => {
 
   const stream = (): FakeEventSource => {
     const s = FakeEventSource.all.find((e) => e.url.startsWith('/v1/voice/sessions/vs_t/events'))
-    if (s === undefined) throw new Error('the stage opened no stream')
+    if (s === undefined) throw new Error('the card list opened no stream')
     return s
   }
 
+  /** The stage and the card list as Talk.tsx seats them: the card list's stream feeds the stage. */
+  function Live({ feed = stageFeed(), sessionId = 'vs_t', live = true }: { feed?: StageFeed; sessionId?: string | null; live?: boolean }) {
+    return (
+      <>
+        <TalkStage projectId="vp_t" sessionId={sessionId} live={live} feed={feed} />
+        <CardList sessionId={sessionId} onStageEvent={feed.emit} />
+      </>
+    )
+  }
+
   it('draws a visual that arrives on the stream, then moves to the visual and lines the planner points at', async () => {
-    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    render(<Live />)
     await screen.findByRole('figure', { name: 'e2e, step 4' })
     listed = [VISUAL, LOG]
     await act(async () => stream().frame('visual.upsert', 1, { visual: VISUAL }))
@@ -378,7 +394,7 @@ describe('the stage applies the session stream live', () => {
     const focused = [...back.querySelectorAll<HTMLElement>('li.vts-line.is-focus')].map((l) => l.dataset.line)
     expect(focused).toEqual(['41', '42'])
     expect(within(back).getByText('The counts are read here.')).toBeTruthy()
-    // The page never reloaded: one stream, opened once.
+    // The page never reloaded: one stream, the card list's, opened once.
     expect(FakeEventSource.all.filter((e) => e.url.startsWith('/v1/voice/sessions/vs_t/events'))).toHaveLength(1)
     // The band is talk-stage.css's rule, not an inline style, and it wins over a note's band.
     const line = back.querySelector<HTMLElement>('li.vts-line[data-line="42"]')!
@@ -389,15 +405,16 @@ describe('the stage applies the session stream live', () => {
     expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
     line.classList.add('is-noted')
     expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
+    // The planner's caption is talk-stage.css's rule too, set off in the focus colour on a line of its own.
+    const caption = within(back).getByText('The counts are read here.')
+    expect(caption.getAttribute('style')).toBeNull()
+    const capWon = (prop: string) => cascade(sheets, caption, prop, { width: 1280 }).winner?.value ?? null
+    expect(capWon('color')).toBe('var(--info)')
+    expect(capWon('flex-basis')).toBe('100%')
   })
 
   it("shares the card list's stream: one connection for the session, each reading its own events", async () => {
-    render(
-      <>
-        <TalkStage projectId="vp_t" sessionId="vs_t" live />
-        <CardList sessionId="vs_t" />
-      </>,
-    )
+    render(<Live />)
     await screen.findByRole('figure', { name: 'e2e, step 4' })
     expect(FakeEventSource.all).toHaveLength(1)
     listed = [VISUAL, LOG]
@@ -407,9 +424,39 @@ describe('the stage applies the session stream live', () => {
     expect(FakeEventSource.all).toHaveLength(1)
   })
 
+  it('opens no stream of its own: a live stage with no card list reads nothing', async () => {
+    listed = [VISUAL]
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live feed={stageFeed()} />)
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(FakeEventSource.all).toHaveLength(0)
+  })
+
+  it("hands the stage's events up from the card list, and only those", async () => {
+    const handed: string[] = []
+    render(<CardList sessionId="vs_t" onStageEvent={(ev) => handed.push(`${ev.type}:${ev.seq}`)} />)
+    expect(FakeEventSource.all).toHaveLength(1)
+    await act(async () => {
+      stream().frame('visual.upsert', 1, { visual: VISUAL })
+      stream().frame('card.upsert', 2, { card: { card_id: 'vc_x', kind: 'nope', version: 1 } })
+      stream().frame('note.upsert', 3, { note: NOTE })
+      stream().frame('focus', 4, { visual_id: 'vv_slice', anchor: null, caption: null })
+    })
+    expect(handed).toEqual(['visual.upsert:1', 'note.upsert:3', 'focus:4'])
+  })
+
+  it("moves the stage's focus on a focus event delivered through the card list", async () => {
+    listed = [VISUAL, LOG]
+    const feed = stageFeed()
+    render(<Live feed={feed} />)
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    await act(async () => stream().frame('focus', 1, { visual_id: 'vv_log', anchor: null, caption: null }))
+    expect(screen.getByRole('button', { name: /e2e, step 4/ }).getAttribute('aria-pressed')).toBe('true')
+    await screen.findByRole('figure', { name: 'e2e, step 4' })
+  })
+
   it('re-reads the visual a note.upsert names, so a pinned note appears and a resolved one leaves', async () => {
     listed = [VISUAL]
-    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    render(<Live />)
     await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
     expect(screen.queryByRole('button', { name: 'Note 1' })).toBeNull()
     notes = [NOTE]
@@ -425,7 +472,7 @@ describe('the stage applies the session stream live', () => {
 
   it('opens no stream while no session is live', async () => {
     listed = [VISUAL]
-    render(<TalkStage projectId="vp_t" sessionId={null} live={false} />)
+    render(<Live sessionId={null} live={false} />)
     await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
     expect(FakeEventSource.all).toHaveLength(0)
   })

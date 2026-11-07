@@ -53,6 +53,8 @@ export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
 /** Every event the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
 const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS]
 
+const IS_STAGE_EVENT: readonly string[] = STAGE_EVENTS
+
 /** A card as the stream carries it (swarm_api/voice/cards.py `card_view`). */
 export interface VoiceCard {
   card_id: string
@@ -185,9 +187,10 @@ interface SharedStream {
 const sessionStreams = new Map<string, SharedStream>()
 
 /**
- * Reads `sessionId`'s stream through the one `EventSource` the card list and
- * the Talk stage share, so a live session holds one connection, not one per
- * reader. The first reader opens it from `after`; a reader that joins an open
+ * Reads `sessionId`'s stream through one `EventSource`, so a live session
+ * holds one connection, not one per reader. The card list is its reader; the
+ * Talk stage reads none of its own and is handed its events by the card list
+ * (`onStageEvent`). The first reader opens it from `after`; a reader that joins an open
  * stream reads from where it stands. A reader that joins a stream that gave
  * up (Reconnect) opens it again from its own `after`, and every reader still
  * on it moves to the new one. The stream closes when its last reader leaves.
@@ -261,15 +264,29 @@ type Link = 'off' | 'open' | 'closed' | 'unsupported'
  * an empty list. `fixtures` draws the given cards with no stream; the
  * console's fixture mode draws `FIXTURE_CARDS` while no session is live, so
  * a review can see every kind without a call.
+ *
+ * `onStageEvent` is handed the stream's visual, note and focus events
+ * (`STAGE_EVENTS`) as they arrive: the Talk stage reads them from here
+ * (Talk.tsx), so a live session holds one stream, not two.
  */
-export function CardList({ sessionId, fixtures }: { sessionId: string | null; fixtures?: readonly VoiceCard[] }) {
+export function CardList({
+  sessionId,
+  fixtures,
+  onStageEvent,
+}: {
+  sessionId: string | null
+  fixtures?: readonly VoiceCard[]
+  onStageEvent?: (ev: StreamEvent) => void
+}) {
   const [s, dispatch] = useReducer(reducer, EMPTY_LIST)
   const [link, setLink] = useState<Link>('off')
   const [round, setRound] = useState(0)
   const lastSeq = useRef(0)
   const logged = useRef(new Set<string>())
   const shownFor = useRef<string | null>(null)
+  const toStage = useRef(onStageEvent)
   lastSeq.current = s.lastSeq
+  toStage.current = onStageEvent
 
   useEffect(() => {
     if (sessionId === null) {
@@ -287,8 +304,10 @@ export function CardList({ sessionId, fixtures }: { sessionId: string | null; fi
     }
     setLink('open')
     return readSessionStream(sessionId, lastSeq.current, {
-      types: STREAM_EVENTS,
+      types: SESSION_EVENTS,
       onEvent: (ev) => {
+        // The stage's events go up to the stage; the list still counts their sequence, so a Reconnect repeats none.
+        if (IS_STAGE_EVENT.includes(ev.type)) toStage.current?.(ev)
         if (ev.type === 'card.upsert') {
           const kind = (ev.data.card as { kind?: unknown } | undefined)?.kind
           const name = typeof kind === 'string' ? kind : '(none)'
