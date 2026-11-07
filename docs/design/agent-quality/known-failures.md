@@ -252,6 +252,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_merge_train.py` | `_need` | `skip_call` | {tool} is required |
 | `tests/unit/scripts/test_merge_train_skips.py` | `_need` | `skip_call` | {tool} is required |
 | `tests/unit/scripts/test_migrate_index_interval.py` | `<module>` | `skipif` | migrate-index-interval.sh needs bash and jq |
+| `tests/unit/scripts/test_no_live_literals.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/scripts/test_offboard_tenant.py` | `<module>` | `skipif` | offboard-tenant.sh needs bash and jq |
 | `tests/unit/scripts/test_onboarding_docs_and_mockup.py` | `test_each_entry_variant_draws_the_checklist` | `skip_call` | {vid} not drawn |
 | `tests/unit/scripts/test_plan_guard_iam_classification.py` | `<module>` | `skipif` | jq is required |
