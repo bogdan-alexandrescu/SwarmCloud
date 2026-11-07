@@ -7976,9 +7976,22 @@ class Worker:
         record = flow_output_mod.normalise(
             ws.artifacts, (self._task or {}).get("step_id"), self._expected_outputs)
         self._flow_output = record
-        if record is not None:
-            for line in record["lines"]:
-                (self.log.info if record["ok"] else self.log.warning)(line)
+        if record is None:
+            return
+        for line in record["lines"]:
+            (self.log.info if record["ok"] else self.log.warning)(line)
+        # On the step's events too, RUNNING with `cause` as `_emit_startup_mark`
+        # writes; not on a fenced exit, and never raised: the upload goes on.
+        if self._fenced_exit or self._writes_forbidden or self._control_plane_down:
+            return
+        try:
+            self.control.emit(EventType.RUNNING, self._scrub({
+                "cause": flow_output_mod.EVENT_CAUSE, "expected": record["expected"], "ok": record["ok"],
+                "renamed": record["renamed"], "lines": list(record["lines"]),
+            }))
+        except Exception as exc:  # noqa: BLE001 -- a mark is never worth the upload
+            self.log.warning("could not record the flow output's normalisation on the task's events",
+                             error=type(exc).__name__)
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
