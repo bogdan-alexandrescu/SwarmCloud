@@ -540,6 +540,26 @@ variable "deployer_storage_buckets_exact" {
   default     = []
 }
 
+variable "plugins_bucket_name" {
+  description = <<-EOT
+    The managed plugins' bucket, as terraform/infra names it (its own
+    plugins_bucket_name, which this mirrors). Empty: <project_id>-swarm-plugins.
+
+    The deployer administers buckets by name prefix, and this default does not
+    start with the platform prefix, so the storage condition admits it by exact
+    name (wif.tf). Without it every release plan stops on a 403 the moment the
+    bucket exists.
+  EOT
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.plugins_bucket_name == "" || (can(regex("^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$", var.plugins_bucket_name)) && strcontains(var.plugins_bucket_name, "swarm"))
+    error_message = "plugins_bucket_name is empty (<project_id>-swarm-plugins) or a bucket name of 3-63 lower-case letters, digits, '-' or '_' that contains \"swarm\"."
+  }
+}
+
 variable "frontend_iap_backends" {
   description = <<-EOT
     The IAP-protected backend services whose accessor list this root manages
