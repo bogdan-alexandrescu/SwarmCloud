@@ -10,10 +10,11 @@
 // refresh (QA12-29).
 //
 // MUTATIONS: put `loadLiveSession` back in `DeviceThumb`; read the digests
-// once per row; drop the list's read time from the digests' effect.
+// once per row; drop the list's read time from the digests' effect; draw the
+// wall's cards without the list's devices.
 
 import { act, render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { TaskDigests } from '../api'
 import type { Result } from '../fetch'
@@ -98,19 +99,36 @@ describe('the Agents list reads its browser rows’ live state in one read', () 
       }),
     )
 
+    // A desktop-wide page, so the inspector holding the wall starts open
+    // (jsdom's 1024px starts it folded to its rail, `startsFolded`).
+    const wide = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerWidth', { value: wide, configurable: true })
+    })
     render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     await advance(0)
     const outline = (n: number) => document.querySelector(`.row.is-compact[data-task-id="${tid(n)}"] .ag-device`)
     expect(document.querySelectorAll('.ag-device')).toHaveLength(ROWS)
     expect(outline(1)?.getAttribute('data-device')).toBe('phone')
+    // The Live browsers wall draws each browser in its device's shape, from
+    // the same read (the owner's request of 2026-11-08).
+    const frame = (n: number) => document.querySelector(`.ag-wall-card[data-task-id="${tid(n)}"] .wf-live-thumb`)
+    expect(document.querySelectorAll('.ag-wall-card')).toHaveLength(ROWS)
+    expect(frame(1)?.getAttribute('data-device')).toBe('phone')
+    expect(frame(ROWS)?.getAttribute('data-orientation')).toBe('portrait')
 
+    // The only session reads are the wall cards' streams opening, one each:
+    // none for a row's outline or a card's frame.
+    const sessionsBefore = api.loadLiveSession.mock.calls.length
+    expect(sessionsBefore).toBeLessThanOrEqual(ROWS)
     const digestsBefore = api.loadTaskDigests.mock.calls.length
     preset = 'desktop'
     await advance(LIVE_POLL_MS)
     await advance(0)
 
-    expect(api.loadLiveSession, 'a live-session read per browser row').not.toHaveBeenCalled()
+    expect(api.loadLiveSession.mock.calls.length, 'a live-session read per browser row').toBe(sessionsBefore)
     // One digest read per list read, naming every browser row at once.
     const refreshes = api.loadTaskDigests.mock.calls.slice(digestsBefore)
     expect(refreshes.length).toBeGreaterThanOrEqual(1)
@@ -121,5 +139,8 @@ describe('the Agents list reads its browser rows’ live state in one read', () 
     // The outline followed the switch on the refresh (QA12-29).
     expect(outline(1)?.getAttribute('data-device')).toBe('desktop')
     expect(outline(ROWS)?.getAttribute('data-orientation')).toBe('landscape')
+    // And so did the wall's frame.
+    expect(frame(1)?.getAttribute('data-device')).toBe('desktop')
+    expect(frame(ROWS)?.getAttribute('data-orientation')).toBe('landscape')
   })
 })

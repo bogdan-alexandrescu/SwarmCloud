@@ -315,6 +315,34 @@ export function thumbWidth(cssWidth: number, dpr: number): number {
   return Math.min(THUMB_WIDTH_MAX, Math.max(1, Math.round(css * ratio)))
 }
 
+/**
+ * THE SHAPE A THUMBNAIL IS DRAWN IN (the owner's request, 2026-11-08: the
+ * Live browsers wall shows each browser "in the resolution, iPhone mode or
+ * iPad or web"). A phone is an iPhone-proportioned frame, a tablet an iPad
+ * one, a desktop the web landscape frame; phone and tablet turn sideways in
+ * landscape. Absent, the canvas keeps the box its host's CSS gives it.
+ */
+export type ThumbFrame = { device: 'phone' | 'tablet' | 'desktop'; orientation: 'portrait' | 'landscape' }
+
+/**
+ * The height, in CSS px, every frame on the wall shares (`--wall-frame-h` on
+ * `.ag-wall-grid` in styles.css, which must say the same), so cards of
+ * different shapes line up and a phone is narrow rather than tall.
+ */
+export const THUMB_FRAME_H = 180
+
+/** A frame's width over its height: iPhone 9:19.5, iPad 3:4, web 16:10, phone and tablet swapped in landscape. */
+export function frameRatio(frame: ThumbFrame): number {
+  if (frame.device === 'desktop') return 16 / 10
+  const portrait = frame.device === 'phone' ? 9 / 19.5 : 3 / 4
+  return frame.orientation === 'landscape' ? 1 / portrait : portrait
+}
+
+/** A frame's CSS width at `THUMB_FRAME_H`: what thumbnail mode is asked for, so a phone is not fed a desktop width. */
+export function frameCssWidth(frame: ThumbFrame): number {
+  return Math.round(THUMB_FRAME_H * frameRatio(frame))
+}
+
 /** Bytes received but not yet parsed, without re-copying them on every message. */
 class ByteQueue {
   private chunks: Uint8Array[] = []
@@ -813,10 +841,13 @@ export function LiveThumb({
   taskId,
   workflowId,
   open = openLiveSocket,
+  frame = null,
 }: {
   taskId: string
   workflowId: string | null
   open?: OpenLive
+  /** The device shape to draw in (`ThumbFrame`); null keeps the host's box. */
+  frame?: ThumbFrame | null
 }) {
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const failures = useRef(0)
@@ -830,6 +861,13 @@ export function LiveThumb({
   shown.current = inView
   const client = useRef<RfbThumb | null>(null)
   const visible = useSyncExternalStore(subscribeOnScreen, thumbsOnScreen)
+  // The frame's width, read by the client at the handshake (SetEncodings).
+  // A later shape -- a device switch -- redraws the frame but opens no new
+  // connection: the picture letterboxes into it until the next connection
+  // asks for the new width, rather than a socket and a session read per card.
+  const frameWidth = frame === null ? null : frameCssWidth(frame)
+  const frameAsk = useRef(frameWidth)
+  frameAsk.current = frameWidth
   useEffect(() => {
     const card = {}
     setOnScreen(card, inView)
@@ -877,8 +915,14 @@ export function LiveThumb({
     const rfb = new RfbThumb({
       send: (b) => sock.send(b),
       sink,
-      // The canvas is laid out at the card's full width (width: 100%).
-      thumbWidthPx: () => thumbWidth(canvas.current?.getBoundingClientRect().width ?? 0, window.devicePixelRatio),
+      // The canvas is laid out at the card's full width (width: 100%), or at
+      // its frame's width, which also stands in before layout and caps it.
+      thumbWidthPx: () => {
+        const laid = canvas.current?.getBoundingClientRect().width ?? 0
+        const ask = frameAsk.current
+        const css = ask === null ? laid : laid > 0 ? Math.min(laid, ask) : ask
+        return thumbWidth(css, window.devicePixelRatio)
+      },
       now: () => Date.now(),
       later: (fn, ms) => {
         const t = setTimeout(fn, ms)
@@ -978,7 +1022,9 @@ export function LiveThumb({
       {status !== 'live' && <StartupBar taskId={taskId} />}
       <canvas
         ref={canvas}
-        className="wf-live-thumb"
+        className={frame === null ? 'wf-live-thumb' : `wf-live-thumb is-${frame.device} is-${frame.orientation}`}
+        data-device={frame?.device}
+        data-orientation={frame?.orientation}
         role="img"
         aria-label={`${note} Frames shown: ${frames}.`}
         data-frames={frames}
