@@ -638,3 +638,17 @@ def test_the_decision_api_tailnet_name_comes_from_the_tailscale_add_on() -> None
         assert off["internal_decision_api_enabled"] is False and "tailscale_egress_target" not in off, pass_name
         none = _infra(pass_name, EVERY_VERSION)
         assert none.get("internal_decision_api_enabled") is not True, pass_name
+
+
+def test_swarm_api_always_gets_an_allowed_caller() -> None:
+    """Day One: swarm-api refuses to start when ALLOWED_DOMAINS and
+    ALLOWED_USERS are both empty. Every infra pass, for a team and for one
+    person, renders ALLOWED_DOMAINS from the organisation's domain and names
+    the installer an admin; a state with no domain stops before Terraform."""
+    for sized in ({}, {"sizing": _sizing(*ONE_PERSON)}, {"sizing": _sizing(*TEAM_OF_5)}):
+        for pass_name in INFRA_PASSES:
+            inputs = _infra(pass_name, **sized)
+            assert inputs["allowed_domains"] == ["example.com"], (pass_name, sized)
+            assert inputs["admin_users"] == ["admin@example.com"], (pass_name, sized)
+    with pytest.raises((LookupError, ValueError)):
+        _infra("infra-2", org_domain="")

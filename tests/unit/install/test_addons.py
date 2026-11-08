@@ -1182,3 +1182,27 @@ def test_real_world_loads_network_parity_from_the_release_bundle(monkeypatch: py
     assert len(fetched) == 1
     assert Path(parity.__file__) == ROOT / "kubernetes" / "network_parity.py"
     assert parity.check_jev_egress_ingress(jev_egress_ingress(API_EGRESS), API_EGRESS) == []
+
+
+def test_the_decision_api_tailnet_name_comes_from_the_asked_target() -> None:
+    """Day One: swarm-api and the scheduler read the decision API's tailnet name
+    from SWARM_DECISION_API_TAILNET_NAME, which Terraform renders from
+    `tailscale_egress_target` while `internal_decision_api_enabled` is on. A
+    fresh install sets both only through the tailscale add-on, which asks for
+    the name (no default) and checks it is one MagicDNS name; off, it turns the
+    internal backends off with it, so no service is left holding a URL without
+    the name."""
+    addon = addons.ADDONS["tailscale"]
+    asked = [c for c in addon.choices if c.key == "tailscale_egress_target"]
+    assert len(asked) == 1 and asked[0].default is None and not asked[0].optional
+    assert re.fullmatch(asked[0].pattern, "decision-api.example-tailnet.ts.net")
+    assert not re.fullmatch(asked[0].pattern, "decision-api.example.com")
+    (root, on), = addon.overlays[addons.ON]({"tailscale_egress_target": "decision-api.example-tailnet.ts.net"})
+    assert root == "infra" and on["internal_decision_api_enabled"] is True
+    assert on["tailscale_egress_target"] == "decision-api.example-tailnet.ts.net"
+    (_, off), = addon.overlays[addons.OFF]({})
+    assert off["internal_decision_api_enabled"] is False
+    locals_tf = (ROOT / "terraform" / "infra" / "locals.tf").read_text()
+    assert re.search(r"decision_api_tailnet_name\s*=\s*var\.internal_decision_api_enabled\s*\?\s*"
+                     r"var\.tailscale_egress_target\s*:\s*\"\"", locals_tf)
+    assert locals_tf.count("SWARM_DECISION_API_TAILNET_NAME = local.decision_api_tailnet_name") >= 1
