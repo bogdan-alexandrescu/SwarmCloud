@@ -36,7 +36,7 @@ from typing import Any
 
 SCENARIO_ENV = "FAKE_SWARM_SCENARIO"
 
-API_URL = "https://swarm-api.fake.run.app"
+API_URL = "https://api.swarm.example.com"
 PROJECT = "swarm-test-project"
 REGION = "us-central1"
 DATABASE = "swarm"

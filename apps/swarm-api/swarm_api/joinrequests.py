@@ -138,7 +138,7 @@ DENIED_HOLD_DAYS = 7
 #: someone holding a working code, so it reveals nothing to anyone else.
 OPEN_PER_WORKSPACE = 50
 #: The `ApiSettings` field that overrides each limit above (lane
-#: JOIN-RESOLVE, BGD's answer of 2026-10-25 on task_ad610136896d4461afeb).
+#: JOIN-RESOLVE, the owner's answer of 2026-10-25 on task_ad610136896d4461afeb).
 #: A store built over settings without the field, or with a value that is
 #: not a whole number of at least one, keeps the constant.
 LIMIT_SETTINGS = {

@@ -223,7 +223,13 @@ WORKDIR /home/swarm
 # the check still proves the app imports and wires up, and needs no identity.
 # PROJECT_ID is supplied only so Settings.from_env() can construct; this
 # proves the module imports and wires up, and builds no Google client.
+# ALLOWED_DOMAINS=example.com is the placeholder sign-in domain from
+# scripts/guards/placeholders.json, on this RUN line only: create_app() refuses
+# to start when ALLOWED_DOMAINS and ALLOWED_USERS are both empty
+# (main.SIGN_IN_LIST_REQUIRED), and the image carries no deployment's domain --
+# Terraform sets the real one on the service. Never a live value here.
 RUN PROJECT_ID=build-time-import-check FIRESTORE_EMULATOR_HOST=127.0.0.1:9 \
+    ALLOWED_DOMAINS=example.com \
     python -c "from swarm_api.main import create_app; create_app(); print('swarm-api ok')"
 
 # Which build this is, served by GET /v1/version (U25). scripts/build-images.sh

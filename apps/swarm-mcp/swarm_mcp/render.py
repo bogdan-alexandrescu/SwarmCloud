@@ -900,7 +900,7 @@ _ORGANISATION_FIELDS = ("name", "plan")
 _POSSIBLE_FIELDS = ("of", "reason")
 
 #: What a reader is told of the other side of a duplicate pair another
-#: workspace owns (#2222; BGD, 2026-10-24 17:26Z: "only within the same
+#: workspace owns (#2222; the owner, 2026-10-24 17:26Z: "only within the same
 #: tenant"). The broker's and swarm-api's wording, so the three never differ.
 ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
 ANOTHER_WORKSPACE_READINGS = (

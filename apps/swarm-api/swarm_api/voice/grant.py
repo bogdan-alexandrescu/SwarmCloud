@@ -59,7 +59,7 @@ posts each final utterance GPT-Live heard so the read-back gate can tell a
 note writes the planner draws through (§8.3). Each is classed as heard in
 `voice/readback.py`, and each writes only to the grant's own session.
 
-THE WRITE LIST ALSO HOLDS the planner's one act route (voice-it.md §3.9; BGD's
+THE WRITE LIST ALSO HOLDS the planner's one act route (voice-it.md §3.9; the owner's
 pick, 6 November 2026): `POST /v1/tasks/{task_id}/answers`, the answer to an
 agent's question, sent by swarm-voice's `answer_question` act tool with
 `via: voice-it` after a read-back the person confirmed. Who may answer is the
@@ -153,7 +153,7 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/v1/voice/sessions/{session_id}/visuals"),
     ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
     # voice-it.md §3.9: the planner's answer act tool (swarm_voice/tools_act.py),
-    # BGD's pick of 6 November 2026. The route's own rule decides who answers.
+    # the owner's pick of 6 November 2026. The route's own rule decides who answers.
     ("POST", "/v1/tasks/{task_id}/answers"),
 })
 

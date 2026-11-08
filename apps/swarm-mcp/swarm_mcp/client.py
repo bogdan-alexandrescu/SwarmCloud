@@ -672,7 +672,7 @@ def _read_body(response: Any, limit: int | None = None) -> bytes:
     return bytes(out if limit is None else out[:limit])
 
 
-#: WHO IS ASKING, on every request (BGD's pick, 2026-11-06): a 20-minute
+#: WHO IS ASKING, on every request (the owner's pick, 2026-11-06): a 20-minute
 #: sample of swarm-api's request log had 3,299 of 3,300 single-task reads from
 #: a caller whose user agent was urllib's bare `Python-urllib/3.x`, so the log
 #: could not tell this bridge from `sc`, a worker or a script. The kind is

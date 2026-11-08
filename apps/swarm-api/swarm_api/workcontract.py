@@ -1,6 +1,6 @@
 """Versioned work contracts: what a step must do, where, with what, proven how.
 
-The owner's agent quality program (BGD, 3 November 2026), work-contract
+The owner's agent quality program (the owner, 3 November 2026), work-contract
 package; the design is docs/design/agent-quality/work-contract.md. A contract
 is a closed, versioned document: stable requirement ids, the repositories and
 commits it binds, read and write scope, protected paths and interfaces, the

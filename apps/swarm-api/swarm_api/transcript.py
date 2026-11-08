@@ -68,7 +68,7 @@ this module applies them after the rules, exactly as `JsonMasker.text()` does.
 No second masker is built; these are the SAME literals the task's one masker
 already learned.
 
-CODEX'S EVENTS (CODEX-TRANSCRIPT, part of #2459; BGD, 2026-10-27, PR 2515
+CODEX'S EVENTS (CODEX-TRANSCRIPT, part of #2459; the owner, 2026-10-27, PR 2515
 question 2). The codex profile runs `codex exec --json`. The worker renders its
 capture readable once the run ends (`agent_worker.runners.codex_events`), but
 the live tail a RUNNING attempt publishes is the raw stream, and read as
@@ -81,7 +81,7 @@ does not depend on the worker:
     `system` row named by `meta.subtype`;
   * `turn.completed` is a `usage` row and `turn.failed`, a top-level `error`
     and an `error` item are `error` rows -- kinds of their own (CODEX-ROWS,
-    part of #2459; BGD, 2026-10-28, mock-up proposal B "New kinds in the
+    part of #2459; the owner, 2026-10-28, mock-up proposal B "New kinds in the
     drawer"), described below;
   * an `agent_message` item is assistant `text`, `reasoning` is `thinking`;
   * `command_execution` is a `tool_call` named `command` whose input is the

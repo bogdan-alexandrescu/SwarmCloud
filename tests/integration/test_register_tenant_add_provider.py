@@ -102,7 +102,7 @@ case "${args}" in
       '{bindings:[{role:"roles/secretmanager.secretVersionAdder", members:[$m]}, {role:"roles/secretmanager.secretAccessor", members:[$m]}]}' ;;
   *"auth print-access-token"*)        echo "fake-access-token" ;;
   *"identity groups describe"*)       echo "groups/1" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *"iam roles describe"*)             echo "roles/custom" ;;
   *"storage buckets describe"*)       echo "swarm-test-artifacts" ;;
   *"storage cp"*)                     cat >/dev/null ;;

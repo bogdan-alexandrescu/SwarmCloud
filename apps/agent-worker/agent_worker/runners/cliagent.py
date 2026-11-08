@@ -279,7 +279,7 @@ _RETRY_AFTER_PATTERNS = (
 # Error kinds: what a failed run on a pool account tells the account's health
 # ---------------------------------------------------------------------------
 #
-# BGD, 2026-10-25 ("Runner lane follow-up", #2302): the runner classifies the
+# The owner, 2026-10-25 ("Runner lane follow-up", #2302): the runner classifies the
 # provider errors its CLI gave up on, so the held account's health record (the
 # broker's `/account-error` route, which never touches AIMD) says which. The
 # CLI retries a 529, a 5xx and a dropped connection itself before it exits, so
@@ -421,7 +421,7 @@ class CliAgentSpec:
     #: The files, under the CLI's HOME, whose lines carry its running usage
     #: when its stream reports usage only at the end of a start: the budget
     #: watcher reads what each gains while the start runs. codex's rollouts
-    #: (`codex.rollout_files`, BGD's pick "Also read the rollout",
+    #: (`codex.rollout_files`, the owner's pick "Also read the rollout",
     #: 2026-10-27); claude-code's stream reports every message, so it needs none.
     usage_files: Callable[[Path], list[Path]] | None = None
     #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
@@ -432,7 +432,7 @@ class CliAgentSpec:
     path_prefix: tuple[str, ...] = ()
     #: Stop a session at the turn boundary after its context passes 200k
     #: tokens or its tool calls pass 150, and carry the task on in a fresh
-    #: session from a handoff, never `--resume` (TOKEN-CEILING, BGD
+    #: session from a handoff, never `--resume` (TOKEN-CEILING, the owner
     #: 2026-10-27, #2524; `ceiling`). Reads claude-code's stream-json usage.
     context_ceiling: bool = False
 
@@ -481,7 +481,7 @@ SESSION_FILE_ENV = "SWARM_SESSION_FILE"
 #: Why a session is being resumed.
 RESUME_MOVED = "moved"
 RESUME_RELOADED = "credential_reloaded"
-#: A new attempt continuing a step that stopped at its time limit (BGD,
+#: A new attempt continuing a step that stopped at its time limit (the owner,
 #: 2026-11-02): set by the worker, with a session to resume or without one.
 RESUME_TIME_LIMIT = "time_limit"
 #: A new attempt resuming a session that parked on a question a person has
@@ -509,7 +509,7 @@ RELOAD_RESUME_PROMPT = (
 
 
 #: The same, and the note a fresh start is given, on a new attempt that
-#: continues a step stopped at its time limit (BGD, 2026-11-02): the worker
+#: continues a step stopped at its time limit (the owner, 2026-11-02): the worker
 #: checkpointed the workspace at the limit and restored it here.
 TIME_LIMIT_RESUME_PROMPT = (
     "You are continuing after a time limit: the step's last attempt reached its "
@@ -1585,7 +1585,7 @@ TITLE_REPAIR_MAX_TURNS = 1
 PR_TITLE_NAME = "pr-title.txt"
 #: An index run's repo-index.json that promotion would refuse
 #: (`agent_worker.indexspec`) is given ONE turn naming the errors (lane
-#: INDEX-ROUTES, #1693): 3 of 19 ai-studio runs were refused for a shape the
+#: INDEX-ROUTES, #1693): 3 of 19 peer-app runs were refused for a shape the
 #: agent can fix in one pass once it is told which fields. A document still
 #: refused after it fails the attempt (`lifecycle.Worker._index_after_agent`).
 INDEX_REPAIR_MAX_TURNS = 1
@@ -1799,9 +1799,9 @@ def repair_prompt(
         # Lazy: the runner never imports the worker at module level.
         from ..lifecycle import CREDENTIAL_ADVICE
 
-        # Never advice to split, join or encode the literal (#2030, BGD's
+        # Never advice to split, join or encode the literal (#2030, the owner's
         # decision 2026-10-23): that defeats the scan, and some repositories
-        # forbid it, which left Product Oracle's agent no way through.
+        # forbid it, which left a peer application's agent no way through.
         lines.append(
             "These added lines look like a credential, and the publish step refuses "
             "a diff that adds one (path:line rule: why it looked like one). For each "
@@ -2073,7 +2073,7 @@ def run_cli_agent(
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
     # The previous session's last words in a handoff: OFF unless
-    # SWARM_CEILING_SESSION_TAIL turns them on (BGD, 2026-11-06). Its own
+    # SWARM_CEILING_SESSION_TAIL turns them on (the owner, 2026-11-06). Its own
     # assistant text fed back as user input got the fresh session's first
     # call refused by the provider's safeguards (task_a27c0b2241d1492492ee,
     # `ceiling.SESSION_TAIL_ENV`); the note file, todos, notes files, diff
@@ -2141,7 +2141,7 @@ def run_cli_agent(
     # just before the platform paragraph for one with a repository.
     first_prompt = f"{task_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
     if not resume and os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_TIME_LIMIT:
-        # A continuation at the time limit with no session to resume (BGD,
+        # A continuation at the time limit with no session to resume (the owner,
         # 2026-11-02): the task again, in the restored workspace, and the note.
         first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
     if cwd != ctx.work_dir and step_publishes(os.environ):
