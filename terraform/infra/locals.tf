@@ -1071,6 +1071,14 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
+      # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
+      # var.plugins_switch says what each value does): "off" refuses every
+      # step that names a plugin. "on" unless the environment's tfvars sets
+      # "off", the state swarm-api reads when the key is unset, so this line
+      # plans no behaviour change. A platform admin's console setting
+      # (swarm_api.platformswitches) overrides it.
+      SWARM_PLUGINS = var.plugins_switch
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
