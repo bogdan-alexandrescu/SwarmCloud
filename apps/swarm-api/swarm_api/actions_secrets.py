@@ -1,6 +1,6 @@
 """GitHub Actions secrets, written write-only (SSC-ACTIONS-API, part of #2158).
 
-Design: docs/design/secrets-scopes.md §3, §6.2, §6.3, with BGD's answers of
+Design: docs/design/secrets-scopes.md §3, §6.2, §6.3, with the owner's answers of
 its §11 (2026-10-23), which override §3 where they differ:
 
   * Q3, NO SECOND APP. Every GitHub call here is made with an installation

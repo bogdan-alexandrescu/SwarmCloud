@@ -314,7 +314,7 @@ class SchedulerSettings:
     #: cost of a pass stays bounded however many tenants exist.
     max_topup_tenants: int = 50
 
-    #: Ready tasks admitted per reservation transaction (BGD, 2026-11-06).
+    #: Ready tasks admitted per reservation transaction (the owner, 2026-11-06).
     #: Each transaction reads every pool document once and writes it once, so
     #: the shared `pools/global` takes one write per batch instead of one per
     #: task: the busiest minute measured 52 single-task writes against

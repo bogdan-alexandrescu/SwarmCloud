@@ -244,14 +244,14 @@ SPEC_KEYS = frozenset(
         # and refuses it beside any merge, so `read_spec` refuses that first.
         "publish_to_pr",
         # What the workflow delivers, in two or three sentences of plain text,
-        # and the feature it belongs to, `{title, url?}` (BGD, 2026-11-04):
+        # and the feature it belongs to, `{title, url?}` (the owner, 2026-11-04):
         # the console's workflow page heads with both. Sent as
         # `metadata.description` and `metadata.feature`, for the reason
         # `title` is; checked for shape by `check_description` and
         # `check_feature` before anything is sent.
         "description",
         "feature",
-        # The description in three labelled parts (BGD, 2026-11-06):
+        # The description in three labelled parts (the owner, 2026-11-06):
         # `{purpose?, goals?, output?}`, why the work exists, up to three
         # things it must achieve, and what lands. Sent as `metadata.about`,
         # for the reason `title` is; checked by `check_about` first.
@@ -1002,7 +1002,7 @@ def check_publish_merge(publish_to_pr: int | str | None, *, merge: Any, steps: A
     """Refuse `publish_to_pr` beside a merge, before anything is sent.
 
     swarm-api refuses it beside a merge step or a `metadata.merge` that
-    appends one (PR 2197, and BGD 2026-10-24: "a publish_to_pr lane still may
+    appends one (PR 2197, and the owner 2026-10-24: "a publish_to_pr lane still may
     not end in a merge step"). The bridge never drops a merge the caller
     asked for to make the submission pass: it refuses, with the API's reason.
     `merge: "off"` asks for none and is not refused. Returns `publish_to_pr`.
@@ -1441,7 +1441,7 @@ def step_rows(
 
 
 # --------------------------------------------------------------------------
-# A step that asks for claude-code-large (BGD, 2026-11-06, part of #2688)
+# A step that asks for claude-code-large (the owner, 2026-11-06, part of #2688)
 # --------------------------------------------------------------------------
 
 LARGE_PROFILE = "claude-code-large"

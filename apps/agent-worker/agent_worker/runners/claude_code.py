@@ -146,7 +146,7 @@ And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
 `python` is the one with Playwright and the helper. Without the endpoint the
 browser image behaves as before: the real browsers and the headless note.
 
-A TEST PROCESS MAY LAUNCH ITS OWN CHROMIUM (PW-TESTRUNNER, BGD 2026-10-24,
+A TEST PROCESS MAY LAUNCH ITS OWN CHROMIUM (PW-TESTRUNNER, the owner 2026-10-24,
 "Test-runner exception on browser"; part of #2253). With the stub above, a
 repository's own `npx playwright test` could not launch the headless Chromium
 it needs, and the image's browsers directory is read-only, so the revision its
@@ -276,7 +276,7 @@ PLAYWRIGHT_BROWSERS_PATH under the cache (an image with no browser), this
 runner hands that path to the agent itself, and never reads it as an image's
 browser (`cachedirs.image_browsers_path`).
 
-WHY LANE CAPS (TOKEN-A, #2524 items 6 and 8, BGD 2026-10-27). A token
+WHY LANE CAPS (TOKEN-A, #2524 items 6 and 8, the owner 2026-10-27). A token
 analysis of 2026-10-20..27 (wf_9a256dde8d174201947c) found 97% of the pool's
 tokens were cache reads: the same long context re-read on every turn. What
 sits in that context is capped here. The repository's own `swarmcloud` MCP
@@ -609,7 +609,7 @@ GRAPH_LOOKUP_SKILL = f"invoke the `{GRAPH_SKILL_NAME}` skill"
 def graph_lookup_line(payload: Mapping[str, Any], work_dir: Path, *,
                       shape: str) -> str | None:
     """The one brief line naming the graph's lookup for an implement, review
-    or fix step (`contextpack.lookup_line`, BGD's pick of 6 November 2026),
+    or fix step (`contextpack.lookup_line`, the owner's pick of 6 November 2026),
     in this shape's words, or None. Called only for a step with the graph."""
     from .. import contextpack  # lazy, as `run_cli_agent` imports it
 
@@ -706,7 +706,7 @@ MCP_CONFIG_NAME = "mcp.json"
 #: auto-named files (a page's download, a console log the server writes) land
 #: here too, in the tenant's own artifacts.
 SCREENSHOTS_DIR_NAME = "screenshots"
-#: TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): every session this runner
+#: TOKEN-RENDER (the owner 2026-10-27, #2524 item 2): every session this runner
 #: starts registers Playwright MCP with `--image-responses omit`, so a
 #: screenshot is saved (under SCREENSHOTS_DIR_NAME) and its bytes never return
 #: into the session's context. An image in a tool result stays in context for
@@ -756,7 +756,7 @@ LIVE_BROWSER_NOTE = (
     "with `from swarm_browser import live; playwright, browser, context = "
     "live()` (CDP to $SWARM_CDP_ENDPOINT; `playwright.stop()` when done, never "
     "`browser.close()`). Open each new page in its own tab. "
-    # CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): do not provoke the
+    # CAPTCHA-AVOID (the owner, 2026-10-23; part of #2058): do not provoke the
     # challenges below. The 2026-10-15 benchmark met 11 to 21 Google 429s a
     # batch from searches typed into google.com in this browser. WebSearch is
     # the CLI's built-in tool and this runner restricts none: SPEC passes no
@@ -766,7 +766,7 @@ LIVE_BROWSER_NOTE = (
     "the browser. When a site has an official API for what is asked, prefer it "
     "to scraping its pages. And on any one site, keep to about one navigation a "
     "second. "
-    # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
+    # CAPTCHA-HANDOFF (the owner, 2026-10-23; part of #2058): the gate raises the
     # hand-off itself when it sees a challenge on the agent's page.
     "Never try to solve or get around a CAPTCHA yourself: the platform asks a "
     "person to solve it. On a CAPTCHA, a bot check, a consent wall or a "
@@ -785,7 +785,7 @@ LIVE_BROWSER_NOTE = (
     "Read a page with browser_snapshot; take screenshots with "
     "browser_take_screenshot without a filename: each is saved under "
     "$SWARM_ARTIFACTS_DIR/screenshots and does not come back to you as an image. "
-    # TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): IMAGE_RESPONSES.
+    # TOKEN-RENDER (the owner 2026-10-27, #2524 item 2): IMAGE_RESPONSES.
     "To judge rendered frames, send them to one Sonnet child per screen, as "
     f"$SWARM_CHILDREN/{SCREEN_REVIEW_GUIDE_NAME} says, and keep its text verdict; "
     "`swarm-handoff compare` writes a crop of a frame over threshold and you "
@@ -873,7 +873,7 @@ JEV_LAUNCH = Path(__file__).resolve().parent / "jev_launch.py"
 #: jev-browser's own switch: never download a Chromium on first use.
 JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
 
-#: THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; `agent_worker.qualitygates`).
+#: THE LANE QUALITY GATES (JEV-LANES, the owner 2026-10-31; `agent_worker.qualitygates`).
 #: jev-belay 0.2.0 (a Stop hook that blocks an unverified "done") and
 #: jev-enforce 1.1.1 (the final reply and every edit against the repository's
 #: CLAUDE.md rule files, `JEV_ENFORCE_MODE=end`: edits recorded, checked once
@@ -1191,7 +1191,7 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
     for, read here from the same environment `body` passes it on from -- the
     file also registers `gate_wait_hook.py` after every tool, so the agent's
     next tool result says when the gate has asked a person to solve a CAPTCHA
-    (CAPTCHA-HANDOFF-2, BGD 2026-10-23; part of #2058). Any other attempt has
+    (CAPTCHA-HANDOFF-2, the owner 2026-10-23; part of #2058). Any other attempt has
     no spool for it to read, and gets no hook.
 
     With `graph_hint` (a step whose graph takes the `skill` shape), it also
@@ -1633,7 +1633,7 @@ SPEC = CliAgentSpec(
     # repository's own checks on what the diff touches, with one fix turn
     # (`agent_worker.prepublish`).
     prepublish=True,
-    # The context ceiling (TOKEN-CEILING, BGD 2026-10-27, #2524): a session
+    # The context ceiling (TOKEN-CEILING, the owner 2026-10-27, #2524): a session
     # past 200k tokens of context or 150 tool calls is stopped at a turn
     # boundary and the task carried on in a fresh session from a handoff,
     # never `--resume` (`ceiling`).
@@ -2060,7 +2060,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if judge_config and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
-    # Where to look a symbol up (BGD, 2026-11-06): an implement, review or fix
+    # Where to look a symbol up (the owner, 2026-11-06): an implement, review or fix
     # step with the graph gets the one line naming the tool, and the
     # exploration line then leaves its graph clause out, so it is named once.
     has_graph = bool(graph_snapshot or graph_served)

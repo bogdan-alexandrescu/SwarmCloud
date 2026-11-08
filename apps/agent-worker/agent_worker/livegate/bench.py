@@ -47,7 +47,7 @@ random glyph set, and the typed keys are letters.
 
 NO MASK COLUMN. Until LIVE-NOMASK (#2298) the frames part also timed the mask
 (`mask_ms`); the gate paints nothing on a frame now (§5.3; owner decision,
-BGD 2026-10-25), so there is no step between the grab and the encode to time.
+the owner 2026-10-25), so there is no step between the grab and the encode to time.
 """
 
 from __future__ import annotations

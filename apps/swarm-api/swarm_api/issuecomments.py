@@ -30,7 +30,7 @@ the tenant said:
     GitHub shows the `<` itself, so `->` and `#<n>` read as written. A value
     in a code span (`code`) or a fenced block (`plain`) is shown as typed and
     parsed for no HTML, so it is written as it is. No `&lt;`/`&gt;` entity is
-    written to GitHub: a title and a code span print one as typed (BGD,
+    written to GitHub: a title and a code span print one as typed (the owner,
     2026-10-26, part of #2391);
   * every `@` that could mention someone broken with a zero-width joiner, by
     the worker's own rule (`agent_worker.lifecycle._neutralise_mentions`,
@@ -180,7 +180,7 @@ def plain(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool
     and shows it as text, and a fenced block shows every character as typed, so
     `&gt;` there is printed as `&gt;` (#2217 read 'implement -&gt; review -&gt;
     fix'). Every writer that posts to GitHub writes this, `prose` or `code`
-    (BGD, 2026-10-26, part of #2391).
+    (the owner, 2026-10-26, part of #2391).
     """
     masked = redact(str(text), extra=tuple(literals)).text.replace("\x00", "")
     if one_line:
@@ -313,7 +313,7 @@ _GRAPH_LABEL_DROP = re.compile(r"[^A-Za-z0-9_.:/ -]")
 
 def _lead_lines(plan: dict, literals: Sequence[str]) -> list[str]:
     """What the plan does, why, how big and how risky: the comment's first lines
-    (BGD, 6 November 2026). Only what the plan has; an older plan has none."""
+    (the owner, 6 November 2026). Only what the plan has; an older plan has none."""
     lines = []
     if plan.get("purpose"):
         lines.append(f"**{prose(plan['purpose'], 300, literals=literals, one_line=True)}**")

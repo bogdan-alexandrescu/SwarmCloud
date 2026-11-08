@@ -4,7 +4,7 @@ WHY (docs/design/test-services.md, owner decisions 2026-10-23, §10). The
 pre-publish `graph-pytest` check runs the tests that cover a change, and a
 repository whose tests need a database errored at setup on every one of
 them: since PR 1606 (#1605) that run is reported `skipped`, so a broken
-database test reached CI uncaught (four product-oracle lanes on 2026-10-19,
+database test reached CI uncaught (four peer-app lanes on 2026-10-19,
 every test `Connect call failed ('127.0.0.1', 5432)`). So a repository
 declares what its tests need, checked in at `DECLARATION_PATH`:
 
@@ -73,7 +73,7 @@ its cleanup, which every exit reaches -- finish, park, cancel, fence (§5.5).
 Invariant 7 is untouched: the server shares the worker container's fixed
 requests == limits and nothing is added to the pod.
 
-NEVER IN MEMORY (TS-CLOUDRUN-REFUSE, BGD 2026-10-24, "Refuse on Cloud Run").
+NEVER IN MEMORY (TS-CLOUDRUN-REFUSE, the owner 2026-10-24, "Refuse on Cloud Run").
 Without `SWARM_CACHE_ROOT` the attempt's cache is inside the workspace tmpfs
 (`cachedirs`), so the data directory would be charged to the container's
 memory, against which §4.1 allows a Postgres only 256 MiB. `start` refuses
@@ -678,7 +678,7 @@ def _start_postgres(
 #: (`CACHE_ROOT_ENV` unset, as on Cloud Run): its data would sit in the
 #: workspace tmpfs, charged to the container's memory, and design §4.1 caps a
 #: Postgres in memory at 256 MiB -- less than a test database and its backends
-#: need. BGD 2026-10-24: "Refuse on Cloud Run". Read from the environment, not
+#: need. The owner 2026-10-24: "Refuse on Cloud Run". Read from the environment, not
 #: from a profile name, so any runner without its own cache volume refuses.
 NO_CACHE_VOLUME = (
     f"test services need {CACHE_ROOT_ENV} on its own volume; "

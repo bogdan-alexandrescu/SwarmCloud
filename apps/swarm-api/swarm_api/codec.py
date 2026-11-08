@@ -923,7 +923,7 @@ SUMMARY_DROPPED_KEYS: tuple[str, ...] = (
 )
 
 #: The `metadata` keys `view=summary` serves (SUMMARY-TITLE, part of #2391):
-#: the title alone. BGD's decision of 2026-10-26 (VQ-009) is that the console
+#: the title alone. The owner's decision of 2026-10-26 (VQ-009) is that the console
 #: names a lone agent by its title in the list, with no read per row. Every
 #: other key stays out: the summary exists because the list moved megabytes of
 #: what it never draws (#168).
@@ -1791,7 +1791,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       does; null for a task summarised before the key, which counts as
       before. Each of `questions` carries its own words' key, `text_digest`
       (`notifications.question_text_digest`), so a wait's question and an
-      artifact's are matched too (the follow-up picked under BGD's overnight
+      artifact's are matched too (the follow-up picked under the owner's overnight
       grant, 6 November 2026).
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     * `plugin_ask`: for a plugin step PARKED on a question wait only (its work

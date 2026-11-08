@@ -58,7 +58,7 @@ run's own -- in the SIGNED prompt, one `KEEP_LINE` (`kept_commits`), the way
 it names a base. The worker reads no database for them: until 2026-10-20 it
 read `index_versions` from Firestore itself, a tenant not switched to the
 state routes was refused that read on every run (PermissionDenied, logged
-since at least 2026-10-15), and nothing was ever retired -- ai-studio held
+since at least 2026-10-15), and nothing was ever retired -- peer-app held
 163 manifests and ~880 MB where 20 versions were kept. The graph write never
 sweeps (`--no-sweep`): its sweep timed out in 19 of 19 runs there, reading
 163 manifests one at a time after a write of 86-97 s. The sweep is its own
@@ -205,7 +205,7 @@ EXTRACT_LSP_RESERVE_SECONDS = 180
 #: own: 0.10 of 1,800 s is 180 s. One batched upload of a full graph (~370
 #: blobs, 1.3 MB) takes well under a minute; the serial upload it replaced
 #: took ~3.9 s a blob, ~24 minutes, and could never fit. It was 0.15 (270 s)
-#: while the write also swept; measured on ai-studio 2026-10-20 the write
+#: while the write also swept; measured on peer-app 2026-10-20 the write
 #: alone takes 86-97 s, so 180 s is about twice that, and the other 90 s
 #: of the old reserve became the sweep's own (lane INDEX-RETENTION).
 GRAPH_WRITE_SHARE = 0.10

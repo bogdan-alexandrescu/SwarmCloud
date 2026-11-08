@@ -1,7 +1,7 @@
 """A plan's optional approval sections: what it does, why, what changes where,
-its risk, how it is validated, and the change graph (BGD, 6 November 2026).
+its risk, how it is validated, and the change graph (the owner, 6 November 2026).
 
-BGD asked, on the issue-run approvals page, to see "super quickly what the
+The owner asked, on the issue-run approvals page, to see "super quickly what the
 plan wants to do, why, whats going to change, where, and risk profiles plus
 test and qa plans for the validation part and diagrams or code graphs". A
 plan carried a summary, requirements, steps and overlaps; nothing said why,

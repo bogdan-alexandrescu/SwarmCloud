@@ -1,4 +1,4 @@
-"""A workspace's default review gate (#2524, BGD 2026-10-28: "every review step").
+"""A workspace's default review gate (#2524, the owner 2026-10-28: "every review step").
 
     GET /v1/workspaces/{tenant_id}/review-gate   the policy in force, the
                                                  platform's default, and whether

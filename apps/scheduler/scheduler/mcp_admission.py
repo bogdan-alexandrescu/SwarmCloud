@@ -18,7 +18,7 @@ the same kind of no:
   * A CREDENTIAL ITS CALLER CAN REPLACE: a `dispatch` server whose credential
     row is past `expires_at`, `destroyed` (the swarm-api sweep destroys a row
     once it expires) or not there at all, for a task whose credential is its
-    WORKFLOW's (a step, or a child of a step). BGD, 2026-10-26, for Product
+    WORKFLOW's (a step, or a child of a step). The owner, 2026-10-26, for Product
     Oracle's runs: the caller is online and can re-store it through
     `PUT /v1/workflows/{id}/mcp-credentials`, so the task parks
     CREDENTIAL_MISSING with `credential: "mcp"`, code `mcp_credential_expired`
@@ -143,7 +143,7 @@ class McpRefusal:
     #: or `missing`.
     why: str
     #: A credential refusal its caller can fix by re-storing the credential:
-    #: the task's credential is its workflow's (§4.10, BGD 2026-10-26).
+    #: the task's credential is its workflow's (§4.10, the owner 2026-10-26).
     restorable: bool = False
     #: When the refused credential row expired; None for a row with no
     #: readable expiry, a missing row, or a server refusal.
@@ -174,7 +174,7 @@ class McpAnswer:
         §4.10 ends it FAILED with the code, no lease (contract request 99:
         READY -> FAILED and PARKED -> FAILED). A workflow's task with the same
         refusal is NOT terminal: its caller can re-store the credential
-        (BGD 2026-10-26), so it parks (`waits_for_credential`)."""
+        (the owner 2026-10-26), so it parks (`waits_for_credential`)."""
         return any(r.credential and not r.restorable for r in self.refusals)
 
     @property

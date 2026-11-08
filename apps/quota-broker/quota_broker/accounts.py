@@ -102,7 +102,7 @@ DEFAULT_STALE_AFTER = timedelta(minutes=30)
 #: more expensive than simply not starting it there.
 DEFAULT_ASSIGN_FLOOR = 0.15
 
-#: A window's own floor, where it differs from DEFAULT_ASSIGN_FLOOR (BGD,
+#: A window's own floor, where it differs from DEFAULT_ASSIGN_FLOOR (the owner,
 #: 2026-10-24, #2222). One 15% floor on every window stranded six accounts
 #: with 2-14% of their WEEK left for one to four days, while 28 agents waited
 #: on the one account whose 5-hour window would clear first. Five per cent of
@@ -126,7 +126,7 @@ def window_floor(window: str, floor: float | None = None) -> float:
 
 
 #: How many agents one account may hold at once, unless its owner sets
-#: another number (BGD, 2026-10-24, #2222: "Per-account cap, staggered wake").
+#: another number (the owner, 2026-10-24, #2222: "Per-account cap, staggered wake").
 #:
 #: `choose()` hands a new agent the account with the MOST headroom, and an
 #: account's headroom does not move until its next reading arrives, minutes
@@ -144,19 +144,19 @@ DEFAULT_MAX_AGENTS = 6
 #: thousand cannot quietly turn the cap off.
 MAX_AGENTS_LIMIT = 50
 
-#: How many agents an account NOBODY HAS MEASURED YET may hold (#2222; BGD,
+#: How many agents an account NOBODY HAS MEASURED YET may hold (#2222; the owner,
 #: 2026-10-24 ~10:55Z, "One until measured"). A never-observed account reads
 #: as fully free (`Account.headroom`), so it won every pick until the poller
-#: read it: at 10:38Z that day eng:saga-team was handed an agent before its
+#: read it: at 10:38Z that day eng:example-team was handed an agent before its
 #: first reading, and the sign-in behind it had authorised the wrong
 #: organisation -- one whose week was 98% spent. One agent keeps a new account
 #: usable at once; its first reading decides the rest, up to `max_agents`.
 MAX_AGENTS_BEFORE_READING = 1
 
-#: IDENTICAL READINGS, THE FALLBACK FOR A MISSING ORGANISATION (#2222; BGD,
+#: IDENTICAL READINGS, THE FALLBACK FOR A MISSING ORGANISATION (#2222; the owner,
 #: 2026-10-24 17:26Z, "Build it as a safety net"). Nothing has yet confirmed
 #: the provider returns an organisation id, and without one `duplicates` finds
-#: nothing. The real pair of that morning (eng:team and eng:saga-personal, one
+#: nothing. The real pair of that morning (eng:team and eng:example-personal, one
 #: Personal Max subscription) read identical figures in every window with
 #: resets ONE SECOND apart. A reset is an absolute instant the provider keeps
 #: per subscription, so two subscriptions agree on it only by coincidence;
@@ -644,7 +644,7 @@ class Account:
     #: `choose`, `eligibility` and `accounts_serving` all go through it.
     model_classes: tuple[str, ...] = ()
 
-    #: The account's NAME (#1913; owner decision 2026-10-22, BGD, "Editable
+    #: The account's NAME (#1913; owner decision 2026-10-22, the owner, "Editable
     #: display name"): free text its owner chose, shown wherever the console
     #: names the account in place of its label. None is "no Name", which is
     #: every document written before this field, and the label shows.
@@ -865,12 +865,12 @@ class Account:
         on purpose: a new account has to be assignable before it can report
         anything, and assuming it empty makes onboarding a chicken-and-egg
         problem. But optimism alone made it win EVERY pick until the poller
-        read it: on 2026-10-24 at 10:38Z eng:saga-team was handed an agent
+        read it: on 2026-10-24 at 10:38Z eng:example-team was handed an agent
         before its first reading, and a sign-in that had authorised the wrong
         organisation would have run that agent -- and every one after it --
         against a week already 98% spent. So `choose()` hands a never-observed
         account at most `MAX_AGENTS_BEFORE_READING` agent
-        (`awaits_first_reading`); its first reading decides the rest (BGD,
+        (`awaits_first_reading`); its first reading decides the rest (the owner,
         "One until measured").
         """
         if not self.windows or self.observed_at is None:
@@ -924,7 +924,7 @@ class Account:
         asked only the readings, and a reading taken minutes before the refusal
         still showed room -- so the next agent was handed the account the
         provider had just refused, met the same 429, and parked (its review,
-        2026-10-25; BGD, "choose() honours limited_until"). This holds the
+        2026-10-25; the owner, "choose() honours limited_until"). This holds the
         account until the provider's own reset, or until a reading of the
         window the 429 named shows that window reset (`with_reading`), or an
         operator's resume (`AccountStore.set_state`) -- whichever is first.
@@ -1613,12 +1613,12 @@ def one_subscription(a: Account, b: Account) -> bool:
 
     ONLY THE PROVIDER'S IDENTITY DECIDES: the same organisation AND the same
     seat, both recorded on both. On the night of 24 to 25 October 2026 the
-    organisation alone withheld eng:aieng-claude1, eng:saga-team,
-    eng:ai-eng-3 and eng:devops-main as duplicates of ai-eng-2 (97% of its
+    organisation alone withheld eng:aieng-claude1, eng:example-team,
+    eng:eng-account-3 and eng:devops-main as duplicates of ai-eng-2 (97% of its
     week) -- four seats of one Team organisation, each with its own limits,
     two of which ran 15 agents each a few hours later. #2282 added the seat
     but paired an account whose seat was not recorded by IDENTICAL READINGS;
-    a usage reading is not an identity (BGD, 2026-11-02). So an account
+    a usage reading is not an identity (the owner, 2026-11-02). So an account
     whose identity is unknown is never one subscription with another:
     `identical_reading_pairs` still flags it, and that flag is advisory.
     """

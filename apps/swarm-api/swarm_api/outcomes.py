@@ -198,7 +198,7 @@ _CACHE_MAX_ENTRIES = 256
 #: counted under 9 has neither column, so it is re-derived once.
 #: 11 (2026-10-27, contract request 118, #2459): an attempt the worker stopped
 #: on its budget (`EndCause.BUDGET_EXCEEDED`) is its own failure class,
-#: `budget_exceeded` -- BGD's decision on the owner question of PR 2519. A
+#: `budget_exceeded` -- the owner's decision on the owner question of PR 2519. A
 #: stored day counted under 10 has no such key and counted those ends under
 #: `runner_error`, so every one is re-derived. CLASSIFIER_VERSION stays: no
 #: text rule was added, and a typed cause is read before any of them.
@@ -406,7 +406,7 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.VERDICT_FAILED.value: "verdict_failed",
     EndCause.PUBLISH_REFUSED.value: "publish_refused",
     # Contract request 118 (#2459): the worker stopped the agent on its
-    # budget. Its own class, not `runner_error`: BGD's decision, 2026-10-27,
+    # budget. Its own class, not `runner_error`: the owner's decision, 2026-10-27,
     # on the owner question of PR 2519 (DERIVE_VERSION 11).
     EndCause.BUDGET_EXCEEDED.value: "budget_exceeded",
     # Contract request 126 (#2509): a fix loop ended without a MERGE. Its own
@@ -1014,7 +1014,7 @@ NO_PROVIDER = "no provider"
 #: pool account are read off its attempts and events once it ends.
 NOT_ENDED = "not ended"
 #: The `pool_account` key of an agent that never takes a pool account
-#: (BGD, 2026-10-24 17:26Z, #2149 answer 4): its profile calls no provider or
+#: (the owner, 2026-10-24 17:26Z, #2149 answer 4): its profile calls no provider or
 #: takes no subscription token (mock, browser, codex, ...), or it was never
 #: admitted. `task_accounts.could_hold_account`'s rule, applied at READ time
 #: to the tuple's `profile` and `attempt_count` -- columns every v9 day
@@ -1022,7 +1022,7 @@ NOT_ENDED = "not ended"
 #: for an agent that could have held one and whose events name none.
 HOLDS_NO_ACCOUNT = "holds no account"
 #: The four breakdowns Platform counts offers, served together in every
-#: `usage` block (BGD, 2026-10-24 17:26Z, answer 3) so picking one never
+#: `usage` block (the owner, 2026-10-24 17:26Z, answer 3) so picking one never
 #: costs a read: agent type, model, workspace and pool account.
 USAGE_BREAKDOWNS = ("runner_profile", "model", "tenant_id", "pool_account")
 #: How many keys a grouping's per-bucket `series` names (answer 1): the five
@@ -1033,11 +1033,11 @@ USAGE_SERIES_NAMED = 5
 #: has a space, which no profile, model, tenant or account ID has.
 OTHER_KEYS = "all others"
 #: `usage` (#2149): which instant places an agent in the usage figures. The
-#: agent's submission (`created_at`, BGD's unit for Platform counts) or its end
+#: agent's submission (`created_at`, the owner's unit for Platform counts) or its end
 #: (`completed_at`, the basis of every outcome figure). No default: without
 #: `usage` the response carries no usage block, exactly as before it existed.
 USAGE_BASES = {"submitted": "created_at", "ended": "completed_at"}
-#: BGD's label, 2026-10-23: the figure is list price times reported tokens, or
+#: the owner's label, 2026-10-23: the figure is list price times reported tokens, or
 #: a stopped run's list-price estimate. It is never a bill.
 COST_LABEL = "Estimated cost (list price, not a bill)"
 COMPARES = ("none", "previous")
@@ -1123,7 +1123,7 @@ class Params:
         projection of, so cards asking for different sections of one query in
         the same minute share one scan (owner decision 2026-09-30).
 
-        And WITHOUT `group` (BGD, 2026-10-24 17:26Z, #2149 answer 3): a group
+        And WITHOUT `group` (the owner, 2026-10-24 17:26Z, #2149 answer 3): a group
         is a projection of the same placed tuples, so picking a breakdown
         never costs a read. `_Fold.groups` and `_Fold.usage` take the
         request's group."""
@@ -2696,7 +2696,7 @@ def _usage(
     reasons: Sequence[str | None],
 ) -> dict[str, Any]:
     """The `usage` block (#2149): agents per bucket and per `by` row, placed by
-    `basis` -- `submitted` by each agent's `created_at` (BGD's unit), joined to
+    `basis` -- `submitted` by each agent's `created_at` (the owner's unit), joined to
     its ended tuple by id; `ended` by its `completed_at`, like every outcome.
 
     `groups` is the request's `by`; `breakdowns` is every USAGE_BREAKDOWNS

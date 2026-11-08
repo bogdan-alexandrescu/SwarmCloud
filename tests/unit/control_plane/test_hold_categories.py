@@ -15,6 +15,7 @@ directly: no app, no Firestore, no credentials, no network.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from pathlib import Path
 
@@ -51,6 +52,14 @@ def _deny_list_from_common_sh() -> list[str]:
     block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
     assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
     return re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
+
+
+@pytest.fixture(autouse=True)
+def _rendered_from_common_sh(monkeypatch):
+    # swarm-api reads the list Terraform renders (SWARM_SHARED_DENY_LIST);
+    # these tests render common.sh's.
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(_deny_list_from_common_sh()))
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
 
 
 # --------------------------------------------------------------------------
@@ -158,8 +167,8 @@ def test_a_prompt_naming_a_tenant_scope_function_is_held_at_plan():
 # --------------------------------------------------------------------------
 
 def test_the_python_deny_list_is_the_one_in_common_sh():
-    # MUTATION: drop or add one entry of issueruns.SHARED_DENY_LIST and this is red.
-    assert list(issueruns.SHARED_DENY_LIST) == _deny_list_from_common_sh()
+    # MUTATION: drop or add one entry of the rendered list as read and this is red.
+    assert list(issueruns.shared_deny_list()) == _deny_list_from_common_sh()
 
 
 @pytest.mark.parametrize("name", [n for n in _deny_list_from_common_sh() if n != "default"])
