@@ -666,7 +666,7 @@ guard_deny_json() {
 #
 #   * `destroy.sh --self-test`, the CI step that exists so the guard is verified
 #     on every run rather than before use. It failed with exit 3
-#     (github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/35959558515);
+#     (github.com/example-org/example-repo/actions/runs/35959558515);
 #   * the real assertion in `destroy.sh`, which means `make destroy` could not
 #     run AT ALL. It fails closed, so nothing was at risk of deletion -- the
 #     teardown path was simply dead, and the one check that tells an operator
@@ -1055,6 +1055,46 @@ tf_var_file() {
   file="$(config_cache_dir "${ENVIRONMENT}")/${ENVIRONMENT}.tfvars"
   [[ -f "${file}" ]] || die "no tfvars for environment '${ENVIRONMENT}': $(config_source "${ENVIRONMENT}")/${ENVIRONMENT}.tfvars does not exist"
   printf '%s' "${file}"
+}
+
+# A value the deployment owns -- who its platform owner is, which domain it
+# admits, the prefix of its Kubernetes label keys -- is read from its own
+# <env>.tfvars, the object Terraform plans from, so a script and Terraform can
+# never hold two answers (docs/design/generic-repository.md, section 2). None is
+# written into code, and none is guessed: tf_var_file stops when the file
+# cannot be fetched. Only one-line assignments are read.
+#
+# deployment_setting NAME -> NAME's string value (`NAME = "value"`), or nothing.
+deployment_setting() {
+  local file
+  file="$(tf_var_file)" || return 1
+  sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"([^\"]*)\"[[:space:]]*(#.*)?$/\\1/p" "${file}" | tail -n 1
+}
+
+# deployment_list NAME -> NAME's strings (`NAME = ["a", "b"]`), one per line, or nothing.
+deployment_list() {
+  local file line
+  file="$(tf_var_file)" || return 1
+  line="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\[(.*)\][[:space:]]*(#.*)?$/\\1/p" "${file}" | tail -n 1)"
+  printf '%s\n' "${line}" | grep -oE '"[^"]+"' | tr -d '"' || true
+}
+
+# deployment_label_prefix -> the prefix of this deployment's Kubernetes label
+# keys: `label_prefix`, else swarm.<its first allowed domain> (design section
+# 3.3), which gives a deployment exactly the keys it already carries. Returns 1,
+# saying why, when neither is set: a guard never judges against a guessed key.
+deployment_label_prefix() {
+  local prefix domain
+  prefix="$(deployment_setting label_prefix)" || return 1
+  if [[ -z "${prefix}" ]]; then
+    domain="$(deployment_list allowed_domains | head -n 1)" || return 1
+    [[ -n "${domain}" ]] && prefix="swarm.${domain}"
+  fi
+  if [[ ! "${prefix}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+    err "this deployment's tfvars set neither label_prefix nor allowed_domains, so its label keys are unknown"
+    return 1
+  fi
+  printf '%s' "${prefix}"
 }
 
 # Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
@@ -2870,7 +2910,7 @@ redact() {
   # value is in the marked span, so the s command puts it back.
   local v_ends='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
   # `$(cmd ...)`, `${NAME}` and `${{ expr }}` are kept only as a whole,
-  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; BGD,
+  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; the owner,
   # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
   # Up to three closing quotes before that end, for nested quoting, and a
   # `$(` whose line ends in a continuation is kept, as main kept both.

@@ -63,7 +63,7 @@
 # commit status on each head it lands, so the ruleset can require that context
 # (the runbook's change) and nothing reaches main without a green train.
 #
-# RED (BGD, 6 November 2026: keep the train and fix red trains). From 4 to 6
+# RED (the owner, 6 November 2026: keep the train and fix red trains). From 4 to 6
 # November 74 of 139 trains were red, mostly on checks known to fail at random
 # ('format / unit tests', 'swarm-ui typecheck / component tests', single
 # shards), and 6 of 18 ejected pull requests later landed with no change. So a
@@ -150,7 +150,7 @@
 #       one only judges). Neither token is ever printed.
 set -euo pipefail
 # This script touches no project: it reads and writes GitHub only. It says
-# so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on an
+# so, so common.sh (no default project, the Day One project-defaults lane) does not stop on an
 # unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
@@ -319,7 +319,7 @@ cmd_select() {
   # that is not required does not hold it (#815).
   # A check run is done when its status is COMPLETED, OR when it carries a
   # conclusion together with a completedAt, whatever its status says -- as
-  # `judge` reads it (BGD 2026-10-23, CHECK-STUCK-2, part of #2031): GitHub
+  # `judge` reads it (the owner 2026-10-23, CHECK-STUCK-2, part of #2031): GitHub
   # left PR 2006's `secret scan` IN_PROGRESS with a conclusion. A commit
   # status keeps its own reading.
   # --allow-unknown-mergeable also boards a pull request whose mergeability
@@ -439,20 +439,20 @@ cmd_judge() {
   # pull_request run, or a workflow run started again -- is listed once per
   # suite: PR 1966 listed ci-gate twice at 5b25774, (failure, success) (#1999).
   # So a check is decided here by the latest run (highest id) of EACH event
-  # that ran it (BGD 2026-10-22, CHECK-RULE-2, part of #1999), as the worker's
+  # that ran it (the owner 2026-10-22, CHECK-RULE-2, part of #1999), as the worker's
   # merge step, swarm-api and auto-merge.yml's gate 5 decide it: a re-run
   # replaces the earlier runs of its own event, never another's. The event is
   # the one that made the run's check suite, from --workflow-runs (GET
   # actions/runs?head_sha=, optional); a suite no Actions run names is its own
   # group, so without the file each check suite is judged on its own.
   # A run has finished when its status is completed, OR when it carries a
-  # conclusion together with a completed_at, whatever its status says (BGD
+  # conclusion together with a completed_at, whatever its status says (the owner
   # 2026-10-23, CHECK-STUCK, part of #2031): GitHub left PR 2006's `secret
   # scan` at in_progress with conclusion success and a completed_at. A run
   # with no conclusion stays pending; the worker's `check_run_finished` and
   # auto-merge.yml's gates 5-6 state the same rule.
   # A latest run that finished `cancelled` is neither bad nor good (#1778,
-  # BGD released bundle H09, 2026-10-27): someone stopped it, so a required
+  # The owner released bundle H09, 2026-10-27): someone stopped it, so a required
   # one leaves the verdict pending until its re-run answers, and a red
   # latest run of another event still makes the verdict red. The worker's
   # `cancelled_run` and swarm-api's `forgechecks.cancelled_run` say the same.

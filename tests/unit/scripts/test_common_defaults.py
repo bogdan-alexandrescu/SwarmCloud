@@ -166,7 +166,7 @@ def test_dev_loop_sets_its_project_before_sourcing() -> None:
 
 #: What CI runs with no PROJECT_ID (application.yml's shell and quick-checks
 #: jobs, security.yml's checks and trivy jobs): each touches no project, says
-#: so with SWARM_NO_PROJECT=1, and must get past common.sh (DAYONE-DESAGA-2B).
+#: so with SWARM_NO_PROJECT=1, and must get past common.sh (the Day One project-defaults lane).
 #: The guards' self-tests prove themselves against the placeholder list
 #: (deny_list_use_example). destroy.sh's is not here: its fixture still names
 #: the old literal's resources, which lane 3 replaces (see the PR body).

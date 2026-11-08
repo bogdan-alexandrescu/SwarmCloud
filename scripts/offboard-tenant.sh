@@ -12,7 +12,7 @@
 # such a registration can read NOTHING of the old tenant. Provider secrets are
 # NOT this script's: terraform deletes them with the tenant's removal from
 # tfvars, and the owner chose not to add deletion protection to them. Two
-# secrets ARE this script's (OWNER DECISION, BGD 2026-10-22, #1977): the forge
+# secrets ARE this script's (OWNER DECISION, the owner 2026-10-22, #1977): the forge
 # slot swarm-tenant-<id>-git and the QA secret swarm-tenant-<id>-qa, which
 # scripts/register-tenant.sh makes and no terraform removal reaches. swarm-api
 # hands a tenant the slot of its id, so a slot that outlived its tenant gave

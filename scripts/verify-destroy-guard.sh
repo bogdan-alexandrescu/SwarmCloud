@@ -2,8 +2,8 @@
 # Prove the destroy guard against a REAL terraform plan, not a hand-written fixture.
 #
 # WHY THIS EXISTS. `make destroy` is the only thing standing between this
-# repository and another team's production: saga-agents-staging holds their live
-# GKE cluster `agents-staging`, their VPC, two subnets, three buckets, twelve
+# repository and another team's production: example-project holds their live
+# GKE cluster `peer-cluster`, their VPC, two subnets, three buckets, twelve
 # service accounts and Firestore's shared `(default)` database. The guard that
 # protects them had never been run against a real `terraform show -json` -- every
 # test of it fed jq fixtures written by hand to match the code.

@@ -32,9 +32,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
-GH_REPO = "bogdan-alexandrescu/SwarmCloud"
-RUN_URL = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/42000000001"
-FAILED_URL = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/41842863519/job/7"
+GH_REPO = "example-org/example-repo"
+RUN_URL = "https://github.com/example-org/example-repo/actions/runs/42000000001"
+FAILED_URL = "https://github.com/example-org/example-repo/actions/runs/41842863519/job/7"
 
 FAKE_GH = """#!/usr/bin/env bash
 set -euo pipefail

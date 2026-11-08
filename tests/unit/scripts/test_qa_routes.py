@@ -172,7 +172,7 @@ def test_the_budget_card_is_captured_on_its_three_by_id_agents():
     """BUDGET-FIXTURES (part of #2459): the agent's Budget card is drawn only
     for a budgeted agent, and no listed fixture task has a budget, so each of
     its three states is captured on an agent the fixture build answers BY ID
-    and keeps OFF THE LISTS (BGD, 2026-10-27): other tests pin every count."""
+    and keeps OFF THE LISTS (the owner, 2026-10-27): other tests pin every count."""
     routes = {r["id"]: r for _g, r in _all_routes()}
     tasks = _fixture_tasks()
     budget_tasks = _budget_fixture()

@@ -35,7 +35,7 @@ WORKFLOW = ROOT / "scripts" / "acceptance" / "groups" / "workflow.sh"
 DOCKERFILE = ROOT / "images" / "swarm-verify" / "Dockerfile"
 CLOUDBUILD = ROOT / "images" / "swarm-verify" / "cloudbuild.yaml"
 
-VERIFY = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+VERIFY = "swarm-verify@example-project.iam.gserviceaccount.com"
 OWN = tenant_id_for_user(VERIFY)
 
 #: The ACC_CHECK of each workflow run_workflow submits, and whether it runs in

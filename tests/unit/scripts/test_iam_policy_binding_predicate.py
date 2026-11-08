@@ -9,7 +9,7 @@ carries every tenant's bindings -- neither grep could return false:
     grep -q "serviceAccount:${GSA_EMAIL}"      # true once THIS member holds any
 
 terraform/modules/tenancy/main.tf binds swarmBucketMetadataReader on that bucket
-for `for_each = var.tenants`, so in dev the tenants eng, smoke and u-bogdan are
+for `for_each = var.tenants`, so in dev the tenants eng, smoke and u-owner are
 all in the policy before this script ever runs. Registering a tenant that is not
 in var.tenants -- which is exactly what this script is for -- matched one of
 their bindings and printed "already granted" for a grant nobody had made. The
@@ -42,7 +42,7 @@ OBJECT_ROLE = "roles/storage.objectUser"
 THIS_TENANT = f"serviceAccount:swarm-agent-worker-research@{PROJECT}.iam.gserviceaccount.com"
 OTHER_TENANTS = [
     f"serviceAccount:swarm-agent-worker-{t}@{PROJECT}.iam.gserviceaccount.com"
-    for t in ("eng", "smoke", "u-bogdan")
+    for t in ("eng", "smoke", "u-owner")
 ]
 
 pytestmark = pytest.mark.skipif(
@@ -67,7 +67,7 @@ def _shared_bucket_policy() -> dict[str, object]:
     bindings: list[dict[str, object]] = [
         {"role": METADATA_ROLE, "members": list(OTHER_TENANTS)},
     ]
-    for member, tenant in zip(OTHER_TENANTS, ("eng", "smoke", "u-bogdan")):
+    for member, tenant in zip(OTHER_TENANTS, ("eng", "smoke", "u-owner")):
         bindings.append(
             {"role": OBJECT_ROLE, "members": [member], "condition": _condition(tenant)}
         )
@@ -124,7 +124,7 @@ def _binds(tmp_path: Path, policy: object, role: str, member: str) -> bool:
 
 
 def test_another_tenants_binding_on_the_same_role_is_not_this_tenants(tmp_path) -> None:
-    """The reproduction: eng/smoke/u-bogdan hold the role, research does not.
+    """The reproduction: eng/smoke/u-owner hold the role, research does not.
 
     This is the whole finding. `grep -q swarmBucketMetadataReader` over this same
     policy is true, so register-tenant.sh skipped the grant and said it existed.

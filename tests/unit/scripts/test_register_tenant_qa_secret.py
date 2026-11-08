@@ -5,7 +5,7 @@ terraform/infra/qa_targets.tf (VQ3-QA-SECRET, PR 1943) declares
 `component=qa-target-credential`, and readable and writable by swarm-api's
 account alone (rows V-1 and V-2 of docs/design/visual-qa-any-app.md §7). A
 tenant this script registers is not in `var.tenants`, so it got none, and no
-own-login credential could be stored for it. BGD, 2026-10-22 08:44Z:
+own-login credential could be stored for it. The owner, 2026-10-22 08:44Z:
 "register-tenant.sh creates it".
 
 What has to hold, for a full registration (`--group`, `--user`):

@@ -37,8 +37,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
-GH_REPO = "bogdan-alexandrescu/SwarmCloud"
-RUN_URL = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/42000000001"
+GH_REPO = "example-org/example-repo"
+RUN_URL = "https://github.com/example-org/example-repo/actions/runs/42000000001"
 TRAIN = 3400
 
 FAKE_GH = r'''#!{python}

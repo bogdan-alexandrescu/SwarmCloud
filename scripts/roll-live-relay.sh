@@ -80,7 +80,7 @@
 #     on SHARED_DENY_LIST, checked BEFORE get-credentials and before apply.sh;
 #   * the context's kubeconfig cluster entry must be exactly
 #     gke_<PROJECT_ID>_<GKE_LOCATION>_<cluster>, so the cluster apply.sh writes
-#     to and the cluster this script waits on are one, and never agents-staging.
+#     to and the cluster this script waits on are one, and never peer-cluster.
 #     apply.sh repeats all of these checks itself.
 #
 # Exit: 0 the relay runs the rendered digest (or the relay is off, or a dry run

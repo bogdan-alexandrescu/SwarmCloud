@@ -26,7 +26,7 @@
 
 set -euo pipefail
 # This script touches no project: it reads the tree. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
@@ -107,7 +107,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
 from swarm_common.models import Tenant
-print(Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+print(Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
              created_at=datetime.now(timezone.utc)).secret_name("anthropic"))
 PY
 )"
@@ -749,7 +749,7 @@ fi
 #       case of all: it agrees with the bug and makes the suite prove it.
 #
 # This is a STATIC scan of the repository and cannot see Firestore: a tenant
-# document that stores a namespace outside the prefix (u-bogdan's, 2026-10-11)
+# document that stores a namespace outside the prefix (u-owner's, 2026-10-11)
 # is caught at runtime instead, by `verified_namespace` in
 # apps/scheduler/scheduler/dispatch.py and apps/reconciler/reconciler/backends.py
 # (the `tenant_namespace_mismatch` log entry and alert), and on demand by
@@ -915,7 +915,7 @@ else:
 # it is a line comment in every language scanned here.
 #
 # apps/swarm-ui IS SCANNED LIKE EVERYTHING ELSE. Its display-only fixtures
-# carried `swarm-u-bogdan` and were reported ADVISORY from 2026-09-24 until the
+# carried `swarm-u-owner` and were reported ADVISORY from 2026-09-24 until the
 # 2026-10-11 stale-name audit renamed them; the advisory branch went with them,
 # so a browser fixture that restates a wrong prefix now fails like any other.
 # The apostrophe is BUILT, not written. This probe is a heredoc inside a

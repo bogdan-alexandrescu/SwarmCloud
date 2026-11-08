@@ -260,7 +260,7 @@ def test_it_runs_only_on_main(event):
 
 
 def test_it_names_no_environment_and_never_prod():
-    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, BGD
+    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, the owner
     # 2026-10-23): it holds the sandbox token, main only, with no reviewers and
     # no deployment record. It gates nothing; a deploy environment would.
     for job_id, job in _accept()["jobs"].items():

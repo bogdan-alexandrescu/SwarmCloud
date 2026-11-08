@@ -67,7 +67,7 @@ case "${BASH_SOURCE[0]}" in
   *)   GUARD_SELF_DIR="." ;;
 esac
 # self-test judges the fixture cases and touches no project, and says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID. Every other subcommand runs inside a workspace build that names
 # one.
 case "${1:-}" in
@@ -1389,7 +1389,7 @@ cmd_expect() {
       # (§4.3 A7); C7 requires it on the Namespace.
       + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id} end)
       # The QA target credential secret of a person, and the one account C6
-      # may bind on it (§2.1, §7 V-1/V-2; BGD 2026-10-22: the deployer job
+      # may bind on it (§2.1, §7 V-1/V-2; the owner 2026-10-22: the deployer job
       # makes it). A PERSONAL expectation only: the secret binder of the
       # deployer stops at swarm-tenant-u-, so no group or service has one.
       + (if $kind == "personal" then {qa_secret: $qa_name, api_email: $api_email} else {} end)
@@ -1512,7 +1512,7 @@ cmd_self_test() {
   # A fixed, credential-free environment: the self-test judges names, so the
   # names must not depend on whoever runs it.
   export SWARM_ENV_FILE="${tmp}/no.env"
-  export PROJECT_ID="saga-agents-staging" REGION="us-central1" ENVIRONMENT="dev"
+  export PROJECT_ID="example-project" REGION="us-central1" ENVIRONMENT="dev"
   export FIRESTORE_DATABASE="swarm" GKE_CLUSTER="swarm-autopilot" GKE_LOCATION="us-central1"
   unset ARTIFACT_BUCKET SWARM_CALL_GUARD_MODE SWARM_KUBECTL SWARM_APPROVAL_PIN
   export SWARM_CALL_GUARD="${tmp}/expect.json"

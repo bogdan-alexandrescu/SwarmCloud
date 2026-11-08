@@ -2,7 +2,7 @@
   "about": "The workspace call guard's self-test (docs/workspaces.md \u00a72.5). Every rule in workspace-calls.json has a call it must refuse and a call it must allow. `rule` is the rule a case exercises; `by` (default: rule) is the rule the guard must name in its verdict. Values in braces come from the expectation the self-test builds from `record` with the guard's own `expect`, plus {casedir}, {fake_token} and {auth_config} (common.sh's auth_config around the fake token: the line fs_request writes), made at run time so nothing here looks like a credential. `phase` is bootstrap (before A1), ready (the default) or stopped (after a refusal). expect_refusals are records `expect` must refuse to turn into an expectation. `kind_records` are a group's and a service's records (docs/design/workspace-kinds.md \u00a74.3); a case or an expect_refusal that names a `kind` is judged against that kind's expectation, and the rest against `record`'s, a person's.",
   "workspace_id": "w-3f9a2c",
   "record": {
-    "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-alice",
+    "name": "projects/example-project/databases/swarm/documents/workspaces/u-alice",
     "fields": {
       "tenant_id": {
         "stringValue": "u-alice"
@@ -37,7 +37,7 @@
             "stringValue": "u-bob"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-bob"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-bob"
       }
     },
     {
@@ -53,7 +53,7 @@
     {
       "name": "a record filed under another tenant",
       "change": {
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-bob"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-bob"
       }
     },
     {
@@ -64,7 +64,7 @@
             "stringValue": "eng"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/eng"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/eng"
       }
     },
     {
@@ -76,7 +76,7 @@
             "stringValue": "reports-bot"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/reports-bot"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/reports-bot"
       }
     },
     {
@@ -91,7 +91,7 @@
             "stringValue": "u-eng"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-eng"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-eng"
       }
     },
     {
@@ -103,7 +103,7 @@
             "stringValue": "u-research"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-research"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-research"
       }
     },
     {
@@ -112,7 +112,7 @@
       "change": {
         "fields": {
           "principal": {
-            "stringValue": "research@saga-agents-staging.iam.gserviceaccount.com"
+            "stringValue": "research@example-project.iam.gserviceaccount.com"
           }
         }
       }
@@ -139,7 +139,7 @@
             "stringValue": "eng"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/eng"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/eng"
       }
     },
     {
@@ -148,13 +148,13 @@
       "change": {
         "fields": {
           "principal": {
-            "stringValue": "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+            "stringValue": "oracle-api@example-project.iam.gserviceaccount.com"
           },
           "tenant_id": {
             "stringValue": "u-or-9a0792"
           }
         },
-        "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-or-9a0792"
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-or-9a0792"
       }
     }
   ],
@@ -2847,7 +2847,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a group's namespace without the job's label",
@@ -2875,7 +2875,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: w-000000\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: w-000000\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a service's namespace with the job's label",
@@ -2889,7 +2889,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a service's namespace without the job's label",
@@ -2934,7 +2934,7 @@
   ],
   "kind_records": {
     "group": {
-      "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/research",
+      "name": "projects/example-project/databases/swarm/documents/workspaces/research",
       "fields": {
         "tenant_id": {
           "stringValue": "research"
@@ -2954,7 +2954,7 @@
       }
     },
     "service": {
-      "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-re-75c2e5",
+      "name": "projects/example-project/databases/swarm/documents/workspaces/u-re-75c2e5",
       "fields": {
         "tenant_id": {
           "stringValue": "u-re-75c2e5"
@@ -2963,7 +2963,7 @@
           "stringValue": "w-3f9a2c"
         },
         "principal": {
-          "stringValue": "reports-bot@saga-agents-staging.iam.gserviceaccount.com"
+          "stringValue": "reports-bot@example-project.iam.gserviceaccount.com"
         },
         "kind": {
           "stringValue": "service"

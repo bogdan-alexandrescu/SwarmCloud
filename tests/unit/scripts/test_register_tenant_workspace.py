@@ -58,7 +58,7 @@ PYCACHE = Path(tempfile.gettempdir()) / f"swarm-test-pycache-{os.getuid()}"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 WORKSPACE = "w-3f9a2c"
 PRINCIPAL = "alice@example.com"
 TENANT = "u-alice"
@@ -76,7 +76,7 @@ BUCKET = f"swarm-artifacts-{PROJECT}"
 SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
 TWIN = SLOT + "-refresh"
 #: The tenant's QA target credential secret (docs/design/visual-qa-any-app.md
-#: §2.1, §7 V-1/V-2): the deployer makes it for a PERSONAL workspace only (BGD,
+#: §2.1, §7 V-1/V-2): the deployer makes it for a PERSONAL workspace only (the owner,
 #: 2026-10-22), with swarm-api alone bound on it.
 QA = f"swarm-tenant-{TENANT}-qa"
 API = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
@@ -198,7 +198,7 @@ def _world() -> dict:
             RECONCILER: {"policy": {"version": 1}, "keys": [], "uid": str(uid + 1)},
         },
         "bucket_policy": {"version": 3, "etag": "BwX=", "bindings": [
-            {"role": "roles/storage.objectViewer", "members": ["serviceAccount:swarm-api@x.iam.gserviceaccount.com"]}]},
+            {"role": "roles/storage.objectViewer", "members": ["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"]}]},
         "project_policy": {"version": 1, "bindings": []},
         "objects": {},
         "secrets": {},
@@ -799,7 +799,7 @@ def test_a_guard_refusal_stops_the_run_as_needs_owner(job: Job) -> None:
     judges the kubeconfig's current one, refuses it by the shared deny-list,
     and the latch refuses everything after; the script records needs_owner.
     """
-    job.edit(lambda w: w.update(kube_current_context="gke_saga-agents-staging_us-central1-a_agents-staging"))
+    job.edit(lambda w: w.update(kube_current_context="gke_example-project_us-central1-a_peer-cluster"))
     proc = job.create()
     out = _out(proc)
     assert proc.returncode == STOPPED, out
@@ -1035,7 +1035,7 @@ def test_verify_finds_a_quota_whose_cpu_limit_cannot_hold_its_pods(job: Job, rea
 
 def _hand_applied_quota(world: dict) -> None:
     """kubernetes/render.py's flat defaults, as `kubernetes/apply.sh --tenant`
-    applied them by hand to u-bogdan's namespace (#2039)."""
+    applied them by hand to u-owner's namespace (#2039)."""
     hard = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
     hard.update({"pods": "100", "requests.cpu": "400", "limits.cpu": "800"})
 
@@ -1145,7 +1145,7 @@ def test_verify_of_a_migrated_record_needs_no_approval_and_allows_the_deployer(j
 
 
 def test_verify_of_a_migrated_record_does_not_require_the_legacy_ksa_binding(job: Job, ready_world: dict) -> None:
-    # A Terraform-made tenant (u-bogdan, W9) binds Workload Identity for
+    # A Terraform-made tenant (u-owner, W9) binds Workload Identity for
     # swarm-agent-worker only; the legacy swarm-worker is rendered only where
     # IAM binds it (kubernetes/README.md). Measured 2026-10-10: A9 failed
     # w-752763 on exactly this binding.
@@ -1175,7 +1175,7 @@ LEGACY_OBJECTS = (f"ServiceAccount/{NAMESPACE}/swarm-worker", f"RoleBinding/{NAM
 
 
 def _as_terraform_made(world: dict) -> None:
-    """u-bogdan's shape (W9, measured 2026-10-10 on w-752763): a migrated
+    """u-owner's shape (W9, measured 2026-10-10 on w-752763): a migrated
     record, no legacy swarm-worker binding and no legacy namespace objects."""
     fields = world["firestore"][f"workspaces/{TENANT}"]["fields"]
     fields.pop("decision")
@@ -1786,7 +1786,7 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
     namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
-    assert namespace["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    assert namespace["metadata"]["labels"]["swarm.example.com/workspace"] == WORKSPACE
     tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
             _field(tenant, "service_account"), _field(tenant, "display_name")) == (
@@ -1808,7 +1808,7 @@ def _deny_listed_account() -> str:
 @pytest.mark.parametrize("principal,account", [
     (_deny_listed_account(), None),
     (f"swarm-api@{PROJECT}.iam.gserviceaccount.com", None),
-    ("reports-bot@other-project-1.iam.gserviceaccount.com", None),
+    ("reports-bot@example-shared-project.iam.gserviceaccount.com", None),
     (SERVICE, {}),
     (SERVICE, {"policy": {"version": 1}, "keys": [], "uid": SERVICE_UID, "disabled": True}),
 ], ids=["shared-deny-list", "platform-account", "another-project", "absent", "disabled"])
@@ -1953,9 +1953,9 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert world["secrets"][twin]["policy"].get("bindings", []) == []
     # A7: the label, on the Namespace and nowhere else.
     labelled = [k for k, v in world["k8s"].items()
-                if "swarm.saga.xyz/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
+                if "swarm.example.com/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
     assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
-    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.example.com/workspace"] == WORKSPACE
     # A8: a group tenant the directory resolves.
     tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
@@ -2010,8 +2010,8 @@ def test_a1_refuses_a_group_whose_tenant_is_someone_elses_before_any_write(job: 
 
 
 def test_a1_refuses_a_service_whose_id_is_a_persons(job: Job) -> None:
-    """`bogdan@<project>.iam.gserviceaccount.com` derives `u-bogdan`, the id
-    of bogdan@example.com's personal workspace: never adopted."""
+    """`owner@<project>.iam.gserviceaccount.com` derives `u-owner`, the id
+    of owner@example.com's personal workspace: never adopted."""
     world = _service_world()
     world["firestore"][f"tenants/{S_TENANT}"] = _tenant_doc("someone@example.com", "user")
     job.write(world)
@@ -2046,7 +2046,7 @@ def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> Non
 def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
     world = copy.deepcopy(group_created["world"])
     world["calls"], world["writes"] = [], []
-    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"]
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.example.com/workspace"]
     job.write(world)
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)

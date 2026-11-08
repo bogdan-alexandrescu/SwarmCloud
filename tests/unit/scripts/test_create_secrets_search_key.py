@@ -80,7 +80,7 @@ def _run(tmp_path: Path, *args: str, stdin: str = "", existing: str = "",
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "SWARM_ENV_FILE": str(tmp_path / "no-such.env"),
-        "PROJECT_ID": "swarm-test-project",
+        "PROJECT_ID": "example-project",
         "REGION": "us-central1",
         "ENVIRONMENT": "dev",
         "NO_COLOR": "1",
@@ -119,7 +119,7 @@ def test_a_missing_secret_is_created_stored_and_granted_to_swarm_api_alone(tmp_p
     assert len(adds) == 1 and adds[0]["args"][3] == SECRET and adds[0]["data"] == value
     grants = [c for c in calls if c["args"][:2] == ["secrets", "add-iam-policy-binding"]]
     assert len(grants) == 1
-    assert ("--member=serviceAccount:swarm-api@swarm-test-project.iam.gserviceaccount.com"
+    assert ("--member=serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
             in grants[0]["args"])
     assert "--role=roles/secretmanager.secretAccessor" in grants[0]["args"]
     assert value not in out, "the key reached the script's output"

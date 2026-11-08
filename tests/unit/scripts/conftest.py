@@ -1,6 +1,6 @@
 """Wiring for the script tests in tests/unit/scripts.
 
-scripts/lib/common.sh has no default project, region or zone (DAYONE-DESAGA-2;
+scripts/lib/common.sh has no default project, region or zone (the Day One project-defaults lane;
 docs/design/generic-repository.md, section 2.2): sourcing it with any of them
 unset is an error. And once a project is named, it reads that deployment's
 never-touch list from config/<env>/deny-list.json and stops when it cannot

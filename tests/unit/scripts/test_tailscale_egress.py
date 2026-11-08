@@ -59,7 +59,7 @@ TENANT_POLICY = KUBERNETES / TENANT_POLICY_FILE
 TAILSCALE_TF = REPO / "terraform" / "infra" / "tailscale.tf"
 RELAY_TEMPLATE = KUBERNETES / "swarm-system" / "swarm-live.yaml"
 
-TARGET = "decision-api-staging.taile0bda9.ts.net"
+TARGET = "decision-api.example-tailnet.ts.net"
 POD_LABEL = {"swarm-judge": "internal"}
 APP = {"app.kubernetes.io/name": "decision-api-egress"}
 FORWARD_PORT = 8443
@@ -241,7 +241,7 @@ def test_one_service_decision_api_on_443_to_the_forwarder():
     assert service["spec"]["ports"] == [
         {"name": "https", "protocol": "TCP", "port": SERVICE_PORT, "targetPort": FORWARD_PORT}
     ]
-    assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"]["swarm.example.com/tailnet-fqdn"] == TARGET
     ports = [p["containerPort"] for c in _pod()["containers"] for p in c.get("ports", [])]
     assert ports == [FORWARD_PORT]
 
@@ -265,7 +265,7 @@ def test_swarm_api_reaches_the_same_forwarder_through_an_internal_passthrough_lo
     spec = service["spec"]
     assert spec["type"] == "LoadBalancer"
     assert service["metadata"]["annotations"]["networking.gke.io/load-balancer-type"] == "Internal"
-    assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"]["swarm.example.com/tailnet-fqdn"] == TARGET
     assert spec["loadBalancerIP"] == ROUTE_ADDRESS
     assert spec["externalTrafficPolicy"] == "Cluster"
     assert spec["selector"] == APP

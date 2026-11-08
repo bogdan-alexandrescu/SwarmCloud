@@ -67,7 +67,7 @@ SETTINGS = (
 )
 CHECKS = ("link-on", "ask", "approve", "selects", "no-group-write", "removal", "link-off")
 TENANT = "join-accept"
-ADMIN = "qa-admin@p.iam.gserviceaccount.com"
+ADMIN = "qa-admin@example-project.iam.gserviceaccount.com"
 PERSON = "join-tester@example.com"
 PERSON_SECRET = "swarm-acceptance-join-person"
 API_URL = "https://swarm-api.example.a.run.app"
@@ -357,7 +357,7 @@ def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_accoun
     peer_sa = placeholder_deployment.PEER["service_account"]
     for name, value in ((SETTINGS[0], "smoke"), (SETTINGS[0], "u-someone"), (SETTINGS[0], "Eng"),
                         (SETTINGS[1], peer_sa),
-                        (SETTINGS[2], "swarm-qa@p.iam.gserviceaccount.com"),
+                        (SETTINGS[2], "swarm-qa@example-project.iam.gserviceaccount.com"),
                         (SETTINGS[3], "a/b"), (SETTINGS[3], peer_secret)):
         proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value})
         assert "REFUSED" in proc.stdout, (name, value)

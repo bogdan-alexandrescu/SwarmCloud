@@ -3,12 +3,12 @@
 # default, `index.min_change_interval_minutes = 30`, to the new one, 120.
 # A ONE-TIME MIGRATION (docs/repo-index.md §3.3, "Moving the old default").
 #
-# WHY. #2524 (BGD, 2026-10-27) raised MIN_CHANGE_INTERVAL_DEFAULT in
+# WHY. #2524 (the owner, 2026-10-27) raised MIN_CHANGE_INTERVAL_DEFAULT in
 # apps/swarm-api/swarm_api/repositories.py from 30 to 120 minutes: 845 index
 # runs in the week 2026-10-20..27, mostly change-triggered. But
 # `_index_defaults` WRITES the default into every registration it creates, so
 # every registration made before #2524 holds a literal 30, and changing the
-# constant moved none of them. BGD, 2026-10-28: "a ONE-TIME MIGRATION, not a
+# constant moved none of them. The owner, 2026-10-28: "a ONE-TIME MIGRATION, not a
 # read-time rule. Reads of min_change_interval_minutes stay literal." A rule
 # that read a stored 30 as 120 was built and removed: it makes the document
 # disagree with what the poll applies, and it cannot tell the old default from
@@ -30,7 +30,7 @@
 # refused by Firestore, reported, and left as it is; run again to pick it up.
 # A re-run finds nothing left to move and writes nothing.
 #
-# THE OPERATOR RUN AGAINST A DEPLOYED ENVIRONMENT WAITS FOR BGD'S GO-AHEAD.
+# THE OPERATOR RUN AGAINST A DEPLOYED ENVIRONMENT WAITS FOR the owner'S GO-AHEAD.
 #
 # Usage:
 #   scripts/migrate-index-interval.sh                 # dry run: list and count
@@ -133,7 +133,7 @@ done <"${WORK}/rows.tsv"
 printf '%s registration(s) store %s = %s\n' "${COUNT}" "${FIELD}" "${FROM_MINUTES}"
 
 if [[ "${APPLY}" -eq 0 ]]; then
-  info "dry run: nothing was written. --apply rewrites them to ${TO_MINUTES} (operator run waits for BGD's go-ahead)."
+  info "dry run: nothing was written. --apply rewrites them to ${TO_MINUTES} (operator run waits for the owner's go-ahead)."
   exit 0
 fi
 if [[ "${COUNT}" -eq 0 ]]; then

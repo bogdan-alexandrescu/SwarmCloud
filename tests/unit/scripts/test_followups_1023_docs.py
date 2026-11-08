@@ -5,7 +5,7 @@ sentence elsewhere saying the opposite. Each check below reads the sentence
 that was wrong and the one that replaced it:
 
   * contract request 114: swarm-api's startup CPU boost (PR 2132, #1816
-    option (a)) is BGD's one recorded exception to invariant 7, and every other
+    option (a)) is the owner's one recorded exception to invariant 7, and every other
     service and every worker stays as the invariant says. The invariant's own
     text in CLAUDE.md and CONTRACT.md is not softened by it;
   * design-system.md: the 560px phone block spares the Overview Pools list's
@@ -65,7 +65,7 @@ def test_the_swarm_api_cpu_boost_is_contract_request_114():
     assert re.search(r"^## 114\. .*startup CPU boost.*\(API-CPU-BOOST, part of #1816\)$",
                      text, re.M)
     # MUTATION: drop who decided, when, or the PR that applied it -> red.
-    for fact in ("BGD", "2026-10-23", "PR 2132", "option (a)", "startup_cpu_boost = true"):
+    for fact in ("the owner", "2026-10-23", "PR 2132", "option (a)", "startup_cpu_boost = true"):
         assert fact in body, f"entry 114 does not say {fact!r}"
     # MUTATION: leave out the scope of the exception -> red.
     assert "every other Cloud Run service" in body
@@ -80,7 +80,7 @@ def test_request_114_has_one_index_row_that_says_it_is_applied():
     rows = [line for line in _read(REQUESTS).splitlines() if line.startswith("| 114 |")]
     # MUTATION: drop the index row, or file it twice -> red.
     assert len(rows) == 1, rows
-    assert "API-CPU-BOOST" in rows[0] and "APPLIED" in rows[0] and "BGD" in rows[0]
+    assert "API-CPU-BOOST" in rows[0] and "APPLIED" in rows[0] and "the owner" in rows[0]
 
 
 @pytest.mark.parametrize("doc", ["CLAUDE.md", "CONTRACT.md"])

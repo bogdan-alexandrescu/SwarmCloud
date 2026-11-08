@@ -221,7 +221,7 @@ def _recheck(tmp_path: Path, answers: dict[int, list[str]], prs: Path = FIXTURES
     proc = _run("select", "--prs", str(prs), "--required", str(_required_file(tmp_path)),
                 "--recheck-unknown", env={
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+                    "GH_REPO": "example-org/example-repo",
                     "FAKE_GH_LOG": str(log),
                     "FAKE_MERGEABLE_DIR": str(mergeable_dir),
                     "MERGE_TRAIN_MERGEABLE_WAIT_SECONDS": "0",
@@ -236,7 +236,7 @@ def test_select_boards_an_unknown_pull_request_that_reads_mergeable_on_a_second_
     # MUTATION: board only the list's MERGEABLE -> 106 is left out, and a tick
     # right after a landing boards nothing.
     assert numbers == ["101", "106", "114", "120"], proc.stderr
-    assert reads == ["pr view 106 --repo bogdan-alexandrescu/SwarmCloud --json mergeable --jq .mergeable"]
+    assert reads == ["pr view 106 --repo example-org/example-repo --json mergeable --jq .mergeable"]
 
 
 def test_select_carries_the_head_and_title_of_a_rechecked_pull_request(tmp_path):
@@ -293,7 +293,7 @@ def test_the_tick_rechecks_unknown_mergeability_when_it_boards_from_the_pool():
     assert "--recheck-unknown" in start
 
 
-# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
+# CHECK-STUCK-2 (the owner, 2026-10-23, task_9e9080121b104370b079 Q0; part of
 # #2031): select reads a rollup check run as done the way `judge` does --
 # status COMPLETED, OR a conclusion together with a completedAt. GitHub left
 # PR 2006's `secret scan` IN_PROGRESS after giving it both; GitHub's own
@@ -391,7 +391,7 @@ def test_judge_pending_while_a_required_check_runs_or_has_not_reported(tmp_path)
 
 
 def test_judge_red_names_the_failing_job_with_its_link(tmp_path):
-    url = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/77/job/88"
+    url = "https://github.com/example-org/example-repo/actions/runs/77/job/88"
     verdict, failed = _judge(tmp_path, [
         _cr("ci-gate", status="in_progress", conclusion=None),
         _cr("secret scan"),
@@ -420,7 +420,7 @@ def test_judge_red_on_a_failed_commit_status(tmp_path):
     assert failed == [("secret scan", "https://x/y")]
 
 
-# CHECK-RULE-2 (BGD, 2026-10-22, both answers): the judge decides a check by
+# CHECK-RULE-2 (the owner, 2026-10-22, both answers): the judge decides a check by
 # the latest run (highest id) of EACH event that ran it, as the worker's
 # merge step, swarm-api and auto-merge.yml's gate 5 do. The event is the one
 # that made the run's check suite, from `--workflow-runs` (the Actions runs at
@@ -478,7 +478,7 @@ def test_judge_a_check_nothing_requires_by_the_latest_run_of_each_event(tmp_path
     assert got == verdict, case
 
 
-# CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+# CHECK-STUCK (the owner, 2026-10-23, part of #2031): a check run that carries a
 # conclusion AND a completed_at is judged by its conclusion, whatever
 # `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
 # `conclusion: success` and a `completed_at`; its workflow run was completed.
@@ -802,7 +802,7 @@ def test_the_train_never_starts_on_a_pull_request_event(train_workflow):
 #: The context paths the tick's `if:` may read. Anything else is refused by
 #: _tick_runs() rather than guessed at.
 _IF_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*|\[\d+\])+")
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+THIS_REPO = "example-org/example-repo"
 
 
 def _tick_runs(
@@ -1193,7 +1193,7 @@ def gate(tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "EVENT_NAME": event_name,
             "PR_NUMBER": "4242",
             "PR_TITLE": "A fact-style headline",
@@ -1284,7 +1284,7 @@ def test_the_runbook_says_how_to_roll_back():
 # a red train: retry once, hold while main is red, else bisect
 # --------------------------------------------------------------------------
 #
-# BGD, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
+# The owner, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
 # 139 trains were red, mostly on checks known to fail at random ('format /
 # unit tests', 'swarm-ui typecheck / component tests', single shards), and 6
 # of 18 ejected pull requests later landed with no change. Keep the train and
@@ -1835,7 +1835,7 @@ def _list_prs(tmp_path: Path, prs: list[dict], fails: dict[str, list[str]] | Non
     out = tmp_path / "prs.json"
     proc = _run("list-prs", "--out", str(out), env={
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "GH_REPO": "example-org/example-repo",
         "FAKE_GH_LOG": str(log),
         "FAKE_GH_DIR": str(answers),
         "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0",

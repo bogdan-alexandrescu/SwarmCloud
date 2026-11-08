@@ -460,7 +460,7 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     registry = "docker.pkg.dev"
     # The build mirrors are the one registry a build-only config may name: the
     # Dockerfiles name no project, so the build passes its project's mirror to
-    # pull through (DAYONE-DESAGA-1; scripts/lib/build-mirror.sh). Pulls only.
+    # pull through (the Day One project-defaults lane; scripts/lib/build-mirror.sh). Pulls only.
     mirror = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/swarm-mirror-(?:dockerhub|ghcr)\b")
     for target, event in submits.items():
         text = mirror.sub("<mirror>", event["text"])
@@ -528,7 +528,7 @@ def test_affected_by_needs_no_gcloud_and_takes_no_targets(tmp_path):
 @pytest.mark.parametrize("args", [["--affected-by", "-"], ["--inputs"]])
 def test_offline_modes_need_no_project(tmp_path, args):
     """application.yml's `changes` job runs these before it authenticates and
-    names no PROJECT_ID; common.sh has no default project (DAYONE-DESAGA-2)."""
+    names no PROJECT_ID; common.sh has no default project (the Day One project-defaults lane)."""
     env = _env(tmp_path)
     env.pop("PROJECT_ID")
     proc = subprocess.run(
