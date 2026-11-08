@@ -653,6 +653,8 @@ describe('the Talk pane on our own speech', () => {
     ;({ mic } = installMedia({ audioContext: true }))
     FakeSocket.all = []
     vi.stubGlobal('WebSocket', FakeSocket)
+    // The fixture console makes today's call: an earlier suite may have left it on.
+    apiMock.fixtures = false
     fetchMock.engine = 'own'
     vadMock.handlers = null
     vadMock.setMic.mockReset()
