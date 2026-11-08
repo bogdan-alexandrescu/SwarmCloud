@@ -197,15 +197,19 @@ def ctx_fail($c; $e; $p):
       "context \($ctx) is not the swarm cluster (\(($e.contexts // []) | join(" or ") | if . == "" then "<not in the expectation yet>" else . end))"
     else empty end;
 
-def obj_fail($ns; $flagns; $rules; $label):
+def obj_fail($ns; $flagns; $rules; $label; $key):
   . as $o
   | ($o.kind // "") as $k
   | if $k == "Namespace" then
       (if $o.name != $ns or ($o.namespace // null) != null then "Namespace \(($o.name // "?") | tojson) is not \($ns)"
        # A group or service namespace is admitted by the deployer scope
        # policy only with the job label (workspace-kinds §4.3, C7).
+       # The key is the one the deployment names (namespace_label_key, read
+       # from its tfvars when the expectation was written); none admits none.
+       elif ($label // null) != null and ($key // "") == "" then
+         "the expectation names no namespace label key, so Namespace \($ns) cannot be admitted"
        elif ($label // null) != null and ($o.workspace_label // null) != $label then
-         "Namespace \($ns) does not carry swarm.saga.xyz/workspace: \($label)"
+         "Namespace \($ns) does not carry \($key): \($label)"
        else empty end)
     elif ($rules.kube_kinds | has_el($k)) | not then "kind \($k | tojson) is not one a tenant namespace holds"
     elif ($o.name // "") == "" then "a \($k) has no name"
@@ -229,7 +233,7 @@ def objects_fail($c; $e; $rules; $p):
     elif ($c.objects | type) == "object" then ($c.objects.error // "the manifest could not be read")
     elif ($c.objects_error // null) != null then $c.objects_error
     elif ($c.objects | type) != "array" or ($c.objects | length) == 0 then "the manifest holds no object the guard could read"
-    else (first_of($c.objects[] | obj_fail($ns; $flagns; $rules; $e.namespace_label)) // empty)
+    else (first_of($c.objects[] | obj_fail($ns; $flagns; $rules; $e.namespace_label; $e.namespace_label_key)) // empty)
     end;
 
 def eval_cli($s; $c; $e; $rules):
@@ -480,6 +484,7 @@ def command_words($c; $rules):
 # docs/workspaces.md §2.3 checks the same objects server-side.
 GUARD_MANIFEST_PY='
 import json
+import os
 import re
 import sys
 
@@ -532,7 +537,10 @@ def child_values(entry, what):
     return {k: plain(v) for k, v in found.items() if k in ("name", "namespace", "kind")}
 
 
-LABEL = "swarm.saga.xyz/workspace"
+# The workspace label key the deployment names, from the expectation (the shell passes
+# its namespace_label_key). None names no key: no label is read, so C7 admits
+# no group or service Namespace.
+LABEL = os.environ.get("GUARD_LABEL_KEY", "") or None
 LABEL_LINE = re.compile(r"^( +)([A-Za-z0-9][A-Za-z0-9_./-]*):(?:[ \t]+(.*))?$")
 
 
@@ -985,7 +993,9 @@ guard_judge() {
       if [[ "${GUARD_MANIFEST_GIVEN}" -eq 1 ]]; then
         if [[ -n "${GUARD_MANIFEST_ERR}" ]]; then
           objects_err="${GUARD_MANIFEST_ERR}"
-        elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" | python3 -c "${GUARD_MANIFEST_PY}")"; then
+        elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" \
+              | GUARD_LABEL_KEY="$(jq -r '.namespace_label_key // ""' "${exp}" 2>/dev/null || true)" \
+                  python3 -c "${GUARD_MANIFEST_PY}")"; then
           # The judge reads it as JSON; what is not JSON, null or false is "the
           # manifest could not be read", as `jq -e .` used to decide here.
           objects_read=true
@@ -1283,6 +1293,16 @@ cmd_expect() {
   [[ "${fs_access}" == "true" || "${fs_access}" == "false" ]] \
     || die "the record's worker_firestore_access is not true or false; refusing"
 
+  # A group's or a service's namespace carries the deployment's workspace
+  # label (C7): its key is <label prefix>/workspace, the prefix read from the
+  # deployment's own tfvars (deployment_label_prefix in lib/common.sh), never a
+  # literal and never the environment. A personal workspace has no such label.
+  local label_key=""
+  if [[ "${rec_kind}" != "personal" ]]; then
+    label_key="$(deployment_label_prefix)/workspace" \
+      || die "this deployment's workspace label key cannot be read; refusing a ${rec_kind} workspace"
+  fi
+
   local derived tenant worker_id forge_suffix
   derived="$(python3 -c "${GUARD_DERIVE_PY}" "${REPO_ROOT}" "${rec_principal}" "${rec_kind}")" \
     || die "swarm_common.identity could not derive a tenant id from the record's principal"
@@ -1351,6 +1371,7 @@ cmd_expect() {
     --arg kind "${rec_kind}" --arg service_principal "${service_principal}" \
     --arg api_email "${api_email}" --arg qa_name "swarm-tenant-${tenant}-qa" \
     --arg front_door "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" \
+    --arg label_key "${label_key}" \
     --argjson fs_access "${fs_access}" '
     ($base.project_id) as $p
     | $base + {
@@ -1387,7 +1408,7 @@ cmd_expect() {
       + (if $kind == "service" then {} else {forge_slot_twin: "\($forge_slot)-refresh"} end)
       # The label the deployer scope policy admits a job-made namespace by
       # (§4.3 A7); C7 requires it on the Namespace.
-      + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id} end)
+      + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id, namespace_label_key: $label_key} end)
       # The QA target credential secret of a person, and the one account C6
       # may bind on it (§2.1, §7 V-1/V-2; the owner 2026-10-22: the deployer job
       # makes it). A PERSONAL expectation only: the secret binder of the
@@ -1520,6 +1541,12 @@ cmd_self_test() {
   # same loader and rules as a deployment's: the cases' other-team names
   # (peer-cluster, peer-runner@...) are on it.
   deny_list_use_example "${tmp}"
+  # Beside it, the placeholder deployment's tfvars: the one setting the guard
+  # reads from a deployment's (its first allowed domain, the prefix of the
+  # workspace label key), so the cases name swarm.example.com/workspace.
+  ( umask 077 && printf 'allowed_domains = ["example.com"]\n' \
+      >"${SWARM_DEPLOY_CONFIG_DIR}/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" ) \
+    || die "could not write the placeholder tfvars"
 
   local workspace
   workspace="$(jq -r '.workspace_id' "${GUARD_CASES}")"

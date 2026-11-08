@@ -988,12 +988,12 @@ def test_kinds_design_records_what_every_lane_built():
     order = "printf '%s\\n' A1 S1 A2 A3 A4 A5 A6 A7 A8 S2 A9"
     assert f"`{REGISTER}` (`{order}`)" in raw
     _cited_anchor(REGISTER, order)
-    # Departure 1: the platform owner A1 checks is read from the guard's
-    # rules, keyed by project, not from entry.py's environment.
+    # Departure 1: the platform owner A1 checks is read from the deployment's
+    # own tfvars, not from entry.py's environment.
     entry = _text(REPO / "images" / "workspace-apply" / "entry.py")
     assert "PLATFORM_OWNER" not in entry
-    assert ".platform_owner" in _cited_anchor(REGISTER, "jq -r --arg p \"${PROJECT_ID}\" '(.platform_owner // {})[$p]")
-    assert "`scripts/lib/workspace-calls.json`" in body and "`platform_owner`" in body
+    assert "platform_owner" in _cited_anchor(REGISTER, 'owner="$(deployment_setting platform_owner)"')
+    assert "`deployment_setting` in `scripts/lib/common.sh`" in body and "`platform_owner`" in body
     assert "not from `entry.py`" in body
     # Departure 2: a service is admitted by the unique id S1 recorded, not
     # by its address alone.

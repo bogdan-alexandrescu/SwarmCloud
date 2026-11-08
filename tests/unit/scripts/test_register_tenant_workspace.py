@@ -38,13 +38,34 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .conftest import write_placeholder_deny_list
+from .conftest import placeholder_deployment, write_placeholder_deny_list, write_placeholder_tfvars
 
 REPO = Path(__file__).resolve().parents[3]
 REGISTER = REPO / "scripts" / "register-tenant.sh"
 GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
+
+
+def _render_workspace_label() -> str:
+    """The workspace label key kubernetes/render.py writes on a job-made
+    Namespace (WORKSPACE_LABEL), read from the module rather than restated."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("swarm_tests_render", REPO / "kubernetes" / "render.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.WORKSPACE_LABEL
+
+
+#: The key A7 renders and A9 and the guard (C7) read back. The job reads its
+#: prefix from the deployment's tfvars (label_prefix), so the harness's
+#: placeholder tfvars names the prefix the render writes.
+LABEL_KEY = _render_workspace_label()
+assert LABEL_KEY.endswith("/workspace"), LABEL_KEY
+#: The placeholder deployment's tfvars, with the render's label prefix.
+TFVARS = {**placeholder_deployment.TFVARS, "label_prefix": LABEL_KEY.rsplit("/", 1)[0]}
 DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
 #: Where every Python a run starts (the fake world on each of a run's ~130
 #: gcloud, kubectl and curl calls, kubernetes/render.py) keeps its bytecode.
@@ -248,6 +269,10 @@ class Job:
         config = tmp / "deploy-config"
         config.mkdir(mode=0o700, exist_ok=True)
         write_placeholder_deny_list(config, PROJECT, ["dev"])
+        # Beside it, the placeholder tfvars: the job reads its platform owner and
+        # its workspace label key's prefix from the deployment's, never a literal.
+        write_placeholder_tfvars(config, ["dev"], TFVARS)
+        self.config = config
         (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_", "KUBECONFIG", "BUILD_ID"))}
@@ -1527,6 +1552,7 @@ def _deployment(tmp: Path) -> dict[str, str]:
     config = tmp / "deploy-config"
     config.mkdir(mode=0o700, exist_ok=True)
     write_placeholder_deny_list(config, PROJECT, ["dev"])
+    write_placeholder_tfvars(config, ["dev"], TFVARS)
     (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
     return {"PROJECT_ID": PROJECT, "REGION": "us-central1", "ZONE": "us-central1-a", "ENVIRONMENT": "dev",
             "SWARM_DEPLOY_CONFIG_DIR": str(config), "XDG_CACHE_HOME": str(tmp / "config-cache")}
@@ -1614,8 +1640,8 @@ def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str |
 RULES_FILE = REPO / "scripts" / "lib" / "workspace-calls.json"
 EXAMPLE_DENY_LIST = REPO / "scripts" / "lib" / "deny-list.example.json"
 #: Who alone approves a service workspace in this project (Q2 (a)): the
-#: image's, never the record's word.
-OWNER = json.loads(RULES_FILE.read_text()).get("platform_owner", {}).get(PROJECT, "")
+#: deployment's tfvars' platform_owner, never the record's word.
+OWNER = str(placeholder_deployment.TFVARS["platform_owner"])
 FRONT_DOOR = json.loads(RULES_FILE.read_text()).get("front_door_backend", "")
 ACCESSOR = "roles/iap.httpsResourceAccessor"
 
@@ -1786,7 +1812,7 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
     namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
-    assert namespace["metadata"]["labels"]["swarm.example.com/workspace"] == WORKSPACE
+    assert namespace["metadata"]["labels"][LABEL_KEY] == WORKSPACE
     tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
             _field(tenant, "service_account"), _field(tenant, "display_name")) == (
@@ -1953,9 +1979,9 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert world["secrets"][twin]["policy"].get("bindings", []) == []
     # A7: the label, on the Namespace and nowhere else.
     labelled = [k for k, v in world["k8s"].items()
-                if "swarm.example.com/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
+                if LABEL_KEY in ((v.get("metadata") or {}).get("labels") or {})]
     assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
-    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.example.com/workspace"] == WORKSPACE
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][LABEL_KEY] == WORKSPACE
     # A8: a group tenant the directory resolves.
     tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
@@ -2046,7 +2072,7 @@ def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> Non
 def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
     world = copy.deepcopy(group_created["world"])
     world["calls"], world["writes"] = [], []
-    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.example.com/workspace"]
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][LABEL_KEY]
     job.write(world)
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)
@@ -2107,24 +2133,27 @@ def test_c10_admits_only_the_approved_account_on_the_api_backend(job: Job, tmp_p
         assert proc.returncode != 0 and ("rule C10" in proc.stderr or "rule C9" in proc.stderr), proc.stderr
 
 
-def test_the_platform_owner_pinned_in_the_image_is_the_environments() -> None:
-    """workspace-calls.json's platform_owner is what A1 holds a service
-    approval to; it must be the owner the environment's tfvars name, for every
-    environment of the project that names one."""
-    import re
+def test_the_image_names_no_platform_owner() -> None:
+    """The platform owner is a deployment value: the job reads it from the
+    deployment's own tfvars (ws_platform_owner), so the rules the image ships
+    name no person (docs/design/generic-repository.md, section 2)."""
+    assert "platform_owner" not in json.loads(RULES_FILE.read_text())
+    body = REGISTER.read_text().split("\nws_platform_owner() {\n", 1)[1].split("\n}\n", 1)[0]
+    assert "deployment_setting platform_owner" in body and "workspace-calls.json" not in body
 
-    owners = json.loads(RULES_FILE.read_text()).get("platform_owner", {})
-    seen = 0
-    for tfvars in sorted((REPO / "terraform" / "environments").glob("*/*.tfvars")):
-        text = tfvars.read_text()
-        project = re.search(r'^project_id\s*=\s*"([^"]+)"', text, re.M)
-        owner = re.search(r'^platform_owner\s*=\s*"([^"]*)"', text, re.M)
-        if project and owner and owner.group(1):
-            seen += 1
-            assert owners.get(project.group(1)) == owner.group(1).lower(), (tfvars, owners)
-    assert seen >= 1, "no environment names a platform_owner"
-    assert set(owners) <= {re.search(r'^project_id\s*=\s*"([^"]+)"', p.read_text(), re.M).group(1)
-                           for p in (REPO / "terraform" / "environments").glob("*/*.tfvars")}
+
+def test_a1_refuses_a_service_when_the_deployment_names_no_platform_owner(job: Job) -> None:
+    """A tfvars without platform_owner is no owner, never a guessed one: the
+    owner's own approval is refused, and nothing is written."""
+    write_placeholder_tfvars(job.config, ["dev"], {k: v for k, v in TFVARS.items() if k != "platform_owner"})
+    job.write(_service_world())
+    before = copy.deepcopy(_rec(job, S_TENANT))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1 and "WORKSPACE_APPROVAL_OWNER_ONLY" in proc.stderr, out
+    assert "no platform owner is configured" in proc.stderr, out
+    assert job.read().get("writes", []) == [], out
+    assert _rec(job, S_TENANT) == before
 
 
 def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> None:
@@ -2145,8 +2174,8 @@ def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> No
 @pytest.mark.parametrize("kind,principal,tenant", [
     ("group", "eng@example.com", "eng"),
     ("group", "smoke@example.com", "smoke"),
-    ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-9a0792"),
-], ids=["eng", "smoke", "u-or-9a0792"])
+    ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-ef6b39"),
+], ids=["eng", "smoke", "service"])
 def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_path: Path, kind: str,
                                                                  principal: str, tenant: str) -> None:
     record = tmp_path / "record.json"
@@ -2154,7 +2183,20 @@ def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_pa
     record.write_text(json.dumps({"name": f"projects/{PROJECT}/databases/swarm/documents/workspaces/{tenant}",
                                   "fields": fields}))
     job.init_guard()
-    done = subprocess.run([str(GUARD), "expect", "--record", str(record)], env=job.env,
+    guard = GUARD
+    if tenant not in json.loads(RULES_FILE.read_text())["terraform_tenants"]["dev"]:
+        # A service's tenant derives from its address, which names the
+        # placeholder project, so no environment pins it: the guard runs from a
+        # copy of lib/ whose rules declare it, beside the real apps/.
+        tree = tmp_path / "tree"
+        shutil.copytree(REPO / "scripts" / "lib", tree / "scripts" / "lib", symlinks=True)
+        (tree / "apps").symlink_to(REPO / "apps")
+        rules = tree / "scripts" / "lib" / "workspace-calls.json"
+        data = json.loads(rules.read_text())
+        data["terraform_tenants"]["dev"].append(tenant)
+        rules.write_text(json.dumps(data))
+        guard = tree / "scripts" / "lib" / "workspace-guard.sh"
+    done = subprocess.run([str(guard), "expect", "--record", str(record)], env=job.env,
                           capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode != 0 and "WORKSPACE_ID_TERRAFORM" in done.stderr, done.stderr
     assert json.loads(job.expect.read_text())["phase"] == "bootstrap", "an expectation was written"

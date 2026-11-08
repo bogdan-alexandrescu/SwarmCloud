@@ -302,8 +302,10 @@ WS_GROUP_TENANT_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # A group's directory check is good for this long (§4.1, `directory`).
 WS_DIRECTORY_MAX_AGE=86400
 # The label A7 puts on a group's or a service's namespace (kubernetes/render.py
-# WORKSPACE_LABEL); A9 reads it back.
-WS_NAMESPACE_LABEL="swarm.saga.xyz/workspace"
+# WORKSPACE_LABEL); A9 reads it back. Its key is the deployment's,
+# <label prefix>/workspace, which the guard read from its tfvars into the
+# expectation (namespace_label_key; deployment_label_prefix in lib/common.sh).
+WS_NAMESPACE_LABEL=""
 # Lower-cased, as swarm-api stores a principal; narrow enough that an address
 # is safe in a Firestore document path and a jq string.
 WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
@@ -680,6 +682,9 @@ ws_admit() {
   # rules, K1 being the owner's to grant (until then S2 stops for them), the
   # page on every IAP SetIamPolicy, and swarm-api's inner gate.
   if [[ "${WS_KIND}" == "service" ]]; then
+    # Read only for a service: a person's or a group's approval never needs it.
+    # A tfvars that cannot be read is no owner, and no approval (said above).
+    [[ -n "${WS_PLATFORM_OWNER}" ]] || WS_PLATFORM_OWNER="$(ws_platform_owner)" || WS_PLATFORM_OWNER=""
     [[ -n "${WS_PLATFORM_OWNER}" ]] \
       || { printf 'WORKSPACE_APPROVAL_OWNER_ONLY no platform owner is configured for %s, so no service workspace can be approved' "${PROJECT_ID}"; return 0; }
     [[ "${WS_DECIDED_BY}" == "${WS_PLATFORM_OWNER}" ]] \
@@ -693,12 +698,15 @@ ws_admit() {
   return 0
 }
 
-# The platform owner for this project, from the rules in the image
-# (workspace-calls.json `platform_owner`): never the record, never the
-# environment, which an execution override can set.
+# The platform owner for this project: `platform_owner` in the deployment's own
+# <env>.tfvars (deployment_setting in lib/common.sh), the value Terraform gives
+# swarm-api as PLATFORM_OWNER. Never the record, never the environment, which
+# an execution override can set. Nothing read is no owner, and no service
+# workspace is approved (ws_approval).
 ws_platform_owner() {
-  jq -r --arg p "${PROJECT_ID}" '(.platform_owner // {})[$p] // "" | ascii_downcase' \
-    "${SWARM_LIB_DIR}/workspace-calls.json"
+  local owner
+  owner="$(deployment_setting platform_owner)" || return 1
+  printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]'
 }
 
 # True when EMAIL is the owner in admin_roles/ now.
@@ -800,6 +808,7 @@ ws_load_names() {
   WS_FORGE_SLOT="$(ws_expect forge_slot)"
   WS_FORGE_TWIN="$(ws_expect forge_slot_twin)"
   WS_LABEL="$(ws_expect namespace_label)"
+  WS_NAMESPACE_LABEL="$(ws_expect namespace_label_key)"
   WS_SERVICE="$(ws_expect service_principal)"
   WS_FRONT_DOOR="$(ws_expect front_door_backend)"
   WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"
@@ -846,8 +855,8 @@ ws_load_names() {
   # group's and a service's namespace its label; a service its front door.
   case "${WS_KIND}" in
     personal) needed+=(WS_FORGE_TWIN) ;;
-    group) needed+=(WS_FORGE_TWIN WS_LABEL) ;;
-    service) needed+=(WS_LABEL WS_FRONT_DOOR) ;;
+    group) needed+=(WS_FORGE_TWIN WS_LABEL WS_NAMESPACE_LABEL) ;;
+    service) needed+=(WS_LABEL WS_NAMESPACE_LABEL WS_FRONT_DOOR) ;;
   esac
   for name in "${needed[@]}"; do
     [[ -n "${!name}" ]] || die "the guard's expectation holds no ${name#WS_}; nothing past A1 can run"
@@ -1044,7 +1053,6 @@ ws_claim_write() {
 ws_claim() {
   step "A1 claim (${WORKSPACE_ID})"
   local query count reason
-  WS_PLATFORM_OWNER="$(ws_platform_owner)"
 
   # 1. The record, by the opaque id: the only read the guard allows yet.
   query="$(jq -nc --arg w "${WORKSPACE_ID}" '{structuredQuery: {
@@ -2350,7 +2358,14 @@ esac
 
 if [[ -n "${PRINCIPAL}" ]]; then
   DOMAIN="${PRINCIPAL##*@}"
-  ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-saga.xyz}"
+  # The deployment's own allowed domains: ALLOWED_DOMAINS as swarm-api has it,
+  # else allowed_domains in its tfvars (deployment_list in lib/common.sh). No
+  # domain is written here, and none is guessed.
+  if [[ -z "${ALLOWED_DOMAINS:-}" ]]; then
+    ALLOWED_DOMAINS="$(deployment_list allowed_domains | paste -sd, -)" || ALLOWED_DOMAINS=""
+  fi
+  [[ -n "${ALLOWED_DOMAINS}" ]] \
+    || die "neither ALLOWED_DOMAINS nor this deployment's tfvars name an allowed domain, so ${PRINCIPAL} cannot be checked"
   case ",${ALLOWED_DOMAINS}," in
     *",${DOMAIN},"*) ;;
     *) die "${PRINCIPAL} is outside the allowed hosted domain(s) (${ALLOWED_DOMAINS}); authentication would reject it anyway" ;;

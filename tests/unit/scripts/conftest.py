@@ -44,6 +44,8 @@ PLACEHOLDER_DEPLOYMENT = {
 
 #: The example list, written for a project under <config_dir>/<env>/ for each env.
 write_placeholder_deny_list = placeholder_deployment.write_deny_list
+#: The placeholder <env>.tfvars (allowed domain, platform owner), for a test whose script reads one.
+write_placeholder_tfvars = placeholder_deployment.write_tfvars
 
 
 def pytest_configure(config: pytest.Config) -> None:

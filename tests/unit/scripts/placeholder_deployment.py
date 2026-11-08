@@ -92,6 +92,31 @@ def write_deny_list(config_dir: Path, project: str, envs: tuple[str, ...] | list
         path.chmod(0o600)
 
 
+#: The placeholder settings a script reads from a deployment's <env>.tfvars
+#: (deployment_setting and deployment_list in scripts/lib/common.sh): its allowed
+#: domain, which gives the label prefix swarm.<domain>, and its platform owner.
+TFVARS: dict[str, str | list[str]] = {"allowed_domains": [_P.ORG_DOMAIN], "platform_owner": _P.OWNER}
+
+
+def write_tfvars(config_dir: Path, envs: tuple[str, ...] | list[str] = ENVIRONMENTS,
+                 settings: Mapping[str, str | list[str]] | None = None) -> None:
+    """The placeholder <env>.tfvars (TFVARS, or SETTINGS), under CONFIG_DIR/<env>/ for each
+    env, the way config_fetch reads one offline. Only for a test whose script reads one:
+    the package deployment serves none, so a script that needs one and finds none is proved
+    to stop."""
+    values = TFVARS if settings is None else settings
+    lines = [f"{name} = {json.dumps(value)}" for name, value in values.items()]
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.chmod(0o700)
+    for env in envs:
+        target = config_dir / env
+        target.mkdir(exist_ok=True)
+        target.chmod(0o700)
+        path = target / f"{env}.tfvars"
+        path.write_text("\n".join(lines) + "\n")
+        path.chmod(0o600)
+
+
 class PlaceholderDeployment:
     """The placeholder deployment rooted at ROOT (a private temporary directory)."""
 
