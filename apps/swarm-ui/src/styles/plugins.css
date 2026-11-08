@@ -32,7 +32,7 @@
 .plg-toggle { display: inline-flex; align-items: center; gap: 8px; }
 
 /* The monogram and the scope chip, tinted by scope. */
-.plg-mono { flex: none; width: 36px; height: 36px; border-radius: var(--r-tile); display: grid; place-items: center; font: 600 var(--t-meta)/var(--lh-flush) var(--mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--line); }
+.plg-mono { flex: none; box-sizing: border-box; width: 36px; height: 36px; padding: 4px; border-radius: var(--r-tile); display: grid; place-items: center; font: 600 var(--t-meta)/var(--lh-flush) var(--mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--line); }
 .plg-mono.is-platform { background: color-mix(in srgb, var(--info) 14%, var(--surface)); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); color: var(--info-ink); }
 .plg-mono.is-workspace { background: color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); color: var(--ok-ink); }
 .plg-scope { flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; border: 1px solid var(--line); color: var(--text-dim); background: var(--surface-2); white-space: nowrap; }
@@ -57,16 +57,16 @@
 
 /* The grid of cards: one column below 300px of room, never wider than the page. */
 .plg-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: var(--ctl-s3); }
-.plg-card { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
+.plg-card { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
 .plg-card:hover { border-color: var(--ctl-bd); }
 .plg-card.is-off .plg-card-top, .plg-card.is-off .plg-card-mid { opacity: .62; }
-.plg-card-top { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px; color: inherit; background: none; border: 0; border-radius: var(--r-card) var(--r-card) 0 0; text-align: left; font: inherit; cursor: pointer; min-width: 0; width: 100%; }
+.plg-card-top { display: flex; align-items: center; gap: 10px; padding: 14px 14px 6px; color: inherit; background: none; border: 0; border-radius: var(--r-card) var(--r-card) 0 0; text-align: left; font: inherit; cursor: pointer; min-width: 0; width: 100%; }
 .plg-card-top:hover b { text-decoration: underline; }
 .plg-card-top:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 .plg-card-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .plg-card-id b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; overflow-wrap: anywhere; }
 .plg-card-id code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plg-card-mid { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; flex: 1; min-width: 0; }
+.plg-card-mid { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 8px; flex: 1; min-width: 0; }
 .plg-card-desc { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
 .plg-card-src { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plg-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-top: 1px solid var(--line-soft); background: var(--bg); border-radius: 0 0 var(--r-card) var(--r-card); }
