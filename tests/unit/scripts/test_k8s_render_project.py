@@ -31,6 +31,10 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 RENDER = KUBERNETES / "render.py"
 APPLY = KUBERNETES / "apply.sh"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 #: A project id built at runtime, so no test reads as naming a real one.
 PROJECT = f"k8s-render-{secrets.token_hex(4)}"
@@ -118,13 +122,16 @@ def test_apply_refuses_an_unset_project(tmp_path: Path) -> None:
         "KUBECONFIG": str(tmp_path / "no-such-kubeconfig"),
         "TMPDIR": str(tmp_path),
         "NO_COLOR": "1",
+        # The region and zone are the placeholder deployment's, so the one
+        # setting missing is the project.
+        **placeholder_deployment.child_env(),
     }
     result = subprocess.run(
         ["bash", str(APPLY), "--tenant", "eng"],
         cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False,
     )
-    # MUTATION: delete the PROJECT_NOT_GIVEN check and common.sh's default
-    # project is read and rendered.
+    # MUTATION: give load_env a default project again (or have apply.sh set
+    # one before sourcing common.sh) and that project is read and rendered.
     assert result.returncode != 0
     assert "PROJECT_ID is not set" in result.stderr, result.stderr[-2000:]
 

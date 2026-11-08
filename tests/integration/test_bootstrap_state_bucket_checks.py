@@ -48,6 +48,7 @@ read does not answer.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -56,6 +57,9 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
 SCRIPTS = REPO / "scripts"
 
 PROJECT = "swarm-test-project"
@@ -123,9 +127,13 @@ def _bootstrap(tmp: Path, fake_gcloud: str) -> subprocess.CompletedProcess:
     shutil.copytree(SCRIPTS, sandbox / "scripts")
     (sandbox / ".env").write_text("")  # present, so nothing is copied over it
     (sandbox / "terraform" / "infra").mkdir(parents=True)
-    tfvars = sandbox / "terraform" / "environments" / "dev"
-    tfvars.mkdir(parents=True)
-    (tfvars / "dev.tfvars").write_text("")
+    # tf_var_file reads the deployment's own <env>.tfvars from its configuration
+    # (config/<env>/ beside the never-touch list), never a tracked file; the
+    # placeholder deployment serves that configuration for PROJECT.
+    config = Path(_P.deployment().child_env(PROJECT)["SWARM_DEPLOY_CONFIG_DIR"])
+    tfvars = config / "dev" / "dev.tfvars"
+    tfvars.write_text("")
+    tfvars.chmod(0o600)
 
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
