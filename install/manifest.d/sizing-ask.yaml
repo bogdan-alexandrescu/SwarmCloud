@@ -1,4 +1,4 @@
-# Lane DAYONE-SIZING-ASK (part of #2688; decision 7, BGD 2026-10-30): stage 0
+# Lane DAYONE-SIZING-ASK (part of #2688; decision 7, the owner, 2026-10-30): stage 0
 # asks whether the deployment is for one person or a team and how many people,
 # proposes pool ceilings, service maximums, Claude accounts and a monthly
 # budget from that (swarm_install/sizing.py), capped at the region's CPUS

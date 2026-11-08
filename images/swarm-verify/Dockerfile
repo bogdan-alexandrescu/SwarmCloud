@@ -55,7 +55,7 @@
 # and by digest: this was the one base here named by tag alone. The digest is
 # Docker Hub's alpine:3.20 index, read on 2026-10-12. A pull request's local
 # build passes MIRROR_DOCKER_HUB=docker.io instead (scripts/lib/build-mirror.sh).
-# No default, so this file names no project (DAYONE-DESAGA-1,
+# No default, so this file names no project (the Day One image lane,
 # docs/design/day-one-install.md section 7): scripts/build-images.sh passes
 # the mirror of the project it builds for (lib/build-mirror.sh
 # mirror_build_args), and the `# syntax=` frontend through the same mirror as

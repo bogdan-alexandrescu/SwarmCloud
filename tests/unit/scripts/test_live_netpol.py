@@ -235,7 +235,10 @@ PRE_L6_DIGESTS = {
 #: Re-read for DAYONE-K8S-1 (2026-10-29): an offline render has no default
 #: project, so its identities name render.py's OFFLINE_PROJECT where they named
 #: the live one; with that name swapped back the render is byte-identical.
-PRE_L6_TENANT_RENDER = "f79c97afab5dca95390390edf399242c9d1917f21754f16fd67b3f127fd981ad"
+#: Re-read for the generic-repository program (2026-11-08, part of #2688): the
+#: tenant manifests' comments name roles and placeholders; every rendered
+#: document parses to the same objects as before.
+PRE_L6_TENANT_RENDER = "9688fcb01407ed3cd95900cb91ae2a6e828984108d75b557db44b25e2efa96f0"
 
 
 def _tenant_values() -> dict[str, str]:

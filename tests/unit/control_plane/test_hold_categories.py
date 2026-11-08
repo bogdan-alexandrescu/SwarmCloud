@@ -181,10 +181,14 @@ def test_a_prompt_naming_a_tenant_scope_function_is_held_at_plan():
 # shared
 # --------------------------------------------------------------------------
 
-def test_the_hold_judges_by_the_list_rendered_on_the_service():
+def test_the_hold_judges_by_the_list_rendered_on_the_service(monkeypatch):
     # MUTATION: drop or add one entry of the rendered list as read, or cache the
     # list at import, and this is red.
     assert issueruns.shared_deny_list() == DENY_LIST
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", "[]")
+    assert issueruns.shared_deny_list() == ()
+    path = "terraform/infra/network.tf"
+    assert _hold([path], patches={path: _patch(f'  network = "{PEER["network"]}"')}) is None
 
 
 @pytest.mark.parametrize("name", [n for n in DENY_LIST if n != "default"])
