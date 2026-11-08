@@ -17,14 +17,16 @@ So:
     restated here -- and every profile in the catalogue is in that table;
   * the support-case runbook exists, is indexed under Incidents, and carries
     the figures, the slow windows, the controls and the fields the owner fills;
-  * neither file names a resource on SHARED_DENY_LIST, parsed from
-    scripts/lib/common.sh, and neither carries anything credential-shaped.
+  * neither file names a resource on the never-touch list the tests are given
+    (scripts/lib/deny-list.example.json), and neither carries anything
+    credential-shaped.
 
 No credentials, no network.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -37,7 +39,7 @@ WORKER_IMAGES = REPO / "docs" / "worker-images.md"
 RUNBOOKS = REPO / "docs" / "runbooks"
 SUPPORT_CASE = RUNBOOKS / "cloud-run-start-support-case.md"
 INDEX = RUNBOOKS / "README.md"
-COMMON = REPO / "scripts" / "lib" / "common.sh"
+DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
 
 SECTION = "## Why the repository index has its own image"
@@ -81,10 +83,9 @@ def _profiles_without_a_job() -> set[str]:
 
 
 def _deny_list() -> list[str]:
-    m = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", _text(COMMON), flags=re.M | re.S)
-    assert m, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST"
-    names = re.findall(r'^\s*"([^"]+)"', m.group(1), flags=re.M)
-    assert len(names) >= 10, names
+    body = json.loads(_text(DENY_LIST_EXAMPLE))
+    names = body["entries"]
+    assert len(names) >= body["floors"]["total"] > 0, names
     return names
 
 
@@ -241,7 +242,7 @@ _CREDENTIAL_SHAPES = re.compile(
 def _names_deny_listed(text: str, name: str) -> bool:
     """Whether the text names a deny-listed resource.
 
-    A name with punctuation in it (`agents-staging-vpc`, an account's email)
+    A name with punctuation in it (`peer-vpc`, an account's email)
     cannot occur in prose, so any occurrence counts. A bare word (`default`,
     the other team's VPC network) is an ordinary English word, so it counts
     only where it is written as a resource: in backticks, or as `default`

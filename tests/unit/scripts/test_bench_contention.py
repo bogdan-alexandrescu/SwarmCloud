@@ -22,6 +22,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 HARNESS = ROOT / "scripts" / "bench_contention.py"
 WRAPPER = ROOT / "scripts" / "bench-contention.sh"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 
 # The harness imports google.cloud.firestore and scheduler.store, and the fakes
@@ -123,13 +128,20 @@ def test_main_refuses_before_it_builds_a_client() -> None:
 
 def test_the_wrapper_refuses_the_live_database_without_credentials(tmp_path) -> None:
     """The shell guard runs before python, gcloud or any client."""
+    # jq on PATH and nothing else added: common.sh reads the never-touch list
+    # with it as it is sourced, before the guard runs.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "jq").symlink_to(shutil.which("jq"))
     proc = subprocess.run(
         ["bash", str(WRAPPER), "--database", "swarm"],
         capture_output=True, text=True, timeout=60,
         # PROJECT_ID named: common.sh has no default project (DAYONE-DESAGA-2),
-        # and the guard under test is the live database's, in the live project.
-        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_ENV_FILE": str(tmp_path / "none"),
-             "PROJECT_ID": "saga-agents-staging"},
+        # and the guard under test is the live database's, in the deployment's
+        # project: the placeholder one, with its region and never-touch list.
+        env={"PATH": f"{tools}:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_ENV_FILE": str(tmp_path / "none"),
+             "PROJECT_ID": placeholder_deployment.PROJECT,
+             **placeholder_deployment.child_env(placeholder_deployment.PROJECT)},
     )
     assert proc.returncode != 0
     assert "bench database" in (proc.stdout + proc.stderr)

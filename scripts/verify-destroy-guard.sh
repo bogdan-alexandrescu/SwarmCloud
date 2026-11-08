@@ -350,11 +350,16 @@ fi
 # exit 0. That is the same shape as the defect this exercise exists to answer, a
 # proof covering 14 of 20 entries and reporting success.
 #
-# So the shared project's inventory is asserted against the numbers CLAUDE.md
-# and CONTRACT.md state, read from destroy-guard-proof-cases.json, independently
-# of the deny-list. Floors, not equalities: gaining a neighbour is normal,
-# losing one silently is the thing that must be impossible.
+# So the shared project's inventory is asserted against floors per kind, which
+# the deployment's never-touch object carries beside its entries (`floors` in
+# config/<env>/deny-list.json, printed by deny_list_floors in lib/common.sh;
+# docs/design/generic-repository.md, section 2.4). Floors, not equalities:
+# gaining a neighbour is normal, losing one silently is the thing that must be
+# impossible. They are written to a file first, in this shell, so a list that
+# cannot be read stops the script here rather than inside a process
+# substitution whose failure the loop would never see.
 step "2b. The deny-list still covers the whole shared inventory"
+deny_list_floors >"${WORK}/floors.tsv"
 while IFS=$'\t' read -r floor_kind floor_n; do
   [[ -n "${floor_kind}" ]] || continue
   CHECKS=$((CHECKS + 1))
@@ -372,7 +377,7 @@ while IFS=$'\t' read -r floor_kind floor_n; do
     err "so nothing else here would have noticed"
     FAILED=$((FAILED + 1))
   fi
-done < <(jq -r '.inventory_floor | to_entries[] | "\(.key)\t\(.value)"' "${CASES_JSON}")
+done <"${WORK}/floors.tsv"
 
 # ---------------------------------------------------------------------------
 # 3. The label half, against real label maps.

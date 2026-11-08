@@ -1,0 +1,31 @@
+{
+  "description": [
+    "The shape of a deployment's never-touch list, with placeholders. The real one",
+    "is gs://<state-bucket>/config/<env>/deny-list.json, written by the owner and",
+    "read by deny_list_load in scripts/lib/common.sh; this repository holds none.",
+    "",
+    "project: the deployment's PROJECT_ID; a list written for another project refuses.",
+    "entries: every resource in the project that belongs to someone else.",
+    "classify: optional {glob, kind} rules for this deployment's names, read ahead of",
+    "  the generic ones in destroy-guard-proof-cases.json (`*` is the only wildcard).",
+    "floors: the fewest entries of each kind (`total` for all) the list may hold; a",
+    "  list below any floor refuses, so a truncated list cannot pass for a short one.",
+    "A project that shares nothing writes \"entries\": [] with every floor 0, and",
+    "says who reviewed that and when: an empty list is a statement, never a default."
+  ],
+  "project": "example-project",
+  "entries": [
+    "peer-cluster",
+    "peer-vpc",
+    "peer-subnet",
+    "peer-bucket",
+    "peer-runner@example-shared-project.iam.gserviceaccount.com"
+  ],
+  "classify": [
+    { "glob": "peer-cluster", "kind": "cluster" },
+    { "glob": "peer-bucket", "kind": "bucket" }
+  ],
+  "floors": { "total": 5, "cluster": 1, "network": 1, "subnet": 1, "bucket": 1, "sa": 1 },
+  "reviewed_by": "owner@example.com",
+  "reviewed_at": "2026-11-07"
+}

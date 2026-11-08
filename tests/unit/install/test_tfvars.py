@@ -85,6 +85,35 @@ def test_inputs_stored_in_state_bucket(tmp_path: Path) -> None:
     assert tfvars.stored(bucket, "infra") == second, "the next apply's inputs replace the last, conditionally"
 
 
+def test_infra_inputs_also_written_as_the_config_tfvars(tmp_path: Path) -> None:
+    """Design §2.1, §2.3: infra's stored inputs are also config/<env>/<env>.tfvars
+    in the state bucket, beside the never-touch list, where `make tf-plan` and
+    the scripts read the deployment's tfvars (config_fetch, tf_var_file)."""
+    bucket = FakeBucket()
+    inputs = tfvars.infra_inputs(install_state(), pass_name="infra-1", installer="admin@example.com")
+    run(tmp_path, "infra-1", FakeExec(), bucket=bucket, g=guards(), inputs=inputs)
+    environment = inputs["environment"]
+    name = f"config/{environment}/{environment}.tfvars"
+    text = bucket.objects[name][0].decode()
+    assert text == tfvars.render_tfvars(inputs)
+    lines = dict(line.split(" = ", 1) for line in text.splitlines() if not line.startswith("#"))
+    assert sorted(lines) == sorted(inputs)
+    assert {key: json.loads(value) for key, value in lines.items()} == inputs
+
+    second = dict(inputs, region="europe-west1")
+    run(tmp_path, "infra-2", FakeExec(), bucket=bucket, g=guards(), inputs=second)
+    assert bucket.objects[name][0].decode() == tfvars.render_tfvars(second), "replaced, conditionally"
+    assert not [n for n in bucket.objects if n.startswith("config/") and n != name]
+
+
+def test_render_tfvars_escapes_templates_and_refuses_odd_names() -> None:
+    text = tfvars.render_tfvars({"hostname": "a${b}%{c}", "count": 2, "on": True, "tags": {"k": "v"}})
+    assert 'hostname = "a$${b}%%{c}"' in text
+    assert "count = 2" in text and "on = true" in text and 'tags = {"k": "v"}' in text
+    with pytest.raises(ValueError, match="not a Terraform variable name"):
+        tfvars.render_tfvars({"a b": 1})
+
+
 def test_pass2_sets_console_app_setup() -> None:
     state = install_state()
     first = tfvars.infra_inputs(state, pass_name="infra-1", installer="admin@example.com")

@@ -23,6 +23,7 @@ PATH, as in test_cluster_network_is_read_not_typed.py.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -34,14 +35,25 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
 SCRIPT = REPO / "scripts" / "apply-tenant-network-policies.sh"
 HELPER = REPO / "scripts" / "tenant_netpol.py"
 POLICY_DIR = REPO / "kubernetes" / "network-policies"
 
-PROJECT = "saga-agents-staging"
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 LOCATION = "us-central1"
 CLUSTER_REF = f"gke_{PROJECT}_{LOCATION}_swarm-autopilot"
-FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_agents-staging"
+FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 
 #: A network that appears nowhere in the repository, so a rendered value that
 #: matches it can only have been READ from the (fake) cluster.
@@ -80,8 +92,9 @@ def tenant_policy_files_on_disk() -> set[str]:
 
 def clean_env(**extra: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+    env.update(placeholder_deployment.child_env(PROJECT))
     # common.sh has no default project any more: name the one the suite models.
-    env["PROJECT_ID"] = "saga-agents-staging"
+    env["PROJECT_ID"] = PROJECT
     env.update(PYTHON_BIN=sys.executable, NO_COLOR="1")
     env.update(extra)
     return env
@@ -352,7 +365,7 @@ def test_another_teams_cluster_is_refused_before_anything_is_read(tmp_path):
 
 def test_a_foreign_cluster_flag_is_refused(tmp_path):
     cluster = Cluster(tmp_path, TENANTS)
-    result = cluster.run("--cluster", "agents-staging", "--confirm")
+    result = cluster.run("--cluster", PEER_CLUSTER, "--confirm")
     assert result.returncode != 0
     assert cluster.applied() == []
 

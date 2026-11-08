@@ -103,6 +103,10 @@ class FakeGcp:
         self.cpu_quota: int | None = 3000  # the region's CPUS
         self.cpu_quota_all_regions: int | None = 3000  # the project's CPUS_ALL_REGIONS
         self.cpu_quota_failure: ApiError | None = None
+        #: What the project already holds, by listing (foundations.config's
+        #: preflight.neighbours): clusters, networks, subnetworks, buckets,
+        #: service_accounts; an ApiError instead of a list is that listing's answer.
+        self.held: dict[str, Any] = {}
 
     def _call(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -193,6 +197,28 @@ class FakeGcp:
     def object_store(self, name):
         self._call("object_store", name)
         return self.stores.setdefault(name, FakeBucket())
+
+    def _held(self, kind: str, project: str) -> list[dict[str, Any]]:
+        self._call(kind, project)
+        found = self.held.get(kind, [])
+        if isinstance(found, ApiError):
+            raise found
+        return list(found)
+
+    def clusters(self, project):
+        return self._held("clusters", project)
+
+    def networks(self, project):
+        return self._held("networks", project)
+
+    def subnetworks(self, project):
+        return self._held("subnetworks", project)
+
+    def project_buckets(self, project):
+        return self._held("buckets", project)
+
+    def project_service_accounts(self, project):
+        return self._held("service_accounts", project)
 
     def global_address(self, project, name):
         self._call("global_address", project, name)
@@ -460,7 +486,7 @@ def test_region_confirmed_before_stage_1(tmp_path: Path) -> None:
     gcp = FakeGcp(log)
     gcp.iam["bindings"] = [{"role": "roles/editor",
                             "members": [f"serviceAccount:{NUMBER}-compute@developer.gserviceaccount.com"]}]
-    right = answers(log, region="europe-west1", foundations_budget=[""])
+    right = answers(log, region="europe-west1", foundations_budget=[""], foundations_config=[PROJECT])
     rig = Rig(tmp_path / "second")
     result = rig.engine(stage0(gcp, right) + stage1(gcp, right), manifest=load_manifest()).run()
     assert result.exit_code == ExitCode.OK, result.message

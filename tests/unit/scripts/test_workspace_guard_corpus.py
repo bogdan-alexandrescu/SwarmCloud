@@ -32,6 +32,7 @@ the defect this file exists to catch.
 from __future__ import annotations
 
 import functools
+import importlib.util
 import json
 import os
 import secrets
@@ -44,6 +45,13 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 CORPUS = Path(__file__).resolve().parent / "fixtures" / "workspace_guard_corpus.json"
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
@@ -206,6 +214,7 @@ def test_a_judged_call_starts_one_jq_and_no_dirname_of_its_own(tmp_path: Path, c
     (real_bin / p["tool"]).chmod(0o755)
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_")) and k != "KUBECONFIG"}
+    env.update(placeholder_deployment.child_env(placeholder_deployment.PROJECT))
     env.update(PATH=f"{SHIMS}:{wrap}:{real_bin}:{os.environ['PATH']}", SWARM_CALL_GUARD=p["expect"],
                KUBECONFIG=p["kubeconfig"], SWARM_ENV_FILE=str(tmp_path / "no.env"), NO_COLOR="1")
     if p["env_project"]:
@@ -216,12 +225,15 @@ def test_a_judged_call_starts_one_jq_and_no_dirname_of_its_own(tmp_path: Path, c
     started = log.read_text().split() if log.exists() else []
     count = {name: started.count(name) for name in COUNTED}
     assert count["bash"] >= 1 and count["dirname"] >= 1, f"the wrappers saw nothing start: {count}"
-    # One jq: the judge, which also builds the argument list, the condition
-    # files and the deny-lists it used to ask separate jq calls for.
-    assert count["jq"] == 1, count
-    # The two dirname left are the shim's and common.sh's first line, both
-    # outside the guard; the guard resolves paths by parameter expansion.
-    assert count["dirname"] <= 2 and count["basename"] == 0, count
+    # One jq for the judge, which also builds the argument list, the condition
+    # files and the deny-lists it used to ask separate jq calls for; the other is
+    # common.sh's deny_list_load, reading the never-touch list once as the shim
+    # sources it (outside the guard, and kept for the rest of the shell).
+    assert count["jq"] == 2, count
+    # The three dirname left are the shim's, common.sh's first line and its
+    # resolve.sh check before loading the list, all outside the guard; the
+    # guard resolves paths by parameter expansion.
+    assert count["dirname"] <= 3 and count["basename"] == 0, count
     # The kubeconfig's context is read by the shell, not sed | sed | tr; the
     # deny-list is filtered in the judge, not by grep.
     assert count["sed"] == 0 and count["tr"] == 0 and count["grep"] == 0, count
@@ -260,9 +272,9 @@ def test_the_judge_reads_the_deny_list_as_guard_deny_json_prints_it(tmp_path: Pa
         wants.append(("argument", name, name in scan))
     # A context is gke_<project>_<location>_<cluster> and ctx_fail reads the
     # cluster as its last `_` field, so only a name that could be a cluster's
-    # is put there: `saga-agents-staging_cloudbuild` (a bucket, on the list
-    # since 2026-10-21) cannot be, and as a context's tail it reads as
-    # `cloudbuild`. The argument cases above still cover it by name.
+    # is put there: a bucket named `<project>_cloudbuild` cannot be, and as a
+    # context's tail it reads as `cloudbuild`. The argument cases above still
+    # cover such a name.
     for i, name in enumerate(sorted(n for n in whole if "_" not in n)):
         kubeconfig = tmp_path / f"kubeconfig-{i}"
         kubeconfig.write_text(f"current-context: gke_p_l_{name}\n")

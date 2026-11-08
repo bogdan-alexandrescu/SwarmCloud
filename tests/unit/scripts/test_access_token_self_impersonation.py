@@ -21,6 +21,7 @@ invocation.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import stat
@@ -30,6 +31,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 
 SA = "swarm-ci-fixer@example.iam.gserviceaccount.com"
@@ -75,6 +83,7 @@ def _access_token(tmp_path: Path, active_account: str) -> tuple[str, list[str]]:
         "SWARM_IMPERSONATE_SA": SA,
         # common.sh has no default project; any project serves this function.
         "PROJECT_ID": "swarm-unit-test",
+        **placeholder_deployment.child_env("swarm-unit-test"),
     }
 
     proc = subprocess.run(

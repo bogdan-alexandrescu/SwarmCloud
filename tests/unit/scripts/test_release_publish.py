@@ -173,6 +173,10 @@ def _env(tmp_path: Path, state: dict) -> dict[str, str]:
         NO_COLOR="1",
         SWARM_ENV_FILE=str(tmp_path / "absent.env"),
     )
+    # The one SWARM_ variable kept: where the package's conftest serves the
+    # placeholder deployment's never-touch list, which publish.sh checks the
+    # release home against.
+    env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
     return env
 
 
@@ -830,11 +834,24 @@ def test_ci_never_promotes_or_records(tmp_path: Path, mode: str) -> None:
     assert _calls(tmp_path) == []
 
 
-@pytest.mark.parametrize("project", ["agents-staging", "some-other-project"])
+@pytest.mark.parametrize("project", ["peer-cluster", "example-shared-project", "some-other-project"])
 def test_refuses_a_project_that_is_not_the_release_home(tmp_path: Path, project: str) -> None:
     proc = _run(tmp_path, _published(**{f"{RELEASE}/TESTED": _tested()}),
                 "--promote", VERSION, "--project", project, typed=VERSION)
     assert proc.returncode != 0
+    assert _calls(tmp_path) == []
+
+
+@pytest.mark.parametrize("extra", [{"PROJECT_ID": ""}, {"SWARM_DEPLOY_CONFIG_DIR": "no-such-config"}])
+def test_no_readable_never_touch_list_refuses_before_gcloud(tmp_path: Path, extra: dict) -> None:
+    """The release home is checked against the never-touch list of the
+    deployment PROJECT_ID names. With no project named, or a list that cannot
+    be read, nothing runs: a missing list is never an empty one."""
+    extra = {k: (str(tmp_path / v) if k == "SWARM_DEPLOY_CONFIG_DIR" else v) for k, v in extra.items()}
+    proc = _run(tmp_path, _published(**{f"{RELEASE}/TESTED": _tested()}),
+                "--promote", VERSION, typed=VERSION, extra_env=extra)
+    assert proc.returncode != 0, proc.stdout
+    assert "never-touch list" in proc.stderr, proc.stderr
     assert _calls(tmp_path) == []
 
 
