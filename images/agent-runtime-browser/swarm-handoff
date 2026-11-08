@@ -102,12 +102,12 @@ inside DIR (a link out of it is not followed), and only for a Host of
 127.0.0.1 or localhost -- a site in the same browser that rebinds its own name
 to 127.0.0.1 is refused, as the CDP proxy refuses it.
 
-A RENDER AGAINST ITS FRAME (IMPLEMENT-RENDER, BGD 2026-10-26, part of #2442;
+A RENDER AGAINST ITS FRAME (IMPLEMENT-RENDER, the owner, 2026-10-26, part of #2442;
 docs/browser-qa.md §6). `compare SHOT FRAME` scores a screenshot of the live
 browser against the repository's frame PNG for the same preset and theme, and
 writes `<name>.diff.png` and `<name>.json` under $SWARM_ARTIFACTS_DIR/compare/,
-so the step's artifacts carry the evidence for every frame it touched. WHY: AI
-Studio's ~30 visual-conformance lanes checked their UI fixes only through
+so the step's artifacts carry the evidence for every frame it touched. WHY: a peer
+application's ~30 visual-conformance lanes checked their UI fixes only through
 rendered-HTML tests; a browser re-check after merge found 28 of 52 desktop rows
 and 12 of 34 phone rows still wrong, and 6 new regressions. A score is what
 lets the implement step see that before it finishes.
@@ -129,7 +129,7 @@ preset is not the page as laid out; swarm_qa.py `_shot` has the measurement),
 and a frame is often the whole page. Exit 0 when the score is at most --threshold (COMPARE_THRESHOLD by
 default), EXIT_DIFFERENT when over it, 5 when refused. The diff image is the
 shot faded towards white, with every differing cell in DIFF_MARK, at the shot's
-size (taller when the frame is). WHERE THE CHANGE IS (TOKEN-RENDER, BGD
+size (taller when the frame is). WHERE THE CHANGE IS (TOKEN-RENDER, the owner,
 2026-10-27, part of #2524): the report's `boxes` group the differing cells that
 touch, in the shot's CSS pixels, and `<name>.crop.png`, beside the diff image,
 is the diff cut to the region they span and scaled down to at most
@@ -253,7 +253,7 @@ COMPARE_DELTA_E = 6.0
 #: an exact match passes --threshold 0.
 COMPARE_THRESHOLD = 0.02
 COMPARE_FORMAT = 1
-#: TOKEN-RENDER (BGD 2026-10-27, part of #2524): WHERE the render and the
+#: TOKEN-RENDER (the owner, 2026-10-27, part of #2524): WHERE the render and the
 #: frame differ, so a lane reads a small crop instead of the whole diff image.
 #: A box is a group of touching differing cells (8-connected), in the shot's
 #: CSS pixels; the report lists the largest COMPARE_MAX_BOXES and counts all.

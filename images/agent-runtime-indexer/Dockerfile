@@ -46,7 +46,7 @@ ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-# No default, so this file names no project (DAYONE-DESAGA-1,
+# No default, so this file names no project (the Day One image lane,
 # docs/design/day-one-install.md section 7): scripts/build-images.sh passes
 # the mirror of the project it builds for (lib/build-mirror.sh
 # mirror_build_args), and the `# syntax=` frontend through the same mirror as
