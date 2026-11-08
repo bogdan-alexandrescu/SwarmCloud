@@ -14,8 +14,8 @@
 #
 # WHY PER ACCOUNT (owner decision 2026-09-29, #334, from the security review of
 # contract request 30, #314). Held on the project, serviceAccountAdmin let CI
-# set the IAM policy of every service account in saga-agents-staging -- the
-# other team's promptlab-runner, swarm-ci-fix, and swarm-tf-deployer itself --
+# set the IAM policy of every service account in example-project -- the
+# other team's peer-app-runner, swarm-ci-fix, and swarm-tf-deployer itself --
 # and so grant itself tokenCreator on any of them. No IAM condition can narrow
 # it: "IAM resources don't provide the resource name"
 # (docs.cloud.google.com/iam/docs/conditions-attribute-reference).

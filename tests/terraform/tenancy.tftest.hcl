@@ -5,9 +5,9 @@
 mock_provider "google" {}
 
 variables {
-  project_id             = "saga-agents-staging"
-  artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-  workload_identity_pool = "saga-agents-staging.svc.id.goog"
+  project_id             = "example-project"
+  artifact_bucket        = "swarm-artifacts-example-project"
+  workload_identity_pool = "example-project.svc.id.goog"
   labels                 = { "managed-by" = "swarm-terraform" }
 
   tenants = {
@@ -24,8 +24,8 @@ variables {
   }
 
   dispatcher_members = {
-    scheduler  = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-    reconciler = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+    scheduler  = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
+    reconciler = "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -100,7 +100,7 @@ run "a_tenant_can_only_reach_its_own_objects" {
   assert {
     condition = alltrue([
       for k, b in google_storage_bucket_iam_member.worker_bucket_metadata :
-      b.role == "projects/saga-agents-staging/roles/swarmBucketMetadataReader"
+      b.role == "projects/example-project/roles/swarmBucketMetadataReader"
     ])
     error_message = "mounting needs bucket metadata and nothing else: the worker's bucket-level grant must be swarmBucketMetadataReader, not a predefined bucket role"
   }
@@ -165,7 +165,7 @@ run "a_worker_identity_can_create_no_infrastructure" {
   assert {
     condition = alltrue([
       for k, b in google_project_iam_member.worker_firestore :
-      b.role == "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
+      b.role == "projects/example-project/roles/swarmTenantWorkerFirestore"
     ])
     error_message = "the worker Firestore grant must be the narrowed custom role, not predefined roles/datastore.user"
   }
@@ -189,7 +189,7 @@ run "a_worker_identity_can_create_no_infrastructure" {
   # another tenant's namespace cannot impersonate this GSA even if it guesses
   # the KSA name.
   assert {
-    condition     = google_service_account_iam_member.workload_identity["eng"].member == "serviceAccount:saga-agents-staging.svc.id.goog[swarm-tenant-eng/swarm-agent-worker]"
+    condition     = google_service_account_iam_member.workload_identity["eng"].member == "serviceAccount:example-project.svc.id.goog[swarm-tenant-eng/swarm-agent-worker]"
     error_message = "the Workload Identity binding must pin both the namespace and the KSA"
   }
 }

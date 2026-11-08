@@ -33,9 +33,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -59,7 +59,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -68,8 +68,8 @@ override_data {
   target          = data.google_service_account.voice
   override_during = plan
   values = {
-    email = "swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
-    name  = "projects/saga-agents-staging/serviceAccounts/swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+    email = "swarm-voice@example-project.iam.gserviceaccount.com"
+    name  = "projects/example-project/serviceAccounts/swarm-voice@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -84,7 +84,7 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -100,30 +100,30 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-voice"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-voice"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
-  platform_owner = "bgd@example.com"
+  platform_owner = "owner@example.com"
 
   # Keys as store.py builds them (swarm_api/voice/store.py, blob_key): a
   # plan, a transcript part, a mock-up and a diagram, under a group tenant and
   # a personal one.
   voice_admitted = [
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voice/vp_0123/transcripts/vs_4567/000000.jsonl",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/u-bgd/voice/vp_89ab/mockups/vc_1/2.html",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/u-bgd/voice/vp_89ab/diagrams/vc_2/1.mmd",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voice/vp_0123/transcripts/vs_4567/000000.jsonl",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/u-pat/voice/vp_89ab/mockups/vc_1/2.html",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/u-pat/voice/vp_89ab/diagrams/vc_2/1.mmd",
   ]
 
   # Keys neither grant may reach: a near-miss of every clause, so dropping or
@@ -131,28 +131,28 @@ variables {
   voice_refused = [
     # anything outside tenants/, another bucket, a longer bucket name, the
     # bucket itself
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/voice/vp_0123/plans/3.md",
     "projects/_/buckets/other-bucket/objects/tenants/eng/voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/eng/voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging",
+    "projects/_/buckets/swarm-artifacts-example-project-x/objects/tenants/eng/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project",
     # another feature's prefix in the same tenant: a task's artifacts, a
     # checkpoint, the repository index, a verdict
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/tasks/t/attempts/a/artifacts/out.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/checkpoints/ck_1/archive.tar.gz",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/repos/r/index.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/verdicts/v.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/tasks/t/attempts/a/artifacts/out.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/checkpoints/ck_1/archive.tar.gz",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/repos/r/index.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/verdicts/v.json",
     # voice/ reached from inside another prefix: the placeholder spans "/", so
     # only the anchored comparison refuses these
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/tasks/t/voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/repos/r/voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/b/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/tasks/t/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/repos/r/voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/b/voice/vp_0123/plans/3.md",
     # an empty tenant, an empty project, an object straight under voice/, the
     # prefix itself
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants//voice/vp_0123/plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voice//plans/3.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voice/notes.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voice/",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/voicex/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants//voice/vp_0123/plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voice//plans/3.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voice/notes.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voice/",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/voicex/vp_0123/plans/3.md",
   ]
 }
 
@@ -190,15 +190,15 @@ run "on_swarm_api_may_create_and_delete_under_the_voice_prefix_only" {
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.api_voice_blob_deleter[0].role == "projects/saga-agents-staging/roles/swarmHistoryPurgeDeleter"
+    condition     = google_storage_bucket_iam_member.api_voice_blob_deleter[0].role == "projects/example-project/roles/swarmHistoryPurgeDeleter"
     error_message = "the deleter is the custom role that is storage.objects.delete and nothing else, never objectAdmin"
   }
 
   assert {
     condition = alltrue([
       for g in [google_storage_bucket_iam_member.api_voice_blob_writer[0], google_storage_bucket_iam_member.api_voice_blob_deleter[0]] : (
-        g.bucket == "swarm-artifacts-saga-agents-staging"
-        && g.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+        g.bucket == "swarm-artifacts-example-project"
+        && g.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
         && length(g.condition) == 1
         && g.condition[0].expression == local.voice_blob_condition
         && strcontains(g.condition[0].description, "managed-by=swarm-terraform")

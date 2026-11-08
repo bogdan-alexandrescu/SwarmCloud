@@ -14,14 +14,14 @@
 #
 #   * a log view, swarm-workers, that holds only SwarmCloud's worker logs. It
 #     lives on the swarm-worker-logs bucket (log_bucket.tf), which a sink fills
-#     with those logs and nothing else -- BGD's decision of 2026-10-22 (#1960),
+#     with those logs and nothing else -- the owner's decision of 2026-10-22 (#1960),
 #     after Cloud Logging refused the view on _Default (below);
 #   * IAM row L-1: roles/logging.viewAccessor for swarm-api's account, bound on
 #     THAT VIEW's own IAM policy -- by terraform/bootstrap/log_view_read.tf,
 #     which the owner applies, not by this root (below the view).
 #
-# WHY NOT roles/logging.viewer. saga-agents-staging is SHARED. The other team's
-# agents-staging cluster writes k8s_container entries to this project's
+# WHY NOT roles/logging.viewer. example-project is SHARED. The other team's
+# peer-cluster cluster writes k8s_container entries to this project's
 # _Default bucket, and a transcript is where a secret turns up. A project-wide read --
 # logging.viewer, privateLogViewer, or viewAccessor granted on the project
 # without a condition, which reads EVERY view -- would hand swarm-api all of it.
@@ -35,7 +35,7 @@
 # policy (google_logging_log_view_iam_member): there is no project binding to
 # get wrong, and a binding in one view's policy cannot reach another view or
 # bucket. It carries no condition for that reason -- the resource is the scope.
-# Since LOG-VIEW-BOOT (BGD, 2026-10-23, #1960) it is the owner's bootstrap that
+# Since LOG-VIEW-BOOT (the owner, 2026-10-23, #1960) it is the owner's bootstrap that
 # makes it (terraform/bootstrap/log_view_read.tf), so no release holds at
 # `dev-iam` on it.
 #
@@ -61,14 +61,14 @@
 # `=`/`!=` checks on the source (project, folder, organization, billing
 # account), the resource type and the log id. No view on _Default can select
 # by cluster or namespace, and the other team's cluster writes to that bucket.
-# AU5-VIEWOFF switched the view off; BGD then decided (2026-10-22, #1960) a
+# AU5-VIEWOFF switched the view off; the owner then decided (2026-10-22, #1960) a
 # dedicated bucket fed by a sink. The sink (log_bucket.tf) does the selecting
 # in the full query language, so this view's filter is the simplest one a
 # view accepts: the one source check, SOURCE("projects/<project>"), no nesting.
 #
 # This root's whole path -- bucket, sink, view -- is behind
 # var.swarm_workers_log_view_enabled (default false; on in dev.tfvars, off in
-# prod until BGD turns it on there); L-1 is bootstrap's, behind its own
+# prod until the owner turns it on there); L-1 is bootstrap's, behind its own
 # swarm_workers_log_view_exists. While it is off the output is null and
 # logs_query answers logs_unavailable.
 #
@@ -115,7 +115,7 @@ resource "google_logging_log_view" "swarm_workers" {
 
 # IAM row L-1 -- swarm-api's roles/logging.viewAccessor on this view -- is NOT
 # granted here. It lives in terraform/bootstrap/log_view_read.tf, which the
-# owner applies (BGD's decision, 2026-10-23, #1960). Release run 39888771458
+# owner applies (the owner's decision, 2026-10-23, #1960). Release run 39888771458
 # (head 2aa01cbe) failed it at `terraform apply, IAM (dev-iam)` with
 # "Error 403: The caller does not have permission": CI's deployer holds
 # roles/logging.configWriter, which cannot set IAM on a log view, and every

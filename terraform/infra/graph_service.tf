@@ -299,7 +299,7 @@ output "graph_service" {
 # until served with an image, so there is never a half-rendered manifest to
 # apply.
 output "swarm_graph_manifest" {
-  description = "The graph service's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging). Null until graph_service.serve is set and the image has a digest."
+  description = "The graph service's Kubernetes objects, rendered. Apply to swarm-autopilot only (never peer-cluster). Null until graph_service.serve is set and the image has a digest."
   value = local.graph_stats_serving ? replace(replace(replace(replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/swarm-graph.yaml"),
     "__SWARM_GRAPH_IMAGE__", local.graph_service_image),

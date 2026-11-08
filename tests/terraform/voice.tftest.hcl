@@ -29,9 +29,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -55,7 +55,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -64,8 +64,8 @@ override_data {
   target          = data.google_service_account.voice
   override_during = plan
   values = {
-    email = "swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
-    name  = "projects/saga-agents-staging/serviceAccounts/swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+    email = "swarm-voice@example-project.iam.gserviceaccount.com"
+    name  = "projects/example-project/serviceAccounts/swarm-voice@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -80,7 +80,7 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -96,21 +96,21 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-voice"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-voice"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
-  platform_owner = "bgd@example.com"
+  platform_owner = "owner@example.com"
 
   # Read as text by the assertion that lists voice.tf's resources.
   tf_root = "../../terraform/infra"
@@ -157,7 +157,7 @@ run "account_reads_the_bootstrap_account_holding_nothing" {
     condition = (
       length(data.google_service_account.voice) == 1
       && data.google_service_account.voice[0].account_id == "swarm-voice"
-      && data.google_service_account.voice[0].project == "saga-agents-staging"
+      && data.google_service_account.voice[0].project == "example-project"
     )
     error_message = "step 1 reads swarm-voice, the account terraform/bootstrap made, by the id modules/service_account_ids spells"
   }
@@ -262,7 +262,7 @@ run "on_swarm_voice_holds_no_secret_grant_and_reaches_the_voice_it_pool" {
     condition = (
       google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].name == "swarm-quota-broker"
       && google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].role == "roles/run.invoker"
-      && google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].member == "serviceAccount:swarm-voice@example-project.iam.gserviceaccount.com"
     )
     error_message = "swarm-voice reaches the quota broker by run.invoker on swarm-quota-broker, and nothing else there"
   }
@@ -281,7 +281,7 @@ run "on_swarm_voice_holds_no_secret_grant_and_reaches_the_voice_it_pool" {
     condition = (
       google_cloud_run_v2_service_iam_member.voice_invokes_api[0].name == "swarm-api"
       && google_cloud_run_v2_service_iam_member.voice_invokes_api[0].role == "roles/run.invoker"
-      && google_cloud_run_v2_service_iam_member.voice_invokes_api[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.voice_invokes_api[0].member == "serviceAccount:swarm-voice@example-project.iam.gserviceaccount.com"
     )
     error_message = "swarm-voice's grant on swarm-api is run.invoker"
   }
@@ -290,7 +290,7 @@ run "on_swarm_voice_holds_no_secret_grant_and_reaches_the_voice_it_pool" {
   assert {
     condition = (
       google_service_account_iam_member.voice_workload_identity[0].role == "roles/iam.workloadIdentityUser"
-      && google_service_account_iam_member.voice_workload_identity[0].member == "serviceAccount:saga-agents-staging.svc.id.goog[swarm-system/swarm-voice]"
+      && google_service_account_iam_member.voice_workload_identity[0].member == "serviceAccount:example-project.svc.id.goog[swarm-system/swarm-voice]"
     )
     error_message = "the Workload Identity binding admits exactly the KSA swarm-system/swarm-voice"
   }
@@ -315,8 +315,8 @@ run "on_swarm_api_calls_the_internal_address_and_swarm_voice_admits_only_swarm_a
   assert {
     condition = (
       strcontains(output.swarm_voice_manifest, "value: http://10.10.0.42:8080")
-      && strcontains(output.swarm_voice_manifest, "value: swarm-api@saga-agents-staging.iam.gserviceaccount.com")
-      && strcontains(output.swarm_voice_manifest, "iam.gke.io/gcp-service-account: swarm-voice@saga-agents-staging.iam.gserviceaccount.com")
+      && strcontains(output.swarm_voice_manifest, "value: swarm-api@example-project.iam.gserviceaccount.com")
+      && strcontains(output.swarm_voice_manifest, "iam.gke.io/gcp-service-account: swarm-voice@example-project.iam.gserviceaccount.com")
       && strcontains(output.swarm_voice_manifest, "loadBalancerIP: 10.10.0.42")
     )
     error_message = "the rendered pod checks for the URL swarm-api mints its token for, admits swarm-api's account alone, and acts as swarm-voice's account"

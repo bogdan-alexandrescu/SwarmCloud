@@ -31,7 +31,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -50,7 +50,7 @@ run "the_writer_role_carries_exactly_what_credentials_py_calls" {
     target          = data.google_project.provider_keys
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -141,7 +141,7 @@ run "the_writer_role_carries_exactly_what_credentials_py_calls" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.provider_key_writer[0].role_id == "swarmProviderKeyWriter",
-      google_project_iam_custom_role.provider_key_writer[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.provider_key_writer[0].project == "example-project",
       google_project_iam_custom_role.provider_key_writer[0].stage == "GA",
     ])
     error_message = "the role id is the one terraform/modules/custom_role_ids spells, defined in this project"
@@ -159,7 +159,7 @@ run "swarm_api_alone_holds_it_on_swarm_tenant_secrets" {
     target          = data.google_project.provider_keys
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -170,9 +170,9 @@ run "swarm_api_alone_holds_it_on_swarm_tenant_secrets" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.provider_key_writer) == 1,
-      google_project_iam_member.provider_key_writer[0].project == "saga-agents-staging",
-      google_project_iam_member.provider_key_writer[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.provider_key_writer[0].role == "projects/saga-agents-staging/roles/swarmProviderKeyWriter",
+      google_project_iam_member.provider_key_writer[0].project == "example-project",
+      google_project_iam_member.provider_key_writer[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.provider_key_writer[0].role == "projects/example-project/roles/swarmProviderKeyWriter",
     ])
     error_message = "swarm-api, alone, holds swarmProviderKeyWriter, granted through the role resource"
   }
@@ -185,7 +185,7 @@ run "swarm_api_alone_holds_it_on_swarm_tenant_secrets" {
   # The exact string, so any edit is a deliberate one this file must follow.
   # The project NUMBER: IAM evaluates Secret Manager names with it.
   assert {
-    condition     = google_project_iam_member.provider_key_writer[0].condition[0].expression == "resource.type == \"cloudresourcemanager.googleapis.com/Project\" || resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\")"
+    condition     = google_project_iam_member.provider_key_writer[0].condition[0].expression == "resource.type == \"cloudresourcemanager.googleapis.com/Project\" || resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\")"
     error_message = "swarm-api's provider-key condition changed; it must be the project (where secrets.create is evaluated) or a name starting projects/<NUMBER>/secrets/swarm-tenant-, and nothing else"
   }
 
@@ -202,18 +202,18 @@ run "swarm_api_alone_holds_it_on_swarm_tenant_secrets" {
       for c in [{
         expr = google_project_iam_member.provider_key_writer[0].condition[0].expression
         admitted = [
-          "projects/209012342332/secrets/swarm-tenant-eng-anthropic",
-          "projects/209012342332/secrets/swarm-tenant-eng-anthropic/versions/3",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-typesafe",
-          "projects/209012342332/secrets/swarm-tenant-u-someone-not-in-terraform-typesafe/versions/1",
+          "projects/123456789012/secrets/swarm-tenant-eng-anthropic",
+          "projects/123456789012/secrets/swarm-tenant-eng-anthropic/versions/3",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-typesafe",
+          "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-typesafe/versions/1",
         ]
         refused = [
-          "projects/209012342332/secrets/swarm-github-app-private-key",
-          "projects/209012342332/secrets/swarm-tenant",
-          "projects/209012342332/secrets/agents-staging-anthropic",
-          "projects/209012342332/secrets/promptlab-openai",
-          "projects/111111111111/secrets/swarm-tenant-eng-anthropic",
-          "projects/saga-agents-staging/secrets/swarm-tenant-eng-anthropic",
+          "projects/123456789012/secrets/swarm-github-app-private-key",
+          "projects/123456789012/secrets/swarm-tenant",
+          "projects/123456789012/secrets/peer-cluster-anthropic",
+          "projects/123456789012/secrets/peer-app-openai",
+          "projects/210987654321/secrets/swarm-tenant-eng-anthropic",
+          "projects/example-project/secrets/swarm-tenant-eng-anthropic",
         ]
         }] : alltrue([
         for n in concat(c.admitted, c.refused) :
@@ -235,7 +235,7 @@ run "no_key_in_state_and_every_resource_labelled" {
     target          = data.google_project.provider_keys
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 

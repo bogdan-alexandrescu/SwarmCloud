@@ -16,7 +16,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
   labels     = { "managed-by" = "swarm-terraform" }
   tf_root    = "../../terraform"
 }

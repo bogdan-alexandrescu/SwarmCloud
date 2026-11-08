@@ -221,7 +221,7 @@ locals {
         # RETENTION, added 2026-09-22 on the owner's explicit decision.
         #
         # Without these the broker cannot expire what it supersedes, and it never
-        # could: swarm-tenant-u-bogdan-anthropic reached 1,816 versions, ALL
+        # could: swarm-tenant-u-pat-anthropic reached 1,816 versions, ALL
         # ENABLED, ZERO destroyed, because nothing in this platform had ever
         # expired one. Only `latest` is ever read, so 1,815 of those were dead
         # credentials that stayed retrievable by anything holding accessor. A
@@ -233,7 +233,7 @@ locals {
         # from a live listing on every publish rather than recording state.
         #
         # THE SCOPE IS PROJECT-WIDE AND THAT IS A DELIBERATE, INFORMED CHOICE, not
-        # an oversight. saga-agents-staging is SHARED, so this permits the broker
+        # an oversight. example-project is SHARED, so this permits the broker
         # to destroy a version of any secret in it, including another team's. The
         # owner chose this over a per-secret binding on 2026-09-22 having been shown
         # that trade-off explicitly.

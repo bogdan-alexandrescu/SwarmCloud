@@ -4,12 +4,12 @@
 mock_provider "google" {}
 
 variables {
-  project_id      = "saga-agents-staging"
-  artifact_bucket = "swarm-artifacts-saga-agents-staging"
+  project_id      = "example-project"
+  artifact_bucket = "swarm-artifacts-example-project"
   labels          = { "managed-by" = "swarm-terraform" }
 
   # The swarm's own Autopilot cluster. It has to be named: the container.* roles
-  # are conditioned to it, and this project also holds a live agents-staging
+  # are conditioned to it, and this project also holds a live peer-cluster
   # cluster owned by another team.
   gke_cluster_name = "swarm-autopilot"
   gke_location     = "us-central1"
@@ -155,7 +155,7 @@ run "gke_dispatch_cannot_reach_another_teams_cluster" {
     source = "../../terraform/modules/iam"
   }
 
-  # This project is SHARED and holds a live `agents-staging` cluster owned by
+  # This project is SHARED and holds a live `peer-cluster` cluster owned by
   # another team. A project-level container.jobs.create covers EVERY cluster in
   # the project, so an unconditioned binding here would let swarm-scheduler
   # create workloads in their production cluster and read its Pod logs, and
@@ -165,14 +165,14 @@ run "gke_dispatch_cannot_reach_another_teams_cluster" {
       for k, b in google_project_iam_member.gke :
       length(b.condition) == 1 && strcontains(b.condition[0].expression, "clusters/swarm-autopilot")
     ])
-    error_message = "every container.* grant must be conditioned to the swarm cluster; project-level covers agents-staging too"
+    error_message = "every container.* grant must be conditioned to the swarm cluster; project-level covers peer-cluster too"
   }
 
   assert {
-    # NOTE: match on "clusters/agents-staging", not "agents-staging" -- the bare
-    # substring also appears inside the project id saga-agents-staging, which made
+    # NOTE: match on "clusters/peer-cluster", not "peer-cluster" -- the bare
+    # substring also appears inside the project id example-project, which made
     # this assertion fail against a perfectly correct condition.
-    condition     = !strcontains(output.gke_role_condition, "clusters/agents-staging")
+    condition     = !strcontains(output.gke_role_condition, "clusters/peer-cluster")
     error_message = "the condition must name the swarm cluster, never another team's"
   }
 
@@ -296,7 +296,7 @@ run "custom_role_ids_are_legal_and_named_in_this_project" {
 
   assert {
     condition = alltrue([
-      for key, name in output.names : name == "projects/saga-agents-staging/roles/${output.ids[key]}"
+      for key, name in output.names : name == "projects/example-project/roles/${output.ids[key]}"
     ])
     error_message = "a role's name is projects/<project>/roles/<id>; a binding naming anything else names no role"
   }

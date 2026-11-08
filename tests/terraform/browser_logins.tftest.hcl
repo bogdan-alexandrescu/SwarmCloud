@@ -38,7 +38,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -55,7 +55,7 @@ run "no_worker_holds_a_browser_grant_even_with_personal_tenants_in_tfvars" {
     target          = data.google_project.browser_logins
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -77,7 +77,7 @@ run "no_worker_holds_a_browser_grant_even_with_personal_tenants_in_tfvars" {
       for m in concat(
         google_project_iam_member.browser_session_provisioner,
         google_project_iam_member.browser_login_revoker,
-      ) : m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      ) : m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     ]) && length(google_project_iam_member.browser_session_provisioner) == 1 && length(google_project_iam_member.browser_login_revoker) == 1
     error_message = "swarm-api alone holds the browser-session grants: it provisions each secret and grants its worker on that secret (owner decision 2026-10-11, L8c)"
   }
@@ -121,7 +121,7 @@ run "swarm_api_provisions_browser_secrets_under_the_condition" {
     target          = data.google_project.browser_logins
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -143,7 +143,7 @@ run "swarm_api_provisions_browser_secrets_under_the_condition" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.browser_session_provisioner[0].role_id == "swarmBrowserSessionProvisioner",
-      google_project_iam_member.browser_session_provisioner[0].role == "projects/saga-agents-staging/roles/swarmBrowserSessionProvisioner",
+      google_project_iam_member.browser_session_provisioner[0].role == "projects/example-project/roles/swarmBrowserSessionProvisioner",
     ])
     error_message = "the provisioner's role id is the one terraform/modules/custom_role_ids spells, granted through the resource"
   }
@@ -163,7 +163,7 @@ run "swarm_api_provisions_browser_secrets_under_the_condition" {
   }
 
   assert {
-    condition     = google_project_iam_member.browser_session_provisioner[0].condition[0].expression == "resource.type == \"cloudresourcemanager.googleapis.com/Project\" || (resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-browser-\") != \"\")"
+    condition     = google_project_iam_member.browser_session_provisioner[0].condition[0].expression == "resource.type == \"cloudresourcemanager.googleapis.com/Project\" || (resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-browser-\") != \"\")"
     error_message = "swarm-api's provision condition must name personal tenants' -browser- secrets by the project NUMBER and extract(), never matches()"
   }
 
@@ -175,19 +175,19 @@ run "swarm_api_provisions_browser_secrets_under_the_condition" {
       for c in [{
         expr = google_project_iam_member.browser_session_provisioner[0].condition[0].expression
         admitted = [
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser-wf-wf_1",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser-login-github-qa",
-          "projects/209012342332/secrets/swarm-tenant-u-someone-not-in-terraform-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser-wf-wf_1",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser-login-github-qa",
+          "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-browser-login-x",
         ]
         refused = [
-          "projects/209012342332/secrets/swarm-tenant-eng-browser-login-x",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-anthropic",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser",
-          "projects/209012342332/secrets/swarm-tenant-u--browser-login-x",
-          "projects/209012342332/secrets/swarm-github-app-private-key",
-          "projects/209012342332/secrets/agents-staging-browser-login-x",
-          "projects/111111111111/secrets/swarm-tenant-u-alice-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-eng-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-anthropic",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser",
+          "projects/123456789012/secrets/swarm-tenant-u--browser-login-x",
+          "projects/123456789012/secrets/swarm-github-app-private-key",
+          "projects/123456789012/secrets/peer-cluster-browser-login-x",
+          "projects/210987654321/secrets/swarm-tenant-u-alice-browser-login-x",
         ]
         }] : alltrue([
         for n in concat(c.admitted, c.refused) : (
@@ -213,7 +213,7 @@ run "swarm_api_may_destroy_browser_secrets_and_never_read_one" {
     target          = data.google_project.browser_logins
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -239,8 +239,8 @@ run "swarm_api_may_destroy_browser_secrets_and_never_read_one" {
 
   assert {
     condition = alltrue([
-      google_project_iam_member.browser_login_revoker[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.browser_login_revoker[0].role == "projects/saga-agents-staging/roles/swarmBrowserLoginRevoker",
+      google_project_iam_member.browser_login_revoker[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.browser_login_revoker[0].role == "projects/example-project/roles/swarmBrowserLoginRevoker",
       length(google_project_iam_member.browser_login_revoker) == 1,
     ])
     error_message = "swarm-api, alone, holds the revoker role: it revokes a named login and deletes a workflow's carry at its terminal state"
@@ -248,7 +248,7 @@ run "swarm_api_may_destroy_browser_secrets_and_never_read_one" {
 
   # The exact string, so any edit is a deliberate one this file must follow.
   assert {
-    condition     = google_project_iam_member.browser_login_revoker[0].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-browser-\") != \"\""
+    condition     = google_project_iam_member.browser_login_revoker[0].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-browser-\") != \"\""
     error_message = "swarm-api's revoke condition changed; it must admit every personal tenant's -browser- secrets, workspaces made outside Terraform included, and nothing else"
   }
 
@@ -260,20 +260,20 @@ run "swarm_api_may_destroy_browser_secrets_and_never_read_one" {
       for c in [{
         expr = google_project_iam_member.browser_login_revoker[0].condition[0].expression
         admitted = [
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser-wf-wf_1",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser-login-github-qa",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser-login-github-qa/versions/7",
-          "projects/209012342332/secrets/swarm-tenant-u-someone-not-in-terraform-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser-wf-wf_1",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser-login-github-qa",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser-login-github-qa/versions/7",
+          "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-browser-login-x",
         ]
         refused = [
-          "projects/209012342332/secrets/swarm-tenant-eng-browser-login-x",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-anthropic",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
-          "projects/209012342332/secrets/swarm-tenant-u-alice-browser",
-          "projects/209012342332/secrets/swarm-tenant-u--browser-login-x",
-          "projects/209012342332/secrets/swarm-github-app-private-key",
-          "projects/209012342332/secrets/agents-staging-browser-login-x",
-          "projects/111111111111/secrets/swarm-tenant-u-alice-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-eng-browser-login-x",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-anthropic",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
+          "projects/123456789012/secrets/swarm-tenant-u-alice-browser",
+          "projects/123456789012/secrets/swarm-tenant-u--browser-login-x",
+          "projects/123456789012/secrets/swarm-github-app-private-key",
+          "projects/123456789012/secrets/peer-cluster-browser-login-x",
+          "projects/210987654321/secrets/swarm-tenant-u-alice-browser-login-x",
         ]
         }] : alltrue(concat(
         [
@@ -301,7 +301,7 @@ run "no_session_in_state_and_every_resource_labelled" {
     target          = data.google_project.browser_logins
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 

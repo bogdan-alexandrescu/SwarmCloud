@@ -1,5 +1,5 @@
 # swarm-api reads the METADATA of swarm-* secrets for Admin › Platform secrets,
-# and never a value (docs/design/secrets-scopes.md §5.2, BGD's Q7 answer in
+# and never a value (docs/design/secrets-scopes.md §5.2, the owner's Q7 answer in
 # §11; lane SSC-PLATFORM-STATUS, part of #2158).
 # terraform/bootstrap/platform_secret_status.tf makes the grant. These runs
 # hold:
@@ -14,7 +14,7 @@
 #     no number;
 #   * the condition, EVALUATED, admits the platform's swarm-* secrets and the
 #     broker's swarm-account-* ones, and refuses the other team's agents-* and
-#     promptlab-* secrets, another project's, and the project-ID spelling --
+#     peer-app-* secrets, another project's, and the project-ID spelling --
 #     so a dropped or widened condition fails here;
 #   * no secret or version is declared, and every resource says
 #     managed-by=swarm-terraform;
@@ -34,7 +34,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -53,7 +53,7 @@ run "the_status_role_holds_secrets_get_and_versions_list_alone" {
     target          = data.google_project.platform_secret_status
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -69,7 +69,7 @@ run "the_status_role_holds_secrets_get_and_versions_list_alone" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.secret_status_viewer[0].role_id == "swarmSecretStatusViewer",
-      google_project_iam_custom_role.secret_status_viewer[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.secret_status_viewer[0].project == "example-project",
       google_project_iam_custom_role.secret_status_viewer[0].stage == "GA",
     ])
     error_message = "the role is swarmSecretStatusViewer, defined in this project, GA"
@@ -87,7 +87,7 @@ run "swarm_api_alone_reads_swarm_secret_metadata_by_project_number" {
     target          = data.google_project.platform_secret_status
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -98,9 +98,9 @@ run "swarm_api_alone_reads_swarm_secret_metadata_by_project_number" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.secret_status_viewer) == 1,
-      google_project_iam_member.secret_status_viewer[0].project == "saga-agents-staging",
-      google_project_iam_member.secret_status_viewer[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.secret_status_viewer[0].role == "projects/saga-agents-staging/roles/swarmSecretStatusViewer",
+      google_project_iam_member.secret_status_viewer[0].project == "example-project",
+      google_project_iam_member.secret_status_viewer[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.secret_status_viewer[0].role == "projects/example-project/roles/swarmSecretStatusViewer",
     ])
     error_message = "swarm-api, alone, holds swarmSecretStatusViewer, granted through the role resource"
   }
@@ -114,13 +114,13 @@ run "swarm_api_alone_reads_swarm_secret_metadata_by_project_number" {
 
   # The exact string, so any edit is a deliberate one this file must follow.
   assert {
-    condition     = google_project_iam_member.secret_status_viewer[0].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-\")"
+    condition     = google_project_iam_member.secret_status_viewer[0].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-\")"
     error_message = "the condition is a name starting projects/<NUMBER>/secrets/swarm- and nothing else"
   }
 
   assert {
     condition = alltrue([
-      for f in ["matches(", "hasOnly(", " || ", "saga-agents-staging", "agents-", "promptlab"] :
+      for f in ["matches(", "hasOnly(", " || ", "example-project", "agents-", "peer-app"] :
       !strcontains(google_project_iam_member.secret_status_viewer[0].condition[0].expression, f)
     ])
     error_message = "the condition uses no matches(), no list, no second arm, names no other family, and spells the project number rather than its ID"
@@ -139,26 +139,26 @@ run "swarm_api_alone_reads_swarm_secret_metadata_by_project_number" {
       for c in [{
         prefix = regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\)$", google_project_iam_member.secret_status_viewer[0].condition[0].expression)[0]
         admitted = [
-          "projects/209012342332/secrets/swarm-github-app-private-key",
-          "projects/209012342332/secrets/swarm-live-key",
-          "projects/209012342332/secrets/swarm-tailscale-oauth",
-          "projects/209012342332/secrets/swarm-account-u-alice--main",
-          "projects/209012342332/secrets/swarm-account-u-alice--main-refresh",
+          "projects/123456789012/secrets/swarm-github-app-private-key",
+          "projects/123456789012/secrets/swarm-live-key",
+          "projects/123456789012/secrets/swarm-tailscale-oauth",
+          "projects/123456789012/secrets/swarm-account-u-alice--main",
+          "projects/123456789012/secrets/swarm-account-u-alice--main-refresh",
         ]
         refused = [
-          "projects/209012342332/secrets/agents-staging-anthropic",
-          "projects/209012342332/secrets/agents-staging-db-password",
-          "projects/209012342332/secrets/promptlab-openai",
-          "projects/209012342332/secrets/swarmish-key",
-          "projects/209012342332/secrets/swarm",
-          "projects/111111111111/secrets/swarm-live-key",
-          "projects/2090123423320/secrets/swarm-live-key",
-          "projects/20901234233/secrets/swarm-live-key",
-          "projects/saga-agents-staging/secrets/swarm-live-key",
+          "projects/123456789012/secrets/peer-cluster-anthropic",
+          "projects/123456789012/secrets/peer-cluster-db-password",
+          "projects/123456789012/secrets/peer-app-openai",
+          "projects/123456789012/secrets/swarmish-key",
+          "projects/123456789012/secrets/swarm",
+          "projects/210987654321/secrets/swarm-live-key",
+          "projects/${"123456789012"}0/secrets/swarm-live-key",
+          "projects/${substr("123456789012", 0, 11)}/secrets/swarm-live-key",
+          "projects/example-project/secrets/swarm-live-key",
         ]
       }] : alltrue([for n in concat(c.admitted, c.refused) : startswith(n, c.prefix) == contains(c.admitted, n)])
     ])
-    error_message = "the condition must admit this project's swarm-* secrets (the platform's and the broker's accounts) and refuse the other team's agents-* and promptlab-*, a name that only begins `swarm` without the hyphen, another project's number, and the project-ID spelling"
+    error_message = "the condition must admit this project's swarm-* secrets (the platform's and the broker's accounts) and refuse the other team's agents-* and peer-app-*, a name that only begins `swarm` without the hyphen, another project's number, and the project-ID spelling"
   }
 
   # A custom role has no labels and an IAM member has none either: each says
@@ -194,7 +194,7 @@ run "the_project_number_comes_from_the_data_source_never_a_literal" {
     target          = data.google_project.platform_secret_status
     override_during = plan
     values = {
-      number = "555555555555"
+      number = "210987654321"
     }
   }
 
@@ -203,7 +203,7 @@ run "the_project_number_comes_from_the_data_source_never_a_literal" {
   }
 
   assert {
-    condition     = google_project_iam_member.secret_status_viewer[0].condition[0].expression == "resource.name.startsWith(\"projects/555555555555/secrets/swarm-\")"
+    condition     = google_project_iam_member.secret_status_viewer[0].condition[0].expression == "resource.name.startsWith(\"projects/210987654321/secrets/swarm-\")"
     error_message = "the condition's project number is data.google_project's, whatever it is"
   }
 

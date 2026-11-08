@@ -22,7 +22,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
   infra_tenants_tfvars = "../../tests/terraform/browser_logins_fixture/tenants.tfvars"
 }
@@ -51,31 +51,31 @@ run "one_row_one_secret" {
     target          = data.google_project.typesafe_user_keys
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   variables {
-    typesafe_user_key_readers = { eng = ["u-bogdan"] }
+    typesafe_user_key_readers = { eng = ["u-pat"] }
   }
 
   assert {
-    condition     = toset(keys(google_project_iam_member.typesafe_user_key_reader)) == toset(["eng/u-bogdan"])
+    condition     = toset(keys(google_project_iam_member.typesafe_user_key_reader)) == toset(["eng/u-pat"])
     error_message = "one row is one binding"
   }
 
   assert {
-    condition     = google_project_iam_member.typesafe_user_key_reader["eng/u-bogdan"].role == "roles/secretmanager.secretAccessor"
+    condition     = google_project_iam_member.typesafe_user_key_reader["eng/u-pat"].role == "roles/secretmanager.secretAccessor"
     error_message = "the grant is read, and nothing else"
   }
 
   assert {
-    condition     = google_project_iam_member.typesafe_user_key_reader["eng/u-bogdan"].condition[0].expression == "resource.name == \"projects/209012342332/secrets/swarm-tenant-u-bogdan-typesafe\" || resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-bogdan-typesafe/versions/\")"
+    condition     = google_project_iam_member.typesafe_user_key_reader["eng/u-pat"].condition[0].expression == "resource.name == \"projects/123456789012/secrets/swarm-tenant-u-pat-typesafe\" || resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-pat-typesafe/versions/\")"
     error_message = "the condition is the one secret and its versions, by project number"
   }
 
   assert {
-    condition     = startswith(google_project_iam_member.typesafe_user_key_reader["eng/u-bogdan"].condition[0].description, "managed-by=swarm-terraform;")
+    condition     = startswith(google_project_iam_member.typesafe_user_key_reader["eng/u-pat"].condition[0].description, "managed-by=swarm-terraform;")
     error_message = "every binding says managed-by=swarm-terraform"
   }
 }
@@ -88,7 +88,7 @@ run "a_personal_id_must_be_u_dash" {
   }
 
   variables {
-    typesafe_user_key_readers = { eng = ["bogdan"] }
+    typesafe_user_key_readers = { eng = ["pat"] }
   }
 
   expect_failures = [var.typesafe_user_key_readers]

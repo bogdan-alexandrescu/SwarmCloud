@@ -59,7 +59,7 @@ variable "scope_gke_to_cluster" {
     Adds an IAM condition pinning the container.* grants to
     projects/<project>/locations/<region>/clusters/<swarm cluster>.
 
-    This project is SHARED and holds a live `agents-staging` cluster owned by
+    This project is SHARED and holds a live `peer-cluster` cluster owned by
     another team. A project-level container.jobs.create covers EVERY cluster in
     the project, so without this condition swarm-scheduler could create
     workloads in -- and read pod logs out of -- that other team's production

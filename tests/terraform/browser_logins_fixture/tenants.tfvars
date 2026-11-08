@@ -9,7 +9,7 @@
 # not, holds a project-level browser grant: swarm-api grants each worker on
 # its own secret, so the personal ones here show the grant is absent anyway.
 
-project_id = "saga-agents-staging"
+project_id = "example-project"
 
 tenants = {
   eng = {
@@ -25,17 +25,17 @@ tenants = {
 
   svc-bot = {
     kind      = "user"
-    principal = "svc-bot@saga-agents-staging.iam.gserviceaccount.com"
+    principal = "svc-bot@example-project.iam.gserviceaccount.com"
   }
 
   u-alice = {
     kind      = "user"
-    principal = "alice-bot@saga-agents-staging.iam.gserviceaccount.com"
+    principal = "alice-bot@example-project.iam.gserviceaccount.com"
   }
 
   "u-verify" = {
     kind            = "user"
-    principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    principal       = "swarm-verify@example-project.iam.gserviceaccount.com"
     directory_group = false
   }
 }

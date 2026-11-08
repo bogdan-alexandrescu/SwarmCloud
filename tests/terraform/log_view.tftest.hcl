@@ -4,11 +4,11 @@
 # terraform/infra/log_bucket.tf and terraform/infra/log_view.tf.
 #
 # OWNER DECISION 2026-10-22 (Q4): "A log view filtered to SwarmCloud resources,
-# viewAccessor on the view only". saga-agents-staging is SHARED: a project-wide
-# log read would hand swarm-api the other team's agents-staging cluster logs.
+# viewAccessor on the view only". example-project is SHARED: a project-wide
+# log read would hand swarm-api the other team's peer-cluster cluster logs.
 # Cloud Logging refused that filter on a view of _Default (release run
 # 39742374084: "Filter exceeds the view filter nesting depth limit of 1"), so
-# BGD decided, 2026-10-22 (#1960): a dedicated log bucket fed by a sink, with
+# the owner decided, 2026-10-22 (#1960): a dedicated log bucket fed by a sink, with
 # the view on that bucket. A sink accepts the full query language.
 #
 # What is held here -- the PROPERTY, not the spelling:
@@ -18,7 +18,7 @@
 #   * the sink's filter is EXACTLY the disjunction of the branches
 #     log_bucket.tf lists, each branch a plain conjunction naming one resource
 #     type -- so nothing can be OR'ed or negated in around them -- and it never
-#     names agents-staging;
+#     names peer-cluster;
 #   * the filter is EVALUATED, not only compared: every entry in
 #     log_admitted and log_refused is run through the planned branches, with
 #     `=` and `=~` emulated (both RE2, as Cloud Logging's are). It admits
@@ -28,13 +28,13 @@
 #     services, not a name that only CONTAINS a prefix;
 #   * nothing grants roles/logging.bucketWriter -- not the sink's writer, not
 #     a platform account: a sink writing a log bucket in its own project needs
-#     no grant (BGD, 2026-10-22, #1960);
+#     no grant (the owner, 2026-10-22, #1960);
 #   * the view swarm-workers lives on the new bucket, never _Default;
 #   * terraform/infra holds NO log-view IAM resource at all: row L-1,
 #     swarm-api's viewAccessor on the view, is terraform/bootstrap's
 #     (log_view_read.tf; log_view_read.tftest.hcl holds it). CI's deployer
 #     cannot set IAM on a log view (release run 39888771458, 2026-10-23:
-#     "Error 403: The caller does not have permission"), and BGD decided on
+#     "Error 403: The caller does not have permission"), and the owner decided on
 #     2026-10-23 (#1960) that it never gains the power to;
 #   * no account this root grants project roles to holds any predefined role
 #     measured to read log entries project-wide
@@ -53,9 +53,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -79,12 +79,12 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -111,8 +111,8 @@ variables {
   ]
   log_refused = [
     # The other team's cluster, even in a namespace spelled like ours.
-    { type = "k8s_container", labels = { cluster_name = "agents-staging", namespace_name = "swarm-tenant-eng", container_name = "agent" } },
-    { type = "k8s_container", labels = { cluster_name = "agents-staging", namespace_name = "default", container_name = "api" } },
+    { type = "k8s_container", labels = { cluster_name = "peer-cluster", namespace_name = "swarm-tenant-eng", container_name = "agent" } },
+    { type = "k8s_container", labels = { cluster_name = "peer-cluster", namespace_name = "default", container_name = "api" } },
     # Our cluster, but not a tenant namespace: the platform's own swarm-system
     # (the egress proxy) is not a worker.
     { type = "k8s_container", labels = { cluster_name = "swarm-autopilot", namespace_name = "swarm-system", container_name = "swarm-egress" } },
@@ -130,14 +130,14 @@ variables {
     { type = "cloud_run_job", labels = { job_name = "swarm-verify" } },
     { type = "cloud_run_job", labels = { job_name = "swarm-workspace-apply" } },
     { type = "cloud_run_job", labels = { job_name = "swarm-jobs-x" } },
-    { type = "cloud_run_job", labels = { job_name = "agents-staging-migrate" } },
+    { type = "cloud_run_job", labels = { job_name = "peer-cluster-migrate" } },
     { type = "cloud_run_job", labels = { job_name = "pre-swarm-job-eng-claude-code" } },
     # The platform's services and the other team's: no service is a worker.
     { type = "cloud_run_revision", labels = { service_name = "swarm-api" } },
     { type = "cloud_run_revision", labels = { service_name = "swarm-scheduler" } },
-    { type = "cloud_run_revision", labels = { service_name = "agents-staging-api" } },
+    { type = "cloud_run_revision", labels = { service_name = "peer-cluster-api" } },
     # A revision carrying a job's label (a type/label mix-up must not admit it).
-    { type = "cloud_run_revision", labels = { job_name = "swarm-job-eng-claude-code", service_name = "agents-staging-api" } },
+    { type = "cloud_run_revision", labels = { job_name = "swarm-job-eng-claude-code", service_name = "peer-cluster-api" } },
     # Every other resource type in the project.
     { type = "k8s_node", labels = { cluster_name = "swarm-autopilot", node_name = "n1" } },
     { type = "k8s_cluster", labels = { cluster_name = "swarm-autopilot" } },
@@ -154,19 +154,19 @@ variables {
   clause_re = "^(resource\\.type|resource\\.labels\\.([a-z_]+))(=~|=)\"([^\"]*)\"$"
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-egress"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -221,7 +221,7 @@ run "the_worker_log_bucket_keeps_30_days" {
     condition = (
       length(google_logging_project_bucket_config.swarm_worker_logs) == 1
       && google_logging_project_bucket_config.swarm_worker_logs[0].bucket_id == "swarm-worker-logs"
-      && google_logging_project_bucket_config.swarm_worker_logs[0].project == "saga-agents-staging"
+      && google_logging_project_bucket_config.swarm_worker_logs[0].project == "example-project"
       && google_logging_project_bucket_config.swarm_worker_logs[0].location == "us-central1"
       && google_logging_project_bucket_config.swarm_worker_logs[0].retention_days == 30
     )
@@ -252,12 +252,12 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
     swarm_workers_log_view_enabled = true
   }
 
-  # MUTATION: destination = "logging.googleapis.com/projects/saga-agents-staging/locations/global/buckets/_Default" turns this red.
+  # MUTATION: destination = "logging.googleapis.com/projects/example-project/locations/global/buckets/_Default" turns this red.
   assert {
     condition = (
       length(google_logging_project_sink.swarm_worker_logs) == 1
-      && google_logging_project_sink.swarm_worker_logs[0].project == "saga-agents-staging"
-      && google_logging_project_sink.swarm_worker_logs[0].destination == "logging.googleapis.com/projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs"
+      && google_logging_project_sink.swarm_worker_logs[0].project == "example-project"
+      && google_logging_project_sink.swarm_worker_logs[0].destination == "logging.googleapis.com/projects/example-project/locations/us-central1/buckets/swarm-worker-logs"
     )
     error_message = "exactly one sink, in this project, and its destination is the swarm-worker-logs bucket"
   }
@@ -272,10 +272,10 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
 
   # The other team's cluster is never named -- not even to exclude it: an
   # exclusion is one edited character from an inclusion.
-  # MUTATION: a branch `resource.labels.cluster_name="agents-staging"` (or `!=` it) turns this red.
+  # MUTATION: a branch `resource.labels.cluster_name="peer-cluster"` (or `!=` it) turns this red.
   assert {
-    condition     = !strcontains(google_logging_project_sink.swarm_worker_logs[0].filter, "agents-staging")
-    error_message = "the sink's filter must never name agents-staging, the other team's cluster"
+    condition     = !strcontains(google_logging_project_sink.swarm_worker_logs[0].filter, "peer-cluster")
+    error_message = "the sink's filter must never name peer-cluster, the other team's cluster"
   }
 
   # Each branch only narrows: a plain AND of clauses this file can parse. OR,
@@ -307,7 +307,7 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
   }
 
   # Every container branch is pinned to the swarm cluster, by the same name the
-  # cluster module is given: the other team's agents-staging cluster writes
+  # cluster module is given: the other team's peer-cluster cluster writes
   # k8s_container entries in this project too.
   # MUTATION: dropping the cluster_name clause from a k8s_container branch turns this red.
   assert {
@@ -354,7 +354,7 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
   }
 }
 
-# NO GRANT TO THE SINK'S WRITER (BGD, 2026-10-22, #1960). The sink writes a
+# NO GRANT TO THE SINK'S WRITER (the owner, 2026-10-22, #1960). The sink writes a
 # log bucket in its own project, which Google authorizes automatically ("Route
 # logs to supported destinations", Set destination permissions), so the
 # release adds no IAM row for it. Nothing anywhere grants
@@ -394,7 +394,7 @@ run "nothing_grants_bucket_writer_to_the_sink_or_anyone" {
     condition = alltrue([
       for f in flatten([for d in var.granting_dirs : [for p in fileset(d, "**/*.tf") : "${d}/${p}"]]) : length(regexall("(?m)^\\s*role\\s*=\\s*\"roles/logging\\.bucketWriter\"", file(f))) == 0
     ])
-    error_message = "a .tf file under terraform/infra or terraform/modules grants roles/logging.bucketWriter; the sink writes a bucket in its own project and needs no grant (BGD, 2026-10-22, #1960)"
+    error_message = "a .tf file under terraform/infra or terraform/modules grants roles/logging.bucketWriter; the sink writes a bucket in its own project and needs no grant (the owner, 2026-10-22, #1960)"
   }
 
   # MUTATION: role = "roles/logging.bucketWriter" on google_project_iam_member.verify_reads_run turns this red.
@@ -430,7 +430,7 @@ run "the_swarm_workers_view_lives_on_the_worker_log_bucket" {
   assert {
     condition = (
       length(google_logging_log_view.swarm_workers) == 1
-      && output.swarm_workers_log_view == "projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs/views/swarm-workers"
+      && output.swarm_workers_log_view == "projects/example-project/locations/us-central1/buckets/swarm-worker-logs/views/swarm-workers"
     )
     error_message = "with swarm_workers_log_view_enabled = true exactly one swarm-workers view is planned and the output names it on swarm-worker-logs"
   }
@@ -441,7 +441,7 @@ run "the_swarm_workers_view_lives_on_the_worker_log_bucket" {
   # MUTATION: bucket = ".../buckets/_Default" (or name = "swarm-logs") turns this red.
   assert {
     condition = (
-      google_logging_log_view.swarm_workers[0].bucket == "projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs"
+      google_logging_log_view.swarm_workers[0].bucket == "projects/example-project/locations/us-central1/buckets/swarm-worker-logs"
       && !strcontains(google_logging_log_view.swarm_workers[0].bucket, "_Default")
       && google_logging_log_view.swarm_workers[0].name == "swarm-workers"
     )
@@ -452,8 +452,8 @@ run "the_swarm_workers_view_lives_on_the_worker_log_bucket" {
   # simplest filter a view accepts: one source check, no nesting.
   # MUTATION: filter = join(" OR ", ...) of the branches (what Cloud Logging refused) turns this red.
   assert {
-    condition     = google_logging_log_view.swarm_workers[0].filter == "SOURCE(\"projects/saga-agents-staging\")"
-    error_message = "the view's filter is SOURCE(\"projects/saga-agents-staging\") alone: the sink does the selecting"
+    condition     = google_logging_log_view.swarm_workers[0].filter == "SOURCE(\"projects/example-project\")"
+    error_message = "the view's filter is SOURCE(\"projects/example-project\") alone: the sink does the selecting"
   }
 
   # MUTATION: dropping "managed-by=swarm-terraform; " from the view's description turns this red.
@@ -466,7 +466,7 @@ run "the_swarm_workers_view_lives_on_the_worker_log_bucket" {
   }
 }
 
-# ROW L-1 IS NOT GRANTED HERE (lane LOG-VIEW-BOOT, BGD 2026-10-23, #1960).
+# ROW L-1 IS NOT GRANTED HERE (lane LOG-VIEW-BOOT, the owner 2026-10-23, #1960).
 # Release run 39888771458 (head 2aa01cbe) failed applying it at
 # `terraform apply, IAM (dev-iam)`: "Error 403: The caller does not have
 # permission". CI's deployer holds roles/logging.configWriter, which cannot set
@@ -503,7 +503,7 @@ run "infra_grants_no_log_view_iam_and_no_project_log_read" {
     condition = alltrue([
       for f in flatten([for d in var.granting_dirs : [for p in fileset(d, "**/*.tf") : "${d}/${p}"]]) : length(regexall(var.view_iam_re, file(f))) == 0
     ])
-    error_message = "a .tf file under terraform/infra or terraform/modules declares a google_logging_log_view_iam_* resource; CI applies that root and cannot set IAM on a log view. Row L-1 is terraform/bootstrap/log_view_read.tf's (BGD, 2026-10-23, #1960)"
+    error_message = "a .tf file under terraform/infra or terraform/modules declares a google_logging_log_view_iam_* resource; CI applies that root and cannot set IAM on a log view. Row L-1 is terraform/bootstrap/log_view_read.tf's (the owner, 2026-10-23, #1960)"
   }
 
   # The view itself stays here: the grant names it, by id.

@@ -75,9 +75,9 @@
 #
 # ---------------------------------------------------------------------------
 # WHAT WAS MEASURED. Every listing below is read-only gcloud against
-# saga-agents-staging on 2026-09-24 (list/describe/get only), and the "ours"
+# example-project on 2026-09-24 (list/describe/get only), and the "ours"
 # column is cross-checked against the resource names in terraform/infra's state
-# (gs://swarm-tfstate-saga-agents-staging/infra/dev/default.tfstate, names
+# (gs://swarm-tfstate-example-project/infra/dev/default.tfstate, names
 # only). tests/terraform/deployer_iam.tftest.hcl replays every listed name
 # against the prefixes below: each of ours admitted, each of theirs refused.
 # ---------------------------------------------------------------------------
@@ -104,14 +104,14 @@ locals {
     #                      theirs  gkegw1-7hi6-{api-service, argocd,
     #                              browser-engine, crawling-service,
     #                              gw-serve404, gw-serve500, keycloak,
-    #                              promptlab-api, promptlab-web}-...  (9)
+    #                              peer-app-api, peer-app-web}-...  (9)
     #   forwarding rules   ours    swarm-ui-http, swarm-ui-https
     #                      theirs  gkegw1-7hi6-gateway-system-external-https-...
     #   target HTTP px     ours    swarm-ui-http-proxy
     #   target HTTPS px    ours    swarm-ui-https-proxy
     #                      theirs  gkegw1-7hi6-gateway-system-external-https-...
     #   target SSL/TCP px  none
-    #   instances          theirs  gke-agents-staging-nap-e2-standard-2--b59db5d4-
+    #   instances          theirs  gke-peer-cluster-nap-e2-standard-2--b59db5d4-
     #                              {bnof, h2ug, xstq}  (us-central1-a; their GKE
     #                              nodes -- Autopilot's are not project VMs)
     #
@@ -121,7 +121,7 @@ locals {
     # regional in these types.
     #
     # STAYS PROJECT-WIDE, because IAM gives these types no name: networks
-    # (agents-staging-vpc, default, swarm-vpc), 46 subnetworks, routers
+    # (peer-vpc, default, swarm-vpc), 46 subnetworks, routers
     # (staging-nat-router is theirs), 7 addresses, 3 URL maps, 9 NEGs and 9
     # health checks. This condition narrows the role; it does not make it safe.
     #
@@ -156,9 +156,9 @@ locals {
     #                       swarm-fw-deny-worker-ingress  (5, terraform/infra)
     #               GKE's   gke-swarm-autopilot-4b0b02c7-{all, vms}
     #               theirs  default-allow-{icmp, internal, rdp, ssh},
-    #                       gke-agents-staging-a2455d7c-{all, exkubelet,
-    #                       inkubelet, vms}, gkegw1-7hi6-l7-agents-staging-vpc-global
-    #   instances   theirs  the three gke-agents-staging-nap-* nodes above
+    #                       gke-peer-cluster-a2455d7c-{all, exkubelet,
+    #                       inkubelet, vms}, gkegw1-7hi6-l7-peer-vpc-global
+    #   instances   theirs  the three gke-peer-cluster-nap-* nodes above
     #
     # ADMITS all five of ours. REFUSES all nine of theirs and all three of
     # their nodes (updateSecurity, setShieldedInstanceIntegrityPolicy). Also
@@ -184,12 +184,12 @@ locals {
     # roles/container.admin -- their live cluster.
     #
     #   clusters   ours    swarm-autopilot  (us-central1)
-    #              theirs  agents-staging   (us-central1-a, zonal)
+    #              theirs  peer-cluster   (us-central1-a, zonal)
     #
     # ADMITS every cluster-level call on swarm-autopilot and its node pools
     # (the prefix covers `.../clusters/swarm-autopilot/...`). REFUSES
     # container.clusters.{get, update, delete, getCredentials} on
-    # agents-staging under either of its names (`zones/` or `locations/`).
+    # peer-cluster under either of its names (`zones/` or `locations/`).
     # clusters.list and operations are checked on the project, not on a
     # Cluster, so the type guard lets them through.
     #
@@ -198,7 +198,7 @@ locals {
     # found that a name condition on the cluster path does not authorise a
     # NAMESPACED request, because the resource in that check is the namespaced
     # object. What IAM reports as that object's resource.type is undocumented,
-    # so under this condition CI's in-cluster authority over agents-staging is
+    # so under this condition CI's in-cluster authority over peer-cluster is
     # either unchanged (a non-Cluster type passes the guard) or gone in both
     # clusters (an unavailable type grants nothing). Neither breaks a release:
     # terraform/infra uses only the google provider and CI runs no kubectl
@@ -218,7 +218,7 @@ locals {
     # -----------------------------------------------------------------------
     # roles/datastore.owner -- a second database, when one appears.
     #
-    #   databases   ours    projects/saga-agents-staging/databases/swarm
+    #   databases   ours    projects/example-project/databases/swarm
     #               theirs  none
     #
     # REFUSES NOTHING TODAY. It exists for the case modules/iam/bindings.tf
@@ -281,12 +281,12 @@ locals {
     # swarmSecretProvisioner (custom, wif.tf) -- their 63 secrets.
     #
     #   secrets   ours    swarm-tenant-{eng-anthropic, eng-openai,
-    #                     u-bogdan-anthropic}[-refresh]            (6, terraform)
+    #                     u-pat-anthropic}[-refresh]            (6, terraform)
     #                     swarm-account-eng--{devops-main, devops-team,
-    #                     saga-personal, team}[-refresh]    (8, the quota broker)
+    #                     example-personal, team}[-refresh]    (8, the quota broker)
     #             theirs  agents-*  (57: keycloak admin password, argocd repo
     #                     SSH key, every service's database password, ...)
-    #                     promptlab-*  (6: db-dsn, fernet-key, ...)
+    #                     peer-app-*  (6: db-dsn, fernet-key, ...)
     #
     # ADMITS all fourteen of ours. REFUSES all sixty-three of theirs.
     #
@@ -352,7 +352,7 @@ locals {
   # roles/container.clusterViewer IS NOT ON IT either (VERIFY-GKE-READ-2, part
   # of #1754; owner decision 2026-10-21), for the same reason: on the list, CI
   # could grant clusterViewer to itself or anyone, unconditioned, and reach the
-  # other team's agents-staging cluster's endpoint and CA. swarm-verify's grant
+  # other team's peer-cluster cluster's endpoint and CA. swarm-verify's grant
   # of it, conditioned to swarm-autopilot, is made by THIS root
   # (verify_cluster_read.tf), as the workspace deployer's is
   # (workspace_deployer.tf).
@@ -521,8 +521,16 @@ resource "google_project_iam_member" "deployer_container_admin" {
 
   condition {
     title       = "swarm clusters only"
-    description = "Cluster-level calls on agents-staging, another team's live cluster, are refused. Does not scope the Kubernetes API inside a cluster."
+    description = "Cluster-level calls on a cluster not named for the platform (another team's, e.g. peer-cluster) are refused. Does not scope the Kubernetes API inside a cluster."
     expression  = local.deployer_conditions["roles/container.admin"]
+  }
+
+  lifecycle {
+    # The description is generic text; a live deployment's binding keeps its
+    # older text, which only its private state holds. A changed condition
+    # forces the binding's replacement, so the description is ignored: an
+    # existing deployment is not replaced and a fresh one gets this text.
+    ignore_changes = [condition[0].description]
   }
 }
 
@@ -776,7 +784,7 @@ output "deployer_speech_machine_condition" {
 # Then there were nine. roles/iam.workloadIdentityPoolAdmin is gone from
 # deployer_roles since 2026-09-29 (#314, owner decision). Pools on 2026-09-24:
 # swarm-github (made by THIS root, which the owner applies), github-actions
-# (theirs), saga-agents-staging.svc.id.goog (GKE's). terraform/infra manages no
+# (theirs), example-project.svc.id.goog (GKE's). terraform/infra manages no
 # pool or provider at all -- it names GKE's pool only as a string inside a
 # service-account binding's member -- so CI never used the role, and holding it
 # let CI add a provider to swarm-github, minting tokens for itself or
@@ -785,9 +793,9 @@ output "deployer_speech_machine_condition" {
 # And roles/iam.serviceAccountAdmin is off the project since 2026-09-29 (#334,
 # owner decision), replaced by roles/iam.serviceAccountCreator above it in the
 # count. On the project it reached 23 service accounts: 11 ours (swarm-*), 11
-# theirs (api-service, promptlab-runner, promptlab-deployer, publisher,
-# crawler, external-secrets, staging-gke-nodes, aipipeline, saga-storage-ro,
-# saga-storage-rw, tournament-digest) and the default compute account, and its
+# theirs (api-service, peer-app-runner, peer-app-deployer, publisher,
+# crawler, external-secrets, staging-gke-nodes, aipipeline, peer-storage-ro,
+# peer-storage-rw, tournament-digest) and the default compute account, and its
 # setIamPolicy let CI grant itself actAs on any of them. No condition could
 # narrow it -- "the condition resource.name.endsWith == devResource never
 # grants access to any IAM resource because IAM resources don't provide the
@@ -803,7 +811,7 @@ output "deployer_speech_machine_condition" {
 #       IAP; that is a change to what the role is, not a condition.
 #   roles/cloudbuild.builds.editor    builds are named by server-generated UUID
 #       and the service is unlisted. 20 most recent builds all ran as
-#       209012342332-compute@developer; no triggers exist.
+#       123456789012-compute@developer; no triggers exist.
 #   roles/cloudscheduler.admin        jobs (us-central1): swarm-reconciler-tick,
 #       swarm-scheduler-tick, swarm-quota-refresh. All ours; none of theirs.
 #   roles/iam.serviceAccountCreator   create, get and list service accounts.

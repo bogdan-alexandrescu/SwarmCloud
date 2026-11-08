@@ -43,7 +43,7 @@
 #   4. `enable_browser_egress = true`, apply: the credential's accessor, the
 #      key reference on swarm-api, and the rendered manifest;
 #   5. `kubernetes/apply.sh --swarm-system --confirm`, which applies it to
-#      swarm-autopilot and refuses the shared cluster agents-staging;
+#      swarm-autopilot and refuses the shared cluster peer-cluster;
 #   6. only then name a tenant in var.browser_egress.tenants and set
 #      enabled = true. Steps 1-5 proxy nothing: the setting ships OFF.
 #
@@ -310,7 +310,7 @@ output "browser_egress" {
 # while the service is off or has no image, so there is never a half-rendered
 # manifest to apply.
 output "swarm_egress_manifest" {
-  description = "swarm-egress's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging), with kubernetes/apply.sh --swarm-system. Null while enable_browser_egress is off."
+  description = "swarm-egress's Kubernetes objects, rendered. Apply to swarm-autopilot only (never peer-cluster), with kubernetes/apply.sh --swarm-system. Null while enable_browser_egress is off."
   value = local.egress_enabled && local.egress_image != "" ? replace(replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/swarm-egress.yaml"),
     "__SWARM_EGRESS_IMAGE__", local.egress_image),

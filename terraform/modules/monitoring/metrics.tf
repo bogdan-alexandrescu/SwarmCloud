@@ -367,7 +367,7 @@ resource "google_logging_metric" "dispatch_failures" {
 #     Cloud Run Job named `<name_prefix>-job-*` (scheduler.dispatch
 #     `job_id_for`, terraform/infra/locals.tf), or the container named
 #     `worker` in this platform's own cluster. Before, any Cloud Run Job or
-#     any pod in the shared project -- the other team's agents-staging
+#     any pod in the shared project -- the other team's peer-cluster
 #     cluster included -- could page CRITICAL with one line;
 #   * name the tenant from that resource, never the payload: `tenant_id` from
 #     the GKE namespace (`swarm-tenant-<tenant>`, dispatch `namespace_for`),

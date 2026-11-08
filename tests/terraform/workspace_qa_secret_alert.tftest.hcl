@@ -2,7 +2,7 @@
 # QA secret, and nothing wider (lane VQ3-DEPLOYER-QA, part of #1933;
 # docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2).
 #
-# BGD, 2026-10-22: the deployer job creates a PERSONAL workspace's empty
+# the owner, 2026-10-22: the deployer job creates a PERSONAL workspace's empty
 # `swarm-tenant-u-<id>-qa` and grants swarm-api secretVersionAdder and
 # secretAccessor on it (register-tenant.sh ws_a6, guard rule C6). Before this,
 # outside_personal_workers fired on every deployer setIamPolicy whose member
@@ -20,7 +20,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 
@@ -45,9 +45,9 @@ run "the_qa_secret_exemption_is_swarm_api_on_a_persons_qa_secret_only" {
     # QA secret is let through by it; drop the QA clause and nothing watches it.
     condition = alltrue([
       strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter,
-      "(resource.type!=\"service_account\" AND protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND NOT protoPayload.resourceName=~\"/secrets/swarm-tenant-u-[a-z0-9]([a-z0-9-]*[a-z0-9])?-qa$\" AND protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-agent-worker-u-[a-z0-9-]+@saga-agents-staging[.]iam[.]gserviceaccount[.]com$\")"),
+      "(resource.type!=\"service_account\" AND protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND NOT protoPayload.resourceName=~\"/secrets/swarm-tenant-u-[a-z0-9]([a-z0-9-]*[a-z0-9])?-qa$\" AND protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-agent-worker-u-[a-z0-9-]+@example-project[.]iam[.]gserviceaccount[.]com$\")"),
       strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter,
-      "(protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND protoPayload.resourceName=~\"/secrets/swarm-tenant-u-[a-z0-9]([a-z0-9-]*[a-z0-9])?-qa$\" AND (protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-api@saga-agents-staging[.]iam[.]gserviceaccount[.]com$\" OR protoPayload.serviceData.policyDelta.bindingDeltas.role!~\"^roles/secretmanager[.](secretVersionAdder|secretAccessor)$\"))"),
+      "(protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND protoPayload.resourceName=~\"/secrets/swarm-tenant-u-[a-z0-9]([a-z0-9-]*[a-z0-9])?-qa$\" AND (protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-api@example-project[.]iam[.]gserviceaccount[.]com$\" OR protoPayload.serviceData.policyDelta.bindingDeltas.role!~\"^roles/secretmanager[.](secretVersionAdder|secretAccessor)$\"))"),
       # Any removal still pages, the QA secret's included.
       strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter,
       "(protoPayload.serviceData.policyDelta.bindingDeltas.action=\"REMOVE\")"),
@@ -68,8 +68,8 @@ run "the_qa_secret_exemption_is_swarm_api_on_a_persons_qa_secret_only" {
     # MUTATION: widen the pattern to /secrets/swarm-tenant-.*-qa$ and the group secret matches.
     condition = alltrue([
       for name in [
-        "projects/209012342332/secrets/swarm-tenant-u-alice-qa",
-        "projects/209012342332/secrets/swarm-tenant-u-or-9a0792-qa",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-qa",
+        "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-qa",
       ] : can(regex(regex("AND protoPayload[.]resourceName=~\"([^\"]+)\" AND [(]", google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter)[0], name))
     ])
     error_message = "the QA clause must match a personal tenant's swarm-tenant-u-<id>-qa"
@@ -79,16 +79,16 @@ run "the_qa_secret_exemption_is_swarm_api_on_a_persons_qa_secret_only" {
     # MUTATION: drop the anchors or the u- and one of these matches.
     condition = alltrue([
       for name in [
-        "projects/209012342332/secrets/swarm-tenant-eng-qa",
-        "projects/209012342332/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
-        "projects/209012342332/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef-refresh",
-        "projects/209012342332/secrets/swarm-tenant-u-alice-qa-refresh",
-        "projects/209012342332/secrets/swarm-tenant-u-alice-qa/versions/1",
-        "projects/209012342332/secrets/not-swarm-tenant-u-alice-qa",
-        "projects/209012342332/secrets/swarm-tenant-u--qa",
-        "projects/209012342332/secrets/swarm-tenant-u-alice-anthropic",
-        "projects/_/buckets/swarm-artifacts-saga-agents-staging",
-        "projects/saga-agents-staging",
+        "projects/123456789012/secrets/swarm-tenant-eng-qa",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-git-u-0123456789abcdef-refresh",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-qa-refresh",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-qa/versions/1",
+        "projects/123456789012/secrets/not-swarm-tenant-u-alice-qa",
+        "projects/123456789012/secrets/swarm-tenant-u--qa",
+        "projects/123456789012/secrets/swarm-tenant-u-alice-anthropic",
+        "projects/_/buckets/swarm-artifacts-example-project",
+        "projects/example-project",
       ] : !can(regex(regex("AND protoPayload[.]resourceName=~\"([^\"]+)\" AND [(]", google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter)[0], name))
     ])
     error_message = "the QA clause must match no other secret (a group's QA secret, a forge slot or its twin, a provider key) and no other resource"
@@ -98,7 +98,7 @@ run "the_qa_secret_exemption_is_swarm_api_on_a_persons_qa_secret_only" {
   # fires (member!~), so every other member pages -- the control is the
   # worker of the same tenant, on the same secret.
   assert {
-    condition     = can(regex(regex("bindingDeltas[.]member!~\"([^\"]+)\" OR ", google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter)[0], "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"))
+    condition     = can(regex(regex("bindingDeltas[.]member!~\"([^\"]+)\" OR ", google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter)[0], "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"))
     error_message = "swarm-api's own binding on a person's QA secret must not page (V-1, V-2)"
   }
 
@@ -106,14 +106,14 @@ run "the_qa_secret_exemption_is_swarm_api_on_a_persons_qa_secret_only" {
     # MUTATION: make the member pattern the personal-worker one, or .*, and the worker stops paging.
     condition = alltrue([
       for member in [
-        "serviceAccount:swarm-agent-worker-u-alice@saga-agents-staging.iam.gserviceaccount.com",
-        "serviceAccount:swarm-api@other-project.iam.gserviceaccount.com",
-        "serviceAccount:swarm-api@saga-agents-stagingXiamXgserviceaccountXcom",
-        "serviceAccount:swarm-api-2@saga-agents-staging.iam.gserviceaccount.com",
-        "serviceAccount:not-swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-        "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com",
-        "user:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-        "deleted:serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com?uid=1",
+        "serviceAccount:swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com",
+        "serviceAccount:swarm-api@example-shared-project.iam.gserviceaccount.com",
+        "serviceAccount:swarm-api@example-projectXiamXgserviceaccountXcom",
+        "serviceAccount:swarm-api-2@example-project.iam.gserviceaccount.com",
+        "serviceAccount:not-swarm-api@example-project.iam.gserviceaccount.com",
+        "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com",
+        "user:swarm-api@example-project.iam.gserviceaccount.com",
+        "deleted:serviceAccount:swarm-api@example-project.iam.gserviceaccount.com?uid=1",
         "allUsers",
       ] : !can(regex(regex("bindingDeltas[.]member!~\"([^\"]+)\" OR ", google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter)[0], member))
     ])

@@ -12,7 +12,7 @@
 # the grant was never needed until the release did the deploying.
 #
 # NOT roles/iam.serviceAccountUser on the project: that would let CI act as every
-# service account in saga-agents-staging, including the other team's twelve.
+# service account in example-project, including the other team's twelve.
 # These bindings are on OUR accounts only -- every platform account modules/iam
 # creates (keys are static, so a fresh project still plans), the tick account the
 # scheduler jobs mint OIDC tokens as, the rollup-sweeper account the
