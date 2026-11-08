@@ -6,8 +6,9 @@ before anything runs. The design is docs/design/agent-quality/jev-contract.md
 section 4, with the owner's answers of that day (its section 14), which this
 module builds to:
 
-* **Its own mode (answer 7).** `SWARM_CONTRACT_REVIEW=off|report|enforce`,
-  read at each submission, OUTSIDE `refusals.py` (whose switch is keyed on the
+* **Its own mode (answer 7).** `SWARM_CONTRACT_REVIEW=off|report|enforce`, or
+  the platform admin's console setting over it (`platformswitches`), read at
+  each submission, OUTSIDE `refusals.py` (whose switch is keyed on the
   error's code, and this refusal's code is the established
   `validation_failed`). `off` -- the default, and what anything else reads as
   -- runs no review and records nothing: the submission is exactly what it was
@@ -88,6 +89,7 @@ from swarm_common.models import Tenant
 from . import contractjudge as cj
 from . import jevusage
 from . import judgment
+from . import platformswitches
 from . import workcontract as wc
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
@@ -108,7 +110,15 @@ MODES = (MODE_OFF, MODE_REPORT, MODE_ENFORCE)
 
 
 def mode(environ: Mapping[str, str] | None = None) -> str:
-    """The review's mode: exactly `report` or `enforce`, else `off`. A typo
+    """The review's mode: the platform admin's console setting when one is
+    stored and verifies (`platformswitches`, docs/design/managed-plugins.md
+    section 11), else the Terraform value in `environ` (`environment_mode`)."""
+    stored = platformswitches.stored(platformswitches.CONTRACT_REVIEW)
+    return stored if stored is not None else environment_mode(environ)
+
+
+def environment_mode(environ: Mapping[str, str] | None = None) -> str:
+    """The Terraform value: exactly `report` or `enforce`, else `off`. A typo
     reads as off, the shipped state, never as enforce. The read is written
     `(os.environ if environ is None else environ).get(...)` so that
     scripts/lib/check-env-parity.sh sees swarm-api read the key terraform sets."""
