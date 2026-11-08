@@ -57,7 +57,7 @@ The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new a
 
 ### 1. The one design rule for this section
 
-> **Superseded 2026-09-25 (#185).** The rule below held while the agent list
+> **Superseded 2026-09-25.** The rule below held while the agent list
 > could not filter by time, and the Timeline was built on it. `GET /v1/outcomes`
 > removes that premise: the Timeline now reads a real span (24h to 90d, 14d by
 > default, or a range), the server buckets it in the viewer's zone and derives
@@ -84,7 +84,7 @@ Hour/day/week/month bucketing then happens **client-side over rows already fetch
 
 ### 2. Screen A1 — Activity
 
-> **Superseded 2026-09-25 (#185).** Screen A1 is now the Timeline's outcome
+> **Superseded 2026-09-25.** Screen A1 is now the Timeline's outcome
 > ledger: a success-rate headline, four aligned lanes (rate with its Wilson
 > interval, decided work, cancels on their own scale, and throughput as the one
 > submission-time series), a Table twin and eight cards. The stat strip, the
@@ -111,7 +111,7 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - `Attempts consumed` — `sum(attempt_count)` over rows. Sub-label: *"admissions, not runs — a lease reclaimed before dispatch counts here"* (see below).
 - `Tokens & spend` — **permanently in the blocked state until P4a.** It renders the words *"not recorded"*, never a number, never `~$0.00`, and taps through to the explainer below. It stays on the screen rather than being removed, because the owner asked for tokens and an absent tile answers nothing.
 
-> **Superseded 2026-09-25 (epic #84, TS-11 and TS-12).** The strip is the shared boxless `.ctl-metrics` strip with **three** figures: `Submitted` is gone, because the window bar above prints the same count beside the same span. `Tokens & spend` is now `Token spend`: the sum of `total_cost_usd` over the rows whose result carries one, with the foot `{k} of {n} tasks · from result` and the `partial` mark whenever `k < n` or a summed agent ran more than once (a result is its last attempt). With no cost in any result it still says *"not recorded"* beside the absent mark, never `$0.00`. The coverage bar the explainer below was replaced by is gone too: it drew a row count where the figure goes, and the foot now states the coverage in words.
+> **Superseded 2026-09-25 (an earlier epic, TS-11 and TS-12).** The strip is the shared boxless `.ctl-metrics` strip with **three** figures: `Submitted` is gone, because the window bar above prints the same count beside the same span. `Tokens & spend` is now `Token spend`: the sum of `total_cost_usd` over the rows whose result carries one, with the foot `{k} of {n} tasks · from result` and the `partial` mark whenever `k < n` or a summed agent ran more than once (a result is its last attempt). With no cost in any result it still says *"not recorded"* beside the absent mark, never `$0.00`. The coverage bar the explainer below was replaced by is gone too: it drew a row count where the figure goes, and the foot now states the coverage in words.
 
 **The "not recorded" explainer (mandatory, not optional chrome).** Plain language, naming the cause: *"Token and cost numbers are produced by the agent CLI on every run, but the platform does not currently store them — the capture added on 19 Sep reads the wrong level of the result object, so every task records an empty usage block. The full numbers still exist in each attempt's transcript in GCS for `artifact_retention_days` (14 days in dev, 180 in prod), one file per attempt."* Once P4a lands, this tile becomes a real number and this explainer is replaced by the coverage bar specified in §3's *what it cannot show yet*.
 

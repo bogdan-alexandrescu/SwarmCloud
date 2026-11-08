@@ -1,5 +1,5 @@
 """The graph's answer leads the pack, and one brief line names the graph's
-lookup (BGD's pick of 6 November 2026 after the 48-hour code intelligence
+lookup (the owner's pick of 6 November 2026 after the 48-hour code intelligence
 report; part of #2688).
 
 The report: 62 of 903 steps that had the graph ever called it; when a step

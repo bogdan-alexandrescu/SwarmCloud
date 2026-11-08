@@ -184,7 +184,7 @@ export function CanStartFact({ profile }: { profile: RunnerProfile }) {
 
 /**
  * A POOL IN WORDS, FOR THE PERSON SUBMITTING (QA1-FIX-23, runs-submit-21).
- * The card read `held by provider:anthropic:tenant:u-bogdan` in mono, a key
+ * The card read `held by provider:anthropic:tenant:u-owner` in mono, a key
  * that means nothing to a submitter. It names what the pool caps and whose it
  * is; the key stays in the title. A profile's pools are the CALLING tenant's
  * (`headroomFor`, trap D), so a tenant pool is always "this tenant". A kind

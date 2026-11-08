@@ -1,6 +1,6 @@
 """graph-pytest runs once per Python project, from that project's directory (#1756).
 
-Lane PREPUB-PYPROJECT. Reported 2026-10-20 on sagaxyz/ai-studio PRs 715, 717,
+Lane PREPUB-PYPROJECT. Reported 2026-10-20 on example-org/peer-app PRs 715, 717,
 718, 721 and 725: that repository has no root `pyproject.toml` -- its
 projects are `api/` and `runner/` -- so the single `uv run pytest <files>`
 the gate ran from the repository root found no project and failed in 0.0 s
@@ -63,7 +63,7 @@ def _repo(tmp_path: Path, files: Mapping[str, str]) -> Path:
 
 
 def _studio(tmp_path: Path, **extra: str) -> Path:
-    """ai-studio's shape: api/ and runner/ projects, no root pyproject."""
+    """peer-app's shape: api/ and runner/ projects, no root pyproject."""
     return _repo(tmp_path, {
         "api/pyproject.toml": '[project]\nname = "api"\n',
         "api/tests/test_routes.py": "def test_routes():\n    pass\n",

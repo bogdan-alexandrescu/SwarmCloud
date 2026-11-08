@@ -2,16 +2,16 @@
 // ROLE-EFFECTIVE-CELL, part of #2391).
 //
 // WHAT EACH CASE HOLDS:
-//   * BGD 2026-10-26 (VQ-ROLES, "Effective role"): a platform admin's cell in
+//   * owner 2026-10-26 (VQ-ROLES, "Effective role"): a platform admin's cell in
 //     a group workspace reads "admin (platform admin)" -- the answer Config ›
 //     People and roles, This workspace and Profile give -- not the stored
 //     `member`; a plain member's cell is unchanged. The Manage drawer still
 //     edits the stored grant, so it is not asked here;
-//   * BGD 2026-10-26 ("Mark the source", ROLE-MARK): the suffix is drawn from
+//   * owner 2026-10-26 ("Mark the source", ROLE-MARK): the suffix is drawn from
 //     the row's `platform_admin` marker, which both reads serve, not from the
 //     admins list, which a workspace admin's scoped read does not -- so a
 //     workspace admin sees "admin (platform admin)" too;
-//   * BGD 2026-10-26 (VQ-056): a column is headed by the workspace's name (the
+//   * owner 2026-10-26 (VQ-056): a column is headed by the workspace's name (the
 //     switcher's rule: `/v1/tenants/mine`'s stored name, an address counting
 //     as no name), else its id -- never its group email, which stays the
 //     head's title.
@@ -209,10 +209,10 @@ describe('the fixture build marks its platform admins in both reads (review, 202
     return (r as unknown as { data: { people: Array<Json & { email: string }> } }).data.people
   }
 
-  it("marks alice and bogdan, the admins list's platform admins, admin in every column", async () => {
+  it("marks alice and owner, the admins list's platform admins, admin in every column", async () => {
     const people = await rows('platform-admin')
     // MUTATION: drop the fixture's marker -> the capture draws their bare stored cells, and this fails.
-    for (const email of ['alice@example.com', 'bogdan@example.com']) {
+    for (const email of ['alice@example.com', 'member@example.com']) {
       const row = people.find((p) => p.email === email)
       expect(row?.platform_admin, email).toBe(true)
       expect(row?.roles, email).toEqual({ eng: 'admin', research: 'admin' })

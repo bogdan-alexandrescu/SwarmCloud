@@ -1786,7 +1786,7 @@ class CheckpointManager:
             return None
         key = uri.split("://", 1)[-1]
         # Every object this platform writes lives under `tenants/`, so slicing
-        # from there turns any flavour of URI -- gs://bucket/..., file:///abs/...
+        # from there turns any flavour of URI -- gs://swarm-artifacts-example-project/..., file:///abs/...
         # -- into the bucket-relative key without special-casing the store.
         marker = key.find(self.own_prefix)
         if marker > 0:

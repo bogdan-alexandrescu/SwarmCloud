@@ -30,7 +30,7 @@ WHERE THE DECIDED SET COMES FROM. Each route states which narrow callers may
 reach it where it is declared (`swarm_api.route_scope`: a router default, or
 a `reachable_by` line on the handler), and the decided set is read from those
 declarations. It used to be a literal here; two changes that each passed
-against their own base then failed together on it (BGD's pick, 6 November
+against their own base then failed together on it (the owner's pick, 6 November
 2026: a whole-tree check two green changes must pass together). Opening a
 route to this scope is still a decision visible in review: a declaration line
 on the route AND an entry in `auth.CONTINUATION_ROUTES`, held equal here.
@@ -266,7 +266,7 @@ def test_a_misspelt_caller_is_refused_where_it_is_declared():
     (route_scope.SCHEDULE_TICK, SCHEDULE_TICK_ROUTES),
 ], ids=["continuation", "rollup_sweeper", "schedule_tick"])
 def test_two_changes_that_each_add_a_declared_route_pass_together(caller, gate):
-    """THE MERGE-SAFE RULE (BGD, 6 November 2026): two changes that each pass
+    """THE MERGE-SAFE RULE (the owner, 6 November 2026): two changes that each pass
     against their own base also pass together. Each change adds one route
     with its declaration and its gate entry; the base, each change alone and
     the two merged all hold."""

@@ -38,7 +38,7 @@ from reconciler.store import ControlStore
 
 UNATTRIBUTED = "cloud run execution under a swarm- job carries no attempt id"
 STILL_RUNNING = "cloud run still reports this execution as running; NOT releasing the slot"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock"
 

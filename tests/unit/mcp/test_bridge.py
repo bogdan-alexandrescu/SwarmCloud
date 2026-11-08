@@ -150,7 +150,7 @@ def test_a_gs_uri_splits_into_bucket_and_key():
     assert parse_gs_uri("gs://b/tenants/u/x.patch") == ("b", "tenants/u/x.patch")
 
 
-@pytest.mark.parametrize("bad", ["", "https://x/y", "gs://onlybucket"])
+@pytest.mark.parametrize("bad", ["", "https://x/y", "gs://swarm-artifacts-example-project"])
 def test_anything_that_is_not_a_complete_gs_uri_is_refused(bad):
     with pytest.raises(SwarmError):
         parse_gs_uri(bad)

@@ -3,7 +3,7 @@
 CONTEXT.md, in this order:
   1. the header: task type, freshness, Jev (only when it is on), the seeds,
      the summary;
-  1a. THE GRAPH'S ANSWER for the brief (`answer.brief_answer`, BGD's pick of
+  1a. THE GRAPH'S ANSWER for the brief (`answer.brief_answer`, the owner's pick of
      6 November 2026): the files swarm-graph `search` ranks most relevant,
      each with its reason, or why there are none -- sized last, to what the
      bound leaves after every never-cut row and the checklist, so it leads

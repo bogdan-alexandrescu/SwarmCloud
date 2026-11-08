@@ -53,7 +53,7 @@ const FIX = 'task_fix00000000000000001'
 const SHA = '0123456789abcdef'.repeat(3).slice(0, 40)
 const PR_URL = 'https://github.com/example/swarm/pull/812'
 
-const gs = (id: string, name: string) => `gs://swarm-artifacts/tenants/acme/tasks/${id}/attempts/att_1/artifacts/${name}`
+const gs = (id: string, name: string) => `gs://swarm-artifacts-example-project/tenants/acme/tasks/${id}/attempts/att_1/artifacts/${name}`
 
 /** Four minors, three as the worker keeps a structured finding (JSON text) and one as an object. */
 const MINORS = [

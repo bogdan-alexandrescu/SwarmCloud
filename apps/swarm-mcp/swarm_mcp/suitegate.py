@@ -1,7 +1,7 @@
 """`swarm_suite_gate`: a repository's whole Playwright suite as a sharded gate (PLAYWRIGHT-GATE, part of #2253).
 
-BGD's decision of 2026-10-26: SwarmCloud runs a repository's Playwright suite
-as a gate, so a project (first: Product Oracle, ~1,230 mock specs) can gate a
+The owner's decision of 2026-10-26: SwarmCloud runs a repository's Playwright suite
+as a gate, so a project (first: a peer application, ~1,230 mock specs) can gate a
 merge train in SwarmCloud instead of on a laptop. docs/suite-gate.md says what
 it runs, what it costs and how a project wires it in.
 
@@ -52,7 +52,7 @@ MIN_SHARDS = 1
 #: 50-step workflow limit. Past ~20 a shard's fixed cost (npm ci, the Chromium
 #: download, the agent's start) outweighs the specs it runs.
 MAX_SHARDS = 20
-#: Eight shards of Product Oracle's ~1,230 specs is ~154 specs each: a shard
+#: Eight shards of a peer application's ~1,230 specs is ~154 specs each: a shard
 #: finishes in minutes, and the gate holds 9 units while it runs.
 DEFAULT_SHARDS = 8
 
@@ -261,8 +261,9 @@ def render(owner: str, repo: str, *, ref: str, working_dir: str, shards: int,
         "merge": "off",
         "repository_url": f"https://github.com/{owner}/{repo}",
         "repository_ref": ref,
-        "title": workflows.check_title(f"Playwright gate · {owner}/{repo}@{ref} · {shards} shards",
-                                       where="swarm_suite_gate"),
+        # A name holds at most 30 characters (workflows.NAME_MAX_CHARS); the
+        # repository and ref are the workflow's own repository_url and ref.
+        "title": workflows.check_title(f"Playwright gate · {shards} shards", where="swarm_suite_gate"),
         "label": "suite-gate",
     }
 

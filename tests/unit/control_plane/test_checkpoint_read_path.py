@@ -631,10 +631,10 @@ def test_the_log_prefix_agrees_with_the_one_the_worker_writes():
         lease_id="lease_1",
         generation=1,
         runner_profile="mock",
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
-        artifact_bucket="swarm-artifacts-saga-agents-staging",
+        artifact_bucket="swarm-artifacts-example-project",
     )
     base = api.attempt_prefix(tenant_id="eng", task_id="task_1", attempt_id="att_9")
     assert config.gcs_prefix == base
@@ -650,8 +650,8 @@ def test_the_pointer_normaliser_matches_the_reconcilers():
     from reconciler.checkpoints import pointer_to_prefix as reconciler_version
 
     for pointer in (
-        "gs://bucket/tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-00001/",
-        "gs://bucket/tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-00001/manifest.json",
+        "gs://swarm-artifacts-example-project/tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-00001/",
+        "gs://swarm-artifacts-example-project/tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-00001/manifest.json",
         "file:///tmp/x/tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-00001",
         "nonsense",
         "",

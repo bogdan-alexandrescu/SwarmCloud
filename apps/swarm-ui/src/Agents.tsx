@@ -33,6 +33,7 @@ import { publishListCounts } from './Spine'
 import { rowLabel, useRowTitles } from './OverviewRegions'
 import { rowClock, useNow } from './useNow'
 import { waitingShort } from './waitingShort'
+import { OneRowName } from './OneRowName'
 import {
   CONCURRENCY_STATES,
   NEVER_WRITTEN,
@@ -156,7 +157,7 @@ function useRowDevices(taskIds: readonly string[], readAt: number | null): Reado
 }
 
 /**
- * EACH WORKFLOW STEP'S WORKFLOW TITLE (VQ-009, BGD's visual QA 2026-10-26):
+ * EACH WORKFLOW STEP'S WORKFLOW TITLE (VQ-009, the owner's visual QA 2026-10-26):
  * of 21 live rows most read `build`, `implement` or `re-review`, while
  * Overview's Running now named the same agents `<title> · implement`. The
  * list reads the titles the way Overview does (`useRowTitles`: one full read
@@ -197,7 +198,7 @@ function isStep(t: Task): boolean {
 }
 
 /**
- * A LONE AGENT'S OWN TITLE (SUMMARY-TITLE, BGD's decision on VQ-009,
+ * A LONE AGENT'S OWN TITLE (SUMMARY-TITLE, the owner's decision on VQ-009,
  * 2026-10-26): `metadata.title`, which the list's summary view carries and
  * nothing else of the metadata (`codec.SUMMARY_METADATA_KEYS`), so the row
  * reads `Fix flaky lease heartbeat test (#248)` with no read per row. Null
@@ -2052,7 +2053,7 @@ function rowReason(
   if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
   // A READY ROW WITH ONLY `waiting_for` NAMES ITS POOL TOO (QA2-FIX-12
   // review, overview-agents-56): `waitingLine` read `waiting for:
-  // provider:anthropic:tenant:u-bogdan 5/5 units` under `No room`. The line
+  // provider:anthropic:tenant:u-owner 5/5 units` under `No room`. The line
   // names the pool by `poolLabel`; the raw key stays in the row's title.
   const raw = waitingLine(task)
   const pool = task.waiting_for?.lead?.pool
@@ -2773,7 +2774,7 @@ function CompactRow({
           // One text, so `.cr-name b`'s ellipsis cuts a long one (not the
           // step's flex `is-titled`); the whole title and the id are the hover.
           <b title={`${name} · ${task.id}`}>
-            {loneTitle}
+            <OneRowName name={loneTitle} title={`${name} · ${task.id}`} />
           </b>
         ) : (
           // THE ID ONCE (visual QA pass 1, overview-agents-14): an untitled

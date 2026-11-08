@@ -1,5 +1,5 @@
 /**
- * THE CONFIG PANEL, MEASURED (CONFIG-PANEL-E; part of #2157, BGD's pick of
+ * THE CONFIG PANEL, MEASURED (CONFIG-PANEL-E; part of #2157, the owner's pick of
  * 2026-10-24, proposal E, docs/web-ui/mockups/config-e.html S1, S1a-S1g, S10a).
  *
  *   * The strip's steps 3 and 4 are measured from CONFIG-SETUP-READ's

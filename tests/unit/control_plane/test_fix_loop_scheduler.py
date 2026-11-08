@@ -1,6 +1,6 @@
 """A fix-loop agent is parked, never leased, and its person-park expires after 7 days (FL-SCHED).
 
-docs/design/fix-loop.md §4.5, §4.7 invariant 1 and §9 Q3 (c), BGD 2026-10-27.
+docs/design/fix-loop.md §4.5, §4.7 invariant 1 and §9 Q3 (c), the owner 2026-10-27.
 A workflow's `fix-loop` step is a `control_plane` profile: no container runs
 it, swarm-api drives its review-fix / re-review rounds as agents of their own
 and ends it. The scheduler's whole part:

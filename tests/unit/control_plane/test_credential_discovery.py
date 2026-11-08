@@ -3,9 +3,9 @@
 Two hazards live here, and neither shows up in the refresher's own tests
 because both are in the seam between the refresher and Secret Manager:
 
-  1. `swarm-tenant-u-bogdan-anthropic-refresh` does not split unambiguously.
+  1. `swarm-tenant-u-owner-anthropic-refresh` does not split unambiguously.
      Personal tenants are `u-<user>`, so taking the name apart on dashes can
-     produce tenant `u` / provider `bogdan-anthropic`, and the refreshed
+     produce tenant `u` / provider `owner-anthropic`, and the refreshed
      credential would then be published to a secret belonging to nobody -- or,
      worse, to somebody else.
 
@@ -73,14 +73,14 @@ def _store(client: _Client) -> SecretManagerStore:
 # -- discovery -------------------------------------------------------------
 
 def test_a_dashed_tenant_id_is_read_from_labels_not_parsed_from_the_name():
-    """`u-bogdan` is the personal-tenant form, and it contains a dash."""
+    """`u-owner` is the personal-tenant form, and it contains a dash."""
     client = _Client([
         _Secret(
-            f"swarm-tenant-u-bogdan-anthropic{REFRESH_SUFFIX}",
-            {"tenant": "u-bogdan", "provider": "anthropic"},
+            f"swarm-tenant-u-owner-anthropic{REFRESH_SUFFIX}",
+            {"tenant": "u-owner", "provider": "anthropic"},
         )
     ])
-    assert _store(client).subscription_tenants() == [("u-bogdan", "anthropic")]
+    assert _store(client).subscription_tenants() == [("u-owner", "anthropic")]
 
 
 def test_only_refresh_secrets_are_swept():
@@ -187,7 +187,7 @@ def test_the_sweep_reports_which_tenants_need_a_human(broker):
 
     refresher = _Refresher([
         RefreshOutcome("eng", "anthropic", True, "refreshed"),
-        RefreshOutcome("u-bogdan", "anthropic", False, "reauth_required"),
+        RefreshOutcome("u-owner", "anthropic", False, "reauth_required"),
         RefreshOutcome("research", "anthropic", False, "still_valid"),
     ])
     body = _client(broker, refresher, lambda: [("eng", "anthropic")]).post(
@@ -196,7 +196,7 @@ def test_the_sweep_reports_which_tenants_need_a_human(broker):
 
     assert body["credentials"]["examined"] == 3
     assert body["credentials"]["refreshed"] == 1
-    assert body["credentials"]["reauth_required"] == ["u-bogdan"]
+    assert body["credentials"]["reauth_required"] == ["u-owner"]
     assert refresher.seen == [[("eng", "anthropic")]]
 
 

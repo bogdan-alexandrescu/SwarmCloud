@@ -1,4 +1,4 @@
-"""PW-TESTRUNNER (BGD, 2026-10-24, "Test-runner exception on browser"; part of #2253).
+"""PW-TESTRUNNER (the owner, 2026-10-24, "Test-runner exception on browser"; part of #2253).
 
 task_2791f0996eab4f958252 could not run its repository's own Playwright suite
 on claude-code-browser: the agent's `PLAYWRIGHT_BROWSERS_PATH` is the

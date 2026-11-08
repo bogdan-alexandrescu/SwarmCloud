@@ -50,10 +50,10 @@ from swarm_voice import credential as cred  # noqa: E402
 from swarm_voice import live  # noqa: E402
 from swarm_voice.main import create_app  # noqa: E402
 
-PERSON = "bogdan@saga.xyz"
+PERSON = "owner@example.com"
 OTHER = "someone-else@example.com"
 FAKE_LOG = "fake_openai"
-CALLER = "swarm-api@voice-test-project.iam.gserviceaccount.com"
+CALLER = "swarm-api@example-project.iam.gserviceaccount.com"
 BROKER = "https://broker.test"
 BROKER_AUDIENCE = "https://swarm-quota-broker.test"
 

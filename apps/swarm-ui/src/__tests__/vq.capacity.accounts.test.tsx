@@ -90,7 +90,7 @@ function b3(now: number): PoolAccount[] {
   const T = (x: string) => Date.parse(x) - AT + now
   return [
     acct('ai-eng-2', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: win(0.9, now + 29 * H) } }, now),
-    under('ai-eng-3', 'seven_day', 0.97, T('2026-10-27T10:59:00Z'), now),
+    under('acct-3', 'seven_day', 0.97, T('2026-10-27T10:59:00Z'), now),
     under('aieng-claude1', 'five_hour', 0.91, T('2026-10-24T15:10:00Z'), now),
     acct('devops-main', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: win(0.92, now + 2 * D) } }, now),
     acct('devops-team', { assigned: 5, windows: { seven_day: win(0.89, T('2026-10-28T12:00:00Z')) } }, now),

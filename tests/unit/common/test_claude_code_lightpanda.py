@@ -1,7 +1,7 @@
 """Contract request 127: the `claude-code-lightpanda` runner profile (LIGHTPANDA-CONTRACT, part of #2688).
 
 docs/design/lightpanda-runtime.md §5 B (2), §6.1 and §7 lane L1; accepted by
-BGD on 2026-10-31 ("go with the recommended options"; accept contract request
+the owner on 2026-10-31 ("go with the recommended options"; accept contract request
 127). Lightpanda is a headless browser that runs JavaScript and draws no
 pixels: on 2026-10-31 it read the same links as headless Chromium on 16 of 17
 real pages at a tenth of the memory. What is held here:

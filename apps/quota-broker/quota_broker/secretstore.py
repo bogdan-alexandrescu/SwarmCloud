@@ -19,12 +19,12 @@ here, once, rather than at four call sites that would drift apart. A rotation
 that leaves its predecessor ENABLED has not rotated: the old credential is
 still retrievable by anything holding `secretAccessor`, which is exactly what
 `scripts/create-secrets.sh:226` says the rotation exists to prevent. Measured
-on 2026-09-22, `swarm-tenant-u-bogdan-anthropic` held 1,816 ENABLED versions
+on 2026-09-22, `swarm-tenant-example-tenant-anthropic` held 1,816 ENABLED versions
 and zero destroyed, and only `latest` has ever been read -- so 1,815 live
 credentials had no consumer and no expiry. See `RETAINED_VERSIONS`.
 
 Discovery goes through LABELS rather than by taking the secret name apart.
-`swarm-tenant-u-bogdan-anthropic-refresh` splits ambiguously -- tenant ids
+`swarm-tenant-example-tenant-anthropic-refresh` splits ambiguously -- tenant ids
 contain dashes (`u-<user>` is the personal-tenant form) -- and a mis-split would
 refresh under the wrong tenant id and publish the result to a secret belonging
 to someone else. The labels are written by the same script that creates the
@@ -79,7 +79,7 @@ RETAINED_VERSIONS = 3
 #: The secret names this platform owns, and the ONLY ones a version may ever be
 #: destroyed from.
 #:
-#: THIS IS THE MOST IMPORTANT LINE IN THIS FILE. `saga-agents-staging` is
+#: THIS IS THE MOST IMPORTANT LINE IN THIS FILE. `example-project` is
 #: SHARED: another team's cluster, VPC and secrets live in the same project, and
 #: the broker's `swarmSecretLister` grant is project-WIDE rather than per-secret
 #: (docs/audits/2026-09-22/track-c-secret-iam-findings.md, Finding 1). Nothing
@@ -92,7 +92,7 @@ RETAINED_VERSIONS = 3
 #: and with it whatever a caller had appended. The body admits only the
 #: characters a Secret Manager secret id may contain, so `/` cannot appear and a
 #: name cannot re-point the resource path at another secret or another project,
-#: and the leading anchor is what refuses `agents-staging-swarm-tenant-x`.
+#: and the leading anchor is what refuses `peer-cluster-swarm-tenant-x`.
 _PLATFORM_SECRET_NAME = re.compile(r"\Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z")
 
 #: The ONLY secrets whose readers follow an account's `lend_to`: a pool
@@ -173,7 +173,7 @@ class SecretManagerStore:
         self._project_id = project_id
         self._client = client
         #: Secret Manager RETURNS resource names with the project NUMBER --
-        #: `projects/209012342332/secrets/...` -- even for a request addressed
+        #: `projects/123456789012/secrets/...` -- even for a request addressed
         #: by ID, so retention has to recognise both. Until #1819 it compared
         #: the number with the ID, refused every pass, and in the live
         #: deployment never destroyed a version. Configured, or resolved once
@@ -422,7 +422,7 @@ class SecretManagerStore:
         WHY THIS IS SECURITY AND NOT TIDINESS. Only `latest` is ever read, so a
         superseded version has no consumer -- but it stays RETRIEVABLE by every
         principal holding `secretAccessor` on the secret until something
-        destroys it. `swarm-tenant-u-bogdan-anthropic` held 1,816 enabled
+        destroys it. `swarm-tenant-example-tenant-anthropic` held 1,816 enabled
         versions on 2026-09-22: 1,815 past credentials, all live, none needed.
         A credential that rotates and leaves its predecessor enabled has not
         rotated.

@@ -703,7 +703,7 @@ def test_an_at_written_as_a_character_reference_is_neutralised_too(text, expecte
     "text",
     [
         "Reported by ops@example.com.",
-        "mail first.last_name@example.co.uk now",
+        "mail first.last_name@mail.example.org now",
         "&#640; is not an at sign, nor is &#x40a;",
         "an @ on its own, and @ followed by a space",
         "no at sign at all",
@@ -933,3 +933,28 @@ def test_a_usable_title_publishes_and_succeeds(db, worker_factory, monkeypatch):
     assert worker.run() == ExitCode.OK
     assert published == [True]
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+
+
+# -- the body names the checkpoint by id, never by its storage address (#2688) --
+
+
+def test_the_body_names_the_checkpoint_by_id_and_never_its_storage_address(worker_factory):
+    """The bucket's name embeds the deployment's project id, and on a public
+    repository every agent's pull request would publish it: the provenance
+    line names the checkpoint by its id alone."""
+    from agent_worker.checkpoint import CheckpointRecord
+
+    bucket = "swarm-artifacts-example-project"
+    worker, config, _ = worker_factory(task_id="t-pr-ckpt")
+    worker._last_checkpoint = CheckpointRecord(
+        checkpoint_id="ckpt-00002", seq=2, task_id=config.task_id,
+        attempt_id=config.attempt_id, tenant_id="eng", generation=1,
+        created_at="2026-11-07T00:00:00Z", archive_key="k", manifest_key="m",
+        archive_bytes=1, archive_sha256="0" * 64, file_count=1,
+        uri=f"gs://{bucket}/tenants/eng/checkpoints/ckpt-00002/",
+    )
+    body = worker._pull_request_body(branch="swarm/t-pr-ckpt", auto_committed=False)
+    assert "- checkpoint: `ckpt-00002`" in body.splitlines(), body
+    assert "gs://" not in body, body
+    assert bucket not in body, body
+    assert "example-project" not in body, body

@@ -7,6 +7,7 @@ the tests exercise is the shipped code path.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -39,7 +40,7 @@ from quota_broker.settings import BrokerSettings
 
 from .fakes import FakeFirestore
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 
 ENG_GROUP = "eng@example.com"
@@ -92,6 +93,19 @@ def _fresh_quota_ledger():
     forge_limits.QUOTAS.clear()
     yield
     forge_limits.QUOTAS.clear()
+
+
+#: The never-touch list as Terraform renders it on swarm-api
+#: (docs/design/generic-repository.md section 2.4), with the placeholder
+#: names. A test of the absent list deletes both variables itself.
+RENDERED_DENY_LIST = ("peer-cluster", "peer-vpc", "peer-subnet", "default", "peer-bucket",
+                      "peer-runner@example-shared-project.iam.gserviceaccount.com")
+
+
+@pytest.fixture(autouse=True)
+def _rendered_deny_list(monkeypatch):
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
 
 
 @pytest.fixture
@@ -404,7 +418,7 @@ GRANTED_MEMBERS = ("alice@example.com", "bob@example.com", "carol@example.com", 
 #: The GitHub repositories the suite's submissions name.
 TEST_REPOSITORIES = (
     "example-org/example", "example-org/widgets", "example-org/payments", "octo-org/widget-shop",
-    "acme/widgets", "bogdan-alexandrescu/SwarmCloud", "o/r",
+    "acme/widgets", "example-org/example-repo", "o/r",
 )
 
 

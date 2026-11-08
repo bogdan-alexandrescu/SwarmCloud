@@ -1,6 +1,6 @@
 /**
  * CREATE AND EDIT A SCHEDULE (docs/schedules.md §6.2; Automate proposal B's
- * A3, picked by BGD 2026-10-26, #2417, docs/web-ui/mockups/automate-b.html
+ * A3, picked by owner 2026-10-26, #2417, docs/web-ui/mockups/automate-b.html
  * #A3a and #A3b). One page of numbered cards -- type and template, target,
  * cadence, gates and approvers, budget and tripwire, and how a new one starts
  * -- beside a sheet that keeps every problem, the change against the stored
@@ -542,7 +542,7 @@ function Choice<T extends string>({
 
 /**
  * A SEGMENTED CONTROL, AS PROPOSAL B DRAWS SCOPE, RUN, PLAN, MERGE AND WHO MAY
- * APPROVE (A3a cards 2 and 4; BGD picked it over dropdowns, 2026-10-28). One
+ * APPROVE (A3a cards 2 and 4; owner picked it over dropdowns, 2026-10-28). One
  * radio group named by its label, every value visible at once and the chosen
  * one checked, in the shared `.c-seg` the Cadence presets and Start already
  * draw. A value the API refuses carries its reason, under the group and as

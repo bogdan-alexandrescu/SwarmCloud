@@ -13,7 +13,7 @@ import './styles/reachable-repositories.css'
 /**
  * "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" (GITHUB-ACCESS-PAGE; part of
  * #2157). It was the last card of Work › Access, under Choose repositories.
- * BGD's decision of 2026-10-23 puts it on Config › Repositories, which is
+ * the owner's decision of 2026-10-23 puts it on Config › Repositories, which is
  * repository management, and leaves Config › GitHub access only the GitHub
  * App integration and Choose repositories (proposal E, config-e.html S2 and
  * S3). So it is its own component, moved whole and unchanged in behaviour:
@@ -26,7 +26,7 @@ import './styles/reachable-repositories.css'
  * `GET /v1/access` the page already read, or `ReachableRepositoriesRead`,
  * which makes that read itself.
  *
- * ITS COPY IS THE PAGE'S, BY PROP (REPOS-FOLLOWUPS; BGD, 2026-10-25). Left
+ * ITS COPY IS THE PAGE'S, BY PROP (REPOS-FOLLOWUPS; owner, 2026-10-25). Left
  * alone it reads as it did on GitHub access, where the owners sit above it
  * and orgs are shown: "Choose repositories from an enabled owner above" and
  * the org-removal sentence. Config › Repositories shows no owner and no org,

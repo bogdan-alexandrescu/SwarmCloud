@@ -782,6 +782,9 @@ def task_to_api(
         "forge_credential_source": forge_credential_source(
             task.forge_credential, (task.metadata or {}).get(FORGE_SOURCE_METADATA_KEY)),
         "cancel_requested": task.cancel_requested,
+        # A single task's own description (#2688), masked as its title is;
+        # null for a workflow's step, which inherits the workflow's.
+        "description": own_description(task, masking),
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,
         # Also inside `metadata`, which is where it is STORED. It is lifted out
@@ -920,11 +923,22 @@ SUMMARY_DROPPED_KEYS: tuple[str, ...] = (
 )
 
 #: The `metadata` keys `view=summary` serves (SUMMARY-TITLE, part of #2391):
-#: the title alone. BGD's decision of 2026-10-26 (VQ-009) is that the console
+#: the title alone. The owner's decision of 2026-10-26 (VQ-009) is that the console
 #: names a lone agent by its title in the list, with no read per row. Every
 #: other key stays out: the summary exists because the list moved megabytes of
 #: what it never draws (#168).
 SUMMARY_METADATA_KEYS: tuple[str, ...] = ("title",)
+
+
+def own_description(task: Task, masking: TaskMasking) -> str | None:
+    """A single task's `metadata.description`, masked by its own masker
+    (`TaskMasking.text`), else None. None for a workflow's step: the
+    workflow's description is copied onto its steps' metadata and is the
+    workflow's, served on the workflow's reads (owner, 2026-11-07, #2688)."""
+    value = (task.metadata or {}).get("description")
+    if task.workflow_id is not None or not isinstance(value, str) or not value:
+        return None
+    return masking.text(value)[0]
 
 
 def summary_metadata(task: Task, masking: TaskMasking) -> tuple[dict[str, Any], int]:
@@ -1777,7 +1791,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       does; null for a task summarised before the key, which counts as
       before. Each of `questions` carries its own words' key, `text_digest`
       (`notifications.question_text_digest`), so a wait's question and an
-      artifact's are matched too (the follow-up picked under BGD's overnight
+      artifact's are matched too (the follow-up picked under the owner's overnight
       grant, 6 November 2026).
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     * `plugin_ask`: for a plugin step PARKED on a question wait only (its work

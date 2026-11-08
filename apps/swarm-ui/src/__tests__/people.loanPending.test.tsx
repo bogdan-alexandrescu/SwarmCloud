@@ -1,10 +1,10 @@
 // ADMIN › PEOPLE, A LOAN TO A WORKSPACE STILL BEING MADE IS PENDING (LOAN-ON-READ, part of #2688).
 //
-// Owner report 2026-11-06: an admin lent eng:ai-eng-3-max to a person whose
+// Owner report 2026-11-06: an admin lent eng:acct-3-max to a person whose
 // workspace (w-4e4036) was still provisioning. The API recorded it pending
 // (`state: "pending"`, with a message) and granted nothing yet, but the picker
-// ignored the answer's state: the first click said "Lent eng:ai-eng-3-max."
-// and a second "eng:ai-eng-3-max was already lent.".
+// ignored the answer's state: the first click said "Lent eng:acct-3-max."
+// and a second "eng:acct-3-max was already lent.".
 //
 // WHAT EACH CASE HOLDS:
 //   * a pending answer says the loan is recorded and applies when their
@@ -122,7 +122,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const AIENG = 'aieng3@example.com'
+const AIENG = 'acct3@example.com'
 
 describe('the lend picker says what the answer says', () => {
   it('says a pending loan is recorded and applies when the workspace is ready, never "Lent"', async () => {

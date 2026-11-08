@@ -52,12 +52,12 @@ function profile(acting: string) {
     state: kind === 'user' ? 'ready' : null,
     selectable: true,
     is_acting: tenant_id === acting,
-    is_default: tenant_id === 'u-bogdan',
+    is_default: tenant_id === 'u-owner',
   })
   return {
-    identity: { email: 'bogdan@example.com', display_name: null, display_name_suggested: null, domain: 'example.com', platform_role: 'owner', is_admin: true, is_admin_unresolved: false },
-    workspaces: [row('u-bogdan', 'Your workspace (u-bogdan)', 'user'), row('eng', 'eng@example.com', 'group'), row('ops', 'ops@example.com', 'group')],
-    default_workspace: { tenant_id: 'u-bogdan', source: 'personal', ignored: null },
+    identity: { email: 'owner@example.com', display_name: null, display_name_suggested: null, domain: 'example.com', platform_role: 'owner', is_admin: true, is_admin_unresolved: false },
+    workspaces: [row('u-owner', 'Your workspace (u-owner)', 'user'), row('eng', 'eng@example.com', 'group'), row('ops', 'ops@example.com', 'group')],
+    default_workspace: { tenant_id: 'u-owner', source: 'personal', ignored: null },
     connections: {},
     revision: 1,
     unavailable: [],
@@ -66,7 +66,7 @@ function profile(acting: string) {
 
 /** `/v1/tenants/mine`: the stored names, and one platform-admin reach entry the profile does not list. */
 const MINE = [
-  { tenant_id: 'u-bogdan', display_name: 'Your workspace (u-bogdan)', kind: 'user', via: 'personal' },
+  { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', via: 'personal' },
   { tenant_id: 'eng', display_name: 'Engineering', group: 'eng@example.com', kind: 'group', via: 'member' },
   { tenant_id: 'ops', display_name: 'Operations', group: 'ops@example.com', kind: 'group', via: 'member' },
   { tenant_id: 'finance', display_name: 'Finance', group: 'finance@example.com', kind: 'group', via: 'platform_admin' },
@@ -107,7 +107,7 @@ function serve(holders: readonly string[], failing: readonly string[] = []) {
       const path = url.split('?')[0] ?? url
       const tenant = new Headers(init?.headers).get(TENANT_HEADER)
       sent.push({ path, tenant })
-      if (path.endsWith('/v1/profile')) return json(200, profile(tenant ?? 'u-bogdan'))
+      if (path.endsWith('/v1/profile')) return json(200, profile(tenant ?? 'u-owner'))
       if (path.endsWith('/v1/tenants/mine')) return json(200, MINE)
       if (path.endsWith(`/v1/workflows/${WF}`)) {
         if (tenant !== null && failing.includes(tenant)) return json(503, { code: 'unavailable', message: 'Firestore did not answer.' })
@@ -125,7 +125,7 @@ beforeEach(() => {
   forgetReads()
   forgetToasts()
   clearTenantSwitch()
-  window.sessionStorage.setItem(TENANT_PREF, 'u-bogdan')
+  window.sessionStorage.setItem(TENANT_PREF, 'u-owner')
 })
 
 afterEach(() => {
@@ -147,7 +147,7 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
     // Display names, never the group's email.
     expect(document.body.textContent).not.toContain('eng@example.com')
     // Offered, never made.
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
     expect(offer).toBeTruthy()
   })
 
@@ -166,7 +166,7 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
 
     expect(chosenTenant()).toBe('eng')
     // The switcher's note and its notice, with the way back.
-    expect(tenantSwitchSnapshot()).toEqual({ from: { id: 'u-bogdan', name: 'Your workspace' }, to: { id: 'eng', name: 'Engineering' }, kept: false })
+    expect(tenantSwitchSnapshot()).toEqual({ from: { id: 'u-owner', name: 'Your workspace' }, to: { id: 'eng', name: 'Engineering' }, kept: false })
     expect(document.body.textContent).toContain('Now acting as Engineering')
     expect(screen.getByRole('button', { name: 'Back to Your workspace' })).toBeTruthy()
     // The page reads its workflow again, under the workspace switched to.
@@ -178,12 +178,12 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
     const sent = serve([])
     render(<WorkflowsScreen view={`wf=${WF}`} />)
 
-    await waitFor(() => expect(workflowReads(sent).map((s) => s.tenant).sort()).toEqual(['eng', 'ops', 'u-bogdan']), WAIT)
+    await waitFor(() => expect(workflowReads(sent).map((s) => s.tenant).sort()).toEqual(['eng', 'ops', 'u-owner']), WAIT)
     await waitFor(() => expect(document.querySelector('[data-elsewhere]')).toBeNull(), WAIT)
     const missing = document.querySelector('.wfp-missing')
     expect(missing?.textContent).toBe(`Not found · HTTP 404. No workflow ${WF} exists in this tenant. Back to the list`)
     expect(screen.queryByRole('button', { name: /^Switch to/ })).toBeNull()
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
   })
 
   it('asks only the person’s own workspaces, each once, in parallel', async () => {
@@ -192,8 +192,8 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
 
     await screen.findByRole('button', { name: 'Switch to Engineering' }, WAIT)
     const tenants = workflowReads(sent).map((s) => s.tenant)
-    // The page's own read under u-bogdan, then one read each of eng and ops.
-    expect([...tenants].sort()).toEqual(['eng', 'ops', 'u-bogdan'])
+    // The page's own read under u-owner, then one read each of eng and ops.
+    expect([...tenants].sort()).toEqual(['eng', 'ops', 'u-owner'])
     // A platform admin's reach is never asked.
     expect(sent.some((s) => s.tenant === 'finance')).toBe(false)
   })
@@ -208,7 +208,7 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
     // Not said as an absence.
     expect(document.querySelector('.wfp-missing')).toBeNull()
     const button = screen.getByRole('button', { name: 'Operations' })
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
     fireEvent.click(button)
     expect(chosenTenant()).toBe('ops')
   })
@@ -220,6 +220,6 @@ describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_00
     await waitFor(() => expect(document.body.textContent).toContain('Could not tell which of your workspaces holds this workflow.'), WAIT)
     expect(screen.getByRole('button', { name: 'Engineering' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Operations' })).toBeTruthy()
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
   })
 })

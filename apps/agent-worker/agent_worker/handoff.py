@@ -126,7 +126,7 @@ from .livegate.tunnel import (
     resolver_class,
 )
 
-#: CAPTCHA-HANDOFF (BGD, 2026-10-23; docs/design/live-browser.md §4.1, part
+#: CAPTCHA-HANDOFF (the owner, 2026-10-23; docs/design/live-browser.md §4.1, part
 #: of #2058): a hand-off the gate raised itself, because it saw a challenge on
 #: the agent's page (livegate `LiveGate._on_challenge`), is `origin: "gate"`
 #: at swarm-api. An agent's own request names no origin: swarm-api's default
@@ -153,11 +153,12 @@ GATE_CTL_ENV = "SWARM_GATE_CTL"
 #: directory Chromium can read (§3.1). Passed on to the agent: a path and a
 #: loopback address, never a credential. With them, the workspace's Jev
 #: judgment backend and, for an internal one, the in-cluster decision API URL
-#: the dispatcher set (`scheduler.judgment`, JUDGE-SELECT): a name and a
-#: cluster address, never a credential, which jev-browser-mcp reads from the
-#: CLI's environment.
+#: the dispatcher set (`scheduler.judgment`, JUDGE-SELECT), with the decision
+#: API's tailnet name that URL must carry (SWARM_DECISION_API_TAILNET_NAME): a
+#: name and an address, never a credential, which jev-browser-mcp reads from
+#: the CLI's environment.
 AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS",
-                         "SWARM_JEV_BACKEND", "JEV_API_URL")
+                         "SWARM_JEV_BACKEND", "JEV_API_URL", "SWARM_DECISION_API_TAILNET_NAME")
 
 #: §5.4.1: each worker-only route signs a domain-separated message, so a
 #: signature for one is never a signature for another. `swarm_api.handoff`
@@ -305,7 +306,7 @@ GATE_WAIT_STEP_SECONDS = 1.0
 #: on the lifecycle's loop, after the control poll, the child requests and the
 #: tickets, and never during the periodic checkpoint, which uploads the work
 #: tree (a capture's hundreds of PNGs) with a 60 s timeout per upload. MEASURED
-#: 2026-11-03 (ai-studio-prod, five legs, GKE Autopilot): every phone-390
+#: 2026-11-03 (peer-app-prod, five legs, GKE Autopilot): every phone-390
 #: route of every leg failed with "the worker did not answer the device
 #: switch" or "... theme change" -- the switches came after the desktop
 #: sweep had filled the tree, and the 30 s the command waits

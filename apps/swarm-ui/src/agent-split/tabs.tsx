@@ -693,7 +693,7 @@ export type AgentQuestions = {
 }
 
 /**
- * THE AGENT'S QUESTIONS, READ ONCE FOR EVERY TAB (BGD, 2026-11-06, part of
+ * THE AGENT'S QUESTIONS, READ ONCE FOR EVERY TAB (owner, 2026-11-06, part of
  * #2688): the task's own (`questionCount`) and the ones a merge is held by
  * (`ownerQuestionsHold`), each from its asking task's questions route. Read
  * again when the attempt, the state or the stored answers change, and when
@@ -761,7 +761,7 @@ async function readAsked(asks: Ask[], own: number): Promise<Result<Asked[]>> {
 }
 
 /**
- * THE QUESTIONS ROW (BGD, 2026-11-06, part of #2688: "a way to act on
+ * THE QUESTIONS ROW (owner, 2026-11-06, part of #2688: "a way to act on
  * questions ... in the agent page"). Only Details drew the agent's questions,
  * so from Logs, Changes, Attempts, Artifacts or Checkpoints nothing said it
  * asked any. Every tab but Details, whose cards already lead it, now opens on

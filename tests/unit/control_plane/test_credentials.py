@@ -252,7 +252,7 @@ def test_a_conditional_binding_for_the_same_role_is_left_alone():
     policy = policy_pb2.Policy(etag=b"tf-1")
     conditional = policy.bindings.add()
     conditional.role = ACCESSOR_ROLE
-    conditional.members.append("serviceAccount:break-glass@example.iam.gserviceaccount.com")
+    conditional.members.append("serviceAccount:break-glass@example-project.iam.gserviceaccount.com")
     conditional.condition.expression = 'request.time < timestamp("2026-01-01T00:00:00Z")'
     client = FakeSecretManager(existing={secret: policy})
 

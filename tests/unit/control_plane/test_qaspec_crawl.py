@@ -1,5 +1,5 @@
 """Capture steps that discover while they capture, as the renderer writes them
-(docs/design/qa-environments.md §3.1, §3.5, §10; lane QAENV-RUN of §8; BGD's
+(docs/design/qa-environments.md §3.1, §3.5, §10; lane QAENV-RUN of §8; the owner's
 Q3 (a) and the `found_per_step` answer of 2026-10-23; part of #2136).
 
 `qaspec.render` makes every capture step a crawling one (`swarm_qa capture
@@ -8,7 +8,7 @@ Q3 (a) and the `found_per_step` answer of 2026-10-23; part of #2136).
   * every capture prompt carries the WHOLE run's stored list, the same in
     every step, and no path a crawl found: the list is swarm-api's, from the
     target, and the step's share is `--group`, `--step` and `--steps`;
-  * `found_per_step` is 8 (BGD, §10), at most 8, cut so the leg's stored plus
+  * `found_per_step` is 8 (the owner, §10), at most 8, cut so the leg's stored plus
     `G x found_per_step` stays within 60 (§3.1);
   * a target with `discover` and no screens renders `discover.slots` crawling
     steps (default 4, at most 8) instead of refusing `qa_target_no_screens`;
@@ -120,7 +120,7 @@ def test_the_route_list_is_written_once_per_step_and_names_the_run_not_the_group
 
 
 def test_the_capture_prompts_found_per_step_is_8() -> None:
-    # BGD, 2026-10-23 (qa-environments.md §10): "8 by default", not the design's 4.
+    # the owner, 2026-10-23 (qa-environments.md §10): "8 by default", not the design's 4.
     # MUTATION: set FOUND_PER_STEP = 4 (the design's recommendation) and both of these fail.
     assert qaspec.FOUND_PER_STEP == 8
     for step in _captures(qaspec.render(_target())):
@@ -331,7 +331,7 @@ def test_each_crawling_steps_sign_in_note_names_that_legs_start_clicks_only() ->
 
 
 # --------------------------------------------------------------------------
-# Dismissed routes (lane QA-CRAWL-SKIP; BGD 2026-10-25, part of #2157)
+# Dismissed routes (lane QA-CRAWL-SKIP; the owner 2026-10-25, part of #2157)
 # --------------------------------------------------------------------------
 
 

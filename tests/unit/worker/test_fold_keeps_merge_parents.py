@@ -1,6 +1,6 @@
 """The publish fold keeps every branch the agent merged as a parent (#3359).
 
-WHAT WENT WRONG (5 November 2026, reported by Product Oracle's session). A
+WHAT WENT WRONG (5 November 2026, reported by a peer application's session). A
 direct-pr task pushing onto an existing pull request (`publish_to_pr`) ran
 `git merge origin/train/an`, and the commit the worker pushed had ONE parent:
 the fold (`gitops.fold_agent_commits`) rewinds the agent's commits to the

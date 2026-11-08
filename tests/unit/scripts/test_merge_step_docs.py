@@ -1,13 +1,13 @@
 """The merge step as its own workflow step, design lane MS0: the docs say what the owner asked.
 
-WHY THIS EXISTS. Owner decision 2026-10-06 (epic #352, #295): merging becomes
+WHY THIS EXISTS. Owner decision 2026-10-06 (the merge-step epic and the merge-step design): merging becomes
 a distinct workflow step -- implement -> review -> fix -> merge -- that parks
 while CI runs, holding no capacity (invariant 4), is woken when the checks
 complete, updates a branch that is behind, squash-merges with the tenant's
 `-git` token, closes the issues its pull request names, and replaces
 `.github/workflows/auto-merge.yml` for SwarmCloud's own pull requests once it
 has merged about ten cleanly. Lane MS0 writes the DESIGN AND THE BUILD PLAN
-only, in docs/merge-step.md, and re-triages every box of epic #352 against it.
+only, in docs/merge-step.md, and re-triages every box of the merge-step epic against it.
 
 A revision that lost one of the brief's parts -- the lifecycle and its wake
 signal, a refusal, the token's exact permissions, what the new design
@@ -73,7 +73,7 @@ def test_the_revision_leads_the_document_and_the_status_line_names_it():
         "the newest revision comes first: a reader stops at the first section that answers them"
     )
     revision = _section(text, REVISION)
-    for ref in ("#352", "#295", "MS0", "auto-merge.yml"):
+    for ref in ("the merge-step epic", "the merge-step design", "MS0", "auto-merge.yml"):
         assert ref in revision, f"the revision must name {ref}"
     assert "DESIGN" in revision and "nothing in this section is built" in revision.lower()
 
@@ -147,11 +147,11 @@ def test_build_plan_has_every_lane_with_territory_dependencies_and_tests():
             assert field in body, f"{lane} must state {field}"
 
 
-def test_epic_352_is_retriaged_box_by_box():
-    tri = _subsection("### 7. Epic #352")
+def test_the_merge_step_epic_is_retriaged_box_by_box():
+    tri = _subsection("### 7. The merge-step epic")
     rows = [line for line in tri.splitlines() if line.startswith("| ") and not line.startswith("| box")
             and not set(line) <= set("|- ")]
-    assert len(rows) == 10, f"epic #352 has 10 boxes; the triage lists {len(rows)}"
+    assert len(rows) == 10, f"the merge-step epic has 10 boxes; the triage lists {len(rows)}"
     for row in rows:
         assert re.search(r"kept as MS\d|superseded because|still needed separately|done", row), row
 

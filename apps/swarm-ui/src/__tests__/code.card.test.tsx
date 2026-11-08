@@ -37,7 +37,7 @@ vi.mock('../api', async (importOriginal) => {
 
 const { Run, publishRefusals } = await import('../AgentDetail')
 
-const PATCH = { name: 'change.diff', bytes: 9400, uri: 'gs://swarm-artifacts/tenants/eng/tasks/t/attempts/att_1/artifacts/change.diff' }
+const PATCH = { name: 'change.diff', bytes: 9400, uri: 'gs://swarm-artifacts-example-project/tenants/eng/tasks/t/attempts/att_1/artifacts/change.diff' }
 
 function run(t: Task, attempts: AttemptRow[] = [attempt(1)]): AgentRun {
   return {

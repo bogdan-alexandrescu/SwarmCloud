@@ -1,4 +1,4 @@
-"""TOKEN-RENDER (BGD 2026-10-27, #2524 item 2, "Yes, Sonnet child per screen").
+"""TOKEN-RENDER (the owner 2026-10-27, #2524 item 2, "Yes, Sonnet child per screen").
 
 A review, or an implement step that renders, judges its frames in ONE SONNET
 CHILD PER SCREEN: the child renders that screen in both themes and both

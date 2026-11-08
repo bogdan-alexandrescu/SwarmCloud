@@ -1,6 +1,6 @@
 """The per-agent budget's settings, refusals and resolution (BUDGET-CAP, part of #2459).
 
-BGD, 2026-10-26: a workspace admin sets a per-agent budget in tokens or
+the owner, 2026-10-26: a workspace admin sets a per-agent budget in tokens or
 dollars; a step may only lower it; a platform admin's ceiling caps it; an
 attempt's budget is min(step, workspace, ceiling), each unit on its own; and
 with nothing set, nothing changes.
@@ -17,7 +17,7 @@ What these hold:
     `budget_above_limit`, naming both, and nothing is stored;
   * a workspace default above the ceiling is 422 `budget_above_ceiling`,
     naming the ceiling, and nothing is written;
-  * both refusals ship ON (`refusals.SWITCHES`, BGD's answer to question 5,
+  * both refusals ship ON (`refusals.SWITCHES`, the owner's answer to question 5,
     2026-10-26: "enforce at once"), so with no `REFUSAL_*` variable set the
     422s are served; switched off, the step still runs under the lower limit
     and the default is still capped;
@@ -124,7 +124,7 @@ def test_no_step_budget_and_no_workspace_default_is_no_budget_whatever_the_ceili
 
 
 def test_both_refusals_ship_on():
-    # BGD, 2026-10-26 (question 5, "enforce at once"): unlike a new refusal's
+    # the owner, 2026-10-26 (question 5, "enforce at once"): unlike a new refusal's
     # usual report-only start, these two are enforced from the first deploy.
     for code in (budget.ABOVE_LIMIT, budget.ABOVE_CEILING):
         assert refusals.SWITCHES[code].default is True, code

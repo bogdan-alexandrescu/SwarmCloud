@@ -672,7 +672,7 @@ def _read_body(response: Any, limit: int | None = None) -> bytes:
     return bytes(out if limit is None else out[:limit])
 
 
-#: WHO IS ASKING, on every request (BGD's pick, 2026-11-06): a 20-minute
+#: WHO IS ASKING, on every request (the owner's pick, 2026-11-06): a 20-minute
 #: sample of swarm-api's request log had 3,299 of 3,300 single-task reads from
 #: a caller whose user agent was urllib's bare `Python-urllib/3.x`, so the log
 #: could not tell this bridge from `sc`, a worker or a script. The kind is
@@ -849,6 +849,7 @@ def task_payload(
     additional_repositories: list[dict[str, str]] | None = None,
     model_class: str | None = None,
     publish_to_pr: int | str | None = None,
+    description: str | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -866,7 +867,11 @@ def task_payload(
         # The Claude Code session that sent it (SC-SESSION-SCOPE): what makes
         # `/sc check`, `/sc attach --all` and the watch count it as that
         # session's own and no other's (`session.tag`, empty when unknown).
-        "metadata": {"origin": "swarm-mcp", **session_tag(), **(metadata or {})},
+        "metadata": {"origin": "swarm-mcp", **session_tag(), **(metadata or {}),
+                     # The task's own description (#2688), as a workflow's
+                     # goes: `metadata.description`, only when given, checked
+                     # by `workflows.check_description` before it gets here.
+                     **({"description": description} if description else {})},
     }
     if repository_url:
         payload["repository_url"] = repository_url
@@ -1995,6 +2000,7 @@ class SwarmClient:
         additional_repositories: list[dict[str, str]] | None = None,
         model_class: str | None = None,
         publish_to_pr: int | str | None = None,
+        description: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -2055,6 +2061,7 @@ class SwarmClient:
             additional_repositories=additional_repositories,
             model_class=model_class,
             publish_to_pr=publish_to_pr,
+            description=description,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,

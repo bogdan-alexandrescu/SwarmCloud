@@ -1,7 +1,7 @@
 // CONFIG › SECRETS, THE KEY FORM AND THE KEYS CARD (lane CONSOLE-SMALL-FIXES,
 // part of #2157). Settings › API keys (ProviderKeys.tsx, lane KEYS-UI) was
 // unrouted once SSC-UI moved keys to Config › Secrets › "Keys for agents and
-// MCP" (BGD, 2026-10-23 23:57Z), and BGD's answer of 2026-10-25 deleted it.
+// MCP" (owner, 2026-10-23 23:57Z), and the owner's answer of 2026-10-25 deleted it.
 // Its KeyRow's behaviours, held to the owner's rules of 2026-10-14, are held
 // here on Secrets.tsx's KeyForm and KeysCard instead:
 //

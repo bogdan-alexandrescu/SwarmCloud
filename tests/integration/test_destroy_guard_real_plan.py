@@ -4,8 +4,8 @@ WHY THIS FILE EXISTS, AND WHY IT IS NOT test_destroy_guard.py.
 
 `make destroy` aborts on anything that belongs to another team and on anything
 without `managed-by=swarm-terraform`. It is the only control between this
-repository and deleting another team's production in `saga-agents-staging`:
-their live GKE cluster `agents-staging`, their VPC, two subnets, three buckets,
+repository and deleting another team's production in the shared project:
+their live GKE cluster `peer-cluster`, their VPC, two subnets, three buckets,
 twelve service accounts, and Firestore's shared `(default)` database.
 
 Until 2026-09-24 that guard had never been run against a real
@@ -21,7 +21,7 @@ database could never reach that branch.
 So this file judges a RECORDING of a real destroy plan:
 `tests/integration/fixtures/destroy-plan-dev-real.json`, 264 real deletions
 across 42 real resource types, produced by `scripts/destroy.sh --dry-run`
-against `saga-agents-staging` and redacted by
+against the shared project and redacted by
 `scripts/verify-destroy-guard.sh --record`. Values survive only for the fields
 the guard reads; every other key survives by NAME, so the recording still states
 what the real provider emits without carrying a service's environment, a
@@ -65,16 +65,17 @@ import pytest
 # The deny-list, parsed out of scripts/lib/common.sh EXACTLY ONCE for this
 # directory. Importing the sibling rather than re-parsing is the whole lesson of
 # the defect above: a second reader of the same list is a second list.
-from test_destroy_guard import GUARD_ARGS, PREFIX, SHARED, UNLABELABLE  # noqa: E402
+from test_destroy_guard import GUARD_ARGS, PREFIX, PROJECT, SHARED, UNLABELABLE  # noqa: E402
+
+import destroy_plan_recording  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
+RECORDED = destroy_plan_recording.RECORDING
 CASES_FILE = REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json"
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 PLAN_GUARD = REPO / "scripts" / "lib" / "plan-guard.sh"
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 DESTROY = REPO / "scripts" / "destroy.sh"
-PROJECT = "saga-agents-staging"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not DESTROY.exists(),
@@ -84,12 +85,16 @@ pytestmark = pytest.mark.skipif(
 # NOT a skip. The recording is the subject of this file, so its absence is a
 # collection error with an instruction, not a quietly green run: "unreadable is
 # not the same as clean" is the rule the plan guard itself was fixed to obey.
-assert FIXTURE.exists(), (
-    f"{FIXTURE} is missing. It is a redacted recording of a real destroy plan; "
+assert RECORDED.exists(), (
+    f"{RECORDED} is missing. It is a redacted recording of a real destroy plan; "
     f"regenerate it with:\n"
     f"    scripts/destroy.sh --environment dev --dry-run\n"
     f"    scripts/verify-destroy-guard.sh --record tests/integration/fixtures/destroy-plan-dev-real.json"
 )
+
+#: What every case below judges: the recording with its placeholder project
+#: rendered as the project the deny-list protects (destroy_plan_recording.py).
+FIXTURE = destroy_plan_recording.render(PROJECT)
 
 PLAN = json.loads(FIXTURE.read_text())
 RECORDING = PLAN["_recording"]
@@ -239,7 +244,7 @@ def test_every_field_the_guard_reads_is_carried_by_the_recording():
         f"destroy-guard.jq reads {missing}, and the recorded plan carries no VALUES "
         f"for those fields -- so every assertion here judges them as null. Re-record:\n"
         f"    scripts/destroy.sh --environment dev --dry-run\n"
-        f"    scripts/verify-destroy-guard.sh --record {FIXTURE.relative_to(REPO)}"
+        f"    scripts/verify-destroy-guard.sh --record {RECORDED.relative_to(REPO)}"
     )
 
 
@@ -810,6 +815,8 @@ def test_the_filters_fallback_prefix_is_guard_name_prefix():
     MUTATION: change the default in destroy-guard.jq to "swarm" and this fails.
     """
     env = {key: value for key, value in os.environ.items() if key != "SWARM_NAME_PREFIX"}
+    # The prefix does not depend on the project; lets common.sh source without PROJECT_ID.
+    env["SWARM_NO_PROJECT"] = "1"
     proc = subprocess.run(
         ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
         capture_output=True, text=True, timeout=60, env=env,

@@ -49,7 +49,7 @@ from swarm_common.identity import TenantMember
 from . import forge_fakes
 from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header, seed_task, seed_tenant
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 CONSOLE = "https://console.example.test"
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)

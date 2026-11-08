@@ -5,7 +5,7 @@ start, and the clone waits for the instance's path to github.com:443 to open.
 Over the 7 days to 2026-10-09, that path opened a median **20.2 s** after the
 worker process started on Cloud Run (n=19). On GKE Autopilot pods, through the
 **same** Cloud NAT, the same NAT address and the same subnet, it opened in a
-median **1.2 s** (n=148). Issue #939, split from #721 part (b).
+median **1.2 s** (n=148). This is the GKE Autopilot migration, split from the clone-connect-stall incident part (b).
 
 **The likely cause is Google's documented Direct VPC egress + Cloud NAT
 start-up delay, not this platform's NAT settings.** Google's Direct VPC egress
@@ -27,11 +27,10 @@ recommendation needs is written out in §6 so that, once decided, it is one
 contract request and one release.
 
 Related, and not the same span: [2026-10-06: a step's clone spends a median
-36.6 s in one TCP connect to GitHub](2026-10-06-clone-connect-stall.md) (#721,
-#917) measured the clone's connect; this document measures when the path
+36.6 s in one TCP connect to GitHub](2026-10-06-clone-connect-stall.md) measured the clone's connect; this document measures when the path
 under it opens. [2026-09-25: a worker whose first connection to Firestore was
 never answered](2026-09-25-worker-startup-network.md) is the same Google
-limitation seen on Google APIs. **#625 measures execution creation to
+limitation seen on Google APIs. **The container-start-latency measurement measures execution creation to
 container start, which ends before this document's clock begins** (process
 start): the two spans add, they do not overlap.
 
@@ -47,7 +46,7 @@ the project or the API: nothing here was re-measured by its author.
 ### 1.1 `egress_ready_seconds` by backend
 
 Read 2026-10-09T16:2xZ, by the pure helper `scripts/egress_ready_report.py`
-from PR #979 (branch `recover-939-fix`, not on main when this was written),
+from the egress-ready-report PR (branch `recover-939-fix`, not on main when this was written),
 over 7 days of `GET /v1/tasks/{id}/events`, with the helper's event-type match
 made case-insensitive (the API serves `"type": "running"` in lowercase; the
 helper as first written matched only `RUNNING` and read zero marks; the fix is
@@ -90,25 +89,25 @@ verdict: FAIL -- insufficient n (19 CLOUD_RUN_JOB marks < 30)
   waits for the probe (`apps/agent-worker/agent_worker/gitops.py::await_egress`) before its
   first git step. Read that way, Cloud Run's 18.0 s p50 is git still being
   slow **after** the probe had connected, against 2.5 s on GKE. That matches
-  #721's observer P27 (the probe connected, yet git's own connect stalled in 5
+  the clone-connect-stall incident's observer P27 (the probe connected, yet git's own connect stalled in 5
   of 7 clones) and is a second, open signal that "the path is open" is
   per-destination or per-connection rather than one instance-wide switch. It
   was not broken down further here (§7).
-* **The title's 35 to 70 s was the connect, not the opening.** #721 measured
+* **The title's 35 to 70 s was the connect, not the opening.** The clone-connect-stall incident measured
   git's connect (`connect_seconds`), which includes the kernel's SYN
   retransmission backoff on top of the opening. The probe opens a fresh
   connection every `EGRESS_PROBE_INTERVAL_SECONDS` (1 s) with a
   `EGRESS_CONNECT_TIMEOUT_SECONDS` (1 s) timeout, so it trails the opening by
   about a second at most, and what it measures is the opening itself: a
-  median of 20 s, a maximum of 43 s. The SYN-backoff reading of #721 is
+  median of 20 s, a maximum of 43 s. The SYN-backoff reading of the clone-connect-stall incident is
   still an **inference**; these numbers are consistent with it (an opening
-  around 20 to 40 s, answered on a later retransmit, lands in #721's 36 s and
+  around 20 to 40 s, answered on a later retransmit, lands in the clone-connect-stall incident's 36 s and
   68 to 71 s modes) but do not prove it.
 
 ### 1.2 Reading 1b: the shell wrapper failed, and how
 
 ```
-$ SWARM_IMPERSONATE_SA=swarm-verify@saga-agents-staging.iam.gserviceaccount.com PATH=/Users/bogdan/.local/bin:$PATH timeout 600 ./scripts/egress-ready-report.sh --since 7d
+$ SWARM_IMPERSONATE_SA=swarm-verify@example-project.iam.gserviceaccount.com PATH=/Users/<user>/.local/bin:$PATH timeout 600 ./scripts/egress-ready-report.sh --since 7d
 read at 2026-10-09T16:04Z
 
 == Tasks created in the last 7d ==
@@ -122,7 +121,7 @@ exit=124
 ```
 
 This is a **defect of the wrapper**, recorded here and not fixed by this PR:
-`scripts/egress-ready-report.sh` is not on main. It is in PR #979 (branches
+`scripts/egress-ready-report.sh` is not on main. It is in the egress-ready-report PR (branches
 `recover-939`, `recover-939-fix`), so the fix belongs on that branch. Read
 from `recover-939-fix` at 7c3a45f:
 
@@ -151,13 +150,12 @@ from `recover-939-fix` at 7c3a45f:
   600 s at the cadence this run reached. That is why the measured run (§1.1)
   used the helper over 199 agents.
 
-The change the wrapper needs, to be made on PR #979's branch:
+The change the wrapper needs, to be made on the egress-ready-report PR's branch:
 
 ```diff
 -trap 'rm -rf "${WORK}"' EXIT INT TERM
 +# INT and TERM EXIT, and the EXIT trap removes WORK: a handler that only
-+# removed it would let the script run on against a deleted directory (#939,
-+# reading 1b).
++# removed it would let the script run on against a deleted directory (+# reading 1b).
 +trap 'rm -rf "${WORK}"' EXIT
 +trap 'exit 130' INT
 +trap 'exit 143' TERM
@@ -191,14 +189,14 @@ made here.
 
 ## 2. The readings
 
-All on 2026-10-09, project `saga-agents-staging`, region `us-central1`, on
+All on 2026-10-09, project `example-project`, region `us-central1`, on
 swarm-owned resources only (`swarm-nat`, `swarm-router`,
 `swarm-subnet-us-central1`, `swarm-job-*`, `swarm-verify`). None is on the
-deny-list in `scripts/lib/common.sh`. Verbatim output is in issue #939's
+deny-list in `scripts/lib/common.sh`. Verbatim output is in the GKE Autopilot migration's
 investigation brief; the parts that matter are quoted.
 
 **Reading 2, the NAT (16:14Z).**
-`gcloud compute routers nats describe swarm-nat --router=swarm-router --region=us-central1 --project=saga-agents-staging --format=yaml`
+`gcloud compute routers nats describe swarm-nat --router=swarm-router --region=us-central1 --project=example-project --format=yaml`
 
 `natIpAllocateOption: MANUAL_ONLY` with one address, `swarm-nat-ip-0`;
 `enableDynamicPortAllocation: true`, `minPortsPerVm: 128`,
@@ -311,7 +309,7 @@ a new instance's mapping takes to program.
   same NAT, the same single NAT address, the same `minPortsPerVm`, the same
   subnet, the same image, the same probe and the same GitHub, and open in
   about 1 s. They do not use Direct VPC egress.
-* #721 found Google APIs over Private Google Access fast on the same
+* The clone-connect-stall incident found Google APIs over Private Google Access fast on the same
   instances, while the internet was slow. Private Google Access does not go
   through Cloud NAT; the internet does.
 
@@ -339,7 +337,7 @@ a new instance's mapping takes to program.
 * **A port-allocation drop is logged.** `ERRORS_ONLY` logs every packet
   dropped because no port was available (§3). If port allocation held every
   new Cloud Run instance's first SYNs for 20 s, every Cloud Run start would
-  leave `DROPPED` entries. #721 read **0** NAT errors over 3 days
+  leave `DROPPED` entries. The clone-connect-stall incident read **0** NAT errors over 3 days
   (2026-10-03 to 2026-10-06) during which every one of 422 clones stalled.
   Reading 6's newest errors are one instant, not one per start.
 * The probe needs one port. 128 ports is enough for the first connection of
@@ -357,7 +355,7 @@ read (§7); it is not this one.
 
 The probe resolves `github.com` on every try
 (`socket.create_connection` in `apps/agent-worker/agent_worker/egress.py::EgressProbe`).
-Resolution goes to the metadata server, which needs no NAT. #721 measured DNS
+Resolution goes to the metadata server, which needs no NAT. The clone-connect-stall incident measured DNS
 at 0.07 to 0.54 s on the same instances, and a resolution failure would end
 each try at once rather than produce a 20 s opening. GKE resolves the same
 name through the same kind of resolver in about a second.
@@ -397,7 +395,7 @@ would sharpen the record but does not change the decision.
 this section is switched on by the PR that adds it.
 
 Measure each option the same way: `scripts/egress-ready-report.sh --since <window> --backend cloud-run`
-(PR #979) shows the Cloud Run `egress_ready_seconds` p50 under 5 s over at
+ shows the Cloud Run `egress_ready_seconds` p50 under 5 s over at
 least 30 steps, with the change named. For option A the steps move to GKE, so
 the judged row is GKE's for the moved profiles.
 
@@ -408,7 +406,7 @@ as contract request 53 did for `claude-code` (applied 2026-10-08).
 
 * **Shortens.** The whole opening: measured, GKE p50 1.17 s, p90 3.76 s,
   max 5.32 s over n=148, already under the bar, through the same NAT. It
-  also takes the Cloud Run start wait of #625 off these profiles: request 53
+  also takes the Cloud Run start wait of the container-start-latency measurement off these profiles: request 53
   measured GKE's fresh-node start p90 at 120 s against Cloud Run's 212 s.
 * **Costs.** Autopilot pod billing in place of Cloud Run job billing for the
   same `requests == limits` shape (invariant 7). No new billed resource type:
@@ -507,20 +505,20 @@ Swap each worker job's `network_interfaces` for a `connector`, still
 ### Option D: tune the NAT (more addresses, a larger minimum, static allocation, endpoint-independent mapping)
 
 * **Shortens.** Nothing measured, and §4.2's evidence says port allocation is
-  not the systematic cause: a starved allocation is logged, and #721 saw none
+  not the systematic cause: a starved allocation is logged, and the clone-connect-stall incident saw none
   in 3 days of stalled clones.
 * **Costs.** A reserved address and its NAT charge per address added; every
   new address must be added to any provider allow-list before it carries
   traffic. Static allocation or a larger `minPortsPerVm` reduces how many
   endpoints one address serves (64,512 / minimum).
-* **Not recommended for #939.** The 07:39:48Z `DROPPED` burst deserves its
+* **Not recommended for the GKE Autopilot migration.** The 07:39:48Z `DROPPED` burst deserves its
   own read (§7) and may justify a second address for another reason.
 
 ### Option E: accept the wait and hide it behind clone-independent start-up work
 
 * **Shortens.** Nothing in `egress_ready_seconds`, which is counted from
   process start and is the bar. A step's wall time shrinks only by whatever
-  start-up work is moved ahead of the clone. #940's per-SHA GCS bundle over
+  start-up work is moved ahead of the clone. The clone-bundle project's per-SHA GCS bundle over
   Private Google Access would take most of the transfer off GitHub, but its
   delta fetch still needs the path, so it shortens the transfer, not the wait.
 * **Costs.** No money; worker changes only.
@@ -534,13 +532,13 @@ Swap each worker job's `network_interfaces` for a `connector`, still
   becomes a request in `docs/contract-change-requests.md` once the owner
   chooses it, not before.
 * **The wrapper's fix (§1.2) is not made**: the wrapper is not on main. It
-  belongs on PR #979's branch.
+  belongs on the egress-ready-report PR's branch.
 * **`api_request` sending an empty bearer** (`scripts/lib/common.sh`): the
   case for it rests on §1.2's inference. Proposed as a follow-up, not made.
 * **Not broken down**: the 19 Cloud Run marks by `probe_attempts`, by
   `peer`, and the clones' `connect_seconds`, `probe_peer`, `git_peer` and
   `peer_pinned`. The brief asked for them; the operator's reading printed the
-  summary only. `scripts/egress-ready-report.sh --json` (PR #979) carries the
+  summary only. `scripts/egress-ready-report.sh --json` carries the
   marks to compute them from.
 * **The 07:39:48Z NAT drops** were not traced to a source. The read in §8
   does it.
@@ -550,13 +548,13 @@ Swap each worker job's `network_interfaces` for a `connector`, still
 Read-only, swarm-owned resources only. Bracket every `OR`.
 
 ```bash
-P=saga-agents-staging; R=us-central1
+P=example-project; R=us-central1
 
 # Reading 4, at the right level: a job's egress lives on its execution template.
 gcloud run jobs describe swarm-job-eng-generic --region=$R --project=$P \
   --format='yaml(spec.template.metadata.annotations)'
 
-# The 19 marks, broken down (PR #979).
+# The 19 marks, broken down.
 scripts/egress-ready-report.sh --since 7d --backend cloud-run --json
 
 # Reading 5, scoped to GitHub (140.82.112.0/20 is github.com's block; check

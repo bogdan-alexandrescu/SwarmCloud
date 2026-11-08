@@ -10,7 +10,7 @@
 //
 // THE DECISION. Agents splits its Waiting tab into "Needs action" and "No
 // room" by `blockerGroup`. Capacity's top group was "Needs action" too, by the
-// same rule, from 2026-10-01 until BGD answered VQ-031 on 2026-10-26 ("Needs
+// same rule, from 2026-10-01 until owner answered VQ-031 on 2026-10-26 ("Needs
 // a look, as the mock-up draws it"): Pools' top group is "Needs a look" again
 // (`needsALook`), every pool `blockerGroup` files under needs_action AND every
 // full, lowered or 80%+ one. The Waiting split is about a task's refusals and
@@ -281,7 +281,7 @@ describe('Capacity puts the pools that need a person under "Needs a look" at the
     expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
     const top = section(/^Needs a look/)
     // It is the first group on the board, and the only one: every pool here
-    // is something to look at (BGD 2026-10-26, VQ-031).
+    // is something to look at (owner 2026-10-26, VQ-031).
     expect(document.querySelector('.cap-families > section')).toBe(top)
     expect(document.querySelectorAll('.cap-families > section').length).toBe(1)
     expect(screen.queryByRole('heading', { name: /Needs action/ })).toBeNull()

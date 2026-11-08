@@ -259,7 +259,7 @@ RUN_ID_PREFIX = "run"
 PLANNER_PROFILE = "claude-code"
 STEP_PROFILE = "claude-code"
 #: The compiled review runs on the browser only when the change is UI (#2322,
-#: BGD 2026-10-25): submitted on the policy's browser profile, the one it
+#: the owner 2026-10-25): submitted on the policy's browser profile, the one it
 #: runs if nothing resolves it, and resolved by the scheduler from what the
 #: implementer steps changed (`scheduler.runtime`). The pair is the
 #: validator's one pair, read rather than restated.
@@ -267,17 +267,17 @@ REVIEW_PROFILE = RUNTIME_POLICY_PROFILES["browser"]
 REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
     {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES})
 
-# The compiled review runs only where it matters (#2524, BGD 2026-10-27:
+# The compiled review runs only where it matters (#2524, the owner 2026-10-27:
 # "Risk paths + over 300 lines; reuse renders"): when what the implementer
 # steps changed touches a risk path or more than 300 lines. Otherwise
 # swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
 # naming the reason (`reviewgate`), and the fix step publishes as for any
 # MERGE. It names no gate of its own: it is a review step (the fix's `when`
-# reads it), so it is stored with the default gate (BGD 2026-10-28, "every
+# reads it), so it is stored with the default gate (the owner 2026-10-28, "every
 # review step"; `validation.default_review_gate_steps`), which follows the
 # workspace's setting.
 #
-# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (BGD 2026-10-28 ~18:25Z, "Gate
+# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (the owner 2026-10-28 ~18:25Z, "Gate
 # + cheap requirements check"). Beside the review, a plan that lists
 # requirements gets `requirements-check`: held like the review and run ONLY
 # when the review is skipped (`reviewgate.is_requirements_check`), on
@@ -426,7 +426,7 @@ FINDINGS_SHAPE = (
     '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
     'path", "line": <its line number>, "side": "new" or "old"}]'
 )
-#: The head the review judged, written beside `verdict` (#2524 check (b), BGD
+#: The head the review judged, written beside `verdict` (#2524 check (b), the owner
 #: 2026-10-28). The worker reads it (`agent_worker.verdict.Verdict.commit`) and
 #: skips a NOT_YET-gated fix whose branch head already contains a commit a
 #: review gave MERGE: that fix would be paid for to change reviewed work.
@@ -1327,69 +1327,85 @@ TENANCY_FUNCTIONS: tuple[str, ...] = ("tenant_scope", "submission_scope", "names
 _TENANCY_NAME = re.compile(r"\b(?:" + "|".join(TENANCY_FUNCTIONS) + r")\b")
 #: The deny-list itself.
 SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
-#: The shared project (CLAUDE.md rule 2): the one project whose other teams'
-#: resources `SHARED_DENY_LIST` names. The list is keyed by it (plan R4,
-#: docs/design/day-one-plan.md section 0), as common.sh's is: a deployment in
-#: any other project holds no change for naming them.
-SHARED_PROJECT_ID = "saga-agents-staging"
-#: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
-#: rule 2). Restated here because swarm-api's image carries no scripts/;
-#: tests/unit/control_plane/test_hold_categories.py fails the day the two
-#: differ. Keep the order of common.sh. oracle-api@ and the bare oracle-api
-#: are off it since 2026-10-27 (#1835, BGD: both entries); common.sh says why.
-#: An entry naming the project is written with `{project}`, so the project's
-#: id is stated once, in SHARED_PROJECT_ID.
-_SHARED_DENY_TEMPLATES: tuple[str, ...] = (
-    "agents-staging",
-    "agents-staging-vpc",
-    "agents-staging-subnet",
-    "gke-agents-staging-88280d02-pe-subnet",
-    "default",
-    "saga-agents-crawled-media-staging",
-    "saga-agents-files-staging",
-    "saga-agents-terraform-state-staging",
-    "ai-studio-avatars-staging",
-    "promptlab-avatars-staging",
-    "{project}_cloudbuild",
-    "api-service@{project}.iam.gserviceaccount.com",
-    "publisher@{project}.iam.gserviceaccount.com",
-    "209012342332-compute@developer.gserviceaccount.com",
-    "promptlab-deployer@{project}.iam.gserviceaccount.com",
-    "promptlab-runner@{project}.iam.gserviceaccount.com",
-    "aipipeline@{project}.iam.gserviceaccount.com",
-    "saga-storage-ro@{project}.iam.gserviceaccount.com",
-    "saga-storage-rw@{project}.iam.gserviceaccount.com",
-    "external-secrets@{project}.iam.gserviceaccount.com",
-    "staging-gke-nodes@{project}.iam.gserviceaccount.com",
-    "crawler@{project}.iam.gserviceaccount.com",
-    "tournament-digest@{project}.iam.gserviceaccount.com",
-    "ai-studio-api@{project}.iam.gserviceaccount.com",
-    "ai-studio-deployer@{project}.iam.gserviceaccount.com",
-    "ai-studio-runner@{project}.iam.gserviceaccount.com",
-    "oracle-ticker@{project}.iam.gserviceaccount.com",
-    "oracle-web@{project}.iam.gserviceaccount.com",
-    "promptlab-api@{project}.iam.gserviceaccount.com",
-    "oracle-web",
+#: The never-touch list (CLAUDE.md rule 2; docs/design/generic-repository.md
+#: section 2.4): the shared project's other-team resources. swarm-api's image
+#: carries no scripts/, so Terraform renders the list on the service from the
+#: deployment's own configuration, as two variables: the list, a JSON array of
+#: names, and a marker that it was rendered at all. A deployment that shares
+#: nothing renders `[]` with the marker; that is a statement, not an absence.
+SHARED_DENY_LIST_VARIABLE = "SWARM_SHARED_DENY_LIST"
+SHARED_DENY_LIST_SET_VARIABLE = "SWARM_SHARED_DENY_LIST_SET"
+#: The code an infrastructure-touching run FAILS AT PLANNING with when the
+#: list is absent or unreadable. Not in PLANNING_REFUSALS: it is the
+#: deployment's fault, not the issue's, and planning again after the list is
+#: rendered answers differently.
+DENY_LIST_UNSET = "DENY_LIST_UNSET"
+#: The refusal's whole text, fixed: nothing from the plan or the issue is
+#: interpolated into it.
+DENY_LIST_UNSET_REFUSAL = (
+    f"{DENY_LIST_UNSET}: this deployment's never-touch list is not readable "
+    f"({SHARED_DENY_LIST_SET_VARIABLE} is absent or {SHARED_DENY_LIST_VARIABLE} is not a "
+    "JSON array of names). Nothing that touches infrastructure runs without it; the "
+    "operator renders both variables on swarm-api"
 )
-SHARED_DENY_LIST: tuple[str, ...] = tuple(t.format(project=SHARED_PROJECT_ID) for t in _SHARED_DENY_TEMPLATES)
+#: What can reach the shared project's resources: Terraform, manifests, the
+#: scripts and wrappers that run gcloud and kubectl, the installer and the
+#: workflows that deploy. A plan naming any of these is refused while the
+#: list is unknown, because nothing could then hold a change that names one.
+INFRASTRUCTURE_PATTERNS: tuple[str, ...] = (
+    "terraform/**",
+    "kubernetes/**",
+    "install/**",
+    "scripts/**",
+    "bin/**",
+    "Makefile",
+    "**/*.tf",
+    "**/*.tfvars",
+    "apps/swarm-install/**",
+    ".github/workflows/**",
+    ".github/actions/**",
+)
 
 
-def shared_deny_list() -> tuple[str, ...]:
-    """The deny-list for the project this swarm-api runs in: `SHARED_DENY_LIST`
-    in the shared project, empty in any other.
+def shared_deny_list() -> tuple[str, ...] | None:
+    """The never-touch list rendered on this service, or None when it is not.
 
-    Keyed by PROJECT_ID, the variable `swarm_common.config.Settings` already
-    reads (`ApiSettings.project_id`), read at call time because the hold
-    functions are pure and their callers hold no settings. An unset project
-    keeps the whole list: an unknown project is not another project, and a
-    hold is cheap (a person decides) where a missed one is not.
+    Read at call time because the hold functions are pure and their callers
+    hold no settings. None, never an empty tuple, when the marker is absent
+    or the list is not a JSON array of non-empty strings: an operator who
+    forgot the variable must not silently empty the guard (plan R4). Only a
+    rendered `[]` with the marker is an empty list.
     """
-    project = os.environ.get("PROJECT_ID", "").strip()
-    return SHARED_DENY_LIST if project in ("", SHARED_PROJECT_ID) else ()
+    if os.environ.get(SHARED_DENY_LIST_SET_VARIABLE, "").strip() != "1":
+        return None
+    try:
+        names = json.loads(os.environ.get(SHARED_DENY_LIST_VARIABLE, ""))
+    except ValueError:
+        return None
+    if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names):
+        return None
+    return tuple(n.strip() for n in names)
 
 
-#: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
-#: is not `agents-staging`). "default" (the shared project's default network)
+def infrastructure_paths(plan: Mapping[str, Any] | None) -> list[str]:
+    """The files a plan's steps name in `files` that can reach infrastructure."""
+    return _matching(plan_files(plan), INFRASTRUCTURE_PATTERNS)
+
+
+def deny_list_refusal(plan: Mapping[str, Any] | None) -> str | None:
+    """The run's `error` when its plan touches infrastructure and the
+    never-touch list is not rendered on this service, or None. Always the
+    fixed DENY_LIST_UNSET_REFUSAL: the plan's paths are planner output steered
+    by issue text, so they go only into a 422's structured detail."""
+    if shared_deny_list() is not None:
+        return None
+    if not infrastructure_paths(plan):
+        return None
+    return DENY_LIST_UNSET_REFUSAL
+
+
+#: A deny-list name, whole: not inside a longer name (`swarm-peer-cluster-x`
+#: is not `peer-cluster`). "default" (the shared project's default network)
 #: is also an ordinary word, so it is matched only quoted, as a resource name
 #: is written; every other entry anywhere.
 _NAME_CHAR = r"A-Za-z0-9_@"
@@ -1495,8 +1511,13 @@ def _category_hits(
     )
     # An ADDED line: removing a reference to the other team's resources is
     # the direction CLAUDE.md rule 2 wants.
-    shared_name = _shared_name(shared_deny_list())
-    if shared_name is None:
+    # No rendered list: every infrastructure path is held, since nothing
+    # can show it names none of the other team's resources.
+    names = shared_deny_list()
+    shared_name = _shared_name(names) if names is not None else None
+    if names is None:
+        scan(STOP_SHARED, SHARED_PATTERNS + INFRASTRUCTURE_PATTERNS, lambda patch: False, lambda text: [])
+    elif shared_name is None:
         scan(STOP_SHARED, SHARED_PATTERNS, lambda patch: False, lambda text: [])
     else:
         scan(STOP_SHARED, SHARED_PATTERNS, changed(shared_name, removed=False), terms(shared_name))
@@ -1894,7 +1915,7 @@ _PLAN_SHAPE_CLASS = (
 
 
 #: What the planner is told about the approval sections (`plansections`;
-#: BGD, 6 November 2026): the person approving reads these first. Each is
+#: the owner, 6 November 2026): the person approving reads these first. Each is
 #: optional and advisory -- one written wrong is dropped, not refused.
 _SECTIONS_RULES = (
     '"purpose", "why", "changes", "risk", "validation" and "graph" are what the person '
@@ -2953,7 +2974,7 @@ def workflow_unit(run: "IssueRun") -> str:
 def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
     """The block an issue run's submission is made in: inside it, the spec's
     own `metadata.issue_run` gets past the reserved-key check, and nothing
-    else does (BGD, 2026-11-04). The caller calls
+    else does (the owner, 2026-11-04). The caller calls
     `ctx.submissions.submit_tasks`/`submit_workflow` itself inside it, so the
     signing paths stay the only writers of a task: the planner and the
     compiled workflow (routes/runs.py), a CI fix round and the merge
@@ -2965,7 +2986,7 @@ def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
 def workflow_feature(run: "IssueRun") -> dict[str, str]:
     """The compiled workflow's `metadata.feature`: the issue, by its title --
     its reference when the title was not read -- and its URL, the title on one
-    line and at most FEATURE_TITLE_MAX_CHARS (BGD, 2026-11-04)."""
+    line and at most FEATURE_TITLE_MAX_CHARS (the owner, 2026-11-04)."""
     issue_read = getattr(run, "issue_read", None)
     read = issue_read if isinstance(issue_read, Mapping) else {}
     title = " ".join(str(read.get("title") or "").split()) or run.issue.short
@@ -2975,7 +2996,7 @@ def workflow_feature(run: "IssueRun") -> dict[str, str]:
 
 
 #: How many of the summary's sentences the description keeps: "two or three
-#: sentences" is what the workflow page heads with (BGD, 2026-11-04).
+#: sentences" is what the workflow page heads with (the owner, 2026-11-04).
 DESCRIPTION_SENTENCES = 3
 
 _FENCED = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.MULTILINE | re.DOTALL)
@@ -3023,7 +3044,7 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "metadata": {
             "title": workflow_title(run),
             "unit": workflow_unit(run),
-            # What the workflow page heads with (BGD, 2026-11-04): the issue
+            # What the workflow page heads with (the owner, 2026-11-04): the issue
             # it works on, and what its approved plan delivers.
             "feature": workflow_feature(run),
             **({"description": description} if (description := workflow_description(run)) else {}),
@@ -3844,7 +3865,7 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: `GET /v1/runs/{id}`'s `planner_documents` (the owner, 6 November 2026, on the
 #: full-page interview lane: "Serve them on the run"): the planner step's
 #: design document and diagrams for the proposal page. A design doc is a
 #: Markdown artifact whose file name holds this word (gstack's planning skills

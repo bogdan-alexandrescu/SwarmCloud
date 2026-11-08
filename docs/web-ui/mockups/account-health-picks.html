@@ -274,7 +274,7 @@ figure.fr:has(>.scroller>.app)>figcaption{margin-left:0}
 </style></head><body>
 <div class="topbar"><div class="in"><span>The picks page: four proposals, five frames</span><div class="tseg" role="group" aria-label="Theme"><button type="button" data-set="light">Light</button><button type="button" data-set="dark">Dark</button><button type="button" data-set="system">System</button></div></div></div>
 <div class="wrap">
-<p class="kick">SwarmCloud · account health · the picks page · 2026-10-25 · part of #2302</p>
+<p class="kick">SwarmCloud · account health · the picks page · 2026-10-25</p>
 <h1>Account health: pick a design</h1>
 <p class="lede">Four complete proposals for showing each subscription account’s health: its rate-limit hits, errors, refusals and re-auths, from the record ACCOUNT-429-SCOPE serves. Each draws the same five frames from the same example record, so they can be compared side by side. Pick one design whole, or one proposal per frame, then press <b>Copy my picks</b> and paste the text into the PR or the issue.</p>
 <p>The previews are the proposals’ own frames, scaled down to show their shape. To read one, open it at full size; it opens the proposal at that frame. Every figure is an <span class="ex">example</span>: one invented pool (tenant eng, 7 accounts) and one invented 7-day record.</p>
@@ -328,7 +328,7 @@ figure.fr:has(>.scroller>.app)>figcaption{margin-left:0}
 <article class="pc" data-p="d"><div class="ph2"><span class="badge">D</span><h3>Incident cards</h3></div><p>The summary line wrapped and the open cards with their fixes; one account’s log with its open incident expanded.</p></article>
 </div></section>
 
-<p class="endnote">Nothing is built until BGD picks. The lane that builds the pick is ACCOUNT-HEALTH-UI, and it builds the picked frames only.</p>
+<p class="endnote">Nothing is built until the owner picks. The lane that builds the pick is ACCOUNT-HEALTH-UI, and it builds the picked frames only.</p>
 
 </div>
 <script>
@@ -356,7 +356,7 @@ addEventListener('resize',function(){document.querySelectorAll('.pv').forEach(fi
 var tray=document.createElement('div');tray.className='tray';tray.setAttribute('role','region');tray.setAttribute('aria-label','Your picks');
 tray.innerHTML='<div class="in"><b class="t">Your picks</b><span class="chips"></span><button type="button" class="btn" data-copy="1">Copy my picks</button><button type="button" class="btn ghost" data-clear="1">Clear</button><span class="done" aria-live="polite"></span><textarea aria-hidden="true" tabindex="-1"></textarea></div>';
 document.body.appendChild(tray);
-function text(){var lines=['ACCOUNT-HEALTH-MOCKS picks (part of #2302)'],all=FR.map(function(f){return picks[f]}),same=all[0]&&all.every(function(x){return x===all[0]});
+function text(){var lines=['ACCOUNT-HEALTH-MOCKS picks'],all=FR.map(function(f){return picks[f]}),same=all[0]&&all.every(function(x){return x===all[0]});
   if(same)lines.push('Whole design: '+NAMES[all[0]]);
   FR.forEach(function(f){var sec=document.getElementById(f);lines.push(f.toUpperCase()+' '+sec.getAttribute('data-name')+': '+(picks[f]?picks[f].toUpperCase():'not picked'))});
   return lines.join('\n')}
@@ -370,8 +370,8 @@ document.addEventListener('click',function(e){var t=e.target.closest&&e.target.c
   if(t.hasAttribute('data-all')){var p=t.getAttribute('data-all');FR.forEach(function(f){picks[f]=p});render();return}
   if(t.hasAttribute('data-clear')){picks={};render();tray.querySelector('.done').textContent='Cleared.';return}
   if(t.hasAttribute('data-copy')){var s=text(),done=tray.querySelector('.done');
-    var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into the PR or #2302.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
-    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into the PR or #2302.'},fallback);else fallback();}});
+    var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into the PR or the lane's issue.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into the PR or the lane's issue.'},fallback);else fallback();}});
 render();
 var m='system';try{m=localStorage.getItem(K)||'system'}catch(_){}apply(m);
 })();

@@ -47,7 +47,7 @@ What is left is the owner's, in this order:
    read the new setting:
 
    ```bash
-   CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
+   CTX=gke_example-project_us-central1_swarm-autopilot
    kubectl --context "$CTX" -n swarm-system get configmap swarm-typesafe-fwd-config -o jsonpath='{.data.config\.json}'
    kubectl --context "$CTX" -n swarm-system rollout status deployment/swarm-typesafe-fwd --timeout=300s
    ```
@@ -86,7 +86,7 @@ eng, profile `claude-code-browser` with **Browser tool: Jev**, and a goal
 that opens any page. While it runs:
 
 ```bash
-CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
+CTX=gke_example-project_us-central1_swarm-autopilot
 # 1. The pod carries the forwarder's label (and so its worker the switch).
 kubectl --context "$CTX" -n swarm-tenant-eng get pods -l swarm-typesafe=inject
 # 2. The worker took the shim, not a key file: `delivery: inject`, and the

@@ -8,7 +8,7 @@ with their masking counts, not null -- skips the masking for them, and says
 unknown view is a 422 naming the allowed values. `GET /v1/tasks/{id}` is
 unchanged.
 
-SUMMARY-TITLE (VQ-009, BGD 2026-10-26): the summary's `metadata` carries the
+SUMMARY-TITLE (VQ-009, the owner 2026-10-26): the summary's `metadata` carries the
 task's `title` and nothing else, masked as the full row masks it, so the
 console names a lone agent by its title with no read per row.
 """

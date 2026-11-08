@@ -1,7 +1,7 @@
 # Join requests: a person asks to join a group workspace, and its admin approves or denies it
 
-**Status: designed 2026-10-25 (lane JOIN-REQUESTS-DESIGN, part of #2325).
-Nothing is built.** BGD asked for this on 2026-10-25, after deciding
+**Status: designed 2026-10-25 (lane JOIN-REQUESTS-DESIGN).
+Nothing is built.** The owner asked for this on 2026-10-25, after deciding
 ADMIN-PEOPLE-ROLES' question "Later lane" (recorded on
 task_31ecaec218d1408a9c8d). The design is what mock-up
 `docs/web-ui/mockups/config-e.html` frame **S5f** draws: a workspace admin's
@@ -101,7 +101,7 @@ row "to join Example Labs" is a request that does not exist.
 
 ### 1.4 What "done" lets someone do that they cannot today
 
-From #2325, "How would you know it worked":
+From an earlier issue, "How would you know it worked":
 
 1. A person outside a group workspace asks to join it.
 2. That workspace's admin sees the request in the page's lead and decides it.
@@ -120,8 +120,8 @@ Under (A), point 3 holds. Under (C), the design says why it cannot (§3.3).
   `x-goog-user-project`** (CLAUDE.md, `docs/multi-tenancy.md` §2). Nothing
   here may list a caller's groups or a group's members.
 * **Some registered groups carry GCP IAM on this shared project.**
-  `eng@saga.xyz` holds project-wide admin roles on `saga-agents-staging`
-  (`docs/ci.md`, "Admitting the fixer through `swarm-eng-bots@saga.xyz`"). So
+  `eng@example.com` holds project-wide admin roles on `example-project`
+  (`docs/ci.md`, "Admitting the fixer through `swarm-eng-bots@example.com`"). So
   adding a person to such a group gives them that IAM as well, in the project
   that holds another team's live cluster (CLAUDE.md rule 2). The admin groups
   (`ADMIN_GROUPS`) are Google groups too.
@@ -185,9 +185,9 @@ workspace in three places, and has no Cloud Identity write anywhere:
     group.
   * **It grants no GCP IAM.** A person approved into `eng` reaches eng's
     workspace on the platform. They do not get the project roles
-    `eng@saga.xyz` carries on the shared project. Of the three designs, this
+    `eng@example.com` carries on the shared project. Of the three designs, this
     is the only one where a workspace admin's approval cannot widen IAM on
-    `saga-agents-staging`.
+    `example-project`.
 * **Isolation (invariant 9).**
   * The new attack surface is a forged or replayed membership. §4.4 closes
     it the way roles closed theirs: a worker cannot sign a grant, cannot
@@ -220,7 +220,7 @@ workspace's group.
 * **The blast radius.**
   * swarm-api is the service every user's token reaches. With group write it
     could add anyone to any group its impersonated user manages. That
-    includes `eng@saga.xyz`, with its project-wide roles on the shared
+    includes `eng@example.com`, with its project-wide roles on the shared
     project, and an `ADMIN_GROUPS` group, which would make the person a
     platform admin.
   * One defect in a role check would become IAM on another team's project.
@@ -252,7 +252,7 @@ read.
 * **What it costs.** The least of the three. The request store, the screens
   and the bell are the same as (A). There is no membership collection and no
   change to `auth.py`.
-* **What it does not do.** It fails #2325's point 3 by design. Someone still
+* **What it does not do.** It fails an earlier issue's point 3 by design. Someone still
   edits the group by hand, and the reason is the one §3.2 gives: the
   platform holds no group write, and getting one is an org-level grant with
   that blast radius.
@@ -261,7 +261,7 @@ read.
 
 ### 3.4 Recommendation: A, built so that C is what it does with the switch off
 
-Choose (A). It is the only design that meets #2325's point 3 without
+Choose (A). It is the only design that meets an earlier issue's point 3 without
 granting the platform a write over groups that carry IAM on the shared
 project.
 
@@ -434,7 +434,7 @@ Two alternatives, for Q2:
   the person cannot tell a typo from a quiet admin.
 * **(c) A directory of "listed" workspaces.** An admin marks a workspace
   listed, and every signed-in person sees it with a Join button. It is the
-  easiest to find, and it is exactly the leak #2325 asks to avoid, made
+  easiest to find, and it is exactly the leak an earlier issue asks to avoid, made
   opt-in.
 
 ### 4.3 What approval does
@@ -814,13 +814,13 @@ Also in this lane's `questions.json`. The recommendation comes first in each.
 **Q1. What does approval do?**
 
 * **(A) A platform-side membership beside the Google group (recommended).**
-  It meets #2325's point 3. It grants no GCP IAM. It needs no new Google
+  It meets an earlier issue's point 3. It grants no GCP IAM. It needs no new Google
   permission. It ships behind a switch, and with the switch off it behaves
   as (C). It partly reverses `workspace-roles.md` Q3.
 * **(B) Add the person to the Google group through Cloud Identity.** This
   needs a Workspace super admin to widen swarm-api's delegation to group
   write. Approval then confers whatever IAM the group carries, which for
-  `eng@saga.xyz` is project-wide roles on the shared project.
+  `eng@example.com` is project-wide roles on the shared project.
 * **(C) Record the decision, and tell the admin to change the group.** The
   cheapest, with no isolation change. A person still edits the group by hand.
 
@@ -861,11 +861,11 @@ Also in this lane's `questions.json`. The recommendation comes first in each.
 
 ## 8. What was built
 
-BGD answered §7 on 2026-10-25 with every recommended option: design A behind
+The owner answered §7 on 2026-10-25 with every recommended option: design A behind
 `platform_memberships`, off; a join link; that workspace's admins and platform
 admins decide; the default role, or `viewer` below it; open 14 days, kept 90,
 the audit row permanent; no end date. The lanes, read from the code on
-2026-11-05. Where a PR number is not given, #2325 does not name it; `git log
+2026-11-05. Where a PR number is not given, an earlier issue does not name it; `git log
 -- <file>` finds the commit.
 
 **JOIN-STORE (PR #2345).** `swarm_api/joinrequests.py` (`JoinStore`: the
@@ -881,7 +881,7 @@ codes of §4.9 in `errors.py`, and their `NOT_SWITCHABLE_CODES` entries
 `_platform_memberships` appends counted memberships to `tenant_choices` after
 the groups; `settings.platform_memberships` (`PLATFORM_MEMBERSHIPS`, off);
 `routes/tenants.py` says `via: "platform_member"`. The four rate limits became
-settings here, as BGD answered on 2026-10-25 (`JOIN_OPEN_PER_PERSON` 3,
+settings here, as the owner answered on 2026-10-25 (`JOIN_OPEN_PER_PERSON` 3,
 `JOIN_DAILY_PER_PERSON` 10, `JOIN_DENIED_HOLD_DAYS` 7,
 `JOIN_OPEN_PER_WORKSPACE` 50, each with its reason beside it in `settings.py`).
 
@@ -891,7 +891,7 @@ link's GET and PUT, the members list and removal, approve and deny;
 `people.py`'s `join_requests`, `pending` and the grid's `requested` cell;
 `routes/people.py`'s `join_scope`. `RoleStore.write` gained a `writer`, so the
 decision, the membership, a lowered role and every audit row are one
-transaction (BGD, 2026-10-25).
+transaction (the owner, 2026-10-25).
 
 **JOIN-BELL (PR #2381).** `notifications.py`'s `join_requests_to_decide`
 (`admin:join:<ref>`) and `own_join_requests` (`join:<ref>:<state>`),
@@ -907,16 +907,16 @@ its joined-by-request list.
 admin, the Waiting for you row with Approve and Deny (a denial needs a reason),
 the grid's `requested` cell, and `admitted: false` showing the group command.
 The grid's "joined by request" mark is drawn from `GET /v1/workspace/members`
-(BGD, 2026-10-26); the People read is unchanged.
+(the owner, 2026-10-26); the People read is unchanged.
 
 **JOIN-WIRE.** `deps.py` hands the authenticator a `MembershipStore`, so
 resolution reads memberships at all; `roles.tenant_via` says
-`platform_member`, so `GET /v1/workspace/roles` `me.via` does too (BGD,
+`platform_member`, so `GET /v1/workspace/roles` `me.via` does too (the owner,
 2026-10-26: a label only). `tests/unit/control_plane/test_join_wire.py`.
 
 **JOIN-ONE-STORE.** `routes/people.membership_store` returns the
 authenticator's own store, so an approval's or a removal's eviction is the
-cache the person's next request reads (BGD, 2026-10-26).
+cache the person's next request reads (the owner, 2026-10-26).
 
 **JOIN-INDEX.** `terraform/modules/firestore/indexes.tf`:
 `workspace-memberships-subject-at`, `join-requests-tenant-requested` and
@@ -926,14 +926,14 @@ cache the person's next request reads (BGD, 2026-10-26).
 **JOIN-BELL-WIRE (this lane's branch).** `routes/notifications.py` hands
 `Notifications` the app's one join store and the reader's administered
 workspaces, read fresh; a platform admin needs no such read; a failed read is
-`partial: true`, never "administers nothing" (BGD, 2026-10-26T01:02Z: until
+`partial: true`, never "administers nothing" (the owner, 2026-10-26T01:02Z: until
 this, the join sources read nothing).
 `tests/unit/control_plane/test_notifications_join_wire.py`.
 
 **The invalid-record counters.** `swarm_api_membership_invalid_total` and
 `swarm_api_join_request_invalid_total` are declared in `ApiMetrics` beside
 `swarm_api_role_grant_invalid_total`, no longer registered lazily by the
-first store (BGD, 2026-10-25: "a later lane").
+first store (the owner, 2026-10-25: "a later lane").
 
 **JOIN-DOCS-ACCEPT (this lane).** [multi-tenancy.md](../multi-tenancy.md) §2
 and §3, [workspace-roles.md](workspace-roles.md)'s Q3 amendment,
@@ -989,7 +989,7 @@ approval answers `admitted: false` with the group command and admits nobody.
 
 ### 8.2 What is left
 
-The dev switch-on, in its own change after this lane (BGD, 2026-10-25):
+The dev switch-on, in its own change after this lane (the owner, 2026-10-25):
 `PLATFORM_MEMBERSHIPS` is read by `settings.py` but no Terraform variable
 renders it yet (`install/manifest.yaml` lists it as internal), so approval
 admits nobody in a deployed environment. That change adds the variable

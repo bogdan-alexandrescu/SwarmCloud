@@ -47,8 +47,8 @@ from swarm_api import qatargets as api_qt
 from test_qa_target_signin import Rig, run, tmp  # noqa: F401  (tmp is a fixture)
 from test_swarm_qa import _capture, _manifest, qa, world  # noqa: F401  (fixtures)
 
-STUDIO = "https://studio.saga.xyz"
-SSO = "https://sso.galatia.saga.xyz"
+STUDIO = "https://studio.example.com"
+SSO = "https://sso.peer.example.com"
 TOKEN_PATH = "/realms/sagents/protocol/openid-connect/token"
 TOKEN_URL = f"{SSO}{TOKEN_PATH}"
 LEGS = ("prod-user", "prod-reviewer", "prod-moderator", "prod-reader", "prod-customer")
@@ -58,7 +58,7 @@ REPO_PACKAGE = Path(__file__).resolve().parents[3] / "apps" / "agent-worker" / "
 def _leg(name: str) -> dict[str, Any]:
     """One production leg as it was approved: both origins, the token path."""
     return {
-        "name": name, "base_url": f"{STUDIO}/", "host": "studio.saga.xyz", "origin": STUDIO,
+        "name": name, "base_url": f"{STUDIO}/", "host": "studio.example.com", "origin": STUDIO,
         "environment": "production",
         "sign_in": {"kind": "own_login", "login_path": "/", "signed_in_selector": "#workspace",
                     "extra_origin": SSO,
@@ -69,7 +69,7 @@ def _leg(name: str) -> dict[str, Any]:
 
 
 def _stored_target() -> dict[str, Any]:
-    return {"id": "qat_" + secrets.token_hex(8), "revision": 2, "name": "ai-studio-prod",
+    return {"id": "qat_" + secrets.token_hex(8), "revision": 2, "name": "peer-app-prod",
             "environments": [_leg(n) for n in LEGS], api_qaspec.MIGRATED: True}
 
 
@@ -134,10 +134,10 @@ def test_after_a_failed_sign_in_nothing_else_is_let_through():
     # MUTATION: let any write to the extra origin through after the sign-in and these continue.
     assert _post(target, f"{SSO}/realms/sagents/account/credentials").action == "refuse"
     assert _post(target, f"{SSO}{TOKEN_PATH}/").action == "refuse"
-    assert _post(target, f"{TOKEN_URL}?client_id=ai-studio-web").action == "refuse"
+    assert _post(target, f"{TOKEN_URL}?client_id=peer-app-web").action == "refuse"
     assert _post(target, f"{STUDIO}{TOKEN_PATH}").action == "refuse"
     assert _post(target, f"{STUDIO}/api/ship").action == "refuse"
-    assert _post(target, f"https://api.galatia.saga.xyz{TOKEN_PATH}").action == "refuse"
+    assert _post(target, f"https://api.peer.example.com{TOKEN_PATH}").action == "refuse"
     for method in ("PUT", "PATCH", "DELETE"):
         assert _post(target, TOKEN_URL, method).action == "refuse", method
     # A top frame posted to the provider still leaves the target.

@@ -1,5 +1,5 @@
 // POOL LIMITS: A PROVIDER-TENANT POOL'S QUOTA TERMS, AND THE TWO CONTROLS
-// OVER THEM (POOL-LIMITS-QUOTA, BGD 2026-10-25, part of #2302).
+// OVER THEM (POOL-LIMITS-QUOTA, owner 2026-10-25, part of #2302).
 //
 // anthropic · eng sat full at 14 while this screen showed its hard limit, 100:
 // the effective limit is the least of the hard limit, the broker's configured

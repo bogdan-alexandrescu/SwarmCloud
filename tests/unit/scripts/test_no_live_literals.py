@@ -25,9 +25,9 @@ the one that fails closed on a missing list (section 4.2).
 why; `test_every_exemption_still_holds_a_literal` fails the day one no longer
 does, so the list only shrinks.
 
-The issueruns deny-list is keyed by project (plan R4): the shared project's
-names hold changes for the owner only when swarm-api runs in the shared
-project (or the project is unknown), and nowhere else.
+The issueruns deny-list is read from the environment Terraform renders
+(generic-repository.md section 2.4): the rendered names hold changes for the
+owner, a rendered `[]` holds none, and no rendering is never an empty list.
 
 Offline: parses source and calls pure functions; no credentials, no emulator.
 """
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import re
 import secrets
@@ -84,21 +85,7 @@ def _listed() -> list:
 
 
 #: (file, module constant) -> why it may name the live deployment.
-EXEMPT: dict[tuple[str, str], str] = {
-    ("apps/swarm-api/swarm_api/issueruns.py", "SHARED_PROJECT_ID"): (
-        "the key of the project-keyed deny-list (plan R4, CLAUDE.md rule 2): the guard "
-        "must name the project it protects, and it applies only there"
-    ),
-    ("apps/scheduler/scheduler/judgment.py", "DECISION_API_TAILNET_NAME"): (
-        "the internal decision API add-on's one accepted host, off unless "
-        "INTERNAL_DECISION_API_URL is set; making it per install crosses "
-        "test_dispatch_judgment.py, test_judgment_backend.py and the worker's jev "
-        "wrapper (question 2 of this lane)"
-    ),
-    ("apps/swarm-api/swarm_api/judgment.py", "INTERNAL_DECISION_ORIGIN"): (
-        "restates scheduler.judgment.INTERNAL_DECISION_ORIGIN (same question)"
-    ),
-}
+EXEMPT: dict[tuple[str, str], str] = {}
 
 
 def _sources() -> list[Path]:
@@ -209,7 +196,7 @@ def test_an_altered_list_is_refused(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# the issueruns deny-list, keyed by project (plan R4)
+# the issueruns deny-list, rendered on the service (section 2.4)
 # --------------------------------------------------------------------------
 
 @pytest.fixture
@@ -229,29 +216,29 @@ def _shared_hold(issueruns, name: str):
     )
 
 
-def _shared_network(issueruns) -> str:
-    """The shared project's other-team network, read from the deny-list itself."""
-    return next(name for name in issueruns.SHARED_DENY_LIST if name.endswith("-vpc"))
+def _render(monkeypatch, names: list[str]) -> None:
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(names))
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
 
 
-def test_the_deny_list_is_empty_for_another_project(monkeypatch, issueruns):
-    monkeypatch.setenv("PROJECT_ID", placeholders.PROJECT)
-    # MUTATION: return the shared list whatever the project, and both are red.
+def test_a_rendered_empty_list_holds_nothing(monkeypatch, issueruns):
+    _render(monkeypatch, [])
+    # MUTATION: hold on a name no list carries, and both are red.
     assert issueruns.shared_deny_list() == ()
-    assert _shared_hold(issueruns, _shared_network(issueruns)) is None
+    assert _shared_hold(issueruns, placeholders.PEER["network"]) is None
 
 
-@pytest.mark.parametrize("project", ["shared", ""])
-def test_the_deny_list_is_whole_in_the_shared_project_or_an_unknown_one(monkeypatch, issueruns, project):
-    monkeypatch.setenv("PROJECT_ID", issueruns.SHARED_PROJECT_ID if project else "")
-    # The guard never weakens where it applies: an unset project is not another project.
-    assert issueruns.shared_deny_list() == issueruns.SHARED_DENY_LIST
-    held = _shared_hold(issueruns, _shared_network(issueruns))
+def test_a_rendered_list_holds_its_names(monkeypatch, issueruns):
+    _render(monkeypatch, [placeholders.PEER["cluster"], placeholders.PEER["network"]])
+    assert issueruns.shared_deny_list() == (placeholders.PEER["cluster"], placeholders.PEER["network"])
+    held = _shared_hold(issueruns, placeholders.PEER["network"])
     assert held is not None and held["reasons"] == ["shared"]
 
 
-def test_the_shared_list_names_its_project_once(issueruns):
-    # Every entry that names the shared project is built from SHARED_PROJECT_ID.
-    project = issueruns.SHARED_PROJECT_ID
-    assert f"{project}_cloudbuild" in issueruns.SHARED_DENY_LIST
-    assert f"api-service@{project}.iam.gserviceaccount.com" in issueruns.SHARED_DENY_LIST
+def test_no_rendered_list_is_never_an_empty_one(monkeypatch, issueruns):
+    monkeypatch.delenv("SWARM_SHARED_DENY_LIST_SET", raising=False)
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", "[]")
+    # The guard never weakens where it is not configured: no list is not "nothing shared".
+    assert issueruns.shared_deny_list() is None
+    held = _shared_hold(issueruns, placeholders.PEER["network"])
+    assert held is not None and held["reasons"] == ["shared"]

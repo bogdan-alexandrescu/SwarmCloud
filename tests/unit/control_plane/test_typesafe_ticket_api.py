@@ -242,10 +242,10 @@ def test_a_group_task_with_only_the_submitters_key_is_refused(ready, ldb):
 
 
 def test_a_namesakes_personal_key_is_never_spent(ready, ldb):
-    """`u-alice` names alice@partner.com, not the submitter alice@example.com:
+    """`u-alice` names alice@example.org, not the submitter alice@example.com:
     the frozen slug drops the domain, and only the principal says whose it is."""
     client, attempt = ready
-    personal_tenant(ldb, "u-alice", "alice@partner.com")
+    personal_tenant(ldb, "u-alice", "alice@example.org")
     set_key(ldb, ALICE_SECRET, tenant_id="u-alice")
     got = claims(ask(client, attempt).json()["ticket"])
     assert (got["scope"], got["secret_id"]) == ("tenant", TENANT_SECRET)
@@ -443,7 +443,7 @@ def test_swarm_api_reads_no_secret_value_to_mint():
 
 
 def test_the_settings_are_read_from_the_environment(monkeypatch):
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("SWARM_TYPESAFE_FWD_KEY", FWD_KEY)
     monkeypatch.setenv("TYPESAFE_TICKET_SECONDS", "240")
     settings = ApiSettings.from_env()

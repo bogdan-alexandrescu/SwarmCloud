@@ -24,7 +24,7 @@ from swarm_mcp.client import SwarmError
 
 NOW = datetime(2026, 11, 3, 3, 0, tzinfo=timezone.utc)
 TENANT = "acme"
-PERSON = "bogdan@saga.xyz"
+PERSON = "owner@example.com"
 
 
 def _account(label: str, **extra) -> dict:

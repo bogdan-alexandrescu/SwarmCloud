@@ -1,5 +1,5 @@
 """A followed workflow costs one workflow read per poll, not one read per step
-(BGD's pick, 2026-11-06, after the load analysis: single-task reads were 39% of
+(the owner's pick, 2026-11-06, after the load analysis: single-task reads were 39% of
 swarm-api's requests, nearly all from the bridge's follow rows).
 
 Offline: a fake client that counts what is asked of it, and a fake clock.

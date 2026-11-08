@@ -66,10 +66,10 @@ function json(body: unknown, status = 200): Response {
 
 const ME: Me = {
   tenant: {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     kind: 'user',
     principal: 'someone@example.com',
-    display_name: 'Bogdan',
+    display_name: 'Alex',
     created_at: '2026-09-01T00:00:00Z',
     max_active: 4,
     capacity_units: 8,
@@ -77,8 +77,8 @@ const ME: Me = {
     enabled: true,
     credentials: ['anthropic'],
     service_account: null,
-    gcs_prefix: 'tenants/u-bogdan',
-    namespace: 'swarm-tenant-u-bogdan',
+    gcs_prefix: 'tenants/u-owner',
+    namespace: 'swarm-tenant-u-owner',
   },
   principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
   environment: 'dev',
@@ -107,7 +107,7 @@ async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ rele
     if (url.startsWith(held)) return screenRead
     // Config › Repositories' second head read (REPOS-PAGE): answered, so the
     // page's refresh speaks for the held read alone, not a read never answered.
-    if (url === '/v1/access') return json({ connection: null, orgs: [], grants: [], tenant_id: 'u-bogdan' })
+    if (url === '/v1/access') return json({ connection: null, orgs: [], grants: [], tenant_id: 'u-owner' })
     return new Promise<Response>(() => {})
   }) as unknown as typeof fetch
   window.location.hash = hash
@@ -209,7 +209,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     // inspector is over it (the frame's age is drawn beside it again).
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
+    const done = task({ id: 'tsk_done', tenant_id: 'u-owner', state: 'SUCCEEDED', completed_at: at(59) })
     let pending = 0
     const answer = (url: string): Response => {
       if (url.startsWith('/v1/tenants/me')) return json(ME)
@@ -269,7 +269,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     // draw its own age on these routes again.
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
+    const done = task({ id: 'tsk_done', tenant_id: 'u-owner', state: 'SUCCEEDED', completed_at: at(59) })
     let pending = 0
     let listReads = 0
     const answer = (url: string): Response => {
@@ -643,7 +643,7 @@ describe('CH-13: one rule for tables below 900px', () => {
     // `overflow-wrap: anywhere` break back on `.uri`.
     const f = fragment(
       '<div class="ctl-table is-stacked"><table><tbody><tr><td data-label="Location">' +
-        '<span class="mono uri">gs://swarm-artifacts/tenants/eng/tasks/tsk_1/attempts/att_1/checkpoints/ckpt-00001/</span>' +
+        '<span class="mono uri">gs://swarm-artifacts-example-project/tenants/eng/tasks/tsk_1/attempts/att_1/checkpoints/ckpt-00001/</span>' +
         '<button class="copy">copy gsutil</button></td></tr></tbody></table></div>',
     )
     const uri = pick(f, '.uri')

@@ -1,6 +1,6 @@
 """The OpenAI credential a GPT-Live session runs on (docs/design/voice-it.md §3.6).
 
-THE OWNER'S CHOICE (BGD, 2026-11-02): an account is reserved for Voice it
+THE OWNER'S CHOICE (the owner, 2026-11-02): an account is reserved for Voice it
 through a separate "Voice it pool" in the quota broker, and swarm-voice leases
 an account from that pool for each session ("pool only, wait for it"). Since 4
 November 2026 that account is an OpenAI developer API key (`KEY_KIND`): OpenAI

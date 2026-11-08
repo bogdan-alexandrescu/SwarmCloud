@@ -1,6 +1,6 @@
 # Tenant settings integrity: a tenant's worker cannot change what the control plane does for another tenant
 
-**Status: designed 2026-10-17 (lane ISO-SETTINGS-DESIGN, part of #1457), and
+**Status: designed 2026-10-17 (lane ISO-SETTINGS-DESIGN), and
 answered by the owner the same day (§7, "The owner's answers").** The ten build
 lanes of §6 have merged (PRs 1473-1487); ISO-IAM, PR 1484, merged as
 `1d7780d4`, giving `terraform/modules/tenancy` its `worker_firestore_access`
@@ -14,7 +14,7 @@ default, passed to the tenancy module) and `worker_firestore_off_tenants`
 (empty by default, rendered onto swarm-api as `WORKER_FIRESTORE_OFF_TENANTS`
 for job-made workspaces), each refused at plan ahead of the state switch.
 [`docs/runbooks/isolation-cutover.md`](../runbooks/isolation-cutover.md) is
-the cutover in Q7's order: u-bogdan, eng, every tenant, then the role's
+the cutover in Q7's order: u-member, eng, every tenant, then the role's
 removal from every Terraform tenant and, last, the owner's removal of its
 definition from bootstrap, each step with its plan, what to watch and its
 rollback. No tenant has been cut over yet.
@@ -90,7 +90,7 @@ write a document whose id it can guess"). The tenant checks the worker makes
 in a process the agent can bypass with `curl`. They are a convenience, not a
 boundary.
 
-### 1.2 The instance #1457 reports
+### 1.2 The instance an earlier issue reports
 
 An agent in tenant A updates `workspace_settings/<B>` with
 `judgment_backend: "typesafe"`. Three readers act on that value:
@@ -149,7 +149,7 @@ How to read the columns:
 | 2 | `tenants/<own>` `.namespace` | yes | no | **A's next GKE pod runs in `swarm-tenant-B`, as B's KSA and so as B's account.** `verified_namespace` keeps a stored value that starts with the prefix, and so accepts another tenant's namespace. | `scheduler/dispatch.py::verified_namespace`, `namespace_for`; `reconciler/store.py::tenant_namespaces` (which namespaces it scans and protects) | yes | yes | yes |
 | 3 | `tenants/<own>` `.gcs_prefix` | yes | no | A's `GCS_PREFIX` names B's prefix. IAM still refuses B's objects, because the bucket grant is prefix-conditioned, so this costs failed writes rather than a leak. | `scheduler/dispatch.py::worker_env` | yes | yes | yes |
 | 4 | `tenants/<B>` `.enabled`, `.max_active`, `.credentials[]`, `.kind`, `.principal` | yes | no | Pause B (`MANUAL_PAUSE`). Make B's agents park `CREDENTIAL_MISSING` or take the account pool. Change B's personal-secret opt-in. Disable B in the broker, which caps the shared provider pool. | `scheduler/store.py` `enabled_tenant_ids`; `scheduler/credentials.py::credential_for`; `scheduler/secret_slots.py`; `quota_broker/service.py` `_enabled_tenant_ids`; swarm-api `auth.py`, `attempts_secrets.py` | yes | yes | yes |
-| 5 | `workspace_settings/<B>` `.judgment_backend` and `code_intelligence.judgment_backend` | yes | no | #1457: B's judgments go to TypeSafe on B's key; B's pods get the inject label; swarm-api mints B's ticket. | §1.2's three readers | yes | yes | yes |
+| 5 | `workspace_settings/<B>` `.judgment_backend` and `code_intelligence.judgment_backend` | yes | no | An earlier issue: B's judgments go to TypeSafe on B's key; B's pods get the inject label; swarm-api mints B's ticket. | §1.2's three readers | yes | yes | yes |
 | 6 | `workspace_settings/<B>` `.merge.*` | yes | no | B's merge mode at submission, and its merge train's size and age. | swarm-api `MergeSettingsStore.mode_for`, `mergetrain.py` | yes | yes | yes |
 | 7 | `workspace_settings/<B>` `.code_intelligence.{jev,context,context_ab,graph_delivery}` | yes | no | Turn B's graph tickets off. Switch B's Jev and context delivery. | swarm-api `graph_ticket.py` (`CodeIntelligenceStore.get`); worker `judge/attempt.py`, `graphstage.py` | yes | yes | yes |
 | 8 | `tenant_settings/<B>` | yes | no | B's graph context. The worker reads it (`graphstage.py`), and no swarm-api path writes it today, so its only possible writer is a forger. | worker only | yes | yes | yes |
@@ -194,7 +194,7 @@ no `entities.list`:
 returned 403 in dev. Whether these three fail live was not measured. Under
 design B they become routes, so the question disappears.
 
-*Measured since (lane GRAPH-STAGING, part of #1694):* the third one fails
+*Measured since (lane GRAPH-STAGING):* the third one fails
 live. On 2026-10-19/20, 73 of 74 implement steps staged no graph, 33 with
 `staging failed (PermissionDenied)` from `_candidates`' `index_versions`
 list. It no longer lists: an unswitched tenant's step reads its registration,
@@ -202,7 +202,7 @@ kept versions and settings from swarm-api's
 `POST /v1/attempts/{attempt_id}/context/graph` (`swarm_api.attemptcontext`,
 the worker's `agent_worker.graphroute`), signed with the child path's attempt
 key, and a worker with no key reads the promoted version by id. The worker's
-role gains nothing. `kept_commits` (#1693) is the same refused query and
+role gains nothing. `kept_commits` is the same refused query and
 still lists on the direct path.
 
 ### 1.4 What "done" lets someone do that they cannot today
@@ -492,7 +492,7 @@ and that should not wait for B. So before B:
   MACs the fields the control plane acts on: `judgment_backend`, `merge.mode`
   and `code_intelligence.*`. The scheduler and swarm-api treat a missing or bad
   MAC as unset, and an unset `judgment_backend` is `internal-jev`, which fails
-  closed (`read_backend`'s default). This closes #1457's instance (rows 5-7)
+  closed (`read_backend`'s default). This closes an earlier issue's instance (rows 5-7)
   within a lane or two, while B is built. It costs request B in §5, and it can
   stay after B as defence in depth or be removed. The owner decides.
 
@@ -725,7 +725,7 @@ do not change.
 | another tenant's worker names this attempt | `401`: its token's email is not `worker_service_account_id(this tenant)`. |
 | a worker on the old path after the role is removed | `PermissionDenied` on its first read; the attempt fails retryably. Phase 3 removes the role only after `STATE_VIA_API_TENANTS` covers every tenant. |
 
-**Why a bare 404 is an outage, and a named one is not (#3041).** On
+**Why a bare 404 is an outage, and a named one is not.** On
 2026-11-02 a running agent failed about 80 seconds into its run on
 `swarm-api refused the state call (404 http_404):` while a release rolled
 out. No state route changed in that window: the worker had called the same
@@ -743,7 +743,7 @@ the budget is spent. A 404 swarm-api answers with a code stays final, and a
 `tests/unit/worker/test_statecall.py`, so a commit cannot ship a worker call
 without the route that serves it.
 
-**One release rolls swarm-api before the scheduler (owner's pick, #3041).**
+**One release rolls swarm-api before the scheduler (owner's pick).**
 Every Cloud Run service used to roll in parallel from one `for_each`, so a
 release that added a state route and its first worker call in one commit
 could have the scheduler, whose `WORKER_IMAGE_REFS` picks every new
@@ -947,12 +947,12 @@ PR 1464. Each took the recommendation:
 | Q4 unprotected heap | (a) register the key flagged `unprotected` and run |
 | Q5 reads | (a) they move too, and the role is removed entirely |
 | Q6 outage tolerance | (a) swarm-api minimum instances 2; the 30 s / 120 s timings stay |
-| Q7 cutover | (a) a per-tenant switch, dev first (`u-bogdan`, then `eng`, then all), then the role is removed |
+| Q7 cutover | (a) a per-tenant switch, dev first (`u-member`, then `eng`, then all), then the role is removed |
 
 The owner asked for all ten lanes of §6. Contract requests A, B and C (§5) were
 accepted with the design and are recorded in `docs/contract-change-requests.md`.
 
-**Q1. Which design closes #1457?**
+**Q1. Which design closes an earlier issue?**
 
 * (a) **B: the worker off direct Firestore, through attempt-signed swarm-api
   routes.** Recommended: it is the only option that closes every row of §1.3,
@@ -965,8 +965,8 @@ accepted with the design and are recorded in `docs/contract-change-requests.md`.
 **Q2. What ships before B lands?**
 
 * (a) **Phase 0 (derive, don't read) plus a MAC on `workspace_settings`.**
-  Recommended: it closes rows 1-3 and #1457's instance in a few lanes.
-* (b) Phase 0 only. #1457's instance stays open until B.
+  Recommended: it closes rows 1-3 and an earlier issue's instance in a few lanes.
+* (b) Phase 0 only. An earlier issue's instance stays open until B.
 * (c) Nothing interim.
 
 **Q3. Where do the state routes run?**

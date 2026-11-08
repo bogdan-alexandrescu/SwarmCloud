@@ -35,7 +35,7 @@ const MODE_WORDS: Readonly<Record<PluginMode, string>> = {
 }
 
 /**
- * NO EXPLANATORY PROSE ON THE SURFACE (Bogdan's console rule, 5 November
+ * NO EXPLANATORY PROSE ON THE SURFACE (the owner's console rule, 5 November
  * 2026; proseapp.tsx counts this page as config/plugins). Each explanation,
  * definition and "not known here, because" sits behind an (i), `InfoTip`,
  * beside the label it explains, or behind a status tick ("Not yet"); the tip

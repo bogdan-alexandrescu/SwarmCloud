@@ -1,6 +1,6 @@
 # Let SwarmCloud's visual QA past the CAPTCHA on an app you own
 
-CAPTCHA-BYPASS, part of #2058. Design:
+CAPTCHA-BYPASS. Design:
 [docs/design/visual-qa-any-app.md](../design/visual-qa-any-app.md) §2.5.
 For the **owner of the application** a QA target tests, and the workspace
 admin who registered the target.

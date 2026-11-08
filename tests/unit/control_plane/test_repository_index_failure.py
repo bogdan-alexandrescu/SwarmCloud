@@ -1,7 +1,7 @@
 """A repository whose index runs fail says why, and the poll stops re-running it (INDEX-FAIL).
 
-Operator QA p14 (2026-10-13): in tenant u-bogdan the poll re-queued an index
-run of sagaxyz/ai-studio every 15 minutes, every one ending "repository clone
+Operator QA p14 (2026-10-13): in tenant u-owner the poll re-queued an index
+run of peer-org/peer-app every 15 minutes, every one ending "repository clone
 failed ... remote: Repository not found. fatal: Authentication failed",
 while the Repositories card showed only "no index" / "indexing now". What is
 held here:

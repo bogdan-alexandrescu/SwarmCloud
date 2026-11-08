@@ -4,7 +4,7 @@
 //   admin-shell-02  at 390 the identity and its copy control ran past the
 //                   card to x=461 and the page scrolled sideways; then, kept
 //                   in the card, its first run was cut and hid the key
-//   admin-shell-18  at 1440 the identity was cut twice, `sw…u-bogdan@ex…`
+//   admin-shell-18  at 1440 the identity was cut twice, `sw…u-owner@ex…`
 //
 // Read through `cascade` (cssgate.ts), which weighs media conditions and
 // specificity as a browser does; jsdom's own getComputedStyle does neither.
@@ -20,13 +20,13 @@ import { textPx } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
-const SA = 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com'
+const SA = 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com'
 
 afterEach(cleanup)
 
 describe('admin-shell-02: at 390 the identity stays inside the card', () => {
   it('wraps the row, so the copy control takes the next line rather than the page edge', () => {
-    render(<TenantIdent value={SA} noun="service account" tenant="u-bogdan" phone />)
+    render(<TenantIdent value={SA} noun="service account" tenant="u-owner" phone />)
     const row = document.querySelector('.ten-ident-row')!
     const ident = row.querySelector('.ten-ident')!
     // MUTATION: leave the row `inline-flex` with no wrap: its minimum is the
@@ -44,7 +44,7 @@ describe('admin-shell-02: at 390 the identity stays inside the card', () => {
   const VALUE_COLUMN_390 = 186
 
   for (const [tenant, key] of [
-    ['u-bogdan', 'u-bogdan@'],
+    ['u-owner', 'u-owner@'],
     ['eng', 'eng@'],
     ['smoke', 'smoke@'],
   ] as const) {
@@ -53,7 +53,7 @@ describe('admin-shell-02: at 390 the identity stays inside the card', () => {
       render(<TenantIdent value={value} noun="service account" tenant={tenant} phone />)
       const segs = [...document.querySelectorAll('.ten-ident .ten-seg')]
       // MUTATION: drop the <wbr> before the key in `TenantIdent`: the run
-      // `swarm-agent-worker-u-bogdan@` is 235px in 186 and is cut to
+      // `swarm-agent-worker-u-owner@` is 235px in 186 and is cut to
       // `swarm-agent-worker-…` on every card, the key gone.
       expect(segs.map((s) => s.textContent)).toContain(key)
       for (const seg of segs) {
@@ -66,7 +66,7 @@ describe('admin-shell-02: at 390 the identity stays inside the card', () => {
 
 describe('admin-shell-18: at 1440 the identity is whole, wrapped in its domain', () => {
   it('wraps the prefix and the key as whole runs and the domain where it must', () => {
-    render(<TenantIdent value={SA} noun="service account" tenant="u-bogdan" phone={false} />)
+    render(<TenantIdent value={SA} noun="service account" tenant="u-owner" phone={false} />)
     const row = document.querySelector('.ten-ident-row')!
     const ident = row.querySelector('.ten-ident')!
     const head = ident.querySelector('.ten-ident-head')!
@@ -82,7 +82,7 @@ describe('admin-shell-18: at 1440 the identity is whole, wrapped in its domain',
     // AND THE DOMAIN IS WHOLE (visual QA pass 2, admin-shell-18): it wraps
     // on its own line rather than being cut. MUTATION: put back
     // `text-overflow: ellipsis` and `white-space` unset on the tail, and the
-    // address reads `u-bogdan@example-proj…` at 1440.
+    // address reads `u-owner@example-proj…` at 1440.
     expect(painted(tail, 'flex', WIDE)).toBe('0 1 auto')
     expect(painted(tail, 'max-width', WIDE)).toBe('100%')
     expect(painted(tail, 'white-space', WIDE)).toBe('normal')

@@ -52,7 +52,7 @@ from .conftest import (
 )
 from .fakes import FakeFirestore
 
-SERVICE = "ci-runner@saga-agents-staging.iam.gserviceaccount.com"
+SERVICE = "ci-runner@example-project.iam.gserviceaccount.com"
 ALICE = "alice@example.com"
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -498,7 +498,7 @@ def test_claude_accounts_are_own_and_borrowed_never_a_group_pool(client, seeded,
 
 def test_each_claude_account_carries_its_name_and_nothing_else_new(
         client, seeded, pool) -> None:
-    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, BGD): 'Your Claude
+    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, the owner): 'Your Claude
     accounts' rebuilds each account by allow-list, so the Name the broker
     serves never reached it. Each now carries `display_name` -- the Name, or
     None for an account without one -- and nothing else new."""
@@ -660,7 +660,7 @@ def test_a_display_name_that_breaks_a_rule_is_422_with_its_code(client, seeded) 
 #
 # Measured 2026-10-19 on SwarmCloud: GET /v1/profile served default_workspace
 # {"tenant_id": "eng", "source": "profile"}, yet a request with no X-Swarm-Tenant
-# acted in u-bogdan, so a console link to an eng task opened in the personal
+# acted in u-owner, so a console link to an eng task opened in the personal
 # workspace and the task was "not found". The production context (build_context)
 # never handed the Authenticator its preferences, so `_with_default` returned at
 # its first line. These go through build_context, as production does.
@@ -693,7 +693,7 @@ def test_clearing_the_saved_default_returns_to_the_personal_workspace(client, se
 
 # -- the time zone (TIMEZONE-SERVER, part of #2391) -----------------------------------
 #
-# BGD, 2026-10-26: a person's zone is kept in their server-side preferences, so
+# the owner, 2026-10-26: a person's zone is kept in their server-side preferences, so
 # it follows them to every browser and survives sign-out. Before this, the
 # console kept it in one browser's local storage (`swarm.timezone:<email>`).
 

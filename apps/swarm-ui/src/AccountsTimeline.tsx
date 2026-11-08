@@ -1,7 +1,7 @@
 /**
  * THE TIMELINE VIEW OF CAPACITY › ACCOUNTS (#2222, ACCOUNTS-TIMELINE).
  *
- * BGD, 2026-10-24 17:33Z: the page is proposal A, with a Table / Timeline
+ * owner, 2026-10-24 17:33Z: the page is proposal A, with a Table / Timeline
  * toggle beside the verdict whose Timeline draws every account the way
  * proposal B does (`docs/web-ui/mockups/accounts-b.html`, frames B1-B6). Table
  * is the default; the last choice is remembered per browser and rides in the
@@ -25,7 +25,7 @@
  * Table and the verdict use -- `forecastOf` above all, so the pace row and the
  * forecast under it cannot disagree with the Table's.
  *
- * PRESSING A LANE OPENS THE TABLE'S SIDE SHEET (BGD, 2026-10-25 10:05Z), the
+ * PRESSING A LANE OPENS THE TABLE'S SIDE SHEET (owner, 2026-10-25 10:05Z), the
  * whole screen on a phone, not proposal B's detail under the lane: the lane
  * only asks (`onChoose`), and Accounts.tsx `Pool` draws the one sheet both
  * views share. The opened lane stays marked under the sheet's scrim.
@@ -359,7 +359,7 @@ function statusOf(a: PoolAccount, scope: string | null, names: ReadonlyMap<strin
     }
   const dup = blocksOf(a).find(isDuplicateBlock)
   if (dup !== undefined) {
-    // Named only when the other registration is in this read (BGD, Q2):
+    // Named only when the other registration is in this read (owner, Q2):
     // another workspace's account is never named.
     const other = dup.duplicate_of ? names.get(dup.duplicate_of) : undefined
     return {
@@ -517,7 +517,7 @@ function Lane({
     <div className={cls} data-account={a.account_id}>
       <div className="acct-tl-words">
         <div className="acct-tl-namerow">
-          {/* THE LANE OPENS THE TABLE'S SIDE SHEET (BGD, 2026-10-25): a
+          {/* THE LANE OPENS THE TABLE'S SIDE SHEET (owner, 2026-10-25): a
               dialog-like panel over the page, not an expansion of this row. */}
           <button
             type="button"

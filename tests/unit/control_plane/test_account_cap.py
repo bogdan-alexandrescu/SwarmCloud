@@ -1,6 +1,6 @@
 """An account holds at most `max_agents` agents at once (#2222, POOL-ACCOUNT-CAP).
 
-BGD, 2026-10-24, "Per-account cap, staggered wake". `choose()` hands a new
+the owner, 2026-10-24, "Per-account cap, staggered wake". `choose()` hands a new
 agent the account with the most headroom, and headroom does not move until
 the next reading, so with nothing capping it every new agent went to the same
 account: at 10:38Z that day four of eng's six agents went to aieng-claude1 the
@@ -116,7 +116,7 @@ def test_a_malformed_stored_cap_takes_the_account_out_of_the_pool(broker):
 def test_a_full_account_is_skipped_and_the_next_one_is_chosen():
     # `aieng-claude1` has the most headroom, so only the cap can skip it.
     claude1 = _acct("aieng-claude1", five_hour=0.0, seven_day=0.30, holds=_holds(6))
-    team = _acct("saga-team", five_hour=0.05, seven_day=0.37)
+    team = _acct("org-team", five_hour=0.05, seven_day=0.37)
     assert claude1.headroom(NOW) > team.headroom(NOW)
     assert claude1.is_full(NOW)
     # MUTATION: dropping `not a.is_full(now)` from choose() hands out the seventh slot.
@@ -125,7 +125,7 @@ def test_a_full_account_is_skipped_and_the_next_one_is_chosen():
 
 def test_one_short_of_the_cap_is_still_offered():
     claude1 = _acct("aieng-claude1", five_hour=0.0, seven_day=0.30, holds=_holds(5))
-    team = _acct("saga-team", five_hour=0.05)
+    team = _acct("org-team", five_hour=0.05)
     assert choose([claude1, team], ENG, NOW).account_id == claude1.account_id
 
 
@@ -193,7 +193,7 @@ def test_the_listing_says_per_account_whether_it_can_take_an_agent_and_why_not()
     weekly = _acct("devops-main", seven_day=0.98, week_resets_in=timedelta(days=2))
     five = _acct("aieng-claude1", five_hour=0.99, seven_day=0.40,
                  five_resets_in=timedelta(minutes=45))
-    full = _acct("saga-team", holds=_holds(6))
+    full = _acct("org-team", holds=_holds(6))
     open_ = _acct("ai-eng-2", five_hour=0.04, seven_day=0.86)
 
     w = account_to_api(weekly, now=NOW)

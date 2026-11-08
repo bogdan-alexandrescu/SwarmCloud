@@ -1,7 +1,7 @@
 # Clone bundles: retired
 
 **Status: RETIRED 2026-10-11 (owner decision), after being built 2026-10-09
-for [#940](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/940).**
+for the per-SHA GCS clone-bundle project.**
 Every clone is a plain clone from the forge again. `clone_timed`'s
 `clone.source` is always `forge`. The worker no longer reads or writes a
 bundle, and it writes no head pointer.
@@ -17,7 +17,7 @@ measurement that ended it.
 
 **The measurement, 2026-10-11 10:20Z.** It covers seven days of `clone_timed`
 startup marks across 2,436 agents, 1,436 of them with a startup mark, taken
-with the `bundle-report` reader this change removes (posted on #940 that day):
+with the `bundle-report` reader this change removes (posted on the clone-bundle project that day):
 
 | source | n | failed | p50 s | p90 s | max s |
 |---|---|---|---|---|---|
@@ -31,20 +31,20 @@ The miss-then-forge fallback ran 0 times.
   against 4.69 s for `bundle+delta`.
 * **A pure bundle hit almost never happened**, n=1 in seven days. A pure hit
   needs the exact commit to be bundled already, and that turned out to be rare.
-  #940's acceptance bar of p50 under 5 s over at least 30 `bundle` steps could
+  The clone-bundle project's acceptance bar of p50 under 5 s over at least 30 `bundle` steps could
   not be met.
 * **What the bundles avoided is gone.** They existed to skip the 35-70 s
   egress stall that a fresh Cloud Run instance hit on its first connect to
   github.com: a median 36.6 s connect against 1.7 s of transfer
-  ([incident](incidents/2026-10-06-clone-connect-stall.md), §1). Since #939
-  moved the runner profiles to GKE Autopilot, a fresh pod's egress no longer
+  ([incident](incidents/2026-10-06-clone-connect-stall.md), §1). Since the GKE Autopilot migration
+  moved the runner profiles there, a fresh pod's egress no longer
   stalls. A bundle then costs an upload after every first clone and storage
   for every sha, and it buys a slower clone in return.
 
 **Revisit only with a new measurement.** If a backend's egress starts
 stalling again, `clone_timed`'s `connect_seconds` and `egress_ready`'s
 `egress_ready_seconds` will show it. That is the time to look at this again,
-and git history has the full implementation (PR #983).
+and git history has the full implementation.
 
 ---
 
@@ -89,7 +89,7 @@ suffixes expired the objects after 7 days.
   objects, and the storage tests now refuse any `age` Delete.
 * **Reports.** `scripts/egress_ready_report.py bundle-report` and
   `scripts/egress-ready-report.sh --clone-bundles` were removed. Nothing else
-  used them. The `report`, `window` and `next-token` subcommands, and #939's
+  used them. The `report`, `window` and `next-token` subcommands, and the GKE Autopilot migration's
   egress report, are unchanged.
 * **Tests.** The tests of the removed code were deleted. The clone tests
   stay, and `tests/unit/worker/test_clone_phase_trace.py` now also pins

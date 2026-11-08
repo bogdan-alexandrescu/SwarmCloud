@@ -164,7 +164,7 @@ def repository_key(value: Any) -> str | None:
 
 
 #: Where a workflow was started from, the one value the console words
-#: (`started_from` on every workflow read; BGD, 2026-11-04). Read off what the
+#: (`started_from` on every workflow read; the owner, 2026-11-04). Read off what the
 #: platform already writes on the step tasks, first match wins:
 #:
 #: * `schedule`: `metadata.schedule`, written only by `schedulefire`
@@ -892,7 +892,7 @@ def rerun_workflow_step(
 # A workflow's per-run MCP credentials, re-stored by its caller
 # --------------------------------------------------------------------------
 
-#: The re-store route (docs/design/registered-mcp-servers.md §4.10, BGD
+#: The re-store route (docs/design/registered-mcp-servers.md §4.10, the owner
 #: 2026-10-26). Its body carries credentials, so `main.UNCAPTURED_ROUTES`
 #: names it.
 MCP_CREDENTIALS_ROUTE = "/v1/workflows/{workflow_id}/mcp-credentials"
@@ -944,7 +944,7 @@ def restore_mcp_credentials(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Replace the workflow's per-run credential for each server the body
-    names; servers it does not name are untouched (§4.10, BGD 2026-10-26).
+    names; servers it does not name are untouched (§4.10, the owner 2026-10-26).
 
     A step that waited past its credential's expiry is PARKED
     CREDENTIAL_MISSING with `blocked_by[].credential == "mcp"`; the re-store

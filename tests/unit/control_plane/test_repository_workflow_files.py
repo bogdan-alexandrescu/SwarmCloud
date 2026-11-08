@@ -1,6 +1,6 @@
 """A registration's `workflow_files` switch (#2029, WF-APP-TOKEN).
 
-BGD, 2026-10-22 (decision 2): "Self-serve, per-repo opt-in": a switch on each
+the owner, 2026-10-22 (decision 2): "Self-serve, per-repo opt-in": a switch on each
 repository registration, off by default, set by the workspace's admin when the
 repository is added or later, and audited like `agents_may_file_issues`. A
 branch workflow runs with the repository's secrets before any merge hold,

@@ -1,6 +1,6 @@
 # User profile: one page that says who you are, where you work, what reaches your bell and which Claude accounts are yours
 
-**Status: designed 2026-10-18 (lane PROFILE-DESIGN, part of #1505); revised
+**Status: designed 2026-10-18 (lane PROFILE-DESIGN); revised
 2026-10-18 (lane PROFILE-DESIGN-B) for the owner's answers to §7, given on
 2026-10-17/18 in PR 1506's comments.** Nothing here is built. The owner
 approves this revision before any build lane starts. Two questions the answers
@@ -11,7 +11,7 @@ Every file and symbol cited below was read on 2026-10-18 at `6174f32`, and the
 ones this revision added were read at `8ab9f26`. Lines move, so each citation
 names the symbol; search for it.
 
-The owner's request (#1505, 2026-10-18): a **Settings › Profile** page with
+The owner's request (2026-10-18): a **Settings › Profile** page with
 four sections, all chosen by the owner:
 
 1. identity and workspaces, with a default workspace for the console and for
@@ -52,7 +52,7 @@ What the design settles, in one line each:
   workspace, member of a group through its address, and platform admin shown
   once. `workspace_role.py::role_in` computes them and serves one API field,
   `role: {name, source: "derived", via}`. Per-workspace roles come from a
-  separate design (#1518, lane ROLES-DESIGN). That build replaces the
+  separate design (lane ROLES-DESIGN). That build replaces the
   function's body and leaves the page alone (Q7, §4.2).
 * **The bell stays derived on read.** Preferences are a filter applied after
   the sources derive their items, and a reminder is a read mark that has aged
@@ -190,7 +190,7 @@ is exact: four pages hold four things, and four things have no page.
   (/settings/profile)" option in both `.github/ISSUE_TEMPLATE/bug_report.yml`
   and `feature_request.yml`, and the test's hand-written list. One lane makes
   all three (§6, PROFILE-NAV).
-* **Per-workspace roles are being designed elsewhere.** Issue #1518 (lane
+* **Per-workspace roles are being designed elsewhere.** an earlier issue (lane
   ROLES-DESIGN, running on 2026-10-18) introduces them. This design must not
   define roles, and must not leave the page knowing how today's roles are
   derived, or the roles build would have to edit it (§4.2, `role`).
@@ -546,7 +546,7 @@ Field rules, each with its reason:
   personal workspace and `{"name": "member", "source": "derived", "via": <group address>}`
   for a group. A platform admin is not a workspace role, so `role_in` never
   returns `admin`; `identity.platform_role` carries it. The roles build
-  (#1518) changes `role_in`'s body to read the assigned role, serves
+  changes `role_in`'s body to read the assigned role, serves
   `source: "assigned"`, and may serve any role name. The page renders
   `role.name` as given and `via` when present, and branches on neither. A
   page test renders an unknown name (`"maintainer"`) verbatim, so a new role
@@ -1058,7 +1058,7 @@ description names Settings › Profile).
 `gitidentity.py` (a stored name already passes `clean_name`), Terraform (Q1
 reuses an existing key), and `apps/common/swarm_common/`.
 
-**Amended 2026-10-19 (#1633, lane NAV-PROFILE).** The "Settings › Profile"
+**Amended 2026-10-19 (lane NAV-PROFILE).** The "Settings › Profile"
 link in the panel foot, above, is gone, with the other three `sk-pset`
 links. Owner decision that day ("All under Profile; Admin by role"):
 **Profile is the spine's first item**, under the Hive and above Submit,
@@ -1073,7 +1073,7 @@ Profile for all five, and the panel foot keeps the name, the admin tag,
 Sign out, the email and the theme toggle. Profile is not a `SECTIONS`
 entry, so the issue forms' "Where" list above is unchanged.
 
-**Amended 2026-10-20 (#1672, lane NAV-FOOT).** Owner request: Profile is
+**Amended 2026-10-20 (lane NAV-FOOT).** Owner request: Profile is
 no longer the spine's first item. It is the spine foot's **last** item,
 below Help, at desktop, collapsed and phone widths, with the same avatar
 and the same five-page panel. The first name in the panel foot's signed-in
@@ -1108,7 +1108,7 @@ See [`docs/web-ui/redesign.md`](../web-ui/redesign.md), *Changed,
 
 ### Request P1. No change to `apps/common/swarm_common/` for the user profile
 
-**Status:** PROPOSED by lane PROFILE-DESIGN, part of #1505, and confirmed by
+**Status:** PROPOSED by lane PROFILE-DESIGN, and confirmed by
 lane PROFILE-DESIGN-B after the owner's answers of 2026-10-17/18. Requests
 no change, so nothing is to be applied. It is recorded so no build lane adds
 one.
@@ -1121,7 +1121,7 @@ one.
   existing `git_identity` record of the dispatch block (P37), whose shape is
   unchanged.
 * **Roles are not a contract type here.** `workspace_role.py::role_in` is
-  swarm-api's. If the roles design (#1518) needs a role in the contract, it
+  swarm-api's. If the roles design needs a role in the contract, it
   files its own request.
 * **Notification topics are not a contract type.** They are swarm-api's and
   the console's, like the existing groups, and `test_ui_api_field_contract.py`
@@ -1167,7 +1167,7 @@ first, PROFILE-BELL tags `awaiting_input` with `waiting_step` and applies the
 reminder rule to it. If PROFILE-BELL lands first, it defines `waiting_step`
 with no source yet, and HW-NOTIFY's brief says to tag its source with it.
 
-**PROFILE-API and the roles build (#1518) meet at
+**PROFILE-API and the roles build meet at
 `workspace_role.py`.** PROFILE-API creates it with the derived roles. The
 roles build edits only that file's body (and its own files), never
 `profile.py` or `Profile.tsx`. Whichever is dispatched second is told the
@@ -1403,7 +1403,7 @@ other's state.
 | Q4 | Whose reminder period wins for a waiting step? | The person's when they chose one; the author's at "as set" (as recommended) | §4.6, PROFILE-BELL |
 | Q5 | Where does the display name come from? | **An editable name stored in the preferences document** (departs from the recommendation) | §4.4, PROFILE-STORE, PROFILE-NAMES-API, PROFILE-NAMES-UI |
 | Q6 | SwarmCloud API keys do not exist. What does the page do? | **Leave the row out**; connections are GitHub and the TypeSafe key only (departs) | §4.1, §4.2, PROFILE-PAGE |
-| Q7 | What is "my role" in a workspace? | **Per-workspace roles will be introduced by a separate design (#1518)**; this page shows today's derived role behind one seam (departs) | §4.2 (`role_in`, `role`), PROFILE-API |
+| Q7 | What is "my role" in a workspace? | **Per-workspace roles will be introduced by a separate design**; this page shows today's derived role behind one seam (departs) | §4.2 (`role_in`, `role`), PROFILE-API |
 | Q8 | May an admin see or change another person's preferences? | No: no admin route, no `?user=`, no preferences section on Admin › People | §4.3, PROFILE-API, PROFILE-NAMES-API |
 | Q9 | If the preferences cannot be read, what does a headerless request do? | 503 `preferences_unavailable`, saying how to name a workspace; nothing submitted; never a silent fallback | §4.5, PROFILE-DEFAULT, PROFILE-SC |
 | Q10 | Which workspaces does the GitHub summary cover? | Every workspace the person can act in, one row each, from one batched read (as recommended) | §4.2, PROFILE-API |
@@ -1420,7 +1420,7 @@ This narrows Q11's "one name everywhere" to **what is stored and what names a
 commit**. It does not change either: the stored name is still the whole name
 the person saved, and Q11 (a) still makes that whole name the agent's commit
 author. Only how the console **displays** a person changes (lane
-PROFILE-FIRSTNAME, part of #1505):
+PROFILE-FIRSTNAME):
 
 * `PersonName` (`apps/swarm-ui/src/PersonName.tsx`) prints the saved name's
   **first word** by default (`variant="first"`): split on whitespace only, so

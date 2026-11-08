@@ -249,6 +249,14 @@ class TaskCreate(StrictModel):
         # `validation.check_repository_url`, which WorkflowCreate calls too.
         return check_repository_url(value)
 
+    @model_validator(mode="after")
+    def _own_description(self) -> "TaskCreate":
+        # A single task's description (owner, 2026-11-07, part of #2688):
+        # the workflow's rule, the same function, refused rather than cut.
+        if "description" in self.metadata:
+            self.metadata = {**self.metadata, "description": _description(self.metadata["description"])}
+        return self
+
 
 class TaskBatchCreate(StrictModel):
     tasks: list[TaskCreate] = Field(min_length=1)
@@ -378,20 +386,29 @@ class MergePullRequest(StrictModel):
 MAX_AFTER_PRS = 10
 
 
-#: What a workflow is about (BGD, 2026-11-04): `metadata.description`, two or
+#: What a workflow is about (the owner, 2026-11-04): `metadata.description`, two or
 #: three sentences of plain text saying what the work is meant to deliver,
 #: and `metadata.feature`, `{title, url?}`, the feature it belongs to. The
 #: console's workflow page heads with both; `routes.workflows.workflow_about`
 #: serves them. Checked by `check_workflow_about`, which refuses rather than
 #: cuts: a description silently shortened says something its author did not.
 DESCRIPTION_MAX_CHARS = 600
+#: The most characters a NAME holds -- a workflow's `metadata.title` and
+#: `metadata.unit` (its label), and a single task's (owner, 2026-11-07, part
+#: of #2688: a name never wraps onto a second row of the console). Measured
+#: at 1440 pixels on fixture data: the Workflows list's name column holds 34
+#: characters of a name, the Agents list's 71; 34 rounded down to a multiple
+#: of 5. Refused, never cut (`service.refuse_long_names`); the detail belongs
+#: in `metadata.description`.
+NAME_MAX_CHARS = 30
+NAME_METADATA_KEYS = ("title", "unit")
 FEATURE_TITLE_MAX_CHARS = 120
 #: Who wrote `metadata.description`. Written by swarm-api, never taken from
 #: a caller: `submitter` when the submission carried one. A later lane's small-model
 #: fallback writes its own value, so the console can mark a generated one.
 DESCRIPTION_SOURCE_KEY = "description_source"
 DESCRIPTION_SOURCE_SUBMITTER = "submitter"
-#: The description in three labelled parts (BGD, 2026-11-06), each optional:
+#: The description in three labelled parts (the owner, 2026-11-06), each optional:
 #: `purpose`, one sentence saying why the work exists; `goals`, up to three
 #: short items it must achieve; `output`, one sentence saying what lands (a
 #: pull request, mock-up frames, a report). The console draws them as three
@@ -765,7 +782,7 @@ class CredentialCreate(StrictModel):
 
 #: What a feature whose state could not be read is served as. Never `false`:
 #: a caller that reads `false` stops offering the feature, which is the wrong
-#: answer Product Oracle's New run form gave its users on 2026-10-20 (#1748).
+#: answer a peer application's New run form gave its users on 2026-10-20 (#1748).
 FEATURE_UNKNOWN = "unknown"
 
 #: One feature's state on `GET /v1/tenants/me`.

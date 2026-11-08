@@ -13,8 +13,8 @@ WHAT IS HELD HERE
   about the run (invariant 10). The names are checked against the target at
   create, edit and every firing (qa-environments.md §7, QAENV-RUN).
 * A FIRING IS ONE WORK ITEM PER LEG, within the firing's room, its caps $80
-  a leg (BGD, 2026-10-26, for 132-flow legs), `max_concurrent` 2 and $160 a
-  day (BGD, 2026-10-23, Q9 (a)).
+  a leg (the owner, 2026-10-26, for 132-flow legs), `max_concurrent` 2 and $160 a
+  day (the owner, 2026-10-23, Q9 (a)).
 * A FIRING RUNS `:run` FOR ITS TARGET: one workflow, the schedule owner's,
   marked with the firing, its browser steps stamped `metadata.qa_target` and
   named in `qa_target_runs/{workflow_id}` exactly as the route's are.
@@ -148,10 +148,10 @@ def test_the_type_is_available_because_its_file_exists() -> None:
 
 def test_the_schedules_caps_are_80_a_leg_2_at_once_and_160_a_day() -> None:
     # QA run 5b (wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62;
-    # BGD set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933) for one leg, and on
+    # the owner set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933) for one leg, and on
     # 2026-10-23 (qa-environments.md §10, Q9 (a)) $40 a leg, max_concurrent 2 and
     # $160 a day: a firing is one work item per leg, so a two-leg app keeps "the
-    # daily firing plus one run-now" for both legs. On 2026-10-26 BGD raised the
+    # daily firing plus one run-now" for both legs. On 2026-10-26 the owner raised the
     # leg to $80: 132 flows at 2 widths at the bench median of $0.14 a flow run
     # are about $37 before capture, review and the report (QA-TRIPWIRE-MAC).
     # MUTATION: keep the 2026-10-23 per_run_usd=40 and this is (40, 160, 2).

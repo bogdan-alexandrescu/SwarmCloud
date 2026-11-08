@@ -96,7 +96,7 @@ the pool's `hard_limit` to the same value in the same transaction.
          +----------------------------> time
 ```
 
-### A pool account's 429 is the account's, not the tenant's (#2302)
+### A pool account's 429 is the account's, not the tenant's
 
 **Built 2026-10-25.** A 429 that names the subscription account it came from
 no longer halves the tenant. The worker's `rate-limit` report carries the pool
@@ -113,9 +113,9 @@ id and attempt: `quota_broker.main.ReportAccount`), and the broker
 
 *Why.* On 2026-10-25 one eng account's 429 at 04:40:57Z took the tenant from
 26 to 14, and the pool sat full with 100+ agents queued while the other
-accounts had room (saga-team 7-day 61%, aieng-claude1 59%). Climbing back is
+accounts had room (example-team 7-day 61%, aieng-claude1 59%). Climbing back is
 +1 per 20 clean calls, 720 of them, so one account's 5-hour window cost the
-tenant half its concurrency for hours; BGD reset it by hand at 06:25Z
+tenant half its concurrency for hours; [the owner] reset it by hand at 06:25Z
 ([runbook](runbooks/quota-throttled-tenant.md)). The account that was refused
 does not need the tenant halved to be kept from new work: its own window
 readings already withhold it (S15, `Account.assignable`), and the hold
@@ -162,7 +162,7 @@ for an account the tenant neither owns nor borrows even if the broker sent it.
 
 #### Incidents: how the console groups an account's events
 
-At phone width the page lists **incidents**, not events (BGD's pick of proposal
+At phone width the page lists **incidents**, not events ([the owner]'s pick of proposal
 D for the phone, 2026-10-25). The grouping is the console's, not the broker's:
 the broker serves events, and `incidentsOf` in
 `apps/swarm-ui/src/accountHealth.ts` groups each account's served events (the
@@ -316,7 +316,7 @@ container start and a slot to discover something the control plane already knew.
 
 **A key is not the only credential.** A tenant with no key of its own is
 admitted when an account in the pool can run the profile for it, and parks only
-when none can (#169). One function decides this,
+when none can. One function decides this,
 `apps/scheduler/scheduler/credentials.py`. Admission asks it, and so do the
 credential sweep that re-readies these parks and the Cloud Run Job's secret
 mount. The API no longer judges it at submission. An account can run a profile
@@ -340,7 +340,7 @@ the broker has none: 300 seconds for an account nobody has read lately, 900 for
 a paused one (`lifecycle._park_no_account`).
 
 **An account is withheld as a duplicate only on the provider's own identity**
-(#3046). Two pool accounts are one subscription only when both have a recorded
+. Two pool accounts are one subscription only when both have a recorded
 organisation **and** seat and the two match
 (`quota_broker.accounts.subscription_identity`). These are opaque digests of
 what the provider's token or profile answer named, and they do not change while
@@ -357,8 +357,7 @@ A withheld account's entry in the park's `accounts` block reads
 and Capacity › Accounts gives the same reason and kind. Neither ever shows the
 identity's value.
 
-**Every quota window binds every attempt, whatever its model class** (#1435,
-owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
+**Every quota window binds every attempt, whatever its model class** (owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
 2026-10-17). An account's headroom is the minimum over all its windows
 (`apps/quota-broker/quota_broker/accounts.py::Account._binding_remaining`), and
 no window is filtered by the step's class. An account whose `seven_day_opus`
@@ -383,7 +382,7 @@ mounts a secret the tenant does not have. Two sweeps handle this case:
   `PROVIDER_QUOTA_EXHAUSTED`, `PROVIDER_COOLDOWN` or `PROVIDER_OUTAGE` park to
   `READY`. The reconciler has no rule for parked agents. Without the guard pool,
   the sweep does not promote the agent early. It promotes it once
-  `next_eligible_at` has passed. Until the #171 review it did not promote it at
+  `next_eligible_at` has passed. Until the prewarm-sweep review it did not promote it at
   all, so the wait never ended.
 * **The credential sweep** handles a `CREDENTIAL_MISSING` park that a worker
   wrote on an agent the pool serves. That happens when the worker cannot reach
@@ -429,7 +428,7 @@ scheduler wake to notice.
 "strictly no early promotion", but it does more than that. This sweep is also
 the only code that returns these parks to `READY` once their instant has passed,
 so with it disabled, or with `PREWARM_MAX_AGENTS=0`, a quota-parked agent is
-never returned. That was found in the #171 review and is not fixed there.
+never returned. That was found in the prewarm-sweep review and is not fixed there.
 
 Early promotion needs the agent's `provider:{p}:tenant:{t}` pool. That pool's
 quota cap is what stops admission until the window actually reopens. An agent
@@ -437,7 +436,7 @@ without one is promoted only once its `next_eligible_at` has passed, and a park
 with no `next_eligible_at` at all is left where it is. See section 4 for why a
 tenant that runs on a pool account usually has no such pool.
 
-**A released account wakes the agents parked on a full pool** (#3042). An agent
+**A released account wakes the agents parked on a full pool**. An agent
 that found no free pool account parks for up to five minutes, because no clock
 says when another agent will give an account back. Every release closes the
 broker's hold record in `account_holds` with `released_at`, whether the agent
@@ -489,7 +488,7 @@ admin can reset the target, clamped to `configured_hard_max` and audited in
 [runbooks/quota-throttled-tenant.md](runbooks/quota-throttled-tenant.md).
 
 ```bash
-./scripts/api.sh PUT /admin/quota/anthropic/u-bogdan/adaptive-target \
+./scripts/api.sh PUT /admin/quota/anthropic/example-tenant/adaptive-target \
   '{"target": 40, "reason": "lent two more accounts"}'
 ```
 
@@ -553,7 +552,7 @@ changed for an existing account.
 
 
 
-**Every refusal on a limit says which value it applied, and why (#3047).** On
+**Every refusal on a limit says which value it applied, and why.** On
 24 October 2026 admission refused up to 48 steps on the provider concurrency
 limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
 recorded the limit applied: the adaptive target and the quota-derived limit are

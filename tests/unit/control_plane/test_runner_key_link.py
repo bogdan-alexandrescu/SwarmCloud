@@ -1,7 +1,7 @@
 """The runner-key link (docs/design/secrets-scopes.md §4, §6.2, §6.3, §11 Q8;
 lane SSC-LINKS, part of #2158).
 
-BGD, 2026-10-23 (Q8): a value arrives only through the console form a
+the owner, 2026-10-23 (Q8): a value arrives only through the console form a
 one-time link opens, or a terminal's --stdin; no route, tool or log takes or
 prints one. `POST /v1/tenants/me/credentials/links` mints the link to the
 runner-key form, and `POST /v1/tenants/me/credentials` consumes it.

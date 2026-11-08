@@ -792,7 +792,7 @@ class Reconciler:
         return report
 
     # ------------------------------------------------------------------
-    # The incremental pass (BGD, 2026-11-06)
+    # The incremental pass (the owner, 2026-11-06)
     # ------------------------------------------------------------------
     def _sweep_is_full(self) -> bool:
         """Full on an instance's first pass, then every `full_sweep_every` passes."""

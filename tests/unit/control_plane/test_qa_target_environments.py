@@ -1,5 +1,5 @@
 """A QA target's `environments[]` (docs/design/qa-environments.md §1.1-§1.4,
-lane QAENV-MODEL of §8; BGD's Q1 (a), 2026-10-23; part of #2136).
+lane QAENV-MODEL of §8; the owner's Q1 (a), 2026-10-23; part of #2136).
 
 What these tests hold, over the real app and the in-memory Firestore:
 

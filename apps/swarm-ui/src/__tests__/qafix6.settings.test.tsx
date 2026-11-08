@@ -20,7 +20,7 @@
 //   h. box 6343757522 -- the table stacks at 390.
 //
 // Item i (box 6343774758, People and API keys reading the same role) went with
-// Settings › API keys (CONSOLE-SMALL-FIXES, BGD 2026-10-25): Config › Secrets
+// Settings › API keys (CONSOLE-SMALL-FIXES, owner 2026-10-25): Config › Secrets
 // draws a key's actions from the API's `can_manage`, the role decision the API
 // already makes, and secrets.keyform.test.tsx holds that.
 //

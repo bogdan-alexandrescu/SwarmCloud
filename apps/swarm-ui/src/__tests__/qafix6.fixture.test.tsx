@@ -103,12 +103,12 @@ describe('b (box 6343763965; 6:flow-find-failure-desktop-01, -phone-02): the two
 })
 
 describe('c (box 6343775508; 6:task-007): the global and tenant pools count the leases the list holds', () => {
-  it('serves global and tenant:u-bogdan active as the LEASED-to-RUNNING task count', async () => {
+  it('serves global and tenant:u-owner active as the LEASED-to-RUNNING task count', async () => {
     const [tasks, cap] = await Promise.all([fixtureTasks(), loadCapacity()])
-    const holding = tasks.filter((t) => CONCURRENCY_STATES.has(t.state) && t.tenant_id === 'u-bogdan').length
+    const holding = tasks.filter((t) => CONCURRENCY_STATES.has(t.state) && t.tenant_id === 'u-owner').length
     expect(holding, 'no fixture task holds capacity').toBeGreaterThan(0)
     const pools = new Map(ok(cap, 'GET /v1/capacity').pools.map((p) => [p.name, p]))
-    for (const name of ['global', 'tenant:u-bogdan']) {
+    for (const name of ['global', 'tenant:u-owner']) {
       // MUTATION: type pool('global', 20, 5) again -> fails: 5 against the list's 7.
       expect(pools.get(name)?.active, `${name} counts other leases than the list holds`).toBe(holding)
     }
@@ -165,7 +165,7 @@ describe('f (6:overview-automate-015, -016 box 6343774039, -019 box 6343758363):
     const windows = accounts.map((a) => ({ id: a.account_id, w: a.windows.five_hour })).filter((x) => x.w !== undefined && x.w !== null && !x.w.reset)
     expect(windows.length, 'no account has an open five-hour window').toBeGreaterThan(1)
     for (const { id, w } of windows) {
-      // MUTATION: put overflow's five-hour reset back at 19h 43m -> fails on u-bogdan:overflow.
+      // MUTATION: put overflow's five-hour reset back at 19h 43m -> fails on u-owner:overflow.
       expect(ms(w?.resets_at) - clock, `${id}'s five-hour window resets outside five hours`).toBeLessThanOrEqual(5 * 3_600_000)
       expect(ms(w?.resets_at), `${id}'s open window reset before the clock`).toBeGreaterThan(clock)
     }

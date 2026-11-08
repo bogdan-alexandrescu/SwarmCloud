@@ -52,7 +52,7 @@ REPO = "https://github.com/octo/widgets.git"
 def _issue(number: int = 265) -> issue_mod.Issue:
     return issue_mod.Issue(
         repository="octo/widgets", number=number, title="Point a step at an issue",
-        state="open", author="bogdan", created_at="", url="", body="the body",
+        state="open", author="octocat", created_at="", url="", body="the body",
     )
 
 

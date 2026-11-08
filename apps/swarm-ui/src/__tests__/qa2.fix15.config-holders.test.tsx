@@ -8,7 +8,7 @@
 //                next step named by its done-state label over its failure.
 //                A "Next:" line names the task: "Fix GitHub access (Enable
 //                orgs failed)".
-//   cap2-08      under `?pool=provider:anthropic:tenant:u-bogdan` the filter
+//   cap2-08      under `?pool=provider:anthropic:tenant:u-owner` the filter
 //                drew the raw id and the head said `every tenant`.
 //   cap2-09      Accounting drift's head said "7 of 7 pools" and its foot
 //                "over 2 rows": two counts, neither named.
@@ -139,7 +139,7 @@ function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-02T10:00:00Z' }
 }
 
-function lease(n: number, pools: string[], tenant = 'u-bogdan'): LeaseRow {
+function lease(n: number, pools: string[], tenant = 'u-owner'): LeaseRow {
   return {
     lease_id: `lease_${String(n).padStart(10, '0')}`,
     task_id: `task_${String(n).padStart(10, '0')}`,
@@ -164,7 +164,7 @@ function lease(n: number, pools: string[], tenant = 'u-bogdan'): LeaseRow {
   } as LeaseRow
 }
 
-const RAW = 'provider:anthropic:tenant:u-bogdan'
+const RAW = 'provider:anthropic:tenant:u-owner'
 
 function board(): HoldersBoard {
   const leases = [lease(1, ['global', RAW]), lease(2, ['global']), lease(3, ['global'], 'eng')]
@@ -196,16 +196,16 @@ describe('cap2-08: the pool filter names the pool, and the head says it is filte
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
-    expect(visible(chip)).toContain('of pool anthropic · u-bogdan')
+    expect(visible(chip)).toContain('of pool anthropic · u-owner')
     expect(visible(chip), 'the chip still draws the raw pool id').not.toContain(RAW)
     expect(chip.querySelector(`[title="${RAW}"]`)).not.toBeNull()
     const text = visible(container)
-    expect(text).toContain('1 unreleased lease · 1 units held · anthropic · u-bogdan only')
+    expect(text).toContain('1 unreleased lease · 1 units held · anthropic · u-owner only')
     expect(text).not.toContain('every tenant')
   })
 
   it('a pool no loaded lease holds: the head reads 0 for that pool, never `every tenant`', async () => {
-    const other = 'provider:openai:tenant:u-bogdan'
+    const other = 'provider:openai:tenant:u-owner'
     window.history.replaceState(null, '', `/capacity/holders?pool=${encodeURIComponent(other)}`)
     const b = board()
     api.loadHolders.mockResolvedValue(ok({ ...b, pools: [...(b.pools ?? []), { name: other, active: 0 }] as unknown as Pool[] }))
@@ -218,9 +218,9 @@ describe('cap2-08: the pool filter names the pool, and the head says it is filte
       return el!
     }, WAIT)
     const text = visible(container)
-    expect(text).toContain('0 unreleased leases · 0 units held · openai · u-bogdan only')
+    expect(text).toContain('0 unreleased leases · 0 units held · openai · u-owner only')
     expect(text).not.toContain('every tenant')
-    expect(visible(empty)).toContain('No lease holds openai · u-bogdan right now')
+    expect(visible(empty)).toContain('No lease holds openai · u-owner right now')
     expect(visible(empty), 'the empty row draws the raw pool id').not.toContain(other)
     expect(empty.querySelector(`[title="${other}"]`)).not.toBeNull()
   })

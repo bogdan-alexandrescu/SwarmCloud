@@ -13,14 +13,14 @@
 > disk `emptyDir`s and the tool caches a 20 GiB PVC (§4), and every agent
 > profile but `mock` runs there.
 
-Two backends. As read on 2026-10-21 (system analysis, epic #1822), GKE
+Two backends. As read on 2026-10-21 (system analysis), GKE
 Autopilot runs nearly every agent and Cloud Run Jobs runs `mock` plus the
 fallback Jobs Terraform keeps for the profiles that moved. It got there one
 profile at a time: GKE Autopilot first existed for the three things Cloud Run
 cannot do, and, since contract request 53 (2026-10-08), for `claude-code`, the
 one thing Cloud Run did too slowly: start it (§4). Since contract request 63 (2026-10-10) `indexer` runs there too, the
-canary for #939: a new Cloud Run instance's internet path opens too slowly.
-Contract requests 64-66 (owner, 2026-10-10, #939 option A) move `generic`,
+canary for the GKE Autopilot migration: a new Cloud Run instance's internet path opens too slowly.
+Contract requests 64-66 (owner, 2026-10-10) move `generic`,
 `codex` and `merge` after it, for the same reason, so Cloud Run is left with
 `mock` and the two disabled profiles that cannot move (§4, item 6).
 
@@ -76,11 +76,11 @@ backend.
 | Profile | Image | Class | Backend | Provider |
 |---|---|---|---|---|
 | `mock` | `agent-runtime-base` | standard | Cloud Run Job | none |
-| `generic` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 64, #939 option A; its Cloud Run Jobs kept, idle, as the rollback) | none |
+| `generic` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 64, the GKE Autopilot migration's option A; its Cloud Run Jobs kept, idle, as the rollback) | none |
 | `claude-code` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 53; its Cloud Run Jobs kept, idle, until 2026-10-15 as the rollback) | anthropic |
-| `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, #939 option A; its Cloud Run Jobs kept, idle, as the rollback; available again since contract request 130, 2026-11-02) | openai |
+| `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, the GKE Autopilot migration's option A; its Cloud Run Jobs kept, idle, as the rollback; available again since contract request 130, 2026-11-02) | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
-| `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
+| `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for the GKE Autopilot migration; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
 | `claude-code-browser` | `agent-runtime-browser` | browser | **GKE Autopilot** (contract request 67: Cloud Run cannot size Chromium's `/dev/shm`) | anthropic |
 | `claude-code-lightpanda` | `agent-runtime-lightpanda` | standard | **GKE Autopilot** (contract request 127: born on GKE, so it has no Cloud Run rollback Job) | anthropic |
 
@@ -220,7 +220,7 @@ Reserved for:
    `cloud_run_fallback_profiles` in `terraform/infra/locals.tf`) is one line in
    `profiles.py`, the backend back to `CLOUD_RUN_JOB`, and a release.
 5. **`indexer`, for its internet path** (contract request 63, owner
-   2026-10-10, the canary for #939). A new Cloud Run instance's path to the
+   2026-10-10, the canary for the GKE Autopilot migration). A new Cloud Run instance's path to the
    internet opens a median 20.2 s after start (n=19) against a GKE pod's
    1.17 s (n=148), through the same Cloud NAT, and every index run starts by
    cloning. It moves alone, first; the other Cloud Run profiles that reach
@@ -229,7 +229,7 @@ Reserved for:
    node-side costs as `claude-code` above, and rolls back the same way: one
    line in `profiles.py` while `cloud_run_fallback_profiles` keeps its Jobs.
 6. **`generic`, `codex` and `merge`, for the same internet path** (contract
-   requests 64, 65 and 66, owner 2026-10-10, #939 option A, merged only after
+   requests 64, 65 and 66, owner 2026-10-10, the GKE Autopilot migration's option A, merged only after
    the indexer canary is measured). Each clones or calls GitHub or a provider
    API first; each keeps its Cloud Run Jobs, idle, as the rollback, and rolls
    back as `indexer` does. `merge` can move because it runs as the tenant's
@@ -269,7 +269,7 @@ Every pod carries:
   2 GiB) and HOME are outside that cap. So a `standard` pod on GKE gets 10 GiB,
   split 5 for the workspace + 3 for `/tmp` + 2 for HOME (CACHE-PVC,
   2026-10-15; it was 5 + 2 cache + 2 `/tmp` + 1 under CACHE-SCRATCH the same
-  day, 5 + 4 `/tmp` + 1 under #893, and 4 + 2 + 4 under contract request 53).
+  day, 5 + 4 `/tmp` + 1 under the first disk-split revision, and 4 + 2 + 4 under contract request 53).
   10 GiB is also the most Autopilot accepts for a general-purpose pod.
   `browser` gets 10 GiB: 4 workspace + 3 `/tmp` + 3 HOME (CACHE-PVC; the
   owner's 4 + 2 + 2 of 2026-10-07 plus the cache's 2 GiB, given back one each
@@ -286,7 +286,7 @@ Every pod carries:
   its reason (`evicted: EmptyDir volume "tmp" exceeds 3Gi; largest at
   10:41:12Z: /tmp/pgdata 2.1 GiB, ...`), and so in the agent's last_error and
   the attempt's error. They come from the worker's last scratch reading
-  (`reconciler/detect.py` `scratch_report`, issue #2436), which is at most one
+  (`reconciler/detect.py` `scratch_report`), which is at most one
   heartbeat old, because kubelet evicts with no grace period and the worker
   cannot report at the moment of eviction. Big scratch data -- databases,
   test logs, unpacked browsers, downloads -- belongs under `$TMPDIR`, on the
@@ -324,7 +324,7 @@ be a bad trade.
 A pod of the one `live_browser` profile, `claude-code-browser` (contract
 request 71), is the only pod with two containers
 ([`docs/design/live-browser.md`](design/live-browser.md) §3.1, §8.2, §8.3;
-lane L5 of #1030). The second, `display`, runs Xvfb, the platform's headed
+lane L5 of the live-browser design). The second, `display`, runs Xvfb, the platform's headed
 Chromium and the live gate, which a person in the console watches through and
 takes control with. `GkeJobDispatcher._manifest` builds every pod as above and
 then, for that profile only, hands it to `with_live_display`
@@ -423,7 +423,7 @@ A GKE attempt's `execution_name` is `<namespace>/<job>`
 (`swarm-tenant-eng/swarm-918a848f969e406389fd-1`), and it is that on both
 writes: the dispatcher records the string it rendered, and the worker's
 `record_attempt_start` writes the same string, which the Job hands it as
-`SWARM_EXECUTION_NAME`. GKE injects no Job name into a pod, so before #1804 a
+`SWARM_EXECUTION_NAME`. GKE injects no Job name into a pod, so before the execution-name fix a
 GKE worker recorded its pod's HOSTNAME (`swarm-<task>-<gen>-<5 chars>`, no
 namespace) over the dispatcher's record; the gate then asked the cluster for a
 Job of the pod's name and called live agents gone, and cancel's probe could not

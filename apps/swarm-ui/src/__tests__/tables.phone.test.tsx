@@ -29,7 +29,7 @@ vi.mock('../api', async (importOriginal) => {
 
 const { RunFiles } = await import('../RunFiles')
 
-const URI = 'gs://swarm-artifacts/tenants/eng/tasks/tsk_charts/attempts/att_1/checkpoints/ckpt-00001/'
+const URI = 'gs://swarm-artifacts-example-project/tenants/eng/tasks/tsk_charts/attempts/att_1/checkpoints/ckpt-00001/'
 
 function agentRun(): AgentRun {
   return {

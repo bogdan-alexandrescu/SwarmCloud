@@ -1,7 +1,7 @@
 """The membership store wired into a deployment's authenticator, approvals
 writing through it, and `/v1/workspace/roles` naming a membership
 selection (docs/design/join-requests.md §4.4, §4.5; lane JOIN-WIRE, part of
-#2325; BGD's answers to JOIN-RESOLVE's questions 0 and 1, 2026-10-26).
+#2325; the owner's answers to JOIN-RESOLVE's questions 0 and 1, 2026-10-26).
 
 Every app here is built by `deps.build_context`, the factory a deployment
 uses, over the in-memory Firestore: before this lane it built the

@@ -20,7 +20,7 @@
 // and read again, never decided on blind.
 //
 // Beside the plan, the planner's design docs and diagrams, as `GET
-// /v1/runs/{id}` serves them in `planner_documents` (BGD, 6 November 2026:
+// /v1/runs/{id}` serves them in `planner_documents` (owner, 6 November 2026:
 // "Serve them on the run"): by name, size and the planner task's own artifact
 // route, never bytes in the run. Each is drawn under the designs' rule, in an
 // iframe with an EMPTY sandbox from `srcDoc`: the doc is read through

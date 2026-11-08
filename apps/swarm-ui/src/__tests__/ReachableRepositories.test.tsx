@@ -1,5 +1,5 @@
 // "REPOSITORIES SWARMCLOUD MAY REACH AS YOU", OUT OF ACCESS.TSX
-// (GITHUB-ACCESS-PAGE; part of #2157). BGD put the list on Config ›
+// (GITHUB-ACCESS-PAGE; part of #2157). owner put the list on Config ›
 // Repositories, so it is its own exported component, unchanged in behaviour:
 // the same card, the same rows in the same order (failures first), the same
 // cells and the same actions it drew on Work › Access. access.page.test.tsx,
@@ -44,7 +44,7 @@ describe('ReachableRepositories', () => {
     vi.resetModules()
     const { ReachableRepositories } = await import('../ReachableRepositories')
     render(<ReachableRepositories grants={GRANTS as never} onChange={vi.fn()} />)
-    // MUTATION: retitle the card (it is the name BGD gave the Repositories section).
+    // MUTATION: retitle the card (it is the name owner gave the Repositories section).
     expect(screen.getByRole('heading', { level: 2, name: 'Repositories SwarmCloud may reach as you' })).toBeTruthy()
     const grid = screen.getByRole('list', { name: 'Your granted repositories, failures first' })
     // MUTATION: sort by name only (drop grantRank from the sort).

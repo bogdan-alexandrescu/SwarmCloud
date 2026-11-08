@@ -195,14 +195,14 @@ def test_single_tasks_are_ordered_by_their_own_state_age():
 
 
 def test_the_blocks_come_in_the_order_of_each_blocks_closest_workflow():
-    """`eng` is listed first and holds the newest, but `u-bogdan` holds the
+    """`eng` is listed first and holds the newest, but `u-owner` holds the
     workflow closest to finish: its block comes first, and inside each block
     the progress order holds."""
     entries = [
         _entry("wf_1", 0, 3, 50, "eng"),
-        _entry("wf_2", 2, 3, 50, "u-bogdan"),
+        _entry("wf_2", 2, 3, 50, "u-owner"),
         _entry("wf_3", 1, 3, 50, "eng"),
-        _entry("wf_4", 1, 3, 70, "u-bogdan"),
+        _entry("wf_4", 1, 3, 70, "u-owner"),
     ]
     assert [e["workflow_id"] for e in sc.group_by_workspace(entries)] == ["wf_2", "wf_4", "wf_3", "wf_1"]
 
@@ -233,7 +233,7 @@ def test_every_running_workflow_is_read_eight_at_a_time_and_listed_closest_first
 
 def test_sc_workflows_prints_progress_the_current_step_and_the_medians(monkeypatch):
     entry = {
-        "workflow_id": "wf_1", "workspace": "u-bogdan", "label": "gate", "state": "RUNNING", "age_seconds": 5400,
+        "workflow_id": "wf_1", "workspace": "u-owner", "label": "gate", "state": "RUNNING", "age_seconds": 5400,
         "console": "https://console.test/w/wf_1", "current_steps": [],
         "progress": {"done": 3, "total": 5, "fraction": 0.6, "age_seconds": 720, "ahead": [],
                      "current": [{"step_id": "review", "task_id": "t", "state": "RUNNING",
@@ -248,7 +248,7 @@ def test_sc_workflows_prints_progress_the_current_step_and_the_medians(monkeypat
     args = types.SimpleNamespace(json=False, width=240, color="never", ascii=True, session_start=False)
     sc.cmd_workflows(types.SimpleNamespace(tenants_mine=lambda: []), args, out)
     line = next(l for l in out.getvalue().splitlines() if "wf_1" in l)
-    assert line.startswith("  [u-bogdan] wf_1  gate  RUNNING  3/5  now: review 12m  p50 20m  eta ~18m"), line
+    assert line.startswith("  [u-owner] wf_1  gate  RUNNING  3/5  now: review 12m  p50 20m  eta ~18m"), line
     assert "console: https://console.test/w/wf_1" in out.getvalue()
 
 
@@ -287,7 +287,7 @@ def _js_group(tmp_path, entries: list[dict]) -> list[str]:
 
 
 def test_run_js_groups_and_orders_exactly_as_the_bridge(tmp_path):
-    entries = [_entry(f"wf_{n:02d}", n % 4, 4, (n * 53) % 17 * 60, ("eng", "u-bogdan", "ops")[n % 3])
+    entries = [_entry(f"wf_{n:02d}", n % 4, 4, (n * 53) % 17 * 60, ("eng", "u-owner", "ops")[n % 3])
                for n in range(24)]
     shuffled = entries[7:] + entries[:7]
     bridge = [e["workflow_id"] for e in sc.group_by_workspace(shuffled)]

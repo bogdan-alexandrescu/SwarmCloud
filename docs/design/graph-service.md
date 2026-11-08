@@ -1,7 +1,6 @@
 # One shared graph service for every agent runtime, instead of a snapshot per pod
 
-**Status: built on `main` except staging's removal (recorded 2026-10-27,
-part of #1384).** Written 2026-10-16 as a design (lane GS-DESIGN). Of §11's
+**Status: built on `main` except staging's removal (recorded 2026-10-27).** Written 2026-10-16 as a design (lane GS-DESIGN). Of §11's
 lanes, GS-MEASURE, GS-CORE, GS-TICKET, GS-INDEXDOC, GS-PUSHAPI,
 GS-SETTING, GS-SVC, GS-HOOKS, GS-SHIM, GS-PACK, GS-INFRA and GS-WORKER have
 landed. GS-INDEXDOC departs from §11: the repo-index document is a third
@@ -19,9 +18,9 @@ workspace still stages. What remains:
   every attempt has run on `service` for 14 days (§8.2 step 6), so it waits
   on the widening.
 
-The owner's decisions of 2026-10-15 (~17:15 PDT, recorded in #1384's body)
+The owner's decisions of 2026-10-15 (~17:15 PDT, recorded in an earlier issue's body)
 are taken as given and are marked **(owner)**. Every other choice below was
-the design lane's, is marked **(proposed)**, and is listed in §12; #1384's
+the design lane's, is marked **(proposed)**, and is listed in §12; an earlier issue's
 comments record the owner's answers.
 
 It extends [knowledge-graph.md](knowledge-graph.md) §5 and
@@ -840,7 +839,7 @@ own credential, and their own index under their own prefix (decision 3).
   "poll and push", and becomes the default for new registrations once the
   receiver is live. `poll` still means poll only, and `off` still means
   neither.
-* **Interval.** `min_change_interval_minutes` (default 120 since #2524, was 30; range 10-1440)
+* **Interval.** `min_change_interval_minutes` (default 120 since an earlier issue, was 30; range 10-1440)
   applies to pushes as well. Otherwise a busy default branch would queue a
   run per merge. Q4 asks whether the default should drop to 10 now that
   pushes arrive promptly.
@@ -1152,7 +1151,7 @@ them before its lane starts.
   * Alternative: an IAP-exempt path on swarm-api's load balancer.
   * Alternative: no receiver, with the poll at 1 minute instead.
 * **Q4, the change interval for pushes.** Keep the default 30 minutes, or
-  lower the default to 10. **Superseded (BGD, 2026-10-27, #2524): the default went the
+  lower the default to 10. **Superseded (the owner, 2026-10-27): the default went the
   other way, to 120 minutes**, to cut index runs (845 in one week).
 * **Q5, warming. DECIDED (owner, 2026-10-15): warm on first sight, with no
   new IAM** (§5.4). Pub/Sub was the doc's first recommendation and is not

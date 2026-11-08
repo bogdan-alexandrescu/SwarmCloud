@@ -1,10 +1,10 @@
 """The gate lets one IdP token path through, after its own sign-in (QA-IDP-POST; part of #2067).
 
-BGD decided on 2026-10-23: a QA target may carry an admin-set `idp_token_path`
+the owner decided on 2026-10-23: a QA target may carry an admin-set `idp_token_path`
 on its approved `extra_origin`, and the live gate lets exactly
 `POST <extra_origin><idp_token_path>` through, once its own sign-in has
 begun (since 2026-11-03, whatever that sign-in's verdict: part of #2688,
-test_qa_idp_token_production_legs). An app that refreshes its SSO token after sign-in (AI Studio,
+test_qa_idp_token_production_legs). An app that refreshes its SSO token after sign-in (A peer application,
 Keycloak's `/protocol/openid-connect/token`) otherwise renders signed out.
 Every other non-GET to the extra origin, and to any other non-target origin,
 is refused exactly as before. Held here, read with an attacker's lens:

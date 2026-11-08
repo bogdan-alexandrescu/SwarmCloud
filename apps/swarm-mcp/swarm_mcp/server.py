@@ -298,6 +298,19 @@ _RETRY_OF_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: A task's name and its description (#2688): the name fits one row of the
+#: console, the detail goes in the description.
+_LABEL_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": f"A short name, for the UI: at most {workflows.NAME_MAX_CHARS} characters.",
+}
+_DESCRIPTION_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "What this task is for, and the detail its short `label` leaves out: plain text, at most "
+        f"{workflows.DESCRIPTION_MAX_CHARS} characters, shown on the console's agent page."),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -314,7 +327,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "ref": {"type": "string", "description": "As `ref` for one task."},
         "infer": {"type": "boolean", "default": False, "description": "As `infer` for one task."},
         "strategy": {"type": "string", "enum": list(_DISPATCH_STRATEGIES), "default": "collect"},
-        "label": {"type": "string", "description": "A short name, for the UI."},
+        "label": _LABEL_SCHEMA,
+        "description": _DESCRIPTION_SCHEMA,
         "inputs": _INPUTS_SCHEMA,
         "files": _FILES_SCHEMA,
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
@@ -326,7 +340,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
-_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "description",
+                     "inputs", "files",
                      "mcp_credentials", "additional_repositories", "model_class", "retry_of")
 
 #: Why `tasks` takes no `publish_to_pr` (#2183, PTP-DISPATCH): a pull request's
@@ -491,7 +506,8 @@ TOOLS: list[dict[str, Any]] = [
                         "`integrate` is a workflow strategy; use swarm_workflow."
                     ),
                 },
-                "label": {"type": "string", "description": "A short name, for the UI."},
+                "label": _LABEL_SCHEMA,
+                "description": _DESCRIPTION_SCHEMA,
                 "inputs": _INPUTS_SCHEMA,
                 "files": _FILES_SCHEMA,
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
@@ -3361,7 +3377,7 @@ def _refuse_a_repeat_dispatch(client: Any, signature: tuple, *,
     TWO REPEATS ARE LET THROUGH, and each is answered as a retry: the dict
     returned names the earlier task and is recorded on the new one.
       * The earlier task ended FAILED or CANCELLED before any attempt started
-        (the Product Oracle session, 6 November 2026: the reconciler failed
+        (a peer application's session, 6 November 2026: the reconciler failed
         its task before it ran, and re-sending the work was refused). Nothing
         of it ran, so sending it again is not a duplicate.
       * The caller names the earlier task in `retry_of`: a deliberate retry.
@@ -3569,7 +3585,7 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]], rows: Any
     reply hands it back so a dispatched task gets a row without anyone asking
     for one. `sent` is `(task_id, label, task)` per task.
 
-    THE ROW MODE IS THE ATTACH'S (Product Oracle, 2026-11-06: a dispatch's
+    THE ROW MODE IS THE ATTACH'S (a peer application, 2026-11-06: a dispatch's
     rows said `summary` in a per-step project): `rows`, the call's own,
     outranks this project's saved layout and the plugin's `rows` option,
     exactly as `swarm_workflow_launch`'s does (`layout.row_mode`).
@@ -4152,6 +4168,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         if not isinstance(prompt, str) or not prompt.strip():
             raise SwarmError(f"{where} has no prompt. Nothing was sent")
         profile = catalogue.check(item.get("runner_profile") or "claude-code", where=where)
+        workflows.check_name(item.get("label"), field="label", where=where)
+        description = workflows.check_description(item.get("description"), where=where)
         inputs = catalogue.check_inputs(profile, item.get("inputs"), where=where)
         credentials = check_mcp_credentials(
             item.get("mcp_credentials"), (inputs or {}).get("mcp_servers"), where=where
@@ -4195,6 +4213,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             strategy=strategy,
             additional_repositories=additional,
             model_class=model_class,
+            description=description,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -4706,7 +4725,7 @@ def _workflow_spec_tool(args: dict[str, Any]) -> dict[str, Any]:
     answered as its OUTLINE, digest and ref -- never every prompt
     (LAUNCH-LARGE-SPEC, #2875).
 
-    Measured 2026-10-31 (product-oracle-2f): a 24-step spec with ~90 KB of
+    Measured 2026-10-31 (peer-app-2f): a 24-step spec with ~90 KB of
     prompts answered 86,506 characters here, over Claude Code's tool-output
     limit, and the /sc:swarmcloud run that asked ended NOT_SUBMITTED. The
     bridge holds the spec under `spec_ref`; the reply names each step's prompt
@@ -5508,6 +5527,10 @@ def _call(
         # `claude-code` is told which names exist instead of reading a 4xx. See
         # `profiles.check` for why a local check here is not a second opinion.
         profile = catalogue.check(args.get("profile") or "claude-code", where="swarm_dispatch")
+        # ITS NAME AND ITS DESCRIPTION (#2688): a label that fits one row of
+        # the console, and the workflow's description rule, before any send.
+        workflows.check_name(args.get("label"), field="label", where="swarm_dispatch")
+        description = workflows.check_description(args.get("description"), where="swarm_dispatch")
         # The inputs this profile DECLARES, and nothing else, refused by name
         # before anything travels (#142).
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
@@ -5569,6 +5592,7 @@ def _call(
             **({"additional_repositories": additional} if additional is not None else {}),
             **({"model_class": model_class} if model_class is not None else {}),
             **({"publish_to_pr": publish_to_pr} if publish_to_pr is not None else {}),
+            **({"description": description} if description is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -6200,10 +6224,10 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
-            # Nor a description or a feature (BGD, 2026-11-04).
+            # Nor a description or a feature (the owner, 2026-11-04).
             description=fields.get("description"),
             feature=fields.get("feature"),
-            # Nor its three-part about (BGD, 2026-11-06).
+            # Nor its three-part about (the owner, 2026-11-06).
             about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
@@ -6212,7 +6236,7 @@ def _call(
                                   name=fields["title"] or fields["label"],
                                   publish_to_pr=publish_to_pr)
         # A step on claude-code-large is sent as written and answered with a
-        # warning naming the medium profile (BGD, 2026-11-06); no key without one.
+        # warning naming the medium profile (the owner, 2026-11-06); no key without one.
         warnings = workflows.large_step_warnings(fields["steps"])
         if not territory and not checks and not warnings:
             return reply

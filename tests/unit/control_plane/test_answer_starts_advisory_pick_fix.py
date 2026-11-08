@@ -30,7 +30,7 @@ import pytest
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 OWNER = "alice@example.com"
 WORKFLOW = "wf_lane"
 MERGE = "task_merge"

@@ -38,7 +38,7 @@ def submit(client, user: str, **body):
         ("backend", "GKE_AUTOPILOT"),
         ("cpu", 64),
         ("memory_gib", 512),
-        ("service_account", "someone-elses-sa@project.iam.gserviceaccount.com"),
+        ("service_account", "someone-elses-sa@example-project.iam.gserviceaccount.com"),
         ("secrets", ["ANTHROPIC_API_KEY"]),
         ("env", {"ANTHROPIC_API_KEY": "sk-stolen"}),
         ("spot", True),
@@ -420,14 +420,14 @@ def test_require_auth_false_is_refused_rather_than_silently_ignored(monkeypatch)
     serve an unauthenticated request."""
     from swarm_api.settings import ApiSettings
 
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("REQUIRE_AUTH", "false")
     with pytest.raises(ValueError) as exc:
         ApiSettings.from_env()
     assert "REQUIRE_AUTH" in str(exc.value)
 
     monkeypatch.setenv("REQUIRE_AUTH", "true")
-    assert ApiSettings.from_env().project_id == "saga-agents-staging"
+    assert ApiSettings.from_env().project_id == "example-project"
 
 
 # -- a tenant record is a reference, not a provisioning act ----------------
@@ -440,7 +440,7 @@ def test_a_self_service_tenant_points_at_the_names_provisioning_uses(client, db)
     submit(client, "carol")
     stored = db.docs["tenants/u-carol"]
     assert stored["service_account"] == (
-        "swarm-agent-worker-u-carol@saga-agents-staging.iam.gserviceaccount.com"
+        "swarm-agent-worker-u-carol@example-project.iam.gserviceaccount.com"
     )
     assert stored["namespace"] == "swarm-tenant-u-carol"
     assert stored["gcs_prefix"].endswith("/tenants/u-carol")
@@ -452,10 +452,10 @@ def test_a_tenant_id_too_long_for_a_service_account_gets_no_guessed_one():
     point at a DIFFERENT tenant's identity as soon as two ids shared a prefix."""
     from swarm_api.store import derived_service_account
 
-    short = derived_service_account("eng", project_id="p")
-    assert short == "swarm-agent-worker-eng@p.iam.gserviceaccount.com"
+    short = derived_service_account("eng", project_id="example-project")
+    assert short == "swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
 
-    assert derived_service_account("a" * 12, project_id="p") is None, (
+    assert derived_service_account("a" * 12, project_id="example-project") is None, (
         "31 characters: refused rather than truncated into a collision"
     )
 

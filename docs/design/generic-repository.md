@@ -1,6 +1,6 @@
 # A generic SwarmCloud repository, and the cutover to a fresh one
 
-**Status:** design, for the owner's approval. Part of #2688. Nothing here has been applied.
+**Status:** design, for the owner's approval. Part of the Day One install program. Nothing here has been applied.
 **Written:** 2026-11-07, against `main` at `cbfb443`.
 **Decision it serves:** the owner's, 7 November 2026: the SwarmCloud repository holds **nothing specific to a company, a person or a live deployment**, so it can be public and reused by anyone.
 

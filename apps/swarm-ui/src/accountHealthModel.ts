@@ -189,7 +189,7 @@ export const UNREAD_WHY = "The broker could not read this account's health recor
  * own answer that the provider refused the credential, so an account whose
  * health is null (not served, or unread on this read) still reads as needing
  * re-auth. It lives here, not in the page, so `worstFirst` sorts that row
- * first and the tiles, the list and the phone's cards agree (BGD, 2026-10-26,
+ * first and the tiles, the list and the phone's cards agree (owner, 2026-10-26,
  * #2391). Its figures stay dashes with their reason: the state says nothing
  * about counts.
  */
@@ -434,7 +434,7 @@ export function served7d(pool: PoolHealth): number {
 // Incidents (proposal D's rule; docs/quota-management.md "Incidents")
 // ---------------------------------------------------------------------------
 
-// THE RULE IS accountHealth.ts's `incidentsOf` (BGD, 2026-10-25): the account
+// THE RULE IS accountHealth.ts's `incidentsOf` (owner, 2026-10-25): the account
 // sheet's Health section and this page group events by one function, so the
 // phone's cards and the sheet cannot disagree about where an incident starts
 // or whether it is open. This page only names each incident's account.

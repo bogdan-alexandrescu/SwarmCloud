@@ -128,15 +128,17 @@ SETTINGS_COLLECTION = "workspace_settings"
 SETTING_FIELD = "judgment_backend"
 AUDIT_JUDGMENT_SET = "judgment_backend_set"
 
-#: The internal decision API by its TAILNET NAME, over https, as a judging pod calls
-#: it: the pod's hostAliases entry resolves the name to JUDGE-NET's egress
-#: Service, which passes TLS through, so the API's own certificate verifies
-#: (owner decision 2026-10-15, #1380). The only value INTERNAL_DECISION_API_URL
-#: may hold besides "" (off): the jev wrapper accepts exactly this host, so a
-#: second spelling here would be one the wrapper refuses. Restates
-#: `scheduler.judgment.INTERNAL_DECISION_ORIGIN`;
+#: The variable that carries the internal decision API's TAILNET NAME, read at
+#: the call: a judging pod calls the API at `https://<name>`, its hostAliases
+#: entry resolving the name to JUDGE-NET's egress Service, which passes TLS
+#: through, so the API's own certificate verifies (owner decision 2026-10-15,
+#: #1380); swarm-api sends it as SNI and Host (`pinned_transport`). The only
+#: origin INTERNAL_DECISION_API_URL may hold besides "" (off). terraform/infra/
+#: locals.tf renders it from `tailscale_egress_target`; NO DEFAULT, because the
+#: name identifies one deployment (owner decision 2026-11-07, part of #2688).
+#: Restates `scheduler.judgment.DECISION_API_TAILNET_NAME_ENV`;
 #: tests/unit/control_plane/test_dispatch_judgment.py holds them equal.
-INTERNAL_DECISION_ORIGIN = "https://decision-api-staging.taile0bda9.ts.net"
+DECISION_API_TAILNET_NAME_ENV = "SWARM_DECISION_API_TAILNET_NAME"
 
 NO_EGRESS = ("the tailnet egress to the decision API is not enabled on this platform "
              "(INTERNAL_DECISION_API_URL is unset)")
@@ -147,6 +149,11 @@ NO_KEY = ("no TypeSafe key resolves for you in this workspace: set your own key,
 NO_ROUTE = ("swarm-api has no route to the decision API: the tailnet egress's internal "
             "load balancer is not rendered (INTERNAL_DECISION_API_ADDRESS is unset)")
 UNREACHABLE = "the decision API's internal load balancer did not answer"
+#: The internal backends are on (INTERNAL_DECISION_API_URL set) but the name
+#: is not rendered: refused, never a call to a guessed host.
+NAME_UNSET = ("the internal decision API is enabled (INTERNAL_DECISION_API_URL is set), but "
+              "SWARM_DECISION_API_TAILNET_NAME is unset or not one <host>.<tailnet>.ts.net name: "
+              "the internal judgment backends are refused until the platform renders it")
 
 
 #: Each reason sentence above as the code the live read's `browser.jev.reason`
@@ -156,7 +163,7 @@ UNREACHABLE = "the decision API's internal load balancer did not answer"
 #: with no load balancer address or one that does not answer; `no_key` when
 #: TypeSafe has no key.
 UNAVAILABLE_CODES = {NO_EGRESS: "no_route", NO_KEY: "no_key",
-                     NO_ROUTE: "no_route", UNREACHABLE: "no_route"}
+                     NO_ROUTE: "no_route", UNREACHABLE: "no_route", NAME_UNSET: "no_route"}
 
 # -- swarm-api's own calls (jev-contract.md section 4.1, Q1) ---------------------
 
@@ -229,16 +236,23 @@ def route_address(raw: str | None = None) -> str | None:
     return value if address.version == 4 and address.is_private and not address.is_loopback else None
 
 
-def _internal_origin(internal_url: str) -> str | None:
-    """`https://<tailnet name>` from INTERNAL_DECISION_API_URL, or None for
-    anything else: no port, no path, no credentials -- the forwarder dials the
-    name on 443 and nothing else."""
+def decision_api_tailnet_name(raw: str | None = None) -> str:
+    """The decision API's tailnet name from SWARM_DECISION_API_TAILNET_NAME,
+    read at the call, never at import; "" when it is unset or not one MagicDNS
+    name."""
+    value = (os.environ.get("SWARM_DECISION_API_TAILNET_NAME", "") if raw is None else raw).strip()
+    return value if _TAILNET_HOST.fullmatch(value) else ""
+
+
+def _internal_origin(internal_url: str, name: str) -> str | None:
+    """`https://<name>` when INTERNAL_DECISION_API_URL is exactly that origin,
+    or None for anything else: another host, a port, a path, credentials --
+    the forwarder dials the one name on 443 and nothing else."""
     parts = urllib.parse.urlsplit((internal_url or "").strip().rstrip("/"))
     if parts.scheme != "https" or parts.path or parts.query or parts.fragment or \
             parts.username or parts.password or parts.port is not None:
         return None
-    host = parts.hostname or ""
-    return f"https://{host}" if _TAILNET_HOST.fullmatch(host) else None
+    return f"https://{name}" if name and parts.hostname == name else None
 
 
 def resolve_call_backend(backend: str, *, internal_url: str, address: str | None,
@@ -258,7 +272,12 @@ def resolve_call_backend(backend: str, *, internal_url: str, address: str | None
         if not key:
             return NoBackend(name, UNAVAILABLE_CODES[NO_KEY], NO_KEY)
         return CallBackend(name, TYPESAFE_URL, TYPESAFE_MODEL, stringify_state=False, key=key)
-    origin = _internal_origin(internal_url)
+    if not (internal_url or "").strip():
+        return NoBackend(name, UNAVAILABLE_CODES[NO_EGRESS], NO_EGRESS)
+    tailnet_name = decision_api_tailnet_name()
+    if not tailnet_name:
+        return NoBackend(name, UNAVAILABLE_CODES[NAME_UNSET], NAME_UNSET)
+    origin = _internal_origin(internal_url, tailnet_name)
     if origin is None:
         return NoBackend(name, UNAVAILABLE_CODES[NO_EGRESS], NO_EGRESS)
     pinned = route_address(address or "")
@@ -603,10 +622,16 @@ def stored_backend(doc: Mapping[str, Any] | None) -> str:
     return value if isinstance(value, str) and value in BACKENDS else DEFAULT_BACKEND
 
 
-def availability(*, internal_enabled: bool,
-                 typesafe_key: bool) -> dict[str, tuple[bool, str | None]]:
-    """Each backend -> (available, why not). Pure, so the matrix is a test."""
-    internal = (True, None) if internal_enabled else (False, NO_EGRESS)
+def availability(*, internal_enabled: bool, typesafe_key: bool,
+                 tailnet_name: str | None = None) -> dict[str, tuple[bool, str | None]]:
+    """Each backend -> (available, why not). Pure given `tailnet_name`, so the
+    matrix is a test; None reads SWARM_DECISION_API_TAILNET_NAME."""
+    if not internal_enabled:
+        internal: tuple[bool, str | None] = (False, NO_EGRESS)
+    elif not decision_api_tailnet_name(tailnet_name):
+        internal = (False, NAME_UNSET)
+    else:
+        internal = (True, None)
     return {
         INTERNAL_JEV: internal,
         INTERNAL_LAYA: internal,
@@ -619,7 +644,8 @@ def unavailable_code(backend: str, *, internal_enabled: bool, typesafe_key: bool
 
     Read off `availability`, the one table that restates the dispatcher's
     condition (`scheduler.judgment.jev_dispatch` sends JEV_API_URL to an
-    internal backend only when INTERNAL_DECISION_API_URL is set), so the
+    internal backend only when INTERNAL_DECISION_API_URL and
+    SWARM_DECISION_API_TAILNET_NAME are set), so the
     console and the dispatcher cannot disagree on it (JEV-OFF, #1345)."""
     available, reason = availability(internal_enabled=internal_enabled,
                                      typesafe_key=typesafe_key)[backend]

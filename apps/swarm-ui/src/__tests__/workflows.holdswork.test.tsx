@@ -1,4 +1,4 @@
-// ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026: "why do I have so
+// ONLY WHAT STILL HOLDS WORK (the owner's pick, 6 November 2026: "why do I have so
 // many needs me in the console and a ton of question marks even beside
 // completed workflows?"). A question counts for Needs you and the list's "?"
 // only while its workflow has not finished, or while a merge is held on the

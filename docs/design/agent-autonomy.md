@@ -1,13 +1,13 @@
 # Agent autonomy: from a prompt to a merged and deployed change, inside SwarmCloud
 
 **Status: DESIGN, not built.** Lane AUTONOMY-DESIGN, 2026-10-22, part of
-#1933. The implementation lanes are §6. The owner answered this design's
+An earlier issue. The implementation lanes are §6. The owner answered this design's
 questions on 2026-10-22 (~05:42Z, recorded on task_08e785ae3e9949d6b86b); each
 answer is written where its question was, as "Owner decision, 2026-10-22", and
 §7 lists them with the few questions still open. Nothing here changes
 behaviour until a lane in §6 builds it.
 
-**The request (BGD, 2026-10-22 ~04:45Z):** "also make sure we include in this
+**The request (the owner, 2026-10-22 ~04:45Z):** "also make sure we include in this
 plan the changes required to our agent runtimes so they can access github, the
 api and all the other mandatory or optional but needed dependencies and
 capabilities to be able to run independently from this session or from claude
@@ -17,10 +17,10 @@ end from prompt to merge and deploy".
 Two designs are built on this one, and §6 plans the lanes of all three:
 
 * the schedule type that is the first user of all of it, `failure-review`,
-  [failure-review.md](failure-review.md) (BGD's request (1));
+  [failure-review.md](failure-review.md) (the owner's request (1));
 * visual QA of **any** web application, its findings filed as issues in that
   application's repository, [visual-qa-any-app.md](visual-qa-any-app.md)
-  (BGD's request (3)).
+  (the owner's request (3)).
 
 **What "independent" means here.** An agent started by a schedule, an issue
 run, another agent, or a person in the console reaches a merged and deployed
@@ -92,7 +92,7 @@ path.
 | 6 | file an issue, comment on one | **missing** for an agent; **exists** for the platform | no swarm-git tool writes issues; swarm-api does through `forgewrite.GitHubWriter.create_issue` (:579) and `create_comment` (:504), from `observer`, `ci_flake_hunter`, `release_health`, `cost_report`, `epic_triage`, `cifix`, `issuesync`; the worker posts review minors on the findings epic (`agent_worker/forge.py`, :1065) |
 | 7 | push a branch mid-run | **exists** | `git_push_branch` (`swarm_api/gittools.py` `_push`, :837), only to the derived `swarm/<id>` branch (`push_policy`, :341), never forced |
 | 8 | open a PR | **exists** (at the end) | the worker's `_publish_git` (`agent_worker/lifecycle.py`, :11507) opens it from `pr-title.txt` and `pr-body.md` with `forge.open_pull_request` (`agent_worker/forge.py`, :780); no tool opens one mid-run |
-| 9 | push `.github/workflows` files | **missing** | the tenant slot has no `workflow` scope (no such row in [git-tokens.md](../git-tokens.md) §5.1), GitHub refuses the push, surfacing as `remote_rejected` (`swarm_api/gitexec.py`, :663); an issue run's plan naming such a file is refused `WORKFLOWS_PATH` ([schedules.md](../schedules.md) §4.4); lanes write `workflow-lines.patch` and the operator pushes it by hand. The brief records SwarmCloud lanes ending SUCCEEDED with the file unpushed; `PUBLISH_FAILED_FIELD` (#872, `lifecycle.py` :12046) is meant to fail a refused push, and whether it caught those lanes was not measured here |
+| 9 | push `.github/workflows` files | **missing** | the tenant slot has no `workflow` scope (no such row in [git-tokens.md](../git-tokens.md) §5.1), GitHub refuses the push, surfacing as `remote_rejected` (`swarm_api/gitexec.py`, :663); an issue run's plan naming such a file is refused `WORKFLOWS_PATH` ([schedules.md](../schedules.md) §4.4); lanes write `workflow-lines.patch` and the operator pushes it by hand. The brief records SwarmCloud lanes ending SUCCEEDED with the file unpushed; `PUBLISH_FAILED_FIELD` (`lifecycle.py` :12046) is meant to fail a refused push, and whether it caught those lanes was not measured here |
 | 10 | read its own tenant's SwarmCloud state (agents, workflows, events, results, artifacts, the stored log tail) | **missing** | `write_mcp_config` gives the agent `playwright`, `jev`, `swarm-git`, `swarm-search`, `swarm-graph` and relayed registered servers (`agent_worker/runners/claude_code.py` `write_mcp_config`, :799); the read routes (`routes/tasks.py` `/events` :623, `/artifacts` :759, `/logs` :938, `/questions` :1061) need a person's scope; the only attempt-scoped reads are `/v1/attempts/{id}/context/inflight` and `/context/graph` (`routes/attemptcontext.py`) |
 | 11 | read Cloud Logging for its tenant's attempts | **missing** | nothing in `apps/` reads Cloud Logging (no `google.cloud.logging`, `entries:list` or `logadmin`); swarm-api's account holds only `roles/logging.logWriter` among logging roles (`terraform/modules/iam/bindings.tf`, `telemetry_roles`) |
 | 12 | dispatch child agents | **exists** | the spool and `routes/children.py` (:90); at most 16 per parent (`settings.max_children_per_task`), depth 1 (`ChildDepthExceeded`), the parent's repository |
@@ -105,7 +105,7 @@ path.
 | 19 | toolchain: uv, gh, gcloud, git, node/npm, ripgrep | **exists** | `images/agent-runtime-base/Dockerfile`: uv 0.12.15 (:53), Node 24 with npm 11 (:47, :261-273), gcloud 587.0.0 (:582), gh 2.102.0 (:638), git and ripgrep (:243-257), terraform, checkov, shellcheck (:899) |
 | 20 | toolchain: `apps/swarm-ui` node_modules | **missing** | no image installs them; every UI agent runs `npm ci` itself, from the network, inside its own time limit |
 | 21 | toolchain: Playwright and browsers | **partial** | only `agent-runtime-browser` (Playwright 1.63.0, Chromium only, `images/agent-runtime-browser/Dockerfile` :43, :71-76), reached by `browser` and `claude-code-browser`; `claude-code` has none |
-| 22 | memory | **partial** | every code profile is `standard`, 8 GiB, request = limit (`swarm_common/profiles.py`); `large` (32 GiB) was reached by no profile until `claude-code-large` (the `large` class, 14,400 s, contract request 113, 2026-10-22) ([runner-sizes.md](runner-sizes.md) §4.1); #1926 made an OOM fail the agent at once and say so (`reconciler/memory.py`), it did not add memory |
+| 22 | memory | **partial** | every code profile is `standard`, 8 GiB, request = limit (`swarm_common/profiles.py`); `large` (32 GiB) was reached by no profile until `claude-code-large` (the `large` class, 14,400 s, contract request 113, 2026-10-22) ([runner-sizes.md](runner-sizes.md) §4.1); an earlier issue made an OOM fail the agent at once and say so (`reconciler/memory.py`), it did not add memory |
 | 23 | time | **partial** | `claude-code` is 7,200 s (`profiles.py`, `timeout_seconds=7200`), killed by the worker as "runner exceeded its 7200s timeout and was killed" (`lifecycle.py`, :3899, `EndCause.TIMEOUT`); three agents died there on 2026-10-22 |
 
 **What the operator's laptop does that no agent can (measured 2026-10-22).**
@@ -196,7 +196,7 @@ Today the tenant slot cannot, and [schedules.md](../schedules.md) §4.4 refuses
 such a plan outright (`WORKFLOWS_PATH`). The design keeps the agent
 credential-free and makes the push the broker's.
 
-**As decided by BGD on 2026-10-22 (#2029, lane WF-APP-TOKEN), superseding the
+**As decided by the owner on 2026-10-22 (lane WF-APP-TOKEN), superseding the
 `-git-wf` slot of Q3's first answer:**
 
 1. **The SwarmCloud GitHub App mints the token at push time.** swarm-api
@@ -206,7 +206,7 @@ credential-free and makes the push the broker's.
    OWN installation (its `forge_orgs` documents, never another tenant's and
    never an owner reached through a person's `method: pat`; invariant 9). It
    is minted fresh for each push and never cached, stored, logged or handed
-   to a worker, and lives at most an hour. BGD: "can we use the github app
+   to a worker, and lives at most an hour. The owner: "can we use the github app
    creds for this? This way we can point a similar job in the future at
    another project or repo."
 2. **Self-serve, per-repo opt-in.** A `workflow_files` switch on each
@@ -214,10 +214,10 @@ credential-free and makes the push the broker's.
    `platform: true` alone is not), set by the workspace's admin when the
    repository is added or later, each change an `admin_audit` entry
    (`repository_workflow_files_set`) in the same transaction, as for
-   `agents_may_file_issues`. BGD: "when adding a new repo to SwarmCloud, the
+   `agents_may_file_issues`. The owner: "when adding a new repo to SwarmCloud, the
    per-repo token is created for the new repo as well, self serve".
 3. **The `-git-wf` slot and IAM row L-2 are removed in the same lane**
-   (BGD chose this over removing them after a live proof). The release holds
+   (the owner chose this over removing them after a live proof). The release holds
    at `dev-iam` for the L-2 removal.
 4. **The App asks for "Workflows: Read and write".** CLD changes the App's
    settings at GitHub and each installation's owner accepts. An installation
@@ -278,9 +278,9 @@ theirs) and signed with the attempt key under **either of two proofs**:
   only the `child` purpose -- registered at `/child-key`, as every tenant not
   switched to the state routes does.
 
-**Owner decision, 2026-10-22 08:54Z (BGD): "Also accept the child-purpose
+**Owner decision, 2026-10-22 08:54Z (the owner): "Also accept the child-purpose
 proof (swarm-child-req/v1) on the read route".** Accepting only the state
-proof would have offered the reads to `u-bogdan` alone, and a failure-review
+proof would have offered the reads to `u-member` alone, and a failure-review
 agent in `eng` could not read the failures it reviews. The wider proof widens
 nothing else: either proof is verified against **this attempt's**
 registration for **its** purpose, over the path **with** its query, and every
@@ -330,8 +330,8 @@ window ≤ 24 h inside that agent's life. Results are capped at 200 entries and
 64 KiB, redacted.
 
 The IAM is the hard part, because the project is **shared**:
-`roles/logging.viewer` on `saga-agents-staging` would let swarm-api read the
-other team's `agents-staging` cluster logs. So:
+`roles/logging.viewer` on `example-project` would let swarm-api read the
+other team's `peer-cluster` cluster logs. So:
 
 * **A log view** on the project's `_Default` bucket, `swarm-workers`, whose
   filter admits only SwarmCloud's resources (`k8s_container` in namespaces
@@ -342,8 +342,8 @@ other team's `agents-staging` cluster logs. So:
   **on that view only** (the resource-level binding with the view name in its
   condition), not project-wide. Owner at dev-iam (§3.12). **Since
   2026-10-23 L-1 is applied by the owner's bootstrap
-  (`terraform/bootstrap/log_view_read.tf`), not by CI's release** (BGD's
-  decision, #1960): CI's dev-iam apply of it failed with "Error 403: The
+  (`terraform/bootstrap/log_view_read.tf`), not by CI's release** (the owner's
+  decision): CI's dev-iam apply of it failed with "Error 403: The
   caller does not have permission" (release run 39888771458), because the
   deployer's `roles/logging.configWriter` cannot set IAM on a log view.
 
@@ -359,12 +359,12 @@ exceeds the view filter nesting depth limit of 1.` Google's LogView reference
 allows a view filter only a logical AND of `=`/`!=` checks on the originating
 project, folder, organization or billing account, the resource type and the
 log id, so no view on `_Default` can select by cluster or namespace, and the
-other team's `agents-staging` cluster writes to that bucket. The view and the
+other team's `peer-cluster` cluster writes to that bucket. The view and the
 L-1 binding are therefore off (`swarm_workers_log_view_enabled`, default
 `false`, lane AU5-VIEWOFF), and `logs_query` answers `logs_unavailable`, its
-documented refusal, until the owner decides the redesign (#1933).
+documented refusal, until the owner decides the redesign.
 
-**Redesigned: a bucket of its own, fed by a sink (BGD, 2026-10-22, #1960).**
+**Redesigned: a bucket of its own, fed by a sink (the owner, 2026-10-22).**
 A sink filter takes the full query language where a view filter cannot, so
 the selecting moved to a sink. `terraform/infra/log_bucket.tf` creates the log
 bucket `swarm-worker-logs` in the project's region with 30-day retention and a
@@ -372,7 +372,7 @@ project sink, `swarm-worker-logs`, that routes
 into it only SwarmCloud's workers: `k8s_container` in the swarm cluster in
 namespaces `swarm-tenant-*`, and `cloud_run_job` named `swarm-job-*`. It never
 names the other team's cluster, not even to exclude it. The sink gets no IAM
-grant, so L-1 is the only IAM row: BGD decided on 2026-10-22 (#1960) to drop
+grant, so L-1 is the only IAM row: the owner decided on 2026-10-22 to drop
 the writer's `roles/logging.bucketWriter`, because Google authorizes a sink
 that writes a log bucket in its own project ("Route logs to supported
 destinations", Set destination permissions), as bootstrap's `workspace_apply`
@@ -461,7 +461,7 @@ question becomes **blocking** with `"blocking": true` on an item:
    **`HUMAN_REQUIRED`**, the frozen reason that is "promoted only by a person"
    (`swarm_common/states.py`), with `metadata.question_wait`. No lease, no
    tokens. The agent learns this from `expected_outputs.questions_line`, the
-   one sentence every claude-code and codex prompt carries: until #2180 it
+   one sentence every claude-code and codex prompt carries: until an earlier issue it
    named neither `blocking` nor `await-answers`, so a ci-fix agent that only
    asked failed `published_nothing` instead of parking
    (task_adb791a17d2e47d6985f).
@@ -515,7 +515,7 @@ acted on. `<option>` must be one of the question's option labels.
 
 ### 3.11 Memory and time (rows 22, 23)
 
-* **Memory.** #1926's measurement was 8 GiB OOMs on `claude-code`. There were
+* **Memory.** an earlier issue's measurement was 8 GiB OOMs on `claude-code`. There were
   two routes, both the owner's because both are spend: a runner-size version
   raising `standard` memory (Admin → Runner sizes, [runner-sizes.md](runner-sizes.md)
   §4.5, no contract change, every standard agent pays), or a new profile
@@ -545,12 +545,12 @@ acted on. `<option>` must be one of the question's option labels.
 | child kinds | `issue_run` (with `after_merged`), `workflow` (saved spec by name) | no |
 | park uses | `DEPENDENCY_INCOMPLETE` + `metadata.release_wait`; `HUMAN_REQUIRED` + `metadata.question_wait` | no |
 | registration field | `agents_may_file_issues` (admin-set, off by default; owner decision Q2) | no |
-| registration field | `workflow_files` (workspace-admin-set, off by default, audited; BGD 2026-10-22, #2029) | no |
+| registration field | `workflow_files` (workspace-admin-set, off by default, audited; the owner 2026-10-22) | no |
 | runner profile | `claude-code-large` (contract request 113, accepted by the owner, Q6) | no IAM; the contract change is accepted, lane AU-9 applies it |
 | Terraform | log view `swarm-workers` on `_Default` | **yes**, with L-1 |
-| **IAM L-1** | swarm-api's account: `roles/logging.viewAccessor` on the view `swarm-workers` only | **yes** (decided, Q4; applied by the owner). Since 2026-10-23 the owner applies it with `scripts/bootstrap.sh` (`terraform/bootstrap/log_view_read.tf`), not CI's release at `dev-iam`, whose apply of it 403'd (BGD's decision, #1960) |
-| ~~**IAM L-2**~~ | **Removed** (BGD, 2026-10-22, #2029): swarm-api's `secretmanager.secretAccessor` on `swarm-tenant-<platform tenant>-git-wf`. A workflow-file push uses an App installation token minted per push; no IAM row replaces it | **yes**, the removal holds at `dev-iam` |
-| ~~**secret**~~ | **Removed** (#2029): `swarm-tenant-<platform tenant>-git-wf` and `create-secrets.sh --git-wf` | no |
+| **IAM L-1** | swarm-api's account: `roles/logging.viewAccessor` on the view `swarm-workers` only | **yes** (decided, Q4; applied by the owner). Since 2026-10-23 the owner applies it with `scripts/bootstrap.sh` (`terraform/bootstrap/log_view_read.tf`), not CI's release at `dev-iam`, whose apply of it 403'd (the owner's decision) |
+| ~~**IAM L-2**~~ | **Removed** (the owner, 2026-10-22): swarm-api's `secretmanager.secretAccessor` on `swarm-tenant-<platform tenant>-git-wf`. A workflow-file push uses an App installation token minted per push; no IAM row replaces it | **yes**, the removal holds at `dev-iam` |
+| ~~**secret**~~ | **Removed**: `swarm-tenant-<platform tenant>-git-wf` and `create-secrets.sh --git-wf` | no |
 
 Visual QA of any app adds its own rows (a QA target's credential secret and
 its IAM, V-1 and V-2): [visual-qa-any-app.md](visual-qa-any-app.md) §7, and
@@ -717,10 +717,10 @@ and it ends with `scripts/changed-guards.sh` and `scripts/publish-scan.sh`.
   only own-login sign-in waits on its apply.
 
 **Lanes that need the owner at `dev-iam`:** AU-2 (L-2 and the `-git-wf`
-secret; both removed again by WF-APP-TOKEN, #2029, whose release holds at
+secret; both removed again by WF-APP-TOKEN, whose release holds at
 `dev-iam` for the removal), AU-5 (L-1), VQ-3 (V-1, V-2 and the per-tenant QA secrets). AU-9
 edits the frozen contract under the owner's acceptance of request 113 (Q6).
-After the merges the owner also: (no `-git-wf` token any more, #2029;
+After the merges the owner also: (no `-git-wf` token any more;
 instead each App installation's owner accepts "Workflows: Read and write" and
 the workspace's admin switches `workflow_files` on where wanted), creates the `failure-review` schedule and
 switches its merge gate to `auto` through the audited switch (Q8). Any
@@ -742,7 +742,7 @@ Each is also written where its question was asked.
   `agents_may_file_issues`, the platform's own repository on).
 * **Q3 — workflow files.** Owner decision, 2026-10-22: "A -git-wf slot read
   only by swarm-api, platform repo only, merge held NEEDS_OWNER" (§3.3).
-  **Superseded later on 2026-10-22 by BGD (#2029):** the GitHub App mints a
+  **Superseded later on 2026-10-22 by the owner:** the GitHub App mints a
   per-push token for one repository with `contents` and `workflows` write,
   from the workspace's own installation; a per-repository `workflow_files`
   switch, off by default, set by the workspace's admin; the `-git-wf` slot

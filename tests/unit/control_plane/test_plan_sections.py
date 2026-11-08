@@ -1,5 +1,5 @@
 """A plan's approval sections: purpose, why, changes, risk, validation and the
-change graph (BGD, 6 November 2026: "super quickly what the plan wants to do,
+change graph (the owner, 6 November 2026: "super quickly what the plan wants to do,
 why, whats going to change, where, and risk profiles plus test and qa plans
 for the validation part and diagrams or code graphs").
 

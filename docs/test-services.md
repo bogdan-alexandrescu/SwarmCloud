@@ -3,7 +3,7 @@
 For a repository whose tests need a database. Without a declaration, an
 agent's pre-publish `graph-pytest` check cannot run those tests: every test
 errors at setup on `127.0.0.1:5432`, the check reports `skipped`, and a broken
-test reaches CI uncaught (#1605: four product-oracle lanes on 2026-10-19).
+test reaches CI uncaught (four peer-app lanes on 2026-10-19).
 With one, the worker runs the database and the check judges the tests. The
 design, the owner's decisions and what each lane built are in
 [design/test-services.md](design/test-services.md); this page is what a
@@ -100,7 +100,7 @@ as if there were no file.
 **For the whole attempt, from right after the clone**, the worker runs the
 server with your databases created before it listens. The agent's own test
 runs while it works reach it at `127.0.0.1:5432`, which is where most
-fixtures already default to (product-oracle's `ORACLE_TEST_DATABASE_URL`
+fixtures already default to (peer-app's `ORACLE_TEST_DATABASE_URL`
 defaults there). The agent's environment does **not** carry the variables
 below; a test that reads only `DATABASE_URL`, with no default, finds the
 database during the pre-publish checks but not during the agent's turn.

@@ -1,7 +1,7 @@
 """A QA target's challenge bypass, the worker's and the gate's half
 (docs/design/visual-qa-any-app.md §2.5; lane CAPTCHA-BYPASS, part of #2058).
 
-BGD, 2026-10-23: a QA target may carry a challenge bypass its owner
+the owner, 2026-10-23: a QA target may carry a challenge bypass its owner
 configures, and only the gate applies it, only on the target's own origins.
 What these tests hold:
 

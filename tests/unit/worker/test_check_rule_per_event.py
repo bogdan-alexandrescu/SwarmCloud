@@ -7,7 +7,7 @@ the step spent a CI-fix round on a head that was already green and then
 refused `checks_failed` (#1999); #1778 is the same site with
 `(cancelled, success)`.
 
-Owner decision, BGD 2026-10-22: a required check is decided by the LATEST
+Owner decision, the owner 2026-10-22: a required check is decided by the LATEST
 run of each event that ran it (push, pull_request, any other). A re-run
 replaces the earlier runs of its own event; every event's latest run must be
 green. CI-EARLY's guarantee (#1694, test_ci_early.py) holds: a red push run is
@@ -211,7 +211,7 @@ def test_a_single_run_per_check_reads_no_workflow_runs(tmp_path):
 # No required check: every check, by the same rule (CHECK-RULE-2)
 # ---------------------------------------------------------------------------
 #
-# BGD, 2026-10-22, answering CHECK-RULE's second question: "Yes, one rule for
+# the owner, 2026-10-22, answering CHECK-RULE's second question: "Yes, one rule for
 # every check." With no required check the step holds on every check at the
 # head, and judged EVERY run of it, so a superseded failure, or a superseded
 # run still in progress, held the merge. Now each check is judged by the
@@ -302,7 +302,7 @@ def test_no_required_check_still_waits_on_an_events_latest_run_in_progress(tmp_p
 # A run GitHub concluded but left `in_progress` (CHECK-STUCK, part of #2031)
 # ---------------------------------------------------------------------------
 #
-# BGD, 2026-10-23: a check run that carries a conclusion AND a completed_at
+# the owner, 2026-10-23: a check run that carries a conclusion AND a completed_at
 # is judged by its conclusion, whatever `status` says. PR 2006's merge step
 # parked CI_PENDING 23 times and failed `checks_timeout` on `secret scan`,
 # which read `status: in_progress`, `conclusion: success`, `completed_at:

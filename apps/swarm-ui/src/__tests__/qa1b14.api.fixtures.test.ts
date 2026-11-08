@@ -42,7 +42,7 @@ describe('Account health draws the resets Accounts draws (QA1-FIX-01 capacity-04
     const board = ok(await api.loadAccountHealthBoard(), 'the health board')
     expect(board.health.kind).toBe('ok')
     const pool = board.health.kind === 'ok' ? board.health.pool : null
-    for (const [id, win] of [['u-bogdan:weekly-burn', 'seven_day'], ['u-bogdan:five-hour-floor', 'five_hour']] as const) {
+    for (const [id, win] of [['u-owner:weekly-burn', 'seven_day'], ['u-owner:five-hour-floor', 'five_hour']] as const) {
       const acct = board.page.accounts.find((a) => a.account_id === id)
       const health = pool?.accounts.find((a) => a.account_id === id)
       const resets = (acct?.windows as Record<string, { resets_at: string | null }> | undefined)?.[win]?.resets_at
@@ -60,7 +60,7 @@ describe('a never-admitted fixture agent (QA1 overview-agents-56, -58)', () => {
     // MUTATION: attempt_count 1 for READY -> fails.
     expect(task.attempt_count).toBe(0)
     // MUTATION: drop the waiting_for -> fails.
-    expect(task.waiting_for?.lead?.pool).toBe('provider:anthropic:tenant:u-bogdan')
+    expect(task.waiting_for?.lead?.pool).toBe('provider:anthropic:tenant:u-owner')
     expect(task.waiting_for?.lead?.state).toBe('full')
     const page = ok(await api.loadTaskEventsPage('task_950b8e4a', { order: 'asc' }), 'its events')
     // MUTATION: drop the submitted event -> the events read answers none.
@@ -74,7 +74,7 @@ describe('Submit and the runs fixtures (QA1-FIX-12, -22, -24)', () => {
   it('the issue preview names the capacity tenant and answers the merge step', async () => {
     const api = await apiAs(null)
     const p = ok(await api.loadIssuePreview('example-org/swarm#12'), 'the preview')
-    expect(p.tenant_id).toBe('u-bogdan')
+    expect(p.tenant_id).toBe('u-owner')
     expect(p.auto_merge).toEqual({ available: true, requires: '#295', reason: null })
   })
 
@@ -139,12 +139,12 @@ describe('/v1/tenants/me honours the pick (QA1-FIX-32 admin-shell-01)', () => {
     let api = await apiAs('platform-admin')
     chooseTenant('eng')
     const me = ok(await api.loadMe(), 'me as the admin')
-    // MUTATION: ignore the pick -> u-bogdan -> fails.
+    // MUTATION: ignore the pick -> u-owner -> fails.
     expect(me.tenant.tenant_id).toBe('eng')
     expect(me.tenant.namespace).toBe('swarm-tenant-eng')
     api = await apiAs(null)
     chooseTenant('eng')
-    expect(ok(await api.loadMe(), 'me as the member').tenant.tenant_id).toBe('u-bogdan')
+    expect(ok(await api.loadMe(), 'me as the member').tenant.tenant_id).toBe('u-owner')
   })
 })
 

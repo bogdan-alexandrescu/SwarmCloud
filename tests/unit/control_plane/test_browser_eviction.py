@@ -151,7 +151,7 @@ def seed_run(
              {"label": "periodic"}, generation=generation)
         emit(db, ids, "checkpoint_completed", at, {
             "checkpoint_id": f"ckpt-{seq:05d}",
-            "uri": f"gs://bucket/tenants/{ENG}/tasks/{ids['task']}/attempts/"
+            "uri": f"gs://swarm-artifacts-example-project/tenants/{ENG}/tasks/{ids['task']}/attempts/"
                    f"{ids['attempt']}/checkpoints/ckpt-{seq:05d}/",
             "size_bytes": size,
             "seq": seq,

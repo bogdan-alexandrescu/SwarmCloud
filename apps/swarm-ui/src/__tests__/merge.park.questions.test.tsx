@@ -1,7 +1,7 @@
 // A MERGE STEP HELD BY THE OWNER'S QUESTIONS IS DRAWN AS THOSE QUESTIONS, NOT
 // AS A BROWSER SIGN-IN (MERGE-PARK-QUESTIONS, #2313).
 //
-// BGD, 2026-10-25 ~07:38Z, on task_7ee2d99642c84dc0b3b2 (GA-MOVE-VIEWS'
+// owner, 2026-10-25 ~07:38Z, on task_7ee2d99642c84dc0b3b2 (GA-MOVE-VIEWS'
 // merge, held by 2 open questions): "why a merge step in a workflow needs to
 // use a browser agent and also needs user input to move forward?" The merge
 // (runner profile `merge`: git only, no browser) parks PARKED(HUMAN_REQUIRED)
@@ -84,7 +84,7 @@ function waiting(over: Partial<Waiting> = {}): Waiting {
       park_phase: 'owner_questions',
       questions: HELD,
       unreadable: 0,
-      who_may_answer: { submitted_by: 'bgd@example.com', admin: true, text: 'bgd@example.com, who launched workflow wf_7548, or an admin' },
+      who_may_answer: { submitted_by: 'owner@example.com', admin: true, text: 'owner@example.com, who launched workflow wf_7548, or an admin' },
     },
     history: [],
     history_read: true,
@@ -102,7 +102,7 @@ function mergeHeld(over: Partial<Task> = {}): Task {
     runner_profile: 'merge',
     workflow_id: 'wf_7548cc6f627f42769919',
     step_id: 'merge',
-    submitted_by: 'bgd@example.com',
+    submitted_by: 'owner@example.com',
     started_at: at(1),
     completed_at: null,
     result_summary: null,

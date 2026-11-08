@@ -1,4 +1,4 @@
-"""A text-only key per question (the follow-up BGD's overnight grant picked on 6 November 2026).
+"""A text-only key per question (the follow-up the owner's overnight grant picked on 6 November 2026).
 
 An implement step and its fix step often ask the same question with other
 option labels. `question_digests` hash the text and the options, so they tell

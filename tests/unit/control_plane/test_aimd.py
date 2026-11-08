@@ -413,8 +413,8 @@ def test_a_tenant_worker_in_this_project_is_authenticated_as_its_tenant():
         # The right name in an ATTACKER'S own project produces a genuine
         # Google-signed OIDC token. With the project unpinned it was authorized
         # as tenant `eng`, able to report rate limits and exhaustion for them.
-        "swarm-agent-worker-eng@evil-project.iam.gserviceaccount.com",
-        "swarm-t-eng@evil-project.iam.gserviceaccount.com",
+        "swarm-agent-worker-eng@example-shared-project.iam.gserviceaccount.com",
+        "swarm-t-eng@example-shared-project.iam.gserviceaccount.com",
         # Some other service account of this project, and a human.
         f"someone-else@{PROJECT}.iam.gserviceaccount.com",
         "swarm-agent-worker-eng@example.com",

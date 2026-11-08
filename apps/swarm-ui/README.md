@@ -51,7 +51,7 @@ pools are created at provisioning time.
 ## Fixtures are real
 
 `api.ts` ships the actual pool names and live values read from dev on
-2026-09-19, including `tenant:u-bogdan` at 40 against a configured 2 -- the
+2026-09-19, including `tenant:u-owner` at 40 against a configured 2 -- the
 out-of-band drift `make pool-check` found. A fixture showing a tidy platform
 teaches the wrong thing about what this screen is for.
 

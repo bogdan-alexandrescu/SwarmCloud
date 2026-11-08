@@ -159,7 +159,7 @@ SEED: dict[str, dict[str, Any]] = {
     "claude-sonnet-5": _seed(2.0, 10.0, 0.20),
     "claude-sonnet-4-6": _seed(3.0, 15.0, 0.30),
     "claude-haiku-4-5": _seed(1.0, 5.0, 0.10),
-    # The sonnet and haiku classes' pins (BGD, 6 November 2026), at the
+    # The sonnet and haiku classes' pins (the owner, 6 November 2026), at the
     # figures of the saved pricing page (_PAGE).
     "claude-sonnet-5-5": _published(2.0, 10.0, 0.10, 2.5),
     "claude-haiku-5-5": _published(0.10, 0.50, 0.01, 0.125, tiers=[

@@ -37,7 +37,7 @@ from swarm_api.validation import OWNER_ANSWERS_METADATA_KEY, RESERVED_METADATA_K
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 TASK = "task_q"
 OWNER = "alice@example.com"
 
@@ -372,7 +372,7 @@ def test_a_session_that_is_not_id_shaped_is_a_422_and_nothing_is_stored(client, 
 
 
 def test_an_answer_given_in_voice_it_is_stored_and_served_as_voice_it(client, db, objects) -> None:
-    """BGD's answer on the full-page interview lane, 6 November 2026 ('Add voice-it')."""
+    """the owner's answer on the full-page interview lane, 6 November 2026 ('Add voice-it')."""
     _asked(db, objects)
 
     response = _answer(client, {"question_index": 0, "choice": "per task", "via": "voice-it"})

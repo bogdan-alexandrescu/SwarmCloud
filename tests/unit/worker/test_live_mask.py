@@ -3,7 +3,7 @@
 docs/design/live-browser.md §5.3. Until 2026-10-25 this file held the mask
 (LB-L1): boxes over password fields, credential autocomplete kinds, text a
 `swarm_redaction` rule matched and the address bar, and the fail-closed
-blanks. BGD decided on 2026-10-25 that the live view shows the screen as
+blanks. the owner decided on 2026-10-25 that the live view shows the screen as
 drawn, in every situation, so those tests went with the painting
 (test_live_nomask.py holds the frame end to end). What is held here is what
 mask.py and capture.py still do:

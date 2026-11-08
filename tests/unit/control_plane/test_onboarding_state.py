@@ -477,7 +477,7 @@ def test_checks_of_another_token_or_tenant_are_not_this_callers() -> None:
 
 # -- app_installed ------------------------------------------------------------------
 
-INSTALL_URL = "https://github.com/apps/swarmcloud-saga/installations/new"
+INSTALL_URL = "https://github.com/apps/swarmcloud-app/installations/new"
 
 
 def app_token(**fields) -> GitTokenRecord:

@@ -51,7 +51,7 @@ afterEach(() => {
 const LA = 'America/Los_Angeles'
 
 describe('clockTime: one formatter for every start and submit time', () => {
-  // THE PERSON'S ZONE, UTC BY DEFAULT (TZ-CLOCKTIME, part of #2391; BGD,
+  // THE PERSON'S ZONE, UTC BY DEFAULT (TZ-CLOCKTIME, part of #2391; owner,
   // 2026-10-26). These read the setting (`timezone.ts`), never the browser's
   // clock: each test starts with nothing picked, so the zone is UTC.
   beforeEach(() => resetTimeZone())

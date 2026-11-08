@@ -467,7 +467,7 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
                  "--workdir", str(work / "repo")], "alwaysLoad": True}}
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
     # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then the
-    # implement step's lookup line (BGD, 2026-11-06), which takes the place of
+    # implement step's lookup line (the owner, 2026-11-06), which takes the place of
     # the exploration line's graph clause (LANE CAPS, part of #2524).
     assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
                               + claude_code.GRAPH_FIRST_NOTE + "\n\n"
