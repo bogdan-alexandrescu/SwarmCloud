@@ -44,7 +44,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
-const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
+const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: null as string | null }))
+const vadMock = vi.hoisted(() => ({
+  start: vi.fn(),
+  setMic: vi.fn(),
+  close: vi.fn(),
+  handlers: null as null | { onStart: () => void; onFrame: (f: ArrayBuffer) => void; onEnd: () => void },
+}))
 const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn(), loadVoiceVisuals: null as null | ReturnType<typeof vi.fn> }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -69,9 +75,23 @@ vi.mock('../AwaitInputCard', () => ({
   ),
 }))
 
-vi.mock('../fetch', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../fetch')>()),
-  write: fetchMock.write,
+vi.mock('../fetch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fetch')>()
+  return {
+    ...actual,
+    write: fetchMock.write,
+    // Settings' engine, when a test names one; every other read is the real one.
+    read: ((target, ...rest) =>
+      target.url === '/v1/voice/settings' && fetchMock.engine !== null
+        ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine } }, fetchedAt: Date.now() })
+        : actual.read(target, ...rest)) as typeof actual.read,
+  }
+})
+
+// Voice detection, faked: a test plays the gate's events and reads what the mic told it.
+vi.mock('../voice/vad', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../voice/vad')>()),
+  startVoiceDetection: vadMock.start,
 }))
 
 import { RESUME_KEY } from '../voice/Projects'
@@ -532,5 +552,296 @@ describe('the cards are seated by talk-pane.css', () => {
     const rules = css.split('\n').filter((l) => l.includes('.vt-card'))
     expect(rules.length).toBeGreaterThan(0)
     for (const r of rules) expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
+  })
+})
+
+// OUR OWN SPEECH ON THE TALK PAGE (docs/design/voice-it-own-speech.md §3.3,
+// §4, §7, §9; section 14, row U1).
+//
+//   * Settings' engine `own`: Start opens the mic and posts no offer, opens no
+//     peer, and a `speech` session opens the audio socket;
+//   * the machine's boot is phases with no prose: each done one a tick named
+//     for a reader, the current one in words; then the state word;
+//   * both sides are captioned from the socket: partials muted outside the log;
+//   * voice detection gates what is sent: its start, frames and end are the
+//     socket's utterance; mute and push-to-talk reach it;
+//   * no L4 at the start, or the engine down mid-session: text mode with one
+//     line and a close button, the microphone kept beside a text box;
+//   * the controls answer whole spoken phrases, and in text mode a Go is the
+//     held read-back's answer, not a turn;
+//   * a 422 for the offer is GPT-Live, which makes today's call.
+//
+// MUTATIONS: send the offer on our own engine; draw the boot as a sentence;
+// open the socket for a text session; drop setMic on mute; stop the mic in
+// text mode; keep the notice after Dismiss; send "go" as a turn; act on a
+// control word inside a longer sentence.
+
+class FakeSocket {
+  static all: FakeSocket[] = []
+  static get last(): FakeSocket {
+    const s = FakeSocket.all[FakeSocket.all.length - 1]
+    if (s === undefined) throw new Error('no socket was opened')
+    return s
+  }
+  binaryType = 'blob'
+  readyState = 0
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: MessageEvent) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+  sent: (string | ArrayBuffer)[] = []
+  closed = false
+  constructor(readonly url: string) {
+    FakeSocket.all.push(this)
+  }
+  send(data: string | ArrayBuffer): void {
+    this.sent.push(data)
+  }
+  close(): void {
+    this.closed = true
+    this.readyState = 3
+  }
+  texts(): unknown[] {
+    return this.sent.filter((d): d is string => typeof d === 'string').map((d) => JSON.parse(d) as unknown)
+  }
+  async open(): Promise<void> {
+    await act(async () => {
+      this.readyState = 1
+      this.onopen?.(new Event('open'))
+    })
+  }
+  async json(m: Record<string, unknown>): Promise<void> {
+    await act(async () => this.onmessage?.({ data: JSON.stringify(m) } as MessageEvent))
+  }
+}
+
+type Started = { mode: 'speech' | 'text'; fallback?: Record<string, unknown> } | { offer: true }
+
+function serveOwn(started: Started, readback: string | null = null): void {
+  fetchMock.write.mockImplementation(async (target: { url: string }, _m: string, body: Record<string, unknown>) => {
+    if (target.url === '/v1/voice/sessions') {
+      if ('offer' in started) {
+        if (body.offer_sdp === undefined) {
+          return { status: 'error', error: { httpStatus: 422, message: 'offer_sdp is required', detail: { field: 'offer_sdp' } } }
+        }
+        return { status: 'ok', data: { session_id: SESSION, mode: 'live', answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+      }
+      return { status: 'ok', data: { session_id: SESSION, ...started }, fetchedAt: Date.now() }
+    }
+    if (target.url === `/v1/voice/sessions/${SESSION}/readbacks/answer`) {
+      return { status: 'ok', data: { answer: readback }, fetchedAt: Date.now() }
+    }
+    if (target.url === `/v1/voice/sessions/${SESSION}/turns`) {
+      return { status: 'ok', data: { turn_id: 't-1', reply: 'Noted.', cards: [] }, fetchedAt: Date.now() }
+    }
+    return { status: 'ok', data: null, fetchedAt: Date.now() }
+  })
+}
+
+const posted = (url: string) => fetchMock.write.mock.calls.filter(([t]) => t.url === url)
+
+async function startOwn(): Promise<void> {
+  // The page reads Settings' engine when it opens.
+  await settle(act)
+  fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
+  await settle(act)
+}
+
+describe('the Talk pane on our own speech', () => {
+  let mic: FakeTrack
+  beforeEach(() => {
+    ;({ mic } = installMedia({ audioContext: true }))
+    FakeSocket.all = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    fetchMock.engine = 'own'
+    vadMock.handlers = null
+    vadMock.setMic.mockReset()
+    vadMock.close.mockReset()
+    vadMock.start.mockReset()
+    vadMock.start.mockImplementation(async (_stream: unknown, handlers: NonNullable<typeof vadMock.handlers>) => {
+      vadMock.handlers = handlers
+      return { model: 'silero', setMic: vadMock.setMic, close: vadMock.close }
+    })
+  })
+  afterEach(() => {
+    fetchMock.write.mockReset()
+    fetchMock.engine = null
+    vi.unstubAllGlobals()
+    window.sessionStorage.clear()
+  })
+
+  it('starts with no offer and no peer, and opens the audio socket on the mic', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const [target, method, body] = fetchMock.write.mock.calls[0] ?? []
+    expect([target.url, method, body]).toEqual(['/v1/voice/sessions', 'POST', {}])
+    expect(FakePeer.all).toHaveLength(0)
+    expect(FakeSocket.last.url).toMatch(new RegExp(`^wss?://[^/]+/v1/voice/sessions/${SESSION}/audio$`))
+    expect(vadMock.start.mock.calls[0]?.[0]).toMatchObject({ tracks: [mic] })
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+  })
+
+  it("shows the machine's boot as phases with no prose, then the state word", async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const ws = FakeSocket.last
+    await ws.open()
+    await ws.json({ t: 'status', state: 'starting machine' })
+    await ws.json({ t: 'status', state: 'updating speech server' })
+    await ws.json({ t: 'status', state: 'fetching model speech-small' })
+    const phases = screen.getByRole('list', { name: 'Starting' })
+    const items = within(phases).getAllByRole('listitem')
+    // Done phases are ticks named for a reader; the current one is its words alone.
+    expect(items.map((i) => i.getAttribute('aria-label'))).toEqual(['starting machine', 'updating speech server', null])
+    expect(items.slice(0, 2).map((i) => i.textContent)).toEqual(['', ''])
+    expect(items[2]?.textContent).toBe('fetching model')
+    expect(items[2]?.getAttribute('aria-current')).toBe('step')
+    await ws.json({ t: 'status', state: 'ready' })
+    expect(screen.queryByRole('list', { name: 'Starting' })).toBeNull()
+    expect(screen.getAllByRole('status')[0]?.textContent).toBe('listening')
+    await ws.json({ t: 'status', state: 'thinking' })
+    expect(screen.getAllByRole('status')[0]?.textContent).toBe('thinking')
+  })
+
+  it('captions both sides from the socket, the partial muted outside the log', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const ws = FakeSocket.last
+    await ws.open()
+    const log = screen.getByRole('log', { name: 'Captions' })
+    await ws.json({ t: 'partial', seq: 1, text: 'Add a' })
+    expect(within(log).queryByText(/Add a/)).toBeNull()
+    expect(screen.getByText('Add a').closest('[aria-hidden="true"]')).not.toBeNull()
+    await ws.json({ t: 'final', seq: 1, text: 'Add a chart to Runs.' })
+    await ws.json({ t: 'say.start', id: 's1', text: 'Drawing it.' })
+    const finals = Array.from(log.querySelectorAll('.vt-cap')).map((p) => [
+      p.querySelector('.vt-cap-who')?.textContent,
+      p.querySelector('.vt-cap-text')?.textContent,
+    ])
+    expect(finals).toEqual([
+      ['You', 'Add a chart to Runs.'],
+      ['Voice it', 'Drawing it.'],
+    ])
+    expect(screen.queryByText('Add a')).toBeNull()
+  })
+
+  it('sends only what voice detection lets through, as one utterance', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const ws = FakeSocket.last
+    await ws.open()
+    const h = vadMock.handlers
+    expect(h).not.toBeNull()
+    // Nothing detected, nothing sent.
+    expect(ws.sent).toEqual([])
+    const frame = new Uint8Array(640).buffer
+    h?.onStart()
+    h?.onFrame(frame)
+    h?.onEnd()
+    expect(ws.texts()).toEqual([
+      { t: 'utt.start', seq: 1 },
+      { t: 'utt.end', seq: 1 },
+    ])
+    expect(ws.sent.filter((d) => typeof d !== 'string')).toEqual([frame])
+  })
+
+  it('mute and push-to-talk reach voice detection, and End closes the socket, the detector and the mic', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    await FakeSocket.last.open()
+    fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
+    await settle(act)
+    expect(vadMock.setMic).toHaveBeenLastCalledWith(expect.objectContaining({ muted: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Push to talk' }))
+    await settle(act)
+    expect(vadMock.setMic).toHaveBeenLastCalledWith({ muted: false, mode: 'ptt', held: false })
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Hold to talk' }))
+    await settle(act)
+    expect(vadMock.setMic).toHaveBeenLastCalledWith({ muted: false, mode: 'ptt', held: true })
+    fireEvent.pointerUp(screen.getByRole('button', { name: 'Hold to talk' }))
+    await settle(act)
+    expect(vadMock.setMic).toHaveBeenLastCalledWith({ muted: false, mode: 'ptt', held: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'End' }))
+    await settle(act)
+    expect(posted(`/v1/voice/sessions/${SESSION}/end`)).toHaveLength(1)
+    expect(FakeSocket.last.closed).toBe(true)
+    expect(vadMock.close).toHaveBeenCalled()
+    expect(mic.stop).toHaveBeenCalled()
+  })
+
+  it('falls back to text mode when no L4 can start: one line a close button dismisses, the mic kept beside a text box', async () => {
+    serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: 'us-central1-a' } })
+    render(<TalkPane />)
+    await startOwn()
+    expect(FakeSocket.all).toHaveLength(0)
+    expect(vadMock.start).not.toHaveBeenCalled()
+    expect(screen.getByText('No L4 free in us-central1-a.')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
+    // The browser's microphone stays: mute still works on it.
+    expect(mic.stop).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Mute' }).hasAttribute('disabled')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText('No L4 free in us-central1-a.')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
+  })
+
+  it('carries on in text mode when the engine goes down mid-session, on the same mic', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const ws = FakeSocket.last
+    await ws.open()
+    await ws.json({ t: 'status', state: 'ready' })
+    await ws.json({ t: 'status', state: 'engine down' })
+    expect(ws.closed).toBe(true)
+    expect(vadMock.close).toHaveBeenCalled()
+    expect(screen.getByText('Engine down.')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
+    expect(mic.stop).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+  })
+
+  it('answers whole spoken phrases: "mute" mutes, a sentence with the word in it does not', async () => {
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    await startOwn()
+    const ws = FakeSocket.last
+    await ws.open()
+    await ws.json({ t: 'final', seq: 1, text: 'Can you mute the alerts on Runs?' })
+    expect(screen.getByRole('button', { name: 'Mute' })).toBeTruthy()
+    await ws.json({ t: 'final', seq: 2, text: 'Mute.' })
+    await settle(act)
+    expect(screen.getByRole('button', { name: 'Unmute' })).toBeTruthy()
+    await ws.json({ t: 'final', seq: 3, text: 'Stop the session.' })
+    await settle(act)
+    expect(posted(`/v1/voice/sessions/${SESSION}/end`)).toHaveLength(1)
+  })
+
+  it('in text mode, a typed Go answers the held read-back and is not sent as a turn', async () => {
+    serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'not_ready' } }, 'go')
+    render(<TalkPane />)
+    await startOwn()
+    expect(screen.getByText('Speech machine not ready.')).toBeTruthy()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Say to Voice it' }), { target: { value: 'Go' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await settle(act)
+    expect(posted(`/v1/voice/sessions/${SESSION}/readbacks/answer`).map(([, , b]) => b)).toEqual([{ text: 'Go' }])
+    expect(posted(`/v1/voice/sessions/${SESSION}/turns`)).toHaveLength(0)
+  })
+
+  it('a 422 for the offer is GPT-Live: the page makes the WebRTC call instead', async () => {
+    serveOwn({ offer: true })
+    render(<TalkPane />)
+    await startOwn()
+    expect(posted('/v1/voice/sessions').map(([, , b]) => b)).toEqual([{}, { offer_sdp: 'v=0 fake-offer' }])
+    expect(FakePeer.all).toHaveLength(1)
+    expect(FakeSocket.all).toHaveLength(0)
   })
 })
