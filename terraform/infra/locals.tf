@@ -1242,6 +1242,22 @@ locals {
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
       SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
       SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
+
+      # The managed plugin catalogue (plugins.tf; routes/plugin_catalogue.py).
+      #   _PLUGINS_BUCKET: where an intake's archive is quarantined, the
+      #     console's signed upload goes and pinned copies are written. Empty
+      #     would answer every install 503; the bucket is made by every apply.
+      #   _INTAKE_JOB: the job each intake starts one execution of, with
+      #     overrides (swarm-api holds jobsExecutorWithOverrides on it alone).
+      #   _INTAKE_AUDIENCE/_INTAKE_CALLERS: who may POST the intake's
+      #     callback: the bucket notification's push subscription, an OIDC
+      #     token for swarm-api's push audience from the rollup sweeper's
+      #     account (plugins.tf says why that account). Either empty admits
+      #     nobody (503) and intakes are finished only when read.
+      SWARM_PLUGINS_BUCKET         = google_storage_bucket.plugins.name
+      SWARM_PLUGIN_INTAKE_JOB      = local.plugin_intake_name
+      SWARM_PLUGIN_INTAKE_AUDIENCE = local.push_audiences["swarm-api"]
+      SWARM_PLUGIN_INTAKE_CALLERS  = module.scheduler.rollup_sweeper_email
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
