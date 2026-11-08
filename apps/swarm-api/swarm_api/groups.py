@@ -1,9 +1,9 @@
 """Cloud Identity group membership, the way the project actually permits.
 
 Read CONTRACT.md's "Verified operational constraint" section before changing
-anything here. Tested live against saga-agents-staging:
+anything here. Tested live against example-project:
 
-    groups:lookup?groupKey.id=eng@saga.xyz                 WORKS
+    groups:lookup?groupKey.id=eng@example.com                 WORKS
     groups/{id}/memberships:checkTransitiveMembership      WORKS
     groups/-/memberships:searchTransitiveGroups            403 Error(4013)
 
@@ -48,7 +48,7 @@ GROUPS_READONLY_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.r
 #: `delegation.delegate()` is never reached. `delegation`: it acts as
 #: `GROUPS_IMPERSONATE_USER` through domain-wide delegation. The default is
 #: `delegation` because that is what the live deployment is set up for; installs
-#: set `admin_role` (BGD's Q2 answer, design section 14).
+#: set `admin_role` (the owner's Q2 answer, design section 14).
 GROUPS_AUTH_ADMIN_ROLE = "admin_role"
 GROUPS_AUTH_DELEGATION = "delegation"
 GROUPS_AUTH_MODES = (GROUPS_AUTH_ADMIN_ROLE, GROUPS_AUTH_DELEGATION)

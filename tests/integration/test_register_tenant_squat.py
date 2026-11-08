@@ -64,7 +64,7 @@ case "${args}" in
   *"identity groups describe"*)       echo "groups/1" ;;
   *"iam service-accounts describe"*)
     [[ -z "${FAKE_SA_MISSING:-}" ]] || exit 1
-    echo "sa@example.iam.gserviceaccount.com" ;;
+    echo "sa@example-project.iam.gserviceaccount.com" ;;
   *"iam service-accounts get-iam-policy"*) cat "${FAKE_SA_POLICY}" ;;
   *"iam service-accounts keys list"*)      cat "${FAKE_SA_KEYS}" ;;
   *"iam roles describe"*)             echo "roles/custom" ;;

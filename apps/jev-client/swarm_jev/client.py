@@ -231,7 +231,7 @@ def _valid_answer(question: Mapping[str, Any], answer: Any) -> bool:
 
 #: What a `lenient` call adds to a choice question's instructions, so the
 #: answer is the shape `_valid_answer` reads: one option label, verbatim, and a
-#: confidence (BGD's pick of 6 November 2026, after 4 of 529 `jev_decide`
+#: confidence (the owner's pick of 6 November 2026, after 4 of 529 `jev_decide`
 #: answers were recorded malformed, each a short output).
 CHOICE_SHAPE = (" Answer with exactly one option label from the criteria, verbatim and with "
                 "no other text, and a confidence between 0 and 1.")

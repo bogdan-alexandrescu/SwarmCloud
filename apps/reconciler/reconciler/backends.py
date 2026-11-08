@@ -980,9 +980,9 @@ class CloudRunBackend:
         not exist any more. `_confirmed_finished` is the rest of it, and it
         exists because Cloud Run does NOT distinguish "the cancellation failed"
         from "the execution did not succeed". Every failed cancel seen on
-        saga-agents-staging was the second thing:
+        example-project was the second thing:
 
-        * `400 Execution 'swarm-job-u-bogdan-mock-w8g2g' cannot be cancelled
+        * `400 Execution 'swarm-job-example-tenant-mock-w8g2g' cannot be cancelled
           because it is not running.` -- 16 of these in 1.997s on 2026-09-20,
           because the executions finished between the list and the cancel. That
           pass (pass_0bd239d41f79479385cf) found 17 dead workers and released
@@ -1355,8 +1355,8 @@ class GkeConnection:
 #
 # THE DISPATCHER'S RULE, copied because this image cannot import
 # `scheduler.dispatch` (its block comment over `verified_namespace` says why the
-# rule exists: `tenants/u-bogdan` stored the pre-2026-09-23 spelling
-# `swarm-u-bogdan`, and dispatch went to a namespace that does not exist).
+# rule exists: `tenants/example-tenant` stored the pre-2026-09-23 spelling
+# `swarm-example-tenant`, and dispatch went to a namespace that does not exist).
 # A stored value outside the authority prefix is IGNORED for the derived name
 # and logged at ERROR; one inside it but different is KEPT and logged at
 # WARNING. The reconciler must agree, or it reads one namespace while the

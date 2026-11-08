@@ -656,7 +656,7 @@ def _lane_label(task: Any) -> str:
 def _held_merge_item(reading: Reading, task: Any, hold: Mapping[str, Any],
                      asked: dict[str, set[int]]) -> dict[str, Any] | None:
     """A merge step held by owner questions (#2070), not a browser hand-off
-    (MERGE-PARK-BELL, part of #2313; BGD 2026-10-25).
+    (MERGE-PARK-BELL, part of #2313; the owner 2026-10-25).
 
     ONE ITEM PER OPEN QUESTION, NEVER TWO AND NEVER NONE. A question the
     hold names rings already when the step that asked it is listed by
@@ -802,7 +802,7 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     `task:questions:<id>`, so the console's card marks it read as before;
     the last blocking answer resumes the agent and the item goes.
 
-    ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026): an ended
+    ONLY WHAT STILL HOLDS WORK (the owner's pick, 6 November 2026): an ended
     task's questions ring only while its workflow has not finished or a
     merge in it is held on the owner's questions (`_holding_workflows`); a
     task in no workflow rings only while it is parked on them. The same
@@ -831,7 +831,7 @@ def _question_key(text: Any) -> str:
 #: alone (`agent_worker.questions.text_digest`), in index order: what an ended
 #: task's artifact questions are matched by across its workflow, their words
 #: being in an artifact this feed does not open (the follow-up picked under
-#: BGD's overnight grant, 6 November 2026).
+#: the owner's overnight grant, 6 November 2026).
 QUESTION_TEXT_DIGESTS_KEY = "question_text_digests"
 #: The worker's digest: 16 lowercase hex characters (`DIGEST_CHARS`). The task
 #: document is tenant-writable, so nothing else is read or served as one.

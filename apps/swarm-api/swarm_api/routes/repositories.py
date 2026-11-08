@@ -44,7 +44,7 @@ owner decision Q2: "admin-set, off by default") is gated exactly as `context`
 before anything is written, and the change and its `admin_audit` entry
 (`agents_may_file_issues_set`) commit in one transaction.
 
-`workflow_files` (#2029, WF-APP-TOKEN; BGD's decision 2, 2026-10-22) is
+`workflow_files` (#2029, WF-APP-TOKEN; the owner's decision 2, 2026-10-22) is
 gated exactly as `agents_may_file_issues`, on create AND on PATCH: the
 workspace's admin, so a member's answers 403 before the forge is read or
 anything is written, and the change and its `admin_audit` entry

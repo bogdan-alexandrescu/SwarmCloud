@@ -31,7 +31,7 @@ goes through its switch: off, the write goes through and the log names who
 would have been refused. The preview and every read stay open to a viewer.
 The firing itself checks its OWNER's role (`schedulefire.owner_acts_as`).
 
-A PLATFORM-SCOPE SCHEDULE IS A PLATFORM ADMIN'S (BGD, 2026-10-24, "Platform
+A PLATFORM-SCOPE SCHEDULE IS A PLATFORM ADMIN'S (the owner, 2026-10-24, "Platform
 admins only"; PLATFORM-SCHED-ADMIN, part of #2157). One whose stored
 `scope.mode` is `platform` reads every workspace's aggregates, so only a
 platform admin may create one (`schedules.check_creator`) -- and, by that
@@ -288,7 +288,7 @@ def _platform_scope(doc: Mapping[str, Any]) -> bool:
 
 def _platform_only(auth: AuthContext, doc: Mapping[str, Any], action: str) -> None:
     """403 `platform_admin_required` when the STORED `doc` is platform-scope and
-    the caller is not a platform admin (BGD, 2026-10-24). Logged with who asked,
+    the caller is not a platform admin (the owner, 2026-10-24). Logged with who asked,
     as `RoleStore.require` logs its refusals; nothing has been written yet."""
     if not _platform_scope(doc) or auth.is_admin or auth.is_owner:
         return

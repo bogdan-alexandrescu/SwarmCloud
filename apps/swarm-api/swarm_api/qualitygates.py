@@ -1,6 +1,6 @@
 """A workspace's quality gates: whether its claude-code lanes run jev-belay and jev-enforce (JEV-LANES).
 
-BGD, 2026-10-31: 25% of lane PRs were red on their first CI run (#642), and a
+The owner, 2026-10-31: 25% of lane PRs were red on their first CI run (#642), and a
 review's NOT_YET round costs a fix step and a re-review. With
 `quality_gates.jev` on, the claude-code runner registers two Claude Code
 hooks, both checked by TypeSafe's Jev with the workspace's TypeSafe key:
@@ -93,7 +93,7 @@ AUDIT_ACTION = "workspace_quality_gates_set"
 MAC_BLOCK = FIELD
 #: What the block holds besides fields this module does not own.
 OWNED_FIELDS = (JEV, SET_AT, SET_BY, MAC_FIELD)
-#: Off until the workspace's owner or admin turns it on (BGD, 2026-10-31).
+#: Off until the workspace's owner or admin turns it on (the owner, 2026-10-31).
 DEFAULT_JEV = False
 #: Only the steps whose signed workflow switch says `quality_gates: on`
 #: (2026-11-01; `agent_worker.qualitygates.ON_REQUEST`).

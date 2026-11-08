@@ -3,7 +3,7 @@
 WHY THIS EXISTS AT ALL
 ----------------------
 The broker holds `secretmanager.versions.add` on a base secret and NOT
-`secretmanager.versions.access` -- in saga-agents-staging that is the custom
+`secretmanager.versions.access` -- in example-project that is the custom
 role `swarmSecretLister` plus a `secretVersionAdder` binding, with the
 `secretAccessor` binding pointing at the WORKER's service account instead. So
 the one question the still-valid publish path needs answered -- "does that
@@ -11,8 +11,8 @@ secret already hold this access token?" -- is a question Secret Manager will
 not answer for this caller.
 
 A failed read is not a negative answer. Treating it as one wrote 1,741
-identical versions of `swarm-account-u-bogdan-devops-main` and 1,814 of
-`swarm-tenant-u-bogdan-anthropic` between 2026-09-18 and 2026-09-22, one every
+identical versions of `swarm-account-example-tenant-devops-main` and 1,814 of
+`swarm-tenant-example-tenant-anthropic` between 2026-09-18 and 2026-09-22, one every
 five minutes. So when the read is refused, the ONLY admissible evidence is a
 positive record of what this platform put there, and that is what this module
 keeps.

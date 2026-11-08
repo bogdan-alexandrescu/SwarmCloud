@@ -1,6 +1,6 @@
 """Jev's review of a work contract at submission (JC1; part of #2688).
 
-The owner chose on 3 November 2026 (BGD) to have Jev review a work contract
+The owner chose on 3 November 2026 (the owner) to have Jev review a work contract
 when it is submitted and flag the requirements no worker could enforce,
 before anything runs. The design is docs/design/agent-quality/jev-contract.md
 section 4, with the owner's answers of that day (its section 14), which this

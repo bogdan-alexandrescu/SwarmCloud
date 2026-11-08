@@ -55,7 +55,7 @@ SKIPPED_SUMMARY_KEY = "skipped"
 #: `conflict-fix:<n>` or `pick-fix:<n>`, appended to the merge's workflow by
 #: swarm-api's wake tick (`swarm_api.mergewake.round_step_id`) when it hands
 #: a red or conflicting pull request, or one whose owner picked an option the
-#: branch did not build, to a round. `pick` since ROLLUP-PICK-FIX (BGD,
+#: branch did not build, to a round. `pick` since ROLLUP-PICK-FIX (the owner,
 #: 2026-10-26: a pick-fix round is a step of the lane, as the other rounds
 #: are); every kind in `mergewake.ROUND_KIND` must match, or the tick's
 #: append is refused -- tests/unit/control_plane/test_merge_auto_fix_rounds.py

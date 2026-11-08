@@ -253,7 +253,7 @@ reported by task id and code, and the worker's fallback instant
 (`MERGE_CI_FALLBACK_SECONDS`) wakes the park anyway.
 
 AN OWNER-QUESTION HOLD WHOSE PULL REQUEST ENDED OUTSIDE THE WORKFLOW ENDS
-(MERGE-OUTSIDE-ENDS, part of #2441; BGD 2026-10-26). A merge step the review
+(MERGE-OUTSIDE-ENDS, part of #2441; the owner 2026-10-26). A merge step the review
 held on owner questions parks HUMAN_REQUIRED with `park_phase:
 "owner_questions"` in its `blocked_by` (#2070). Only an answer wakes it, and
 the scheduler's human-wait expiry spares it, so when JOIN-UI-ADMIN's PR 2387
@@ -276,7 +276,7 @@ step SUCCEEDED ("merged outside the workflow") or CANCELLED, or parks again
 on an open one. A forged mark costs one early wake, as above.
 
 AN OWNER PICK THE BRANCH DID NOT BUILD IS A PICK-FIX ROUND (PICK-FIX-ROUND,
-part of #2441; BGD 2026-10-26). A merge whose owner picked an option its
+part of #2441; the owner 2026-10-26). A merge whose owner picked an option its
 branch did not build parks CI_PENDING on `owner_pick_fix_pending`, one
 `pending` line per pick (`agent_worker.merge.pick_line`). The tick reads
 ONLY the pull request for it, never the checks (`_read_pull`): merged or

@@ -130,7 +130,7 @@ _UA = "swarmcloud-agent-worker"
 #: for a credential it has no variable to put.
 ACCOUNT_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 
-#: The variables a ChatGPT PLAN account fills (part of #2688; BGD, 2026-11-01:
+#: The variables a ChatGPT PLAN account fills (part of #2688; the owner, 2026-11-01:
 #: codex runs on a shared pool of ChatGPT-plan accounts the way claude-code
 #: runs on the pool of Claude subscriptions). The plan's current ACCESS token
 #: (about an hour) and its account id; codex reads both from the auth.json the
@@ -149,7 +149,7 @@ ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
 }
 
 #: Providers whose pool serves a tenant only when the tenant supplies no API
-#: key of its own. For "openai" the brief is explicit (BGD, 2026-11-01): a
+#: key of its own. For "openai" the brief is explicit (the owner, 2026-11-01): a
 #: codex step leases a plan when the tenant has no OPENAI_API_KEY, so a tenant
 #: paying for metered access keeps running on it. "anthropic" stays pool-first.
 TENANT_KEY_FIRST: frozenset[str] = frozenset({"openai"})

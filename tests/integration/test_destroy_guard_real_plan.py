@@ -21,9 +21,10 @@ database could never reach that branch.
 So this file judges a RECORDING of a real destroy plan:
 `tests/integration/fixtures/destroy-plan-dev-real.json`, 264 real deletions
 across 42 real resource types, produced by `scripts/destroy.sh --dry-run`
-and redacted by `scripts/verify-destroy-guard.sh --record`. It is judged here
-for the placeholder project: the project it was recorded in (`_recording.project`)
-is rewritten to `PROJECT` when it is loaded, so no test names a real deployment. Values survive only for the fields
+and redacted by `scripts/verify-destroy-guard.sh --record`. It names its project
+by the placeholder and is judged here for the placeholder deployment: every
+occurrence is rendered as `PROJECT` when it is loaded (destroy_plan_recording.py),
+so no test names a real deployment. Values survive only for the fields
 the guard reads; every other key survives by NAME, so the recording still states
 what the real provider emits without carrying a service's environment, a
 Firestore document's contents or a 7 KB dashboard.
@@ -59,7 +60,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -77,8 +77,10 @@ from test_destroy_guard import (  # noqa: E402
     _P,
 )
 
+import destroy_plan_recording  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
-RECORDED = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
+RECORDED = destroy_plan_recording.RECORDING
 CASES_FILE = REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json"
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 PLAN_GUARD = REPO / "scripts" / "lib" / "plan-guard.sh"
@@ -104,14 +106,10 @@ assert RECORDED.exists(), (
     f"    scripts/verify-destroy-guard.sh --record tests/integration/fixtures/destroy-plan-dev-real.json"
 )
 
-_RECORDED_TEXT = RECORDED.read_text()
-_RECORDED_PROJECT = json.loads(_RECORDED_TEXT)["_recording"]["project"]
-#: The recording, with the project it was recorded in replaced by the placeholder
-#: one: every `project`, id, self-link, email and name carrying it moves together,
-#: so the plan judged is the same plan for `PROJECT`. Written once, outside the
-#: checkout, because jq, destroy.sh and plan-guard.sh all read it by path.
-FIXTURE = Path(tempfile.mkdtemp(prefix="destroy-plan-")) / RECORDED.name
-FIXTURE.write_text(_RECORDED_TEXT.replace(_RECORDED_PROJECT, PROJECT))
+#: What every case below judges: the recording with its placeholder project
+#: rendered as the project the deny-list protects (destroy_plan_recording.py).
+FIXTURE = destroy_plan_recording.render(PROJECT)
+
 PLAN = json.loads(FIXTURE.read_text())
 RECORDING = PLAN["_recording"]
 CENSUS = RECORDING["before_keys_by_type"]
@@ -833,6 +831,8 @@ def test_the_filters_fallback_prefix_is_guard_name_prefix():
     MUTATION: change the default in destroy-guard.jq to "swarm" and this fails.
     """
     env = {key: value for key, value in os.environ.items() if key != "SWARM_NAME_PREFIX"}
+    # The prefix does not depend on the project; lets common.sh source without PROJECT_ID.
+    env["SWARM_NO_PROJECT"] = "1"
     proc = subprocess.run(
         ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
         capture_output=True, text=True, timeout=60, env=env,

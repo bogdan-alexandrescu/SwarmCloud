@@ -118,7 +118,7 @@ MAX_WAIT_SECONDS = 300
 #: How often a gathering call re-reads the routes.
 POLL_SECONDS = 5.0
 
-#: THE QUIET BACK-OFF (BGD's pick, 2026-11-06; it replaces the 30 s cap for
+#: THE QUIET BACK-OFF (the owner's pick, 2026-11-06; it replaces the 30 s cap for
 #: pending tasks, owner decision 2026-09-26, which it keeps as a cost bound).
 #: While a poll brings nothing new -- no line, no state change -- the wait
 #: before the next one doubles from `POLL_SECONDS` up to this, and any new
@@ -681,10 +681,10 @@ def waiting_key(task: dict[str, Any]) -> str | None:
 # --------------------------------------------------------------------------
 
 #: The catalogue's control-plane profile a fix-loop step runs on (FL-CONTRACT,
-#: BGD Q10 (a)); read from the frozen catalogue so a rename fails at import.
+#: the owner Q10 (a)); read from the frozen catalogue so a rename fails at import.
 FIX_LOOP_PROFILE = RUNNER_PROFILES["fix-loop"].name
 #: swarm-api's bounds, spelled again because swarm-api is not installed with
-#: the bridge: `max_rounds` 1-5, default 3 (BGD Q5 (a)), and at most 10 rounds
+#: the bridge: `max_rounds` 1-5, default 3 (the owner Q5 (a)), and at most 10 rounds
 #: with every round a person added (Q4 (a), `fixloop.FIX_LOOP_ROUNDS_CEILING`).
 FIX_LOOP_DEFAULT_ROUNDS = 3
 FIX_LOOP_MIN_ROUNDS = 1

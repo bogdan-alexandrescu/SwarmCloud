@@ -27,7 +27,7 @@ By the step's role, in this order, never by a model:
 
 A STEP WHOSE TYPE IS KNOWN ASKS JEV NOTHING (owner's choice, 4 November 2026).
 SwarmCloud's own usage ledger, 3 to 4 November: 172 of 377 Jev calls were J0,
-and 122 of those typed AI Studio's visual-check capture steps, which the QA
+and 122 of those typed a peer application's visual-check capture steps, which the QA
 renderer (`swarm_api.qaspec`) makes and whose role it names in the step id.
 The step id does not reach this process (the worker writes `input` alone into
 `input.json`), so a template is recognised by the lead its renderer writes:

@@ -311,7 +311,7 @@ class ControlStore:
     ) -> ControlSnapshot:
         """What changed since the last pass, and what falls due before the next one.
 
-        The pass between two full sweeps (BGD, 2026-11-06: the full pass took a
+        The pass between two full sweeps (the owner, 2026-11-06: the full pass took a
         26.4 s median on a 60 s tick and grew with the documents). Two indexed
         reads, then by-id reads that close the set over itself:
 

@@ -64,7 +64,7 @@ swarm-voice's own sentence, under the established codes:
 Either way the session is ended at once (cause `voice_pool_refused`) and the
 person's marker freed, so the next try is not a 409 of ours.
 
-THE MODELS (BGD, 6 November 2026: "wire-in-follow-up", "front-reads-it").
+THE MODELS (the owner, 6 November 2026: "wire-in-follow-up", "front-reads-it").
 Voice it › Settings is read once, before the start transaction, and both
 start bodies (live and text) carry what it names:
 

@@ -1,5 +1,5 @@
 """`/sc layout rows|pane|band`: how this project follows SwarmCloud work in
-Claude Code, remembered per project (SC-BROWSER-BUILD, #2318; BGD picked
+Claude Code, remembered per project (SC-BROWSER-BUILD, #2318; the owner picked
 proposal B on 2026-10-25, PR 2328, and added the band on 2026-10-26, SC-BAND).
 
 THREE LAYOUTS.
@@ -16,7 +16,7 @@ THREE LAYOUTS.
   call every thirty minutes, not one per step change.
 * `band` -- a strip ABOVE the prompt (the hooks module's `AbovePrompt` band)
   drawing the pane's levels, with one summary line below the prompt, and NO
-  /workflows row at all (BGD, 2026-10-26): in Claude Code's fullscreen layout
+  /workflows row at all (the owner, 2026-10-26): in Claude Code's fullscreen layout
   a pane docks on the right where a plugin cannot move it, and a /workflows
   row is a model agent. The band re-reads the list once a minute while
   anything runs (one direct `swarm_browse` call, no model tokens) and queues
