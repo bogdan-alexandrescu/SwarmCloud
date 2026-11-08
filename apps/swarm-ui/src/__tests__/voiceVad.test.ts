@@ -170,7 +170,8 @@ describe('the speech gate', () => {
 
 /** onnxruntime-web's surface, recorded. */
 function fakeOrt(probs: number[]) {
-  const feeds: Record<string, { type: string; data: Float32Array | BigInt64Array; dims: readonly number[] }>[] = []
+  type Feed = { type: string; data: Float32Array | BigInt64Array; dims: readonly number[] }
+  const feeds: { input: Feed; state: Feed; sr: Feed }[] = []
   class Tensor {
     constructor(
       readonly type: string,
@@ -224,14 +225,14 @@ describe('the detector', () => {
     // Windows 3 to 5 are speech.
     const model: SpeechModel = { name: 'silero', probability: () => ((i += 1), i >= 3 && i <= 5 ? 0.9 : 0.05), reset: () => undefined }
     const d = new VoiceDetector(model, r.h, 48_000)
-    for (let b = 0; b < 30; b++) await d.push(new Float32Array(1_024).fill(0.2))
-    // 30 * 1024 / 3 = 10,240 samples at 16 kHz: twenty windows scored.
-    expect(i).toBe(20)
+    for (let b = 0; b < 45; b++) await d.push(new Float32Array(1_024).fill(0.2))
+    // 45 * 1024 / 3 = 15,360 samples at 16 kHz: thirty windows scored, the last 25 quiet (800 ms, past the hangover).
+    expect(i).toBe(30)
     expect(r.events.filter((e) => e === 'start')).toHaveLength(1)
     expect(r.events).toContain('end')
     d.close()
     await d.push(new Float32Array(1_024))
-    expect(i).toBe(20)
+    expect(i).toBe(30)
   })
 
   it('loudness: a quiet room is 0, speech near the mic is 1', () => {

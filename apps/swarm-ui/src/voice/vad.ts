@@ -67,12 +67,12 @@ export function pcm16(samples: Float32Array): ArrayBuffer {
 /**
  * Down to 16 kHz from the context's rate (48 kHz, 44.1 kHz, ...): each output
  * sample is the mean of the input samples it covers, which is also the
- * low-pass that keeps speech from aliasing. The fractional position carries
+ * low-pass that keeps speech from aliasing. The input and output counts carry
  * from one block to the next, so blocks of any length join without a seam.
  */
 export class Resampler {
-  private readonly step: number
-  private pos = 0
+  private seen = 0
+  private made = 0
   private sum = 0
   private count = 0
 
@@ -81,19 +81,19 @@ export class Resampler {
     readonly to: number = VAD_RATE,
   ) {
     if (!(from > 0) || !(to > 0)) throw new RangeError('A sample rate must be positive.')
-    this.step = from / to
   }
 
   push(input: Float32Array): Float32Array {
-    if (this.step === 1) return input.slice()
+    if (this.from === this.to) return input.slice()
     const out: number[] = []
     for (let i = 0; i < input.length; i++) {
       this.sum += input[i] ?? 0
       this.count += 1
-      this.pos += 1
-      if (this.pos >= this.step) {
+      this.seen += 1
+      // Whole-number counts, not a fractional step: a step like 2.75625 drifts a sample a second.
+      if (this.seen * this.to >= (this.made + 1) * this.from) {
         out.push(this.sum / this.count)
-        this.pos -= this.step
+        this.made += 1
         this.sum = 0
         this.count = 0
       }
@@ -115,7 +115,7 @@ export interface OrtLike {
   InferenceSession: { create(model: Uint8Array): Promise<OrtSession> }
 }
 export interface OrtSession {
-  run(feeds: Record<string, unknown>): Promise<Record<string, { data: ArrayLike<number> | Float32Array } & unknown>>
+  run(feeds: Record<string, unknown>): Promise<Record<string, unknown>>
 }
 
 /** Silero VAD v5: `input` [1, 64 + 512], `state` [2, 1, 128], `sr`; out `output` [1, 1] and `stateN`. */
@@ -162,7 +162,8 @@ export class SileroModel implements SpeechModel {
     })
     this.state = out.stateN
     this.context = window.slice(window.length - CONTEXT_SAMPLES)
-    return Number(out.output?.data[0] ?? 0)
+    const output = out.output as { data?: ArrayLike<number> } | undefined
+    return Number(output?.data?.[0] ?? 0)
   }
 
   reset(): void {
