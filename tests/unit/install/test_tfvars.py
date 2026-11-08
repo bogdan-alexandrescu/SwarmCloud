@@ -7,6 +7,7 @@ import builtins
 import copy
 import inspect
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,26 @@ from .test_terraform_runner import DESKTOP_CLIENT_ID, PROJECT, FakeExec, guards,
 
 DIGEST = "sha256:" + "a" * 64
 
-#: The live deployment's name, built at runtime so this file names it in no
-#: literal the guard below would have to except.
-_LIVE_NAME = "".join(("s", "a", "g", "a"))
+#: A host- or domain-shaped token inside a generated value.
+_DOTTED = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+#: Google's own service domains, which every deployment's inputs name.
+_GOOGLE_DOMAINS = (".apps.googleusercontent.com", ".pkg.dev", ".googleapis.com")
+
+
+def _foreign_names(values: list[str], state) -> list[str]:
+    """Every dotted token that is neither a version or address, a Google service
+    domain, nor the state's own project, domain or hostname: a name the install
+    did not give is a deployment the code carries (lesson 5)."""
+    own = (state.outputs["org_domain"], state.hostname)
+    foreign = []
+    for token in (t for v in values for t in _DOTTED.findall(v)):
+        if re.fullmatch(r"[0-9.]+", token) or token.endswith(_GOOGLE_DOMAINS):
+            continue
+        if token == f"{state.project}.iam.gserviceaccount.com":
+            continue
+        if not any(token == name or token.endswith("." + name) for name in own):
+            foreign.append(token)
+    return foreign
 
 
 def _strings(value) -> list[str]:
@@ -55,8 +73,8 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
         f"europe-west1-docker.pkg.dev/{PROJECT}/swarm-images/workspace-apply@{DIGEST}"
     ), "the workspace-apply image is the release's digest in the project's own registry"
     assert infra["tenants"] == {}, "design §5.6: installs declare no Terraform tenants"
-    for value in _strings(boot) + _strings(infra):
-        assert _LIVE_NAME not in value, f"{value!r}: a generated input names the live deployment (lesson 5)"
+    assert not _foreign_names(_strings(boot) + _strings(infra), state), (
+        "lesson 5: a generated input names a deployment the install state did not give")
     source = inspect.getsource(tfvars)
     assert "terraform.tfvars\"" not in source and "environments/" not in source.replace(
         "terraform/environments/`", "")
