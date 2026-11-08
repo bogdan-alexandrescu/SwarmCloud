@@ -78,16 +78,23 @@ set -euo pipefail
 # as "not there yet", and the enable below runs.
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # This script never touches PROJECT_ID's project: it works in the release home
-# its --project names. It says so, so common.sh (no default project,
-# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# its --project names. It says so, so common.sh (no default project, region or
+# zone, DAYONE-DESAGA-2) does not stop on an unset REGION or ZONE. PROJECT_ID
+# still matters: it names the deployment whose never-touch list the release
+# home is checked against, below.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
-# The release home is never PROJECT_ID, so the deny-list it is checked against
-# is the shared project's whole list, not the one common.sh keyed to whatever
-# PROJECT_ID an operator's .env names (empty for any other project).
-SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
+# The release home is never PROJECT_ID's project, but the never-touch list it
+# is checked against is PROJECT_ID's: the one that deployment keeps in its config
+# object, gs://<state-bucket>/config/<env>/deny-list.json (deny_list_load in
+# lib/common.sh; docs/design/generic-repository.md, section 2.4). The operator's
+# .env or the job's environment names the deployment. SWARM_NO_PROJECT=1 above
+# defers the load, so it is made here, before any guard below walks the list:
+# with no project named, or a list that cannot be read, this stops. A release
+# home is never checked against an empty list nobody wrote.
+deny_list_require
 
 # A publish and a promotion are never non-interactive: an automation that sets
 # this does not get to answer the typed version.
@@ -157,7 +164,7 @@ is_shared_project() {
   return 1
 }
 if is_shared_project "${PROJECT}" || is_shared_resource "${PROJECT}"; then
-  die "refusing project ${PROJECT}: it is the shared project or on SHARED_DENY_LIST (scripts/lib/common.sh); the release home is never there"
+  die "refusing project ${PROJECT}: it is the shared project or on the never-touch list (config/${ENVIRONMENT}/deny-list.json); the release home is never there"
 fi
 release_project=0
 for candidate in "${RELEASE_PROJECTS[@]}"; do

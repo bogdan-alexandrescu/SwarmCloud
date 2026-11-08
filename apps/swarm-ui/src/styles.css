@@ -2559,16 +2559,56 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* The wall: every live browser's still, two a row at the inspector's resting width. */
 .ag-wall { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
 .ag-wall-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
-.ag-wall-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--ctl-s2); min-width: 0; }
-.ag-wall-card { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+/* EACH CARD IN ITS DEVICE'S SHAPE (the owner's request, 2026-11-08; Agents.tsx
+   `deviceFrame`): every frame is the same height (`--wall-frame-h`, which
+   LiveThumb.tsx's THUMB_FRAME_H mirrors to size the stream it asks for) and as
+   wide as its device's proportions make it -- iPhone 9:19.5, iPad 3:4, web
+   16:10, phone and tablet turned in landscape -- so the cards in a row line up
+   and a phone card is narrow rather than tall. A card is its frame's width
+   (wrapping rows, not fixed columns, so phones leave no wide gaps), never
+   wider than the wall; the picture letterboxes into its frame.
+   TWO CARDS A ROW ON A NARROW WALL (review of 2026-11-08): at 180px a desktop
+   card is wider than half the inspector's wall (about 317px on a desktop,
+   374px on a 390px phone), so a phone or tablet card sat alone in its row.
+   The shared height shrinks with the wall (`cqi`, the grid's width) until a
+   desktop card fits beside a tablet-portrait one (16:10 + 3:4 = 2.35 heights,
+   plus two cards' padding and border, the gap and 4px of rounding: 32px) and
+   beside a phone card at its minimum width (6.5rem, plus one card's chrome,
+   the gap and the slack: 22px); never under 90px, never over
+   `--wall-frame-max`, the 180px LiveThumb.tsx's THUMB_FRAME_H mirrors.
+   EVERY var() OF THESE WALL-SCOPED NAMES CARRIES A FALLBACK (the desktop
+   frame at its 180px maximum). The browser never uses it -- the grid and the
+   card always declare the name -- but the contrast and spacing sweeps resolve
+   the whole sheet against `:root`'s tokens only (spaceprobe.ts `resolveVars`),
+   and a name declared on an element with no fallback stops that resolver
+   for every screen, not just this one. */
+.ag-wall-grid { container-type: inline-size; --wall-frame-max: 180px; --wall-frame-h: clamp(90px, min((100cqi - 32px) / 2.35, (100cqi - 6.5rem - 22px) / 1.6), var(--wall-frame-max, 180px)); list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-card { --frame-ratio: 16 / 10; --frame-w: calc(var(--wall-frame-h, 180px) * 16 / 10); display: flex; flex-direction: column; gap: var(--ctl-s1); flex: 0 1 auto; width: calc(var(--frame-w, 288px) + 2 * var(--ctl-s1) + 2px); min-width: min(6.5rem, 100%); max-width: 100%; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+.ag-wall-card.is-phone.is-portrait { --frame-ratio: 9 / 19.5; --frame-w: calc(var(--wall-frame-h, 180px) * 9 / 19.5); }
+.ag-wall-card.is-phone.is-landscape { --frame-ratio: 19.5 / 9; --frame-w: calc(var(--wall-frame-h, 180px) * 19.5 / 9); }
+.ag-wall-card.is-tablet.is-portrait { --frame-ratio: 3 / 4; --frame-w: calc(var(--wall-frame-h, 180px) * 3 / 4); }
+.ag-wall-card.is-tablet.is-landscape { --frame-ratio: 4 / 3; --frame-w: calc(var(--wall-frame-h, 180px) * 4 / 3); }
 .ag-wall-card.is-your-turn { border-color: var(--warn); }
 .ag-wall-open { display: flex; align-items: center; gap: var(--ctl-s1); min-width: 0; border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
 .ag-wall-open:hover .ag-wall-name { text-decoration: underline; }
 .ag-wall-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ag-wall-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--t-meta); }
-.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.ag-wall-card .wf-live-links { margin-top: auto; }
+/* A NARROW CARD KEEPS ITS ROWS SHORT, so a phone's frame starts and its links
+   end level with a desktop's beside it: the wall's own title already says
+   "Live browsers", so a card's "live browser" eyebrow is not drawn (the badge
+   and the section's name still say it), and a link wraps whole, never mid-name. */
+.ag-wall-card .wf-live-head .ctl-eyebrow { display: none; }
+.ag-wall-card .wf-live-links .ctl-link { white-space: nowrap; }
+/* A STATUS BADGE WRAPS INSIDE A NARROW CARD (review of 2026-11-08): "live view
+   unavailable" is wider than a phone card, and on one line it ran past the
+   card's border. */
+.ag-wall-card .wf-live-head .ctl-mark { white-space: normal; max-width: 100%; }
 .ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s1); }
-.ag-wall-card .wf-live-thumb { display: block; width: 100%; aspect-ratio: 16 / 10; height: auto; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-card .wf-live-thumb { display: block; width: min(100%, var(--frame-w, 288px)); aspect-ratio: var(--frame-ratio, 16 / 10); height: auto; margin-inline: auto; object-fit: contain; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-card .wf-live-thumb.is-phone { border-radius: 10px; }
+.ag-wall-card .wf-live-thumb.is-tablet { border-radius: 8px; }
 .ag-wall-count { white-space: nowrap; }
 /* On a phone the wall is a sheet, opened from this one button over the list. */
 .ag-wall-phone { display: block; margin: 0 0 var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); padding: var(--ctl-s1) var(--ctl-s2); cursor: pointer; max-width: 100%; }

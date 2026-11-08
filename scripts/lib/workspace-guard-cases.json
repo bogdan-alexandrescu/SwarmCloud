@@ -191,19 +191,19 @@
         "iam",
         "service-accounts",
         "describe",
-        "api-service@saga-agents-staging.iam.gserviceaccount.com",
+        "peer-runner@example-shared-project.iam.gserviceaccount.com",
         "--project",
         "{project_id}"
       ]
     },
     {
-      "name": "kubectl naming the other team's cluster agents-staging is refused",
+      "name": "kubectl naming the other team's cluster peer-cluster is refused",
       "rule": "C0",
       "expect": "refuse",
       "tool": "kubectl",
       "argv": [
         "--context",
-        "gke_saga-agents-staging_us-central1-a_agents-staging",
+        "gke_example-shared-project_us-central1-a_peer-cluster",
         "get",
         "--raw=/readyz"
       ]
@@ -575,13 +575,13 @@
       "tool": "kubectl",
       "argv": [
         "--context",
-        "gke_saga-agents-prod_us-central1_agents-prod",
+        "gke_example-shared-project_us-central1_peer-prod",
         "get",
         "--raw=/readyz"
       ]
     },
     {
-      "name": "kubectl through the current context, when it is the other team's agents-staging",
+      "name": "kubectl through the current context, when it is the other team's peer-cluster",
       "rule": "C1",
       "expect": "refuse",
       "tool": "kubectl",
@@ -589,7 +589,7 @@
         "get",
         "--raw=/readyz"
       ],
-      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
     },
     {
       "name": "a token minted by impersonating another account",
@@ -1897,7 +1897,7 @@
       "stdin": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\n"
     },
     {
-      "name": "the TypeSafe hostname policy through the current context, the other team's agents-staging",
+      "name": "the TypeSafe hostname policy through the current context, the other team's peer-cluster",
       "rule": "C7",
       "expect": "refuse",
       "tool": "kubectl",
@@ -1907,10 +1907,10 @@
         "-"
       ],
       "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n",
-      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
     },
     {
-      "name": "apply through the current context, the other team's agents-staging",
+      "name": "apply through the current context, the other team's peer-cluster",
       "rule": "C7",
       "expect": "refuse",
       "tool": "kubectl",
@@ -1920,7 +1920,7 @@
         "-"
       ],
       "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n",
-      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
     },
     {
       "name": "a manifest the reader cannot be certain of (an alias)",
@@ -2701,7 +2701,7 @@
       ]
     },
     {
-      "name": "discovery through the current context, the other team's agents-staging",
+      "name": "discovery through the current context, the other team's peer-cluster",
       "rule": "C1",
       "expect": "refuse",
       "tool": "kubectl",
@@ -2711,7 +2711,7 @@
         "-o",
         "name"
       ],
-      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
     },
     {
       "name": "a group's team slot, empty",

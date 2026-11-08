@@ -1,5 +1,5 @@
 """The installer offers Voice it (lane installer-offers-voice-it; part of #2688;
-BGD, 2026-11-05): the installer never turned Voice it on, so a yes to its own
+the owner, 2026-11-05): the installer never turned Voice it on, so a yes to its own
 speech engine made nothing.
 
 Stage 0 asks whether to turn Voice it on, default no. A no keeps infra's

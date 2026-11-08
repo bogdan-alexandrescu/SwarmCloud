@@ -3,13 +3,13 @@
 #
 # `scripts/lib/common.sh` has had `assert_kube_context` since the beginning, and
 # its own comment records why: on this workstation the ACTIVE context was
-# gke_saga-agents-staging_us-central1-a_agents-staging -- another team's live
-# cluster -- with agents-prod sitting in the same kubeconfig.
+# another team's live cluster in the shared project, with that team's
+# production cluster sitting in the same kubeconfig.
 #
 # The guard worked. Using it was optional, and that is the defect. On
 # 2026-09-18 a bare `kubectl get runtimeclass` was run against a cluster eight
-# minutes old and returned resources aged 133 days; it had reached
-# agents-staging. That call was read-only. The next one in the sequence was
+# minutes old and returned resources aged 133 days; it had reached the other
+# team's cluster. That call was read-only. The next one in the sequence was
 # `kubectl apply` of two Jobs.
 #
 # So this wrapper goes on PATH ahead of the real binary and applies the check to
@@ -72,7 +72,7 @@ fi
 trailing="${ctx##*_}"
 if is_shared_resource "${trailing}"; then
   err "REFUSED: context '${ctx}' resolves to '${trailing}', which is on the shared deny-list."
-  err "That is another team's cluster. This project shares saga-agents-staging with them."
+  err "That is another team's cluster, named on this deployment's never-touch list."
   die "run scripts/configure-kubectl.sh, or export KUBECONFIG=build/kubeconfig-${ENVIRONMENT}.yaml"
 fi
 

@@ -31,6 +31,7 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import secrets
@@ -44,6 +45,13 @@ import pytest
 from .test_release_reuses_ci_images import _code, _workflow
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
 GROUP = REPO / "scripts" / "acceptance" / "groups" / "join.sh"
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
 DESIGN = REPO / "docs" / "design" / "join-requests.md"
@@ -207,7 +215,7 @@ def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
            "FAKE_ADMIN": ADMIN, "SWARM_ACCEPTANCE_JOIN_SETTLE": "0",
            "FAKE_CREDENTIAL_B64": base64.b64encode(credential.encode()).decode(),
            SETTINGS[0]: TENANT, SETTINGS[1]: ADMIN, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET,
-           **tokens, **extra}
+           **placeholder_deployment.child_env("swarm-dev-test"), **tokens, **extra}
     script = (f'source "{REPO}/scripts/lib/common.sh"\nSUITE_NAME=acceptance\n'
               f'source "{REPO}/scripts/lib/testlib.sh"\n'
               f'source "{REPO}/scripts/acceptance/lib.sh"\nsource "{GROUP}"\n'
@@ -322,7 +330,7 @@ def test_a_link_left_on_fails_link_off(tmp_path):
 def _bash(script: str, **env: str) -> subprocess.CompletedProcess:
     # No script guesses the project any more, so the caller names one.
     full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1",
-            "PROJECT_ID": "swarm-dev-test", **env}
+            "PROJECT_ID": "swarm-dev-test", **placeholder_deployment.child_env("swarm-dev-test"), **env}
     return subprocess.run(["bash", "-c", f'source "{REPO}/scripts/lib/common.sh"\nsource "{GROUP}"\n{script}'],
                           cwd=REPO, env=full,
                           capture_output=True, text=True, timeout=60)
@@ -342,15 +350,16 @@ def test_it_names_every_missing_setting():
 def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_account():
     full = dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET)))
     assert _bash("join_settings_problem && echo OK", **full).stdout.strip() == "OK"
-    # The never-touch list is whole only in the shared project (keyed by PROJECT_ID), so the
-    # deny-listed secret is tried there; the project id is read from common.sh, not restated.
-    shared = _bash('printf %s "$SHARED_PROJECT_ID"').stdout.strip()
-    assert shared
+    # The never-touch list is the placeholder deployment's, served for the project _bash
+    # names: a name on it (a PEER entry, never a real resource) is refused as the secret,
+    # and its service account as the admin.
+    peer_secret = placeholder_deployment.PEER["bucket"]
+    peer_sa = placeholder_deployment.PEER["service_account"]
     for name, value in ((SETTINGS[0], "smoke"), (SETTINGS[0], "u-someone"), (SETTINGS[0], "Eng"),
+                        (SETTINGS[1], peer_sa),
                         (SETTINGS[2], "swarm-qa@p.iam.gserviceaccount.com"),
-                        (SETTINGS[3], "a/b"), (SETTINGS[3], "oracle-web")):
-        project = {"PROJECT_ID": shared} if value == "oracle-web" else {}
-        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value, **project})
+                        (SETTINGS[3], "a/b"), (SETTINGS[3], peer_secret)):
+        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value})
         assert "REFUSED" in proc.stdout, (name, value)
 
 
@@ -392,7 +401,8 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
            "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-dev-test",
-           SETTINGS[0]: TENANT, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET}
+           SETTINGS[0]: TENANT, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET,
+           **placeholder_deployment.child_env("swarm-dev-test")}
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr

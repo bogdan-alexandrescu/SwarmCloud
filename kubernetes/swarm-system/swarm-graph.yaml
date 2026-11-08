@@ -19,7 +19,7 @@
 #
 #   terraform -chdir=terraform/infra output -raw swarm_graph_manifest
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2).
 #
 # WHY TWO REPLICAS (§2.1, owner Q8). One replica is a single point of failure
@@ -47,7 +47,7 @@
 # sources and nothing else: swarm-api's Direct VPC egress range, through the
 # internal load balancer `swarm-graph-stats` below, and the swarm-graph pods
 # themselves, so the replica that receives /v1/stats can read each peer's
-# /v1/stats/local (BGD, 2026-10-28: without it every peer is a `timeout`). A
+# /v1/stats/local (the owner, 2026-10-28: without it every peer is a `timeout`). A
 # separate port because a NetworkPolicy admits by port, not by path: swarm-api
 # never reaches /mcp, and a tenant pod never reaches the stats. The stats
 # route takes a stats ticket under its own HMAC domain, so the network is

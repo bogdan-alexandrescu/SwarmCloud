@@ -1,5 +1,5 @@
 {
- "_about": "Responses of Saga's internal decision API (Internal Jev, /jev/v1/decide) in the shape and with the values the operator measured over Tailscale on 2026-10-14: noul -> {\"noul\": p}; choice -> {choice, confidence, probabilities} keyed by the criteria's keys (the TypeSafe shape), confidence 0.98 on an element pick. Laid out as the three calls jev-browser's decide() makes for the pages compat-probe.mjs builds: a one-stage pick on a 3-element page, then the group and target stages on a 250-element page. Not a byte capture: the measurement recorded shapes and values, not bodies (JUDGE-ADAPT, part of #1030).",
+ "_about": "Responses of the operator's internal decision API (Internal Jev, /jev/v1/decide) in the shape and with the values the operator measured over Tailscale on 2026-10-14: noul -> {\"noul\": p}; choice -> {choice, confidence, probabilities} keyed by the criteria's keys (the TypeSafe shape), confidence 0.98 on an element pick. Laid out as the three calls jev-browser's decide() makes for the pages compat-probe.mjs builds: a one-stage pick on a 3-element page, then the group and target stages on a 250-element page. Not a byte capture: the measurement recorded shapes and values, not bodies (JUDGE-ADAPT, part of #1030).",
  "single": {
   "answers": {
    "done": {

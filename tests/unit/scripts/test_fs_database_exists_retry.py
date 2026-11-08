@@ -34,6 +34,7 @@ exercised, in milliseconds.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import stat
@@ -44,6 +45,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 COMMON = REPO / "scripts" / "lib" / "common.sh"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 pytestmark = pytest.mark.skipif(
     not COMMON.exists() or shutil.which("bash") is None or shutil.which("jq") is None,
@@ -130,6 +135,9 @@ def _call(tmp_path: Path, answers: list[str], fn: str = "fs_database_exists",
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
         "PROJECT_ID": "swarm-test-project",
         "FIRESTORE_DATABASE": "swarm",
+        # The placeholder deployment's region, and its never-touch list served
+        # for this project: common.sh reads both as it is sourced.
+        **placeholder_deployment.child_env("swarm-test-project"),
     }
     env.update(extra_env or {})
     # _ACCESS_TOKEN is set so access_token returns it rather than asking gcloud:

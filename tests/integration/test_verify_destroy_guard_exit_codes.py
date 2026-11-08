@@ -20,6 +20,7 @@ script that exits 2 for everything.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -28,14 +29,17 @@ from pathlib import Path
 
 import pytest
 
-from destroy_plan_recording import render, shared_project_id  # noqa: E402
+from destroy_plan_recording import deny_list_project, render  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "verify-destroy-guard.sh"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
 #: The recording with its placeholder project rendered as the project the
-#: deny-list protects (destroy_plan_recording.py): under the placeholder the
-#: script would judge it against an empty list.
-FIXTURE = render(shared_project_id())
+#: placeholder deployment serves the never-touch list for
+#: (destroy_plan_recording.py), so the script runs for that deployment only.
+FIXTURE = render(deny_list_project())
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not SCRIPT.exists() or not FIXTURE.exists(),
@@ -55,9 +59,8 @@ def _copy(tmp_path: Path, *, broken_guard: bool) -> tuple[Path, dict[str, str]]:
         guard = root / "scripts" / "lib" / "plan-guard.sh"
         guard.write_text(GUARD_THAT_ALLOWS_EVERYTHING)
         guard.chmod(0o755)
-    project = json.loads(FIXTURE.read_text())["_recording"]["project"]
     env_file = tmp_path / "env"
-    env_file.write_text(f"PROJECT_ID={project}\nREGION=us-central1\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n")
+    env_file.write_text(f"PROJECT_ID={_P.PROJECT}\nREGION={_P.REGION}\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n")
     env_file.chmod(0o600)
     env = dict(os.environ)
     env["SWARM_ENV_FILE"] = str(env_file)
