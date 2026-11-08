@@ -52,7 +52,7 @@ a.ap-card-top:hover b { text-decoration: underline; }
 .ap-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; padding: 8px; border: 1px solid var(--line-soft); border-radius: var(--r-tile); background: var(--bg); min-width: 0; }
 .ap-item .c-inp { flex: 1 1 120px; min-width: 0; }
 .ap-item .c-inp.is-num { flex: 0 0 72px; }
-.ap-check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); cursor: pointer; }
+.ap-optin { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); cursor: pointer; }
 .ap-chips { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .ap-sub > .c-inp { width: 100%; }
 

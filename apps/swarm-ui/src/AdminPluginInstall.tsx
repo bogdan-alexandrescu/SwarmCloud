@@ -523,7 +523,7 @@ function OverlayEditor({ value, onChange, disabled }: { value: OverlayForm; onCh
         Overlay
         <InfoTip about="the overlay" tip="For a plugin with no plugin.json, or one that reads environment variables and files: its manifest, hooks, declared settings and what it needs. It adds to what the plugin ships and never replaces its hooks." />
       </legend>
-      <label className="ap-check">
+      <label className="ap-optin">
         <input type="checkbox" checked={value.manifest} onChange={(e) => set({ manifest: e.target.checked })} />
         No plugin.json
       </label>
@@ -596,7 +596,7 @@ function OverlayEditor({ value, onChange, disabled }: { value: OverlayForm; onCh
             </select>
             <input className="c-inp is-mono" aria-label="Environment variable" placeholder="VARIABLE" value={s.variable} onChange={(e) => setting(i, { variable: e.target.value })} />
             <input className="c-inp" aria-label="Description" placeholder="description" value={s.description} onChange={(e) => setting(i, { description: e.target.value })} />
-            <label className="ap-check">
+            <label className="ap-optin">
               <input type="checkbox" checked={s.sensitive} onChange={(e) => setting(i, { sensitive: e.target.checked })} />
               Sensitive
             </label>
@@ -617,7 +617,7 @@ function OverlayEditor({ value, onChange, disabled }: { value: OverlayForm; onCh
         </span>
         <div className="ap-chips" role="group" aria-label="Runtimes">
           {RUNTIMES.map((r) => (
-            <label key={r} className="ap-check">
+            <label key={r} className="ap-optin">
               <input type="checkbox" checked={value.runtimes.includes(r)} onChange={(e) => set({ runtimes: e.target.checked ? [...value.runtimes, r] : value.runtimes.filter((x) => x !== r) })} />
               {r}
             </label>
