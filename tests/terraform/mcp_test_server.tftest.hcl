@@ -32,9 +32,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -58,12 +58,12 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   # Read by the dev run's assertions only (live.tftest.hcl does the same).
   tf_root = "../../terraform/infra"
@@ -81,24 +81,24 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    "swarm-graph"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    "swarm-github-hooks"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-egress"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    "swarm-graph"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    "swarm-github-hooks"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
   # The deployer that must act as the echo server's account.
-  deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+  deployer_service_account = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
 }
 
 run "off_by_default_nothing_exists" {
@@ -171,7 +171,7 @@ run "account_creates_the_account_alone" {
       && length(google_cloud_run_v2_service.mcp_test_server) == 0
       && length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 0
       && output.mcp_test_server.created == false
-      && output.mcp_test_server.service_account == "swarm-mcp-echo@saga-agents-staging.iam.gserviceaccount.com"
+      && output.mcp_test_server.service_account == "swarm-mcp-echo@example-project.iam.gserviceaccount.com"
     )
     error_message = "step 1 creates swarm-mcp-echo and nothing that acts as it: bootstrap's admin grant must land before the deployer's actAs is asked for"
   }
@@ -193,7 +193,7 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
       length(google_cloud_run_v2_service.mcp_test_server) == 1
       && google_cloud_run_v2_service.mcp_test_server[0].name == "swarm-mcp-echo"
       && google_cloud_run_v2_service.mcp_test_server[0].ingress == "INGRESS_TRAFFIC_ALL"
-      && google_cloud_run_v2_service.mcp_test_server[0].template[0].containers[0].image == "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      && google_cloud_run_v2_service.mcp_test_server[0].template[0].containers[0].image == "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     )
     error_message = "the echo server is the Cloud Run service swarm-mcp-echo, ingress all, on the swarm-verify image's promoted digest"
   }
@@ -225,10 +225,10 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
   assert {
     condition = (
       length(google_cloud_run_v2_service_iam_member.mcp_test_server_invoker) == 1
-      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].member == "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].member == "serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com"
       && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].role == "roles/run.invoker"
       && google_cloud_run_v2_service_iam_member.mcp_test_server_invoker[0].name == "swarm-mcp-echo"
-      && output.mcp_test_server.invoker == "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      && output.mcp_test_server.invoker == "swarm-verify@example-project.iam.gserviceaccount.com"
     )
     error_message = "run.invoker on swarm-mcp-echo is held by swarm-verify alone, and the output names it"
   }
@@ -253,8 +253,8 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
   assert {
     condition = (
       google_service_account.mcp_test_server[0].account_id == "swarm-mcp-echo"
-      && google_cloud_run_v2_service.mcp_test_server[0].template[0].service_account == "swarm-mcp-echo@saga-agents-staging.iam.gserviceaccount.com"
-      && output.mcp_test_server.service_account == "swarm-mcp-echo@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service.mcp_test_server[0].template[0].service_account == "swarm-mcp-echo@example-project.iam.gserviceaccount.com"
+      && output.mcp_test_server.service_account == "swarm-mcp-echo@example-project.iam.gserviceaccount.com"
     )
     error_message = "the echo server runs as its own account swarm-mcp-echo, not swarm-verify's (which reads Firestore) nor the default compute account"
   }
@@ -266,7 +266,7 @@ run "on_in_dev_the_echo_server_admits_only_the_acceptance_identity_scales_to_zer
     condition = (
       length(regexall("resource \"google_[a-z0-9_]*iam_[a-z_]*\"", file("${var.tf_root}/mcp_test_server.tf"))) == 2
       && google_service_account_iam_member.mcp_test_server_deployer_acts_as[0].role == "roles/iam.serviceAccountUser"
-      && google_service_account_iam_member.mcp_test_server_deployer_acts_as[0].member == "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      && google_service_account_iam_member.mcp_test_server_deployer_acts_as[0].member == "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com"
     )
     error_message = "mcp_test_server.tf grants the echo server's account nothing; the deployer alone may act as it"
   }

@@ -10,7 +10,7 @@
 #   1. swarm-verify holds roles/container.clusterViewer, conditioned to the
 #      swarm-autopilot cluster's own resource name -- GKE has no per-cluster
 #      IAM resource, so the condition IS the scope -- and the expression never
-#      names the shared project's agents-staging cluster;
+#      names the shared project's peer-cluster cluster;
 #   2. the grant is made by terraform/bootstrap, which the OWNER applies, and
 #      never by terraform/infra, which CI applies: CI's scoped projectIamAdmin
 #      does not carry clusterViewer (deployer_iam.tftest.hcl holds that), and
@@ -38,7 +38,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 }
 
@@ -63,21 +63,21 @@ run "verify_views_the_swarm_cluster_and_no_other" {
 
   # MUTATION: name another account (the scheduler's) and the gate still 403s.
   assert {
-    condition     = google_project_iam_member.verify_views_swarm_cluster.member == "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_project_iam_member.verify_views_swarm_cluster.member == "serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com"
     error_message = "the cluster read must be granted to swarm-verify, the gate's identity, and to nobody else"
   }
 
   # MUTATION: grant it in another project and the gate still 403s.
   assert {
-    condition     = google_project_iam_member.verify_views_swarm_cluster.project == "saga-agents-staging"
+    condition     = google_project_iam_member.verify_views_swarm_cluster.project == "example-project"
     error_message = "the cluster read is granted in the platform's project"
   }
 
   # MUTATION: drop the condition block and the grant covers every cluster in
-  # this shared project, the other team's agents-staging included.
+  # this shared project, the other team's peer-cluster included.
   assert {
     condition     = length(google_project_iam_member.verify_views_swarm_cluster.condition) == 1
-    error_message = "swarm-verify's clusterViewer must carry a condition: unconditioned, a project-level grant reaches every cluster in saga-agents-staging, agents-staging included"
+    error_message = "swarm-verify's clusterViewer must carry a condition: unconditioned, a project-level grant reaches every cluster in example-project, peer-cluster included"
   }
 
   # MUTATION: a bare startsWith(".../clusters/swarm-autopilot") -- the form
@@ -86,16 +86,16 @@ run "verify_views_the_swarm_cluster_and_no_other" {
   # exactly, or a path under it.
   assert {
     condition = google_project_iam_member.verify_views_swarm_cluster.condition[0].expression == join(" || ", [
-      "resource.name == \"projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot\"",
-      "resource.name.startsWith(\"projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot/\")",
+      "resource.name == \"projects/example-project/locations/us-central1/clusters/swarm-autopilot\"",
+      "resource.name.startsWith(\"projects/example-project/locations/us-central1/clusters/swarm-autopilot/\")",
     ])
-    error_message = "swarm-verify's clusterViewer condition must name projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot exactly (or a path under it), and nothing else"
+    error_message = "swarm-verify's clusterViewer condition must name projects/example-project/locations/us-central1/clusters/swarm-autopilot exactly (or a path under it), and nothing else"
   }
 
   # MUTATION: point the condition at the shared cluster and this fails.
   assert {
-    condition     = length(regexall("agents-staging\"|clusters/agents-staging", google_project_iam_member.verify_views_swarm_cluster.condition[0].expression)) == 0
-    error_message = "swarm-verify's cluster grant names agents-staging, the other team's cluster on the shared deny-list (scripts/lib/common.sh)"
+    condition     = length(regexall("peer-cluster\"|clusters/peer-cluster", google_project_iam_member.verify_views_swarm_cluster.condition[0].expression)) == 0
+    error_message = "swarm-verify's cluster grant names peer-cluster, the other team's cluster on the shared deny-list (scripts/lib/common.sh)"
   }
 
   # The marker make destroy reads: an IAM member takes no labels, so it is at
@@ -220,7 +220,7 @@ run "verify_holds_no_other_project_level_container_role" {
         "",
         "resource \"google_project_iam_member\" \"someone_else\" {",
         "  role   = \"roles/container.viewer\"",
-        "  member = \"serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com\"",
+        "  member = \"serviceAccount:swarm-api@example-project.iam.gserviceaccount.com\"",
         "}",
         "",
       ])) : "${m[1]} ${length(regexall("(?m)^\\s*condition \\{", m[2])) > 0 ? "conditioned" : "unconditioned"}"

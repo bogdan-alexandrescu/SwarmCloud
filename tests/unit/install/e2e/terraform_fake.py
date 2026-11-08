@@ -25,12 +25,6 @@ from .world import World
 _VARIABLE = re.compile(r'^variable\s+"([^"]+)"\s*\{', re.MULTILINE)
 INPUTS_FILE = "swarm-install.auto.tfvars.json"
 
-#: An input whose variable the Terraform lane declares in its own pull request,
-#: which the owner merges first (generic-repository design section 2.4:
-#: `shared_deny_list`, list(string), default []). Until then the fake accepts
-#: it as real Terraform would once declared; remove the entry when it is.
-PENDING_VARIABLES = {"infra": {"shared_deny_list"}}
-
 
 def _block(text: str, start: int) -> str:
     """The body of the block opened at `start`: `terraform fmt` (which `make
@@ -70,7 +64,7 @@ def check_inputs(root_dir: Path) -> list[str]:
     inputs = json.loads(inputs_path.read_text()) if inputs_path.is_file() else {}
     variables = declared(root_dir)
     problems = [f"{root_dir.name}: {key} is not a declared variable" for key in sorted(inputs)
-                if key not in variables and key not in PENDING_VARIABLES.get(root_dir.name, set())]
+                if key not in variables]
     problems += [f"{root_dir.name}: No value for required variable {name}" for name, has_default
                  in sorted(variables.items()) if not has_default and name not in inputs]
     return problems

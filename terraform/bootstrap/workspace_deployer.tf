@@ -157,7 +157,7 @@ locals {
   # Personal tenants' secrets, and only theirs: `swarm-tenant-u-` is
   # Tenant.secret_name's spelling for a tenant id the frozen contract mints
   # for a person (identity.tenant_id_for_user). The other team's secrets are
-  # agents-* and promptlab-*, which this cannot match.
+  # agents-* and peer-app-*, which this cannot match.
   workspace_personal_secret_prefix = "projects/${local.workspace_project_number}/secrets/swarm-tenant-u-"
 
   # The roles each person's worker holds on the project, and so the only roles
@@ -184,7 +184,7 @@ locals {
     object_creator = "resource.name.startsWith(\"projects/_/buckets/${local.workspace_artifact_bucket}/objects/tenants/\")"
 
     # get-credentials on the swarm cluster; nothing on the other team's
-    # agents-staging. The expression modules/iam builds for the dispatchers.
+    # peer-cluster. The expression modules/iam builds for the dispatchers.
     cluster_viewer = "resource.name.startsWith(\"${local.workspace_cluster_name}\")"
   }
 
@@ -449,7 +449,7 @@ locals {
       role = "roles/container.clusterViewer"
       conditions = [{
         title       = "swarm-cluster-only"
-        description = "managed-by=swarm-terraform; get-credentials on the swarm Autopilot cluster for the namespace step; agents-staging belongs to another team."
+        description = "managed-by=swarm-terraform; get-credentials on the swarm Autopilot cluster for the namespace step; any other cluster (e.g. peer-cluster) belongs to another team."
         expression  = local.workspace_deployer_conditions.cluster_viewer
       }]
     }
@@ -473,6 +473,14 @@ resource "google_project_iam_member" "workspace_deployer" {
   }
 
   lifecycle {
+    # The cluster viewer's description is generic text; a live deployment's
+    # binding keeps its older text, which only its private state holds. A
+    # changed condition forces the binding's replacement, so the description
+    # is ignored: an existing deployment is not replaced and a fresh one gets
+    # this text. It is ignored on every role's condition here, since one
+    # lifecycle covers the whole for_each.
+    ignore_changes = [condition[0].description]
+
     # The slot creator is forge_user_slots.tf's role, defined only while the
     # user slots are on; granting a role that does not exist fails the apply
     # halfway, so it is refused at plan instead.

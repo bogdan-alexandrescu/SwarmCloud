@@ -42,7 +42,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -99,7 +99,7 @@ run "bootstrap_defines_the_eight_roles_exactly_as_terraform_infra_did" {
 
   assert {
     condition = alltrue([
-      for key, r in google_project_iam_custom_role.platform : r.project == "saga-agents-staging"
+      for key, r in google_project_iam_custom_role.platform : r.project == "example-project"
     ])
     error_message = "every platform role is defined in the project whose bindings name it"
   }
@@ -117,7 +117,7 @@ run "modules_iam_names_the_broker" {
   }
 
   variables {
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    artifact_bucket  = "swarm-artifacts-example-project"
     labels           = { "managed-by" = "swarm-terraform" }
     gke_cluster_name = "swarm-autopilot"
     gke_location     = "us-central1"
@@ -142,14 +142,14 @@ run "bootstrap_grants_the_broker_swarm_secret_lister" {
   }
 
   assert {
-    condition     = google_project_iam_member.broker_secret_lister["swarm-quota-broker"].role == "projects/saga-agents-staging/roles/swarmSecretLister"
+    condition     = google_project_iam_member.broker_secret_lister["swarm-quota-broker"].role == "projects/example-project/roles/swarmSecretLister"
     error_message = "the broker's grant must be swarmSecretLister, by the name terraform/infra granted it under"
   }
 
   # The account modules/iam creates. Bootstrap cannot read it (the account is
   # terraform/infra's), so it names it, and this is where the two are compared.
   assert {
-    condition     = google_project_iam_member.broker_secret_lister["swarm-quota-broker"].member == "serviceAccount:${run.modules_iam_names_the_broker.quota_broker_account_id}@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_project_iam_member.broker_secret_lister["swarm-quota-broker"].member == "serviceAccount:${run.modules_iam_names_the_broker.quota_broker_account_id}@example-project.iam.gserviceaccount.com"
     error_message = "terraform/bootstrap grants swarmSecretLister to an account other than the quota broker modules/iam creates"
   }
 
@@ -175,7 +175,9 @@ run "the_moved_block_names_the_broker_grant_by_its_old_key" {
   }
 
   assert {
-    condition     = strcontains(file("../../terraform/infra/custom_roles_moved_to_bootstrap.tf"), "from = module.iam.google_project_iam_member.plain[\"${run.modules_iam_names_the_broker.quota_broker_account_id}:${output.names.secret_lister}\"]")
+    # The block's old key holds the live project's id (a state address, kept
+    # as it is), so the project part is read by shape and the rest exactly.
+    condition     = length(regexall("from = module\\.iam\\.google_project_iam_member\\.plain\\[\"${run.modules_iam_names_the_broker.quota_broker_account_id}:projects/[a-z][a-z0-9-]*/roles/${element(split("/", output.names.secret_lister), 3)}\"\\]", file("../../terraform/infra/custom_roles_moved_to_bootstrap.tf"))) == 1
     error_message = "the `moved` block in terraform/infra/custom_roles_moved_to_bootstrap.tf does not name the broker's swarmSecretLister grant by the key modules/iam gave it; the release would destroy that grant instead of forgetting it"
   }
 }
@@ -490,16 +492,16 @@ run "terraform_infra_writes_the_marker_bootstrap_waits_for" {
     # terraform/infra refuses to plan without a digest for every image it
     # deploys. The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -530,7 +532,7 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     override_during = plan
     values = {
       outputs = {
-        project_id = "saga-agents-staging"
+        project_id = "example-project"
       }
     }
   }
@@ -553,8 +555,8 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     target          = google_service_account.platform
     override_during = plan
     values = {
-      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-api@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -562,8 +564,8 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     target          = google_service_account.tick
     override_during = plan
     values = {
-      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-tick@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -571,8 +573,8 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     target          = google_service_account.verify
     override_during = plan
     values = {
-      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-verify@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -580,8 +582,8 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     target          = google_service_account.schedule_tick
     override_during = plan
     values = {
-      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -589,8 +591,8 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     target          = google_service_account.rollup_sweeper
     override_during = plan
     values = {
-      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -616,7 +618,7 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     override_during = plan
     values = {
       outputs = {
-        project_id         = "saga-agents-staging"
+        project_id         = "example-project"
         custom_roles_owner = "terraform/bootstrap"
       }
     }
@@ -640,8 +642,8 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     target          = google_service_account.platform
     override_during = plan
     values = {
-      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-api@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -649,8 +651,8 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     target          = google_service_account.tick
     override_during = plan
     values = {
-      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-tick@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -658,8 +660,8 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     target          = google_service_account.verify
     override_during = plan
     values = {
-      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-verify@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -667,8 +669,8 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     target          = google_service_account.schedule_tick
     override_during = plan
     values = {
-      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -676,8 +678,8 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     target          = google_service_account.rollup_sweeper
     override_during = plan
     values = {
-      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
-      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      email  = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
     }
   }
 

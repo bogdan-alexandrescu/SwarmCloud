@@ -35,7 +35,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -45,7 +45,7 @@ variables {
   # The grantable list and the deployer's account grants exist only with the
   # GitHub WIF on (github_hooks_role.tftest.hcl does the same).
   enable_github_wif     = true
-  github_repository     = "saga/agent-swarm-infra"
+  github_repository     = "example-org/example-repo"
   deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 }
 
@@ -53,7 +53,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -99,13 +99,13 @@ run "on_the_account_exists_with_no_key" {
 
   variables {
     enable_qa_identity   = true
-    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com"]
+    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@example-project.iam.gserviceaccount.com"]
   }
 
   assert {
     condition = alltrue([
       google_service_account.qa_identity[0].account_id == "qa-console",
-      google_service_account.qa_identity[0].project == "saga-agents-staging",
+      google_service_account.qa_identity[0].project == "example-project",
       startswith(google_service_account.qa_identity[0].description, "managed-by=swarm-terraform;"),
       !coalesce(google_service_account.qa_identity[0].create_ignore_already_exists, false),
     ])
@@ -133,7 +133,7 @@ run "on_the_role_holds_sign_jwt_alone" {
 
   variables {
     enable_qa_identity   = true
-    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com"]
+    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@example-project.iam.gserviceaccount.com"]
   }
 
   # The exact set. getAccessToken or getOpenIdToken would mint a token for any
@@ -147,7 +147,7 @@ run "on_the_role_holds_sign_jwt_alone" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.qa_jwt_signer[0].role_id == "swarmQaJwtSigner",
-      google_project_iam_custom_role.qa_jwt_signer[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.qa_jwt_signer[0].project == "example-project",
       google_project_iam_custom_role.qa_jwt_signer[0].stage == "GA",
       startswith(google_project_iam_custom_role.qa_jwt_signer[0].description, "managed-by=swarm-terraform"),
     ])
@@ -156,8 +156,8 @@ run "on_the_role_holds_sign_jwt_alone" {
 
   assert {
     condition = (
-      output.qa_identity.email == "qa-console@saga-agents-staging.iam.gserviceaccount.com"
-      && output.qa_identity.role == "projects/saga-agents-staging/roles/swarmQaJwtSigner"
+      output.qa_identity.email == "qa-console@example-project.iam.gserviceaccount.com"
+      && output.qa_identity.role == "projects/example-project/roles/swarmQaJwtSigner"
       && output.qa_identity.permissions == tolist(["iam.serviceAccounts.signJwt"])
     )
     error_message = "the output gives the owner the account, the role's full name and its one permission, the rows to read the plan against"
@@ -173,23 +173,23 @@ run "on_swarm_api_alone_may_sign_as_the_qa_account" {
 
   variables {
     enable_qa_identity   = true
-    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com"]
+    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@example-project.iam.gserviceaccount.com"]
   }
 
   override_resource {
     target          = google_service_account.qa_identity
     override_during = plan
     values = {
-      name  = "projects/saga-agents-staging/serviceAccounts/qa-console@saga-agents-staging.iam.gserviceaccount.com"
-      email = "qa-console@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/qa-console@example-project.iam.gserviceaccount.com"
+      email = "qa-console@example-project.iam.gserviceaccount.com"
     }
   }
 
   assert {
     condition = alltrue([
       length(data.google_iam_policy.qa_identity.binding) == 1,
-      toset([for b in data.google_iam_policy.qa_identity.binding : b.role]) == toset(["projects/saga-agents-staging/roles/swarmQaJwtSigner"]),
-      toset(flatten([for b in data.google_iam_policy.qa_identity.binding : tolist(b.members)])) == toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"]),
+      toset([for b in data.google_iam_policy.qa_identity.binding : b.role]) == toset(["projects/example-project/roles/swarmQaJwtSigner"]),
+      toset(flatten([for b in data.google_iam_policy.qa_identity.binding : tolist(b.members)])) == toset(["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"]),
       alltrue([for b in data.google_iam_policy.qa_identity.binding : length(b.condition) == 0]),
     ])
     error_message = "the QA account's policy has one binding: swarmQaJwtSigner, for swarm-api's runtime account alone"
@@ -198,7 +198,7 @@ run "on_swarm_api_alone_may_sign_as_the_qa_account" {
   assert {
     condition = (
       length(google_service_account_iam_policy.qa_identity) == 1
-      && google_service_account_iam_policy.qa_identity[0].service_account_id == "projects/saga-agents-staging/serviceAccounts/qa-console@saga-agents-staging.iam.gserviceaccount.com"
+      && google_service_account_iam_policy.qa_identity[0].service_account_id == "projects/example-project/serviceAccounts/qa-console@example-project.iam.gserviceaccount.com"
       && google_service_account_iam_policy.qa_identity[0].policy_data == "{\"qa\":\"swarm-api-signs\"}"
     )
     error_message = "the policy is written AUTHORITATIVELY on the QA account, so a token creator or actAs member added there by hand is removed on the next apply"
@@ -230,7 +230,7 @@ run "on_the_deployer_cannot_reach_the_qa_account" {
 
   variables {
     enable_qa_identity   = true
-    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com"]
+    frontend_iap_members = ["domain:example.com", "serviceAccount:qa-console@example-project.iam.gserviceaccount.com"]
   }
 
   assert {

@@ -366,16 +366,8 @@ def test_every_generated_input_is_a_declared_variable() -> None:
             inputs = _boot(pass_name, **digests)
         else:
             inputs = _infra(pass_name, EVERY_VERSION, **digests)
-        undeclared = set(inputs) - _declared(root) - PENDING_VARIABLES.get(root, set())
+        undeclared = set(inputs) - _declared(root)
         assert not undeclared, (pass_name, sorted(undeclared))
-
-
-#: An input whose variable the Terraform lane declares in its own pull request
-#: (generic-repository design section 2.4: `shared_deny_list`, list(string),
-#: default [], rendered as swarm-api's SWARM_SHARED_DENY_LIST and
-#: SWARM_SHARED_DENY_LIST_SET). Until it merges Terraform prints a warning for
-#: the value and applies nothing; once it is declared, this entry is moot.
-PENDING_VARIABLES = {"infra": {"shared_deny_list"}}
 
 
 # -- DAYONE-TFVARS-2: sizing, one-person admission, add-ons --------------------------------

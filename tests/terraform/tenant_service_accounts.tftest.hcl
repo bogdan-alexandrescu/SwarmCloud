@@ -20,20 +20,20 @@ mock_provider "google" {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -59,8 +59,8 @@ run "an_account_under_two_tenants_is_refused" {
   # would make that depend on rendering order. Case differs on purpose.
   variables {
     tenants = {
-      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      smoke = { kind = "group", principal = "smoke@example.com", providers = [], service_accounts = ["SWARM-CI-FIX@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
+      smoke = { kind = "group", principal = "smoke@example.com", providers = [], service_accounts = ["SWARM-CI-FIX@example-project.iam.gserviceaccount.com"] }
     }
   }
 
@@ -85,7 +85,7 @@ run "a_human_address_is_refused" {
   # A person reaches a tenant through its group, never through a listing.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["bogdan@example.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["owner@example.com"] }
     }
   }
 
@@ -110,7 +110,7 @@ run "an_iam_member_string_is_refused" {
   # swarm-api compares the bare email from the token; a prefix matches nobody.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
     }
   }
 
@@ -161,7 +161,7 @@ run "an_account_in_another_project_is_refused" {
   # The shape alone fits any project; the pin to var.project_id refuses this.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@other-project.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-shared-project.iam.gserviceaccount.com"] }
     }
   }
 
@@ -186,9 +186,9 @@ run "an_account_in_admin_users_is_refused" {
   # A listing gives exactly one tenant's rights; an admin entry adds every tenant's.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
     }
-    admin_users = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+    admin_users = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"]
   }
 
   expect_failures = [var.tenants]
@@ -211,9 +211,9 @@ run "an_account_in_admin_pool_users_is_refused" {
 
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
     }
-    admin_pool_users = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+    admin_pool_users = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"]
   }
 
   expect_failures = [var.tenants]
@@ -240,9 +240,9 @@ run "an_account_in_secret_admin_members_is_refused" {
   # variable already reads var.tenants, so the reverse read would be a cycle.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
     }
-    secret_admin_members = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+    secret_admin_members = ["serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com"]
   }
 
   expect_failures = [var.secret_admin_members]
@@ -271,8 +271,8 @@ run "an_account_in_a_tenants_own_secret_admins_is_refused" {
         kind             = "group"
         principal        = "eng@example.com"
         providers        = []
-        service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
-        secret_admins    = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+        service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"]
+        secret_admins    = ["serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com"]
       }
     }
   }
@@ -298,8 +298,8 @@ run "an_account_that_is_another_tenants_principal_is_refused" {
   # It already has a tenant of its own; a listing would give it a second.
   variables {
     tenants = {
-      eng           = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      "u-sw-c90291" = { kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
+      eng           = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
+      "u-sw-c90291" = { kind = "user", principal = "swarm-ci-fix@example-project.iam.gserviceaccount.com", providers = [] }
     }
   }
 
@@ -323,7 +323,7 @@ run "the_listing_renders_as_a_json_list_with_the_accounts_uid" {
 
   variables {
     tenants = {
-      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"] }
       smoke = { kind = "group", principal = "smoke@example.com", providers = [] }
     }
   }
@@ -334,7 +334,7 @@ run "the_listing_renders_as_a_json_list_with_the_accounts_uid" {
   assert {
     condition = jsondecode(local.service_env["swarm-api"].TENANT_SERVICE_ACCOUNTS) == [
       {
-        email     = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+        email     = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
         kind      = "group"
         principal = "eng@example.com"
         uid       = "104857600000000000001"

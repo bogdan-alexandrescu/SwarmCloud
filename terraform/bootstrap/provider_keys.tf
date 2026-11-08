@@ -55,7 +55,7 @@
 #     versions.* permissions are evaluated against the secret or the version
 #     (`.../secrets/<id>/versions/<v>`, which starts with the same prefix), so
 #     this arm NARROWS them to the platform's tenant secrets: never
-#     swarm-github-app-*, never the other team's agents-* or promptlab-*.
+#     swarm-github-app-*, never the other team's agents-* or peer-app-*.
 #   * `resource.type == "cloudresourcemanager.googleapis.com/Project"`.
 #     secrets.create is evaluated against the PARENT PROJECT, whose name
 #     carries no secret id, so no resource-name condition can gate it: the
@@ -94,7 +94,7 @@
 # (#79; tests/terraform/custom_roles_out_of_ci.tftest.hcl), and a role carrying
 # secrets.setIamPolicy on the CI deployer's grantable list
 # (deployer_conditions.tf) would let CI grant itself the means to rewrite any
-# secret's policy in saga-agents-staging, the other team's among them (#69):
+# secret's policy in example-project, the other team's among them (#69):
 # hasOnly() limits WHICH roles CI may grant, never to whom or under what
 # condition. So the owner applies this (dev-iam).
 #
@@ -110,7 +110,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. The name arm starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
-# promptlab-*, so it can match none of them. The create arm can create a
+# peer-app-*, so it can match none of them. The create arm can create a
 # secret with their prefix, and can do nothing else to it.
 
 variable "enable_provider_keys" {

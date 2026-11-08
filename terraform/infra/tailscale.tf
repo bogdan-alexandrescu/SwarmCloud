@@ -1,4 +1,4 @@
-# Tailscale egress: the one path from swarm-autopilot onto Saga's tailnet, to
+# Tailscale egress: the one path from swarm-autopilot onto the organisation's tailnet, to
 # the internal decision API Jev's "Internal Jev" and "Internal Laya" judgment
 # backends call (owner decisions 2026-10-14; lane JUDGE-NET;
 # docs/runbooks/tailscale-egress.md).
@@ -56,7 +56,7 @@
 #   4. `kubernetes/apply.sh --policies --confirm` (the workspace deployer may
 #      then write swarm-allow-judge-egress), then `kubernetes/apply.sh
 #      --swarm-system --confirm`, which applies the manifest to
-#      swarm-autopilot, refuses agents-staging, and syncs the Secret.
+#      swarm-autopilot, refuses peer-cluster, and syncs the Secret.
 #
 # GKE ONLY: the forwarder is a pod on the Autopilot cluster.
 
@@ -247,7 +247,7 @@ output "tailscale_egress" {
 # swarm-api's egress range filled in. Null while the switch is off, so
 # apply.sh applies nothing about the tailnet and syncs no secret.
 output "tailscale_egress_manifest" {
-  description = "The decision-api tailnet egress, rendered. Apply to swarm-autopilot only (never agents-staging), with kubernetes/apply.sh --swarm-system. Null while enable_tailscale_egress is off."
+  description = "The decision-api tailnet egress, rendered. Apply to swarm-autopilot only (never peer-cluster), with kubernetes/apply.sh --swarm-system. Null while enable_tailscale_egress is off."
   value = local.tailscale_egress_enabled ? replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/tailscale-egress.yaml"),
     "__TAILNET_FQDN__", var.tailscale_egress_target),

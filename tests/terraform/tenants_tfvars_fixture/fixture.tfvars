@@ -8,7 +8,7 @@
 #
 # The parse must find exactly alpha, b-2 and quoted.
 
-project_id = "saga-agents-staging"
+project_id = "example-project"
 
 service_max_instances = {
   notatenant = {

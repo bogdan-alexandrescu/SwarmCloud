@@ -3,7 +3,7 @@
 # Bucket is supplied at init time so this root stays environment-agnostic:
 #
 #   terraform init \
-#     -backend-config="bucket=swarm-tfstate-saga-agents-staging" \
+#     -backend-config="bucket=swarm-tfstate-example-project" \
 #     -backend-config="prefix=infra/dev"
 #
 # The bucket itself is created by terraform/bootstrap, which is a SEPARATE root

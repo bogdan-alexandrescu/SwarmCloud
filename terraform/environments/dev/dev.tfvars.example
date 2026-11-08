@@ -1,0 +1,73 @@
+# Dev environment: an example with placeholders
+# (docs/design/generic-repository.md section 3.1). A deployment's real
+# dev.tfvars is private: it lives under the state bucket's config/dev/ prefix,
+# never in this repository. Every variable not set here keeps its default in
+# terraform/infra/variables.tf, which is off for every optional feature.
+#
+#   terraform -chdir=terraform/infra init \
+#     -backend-config="bucket=swarm-tfstate-example-project" \
+#     -backend-config="prefix=infra/dev"
+#   terraform -chdir=terraform/infra plan -var-file=<the private dev.tfvars>
+
+project_id  = "example-project"
+region      = "us-central1"
+environment = "dev"
+
+deletion_protection  = false
+bucket_force_destroy = false
+
+extra_labels = {
+  "swarm-owner" = "platform"
+  "swarm-tier"  = "development"
+}
+
+# --- network ---------------------------------------------------------------
+# Disjoint from anything the shared project's other networks use.
+subnet_cidr         = "10.40.0.0/20"
+pods_cidr           = "10.44.0.0/14"
+services_cidr       = "10.48.0.0/20"
+gke_master_cidr     = "172.16.32.0/28"
+nat_static_ip_count = 1
+restrict_egress     = false
+
+# --- GKE Autopilot ---------------------------------------------------------
+enable_gke_autopilot        = true
+gke_release_channel         = "REGULAR"
+gke_enable_private_endpoint = false
+gke_master_authorized_cidrs = [{ cidr_block = "203.0.113.7/32", display_name = "installer" }]
+
+# --- data ------------------------------------------------------------------
+firestore_database      = "swarm"
+artifact_retention_days = 30
+
+# --- identity --------------------------------------------------------------
+allowed_domains = ["example.com"]
+
+tenants = {
+  eng = {
+    kind           = "group"
+    principal      = "eng@example.com"
+    display_name   = "Engineering"
+    providers      = ["anthropic"]
+    max_active     = 10
+    capacity_units = 20
+  }
+}
+
+api_invokers         = ["group:eng@example.com"]
+secret_admin_members = ["group:swarm-admins@example.com"]
+admin_users          = ["admin@example.com"]
+platform_owner       = "owner@example.com"
+
+# The shared project's other-team resources nothing may touch (rendered on
+# swarm-api as SWARM_SHARED_DENY_LIST). A project that shares nothing: [].
+shared_deny_list = ["peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket", "peer-runner@example-shared-project.iam.gserviceaccount.com"]
+
+# --- console ---------------------------------------------------------------
+enable_frontend   = true
+frontend_hostname = "swarm.example.com"
+
+# --- operations ------------------------------------------------------------
+create_alerts       = true
+alert_emails        = ["swarm-alerts@example.com"]
+spec_signature_mode = "enforce"

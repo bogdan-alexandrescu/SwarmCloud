@@ -34,7 +34,7 @@ locals {
   # So this defaults OFF, and the boundary is stated honestly rather than
   # claimed falsely: a swarm identity can reach ANY Firestore database in this
   # project. Today that is only `swarm`, so nothing else is exposed. ANYONE
-  # CREATING A SECOND DATABASE IN saga-agents-staging MUST KNOW THIS -- the real
+  # CREATING A SECOND DATABASE IN example-project MUST KNOW THIS -- the real
   # fix is to move Firestore into its own project, where project-level IAM is
   # the database boundary. See docs/security.md.
   #
@@ -121,7 +121,7 @@ locals {
   # dispatcher exists to make.
   gke_condition = var.scope_gke_to_cluster && local.swarm_cluster_name != "" ? [{
     title       = "swarm-cluster-only"
-    description = "Restricts this grant to the swarm Autopilot cluster; agents-staging belongs to another team."
+    description = "Restricts this grant to the swarm Autopilot cluster; any other cluster (e.g. peer-cluster) belongs to another team."
     expression  = "resource.name.startsWith(\"${local.swarm_cluster_name}\")"
   }] : []
 
@@ -157,7 +157,7 @@ resource "google_project_iam_member" "plain" {
 # GKE dispatch and reap, pinned to the swarm's own cluster.
 #
 # A project-level container.* binding covers every cluster in the project, and
-# saga-agents-staging holds a live `agents-staging` cluster owned by another
+# example-project holds a live `peer-cluster` cluster owned by another
 # team. Unconditioned, swarm-scheduler could create Jobs in it and read its Pod
 # logs, and swarm-reconciler could delete its Jobs and Pods.
 #
@@ -184,6 +184,12 @@ resource "google_project_iam_member" "gke" {
   }
 
   lifecycle {
+    # The description is generic text; a live deployment's binding keeps its
+    # older text, which only its private state holds. A changed condition
+    # forces the binding's replacement, so the description is ignored: an
+    # existing deployment is not replaced and a fresh one gets this text.
+    ignore_changes = [condition[0].description]
+
     precondition {
       condition     = !var.scope_gke_to_cluster || var.gke_cluster_name != ""
       error_message = "gke_cluster_name must name the swarm cluster when scope_gke_to_cluster is on, or the container.* grants would cover every cluster in this shared project."

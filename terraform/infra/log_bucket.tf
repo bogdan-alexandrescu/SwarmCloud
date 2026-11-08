@@ -11,7 +11,7 @@
 # select by cluster or namespace -- and the other team's cluster writes
 # k8s_container entries to _Default too.
 #
-# BGD'S DECISION, 2026-10-22 (#1960): "a dedicated log bucket fed by a sink,
+# THE OWNER'S DECISION, 2026-10-22 (#1960): "a dedicated log bucket fed by a sink,
 # with the view on that bucket". A SINK filter accepts the full query
 # language, so the selecting moves here, and the view on this bucket needs no
 # selecting at all.
@@ -60,7 +60,7 @@ locals {
   swarm_worker_logs_bucket_id = "${var.name_prefix}-worker-logs"
   swarm_worker_logs_bucket    = "projects/${var.project_id}/locations/${local.swarm_worker_logs_location}/buckets/${local.swarm_worker_logs_bucket_id}"
 
-  # 30 days: BGD's decision (#1960). Long enough for a failure-review or an
+  # 30 days: the owner's decision (#1960). Long enough for a failure-review or an
   # agent's logs_query (a 24 h window inside the agent's life, §3.5) to read a
   # week-old failure; anything older is in _Default at its own retention.
   swarm_worker_logs_retention_days = 30
@@ -92,7 +92,7 @@ resource "google_logging_project_bucket_config" "swarm_worker_logs" {
   depends_on = [module.project_services]
 }
 
-# NO GRANT TO THE SINK'S WRITER (BGD's decision, 2026-10-22, #1960). The
+# NO GRANT TO THE SINK'S WRITER (the owner's decision, 2026-10-22, #1960). The
 # destination is a log bucket in the sink's own project, and Google authorizes
 # such a sink itself. "Route logs to supported destinations", section "Set
 # destination permissions"

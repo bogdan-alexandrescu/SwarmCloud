@@ -66,11 +66,12 @@ DENY_LIST: tuple[str, ...] = (*_placeholder_deny_list(), "default")
 
 @pytest.fixture(autouse=True)
 def _rendered_placeholder_list(monkeypatch):
-    """swarm-api reads the never-touch list Terraform renders
-    (SWARM_SHARED_DENY_LIST); these tests render the placeholder one. The
-    hold's MECHANISM -- which lines, prompts and names it holds -- is what this
-    file proves, so it judges by placeholders, never by a real deployment's
-    resources.
+    """swarm-api reads the list Terraform renders (SWARM_SHARED_DENY_LIST);
+    these tests render the placeholder one.
+
+    The hold's MECHANISM -- which lines, prompts and names it holds -- is what
+    this file proves, so it judges by placeholders, never by a real
+    deployment's resources.
     """
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
@@ -180,9 +181,9 @@ def test_a_prompt_naming_a_tenant_scope_function_is_held_at_plan():
 # shared
 # --------------------------------------------------------------------------
 
-def test_the_hold_judges_by_the_rendered_list(monkeypatch):
-    # MUTATION: cache the list at import, or drop or add one entry of the
-    # rendered list as read, and this is red.
+def test_the_hold_judges_by_the_list_rendered_on_the_service(monkeypatch):
+    # MUTATION: drop or add one entry of the rendered list as read, or cache the
+    # list at import, and this is red.
     assert issueruns.shared_deny_list() == DENY_LIST
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", "[]")
     assert issueruns.shared_deny_list() == ()

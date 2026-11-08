@@ -134,7 +134,7 @@ resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
 #     deployer_grantable_project_roles -- which limits WHICH roles, never to
 #     whom or under what condition. Granted from here, clusterViewer would have
 #     to be on that list, and CI could then grant it unconditioned, reaching
-#     the other team's agents-staging cluster. So it is not on the list, and no
+#     the other team's peer-cluster cluster. So it is not on the list, and no
 #     grant of it is here (tests/terraform/verify_gke_read.tftest.hcl holds
 #     that this root grants swarm-verify no container role at all).
 #   * the Job read is Kubernetes RBAC -- kubernetes/rbac/verify-rbac.yaml,
