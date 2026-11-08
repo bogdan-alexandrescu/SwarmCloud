@@ -325,9 +325,11 @@ export function thumbWidth(cssWidth: number, dpr: number): number {
 export type ThumbFrame = { device: 'phone' | 'tablet' | 'desktop'; orientation: 'portrait' | 'landscape' }
 
 /**
- * The height, in CSS px, every frame on the wall shares (`--wall-frame-h` on
- * `.ag-wall-grid` in styles.css, which must say the same), so cards of
- * different shapes line up and a phone is narrow rather than tall.
+ * The height, in CSS px, every frame on the wall shares at most
+ * (`--wall-frame-max` on `.ag-wall-grid` in styles.css, which must say the
+ * same), so cards of different shapes line up and a phone is narrow rather
+ * than tall. A narrow wall draws them shorter (`--wall-frame-h`); the stream
+ * then asks for the canvas's laid-out width, which is smaller.
  */
 export const THUMB_FRAME_H = 180
 

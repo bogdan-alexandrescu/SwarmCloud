@@ -120,8 +120,21 @@ describe('the Live browsers wall draws each card in its frame', () => {
 describe('the stylesheet draws the same frames', () => {
   const css = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
 
-  it('every frame on the wall is THUMB_FRAME_H tall, as the stream asked for assumes', () => {
-    expect(css).toMatch(new RegExp(`\\.ag-wall-grid \\{[^}]*--wall-frame-h: ${THUMB_FRAME_H}px;`))
+  it('every frame on the wall is at most THUMB_FRAME_H tall, as the stream asked for assumes', () => {
+    expect(css).toMatch(new RegExp(`\\.ag-wall-grid \\{[^}]*--wall-frame-max: ${THUMB_FRAME_H}px;`))
+    expect(css).toMatch(/\.ag-wall-grid \{[^}]*--wall-frame-h: clamp\([^;]*var\(--wall-frame-max\)\);/)
+  })
+
+  it('a narrow wall shrinks the shared height so a desktop card fits beside a tablet or phone card', () => {
+    // The grid is the container its cards' `cqi` measures.
+    expect(css).toMatch(/\.ag-wall-grid \{[^}]*container-type: inline-size;/)
+    // Desktop 16:10 beside tablet portrait 3:4, and beside a phone card at its 6.5rem minimum.
+    expect(css).toMatch(/--wall-frame-h: clamp\(90px, min\(\(100cqi - 32px\) \/ 2\.35, \(100cqi - 6\.5rem - 22px\) \/ 1\.6\)/)
+    expect(css).toMatch(/\.ag-wall-card \{[^}]*min-width: min\(6\.5rem, 100%\);/)
+  })
+
+  it('a status badge wraps inside a narrow card rather than running past its border', () => {
+    expect(css).toMatch(/\.ag-wall-card \.wf-live-head \.ctl-mark \{[^}]*white-space: normal;[^}]*max-width: 100%;/)
   })
 
   it.each([
