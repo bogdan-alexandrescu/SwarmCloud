@@ -206,10 +206,11 @@ def obj_fail($ns; $flagns; $rules; $label; $key):
        # policy only with the job label (workspace-kinds §4.3, C7).
        # The key is the one the deployment names (namespace_label_key, read
        # from its tfvars when the expectation was written); none admits none.
+       # Neither refusal prints the key: the deployment chose it.
        elif ($label // null) != null and ($key // "") == "" then
-         "the expectation names no namespace label key, so Namespace \($ns) cannot be admitted"
+         "the expectation names no namespace label key, so no team Namespace can be admitted"
        elif ($label // null) != null and ($o.workspace_label // null) != $label then
-         "Namespace \($ns) does not carry \($key): \($label)"
+         "Namespace \($ns) does not carry its workspace label: \($label)"
        else empty end)
     elif ($rules.kube_kinds | has_el($k)) | not then "kind \($k | tojson) is not one a tenant namespace holds"
     elif ($o.name // "") == "" then "a \($k) has no name"

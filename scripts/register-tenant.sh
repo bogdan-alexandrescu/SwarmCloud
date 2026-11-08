@@ -2365,7 +2365,7 @@ if [[ -n "${PRINCIPAL}" ]]; then
     ALLOWED_DOMAINS="$(deployment_list allowed_domains | paste -sd, -)" || ALLOWED_DOMAINS=""
   fi
   [[ -n "${ALLOWED_DOMAINS}" ]] \
-    || die "neither ALLOWED_DOMAINS nor this deployment's tfvars name an allowed domain, so ${PRINCIPAL} cannot be checked"
+    || die "neither ALLOWED_DOMAINS nor this deployment's tfvars name an allowed domain, so the principal cannot be checked"
   case ",${ALLOWED_DOMAINS}," in
     *",${DOMAIN},"*) ;;
     *) die "${PRINCIPAL} is outside the allowed hosted domain(s) (${ALLOWED_DOMAINS}); authentication would reject it anyway" ;;

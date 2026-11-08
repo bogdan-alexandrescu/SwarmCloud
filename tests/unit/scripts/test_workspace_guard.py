@@ -614,6 +614,35 @@ def test_a_group_or_service_expectation_names_the_deployments_label_key(tmp_path
     assert exp["namespace_label_key"] == f"swarm.{placeholder_deployment.TFVARS['allowed_domains'][0]}/workspace"
 
 
+def _unlabelled_namespace_refusal(tmp: Path, drop_key: bool) -> tuple[subprocess.CompletedProcess[str], dict]:
+    done, exp = _kind_expect(tmp, "group")
+    assert done.returncode == 0, done.stderr
+    assert exp.get("namespace_label") and exp.get("namespace_label_key"), sorted(exp)
+    if drop_key:
+        exp.pop("namespace_label_key")
+    env = _kind_env(tmp)
+    Path(env["SWARM_CALL_GUARD"]).write_text(json.dumps(exp))
+    manifest = f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {exp['namespace']}\n"
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=env, stdin=manifest)
+    assert out.returncode == REFUSED and "rule C7" in out.stderr, out.stderr
+    return out, exp
+
+
+def test_an_unlabelled_team_namespace_is_refused_without_printing_the_configured_key(tmp_path: Path) -> None:
+    # The key comes from the deployment's tfvars; the refusal names the label
+    # value the image expects, never the deployment's key.
+    # MUTATION: print \($key) in the reason and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=False)
+    assert exp["namespace_label_key"] not in out.stderr, out.stderr
+
+
+def test_an_expectation_without_a_label_key_refuses_with_one_fixed_sentence(tmp_path: Path) -> None:
+    # MUTATION: interpolate the namespace into the refusal and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=True)
+    assert "the expectation names no namespace label key, so no team Namespace can be admitted" in out.stderr
+    assert exp["namespace"] not in out.stderr, out.stderr
+
+
 def test_a_team_expectation_is_refused_when_the_deployment_names_no_label_prefix(tmp_path: Path) -> None:
     # Neither label_prefix nor allowed_domains: the key is unknown, so no
     # expectation is written, rather than one judged against a guessed key.
