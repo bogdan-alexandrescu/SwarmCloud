@@ -29,7 +29,7 @@
 # deployer_storage_bucket_prefixes); the refresh runs as an operator.
 #
 # THE NAMES ARE WRITTEN INTO EVERY DOCKERFILE as the MIRROR_* argument
-# defaults (us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-*),
+# defaults (us-central1-docker.pkg.dev/example-project/swarm-mirror-*),
 # because a checked-in cloudbuild.yaml passes no build argument for them. A
 # test (tests/unit/scripts/test_build_mirror.py) holds the two equal for the
 # default name_prefix and the dev project.

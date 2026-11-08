@@ -43,9 +43,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -69,7 +69,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -85,7 +85,7 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   # Read by the dev run's assertions only (live.tftest.hcl does the same).
   tf_root = "../../terraform/infra"
@@ -128,20 +128,20 @@ variables {
   ]
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    "swarm-graph"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-egress"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    "swarm-graph"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -216,7 +216,7 @@ run "created_the_key_has_two_readers_and_the_service_reads_graphs_only" {
     condition = (
       google_secret_manager_secret_iam_binding.graph_ticket_key_accessor[0].role == "roles/secretmanager.secretAccessor"
       && google_secret_manager_secret_iam_binding.graph_ticket_key_accessor[0].secret_id == "swarm-graph-ticket-key"
-      && output.graph_service.principal == "principal://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/saga-agents-staging.svc.id.goog/subject/ns/swarm-system/sa/swarm-graph"
+      && output.graph_service.principal == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/swarm-system/sa/swarm-graph"
     )
     error_message = "swarm-graph-ticket-key is read by swarm-api (mints) and the service's KSA principal (verifies), nobody else"
   }
@@ -228,7 +228,7 @@ run "created_the_key_has_two_readers_and_the_service_reads_graphs_only" {
     condition = (
       length(google_storage_bucket_iam_member.graph_service_read) == 1
       && google_storage_bucket_iam_member.graph_service_read[0].role == "roles/storage.objectViewer"
-      && google_storage_bucket_iam_member.graph_service_read[0].bucket == "swarm-artifacts-saga-agents-staging"
+      && google_storage_bucket_iam_member.graph_service_read[0].bucket == "swarm-artifacts-example-project"
       && google_storage_bucket_iam_member.graph_service_read[0].member == output.graph_service.principal
     )
     error_message = "the service's GCS grant is one conditioned roles/storage.objectViewer member on the artifact bucket, held by ns/swarm-system/sa/swarm-graph"
@@ -244,7 +244,7 @@ run "created_the_key_has_two_readers_and_the_service_reads_graphs_only" {
 
   # The exact string, so any edit is a deliberate one this file has to follow.
   assert {
-    condition     = google_storage_bucket_iam_member.graph_service_read[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\") && resource.name.extract(\"/objects/tenants/{t}/\") != \"\" && resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/repos/\") && resource.name.extract(\"/repos/{r}/\") != \"\" && resource.name.extract(\"/repos/{r}/\") == resource.name.extract(\"/repos/{r}/graph/\")"
+    condition     = google_storage_bucket_iam_member.graph_service_read[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/\") && resource.name.extract(\"/objects/tenants/{t}/\") != \"\" && resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/repos/\") && resource.name.extract(\"/repos/{r}/\") != \"\" && resource.name.extract(\"/repos/{r}/\") == resource.name.extract(\"/repos/{r}/graph/\")"
     error_message = "the graph-read condition changed; it must admit tenants/<t>/repos/<r>/graph/** of the artifact bucket and nothing else, and use no matches() (Cloud Storage IAM conditions refuse it)"
   }
 
@@ -258,9 +258,9 @@ run "created_the_key_has_two_readers_and_the_service_reads_graphs_only" {
     condition = [
       for x in [regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"]+)\"\\) != \"\" && resource\\.name\\.extract\\(\"([^\"]+)\"\\) == resource\\.name\\.extract\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"]+)\"\\) != \"\" && resource\\.name\\.extract\\(\"([^\"]+)\"\\) == resource\\.name\\.extract\\(\"([^\"]+)\"\\)$", google_storage_bucket_iam_member.graph_service_read[0].condition[0].expression)] : {
         for name in concat(
-          [for path in concat(var.graph_admitted, var.graph_refused) : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
+          [for path in concat(var.graph_admitted, var.graph_refused) : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"],
           [for path in var.graph_admitted : "projects/_/buckets/other-bucket/objects/${path}"],
-          [for path in var.graph_admitted : "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/${path}"],
+          [for path in var.graph_admitted : "projects/_/buckets/swarm-artifacts-example-project-x/objects/${path}"],
           ) : name => (
           x[1] == x[2] && x[4] == x[5] && startswith(name, x[0]) && [
             # e = [T, T', R, R'], each template emulated as documented.
@@ -277,10 +277,10 @@ run "created_the_key_has_two_readers_and_the_service_reads_graphs_only" {
       }
       ][0] == {
       for name in concat(
-        [for path in concat(var.graph_admitted, var.graph_refused) : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
+        [for path in concat(var.graph_admitted, var.graph_refused) : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"],
         [for path in var.graph_admitted : "projects/_/buckets/other-bucket/objects/${path}"],
-        [for path in var.graph_admitted : "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/${path}"],
-      ) : name => can(regex("^projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/[^/]+/repos/[^/]+/graph/", name))
+        [for path in var.graph_admitted : "projects/_/buckets/swarm-artifacts-example-project-x/objects/${path}"],
+      ) : name => can(regex("^projects/_/buckets/swarm-artifacts-example-project/objects/tenants/[^/]+/repos/[^/]+/graph/", name))
     }
     error_message = "the graph-read condition, evaluated with extract() as documented, must admit exactly tenants/<t>/repos/<r>/graph/** (one tenant and one repository segment) of the artifact bucket and refuse the index, tasks, nested and empty segments and every other bucket"
   }
@@ -335,8 +335,8 @@ run "served_swarm_api_mints_and_the_manifest_renders" {
       output.swarm_graph_manifest != null
       && length(regexall("__[A-Z0-9_]+__", output.swarm_graph_manifest)) == 0
       && strcontains(output.swarm_graph_manifest, "swarm-graph@sha256:dddd")
-      && strcontains(output.swarm_graph_manifest, "value: projects/saga-agents-staging/secrets/swarm-graph-ticket-key/versions/latest")
-      && strcontains(output.swarm_graph_manifest, "value: swarm-artifacts-saga-agents-staging")
+      && strcontains(output.swarm_graph_manifest, "value: projects/example-project/secrets/swarm-graph-ticket-key/versions/latest")
+      && strcontains(output.swarm_graph_manifest, "value: swarm-artifacts-example-project")
       && strcontains(output.swarm_graph_manifest, "{\"enabled\":false}")
       && strcontains(output.swarm_graph_manifest, sha256(jsonencode(local.graph_service_config)))
     )
@@ -487,19 +487,19 @@ run "served_without_a_digest_renders_no_manifest_and_fails_its_check" {
       serve = true
     }
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-      "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-      "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      "swarm-egress"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 

@@ -18,11 +18,11 @@
 mock_provider "google" {}
 
 variables {
-  project_id              = "saga-agents-staging"
+  project_id              = "example-project"
   scheduler_push_endpoint = "https://swarm-scheduler.example.run.app"
   reconciler_endpoint     = "https://swarm-reconciler.example.run.app"
   quota_broker_endpoint   = "https://swarm-quota-broker.example.run.app"
-  tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+  tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
   labels                  = { managed-by = "swarm-terraform" }
 }
 

@@ -4,7 +4,7 @@
 # serviceAccountAdmin on without any tenant of that name. So bootstrap refuses
 # to plan against a tenants block containing `<<` at all.
 
-project_id = "saga-agents-staging"
+project_id = "example-project"
 
 tenants = {
   alpha = {

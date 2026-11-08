@@ -38,9 +38,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -64,12 +64,12 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -86,24 +86,24 @@ variables {
 
   # Every image pinned by digest, or verify.tf refuses the plan.
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
   # Keys as swarm-api writes an answer (§4.3), a member's form and one of its
   # files, under a group tenant and a personal one.
   input_admitted = [
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.files/draft.md",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/u-ana/tasks/task_2/attempts/input-ffffffffffff/artifacts/answers.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.files/draft.md",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/u-ana/tasks/task_2/attempts/input-ffffffffffff/artifacts/answers.json",
   ]
 
   # Keys it must never create: the row's four, then a near-miss of every
@@ -111,33 +111,33 @@ variables {
   input_refused = [
     # the row's: a worker attempt, an input attempt's checkpoints/ and live/,
     # a key outside tenants/
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/att_x/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/checkpoints/ck_1/archive.tar.gz",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/live/rec-000001.live.webm",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/att_x/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/checkpoints/ck_1/archive.tar.gz",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/live/rec-000001.live.webm",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
     # another bucket, a longer bucket name, the bucket itself
     "projects/_/buckets/other-bucket/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging",
+    "projects/_/buckets/swarm-artifacts-example-project-x/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project",
     # the input path written INSIDE a worker attempt's artifacts, or inside an
     # input attempt's checkpoints/: the placeholder spans "/", so only the
     # anchored comparisons refuse these
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/att_x/artifacts/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/checkpoints/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/att_x/artifacts/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/checkpoints/attempts/input-0123456789ab/artifacts/review.json",
     # not tenants/<one segment>/tasks/<one segment>/attempts/
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/b/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/verdicts/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/repos/r/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/sub/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants//tasks/t/attempts/input-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks//attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/b/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/verdicts/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/repos/r/tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/sub/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants//tasks/t/attempts/input-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks//attempts/input-0123456789ab/artifacts/review.json",
     # not attempts/input-<non-empty>/artifacts/
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/xinput-0123456789ab/artifacts/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifactsx/review.json",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/logs/stdout.log",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts",
-    "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/a/tasks/t/result.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/xinput-0123456789ab/artifacts/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifactsx/review.json",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/logs/stdout.log",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/attempts/input-0123456789ab/artifacts",
+    "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/a/tasks/t/result.json",
   ]
 }
 
@@ -154,8 +154,8 @@ run "swarm_api_may_create_an_answer_and_nothing_else" {
     target          = module.iam.google_service_account.platform["swarm-api"]
     override_during = plan
     values = {
-      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-api@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -165,12 +165,12 @@ run "swarm_api_may_create_an_answer_and_nothing_else" {
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.api_input_writer.bucket == "swarm-artifacts-saga-agents-staging"
+    condition     = google_storage_bucket_iam_member.api_input_writer.bucket == "swarm-artifacts-example-project"
     error_message = "the grant is a member of the artifact bucket's policy, never the project's: this project holds another team's buckets"
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.api_input_writer.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_storage_bucket_iam_member.api_input_writer.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     error_message = "swarm-api writes the answer (Q10); no other account holds this grant"
   }
 
@@ -242,8 +242,8 @@ run "swarm_api_reads_the_bucket_as_before" {
     target          = google_service_account.platform["swarm-api"]
     override_during = plan
     values = {
-      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-api@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -252,7 +252,7 @@ run "swarm_api_reads_the_bucket_as_before" {
   }
 
   variables {
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    artifact_bucket  = "swarm-artifacts-example-project"
     labels           = { "managed-by" = "swarm-terraform" }
     gke_cluster_name = "swarm-autopilot"
     gke_location     = "us-central1"
@@ -264,8 +264,8 @@ run "swarm_api_reads_the_bucket_as_before" {
   assert {
     condition = (
       google_storage_bucket_iam_member.api_reader.role == "roles/storage.objectViewer"
-      && google_storage_bucket_iam_member.api_reader.bucket == "swarm-artifacts-saga-agents-staging"
-      && google_storage_bucket_iam_member.api_reader.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      && google_storage_bucket_iam_member.api_reader.bucket == "swarm-artifacts-example-project"
+      && google_storage_bucket_iam_member.api_reader.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       && length(google_storage_bucket_iam_member.api_reader.condition) == 0
     )
     error_message = "api_reader is unchanged: swarm-api's objectViewer on the artifact bucket, unconditioned"

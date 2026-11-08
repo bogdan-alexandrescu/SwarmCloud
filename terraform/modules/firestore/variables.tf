@@ -9,7 +9,7 @@ variable "location" {
 
 variable "database_id" {
   description = <<-EOT
-    A NAMED database. `(default)` must stay free: saga-agents-staging is shared,
+    A NAMED database. `(default)` must stay free: example-project is shared,
     and a project gets exactly one default database. Taking it would permanently
     deny it to whichever team asks for it next.
   EOT

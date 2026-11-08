@@ -76,7 +76,7 @@
 # deployer_grantable_project_roles), and hasOnly() limits WHICH roles CI may
 # grant, never to whom or under what condition. A custom role carrying
 # secrets.setIamPolicy on that list would let CI grant itself the means to
-# rewrite any secret's policy in saga-agents-staging, the other team's among
+# rewrite any secret's policy in example-project, the other team's among
 # them (#69). And custom roles cannot be defined there at all (#79;
 # tests/terraform/custom_roles_out_of_ci.tftest.hcl). So the owner applies
 # this.
@@ -92,7 +92,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. Every name arm starts
 # `projects/<n>/secrets/swarm-tenant-u-`; their secrets are agents-* and
-# promptlab-*, so no name arm can match one. The create arm can create a
+# peer-app-*, so no name arm can match one. The create arm can create a
 # secret with their prefix, and can do nothing else to it: no read, no
 # version, and setIamPolicy only where the name arm holds.
 
@@ -160,7 +160,7 @@ resource "google_project_iam_custom_role" "browser_session_provisioner" {
   # grant. Accepted residual (owner decision: the capability stays); detection
   # is deferred to the security epic #476, an alert on SetIamPolicy whose new
   # bindings name anything other than swarm-agent-worker-u-*
-  # (https://github.com/bogdan-alexandrescu/SwarmCloud/issues/476#issuecomment-6114767079).
+  # (https://github.com/example-org/example-repo/issues/476#issuecomment-6114767079).
   # A separate role from swarmBrowserLoginRevoker, so the plan shows the
   # IAM-writing permission on its own line.
   permissions = [

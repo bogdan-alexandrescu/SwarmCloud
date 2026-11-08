@@ -31,9 +31,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -57,12 +57,12 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -83,21 +83,21 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-voice"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-voice"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
-  platform_owner = "bgd@example.com"
+  platform_owner = "owner@example.com"
 }
 
 run "the_bucket_and_its_grants" {
@@ -109,7 +109,7 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_storage_bucket.plugins.name == "saga-agents-staging-swarm-plugins"
+      google_storage_bucket.plugins.name == "example-project-swarm-plugins"
       && google_storage_bucket.plugins.uniform_bucket_level_access == true
       && google_storage_bucket.plugins.public_access_prevention == "enforced"
       && google_storage_bucket.plugins.labels["managed-by"] == "swarm-terraform"
@@ -120,7 +120,7 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_storage_bucket_iam_member.plugins_api_objects.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      google_storage_bucket_iam_member.plugins_api_objects.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       && google_storage_bucket_iam_member.plugins_api_objects.role == "roles/storage.objectUser"
       && length(google_storage_bucket_iam_member.plugins_api_objects.condition) == 0
     )
@@ -129,9 +129,9 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_storage_bucket_iam_member.plugins_intake_read.member == "serviceAccount:swarm-plugin-intake@saga-agents-staging.iam.gserviceaccount.com"
+      google_storage_bucket_iam_member.plugins_intake_read.member == "serviceAccount:swarm-plugin-intake@example-project.iam.gserviceaccount.com"
       && google_storage_bucket_iam_member.plugins_intake_read.role == "roles/storage.objectViewer"
-      && google_storage_bucket_iam_member.plugins_intake_read.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/quarantine/\")"
+      && google_storage_bucket_iam_member.plugins_intake_read.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/quarantine/\")"
       && startswith(google_storage_bucket_iam_member.plugins_intake_read.condition[0].description, "managed-by=swarm-terraform;")
     )
     error_message = "the intake account reads under quarantine/ only (objectViewer, conditioned)"
@@ -139,9 +139,9 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_storage_bucket_iam_member.plugins_intake_stage.member == "serviceAccount:swarm-plugin-intake@saga-agents-staging.iam.gserviceaccount.com"
+      google_storage_bucket_iam_member.plugins_intake_stage.member == "serviceAccount:swarm-plugin-intake@example-project.iam.gserviceaccount.com"
       && google_storage_bucket_iam_member.plugins_intake_stage.role == "roles/storage.objectCreator"
-      && google_storage_bucket_iam_member.plugins_intake_stage.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/staging/\")"
+      && google_storage_bucket_iam_member.plugins_intake_stage.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/staging/\")"
       && startswith(google_storage_bucket_iam_member.plugins_intake_stage.condition[0].description, "managed-by=swarm-terraform;")
     )
     error_message = "the intake account creates under staging/ only (objectCreator: no overwrite, no delete)"
@@ -149,11 +149,11 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_storage_bucket_iam_member.plugins_reconciler_list.member == "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+      google_storage_bucket_iam_member.plugins_reconciler_list.member == "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
       && google_storage_bucket_iam_member.plugins_reconciler_list.role == "roles/storage.objectViewer"
-      && google_storage_bucket_iam_member.plugins_reconciler_gc.member == "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
-      && google_storage_bucket_iam_member.plugins_reconciler_gc.role == "projects/saga-agents-staging/roles/swarmHistoryPurgeDeleter"
-      && google_storage_bucket_iam_member.plugins_reconciler_gc.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/platform/\") || resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/tenants/\")"
+      && google_storage_bucket_iam_member.plugins_reconciler_gc.member == "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
+      && google_storage_bucket_iam_member.plugins_reconciler_gc.role == "projects/example-project/roles/swarmHistoryPurgeDeleter"
+      && google_storage_bucket_iam_member.plugins_reconciler_gc.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/platform/\") || resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/tenants/\")"
     )
     error_message = "the reconciler lists the bucket and deletes, with the delete-only role, under platform/ and tenants/ only (section 9.3)"
   }
@@ -163,9 +163,9 @@ run "the_bucket_and_its_grants" {
       toset(keys(google_storage_bucket_iam_member.plugins_tenant_read)) == toset(["eng", "smoke"])
       && alltrue([
         for t, g in google_storage_bucket_iam_member.plugins_tenant_read : (
-          g.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com"
+          g.member == "serviceAccount:swarm-agent-worker-${t}@example-project.iam.gserviceaccount.com"
           && g.role == "roles/storage.objectViewer"
-          && g.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/platform/\") || resource.name.startsWith(\"projects/_/buckets/saga-agents-staging-swarm-plugins/objects/tenants/${t}/\")"
+          && g.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/platform/\") || resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/tenants/${t}/\")"
           && startswith(g.condition[0].description, "managed-by=swarm-terraform;")
         )
       ])
@@ -188,8 +188,8 @@ run "the_bucket_and_its_grants" {
         ["smoke", "tenants/eng/abc.tar", false],
         ] : (
         anytrue([
-          startswith("projects/_/buckets/saga-agents-staging-swarm-plugins/objects/${case[1]}", "projects/_/buckets/saga-agents-staging-swarm-plugins/objects/platform/"),
-          startswith("projects/_/buckets/saga-agents-staging-swarm-plugins/objects/${case[1]}", "projects/_/buckets/saga-agents-staging-swarm-plugins/objects/tenants/${case[0]}/"),
+          startswith("projects/_/buckets/example-project-swarm-plugins/objects/${case[1]}", "projects/_/buckets/example-project-swarm-plugins/objects/platform/"),
+          startswith("projects/_/buckets/example-project-swarm-plugins/objects/${case[1]}", "projects/_/buckets/example-project-swarm-plugins/objects/tenants/${case[0]}/"),
         ]) == case[2]
         && strcontains(google_storage_bucket_iam_member.plugins_tenant_read[case[0]].condition[0].expression, "objects/tenants/${case[0]}/\")")
       )
@@ -199,9 +199,9 @@ run "the_bucket_and_its_grants" {
 
   assert {
     condition = (
-      google_project_iam_member.plugins_api_secret_versions.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      google_project_iam_member.plugins_api_secret_versions.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       && google_project_iam_member.plugins_api_secret_versions.role == "roles/secretmanager.secretVersionAdder"
-      && google_project_iam_member.plugins_api_secret_versions.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-plg-\") != \"\""
+      && google_project_iam_member.plugins_api_secret_versions.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-plg-\") != \"\""
       && startswith(google_project_iam_member.plugins_api_secret_versions.condition[0].description, "managed-by=swarm-terraform;")
     )
     error_message = "swarm-api adds versions to swarm-tenant-<t>-plg-* secrets only"
@@ -215,7 +215,7 @@ run "the_bucket_and_its_grants" {
         google_storage_bucket_iam_member.plugins_api_objects.member,
         google_storage_bucket_iam_member.plugins_reconciler_list.member,
         google_storage_bucket_iam_member.plugins_reconciler_gc.member,
-      ] : m != "serviceAccount:swarm-plugin-intake@saga-agents-staging.iam.gserviceaccount.com"
+      ] : m != "serviceAccount:swarm-plugin-intake@example-project.iam.gserviceaccount.com"
     ])
     error_message = "the intake account holds the two conditioned bucket grants and nothing else"
   }
@@ -227,7 +227,7 @@ run "the_bucket_and_its_grants" {
   }
 
   assert {
-    condition     = output.plugins_bucket == "saga-agents-staging-swarm-plugins"
+    condition     = output.plugins_bucket == "example-project-swarm-plugins"
     error_message = "the plugins_bucket output names the bucket the installer checks"
   }
 }
@@ -259,14 +259,14 @@ run "the_intake_job_has_no_egress_and_no_secret" {
 
   variables {
     image_refs = merge(var.image_refs, {
-      "swarm-plugin-intake" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-plugin-intake@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      "swarm-plugin-intake" = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-intake@sha256:9999999999999999999999999999999999999999999999999999999999999999"
     })
   }
 
   assert {
     condition = (
       google_cloud_run_v2_job.plugin_intake[0].name == "swarm-plugin-intake"
-      && google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].service_account == "swarm-plugin-intake@saga-agents-staging.iam.gserviceaccount.com"
+      && google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].service_account == "swarm-plugin-intake@example-project.iam.gserviceaccount.com"
       && google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].max_retries == 0
       && google_cloud_run_v2_job.plugin_intake[0].labels["managed-by"] == "swarm-terraform"
     )
@@ -320,7 +320,7 @@ run "the_intake_job_has_no_egress_and_no_secret" {
 
   assert {
     condition = (
-      google_cloud_run_v2_job_iam_member.plugin_intake_api_runs[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      google_cloud_run_v2_job_iam_member.plugin_intake_api_runs[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       && google_cloud_run_v2_job_iam_member.plugin_intake_api_runs[0].role == "roles/run.jobsExecutorWithOverrides"
       && google_cloud_run_v2_job_iam_member.plugin_intake_api_runs[0].name == "swarm-plugin-intake"
     )

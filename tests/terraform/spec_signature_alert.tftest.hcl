@@ -14,7 +14,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 
@@ -85,7 +85,7 @@ run "only_a_worker_container_counts_and_the_resource_names_the_tenant" {
         !strcontains(f, "resource.type=(\"cloud_run_job\" OR \"k8s_container\")"),
       ]
     ]))
-    error_message = "a spec refusal counts only from a worker's Cloud Run Job (swarm-job-*) or the worker container in this platform's own GKE cluster -- never any job or pod in the shared project, the other team's agents-staging cluster included"
+    error_message = "a spec refusal counts only from a worker's Cloud Run Job (swarm-job-*) or the worker container in this platform's own GKE cluster -- never any job or pod in the shared project, the other team's peer-cluster cluster included"
   }
 
   # Every label the alert groups by comes from the monitored resource or a

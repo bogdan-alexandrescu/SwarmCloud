@@ -9,7 +9,9 @@ one: REGION and ZONE from scripts/guards/placeholders.json (through
 tests/placeholders.py), and a never-touch list served the way config_fetch
 reads one offline -- a SWARM_DEPLOY_CONFIG_DIR laid out as
 <dir>/<env>/deny-list.json, owned by this user and not group- or
-world-writable, with a cache of its own.
+world-writable, with a cache of its own. <env> is dev, prod and whatever
+environment the test sets (ENVIRONMENT in this process, in a child's env or in
+its SWARM_ENV_FILE; CI's integration job sets `ci`), each with the same list.
 
 The list is scripts/lib/deny-list.example.json, written for the project the
 child process names: its entries, floors and reviewer are placeholders, so no
@@ -80,6 +82,17 @@ PEER: dict[str, str] = dict(_P.PEER)
 SANDBOX_REPOSITORY_URL: str = f"https://github.com/{_P.GITHUB_REPOSITORY}.git"
 
 
+def environments(*named: str | None) -> list[str]:
+    """ENVIRONMENTS and each NAMED environment that can be a directory name: a test's
+    own (ENVIRONMENT, as CI's integration job sets `ci`) gets the placeholder list too,
+    and a name that cannot be a directory is left to refuse."""
+    found = set(ENVIRONMENTS)
+    for env in named:
+        if env and "/" not in env and not env.startswith("."):
+            found.add(env)
+    return sorted(found)
+
+
 def write_deny_list(config_dir: Path, project: str, envs: tuple[str, ...] | list[str] = ENVIRONMENTS) -> None:
     """The example list, written for PROJECT, under CONFIG_DIR/<env>/ for each env."""
     body = json.loads(EXAMPLE_DENY_LIST.read_text())
@@ -130,7 +143,9 @@ class PlaceholderDeployment:
         root.chmod(0o700)
         (root / "cache").mkdir(mode=0o700, exist_ok=True)
         self.config_dir = self.config_dir_for(PROJECT)
-        write_deny_list(self.config_dir, PROJECT)
+        # The environment this process names, too: a child that inherits it before
+        # any child is served (a test file's import-time probe) finds its list.
+        write_deny_list(self.config_dir, PROJECT, environments(os.environ.get("ENVIRONMENT")))
 
     def config_dir_for(self, project: str) -> Path:
         return self.root / "projects" / project / "config"
@@ -151,7 +166,7 @@ class PlaceholderDeployment:
         region and zone, the placeholder sandbox, and the placeholder list served for
         PROJECT in ENVIRONMENT."""
         config_dir = self.config_dir_for(project)
-        write_deny_list(config_dir, project, sorted({*ENVIRONMENTS, environment}))
+        write_deny_list(config_dir, project, environments(environment, os.environ.get("ENVIRONMENT")))
         return {
             "REGION": REGION,
             "ZONE": ZONE,
@@ -175,12 +190,11 @@ class PlaceholderDeployment:
         project = from_file.get("PROJECT_ID") or env.get("PROJECT_ID") or ""
         environment = from_file.get("ENVIRONMENT") or env.get("ENVIRONMENT") or ""
         if not project or project == PROJECT or "/" in project or project.startswith("."):
-            if project == PROJECT and environment not in ("", *ENVIRONMENTS):
-                write_deny_list(self.config_dir, PROJECT, [environment])
+            if project == PROJECT:
+                write_deny_list(self.config_dir, PROJECT, environments(environment))
             return None
-        envs = sorted({*ENVIRONMENTS, environment or "dev"})
         config_dir = self.config_dir_for(project)
-        write_deny_list(config_dir, project, envs)
+        write_deny_list(config_dir, project, environments(environment))
         served = dict(env)
         served["SWARM_DEPLOY_CONFIG_DIR"] = str(config_dir)
         return served

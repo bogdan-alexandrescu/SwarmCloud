@@ -13,8 +13,8 @@
 #
 # WHAT IT COSTS, SAID PLAINLY. Every member of a group tenant runs as that one
 # worker account, and the agent runs in the worker's container. So a row
-# `eng = ["u-bogdan"]` lets ANY eng member's task read u-bogdan's TypeSafe key,
-# not only bogdan's tasks -- the trade docs/provider-keys.md §2 warns of, and
+# `eng = ["u-pat"]` lets ANY eng member's task read u-pat's TypeSafe key,
+# not only that person's tasks -- the trade docs/provider-keys.md §2 warns of, and
 # the same one the owner accepted for GitHub user slots (forge_user_slots.tf,
 # #780 D7 U1: the tenant's worker reads every member's slot). The worker
 # itself uses the key only for a task its owner submitted; the IAM grant

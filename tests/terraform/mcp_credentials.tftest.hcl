@@ -39,7 +39,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -58,7 +58,7 @@ run "the_accessor_role_carries_access_and_delete_alone" {
     target          = data.google_project.mcp_credentials
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -74,7 +74,7 @@ run "the_accessor_role_carries_access_and_delete_alone" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.mcp_credential_accessor[0].role_id == "swarmMcpCredentialAccessor",
-      google_project_iam_custom_role.mcp_credential_accessor[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.mcp_credential_accessor[0].project == "example-project",
       google_project_iam_custom_role.mcp_credential_accessor[0].stage == "GA",
     ])
     error_message = "the role is swarmMcpCredentialAccessor, GA, defined in this project"
@@ -92,7 +92,7 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
     target          = data.google_project.mcp_credentials
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -103,9 +103,9 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.mcp_credential_accessor) == 1,
-      google_project_iam_member.mcp_credential_accessor[0].project == "saga-agents-staging",
-      google_project_iam_member.mcp_credential_accessor[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.mcp_credential_accessor[0].role == "projects/saga-agents-staging/roles/swarmMcpCredentialAccessor",
+      google_project_iam_member.mcp_credential_accessor[0].project == "example-project",
+      google_project_iam_member.mcp_credential_accessor[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.mcp_credential_accessor[0].role == "projects/example-project/roles/swarmMcpCredentialAccessor",
     ])
     error_message = "swarm-api, alone, holds swarmMcpCredentialAccessor, granted through the role resource"
   }
@@ -114,18 +114,18 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
   # other team's among them.
   assert {
     condition     = length(google_project_iam_member.mcp_credential_accessor[0].condition) == 1
-    error_message = "the grant carries exactly one condition; unconditioned, versions.access reads every secret in saga-agents-staging"
+    error_message = "the grant carries exactly one condition; unconditioned, versions.access reads every secret in example-project"
   }
 
   # The exact string, so any edit is a deliberate one this file must follow.
   assert {
-    condition     = google_project_iam_member.mcp_credential_accessor[0].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-mcpc-\") != \"\""
+    condition     = google_project_iam_member.mcp_credential_accessor[0].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-mcpc-\") != \"\""
     error_message = "swarm-api's MCP credential condition changed; it must be a name starting projects/<NUMBER>/secrets/swarm-tenant- with a non-empty tenant before -mcpc-, by extract(), and nothing else"
   }
 
   assert {
     condition = alltrue([
-      for f in ["matches(", "hasOnly(", " || ", "saga-agents-staging", "wsec"] :
+      for f in ["matches(", "hasOnly(", " || ", "example-project", "wsec"] :
       !strcontains(google_project_iam_member.mcp_credential_accessor[0].condition[0].expression, f)
     ])
     error_message = "the condition uses no matches(), no hasOnly() list, no second arm, no -wsec- arm, and the project number rather than its ID"
@@ -148,37 +148,37 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
         for c in [{
           parts = regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"{]+)\\{[a-z]+\\}([^\"]+)\"\\) != \"\"$", google_project_iam_member.mcp_credential_accessor[0].condition[0].expression)
           admitted = [
-            "projects/209012342332/secrets/swarm-tenant-a-mcpc-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-mcpc-${h}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-a-mcpc-${h}/versions/latest",
-            "projects/209012342332/secrets/swarm-tenant-eng-mcpc-${h}",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-mcpc-${h}/versions/3",
-            "projects/209012342332/secrets/swarm-tenant-u-someone-not-in-terraform-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-mcpc-${h}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-a-mcpc-${h}/versions/latest",
+            "projects/123456789012/secrets/swarm-tenant-eng-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-mcpc-${h}/versions/3",
+            "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-mcpc-${h}",
           ]
           refused = [
-            "projects/209012342332/secrets/swarm-tenant-a-wsec-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-wsec-${h}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-a-git",
-            "projects/209012342332/secrets/swarm-tenant-a-git/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-a-git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-git-r-${h}/versions/2",
-            "projects/209012342332/secrets/swarm-tenant-a-typesafe",
-            "projects/209012342332/secrets/swarm-tenant-a-typesafe/versions/3",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-typesafe",
-            "projects/209012342332/secrets/swarm-tenant-a-anthropic",
-            "projects/209012342332/secrets/swarm-tenant-a-mcpc",
-            "projects/209012342332/secrets/swarm-tenant-mcpc-${h}",
-            "projects/209012342332/secrets/swarm-tenant--mcpc-${h}",
-            "projects/209012342332/secrets/swarm-tenant",
-            "projects/209012342332/secrets/swarm-github-app-private-key",
-            "projects/209012342332/secrets/swarm-github-app-webhook-mcpc-${h}",
-            "projects/209012342332/secrets/swarm-account-a-mcpc-${h}",
-            "projects/209012342332/secrets/agents-staging-anthropic",
-            "projects/209012342332/secrets/agents-a-mcpc-${h}",
-            "projects/209012342332/secrets/promptlab-openai",
-            "projects/111111111111/secrets/swarm-tenant-a-mcpc-${h}",
-            "projects/2090123423320/secrets/swarm-tenant-a-mcpc-${h}",
-            "projects/saga-agents-staging/secrets/swarm-tenant-a-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-wsec-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-wsec-${h}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-a-git",
+            "projects/123456789012/secrets/swarm-tenant-a-git/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-a-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-git-r-${h}/versions/2",
+            "projects/123456789012/secrets/swarm-tenant-a-typesafe",
+            "projects/123456789012/secrets/swarm-tenant-a-typesafe/versions/3",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-typesafe",
+            "projects/123456789012/secrets/swarm-tenant-a-anthropic",
+            "projects/123456789012/secrets/swarm-tenant-a-mcpc",
+            "projects/123456789012/secrets/swarm-tenant-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant--mcpc-${h}",
+            "projects/123456789012/secrets/swarm-tenant",
+            "projects/123456789012/secrets/swarm-github-app-private-key",
+            "projects/123456789012/secrets/swarm-github-app-webhook-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-account-a-mcpc-${h}",
+            "projects/123456789012/secrets/peer-cluster-anthropic",
+            "projects/123456789012/secrets/agents-a-mcpc-${h}",
+            "projects/123456789012/secrets/peer-app-openai",
+            "projects/210987654321/secrets/swarm-tenant-a-mcpc-${h}",
+            "projects/${"123456789012"}0/secrets/swarm-tenant-a-mcpc-${h}",
+            "projects/example-project/secrets/swarm-tenant-a-mcpc-${h}",
           ]
           }] : alltrue([
           for n in concat(c.admitted, c.refused) : (
@@ -190,7 +190,7 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
         ])
       ])
     ])
-    error_message = "swarm-api's MCP credential condition must admit every tenant's swarm-tenant-<t>-mcpc-<hex> secret and its versions, personal tenants made outside Terraform included, and refuse a workspace secret (-wsec-), the tenant's -git and -typesafe secrets, its forge slots and provider keys, an empty tenant, the platform's swarm-github-app-* and swarm-account-* secrets, the other team's agents-* and promptlab-*, another project's and the project-ID spelling"
+    error_message = "swarm-api's MCP credential condition must admit every tenant's swarm-tenant-<t>-mcpc-<hex> secret and its versions, personal tenants made outside Terraform included, and refuse a workspace secret (-wsec-), the tenant's -git and -typesafe secrets, its forge slots and provider keys, an empty tenant, the platform's swarm-github-app-* and swarm-account-* secrets, the other team's agents-* and peer-app-*, another project's and the project-ID spelling"
   }
 
   # The control for the emulation above: the same parse finds a tenant in an
@@ -199,9 +199,9 @@ run "swarm_api_alone_reads_mcpc_secrets_and_nothing_else" {
   assert {
     condition = alltrue([
       for c in [regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"{]+)\\{[a-z]+\\}([^\"]+)\"\\) != \"\"$", google_project_iam_member.mcp_credential_accessor[0].condition[0].expression)] :
-      c[0] == "projects/209012342332/secrets/swarm-tenant-" && c[1] == "/secrets/swarm-tenant-" && c[2] == "-mcpc-" &&
-      split(c[2], split(c[1], "projects/209012342332/secrets/swarm-tenant-u-alice-mcpc-x")[1])[0] == "u-alice" &&
-      length(split(c[2], split(c[1], "projects/209012342332/secrets/swarm-tenant-u-alice-wsec-x")[1])) == 1
+      c[0] == "projects/123456789012/secrets/swarm-tenant-" && c[1] == "/secrets/swarm-tenant-" && c[2] == "-mcpc-" &&
+      split(c[2], split(c[1], "projects/123456789012/secrets/swarm-tenant-u-alice-mcpc-x")[1])[0] == "u-alice" &&
+      length(split(c[2], split(c[1], "projects/123456789012/secrets/swarm-tenant-u-alice-wsec-x")[1])) == 1
     ])
     error_message = "the condition's parts are the project-number prefix, the /secrets/swarm-tenant- template prefix and the -mcpc- marker; the parse recovers u-alice from a personal tenant's credential and finds no marker in a workspace secret"
   }
@@ -218,7 +218,7 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
     target          = data.google_project.mcp_credentials
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -226,7 +226,7 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
     target          = data.google_project.forge_user_slots
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -234,7 +234,7 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
     target          = data.google_project.typesafe_user_keys
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -267,9 +267,9 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
         [for k, m in google_project_iam_member.typesafe_user_key_reader : { tenant = split("/", k)[0], member = m.member, expr = m.condition[0].expression }],
         ) : alltrue([
           for n in [
-            "projects/209012342332/secrets/swarm-tenant-${b.tenant}-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}",
-            "projects/209012342332/secrets/swarm-tenant-${b.tenant}-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}",
+            "projects/123456789012/secrets/swarm-tenant-${b.tenant}-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}",
+            "projects/123456789012/secrets/swarm-tenant-${b.tenant}-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-mcpc-${substr(sha256("mcp-iam per-run credential"), 0, 16)}",
             ] : alltrue(concat(
               [for p in regexall("startsWith\\(\"([^\"]+)\"\\)", b.expr) : !startswith(n, p[0])],
               [for e in regexall("== \"([^\"]+)\"", b.expr) : n != e[0]],
@@ -290,11 +290,11 @@ run "no_tenant_worker_reads_a_mcpc_secret" {
       alltrue([for k, m in google_project_iam_member.typesafe_user_key_reader : startswith(m.member, "serviceAccount:swarm-agent-worker-eng@")]),
       alltrue([
         for k, m in google_project_iam_member.forge_slot_reader :
-        anytrue([for p in regexall("startsWith\\(\"([^\"]+)\"\\)", m.condition[0].expression) : startswith("projects/209012342332/secrets/swarm-tenant-${k}-git-u-${substr(sha256("mcp-iam per-run credential"), 0, 16)}", p[0])])
+        anytrue([for p in regexall("startsWith\\(\"([^\"]+)\"\\)", m.condition[0].expression) : startswith("projects/123456789012/secrets/swarm-tenant-${k}-git-u-${substr(sha256("mcp-iam per-run credential"), 0, 16)}", p[0])])
       ]),
       alltrue([
         for k, m in google_project_iam_member.typesafe_user_key_reader :
-        anytrue([for e in regexall("== \"([^\"]+)\"", m.condition[0].expression) : e[0] == "projects/209012342332/secrets/swarm-tenant-u-alice-typesafe"])
+        anytrue([for e in regexall("== \"([^\"]+)\"", m.condition[0].expression) : e[0] == "projects/123456789012/secrets/swarm-tenant-u-alice-typesafe"])
       ]),
     ])
     error_message = "the worker-grant check read no binding, or a binding's condition has no name literal, or the check fails to admit the forge slot or TypeSafe key the binding exists for: the assertion above would be vacuous"
@@ -312,7 +312,7 @@ run "no_secret_in_state_and_every_resource_labelled" {
     target          = data.google_project.mcp_credentials
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 

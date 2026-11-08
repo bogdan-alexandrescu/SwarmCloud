@@ -15,7 +15,7 @@
 # change IAM.
 #
 # WHAT THIS DOES NOT PROTECT AGAINST, accepted by the owner 2026-09-29: the key
-# lives in the shared saga-agents-staging project, so a project Owner or Editor
+# lives in the shared example-project project, so a project Owner or Editor
 # can redeploy swarm-api's service to run code of their choosing as its account,
 # and sign through it, without touching this policy. It does hold against
 # tenant agents -- no tenant or worker account holds any role on this key.

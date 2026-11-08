@@ -1,7 +1,7 @@
 # Custom-mode VPC for the swarm.
 #
 # This is deliberately a NEW network. The project already holds
-# `agents-staging-vpc`, owned by another team, and the default VPC. Neither is
+# `peer-vpc`, owned by another team, and the default VPC. Neither is
 # referenced, read or modified anywhere in this module.
 #
 # Several Compute resources (network, subnetwork, router, NAT, firewall) have no
@@ -32,7 +32,15 @@ resource "google_compute_network" "this" {
   # and deleting the route here would strand the NAT gateway too.
   delete_default_routes_on_create = false
 
-  description = "${local.owner_marker}; swarm execution network (not agents-staging-vpc)"
+  description = "${local.owner_marker}; swarm execution network (not another team's, e.g. peer-vpc)"
+
+  lifecycle {
+    # The description is generic text; a live deployment's network keeps its
+    # older text, which only its private state holds. A changed description
+    # forces the network's replacement, so it is ignored: an existing
+    # deployment is not replaced and a fresh one gets this text.
+    ignore_changes = [description]
+  }
 }
 
 resource "google_compute_subnetwork" "this" {

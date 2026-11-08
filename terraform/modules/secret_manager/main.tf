@@ -102,7 +102,7 @@ resource "google_secret_manager_secret" "this" {
 
   # `component`/`tenant`/`provider` are the same keys scripts/create-secrets.sh
   # writes, and the broker's discovery reads them rather than taking the secret
-  # name apart -- `swarm-tenant-u-bogdan-anthropic-refresh` does not split
+  # name apart -- `swarm-tenant-u-pat-anthropic-refresh` does not split
   # unambiguously, because personal tenant ids are `u-<user>` and contain a
   # dash. Two provisioning paths that label differently would make half the
   # fleet invisible to the refresher, so they are kept identical here.

@@ -13,7 +13,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required since IAP membership moved into this root (2026-09-24). It has no
   # default on purpose: an empty list is refused, and a default would admit
@@ -29,7 +29,7 @@ run "state_survives_the_ways_a_platform_is_usually_lost" {
   }
 
   assert {
-    condition     = google_storage_bucket.state.name == "swarm-tfstate-saga-agents-staging"
+    condition     = google_storage_bucket.state.name == "swarm-tfstate-example-project"
     error_message = "the state bucket carries the swarm prefix and is unique by project id"
   }
 
@@ -97,14 +97,14 @@ run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   # Without an attribute condition the pool trusts GitHub's issuer -- which is
   # to say every repository on GitHub, including one created five minutes from
   # now.
   assert {
-    condition     = strcontains(google_iam_workload_identity_pool_provider.github[0].attribute_condition, "assertion.repository == \"saga/agent-swarm-infra\"")
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github[0].attribute_condition, "assertion.repository == \"example-org/example-repo\"")
     error_message = "the provider must be pinned to this repository"
   }
 
@@ -116,7 +116,7 @@ run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
   # THERE IS DELIBERATELY NO `assertion.sub` ASSERTION HERE.
   #
   # One existed, requiring
-  # `assertion.sub == "repo:saga/agent-swarm-infra:ref:refs/heads/main"` in the
+  # `assertion.sub == "repo:example-org/example-repo:ref:refs/heads/main"` in the
   # rendered condition, to gate a pin checkov could not read through a `join()`
   # over a `for`. The pin itself was then REMOVED from wif.tf for two measured
   # reasons: it rejected a legitimate `refs/heads/main` run
@@ -174,7 +174,7 @@ run "ci_is_never_granted_owner" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/owner"]
   }
 
@@ -224,12 +224,12 @@ run "api_enablement_can_never_cascade_in_a_shared_project" {
   }
 
   variables {
-    project_id = "saga-agents-staging"
+    project_id = "example-project"
     services   = ["run.googleapis.com", "container.googleapis.com"]
   }
 
   # A destroy that disabled container.googleapis.com would take down the other
-  # team's live agents-staging cluster -- the exact blast radius this platform
+  # team's live peer-cluster cluster -- the exact blast radius this platform
   # is required never to have.
   assert {
     condition = alltrue([
@@ -248,7 +248,7 @@ run "turning_api_disablement_on_is_refused" {
   }
 
   variables {
-    project_id         = "saga-agents-staging"
+    project_id         = "example-project"
     services           = ["run.googleapis.com"]
     disable_on_destroy = true
   }
@@ -271,8 +271,8 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
   variables {
     frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
-    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
+    github_repository     = "example-org/example-repo"
+    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example-project.iam.gserviceaccount.com"]
   }
 
   assert {
@@ -336,22 +336,22 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
     target          = google_iam_workload_identity_pool.github
     override_during = plan
     values = {
-      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
     }
   }
 
   variables {
     enable_github_wif      = true
-    github_repository      = "saga/agent-swarm-infra"
-    ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
     frontend_iap_members = [
       "domain:example.com",
-      "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com",
     ]
   }
 
   assert {
-    condition     = google_service_account_iam_member.ci_fix_wif[0].member == "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/ci-fix.yml@refs/heads/main"
+    condition     = google_service_account_iam_member.ci_fix_wif[0].member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/ci-fix.yml@refs/heads/main"
     error_message = "the fixer's identity must be federated to exactly ci-fix.yml on refs/heads/main, and nothing wider"
   }
 
@@ -368,7 +368,7 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
   }
 
   assert {
-    condition     = google_service_account_iam_member.ci_fix_wif[0].service_account_id == "projects/saga-agents-staging/serviceAccounts/swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_service_account_iam_member.ci_fix_wif[0].service_account_id == "projects/example-project/serviceAccounts/swarm-ci-fix@example-project.iam.gserviceaccount.com"
     error_message = "the binding must sit on the fixer's own service account"
   }
 
@@ -380,7 +380,7 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
   # The mapping was added; the trust policy was not touched. Compared whole, so
   # a clause dropped or an alternative OR-ed in fails here.
   assert {
-    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"saga/agent-swarm-infra\" && (assertion.ref == \"refs/heads/main\")"
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"example-org/example-repo\" && (assertion.ref == \"refs/heads/main\")"
     error_message = "adding the fixer must not loosen the provider's attribute_condition"
   }
 
@@ -407,7 +407,7 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_job
     target          = google_iam_workload_identity_pool.github
     override_during = plan
     values = {
-      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
     }
   }
 
@@ -415,17 +415,17 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_job
     target          = google_project_iam_custom_role.acceptance_runner
     override_during = plan
     values = {
-      name = "projects/saga-agents-staging/roles/swarmAcceptanceRunner"
+      name = "projects/example-project/roles/swarmAcceptanceRunner"
     }
   }
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
-    condition     = google_service_account_iam_member.acceptance_wif[0].member == "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/accept.yml@refs/heads/main"
+    condition     = google_service_account_iam_member.acceptance_wif[0].member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/accept.yml@refs/heads/main"
     error_message = "the acceptance identity must be federated to exactly accept.yml on refs/heads/main, and nothing wider"
   }
 
@@ -473,7 +473,7 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_job
   }
 
   assert {
-    condition     = google_project_iam_member.acceptance_runs_jobs[0].role == "projects/saga-agents-staging/roles/swarmAcceptanceRunner" && google_project_iam_custom_role.acceptance_runner[0].role_id == "swarmAcceptanceRunner"
+    condition     = google_project_iam_member.acceptance_runs_jobs[0].role == "projects/example-project/roles/swarmAcceptanceRunner" && google_project_iam_custom_role.acceptance_runner[0].role_id == "swarmAcceptanceRunner"
     error_message = "the unconditioned project grant must be swarmAcceptanceRunner and nothing broader"
   }
 
@@ -485,13 +485,13 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_job
   }
 
   assert {
-    condition     = google_project_iam_member.acceptance_reads_verify_logs[0].condition[0].expression == "resource.name == \"projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-verify\""
+    condition     = google_project_iam_member.acceptance_reads_verify_logs[0].condition[0].expression == "resource.name == \"projects/example-project/locations/global/buckets/_Default/views/swarm-verify\""
     error_message = "the acceptance identity may read the swarm-verify log view and no other log"
   }
 
   # The state bucket also holds every root's state: releases/ only.
   assert {
-    condition     = google_storage_bucket_iam_member.acceptance_reads_release_records[0].role == "roles/storage.objectViewer" && google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-tfstate-saga-agents-staging/objects/releases/\")"
+    condition     = google_storage_bucket_iam_member.acceptance_reads_release_records[0].role == "roles/storage.objectViewer" && google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-tfstate-example-project/objects/releases/\")"
     error_message = "the acceptance identity may read releases/ in the state bucket, never a state object"
   }
 }
@@ -518,7 +518,7 @@ run "the_ci_fixer_binding_is_absent_until_an_account_is_named" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
@@ -536,11 +536,11 @@ run "the_ci_fixer_can_never_be_the_deployer" {
 
   variables {
     enable_github_wif      = true
-    github_repository      = "saga/agent-swarm-infra"
-    ci_fix_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
     frontend_iap_members = [
       "domain:example.com",
-      "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com",
     ]
   }
 
@@ -556,8 +556,8 @@ run "a_ci_fixer_that_cannot_pass_iap_is_refused" {
 
   variables {
     enable_github_wif      = true
-    github_repository      = "saga/agent-swarm-infra"
-    ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
   }
 
   expect_failures = [google_service_account_iam_member.ci_fix_wif]
@@ -572,8 +572,8 @@ run "a_malformed_ci_fixer_account_is_refused" {
 
   variables {
     enable_github_wif      = true
-    github_repository      = "saga/agent-swarm-infra"
-    ci_fix_service_account = "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com"
   }
 
   expect_failures = [var.ci_fix_service_account]
@@ -602,20 +602,20 @@ run "the_deployer_is_bound_to_its_workflow_files_on_main" {
     target          = google_iam_workload_identity_pool.github
     override_during = plan
     values = {
-      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
     }
   }
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   # Compared whole, as a set: a file added, dropped or widened fails here.
   assert {
     condition = toset([for m in values(google_service_account_iam_member.deployer_wif) : m.member]) == toset([
       for f in ["application.yml", "hotfix.yml", "iam-refusal-probe.yml", "publish-release.yml", "release.yml", "security.yml", "terraform.yml"] :
-      "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/${f}@refs/heads/main"
+      "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/${f}@refs/heads/main"
     ])
     error_message = "the deployer must be federated to exactly release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml and publish-release.yml on refs/heads/main"
   }
@@ -637,7 +637,7 @@ run "the_deployer_is_bound_to_its_workflow_files_on_main" {
 
   # The pin narrows the binding; the pool's trust policy is untouched.
   assert {
-    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"saga/agent-swarm-infra\" && (assertion.ref == \"refs/heads/main\")"
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"example-org/example-repo\" && (assertion.ref == \"refs/heads/main\")"
     error_message = "pinning the deployer must not change the provider's attribute_condition"
   }
 
@@ -656,7 +656,7 @@ run "the_deployer_pin_covers_every_allowed_ref" {
 
   variables {
     enable_github_wif   = true
-    github_repository   = "saga/agent-swarm-infra"
+    github_repository   = "example-org/example-repo"
     github_allowed_refs = ["refs/heads/main", "refs/tags/v1"]
   }
 

@@ -71,7 +71,7 @@ variables {
   # since DAYONE-TF-1 (a fresh project's first bootstrap pass has none).
   frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
 
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 
   # Built from the parts so no line holds a 64-hex literal on its own.
@@ -104,20 +104,20 @@ run "nothing_is_planned_while_the_switch_is_off" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -152,20 +152,20 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
     enable_forge_user_slots   = true
     enable_workspace_kinds    = true
     workspace_deployer_roles  = var.roles_with_k1
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -192,7 +192,7 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.front_door_admitter[0].role_id == "swarmFrontDoorAdmitter",
-      google_project_iam_custom_role.front_door_admitter[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.front_door_admitter[0].project == "example-project",
       google_project_iam_custom_role.front_door_admitter[0].stage == "GA",
       startswith(google_project_iam_custom_role.front_door_admitter[0].description, "managed-by=swarm-terraform;"),
       length(google_project_iam_custom_role.front_door_admitter[0].description) <= 300,
@@ -211,9 +211,9 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.front_door_admitter) == 1,
-      google_project_iam_member.front_door_admitter[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.front_door_admitter[0].role == "projects/saga-agents-staging/roles/swarmFrontDoorAdmitter",
-      google_project_iam_member.front_door_admitter[0].project == "saga-agents-staging",
+      google_project_iam_member.front_door_admitter[0].member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.front_door_admitter[0].role == "projects/example-project/roles/swarmFrontDoorAdmitter",
+      google_project_iam_member.front_door_admitter[0].project == "example-project",
       length(google_project_iam_member.front_door_admitter[0].condition) == 1,
       startswith(google_project_iam_member.front_door_admitter[0].condition[0].description, "managed-by=swarm-terraform;"),
     ])
@@ -231,13 +231,13 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
 
   # Equality on the API backend's number-form name. Before O1, no hasOnly().
   assert {
-    condition     = google_project_iam_member.front_door_admitter[0].condition[0].expression == "resource.name == \"projects/209012342332/iap_web/compute/services/4410000000000000001\""
+    condition     = google_project_iam_member.front_door_admitter[0].condition[0].expression == "resource.name == \"projects/123456789012/iap_web/compute/services/4410000000000000001\""
     error_message = "K1's condition is resource.name == projects/<NUMBER>/iap_web/compute/services/<generated id of swarm-ui-backend>, and nothing else until O1"
   }
 
   assert {
     condition = alltrue([
-      for f in ["startsWith", "endsWith", "extract(", "matches(", " || ", "4420000000000000002", "swarm-ui-ui-backend", "saga-agents-staging", "iap_web/compute/services/\"", "*"] :
+      for f in ["startsWith", "endsWith", "extract(", "matches(", " || ", "4420000000000000002", "swarm-ui-ui-backend", "example-project", "iap_web/compute/services/\"", "*"] :
       !strcontains(google_project_iam_member.front_door_admitter[0].condition[0].expression, f)
     ])
     error_message = "K1's condition is no prefix, suffix, extract or match, has no second arm, never names the console's -ui-backend by id or name, uses the project NUMBER, and names one backend"
@@ -262,10 +262,10 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.workspace_team_slot_binder) == 1,
-      google_project_iam_member.workspace_team_slot_binder[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.workspace_team_slot_binder[0].role == "projects/saga-agents-staging/roles/swarmWorkspaceSecretBinder",
+      google_project_iam_member.workspace_team_slot_binder[0].member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.workspace_team_slot_binder[0].role == "projects/example-project/roles/swarmWorkspaceSecretBinder",
       length(google_project_iam_member.workspace_team_slot_binder[0].condition) == 1,
-      google_project_iam_member.workspace_team_slot_binder[0].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\") && (resource.name.endsWith(\"-git\") || resource.name.endsWith(\"-git-refresh\"))",
+      google_project_iam_member.workspace_team_slot_binder[0].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\") && (resource.name.endsWith(\"-git\") || resource.name.endsWith(\"-git-refresh\"))",
       startswith(google_project_iam_member.workspace_team_slot_binder[0].condition[0].description, "managed-by=swarm-terraform;"),
     ])
     error_message = "K2 is a second swarmWorkspaceSecretBinder grant to the deployer, bounded to swarm-tenant-*-git and -git-refresh by full name with the project NUMBER"
@@ -273,7 +273,7 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
 
   # The personal grant is unchanged beside it.
   assert {
-    condition     = google_project_iam_member.workspace_deployer["swarmWorkspaceSecretBinder"].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\")"
+    condition     = google_project_iam_member.workspace_deployer["swarmWorkspaceSecretBinder"].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-\")"
     error_message = "the first secret-binder grant stays personal tenants' secrets only"
   }
 
@@ -284,28 +284,28 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
         for c in [{
           parts = regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && \\(resource\\.name\\.endsWith\\(\"([^\"]+)\"\\) \\|\\| resource\\.name\\.endsWith\\(\"([^\"]+)\"\\)\\)$", google_project_iam_member.workspace_team_slot_binder[0].condition[0].expression)
           admitted = [
-            "projects/209012342332/secrets/swarm-tenant-eng-git",
-            "projects/209012342332/secrets/swarm-tenant-eng-git-refresh",
-            "projects/209012342332/secrets/swarm-tenant-research-git",
-            "projects/209012342332/secrets/swarm-tenant-research-git-refresh",
-            "projects/209012342332/secrets/swarm-tenant-u-sw-c90291-git",
+            "projects/123456789012/secrets/swarm-tenant-eng-git",
+            "projects/123456789012/secrets/swarm-tenant-eng-git-refresh",
+            "projects/123456789012/secrets/swarm-tenant-research-git",
+            "projects/123456789012/secrets/swarm-tenant-research-git-refresh",
+            "projects/123456789012/secrets/swarm-tenant-u-pat-git",
           ]
           refused = [
-            "projects/209012342332/secrets/swarm-tenant-eng-anthropic",
-            "projects/209012342332/secrets/swarm-tenant-eng-anthropic-refresh",
-            "projects/209012342332/secrets/swarm-tenant-eng-wsec-x",
-            "projects/209012342332/secrets/swarm-tenant-eng-wsec-${h}",
-            "projects/209012342332/secrets/swarm-tenant-eng-git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-eng-git-u-${h}-refresh",
-            "projects/209012342332/secrets/swarm-tenant-eng-git-r-${h}",
-            "projects/209012342332/secrets/swarm-tenant-eng-typesafe",
-            "projects/209012342332/secrets/swarm-tenant-eng-mcpc-${h}",
-            "projects/209012342332/secrets/swarm-github-app-git",
-            "projects/209012342332/secrets/agents-staging-git",
-            "projects/209012342332/secrets/promptlab-git",
-            "projects/111111111111/secrets/swarm-tenant-eng-git",
-            "projects/2090123423320/secrets/swarm-tenant-eng-git",
-            "projects/saga-agents-staging/secrets/swarm-tenant-eng-git",
+            "projects/123456789012/secrets/swarm-tenant-eng-anthropic",
+            "projects/123456789012/secrets/swarm-tenant-eng-anthropic-refresh",
+            "projects/123456789012/secrets/swarm-tenant-eng-wsec-x",
+            "projects/123456789012/secrets/swarm-tenant-eng-wsec-${h}",
+            "projects/123456789012/secrets/swarm-tenant-eng-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-eng-git-u-${h}-refresh",
+            "projects/123456789012/secrets/swarm-tenant-eng-git-r-${h}",
+            "projects/123456789012/secrets/swarm-tenant-eng-typesafe",
+            "projects/123456789012/secrets/swarm-tenant-eng-mcpc-${h}",
+            "projects/123456789012/secrets/swarm-github-app-git",
+            "projects/123456789012/secrets/peer-cluster-git",
+            "projects/123456789012/secrets/peer-app-git",
+            "projects/210987654321/secrets/swarm-tenant-eng-git",
+            "projects/${"123456789012"}0/secrets/swarm-tenant-eng-git",
+            "projects/example-project/secrets/swarm-tenant-eng-git",
           ]
           }] : alltrue([
           for n in concat(c.admitted, c.refused) :
@@ -322,7 +322,7 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
     condition = alltrue([
       toset(keys(google_project_iam_member.forge_member_slots_any_tenant)) == toset(["version_adder", "version_manager", "slot_reader"]),
       google_project_iam_member.forge_member_slots_any_tenant["version_adder"].role == "roles/secretmanager.secretVersionAdder",
-      google_project_iam_member.forge_member_slots_any_tenant["version_manager"].role == "projects/saga-agents-staging/roles/swarmForgeSlotVersionManager",
+      google_project_iam_member.forge_member_slots_any_tenant["version_manager"].role == "projects/example-project/roles/swarmForgeSlotVersionManager",
       google_project_iam_member.forge_member_slots_any_tenant["slot_reader"].role == "roles/secretmanager.secretAccessor",
     ])
     error_message = "K3 is swarm-api's three forge-slot roles, the version adder, the version manager and the slot reader, one any-tenant binding each"
@@ -331,9 +331,9 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
   assert {
     condition = alltrue([
       for k, m in google_project_iam_member.forge_member_slots_any_tenant :
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       && length(m.condition) == 1
-      && m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-git-u-\") != \"\""
+      && m.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-git-u-\") != \"\""
       && startswith(m.condition[0].description, "managed-by=swarm-terraform;")
     ])
     error_message = "every K3 binding is swarm-api's, under swarm-tenant-<t>-git-u- by extract() with the project NUMBER, and nothing else"
@@ -348,26 +348,26 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
         for c in [{
           parts = regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"{]+)\\{[a-z]+\\}([^\"]+)\"\\) != \"\"$", google_project_iam_member.forge_member_slots_any_tenant["slot_reader"].condition[0].expression)
           admitted = [
-            "projects/209012342332/secrets/swarm-tenant-research-git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-research-git-u-${h}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-research-git-u-${h}-refresh",
-            "projects/209012342332/secrets/swarm-tenant-research-git-u-${h}-refresh/versions/latest",
-            "projects/209012342332/secrets/swarm-tenant-eng-git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-research-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-research-git-u-${h}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-research-git-u-${h}-refresh",
+            "projects/123456789012/secrets/swarm-tenant-research-git-u-${h}-refresh/versions/latest",
+            "projects/123456789012/secrets/swarm-tenant-eng-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-git-u-${h}",
           ]
           refused = [
-            "projects/209012342332/secrets/swarm-tenant-research-git",
-            "projects/209012342332/secrets/swarm-tenant-research-git/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-research-git-refresh",
-            "projects/209012342332/secrets/swarm-tenant-research-git-r-${h}",
-            "projects/209012342332/secrets/swarm-tenant-research-anthropic",
-            "projects/209012342332/secrets/swarm-tenant-research-wsec-${h}",
-            "projects/209012342332/secrets/swarm-tenant--git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-git-u-${h}",
-            "projects/209012342332/secrets/swarm-github-app-git-u-${h}",
-            "projects/209012342332/secrets/agents-research-git-u-${h}",
-            "projects/111111111111/secrets/swarm-tenant-research-git-u-${h}",
-            "projects/saga-agents-staging/secrets/swarm-tenant-research-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-research-git",
+            "projects/123456789012/secrets/swarm-tenant-research-git/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-research-git-refresh",
+            "projects/123456789012/secrets/swarm-tenant-research-git-r-${h}",
+            "projects/123456789012/secrets/swarm-tenant-research-anthropic",
+            "projects/123456789012/secrets/swarm-tenant-research-wsec-${h}",
+            "projects/123456789012/secrets/swarm-tenant--git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-git-u-${h}",
+            "projects/123456789012/secrets/swarm-github-app-git-u-${h}",
+            "projects/123456789012/secrets/agents-research-git-u-${h}",
+            "projects/210987654321/secrets/swarm-tenant-research-git-u-${h}",
+            "projects/example-project/secrets/swarm-tenant-research-git-u-${h}",
           ]
           }] : alltrue([
           for n in concat(c.admitted, c.refused) : (
@@ -410,20 +410,20 @@ run "o1s_bound_appends_hasonly_on_the_accessor_role" {
     enable_workspace_kinds      = true
     front_door_admit_role_bound = true
     workspace_deployer_roles    = var.roles_with_k1
-    workspace_apply_image       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image       = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -444,7 +444,7 @@ run "o1s_bound_appends_hasonly_on_the_accessor_role" {
   }
 
   assert {
-    condition     = google_project_iam_member.front_door_admitter[0].condition[0].expression == "resource.name == \"projects/209012342332/iap_web/compute/services/4410000000000000001\" && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iap.httpsResourceAccessor\"])"
+    condition     = google_project_iam_member.front_door_admitter[0].condition[0].expression == "resource.name == \"projects/123456789012/iap_web/compute/services/4410000000000000001\" && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iap.httpsResourceAccessor\"])"
     error_message = "with O1's proof, K1 is the same equality AND hasOnly() over exactly roles/iap.httpsResourceAccessor"
   }
 }
@@ -481,20 +481,20 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
     enable_workspace_kinds    = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -534,7 +534,7 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
     condition = alltrue([
       length(google_project_iam_custom_role.front_door_reader) == 1,
       google_project_iam_custom_role.front_door_reader[0].role_id == "swarmFrontDoorReader",
-      google_project_iam_custom_role.front_door_reader[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.front_door_reader[0].project == "example-project",
       google_project_iam_custom_role.front_door_reader[0].stage == "GA",
       startswith(google_project_iam_custom_role.front_door_reader[0].description, "managed-by=swarm-terraform;"),
       length(google_project_iam_custom_role.front_door_reader[0].description) <= 300,
@@ -551,9 +551,9 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
     condition = alltrue([
       length(google_iap_web_backend_service_iam_member.front_door_reader) == 1,
       google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service == "swarm-ui-backend",
-      google_iap_web_backend_service_iam_member.front_door_reader[0].project == "saga-agents-staging",
-      google_iap_web_backend_service_iam_member.front_door_reader[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
-      google_iap_web_backend_service_iam_member.front_door_reader[0].role == "projects/saga-agents-staging/roles/swarmFrontDoorReader",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].project == "example-project",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].role == "projects/example-project/roles/swarmFrontDoorReader",
       length(google_iap_web_backend_service_iam_member.front_door_reader[0].condition) == 0,
     ])
     error_message = "the reader is one binding of swarmFrontDoorReader, to swarm-workspace-deployer alone, on the API backend swarm-ui-backend's own IAP policy, with no condition"
@@ -563,7 +563,7 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
   assert {
     condition = alltrue(concat(
       [for m in google_project_iam_member.workspace_deployer : !strcontains(m.role, "swarmFrontDoorReader")],
-      [for b in google_iap_web_backend_service_iam_member.frontend_accessors : b.member != "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"],
+      [for b in google_iap_web_backend_service_iam_member.frontend_accessors : b.member != "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com"],
       [google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service != "swarm-ui-ui-backend"],
     ))
     error_message = "swarmFrontDoorReader is never granted at the project, and swarm-workspace-deployer is named on no IAP backend but the API backend"
@@ -618,7 +618,7 @@ run "the_switch_without_the_user_slots_is_refused" {
   variables {
     enable_workspace_kinds    = true
     enable_workspace_deployer = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
     # The slot creator off too, so its own precondition (workspace_deployer.tf)
     # is not the failure this run sees.
     workspace_deployer_roles = ["swarmWorkspaceProjectReader", "swarmWorkspaceSecretBinder", "swarmFrontDoorAdmitter"]
@@ -643,20 +643,20 @@ run "k1_without_the_api_backend_is_refused" {
     enable_workspace_kinds    = true
     frontend_iap_backends     = []
     workspace_deployer_roles  = var.roles_with_k1
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -677,20 +677,20 @@ run "the_front_door_reader_without_the_api_backend_is_refused" {
     enable_forge_user_slots   = true
     enable_workspace_kinds    = true
     frontend_iap_backends     = []
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 

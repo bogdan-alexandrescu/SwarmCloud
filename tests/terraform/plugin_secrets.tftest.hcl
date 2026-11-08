@@ -35,7 +35,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -54,7 +54,7 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
     target          = data.google_project.plugin_secrets
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -65,8 +65,8 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
   assert {
     condition = alltrue([
       length(google_project_iam_member.plugin_secret_reader) == 1,
-      google_project_iam_member.plugin_secret_reader[0].project == "saga-agents-staging",
-      google_project_iam_member.plugin_secret_reader[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+      google_project_iam_member.plugin_secret_reader[0].project == "example-project",
+      google_project_iam_member.plugin_secret_reader[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
       google_project_iam_member.plugin_secret_reader[0].role == "roles/secretmanager.secretAccessor",
     ])
     error_message = "swarm-api, alone, holds roles/secretmanager.secretAccessor for plugin secrets"
@@ -76,20 +76,20 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
   # other team's among them.
   assert {
     condition     = length(google_project_iam_member.plugin_secret_reader[0].condition) == 1
-    error_message = "the grant carries exactly one condition; unconditioned, secretAccessor reads every secret in saga-agents-staging"
+    error_message = "the grant carries exactly one condition; unconditioned, secretAccessor reads every secret in example-project"
   }
 
   # The exact string, so any edit is a deliberate one this file must follow:
   # terraform/infra/plugins.tf's plugin_secret_condition, which
   # plugins_infra.tftest.hcl holds to the same text.
   assert {
-    condition     = google_project_iam_member.plugin_secret_reader[0].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-plg-\") != \"\""
+    condition     = google_project_iam_member.plugin_secret_reader[0].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-plg-\") != \"\""
     error_message = "swarm-api's plugin-secret condition changed; it must be a name starting projects/<NUMBER>/secrets/swarm-tenant- with a non-empty tenant before -plg-, by extract(), and nothing else"
   }
 
   assert {
     condition = alltrue([
-      for f in ["matches(", "hasOnly(", " || ", "saga-agents-staging"] :
+      for f in ["matches(", "hasOnly(", " || ", "example-project"] :
       !strcontains(google_project_iam_member.plugin_secret_reader[0].condition[0].expression, f)
     ])
     error_message = "the condition uses no matches() (refused on some services), no hasOnly() list, no second arm, and the project number rather than its ID"
@@ -123,37 +123,37 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
         for c in [{
           parts = regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"{]+)\\{[a-z]+\\}([^\"]+)\"\\) != \"\"$", google_project_iam_member.plugin_secret_reader[0].condition[0].expression)
           admitted = [
-            "projects/209012342332/secrets/swarm-tenant-a-plg-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-plg-${h}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-a-plg-${h}/versions/latest",
-            "projects/209012342332/secrets/swarm-tenant-eng-plg-${h}",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-plg-${h}/versions/12",
-            "projects/209012342332/secrets/swarm-tenant-u-someone-not-in-terraform-plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-plg-${h}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-a-plg-${h}/versions/latest",
+            "projects/123456789012/secrets/swarm-tenant-eng-plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-plg-${h}/versions/12",
+            "projects/123456789012/secrets/swarm-tenant-u-someone-not-in-terraform-plg-${h}",
           ]
           refused = [
-            "projects/209012342332/secrets/swarm-tenant-a-git",
-            "projects/209012342332/secrets/swarm-tenant-a-git/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-a-git-u-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-git-r-${h}/versions/2",
-            "projects/209012342332/secrets/swarm-tenant-a-typesafe",
-            "projects/209012342332/secrets/swarm-tenant-a-anthropic",
-            "projects/209012342332/secrets/swarm-tenant-a-anthropic-refresh",
-            "projects/209012342332/secrets/swarm-tenant-a-wsec-${h}",
-            "projects/209012342332/secrets/swarm-tenant-a-wsec-${h}/versions/1",
-            "projects/209012342332/secrets/swarm-tenant-u-alice-browser-login-github-qa",
-            "projects/209012342332/secrets/swarm-tenant-a-plg",
-            "projects/209012342332/secrets/swarm-tenant-plg-${h}",
-            "projects/209012342332/secrets/swarm-tenant--plg-${h}",
-            "projects/209012342332/secrets/swarm-tenant",
-            "projects/209012342332/secrets/swarm-github-app-private-key",
-            "projects/209012342332/secrets/swarm-github-app-plg-${h}",
-            "projects/209012342332/secrets/swarm-account-a-plg-${h}",
-            "projects/209012342332/secrets/agents-staging-anthropic",
-            "projects/209012342332/secrets/agents-a-plg-${h}",
-            "projects/209012342332/secrets/promptlab-openai",
-            "projects/111111111111/secrets/swarm-tenant-a-plg-${h}",
-            "projects/2090123423320/secrets/swarm-tenant-a-plg-${h}",
-            "projects/saga-agents-staging/secrets/swarm-tenant-a-plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-git",
+            "projects/123456789012/secrets/swarm-tenant-a-git/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-a-git-u-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-git-r-${h}/versions/2",
+            "projects/123456789012/secrets/swarm-tenant-a-typesafe",
+            "projects/123456789012/secrets/swarm-tenant-a-anthropic",
+            "projects/123456789012/secrets/swarm-tenant-a-anthropic-refresh",
+            "projects/123456789012/secrets/swarm-tenant-a-wsec-${h}",
+            "projects/123456789012/secrets/swarm-tenant-a-wsec-${h}/versions/1",
+            "projects/123456789012/secrets/swarm-tenant-u-alice-browser-login-github-qa",
+            "projects/123456789012/secrets/swarm-tenant-a-plg",
+            "projects/123456789012/secrets/swarm-tenant-plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant--plg-${h}",
+            "projects/123456789012/secrets/swarm-tenant",
+            "projects/123456789012/secrets/swarm-github-app-private-key",
+            "projects/123456789012/secrets/swarm-github-app-plg-${h}",
+            "projects/123456789012/secrets/swarm-account-a-plg-${h}",
+            "projects/123456789012/secrets/peer-cluster-anthropic",
+            "projects/123456789012/secrets/agents-a-plg-${h}",
+            "projects/123456789012/secrets/peer-app-openai",
+            "projects/210987654321/secrets/swarm-tenant-a-plg-${h}",
+            "projects/${"123456789012"}0/secrets/swarm-tenant-a-plg-${h}",
+            "projects/example-project/secrets/swarm-tenant-a-plg-${h}",
           ]
           }] : alltrue([
           for n in concat(c.admitted, c.refused) : (
@@ -165,7 +165,7 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
         ])
       ])
     ])
-    error_message = "swarm-api's plugin-secret condition must admit every workspace's swarm-tenant-<t>-plg-<hex> secret and its versions, workspaces made outside Terraform included, and refuse the tenant's -git, -typesafe and -wsec- secrets, its forge slots and provider keys, an empty tenant, the platform's swarm-github-app-* and swarm-account-* secrets, the other team's agents-* and promptlab-*, another project's and the project-ID spelling"
+    error_message = "swarm-api's plugin-secret condition must admit every workspace's swarm-tenant-<t>-plg-<hex> secret and its versions, workspaces made outside Terraform included, and refuse the tenant's -git, -typesafe and -wsec- secrets, its forge slots and provider keys, an empty tenant, the platform's swarm-github-app-* and swarm-account-* secrets, the other team's agents-* and peer-app-*, another project's and the project-ID spelling"
   }
 
   # The control for the emulation above: the same parse finds a tenant in an
@@ -173,8 +173,8 @@ run "swarm_api_alone_reads_plg_secrets_and_nothing_else" {
   assert {
     condition = alltrue([
       for c in [regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"{]+)\\{[a-z]+\\}([^\"]+)\"\\) != \"\"$", google_project_iam_member.plugin_secret_reader[0].condition[0].expression)] :
-      c[0] == "projects/209012342332/secrets/swarm-tenant-" && c[1] == "/secrets/swarm-tenant-" && c[2] == "-plg-" &&
-      split(c[2], split(c[1], "projects/209012342332/secrets/swarm-tenant-u-alice-plg-x")[1])[0] == "u-alice"
+      c[0] == "projects/123456789012/secrets/swarm-tenant-" && c[1] == "/secrets/swarm-tenant-" && c[2] == "-plg-" &&
+      split(c[2], split(c[1], "projects/123456789012/secrets/swarm-tenant-u-alice-plg-x")[1])[0] == "u-alice"
     ])
     error_message = "the condition's parts are the project-number prefix, the /secrets/swarm-tenant- template prefix and the -plg- marker, and the parse recovers u-alice from a personal tenant's secret"
   }
@@ -191,7 +191,7 @@ run "no_worker_no_secret_in_state_and_labelled" {
     target          = data.google_project.plugin_secrets
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
