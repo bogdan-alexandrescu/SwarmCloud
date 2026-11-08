@@ -34,7 +34,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import re
 from pathlib import Path
 from typing import Any
 

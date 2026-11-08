@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -47,25 +48,29 @@ SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 
 
-def _render_workspace_label() -> str:
+@functools.cache
+def _label_key() -> str:
     """The workspace label key kubernetes/render.py writes on a job-made
-    Namespace (WORKSPACE_LABEL), read from the module rather than restated."""
+    Namespace (WORKSPACE_LABEL), read from the module rather than restated.
+
+    The key A7 renders and A9 and the guard (C7) read back. Read on first use,
+    not at import: render.py loads the scheduler, and every collection of
+    tests/unit/scripts would pay for it (test_collection_stays_cheap.py)."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("swarm_tests_render", REPO / "kubernetes" / "render.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.WORKSPACE_LABEL
+    key = module.WORKSPACE_LABEL
+    assert key.endswith("/workspace"), key
+    return key
 
 
-#: The key A7 renders and A9 and the guard (C7) read back. The job reads its
-#: prefix from the deployment's tfvars (label_prefix), so the harness's
-#: placeholder tfvars names the prefix the render writes.
-LABEL_KEY = _render_workspace_label()
-assert LABEL_KEY.endswith("/workspace"), LABEL_KEY
-#: The placeholder deployment's tfvars, with the render's label prefix.
-TFVARS = {**placeholder_deployment.TFVARS, "label_prefix": LABEL_KEY.rsplit("/", 1)[0]}
+def _tfvars() -> dict:
+    """The placeholder deployment's tfvars, with the render's label prefix: the
+    job reads its prefix from the deployment's tfvars (label_prefix)."""
+    return {**placeholder_deployment.TFVARS, "label_prefix": _label_key().rsplit("/", 1)[0]}
 DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
 #: Where every Python a run starts (the fake world on each of a run's ~130
 #: gcloud, kubectl and curl calls, kubernetes/render.py) keeps its bytecode.
@@ -271,7 +276,7 @@ class Job:
         write_placeholder_deny_list(config, PROJECT, ["dev"])
         # Beside it, the placeholder tfvars: the job reads its platform owner and
         # its workspace label key's prefix from the deployment's, never a literal.
-        write_placeholder_tfvars(config, ["dev"], TFVARS)
+        write_placeholder_tfvars(config, ["dev"], _tfvars())
         self.config = config
         (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items()
@@ -1552,7 +1557,7 @@ def _deployment(tmp: Path) -> dict[str, str]:
     config = tmp / "deploy-config"
     config.mkdir(mode=0o700, exist_ok=True)
     write_placeholder_deny_list(config, PROJECT, ["dev"])
-    write_placeholder_tfvars(config, ["dev"], TFVARS)
+    write_placeholder_tfvars(config, ["dev"], _tfvars())
     (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
     return {"PROJECT_ID": PROJECT, "REGION": "us-central1", "ZONE": "us-central1-a", "ENVIRONMENT": "dev",
             "SWARM_DEPLOY_CONFIG_DIR": str(config), "XDG_CACHE_HOME": str(tmp / "config-cache")}
@@ -1812,7 +1817,7 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
     namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
-    assert namespace["metadata"]["labels"][LABEL_KEY] == WORKSPACE
+    assert namespace["metadata"]["labels"][_label_key()] == WORKSPACE
     tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
             _field(tenant, "service_account"), _field(tenant, "display_name")) == (
@@ -1979,9 +1984,9 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert world["secrets"][twin]["policy"].get("bindings", []) == []
     # A7: the label, on the Namespace and nowhere else.
     labelled = [k for k, v in world["k8s"].items()
-                if LABEL_KEY in ((v.get("metadata") or {}).get("labels") or {})]
+                if _label_key() in ((v.get("metadata") or {}).get("labels") or {})]
     assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
-    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][LABEL_KEY] == WORKSPACE
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][_label_key()] == WORKSPACE
     # A8: a group tenant the directory resolves.
     tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
@@ -2072,7 +2077,7 @@ def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> Non
 def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
     world = copy.deepcopy(group_created["world"])
     world["calls"], world["writes"] = [], []
-    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][LABEL_KEY]
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][_label_key()]
     job.write(world)
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)
@@ -2145,7 +2150,7 @@ def test_the_image_names_no_platform_owner() -> None:
 def test_a1_refuses_a_service_when_the_deployment_names_no_platform_owner(job: Job) -> None:
     """A tfvars without platform_owner is no owner, never a guessed one: the
     owner's own approval is refused, and nothing is written."""
-    write_placeholder_tfvars(job.config, ["dev"], {k: v for k, v in TFVARS.items() if k != "platform_owner"})
+    write_placeholder_tfvars(job.config, ["dev"], {k: v for k, v in _tfvars().items() if k != "platform_owner"})
     job.write(_service_world())
     before = copy.deepcopy(_rec(job, S_TENANT))
     proc = job.create()
