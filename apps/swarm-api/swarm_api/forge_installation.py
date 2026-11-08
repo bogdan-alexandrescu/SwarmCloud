@@ -1,8 +1,8 @@
 """GitHub App installation tokens for swarm-api's background reads (#1483, QUOTA-INSTALL).
 
 WHY. On 2026-10-17 every GitHub call SwarmCloud made for the eng and
-u-bogdan workspaces went out as one person: both workspaces connect through
-the App's USER token for bogdan-alexandrescu (`method: app_user`), and the
+example-tenant workspaces went out as one person: both workspaces connect through
+the App's USER token for the owner's GitHub account (`method: app_user`), and the
 `-git` slot `ForgeTokens.token_for` reads is that token. The merge wake's CI
 reads alone (mergewake.py, one park every `issueci.CI_READ_SECONDS`) cost
 ~3,450 calls an hour, the stranded-PR sweep ~200-400 more; the person's
@@ -43,7 +43,7 @@ pull request, comment, re-run a job, merge, or read as the person: only the
 background reads that switched (mergewake `_read`, issueci's CI read, the
 stranded-PR sweep, the repository index's head poll) ask for one.
 
-THE EXCEPTION: A WORKFLOW-FILE PUSH (#2029, WF-APP-TOKEN; BGD, 2026-10-22).
+THE EXCEPTION: A WORKFLOW-FILE PUSH (#2029, WF-APP-TOKEN; the owner, 2026-10-22).
 `workflow_push_token(tenant, owner, repo)` mints the token gittools'
 `git_push_branch` pushes a range touching `.github/workflows/**` or
 `.github/actions/**` with, and only for a registration whose `workflow_files`
@@ -57,7 +57,7 @@ A failure is a typed `WorkflowMintRefused` (`MINT_*`), constant text, never
 GitHub's message or the transport's.
 
 THE SECOND EXCEPTION: A GITHUB ACTIONS SECRET (SSC-ACTIONS-API, part of
-#2158; docs/design/secrets-scopes.md §3, BGD's Q3 and Q4 of its §11).
+#2158; docs/design/secrets-scopes.md §3, the owner's Q3 and Q4 of its §11).
 `actions_token(tenant, owner, repo, use)` mints the token
 `actions_secrets.py` writes one Actions secret with, or reads one
 environment's branch rule with. No second App: the same installation lookup,
@@ -183,7 +183,7 @@ ACTIONS_PERMISSIONS: Mapping[str, Mapping[str, str]] = {
 #: through a person's token).
 MINT_NO_INSTALLATION = "no_installation"
 #: GitHub refused the permissions: the installation has not accepted
-#: "Workflows: Read and write" (BGD's decision 4, accepted per installation).
+#: "Workflows: Read and write" (the owner's decision 4, accepted per installation).
 MINT_NOT_GRANTED = "workflows_not_granted"
 #: GitHub refused the repository: the installation does not cover it.
 MINT_NOT_COVERED = "repository_not_covered"

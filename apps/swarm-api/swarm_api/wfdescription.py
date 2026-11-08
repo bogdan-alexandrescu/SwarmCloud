@@ -1,8 +1,8 @@
-"""A generated description for a workflow submitted without one (BGD, 2026-11-04).
+"""A generated description for a workflow submitted without one (the owner, 2026-11-04).
 
 Opening a workflow in the console, the owner could not tell what it was meant
 to deliver. A submitter may write `metadata.about` (`{purpose, goals,
-output}`, `schemas.check_about`, BGD 2026-11-06) or a bare
+output}`, `schemas.check_about`, the owner 2026-11-06) or a bare
 `metadata.description` (`schemas.check_workflow_about`), recorded
 `description_source: "submitter"`. The owner picked a small model to fill the
 gap where nobody wrote one, marked as generated, so the console can say so.

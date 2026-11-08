@@ -15,7 +15,7 @@ second-person rule with its owner waiver (#2259) and the audit are the
 console's, and two comments racing the console's approve make one
 transition: the loser meets `already_decided`.
 
-A PLATFORM-SCOPE SCHEDULE'S PLAN AND MERGE ARE A PLATFORM ADMIN'S (BGD,
+A PLATFORM-SCOPE SCHEDULE'S PLAN AND MERGE ARE A PLATFORM ADMIN'S (the owner,
 2026-10-25; PLATFORM-SCHED-ROUTES, part of #2157), here as in the inbox:
 when the schedule the run's or the record's STORED reference names is
 platform-scope, `_platform_only` asks the directory, fresh, whether the

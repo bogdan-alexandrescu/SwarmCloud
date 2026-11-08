@@ -145,7 +145,7 @@ ci-fix:1 question's answer, #2898), and compares
 each ANSWERED question's `choice` with its `built`, the option label the
 asking agent said its branch implements -- the `needs_owner` ones and every
 other answered one, such as a question the owner answered before the review
-ran, which the review lists nowhere (PICK-FIX-ROUND, BGD 2026-10-26). A
+ran, which the review lists nowhere (PICK-FIX-ROUND, the owner 2026-10-26). A
 different option, or free text that names none, is an unbuilt pick
 (`unbuilt_picks`), found before any credential. `built: null` (the answer
 changes nothing the branch builds) passes, and so does a question with no
@@ -156,7 +156,7 @@ BROWSER-POOL-100) would have merged the opposite of the owner's pick without
 it.
 
 AN UNBUILT PICK IS A PICK-FIX ROUND'S TO BUILD (PICK-FIX-ROUND, part of
-#2441; BGD 2026-10-26), not the operator's. The step parks CI_PENDING on
+#2441; the owner 2026-10-26), not the operator's. The step parks CI_PENDING on
 `owner_pick_fix_pending`, one `pending` line per pick; swarm-api's wake tick
 reads that park as it reads a CI or conflict park and submits a claude-code
 round on the pull request's branch whose brief names each pick. The round
@@ -248,7 +248,7 @@ OWNER_PICK_NOT_BUILT = "owner_pick_not_built"
 UNBUILT_PICKS_KEY = "unbuilt_picks"
 OWNER_QUESTIONS_UNREADABLE = "owner_questions_unreadable"
 #: A pick the branch did not build is a pick-fix round's to build
-#: (PICK-FIX-ROUND, part of #2441; BGD 2026-10-26), not a refusal: the step
+#: (PICK-FIX-ROUND, part of #2441; the owner 2026-10-26), not a refusal: the step
 #: parks CI_PENDING on one of these codes, which swarm-api's wake tick reads
 #: as it reads a CI or a conflict park. PENDING asks for the next round;
 #: RUNNING waits on the one claimed. The rounds are `merge_fix.pick_rounds`,
@@ -370,7 +370,7 @@ MERGE_CI_MAX_SECONDS = 6 * 3600
 
 #: How long a reading whose ONLY problem is cancelled runs -- nothing failed,
 #: nothing still running or missing (`cancelled_since`) -- waits for its
-#: re-run before the step refuses `checks_cancelled`. BGD set it on
+#: re-run before the step refuses `checks_cancelled`. The owner set it on
 #: 2026-10-27 (#1778, "refuse after a shorter bound", 60 min): a cancelled
 #: run is pending, not failed, but nobody re-running it is not CI that has
 #: yet to settle, so it does not get the 6 h of `MERGE_CI_MAX_SECONDS`. A
@@ -431,7 +431,7 @@ TRAIN_FIX_PENDING = "train_fix_pending"
 #: yet. MERGE_CI_MAX_SECONDS bounds it.
 CI_RERUN_PENDING = "ci_rerun_pending"
 #: The park code of a red reading with no CI-fix round left to ask for and no
-#: re-run recorded at this head (#2351, BGD 2026-10-27): swarm-api's wake
+#: re-run recorded at this head (#2351, the owner 2026-10-27): swarm-api's wake
 #: tick re-runs the failing Actions jobs only for a merge parked CI_PENDING
 #: (`mergewake._rerun_first`), so refusing on the FIRST red reading meant the
 #: free re-run never ran -- a transient red (trivy failing to download its
@@ -587,7 +587,7 @@ REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 
 #: The refusal code of a step whose pull request a person on it pushed a
-#: commit to (#2505). BGD, 2026-10-27 (issue triage, epic #2525): "a distinct
+#: commit to (#2505). The owner, 2026-10-27 (issue triage, epic #2525): "a distinct
 #: non-failure end: superseded_by_person_push (not FAILED) when the committer
 #: is not the platform identity, so failure-review stops filing it; a foreign
 #: head from an unknown branch-mate still refuses." The refusal is unchanged:
@@ -633,7 +633,7 @@ LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "fix_l
 
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
-#: accepted head. BGD, 2026-10-26: "accept a pure base merge, and record who
+#: accepted head. The owner, 2026-10-26: "accept a pure base merge, and record who
 #: made it" -- F05 of #2379, where a person's merge of main ended a parked
 #: merge step FAILED head_moved that auto-merge.yml's `is_pure_base_merge`
 #: accepts from anyone. Each entry is `_commit_record`'s.
@@ -653,7 +653,7 @@ _MERGE_QUEUE = re.compile(r"merge queue", re.IGNORECASE)
 #: A 403 that is GitHub's plan answer, not a missing right: a private
 #: repository on a plan without rulesets (or branch protection) is answered
 #: "Upgrade to GitHub Pro or make this repository public to enable this
-#: feature." (measured on sagaxyz/ai-studio, 2026-10-10). Read as "the plan
+#: feature." (measured on example-org/peer-app, 2026-10-10). Read as "the plan
 #: has none", exactly as a 404 is; any other 403 still refuses.
 _PLAN_LACKS_FEATURE = re.compile(
     r"upgrade to github pro|make this repository public to enable this feature",
@@ -735,7 +735,7 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     """Whether a check run has finished: `status` is `completed`, OR it
     carries a conclusion together with a `completed_at`.
 
-    BGD's decision of 2026-10-23 (CHECK-STUCK, part of #2031): a run that
+    The owner's decision of 2026-10-23 (CHECK-STUCK, part of #2031): a run that
     carries a conclusion and a completed_at is judged by its conclusion,
     whatever `status` says. GitHub left PR 2006's `secret scan` at
     `in_progress` with `conclusion: success` and a `completed_at`, its
@@ -834,7 +834,7 @@ def _event_group(run: Mapping[str, Any]) -> str | None:
 def latest_per_event(runs: list[Mapping[str, Any]]) -> list[tuple[str | None, Mapping[str, Any]]]:
     """The latest run of each event among the runs of ONE check, as (event, run).
 
-    BGD's decision of 2026-10-22 (CHECK-RULE, part of #1999 and #1778): a
+    The owner's decision of 2026-10-22 (CHECK-RULE, part of #1999 and #1778): a
     re-run replaces the earlier runs of ITS OWN event, never another's. Runs
     are ordered as `latest_reading` orders them: by GitHub's run id, which a
     re-run increases, then by position; runs with no id (commit statuses)
@@ -856,7 +856,7 @@ def latest_per_event(runs: list[Mapping[str, Any]]) -> list[tuple[str | None, Ma
 def cancelled_by_its_workflow(run: Mapping[str, Any],
                               deciding: Iterable[Mapping[str, Any]]) -> bool:
     """Whether a check run that finished red is read as `cancelled` because
-    its Actions run was (#2582, BGD 2026-10-28).
+    its Actions run was (#2582, the owner 2026-10-28).
 
     `ci-gate` and security.yml's folded name-keepers run under `if: always()`,
     so inside a workflow run concurrency cancelled they still run and conclude
@@ -890,7 +890,7 @@ def cancelled_by_its_workflow(run: Mapping[str, Any],
 def cancelled_run(run: Mapping[str, Any]) -> bool:
     """A run that finished `cancelled`: pending, never failed (#1778).
 
-    BGD released bundle H09, 2026-10-27, #1778's second expectation: "a check
+    The owner released bundle H09, 2026-10-27, #1778's second expectation: "a check
     whose LATEST run is cancelled is still not green and waits, rather than
     failing the merge". A cancelled run is one someone stopped -- the operator
     cancelling stranded runs to re-run them, on 2026-10-21 -- not a verdict on
@@ -965,7 +965,7 @@ def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str
 def required_check_state(runs: list[Mapping[str, Any]]) -> str:
     """The runs of ONE required check: "green", "pending" or "failed".
 
-    Decided by the LATEST run of EACH event that ran it (BGD, 2026-10-22):
+    Decided by the LATEST run of EACH event that ran it (the owner, 2026-10-22):
     green only when every event's latest run is green, pending when any is
     not finished (`check_run_finished`; or there is none) or every one not
     green is cancelled (`cancelled_run`, #1778), failed otherwise. A red push run is
@@ -1012,7 +1012,7 @@ def judge_other_checks(checks: list[CheckFacts]) -> tuple[list[str], list[str]]:
     """The no-required path's decision over every check at the head: the
     labels of the checks pending and of the checks failed.
 
-    One rule for every check (BGD, 2026-10-22, CHECK-RULE-2, part of #1999):
+    One rule for every check (the owner, 2026-10-22, CHECK-RULE-2, part of #1999):
     each check -- its name and App, so one App's run never supersedes
     another's -- is judged by the latest run of each event that ran it
     (`latest_per_event`), and only those deciding runs by
@@ -2048,7 +2048,7 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
 # A merge behind a fix loop (FL-WORKER, docs/design/fix-loop.md §4.6)
 # ---------------------------------------------------------------------------
 
-#: The catalogue profile of a fix-loop step (FL-CONTRACT, BGD Q10).
+#: The catalogue profile of a fix-loop step (FL-CONTRACT, the owner Q10).
 FIX_LOOP_PROFILE = "fix-loop"
 #: The loop's signed dispatch block, as FL-SUBMIT signs it: `review` (and,
 #: under `integrate`, `fix`) are TASK ids, as `verdict_gate.task_id` is.
@@ -2641,7 +2641,7 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     task document, or from its signed target's review and opener when that
     cannot be read): one answered before the review ran is in neither of the
     review's lists, and its pick binds the merge all the same (PICK-FIX-ROUND,
-    BGD 2026-10-26). And every answered question in `asked_by_rounds`, the
+    the owner 2026-10-26). And every answered question in `asked_by_rounds`, the
     questions this merge's own fix rounds asked (`_round_questions`): a round
     is a step appended to the workflow after the merge, which depends on none
     of them (#2898). Each step's validated `questions.json` is read again
@@ -2859,7 +2859,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
               unbuilt: list[dict[str, Any]]) -> ActionOutcome | None:
     """Picks the branch did not build: a pick-fix round's, or `owner_pick_not_built`.
 
-    PICK-FIX-ROUND (part of #2441; BGD 2026-10-26). None when the step's
+    PICK-FIX-ROUND (part of #2441; the owner 2026-10-26). None when the step's
     pick-fix rounds built every pick in `unbuilt`, so the merge goes on;
     otherwise the park or the refusal. The shape is `_conflicted`'s:
 
@@ -4091,7 +4091,7 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
     the live head, each step down must be a two-parent commit whose second
     parent is already on `base`, and either GitHub itself committed and
     signed it or its tree is the clean merge of its two parents
-    (`_merge_impurity`; BGD 2026-10-26, F05 of #2379). Its first parent is
+    (`_merge_impurity`; the owner 2026-10-26, F05 of #2379). Its first parent is
     the next step. It must reach `pushed` within MERGE_MAX_HEAD_UPDATES
     steps. A fact about GitHub, never about the tenant-writable task
     document, so a lost attempt's update is re-derived here and a forged
@@ -4130,7 +4130,7 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
                    lane: Callable[[str], bool] | None = None) -> str | None:
     """The login of the person on `pr` who made `commit`, or None (#2505).
 
-    A person's push is a commit that is not a merge (BGD's decision is about
+    A person's push is a commit that is not a merge (the owner's decision is about
     a person's content commit: a two-parent merge the purity proof refuses
     stays `head_moved`, since the proof may refuse what git accepts and that
     is the platform's to look at), that the platform did not make -- not

@@ -4,7 +4,7 @@ answer, schedule, cancel ... act tools, each after the ledger reserves it").
   answer_question  answer one of an agent's questions: an option label, the
                    person's own words, or both
 
-BGD's pick, 6 November 2026 (the option-designs lane): Voice it answers an
+The owner's pick, 6 November 2026 (the option-designs lane): Voice it answers an
 agent's question through its own act tool, sending `via: "voice-it"`.
 
 READ BACK, THEN ANSWER. The first call for an answer sends nothing: it reads

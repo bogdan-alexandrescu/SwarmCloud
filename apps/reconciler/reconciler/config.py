@@ -114,7 +114,7 @@ class ReconcilerConfig:
     #: incident from last week, short enough not to become a data set.
     pass_retention_hours: int = 168
 
-    # -- The incremental pass (BGD, 2026-11-06) ------------------------------
+    # -- The incremental pass (the owner, 2026-11-06) ------------------------------
     #: Every Nth pass of an instance is a FULL sweep, and its first pass always
     #: is; the passes between read only what changed since the last pass and
     #: the leases falling due before the next tick

@@ -28,9 +28,14 @@ from pathlib import Path
 
 import pytest
 
+from destroy_plan_recording import render, shared_project_id  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "verify-destroy-guard.sh"
-FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
+#: The recording with its placeholder project rendered as the project the
+#: deny-list protects (destroy_plan_recording.py): under the placeholder the
+#: script would judge it against an empty list.
+FIXTURE = render(shared_project_id())
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not SCRIPT.exists() or not FIXTURE.exists(),

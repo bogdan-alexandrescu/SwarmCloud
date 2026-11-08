@@ -17,7 +17,7 @@ without the exemption every browser step is refused 422. A firing files issues (
 nothing in the schedule can make it push or merge.
 
 A FIRING IS ONE WORK ITEM PER LEG (docs/design/qa-environments.md §2.2, §7;
-lane QAENV-RUN, BGD's Q2 (a) and Q9 (a), 2026-10-23). `params.environments`
+lane QAENV-RUN, the owner's Q2 (a) and Q9 (a), 2026-10-23). `params.environments`
 names the target's legs (every entry when unset), checked against the target
 at create, at edit (`check_target`) and at every firing (`_names`). Every
 named leg is checked with `runnable_legs` before any is submitted, exactly as
@@ -74,15 +74,15 @@ FILE = "issues"
 
 #: Measured, then set by the owner: the first full-console QA run (run 5b,
 #: wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62, 94% of the
-#: provisional $25 per run, and BGD set $40 a run, $80 a day and one at a time
+#: provisional $25 per run, and the owner set $40 a run, $80 a day and one at a time
 #: on 2026-10-22 (VQ7-CAPS, #1933). A firing is now one work item PER LEG, so
-#: BGD set these on 2026-10-23 (docs/design/qa-environments.md §10, Q9 (a)):
+#: the owner set these on 2026-10-23 (docs/design/qa-environments.md §10, Q9 (a)):
 #: `per_run_usd` 40 bounds each LEG (a work item), as it bounded a run;
 #: `max_concurrent` 2 lets a two-leg firing start both legs; `per_day_usd` 160
 #: keeps "the daily firing plus one run-now" for both legs. A leg may run up
 #: to 150 flows in batches (QA-FLOWS-CAP, PR 2409), and at the bench median of $0.14 a
 #: flow run, 132 flows at 2 widths cost about $37 before capture, review and
-#: the report, so BGD raised `per_run_usd` to 80 on 2026-10-26 (QA-TRIPWIRE-MAC).
+#: the report, so the owner raised `per_run_usd` to 80 on 2026-10-26 (QA-TRIPWIRE-MAC).
 #: `per_day_usd` 160 still holds two legs, so it and `max_concurrent` stay.
 #: A schedule may set lower figures; raising them is a change to this line,
 #: in a pull request.

@@ -1076,7 +1076,7 @@ def set_quota_hard_max(
 ) -> dict:
     """Set a tenant's `configured_hard_max`, through the quota broker.
 
-    POOL-LIMITS-QUOTA (BGD, 2026-10-25, part of #2302: "Console edits
+    POOL-LIMITS-QUOTA (the owner, 2026-10-25, part of #2302: "Console edits
     configured max"). The effective limit of a `provider:<p>:tenant:<t>` pool
     is the least of its hard limit, this max and the AIMD target, and until
     this route the max could only be changed by calling the broker directly.
@@ -1089,7 +1089,7 @@ def set_quota_hard_max(
 
     AUDITED TWICE. The broker records the change in `quota_audit`, in the
     quota document's own transaction, with the `requested_by` and `reason`
-    this route forwards (ACCOUNT-429-FOLLOWUP; BGD, 2026-10-25), and this
+    this route forwards (ACCOUNT-429-FOLLOWUP; the owner, 2026-10-25), and this
     route writes one `admin_audit` entry once the broker has answered: who,
     why, and the max and target before and after. Who is the admin's
     verified email from the token in both -- the body cannot name one.
@@ -1234,7 +1234,7 @@ def rollup_workflows(
     been given a complete census, and the response says so.
 
     `seal_outcomes=true` ALSO SEALS the tenant's ended `outcome_days`
-    (COUNTS-SEAL, #2149; `Outcomes.seal_recent`): BGD's decision is that the
+    (COUNTS-SEAL, #2149; `Outcomes.seal_recent`): the owner's decision is that the
     existing rollup job seals each day overnight, and this is the route that
     job already calls, as the identity it already presents, so the seal needs
     no new job, no new route on `auth.ROLLUP_SWEEPER_ROUTES` and no IAM row.
@@ -1308,7 +1308,7 @@ def advance_runs(
     size per tick, oldest first; truncation is reported, as the rollup does.
 
     HELD CHILD RUNS ARE RELEASED ON THE SAME TICK (agent-autonomy.md §3.6,
-    decided 2026-10-22 under BGD's overnight rule): after the runs move, each
+    decided 2026-10-22 under the owner's overnight rule): after the runs move, each
     `after_merged` child run of THIS tenant whose predecessor is now DONE with
     its pull request merged is started, and one whose predecessor ended
     unmerged is cancelled (`children.release_held_runs`). After, not before:

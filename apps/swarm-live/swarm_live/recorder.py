@@ -3,7 +3,7 @@
 docs/design/live-browser.md §7. The RELAY records, not the pod: it already
 carries every frame the gate publishes, and an object written by the relay's
 identity cannot be forged or padded by the agent, which shares the tenant's
-GSA with everything else in its pod. Since BGD's decision of 2026-10-25
+GSA with everything else in its pod. Since the owner's decision of 2026-10-25
 (live-browser.md §5.3) those frames are the screen as Chromium drew it, with
 nothing painted over it, so a recording holds whatever the page showed; it is
 a tenant artifact under the tenant's prefix, read only by that tenant's
@@ -159,7 +159,7 @@ class FfmpegVp8Encoder:
     segment's Duration and its Cues by seeking back once the last frame is in,
     and a pipe cannot seek, so a segment muxed to `pipe:1` carried neither. A
     browser then reads its duration as Infinity, draws a scrubber with no
-    total and cannot seek it (measured on swarm.saga.xyz, 2026-10-26). The file
+    total and cannot seek it (measured on swarm.example.com, 2026-10-26). The file
     lives in a private directory under the relay's temp dir (`/tmp`, a memory
     emptyDir in kubernetes/swarm-system/swarm-live.yaml, since the root
     filesystem is read-only), is read whole when the segment ends, and is

@@ -1,6 +1,6 @@
 """A Cloudflare Access service token, the worker's half (CF-ACCESS-TOKEN, part of #2442).
 
-BGD decided on 2026-10-26 that browser visual-QA agents reach a site behind
+The owner decided on 2026-10-26 that browser visual-QA agents reach a site behind
 Cloudflare Access with a SERVICE TOKEN. The token is a workspace secret of
 kind `oauth_client` granted to `profile:claude-code-browser` in its
 `cf-access` slot, with the hosts it may be sent to set on the grant

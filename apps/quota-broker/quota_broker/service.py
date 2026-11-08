@@ -473,7 +473,7 @@ class QuotaBroker:
         be violated for however long it took the next 429 to arrive.
 
         AUDITED in `quota_audit` in the change's own transaction, as a target
-        reset is (BGD, 2026-10-25, "Yes, follow-up in the broker"): who asked
+        reset is (the owner, 2026-10-25, "Yes, follow-up in the broker"): who asked
         (`requested_by`, the person the platform caller acts for; `caller`,
         the identity the broker verified), why, and the max and target before
         and after. swarm-api keeps its own `admin_audit` entry as well; this
