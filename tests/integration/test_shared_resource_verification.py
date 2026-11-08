@@ -49,7 +49,7 @@ _SPEC.loader.exec_module(_P)
 DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
 
 # The shared project, by name: common.sh reads the never-touch list of the
-# project named (DAYONE-DESAGA-2), and the placeholder deployment serves the
+# project named (DAYONE-GENERIC-2), and the placeholder deployment serves the
 # placeholder list (PEER's entries) for it. These neighbours are on that list.
 PROJECT = _P.SHARED_PROJECT
 PEER_CLUSTER = _P.PEER["cluster"]
@@ -70,7 +70,7 @@ case "${args}" in
   *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
@@ -101,7 +101,7 @@ case "${args}" in
   *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0

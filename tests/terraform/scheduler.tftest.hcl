@@ -4,17 +4,17 @@
 mock_provider "google" {}
 
 variables {
-  project_id              = "saga-agents-staging"
+  project_id              = "example-project"
   wake_topic_name         = "swarm-scheduler-wake"
   scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
   reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
   quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-  tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+  tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
   labels                  = { "managed-by" = "swarm-terraform" }
 
   publisher_members = {
-    api        = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-    reconciler = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+    api        = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
+    reconciler = "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -209,14 +209,14 @@ run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
   assert {
     condition = alltrue([
       for t, job in google_cloud_scheduler_job.workflow_rollup :
-      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
     ])
     error_message = "the rollup jobs must present the dedicated rollup-sweeper identity, not the tick"
   }
 
   assert {
-    condition     = output.rollup_sweeper_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = output.rollup_sweeper_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
     error_message = "the root hands this address to swarm-api as ROLLUP_SWEEPER_USERS; it must be the account the jobs present"
   }
 
@@ -285,7 +285,7 @@ run "the_issue_run_tick_runs_per_tenant_every_minute_as_the_sweeper" {
   assert {
     condition = alltrue([
       for t, job in google_cloud_scheduler_job.issue_run_advance :
-      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
       && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
     ])
@@ -385,7 +385,7 @@ run "the_stranded_pr_sweep_runs_per_tenant_every_half_hour_as_the_sweeper_withou
       for t, job in google_cloud_scheduler_job.stranded_pr_sweep :
       job.http_target[0].oidc_token[0].service_account_email == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].service_account_email
       && job.http_target[0].oidc_token[0].audience == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].audience
-      && job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
     ])
     error_message = "the stranded-PR sweep presents issue_run_advance's identity and audience -- the rollup sweeper, which swarm-api admits to the route -- never swarm-tick, which it would refuse"
@@ -472,7 +472,7 @@ run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
   assert {
     condition = alltrue([
       for t, job in google_cloud_scheduler_job.repo_index_poll :
-      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
       && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
@@ -562,7 +562,7 @@ run "the_merge_wake_runs_per_tenant_every_minute_as_the_sweeper" {
   assert {
     condition = alltrue([
       for t, job in google_cloud_scheduler_job.merge_wake :
-      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
       && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
@@ -656,7 +656,7 @@ run "a_cancel_reaches_the_reconciler_and_only_swarm_api_publishes_it" {
 
   variables {
     execution_cancel_publisher_members = {
-      api = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      api = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -703,8 +703,8 @@ run "the_task_identities_may_ring_the_wake_topic_and_nothing_else" {
 
   variables {
     worker_publisher_members = {
-      "worker:eng"             = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-      "action:eng:claude-code" = "serviceAccount:swarm-action-eng-cc@saga-agents-staging.iam.gserviceaccount.com"
+      "worker:eng"             = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
+      "action:eng:claude-code" = "serviceAccount:swarm-action-eng-cc@example-project.iam.gserviceaccount.com"
     }
   }
 

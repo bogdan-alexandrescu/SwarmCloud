@@ -41,7 +41,7 @@ The tenant on every route comes from `tenant_scope`, never from the body: a
 run is created in the caller's tenant (through `submit_tasks`, which runs
 `tenant_for`) and every other route reads it under that same check.
 
-A PLATFORM-SCOPE SCHEDULE'S PLAN IS A PLATFORM ADMIN'S TO DECIDE (BGD,
+A PLATFORM-SCOPE SCHEDULE'S PLAN IS A PLATFORM ADMIN'S TO DECIDE (the owner,
 2026-10-25; PLATFORM-SCHED-ROUTES, part of #2157). `plan:approve` and
 `plan:reject` of a run whose STORED `schedule.schedule_id` -- never the
 request -- names a schedule whose stored `scope.mode` is `platform` are 403
@@ -50,7 +50,7 @@ the run moves: the inbox's own check (`routes.approvals._platform_only`),
 with its log line. A run of a workspace-scope schedule, or of none, keeps
 the rules above exactly.
 
-ONLY SOMEONE WHO MAY APPROVE A PLAN MAY REJECT IT (BGD 2026-10-26,
+ONLY SOMEONE WHO MAY APPROVE A PLAN MAY REJECT IT (the owner 2026-10-26,
 PLAN-REJECT-RULE, part of #2417). `plan:reject` of a PLANNED run asks the
 approvals inbox's own reject rule (`reject_rule`, over
 `routes.approvals._reject_rule`): the who-checks `plan:approve` makes -- the
@@ -101,6 +101,7 @@ from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
     AUTO_APPROVER,
+    DENY_LIST_UNSET,
     WORKFLOWS_PATH,
     MAX_PLAN_BYTES,
     PLAN_FILE,
@@ -110,7 +111,9 @@ from ..issueruns import (
     IssueRuns,
     RunState,
     compile_plan,
+    deny_list_refusal,
     failure_text,
+    infrastructure_paths,
     issue_read_from_preview,
     owner_refusal,
     parse_edited_plan,
@@ -317,7 +320,7 @@ PLANNER_LISTING_LIMIT = 500
 def with_planner_documents(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
     """`row` with `planner_documents`: the planner's design docs and diagrams
     (`issueruns.planner_documents`), by name, size and read link, for the
-    proposal page (BGD, 6 November 2026: "Serve them on the run").
+    proposal page (the owner, 6 November 2026: "Serve them on the run").
 
     `None` while the planner has not finished (its artifacts are uploaded at
     the end of its attempt, so an empty list then would be a "none" nobody
@@ -422,6 +425,18 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             return runs.transition(
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                 patch={"error": failure_text(workflows_refusal(refused))},
+            )
+        unlisted = deny_list_refusal(plan)
+        if unlisted:
+            # docs/design/generic-repository.md §2.4: no rendered never-touch
+            # list, no infrastructure change. Refused like the workflow files
+            # above, before anything is stored or submitted.
+            log.warning("issue run %s tenant=%s: plan touches infrastructure and the "
+                        "never-touch list is not rendered; refused (%s)",
+                        run.id, tenant_id, DENY_LIST_UNSET)
+            return runs.transition(
+                tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+                patch={"error": failure_text(unlisted)},
             )
         patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
                  "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
@@ -1373,6 +1388,12 @@ def edit_plan(
             "workflow_files switched on",
             detail={"code": WORKFLOWS_PATH, "paths": refused[:10]},
         )
+    unlisted = deny_list_refusal(plan)
+    if unlisted:
+        # §2.4: an edit cannot add infrastructure files while the never-touch
+        # list is not rendered, as the planner's plan could not.
+        raise InvalidPlan(unlisted, detail={"code": DENY_LIST_UNSET,
+                                            "paths": infrastructure_paths(plan)[:10]})
     # An edit can add a hold but never clears one (§4.5): `widen_hold` over
     # the hold the claim reads.
     found = hard_stops_at_plan(ctx, tenant_id, current, plan)

@@ -153,7 +153,7 @@ run "swarmclouds_own_bootstrap_plans_no_change" {
   # neither enable_deployer nor deployer_impersonator named.
   variables {
     enable_github_wif     = true
-    github_repository     = "bogdan-alexandrescu/SwarmCloud"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
   }
 

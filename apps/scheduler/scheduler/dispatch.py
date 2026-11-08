@@ -1539,8 +1539,8 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
 
     The "job" segment is NOT decoration: terraform/infra/locals.tf names these
     `${name_prefix}-job-${tenant}-${profile}`, and this must match exactly. It
-    did not -- the dispatcher asked for `swarm-u-bogdan-mock` while terraform had
-    created `swarm-job-u-bogdan-mock` -- so every dispatch 404'd and the
+    did not -- the dispatcher asked for `swarm-example-tenant-mock` while terraform had
+    created `swarm-job-example-tenant-mock` -- so every dispatch 404'd and the
     dispatcher then created its OWN job under the wrong name. Those jobs carry no
     `managed-by=swarm-terraform` label, which means scripts/destroy.sh would
     refuse to run at all rather than delete an unlabelled resource.
@@ -2448,7 +2448,7 @@ class CloudRunJobDispatcher:
         # AND ITS NETWORK (#1893). A Job made before `tenant_job_vpc_egress`
         # was on has no `vpc_access`, and its switched worker's state calls are
         # refused at swarm-api's ingress; rebuilt, not deleted, so
-        # `swarm-job-u-bogdan-*` keep their names. Nothing while the switch is off.
+        # `swarm-job-example-tenant-*` keep their names. Nothing while the switch is off.
         storage_drift = [*storage_drift, *_vpc_drift(existing, self._settings)]
         if (current == wanted and current_model == wanted_model and not spec_drift
                 and not storage_drift):
@@ -2835,8 +2835,8 @@ def authenticated_identity(credentials: Any) -> str:
 # A stored tenant namespace is a RECORD, not authority (#1457)
 # ---------------------------------------------------------------------------
 #
-# `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the spelling used
-# before 2026-09-23, while its real namespace was `swarm-tenant-u-bogdan`.
+# `tenants/example-tenant` carried `namespace: swarm-example-tenant`, the spelling used
+# before 2026-09-23, while its real namespace was `swarm-tenant-example-tenant`.
 # `namespace_for` preferred the stored value unchecked, so every GKE task for
 # that tenant was created in a namespace that does not exist -- and Kubernetes
 # reports that as `jobs.batch is forbidden`, never as a missing namespace
@@ -3069,7 +3069,7 @@ PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDE
 #: How long a finished worker Job (and so its pod and its cache claim) stays
 #: in the tenant namespace: `ttlSecondsAfterFinished`. It holds a
 #: `count/jobs.batch` slot for all of it, so the namespace admits
-#: quota / (runtime + this) Jobs an hour. 600 s, from 3600, by BGD's decision
+#: quota / (runtime + this) Jobs an hour. 600 s, from 3600, by the owner's decision
 #: of 2026-10-28 after finished Jobs filled eng's quota of 240 and refused
 #: every dispatch past it (#1820).
 FINISHED_JOB_TTL_SECONDS = 600
@@ -3404,7 +3404,7 @@ class GkeJobDispatcher:
                     task.timeout_seconds,
                     dispatch_timeout_seconds=self._settings.core.dispatch_timeout_seconds,
                 ),
-                # TEN MINUTES, not an hour (BGD 2026-10-28). A finished Job
+                # TEN MINUTES, not an hour (the owner 2026-10-28). A finished Job
                 # keeps its `count/jobs.batch` slot until this expires, and on
                 # 2026-10-28 ~09:30-11:15Z eng's 240 slots filled with FINISHED
                 # Jobs from a burst of ~45 lanes: every dispatch past them was

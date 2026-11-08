@@ -128,7 +128,7 @@ each told its steps in `row_share`; the first reports the finished steps.
 `--per-step` or `--summary` after it is refused with a pointer to `rows`
 (SC-ATTACH-SUFFIX-DROP).
 
-THE PANE LAYOUT (SC-BROWSER-BUILD, #2318; BGD picked proposal B on
+THE PANE LAYOUT (SC-BROWSER-BUILD, #2318; the owner picked proposal B on
 2026-10-25). With this project's layout set to `pane` (`/sc layout pane`, or
 the plugin's `layout` option; `layout.row_mode` reads both, the saved choice
 first), every copy for a workflow says `rows: "pane"`: ONE sc:finish row per
@@ -138,7 +138,7 @@ chat browses stages, agents and details with direct MCP calls and no model
 tokens. A single task keeps its own run and its one sc:task row, in this
 layout as in every other but the band.
 
-THE BAND LAYOUT (SC-BAND, part of #2318; BGD, 2026-10-26). With the layout
+THE BAND LAYOUT (SC-BAND, part of #2318; the owner, 2026-10-26). With the layout
 set to `band` (`/sc layout band`) the SwarmCloud view is a strip above the
 prompt and a summary line below it, and the plugin starts NO /workflows row:
 an attach, an attach-all and a dispatch's rows answer `launches: []` with
@@ -166,7 +166,7 @@ bridge writes its copies to) and checks them against the digest as it checks
 path and its digest check.
 
 THE ARGS CARRY THE HANDLE, NEVER THE SPEC (LAUNCH-LARGE-SPEC, #2875).
-Measured 2026-10-31 (product-oracle-2f): a 24-step spec with ~90 KB of
+Measured 2026-10-31 (peer-app-2f): a 24-step spec with ~90 KB of
 prompts made this launch answer 94,498 characters -- over Claude Code's
 tool-output limit, so the reply landed in a file -- and the session was told
 to pass `args` as given, the whole spec included, which it cannot retype. So
@@ -809,7 +809,7 @@ def forget_attached() -> None:
         _ROWS_FOLLOWING.clear()
 
 
-# A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06). The
+# A DISPATCH WHOSE ROWS NEVER STARTED (a peer application, 2026-11-06). The
 # dispatch reply carries the row launch, and `_ATTACHED` takes the task in
 # as it is written -- so a session that skipped the launch had a running task
 # with no row that nothing caught: `new_only` leaves it out. So the launch a
@@ -856,7 +856,7 @@ def rowless(running: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-# A ROW THAT ENDED WAITING ON A PERSON (#2441, BGD 2026-10-26). A row whose
+# A ROW THAT ENDED WAITING ON A PERSON (#2441, the owner 2026-10-26). A row whose
 # task parks on HUMAN_REQUIRED ends (`compact.person_wait_result`) instead of
 # polling for hours, so its workflow is in `_ATTACHED` with no live row. When
 # the step resumes -- the owner answered, a person said it is ready -- it
@@ -1512,7 +1512,7 @@ def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int
 def _own_or_project(entries: list[dict[str, Any]], sid: str | None, repository: str | None,
                     left_out: dict[str, int]) -> list[dict[str, Any]]:
     """The entries tagged with session `sid`, and -- `/sc attach --all
-    --project`, at session start (SC-BROWSER-FOLLOWUP, BGD 2026-10-25) --
+    --project`, at session start (SC-BROWSER-FOLLOWUP, the owner 2026-10-25) --
     those that clone `repository`, whichever session started them; each kept
     entry marked `this_session`. The rest counted in `left_out` by why."""
     from . import session
@@ -1592,7 +1592,7 @@ def for_all(
     `rows` (`swarm_workflow_launch`'s argument, PLUGIN-ROW-SPLIT-2) is the
     mode for every copy, the single tasks' too; None reads the setting.
 
-    `project` (`/sc attach --all --project`, SC-BROWSER-FOLLOWUP, BGD
+    `project` (`/sc attach --all --project`, SC-BROWSER-FOLLOWUP, the owner
     2026-10-25): what the SessionStart hook asks for in the rows layout --
     this session's work AND every workflow and single task still running that
     clones this checkout's origin repository (`repository` names another),

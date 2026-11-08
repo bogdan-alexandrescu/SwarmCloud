@@ -1346,7 +1346,7 @@ class CheckpointContent:
         path: str,
         attempt_id: str | None = None,
     ) -> CheckpointImage:
-        """A png, jpeg, webp or gif member, byte for byte (BGD, 2026-11-06).
+        """A png, jpeg, webp or gif member, byte for byte (the owner, 2026-11-06).
 
         `GET .../files/{path}?format=image`. The Changes view draws an image a
         step CHANGED from here: the patch holds a changed image as a delta

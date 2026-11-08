@@ -107,6 +107,7 @@ from .mcp_servers import (
     server_id as mcp_server_id,
 )
 from .metrics import ApiMetrics
+from .nochange import refuse_undeclared_no_change
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
 from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
@@ -619,7 +620,7 @@ class SubmissionService:
         # That validation can only see tenants DECLARED in var.tenants. This
         # method creates one for any allowed-domain caller who has never been
         # seen before, which is the path that actually fired: on 2026-09-21
-        # admin@saga.xyz signed in to the web UI and tenant u-admin was written,
+        # admin@example.com signed in to the web UI and tenant u-admin was written,
         # with the platform's secret admin as its principal.
         #
         # 403 rather than a silent skip: the caller is authenticated and known,
@@ -1634,6 +1635,12 @@ class SubmissionService:
             # nothing succeeds `no_change` instead of failing
             # `published_nothing:` and sweeping the step that reads it.
             readers = reader_step_ids(step_specs, strategy=dispatch.strategy)
+            # A step held to a pull request whose prompt says it changes
+            # nothing, submitted without `allow_empty_diff` (part of #2688).
+            refuse_undeclared_no_change(
+                spec.steps, step_specs, strategy=dispatch.strategy, readers=readers,
+                integrator_step_id=integrator_step_id, rereview=rereview_step_id,
+            )
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
@@ -1716,7 +1723,7 @@ class SubmissionService:
         # runs it writes requirements.json, and when the review runs it runs
         # no agent and pushes nothing at all.
         not_integrated |= requirements_check_steps(spec.steps)
-        # Every review step names a gate by default (#2524, BGD 2026-10-28):
+        # Every review step names a gate by default (#2524, the owner 2026-10-28):
         # one that names none is stored with the platform's default block,
         # which swarm-api resolves against the workspace's setting.
         default_gated = default_review_gate_steps(spec.steps, spec.metadata)
@@ -1962,7 +1969,7 @@ class SubmissionService:
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         # A workflow submitted without a description gets one written for it,
-        # marked generated (BGD, 2026-11-04), on a thread of its own: this
+        # marked generated (the owner, 2026-11-04), on a thread of its own: this
         # returns at once and never raises, so it delays and fails nothing.
         wfdescription.after_submission(getattr(self._store, "db", None), tasks,
                                        settings=self._settings)
@@ -2069,7 +2076,7 @@ class SubmissionService:
             step, on such a host is still refused at submission.
 
         With a `fix-loop` step (`fix_loop`, docs/design/fix-loop.md §4.6,
-        BGD Q8 (a)) the merge reads the loop, whose last re-review is the
+        the owner Q8 (a)) the merge reads the loop, whose last re-review is the
         latest verdict, and "on_merge_verdict" appends ONLY the merge: the
         loop's `re-review:1` is the re-review it would have appended
         (`rereview_step_for` is skipped).

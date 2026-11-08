@@ -40,9 +40,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -50,9 +50,9 @@ override_data {
         public_key       = []
       },
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 2
         state            = "DISABLED"
         protection_level = "SOFTWARE"
@@ -60,9 +60,9 @@ override_data {
         public_key       = []
       },
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 3
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -92,16 +92,16 @@ override_data {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 
   enable_workspace_deployer = true
   enable_forge_user_slots   = true
   enable_github_wif         = true
-  github_repository         = "saga/agent-swarm-infra"
+  github_repository         = "example-org/example-repo"
 
   # Built from the parts so no line holds a 64-hex literal on its own.
-  workspace_apply_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:${join("", [for i in range(8) : "0123abcd"])}"
+  workspace_apply_image = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@sha256:${join("", [for i in range(8) : "0123abcd"])}"
 }
 
 run "the_job_carries_spec_verify_keys_from_the_module" {
@@ -116,7 +116,7 @@ run "the_job_carries_spec_verify_keys_from_the_module" {
   assert {
     condition = alltrue([
       data.google_kms_crypto_key_versions.workspace_spec_versions[0].crypto_key == module.spec_signing_key["dev"].crypto_key_id,
-      data.google_kms_crypto_key_versions.workspace_spec_versions[0].crypto_key == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec",
+      data.google_kms_crypto_key_versions.workspace_spec_versions[0].crypto_key == "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec",
       data.google_kms_crypto_key_versions.workspace_spec_versions[0].filter == "state=ENABLED",
     ])
     error_message = "the job's keys are read from dev's step-spec key, the one module.spec_signing_key[\"dev\"] names, ENABLED versions only"
@@ -126,8 +126,8 @@ run "the_job_carries_spec_verify_keys_from_the_module" {
   # DISABLED one, so the assertions below are over a non-empty map.
   assert {
     condition = module.workspace_spec_keys[0].verify_keys == {
-      "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1" = "PEM-ONE"
-      "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3" = "PEM-THREE"
+      "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1" = "PEM-ONE"
+      "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3" = "PEM-THREE"
     }
     error_message = "the module renders {full version name: PEM} over the ENABLED versions only: a DISABLED version is a revoked one"
   }
@@ -184,8 +184,8 @@ run "no_kms_grant_names_the_workspace_deployer" {
     target          = google_service_account.deployer
     override_during = plan
     values = {
-      email = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-tf-deployer@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -198,7 +198,7 @@ run "no_kms_grant_names_the_workspace_deployer" {
   assert {
     condition = alltrue([
       for m in concat(values(google_kms_crypto_key_iam_member.swarm_api_signer), values(google_kms_crypto_key_iam_member.deployer_key_readers)) :
-      m.member != "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      m.member != "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com"
     ])
     error_message = "a Cloud KMS grant names swarm-workspace-deployer: the job verifies against SPEC_VERIFY_KEYS and must hold no role on the key (owner decision 2026-10-19)"
   }
@@ -209,8 +209,8 @@ run "no_kms_grant_names_the_workspace_deployer" {
     condition = toset([
       for m in concat(values(google_kms_crypto_key_iam_member.swarm_api_signer), values(google_kms_crypto_key_iam_member.deployer_key_readers)) : m.member
       ]) == toset([
-      "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com",
     ])
     error_message = "the step-spec key's grants go to swarm-api (signer) and the CI deployer (readers), and to nobody else"
   }

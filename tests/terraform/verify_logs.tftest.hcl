@@ -51,7 +51,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 }
 
@@ -64,7 +64,7 @@ run "the_deployer_may_read_the_verify_job_s_logs_and_nothing_wider" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   # _Default is where Cloud Run already writes the job's stdout and stderr. A
@@ -182,7 +182,7 @@ run "an_unconditioned_view_accessor_for_the_deployer_is_refused" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/run.admin", "roles/logging.viewAccessor"]
   }
 
@@ -198,7 +198,7 @@ run "a_project_wide_log_read_for_the_deployer_is_refused" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/run.admin", "roles/logging.viewer"]
   }
 
@@ -219,7 +219,7 @@ run "a_log_reader_that_is_not_a_logging_role_is_refused" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/run.admin", "roles/iam.securityReviewer"]
   }
 
@@ -238,7 +238,7 @@ run "a_role_nobody_reviewed_is_refused" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/run.admin", "roles/cloudsql.admin"]
   }
 

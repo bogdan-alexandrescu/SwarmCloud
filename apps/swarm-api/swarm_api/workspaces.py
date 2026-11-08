@@ -180,7 +180,7 @@ MIGRATION_REASON = "Terraform-era tenant moved by W9"
 MIGRATION_VIA = "migration"
 #: States the migration completes IN PLACE, keeping the record's workspace id:
 #: a person may have asked for a workspace before their Terraform-era tenant
-#: moved (u-bogdan did, 2026-10-09: w-752763), and a fresh id would orphan the
+#: moved (example-tenant did, 2026-10-09: w-752763), and a fresh id would orphan the
 #: one their request, its index entry and any admin's view already name.
 #: Not approved, applying or needs_owner: a build may be about to make, or be
 #: making, the resources the tenant already has. Not ready unless migrated: the
@@ -204,7 +204,7 @@ def worker_firestore_access(tenant_id: str, off_tenants: Iterable[str]) -> bool:
     named in WORKER_FIRESTORE_OFF_TENANTS (`ApiSettings.worker_firestore_off_tenants`),
     or that list is `*`. True otherwise -- an empty list, the default, is
     every workspace's grant exactly as before (owner decision Q7: dev first,
-    u-bogdan, then eng, then all, and only then is the role removed)."""
+    example-tenant, then eng, then all, and only then is the role removed)."""
     off = tuple(off_tenants or ())
     return not ("*" in off or tenant_id in off)
 
@@ -338,7 +338,7 @@ FAILURE_COPY: Mapping[str, str] = {
 }
 #: A9's failure on the `ResourceQuota` (QUOTA-ONE, #2039): the object is
 #: there, with other numbers than the record's limits -- a namespace applied
-#: by hand from the renderer's defaults, as u-bogdan's was on 2026-10-23 -- so
+#: by hand from the renderer's defaults, as example-tenant's was on 2026-10-23 -- so
 #: VERIFY_FAILED's "could not find" is not true of it. The record keeps
 #: VERIFY_FAILED and the object's type (§4.2, no numbers), which is how this
 #: is told apart; an admin's retry re-applies the quota from the limits.
@@ -999,7 +999,7 @@ class Workspaces:
 
     def claude_accounts(self, tenant_id: str, tenant: Tenant | None) -> dict[str, Any]:
         """§5.1 (3): an active pool account the tenant owns, one lent to it, or
-        a provider key in its `credentials` (only `u-bogdan` holds one, §3.3).
+        a provider key in its `credentials` (only `example-tenant` holds one, §3.3).
 
         Counts only; no account id, label or secret name is returned."""
         def usable(field: str, op: str) -> int:

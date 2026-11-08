@@ -16,7 +16,7 @@ For each request it:
    key under the purpose the key carries (`StateReadsConfig.purpose`):
    `swarm-state-req/v1` (`statecall.state_request_message`) for a key
    `state/open` registered for the state purpose, else `swarm-child-req/v1`
-   (`children.request_message`) for a child-purpose key (BGD, 2026-10-22
+   (`children.request_message`) for a child-purpose key (the owner, 2026-10-22
    08:54Z, which swarm-api accepts on this route only), the path WITH its
    query, so neither the tuple nor an argument can be swapped
    under the proof, and sends it with the worker's ID token

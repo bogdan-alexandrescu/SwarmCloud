@@ -158,7 +158,7 @@ server parks CREDENTIAL_MISSING, code `mcp_server_unavailable`, its event
 naming each server by name only; the sweep promotes it once every server says
 yes. A per-run credential that expired or was destroyed parks a workflow's
 task the same way, with `credential: "mcp"`, until its caller re-stores it
-(BGD 2026-10-26); for a task that is no workflow's it is TERMINAL
+(the owner 2026-10-26); for a task that is no workflow's it is TERMINAL
 (`CredentialAnswer.terminal`), since nothing can re-store it. A task that names no server reads nothing and records nothing
 new. The reader is built over the database the workspace grants already read
 (`_mcp_reader`), so admission and the sweep ask it with no new argument.

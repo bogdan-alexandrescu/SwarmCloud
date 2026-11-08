@@ -179,7 +179,7 @@ ERROR: (gcloud.run.jobs.execute) The execution failed.
 View details about this execution by running:
 gcloud run jobs executions describe ${FAKE_EXECUTION}
 
-Or visit https://console.cloud.google.com/run/jobs/executions/details/${FAKE_REGION}/${FAKE_EXECUTION}?project=209012342332
+Or visit https://console.cloud.google.com/run/jobs/executions/details/${FAKE_REGION}/${FAKE_EXECUTION}?project=123456789012
 EOF
     exit 1
   fi
@@ -247,7 +247,7 @@ exit 127
 #: Oldest first, as the suite wrote them. The fake serves them in the order
 #: asked for.
 TRANSCRIPT = [
-    ("stderr", "== Smoke test: saga-agents-staging / dev =="),
+    ("stderr", "== Smoke test: example-project / dev =="),
     ("stderr", "[5] Baseline capacity before submitting"),
     ("stderr", "  PASS baseline captured"),
     ("stderr", "  FAIL could not read the runner-profile catalogue; this suite cannot know which backends exist"),

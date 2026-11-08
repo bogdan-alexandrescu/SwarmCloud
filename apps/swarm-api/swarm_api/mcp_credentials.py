@@ -30,7 +30,7 @@ Design: docs/design/registered-mcp-servers.md §4.4, and owner decision Q2 of
     attempt's signature, fence and signed spec. `credential_for` finds the
     row; `version_to_read` rebuilds the version name from a row it has
     checked, so a rewritten row can point only at its own tenant's `-mcpc-`.
-  * RE-STORED BY THE CALLER (BGD 2026-10-26, Product Oracle's runs).
+  * RE-STORED BY THE CALLER (the owner 2026-10-26, a peer application's runs).
     `PUT /v1/workflows/{id}/mcp-credentials` (`restore_workflow`) replaces
     a workflow's credential for each server its body names, through the
     same `McpCredentials.store`: a new secret, a new live row with the new

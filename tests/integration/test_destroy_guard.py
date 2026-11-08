@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from destroy_plan_recording import deny_list_project  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 DESTROY = REPO / "scripts" / "destroy.sh"
@@ -27,11 +29,14 @@ DESTROY = REPO / "scripts" / "destroy.sh"
 _SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
 _P = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_P)
-PROJECT = _P.PROJECT
 
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 TYPES_JSON = REPO / "scripts" / "lib" / "unlabelable-types.json"
 DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
+
+#: The project the placeholder deployment serves the never-touch list for, the
+#: one the recorded plan is rendered for (destroy_plan_recording.py).
+PROJECT = deny_list_project()
 
 
 def _shared_deny_list() -> list[str]:

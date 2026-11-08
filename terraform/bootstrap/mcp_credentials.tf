@@ -67,7 +67,7 @@
 # workspace_secrets.tf's own grant), the tenant's forge token (`-git`) and
 # its `-git-u-`/`-git-r-` slots, its provider keys (`-anthropic`,
 # `-typesafe`, ...), the platform's swarm-github-app-* and swarm-account-*
-# secrets, and the other team's agents-* and promptlab-* secrets, which do
+# secrets, and the other team's agents-* and peer-app-* secrets, which do
 # not start with the prefix at all.
 #
 # WHAT IT STILL REACHES (the residual, for the security review), the same
@@ -93,7 +93,7 @@
 # WHY HERE AND NOT IN terraform/infra. A custom role cannot be defined there
 # (#79; tests/terraform/custom_roles_out_of_ci.tftest.hcl), and a role
 # carrying versions.access on the CI deployer's grantable list would let CI
-# grant itself read on any secret in saga-agents-staging, the other team's
+# grant itself read on any secret in example-project, the other team's
 # among them. So the owner applies this (dev-iam).
 #
 # NOT VERIFIED LIVE: that IAM evaluates the condition as the mock-provider
@@ -102,7 +102,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. The name arm starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
-# promptlab-*, so it can match none of them. The grant is to swarm-api alone
+# peer-app-*, so it can match none of them. The grant is to swarm-api alone
 # and touches no cluster, network, bucket or account of theirs.
 
 variable "enable_mcp_credentials" {

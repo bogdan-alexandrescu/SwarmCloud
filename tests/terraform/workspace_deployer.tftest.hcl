@@ -66,7 +66,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 
   # Built from the parts so no line holds a 64-hex literal on its own.
@@ -132,7 +132,7 @@ run "the_identity_is_usable_only_by_its_job" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
     workspace_log_readers     = ["group:swarm-admins@example.com"]
   }
 
@@ -140,9 +140,9 @@ run "the_identity_is_usable_only_by_its_job" {
     target          = google_service_account.workspace_deployer
     override_during = plan
     values = {
-      id    = "projects/saga-agents-staging/serviceAccounts/swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
-      email = "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      id    = "projects/example-project/serviceAccounts/swarm-workspace-deployer@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-workspace-deployer@example-project.iam.gserviceaccount.com"
+      email = "swarm-workspace-deployer@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -165,14 +165,14 @@ run "the_identity_is_usable_only_by_its_job" {
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -192,7 +192,7 @@ run "the_identity_is_usable_only_by_its_job" {
     condition = alltrue([
       google_cloud_run_v2_job.workspace_apply[0].name == "swarm-workspace-apply",
       google_cloud_run_v2_job.workspace_apply[0].location == "us-central1",
-      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].service_account == "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].service_account == "swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
       google_cloud_run_v2_job.workspace_apply[0].labels["managed-by"] == "swarm-terraform",
       google_cloud_run_v2_job.workspace_apply[0].template[0].labels["managed-by"] == "swarm-terraform",
     ])
@@ -229,8 +229,8 @@ run "the_identity_is_usable_only_by_its_job" {
   assert {
     condition = alltrue([
       google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].egress == "ALL_TRAFFIC",
-      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].subnetwork == "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1",
-      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].network == "projects/saga-agents-staging/global/networks/swarm-vpc",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].subnetwork == "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].network == "projects/example-project/global/networks/swarm-vpc",
       contains(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].tags, "swarm-worker"),
     ])
     error_message = "the job's egress is ALL_TRAFFIC into the swarm subnet, tagged swarm-worker so modules/network's worker-ingress deny covers it (§2.1)"
@@ -241,7 +241,7 @@ run "the_identity_is_usable_only_by_its_job" {
     condition = alltrue([
       length(data.google_iam_policy.workspace_apply_job.binding) == 1,
       toset([for b in data.google_iam_policy.workspace_apply_job.binding : b.role]) == toset(["roles/run.jobsExecutorWithOverrides"]),
-      toset(flatten([for b in data.google_iam_policy.workspace_apply_job.binding : tolist(b.members)])) == toset(["serviceAccount:swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com"]),
+      toset(flatten([for b in data.google_iam_policy.workspace_apply_job.binding : tolist(b.members)])) == toset(["serviceAccount:swarm-workspace-dispatch@example-project.iam.gserviceaccount.com"]),
       google_cloud_run_v2_job_iam_policy.workspace_apply[0].policy_data == "{\"job\":\"dispatcher-only\"}",
       google_cloud_run_v2_job_iam_policy.workspace_apply[0].name == "swarm-workspace-apply",
       google_cloud_run_v2_job_iam_policy.workspace_apply[0].location == "us-central1",
@@ -254,7 +254,7 @@ run "the_identity_is_usable_only_by_its_job" {
   assert {
     condition = alltrue([
       google_project_iam_audit_config.run_data_write[0].service == "run.googleapis.com",
-      google_project_iam_audit_config.run_data_write[0].project == "saga-agents-staging",
+      google_project_iam_audit_config.run_data_write[0].project == "example-project",
       [for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : c.log_type] == ["DATA_WRITE"],
       alltrue([for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : try(length(c.exempted_members), 0) == 0]),
     ])
@@ -267,7 +267,7 @@ run "the_identity_is_usable_only_by_its_job" {
   }
 
   assert {
-    condition     = google_pubsub_topic_iam_binding.workspace_apply_publisher[0].role == "roles/pubsub.publisher" && google_pubsub_topic_iam_binding.workspace_apply_publisher[0].members == toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_pubsub_topic_iam_binding.workspace_apply_publisher[0].role == "roles/pubsub.publisher" && google_pubsub_topic_iam_binding.workspace_apply_publisher[0].members == toset(["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"])
     error_message = "swarm-api must be the topic's only publisher (docs/workspaces.md §2.1, option (ii)), through an authoritative binding for the role"
   }
 
@@ -280,7 +280,7 @@ run "the_identity_is_usable_only_by_its_job" {
     condition = alltrue([
       output.workspace_deployer.job == "swarm-workspace-apply",
       output.workspace_deployer.image == var.workspace_apply_image,
-      output.workspace_deployer.dispatcher == "swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com",
+      output.workspace_deployer.dispatcher == "swarm-workspace-dispatch@example-project.iam.gserviceaccount.com",
     ])
     error_message = "the workspace_deployer output names the job, the pinned image and the dispatcher the owner reads a plan against"
   }
@@ -296,20 +296,20 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -329,10 +329,10 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
 
   assert {
     condition = alltrue(concat(
-      [for k, m in google_project_iam_member.workspace_deployer : m.member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"],
+      [for k, m in google_project_iam_member.workspace_deployer : m.member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com"],
       [
-        google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
-        google_storage_bucket_iam_member.workspace_deployer_marker[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
+        google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
+        google_storage_bucket_iam_member.workspace_deployer_marker[0].member == "serviceAccount:swarm-workspace-deployer@example-project.iam.gserviceaccount.com",
       ],
     ))
     error_message = "every grant in workspace_deployer.tf is to swarm-workspace-deployer and to nobody else"
@@ -352,7 +352,7 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   # hasOnly() over EXACTLY the personal worker's three project roles.
   assert {
     condition = toset(split(", ", regex("hasOnly\\(\\[(.*)\\]\\)$", google_project_iam_member.workspace_deployer["roles/resourcemanager.projectIamAdmin"].condition[0].expression)[0])) == toset([
-      "\"projects/saga-agents-staging/roles/swarmTenantWorkerFirestore\"",
+      "\"projects/example-project/roles/swarmTenantWorkerFirestore\"",
       "\"roles/logging.logWriter\"",
       "\"roles/monitoring.metricWriter\"",
     ]) && startswith(google_project_iam_member.workspace_deployer["roles/resourcemanager.projectIamAdmin"].condition[0].expression, "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([")
@@ -360,22 +360,22 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   }
 
   assert {
-    condition     = google_project_iam_member.workspace_deployer["swarmWorkspaceSecretBinder"].condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\")"
+    condition     = google_project_iam_member.workspace_deployer["swarmWorkspaceSecretBinder"].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-\")"
     error_message = "the secret binder is bounded to personal tenants' secrets, by their full name with the project NUMBER (docs/workspaces.md §2.3)"
   }
 
   assert {
-    condition     = google_project_iam_member.workspace_deployer["roles/container.clusterViewer"].condition[0].expression == "resource.name.startsWith(\"projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot\")"
-    error_message = "clusterViewer is bounded to the swarm cluster; agents-staging belongs to another team"
+    condition     = google_project_iam_member.workspace_deployer["roles/container.clusterViewer"].condition[0].expression == "resource.name.startsWith(\"projects/example-project/locations/us-central1/clusters/swarm-autopilot\")"
+    error_message = "clusterViewer is bounded to the swarm cluster; peer-cluster belongs to another team"
   }
 
   assert {
     condition = alltrue([
-      google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].bucket == "swarm-artifacts-saga-agents-staging",
-      google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].role == "projects/saga-agents-staging/roles/swarmWorkspaceBucketIam",
-      google_storage_bucket_iam_member.workspace_deployer_marker[0].bucket == "swarm-artifacts-saga-agents-staging",
+      google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].bucket == "swarm-artifacts-example-project",
+      google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].role == "projects/example-project/roles/swarmWorkspaceBucketIam",
+      google_storage_bucket_iam_member.workspace_deployer_marker[0].bucket == "swarm-artifacts-example-project",
       google_storage_bucket_iam_member.workspace_deployer_marker[0].role == "roles/storage.objectCreator",
-      google_storage_bucket_iam_member.workspace_deployer_marker[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\")",
+      google_storage_bucket_iam_member.workspace_deployer_marker[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/\")",
     ])
     error_message = "the bucket grants are on the artifact bucket only, and the object creator on tenants/ only"
   }
@@ -411,8 +411,8 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   assert {
     condition = alltrue([
       for k, m in google_project_iam_member.forge_personal_slots :
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      && startswith(m.condition[0].expression, "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-u-\") != \"\"")
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
+      && startswith(m.condition[0].expression, "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-u-\") != \"\"")
     ]) && toset(keys(google_project_iam_member.forge_personal_slots)) == toset(["version_adder", "version_manager", "slot_reader"])
     error_message = "swarm-api's personal-slot grants are its three user-slot grants, bounded to swarm-tenant-u-*-git-u-* slots"
   }
@@ -433,7 +433,7 @@ run "its_logs_go_to_a_restricted_bucket_and_not_to_default" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
     workspace_log_readers     = ["group:swarm-admins@example.com", "user:owner@example.com"]
   }
 
@@ -443,7 +443,7 @@ run "its_logs_go_to_a_restricted_bucket_and_not_to_default" {
   }
 
   assert {
-    condition     = google_logging_project_sink.workspace_apply[0].destination == "logging.googleapis.com/projects/saga-agents-staging/locations/global/buckets/swarm-workspace-apply"
+    condition     = google_logging_project_sink.workspace_apply[0].destination == "logging.googleapis.com/projects/example-project/locations/global/buckets/swarm-workspace-apply"
     error_message = "the sink writes to the restricted bucket"
   }
 
@@ -460,7 +460,7 @@ run "its_logs_go_to_a_restricted_bucket_and_not_to_default" {
   assert {
     condition = alltrue([
       for m, g in google_project_iam_member.workspace_log_readers :
-      g.role == "roles/logging.viewAccessor" && g.condition[0].expression == "resource.name == \"projects/saga-agents-staging/locations/global/buckets/swarm-workspace-apply/views/_AllLogs\""
+      g.role == "roles/logging.viewAccessor" && g.condition[0].expression == "resource.name == \"projects/example-project/locations/global/buckets/swarm-workspace-apply/views/_AllLogs\""
     ]) && length(google_project_iam_member.workspace_log_readers) == 2
     error_message = "each log reader gets viewAccessor on the restricted bucket's _AllLogs view and nothing wider"
   }
@@ -492,13 +492,13 @@ run "the_alerts_watch_the_names_the_bootstrap_creates" {
   assert {
     condition = alltrue([
       for k in ["outside_personal_workers", "foreign_runtime", "job_changed"] :
-      startswith(google_monitoring_alert_policy.workspace[k].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND ")
+      startswith(google_monitoring_alert_policy.workspace[k].conditions[0].condition_matched_log[0].filter, "logName=\"projects/example-project/logs/cloudaudit.googleapis.com%2Factivity\" AND ")
     ])
     error_message = "the deployer, runtime and change alerts match the project's Admin Activity audit log"
   }
 
   assert {
-    condition     = startswith(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Fdata_access\" AND ")
+    condition     = startswith(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/example-project/logs/cloudaudit.googleapis.com%2Fdata_access\" AND ")
     error_message = "a jobs.run is a DATA_WRITE (Data Access) entry, not Admin Activity (W0b (2)): the foreign_run alert must read the data_access log"
   }
 
@@ -545,8 +545,8 @@ run "the_alerts_watch_the_names_the_bootstrap_creates" {
   # is what the guard admits (C2-C6).
   assert {
     condition = alltrue([
-      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "NOT resource.labels.email_id=~\"^swarm-agent-worker-u-[a-z0-9-]+@saga-agents-staging[.]iam[.]gserviceaccount[.]com$\""),
-      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-agent-worker-u-[a-z0-9-]+@saga-agents-staging[.]iam[.]gserviceaccount[.]com$\""),
+      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "NOT resource.labels.email_id=~\"^swarm-agent-worker-u-[a-z0-9-]+@example-project[.]iam[.]gserviceaccount[.]com$\""),
+      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:swarm-agent-worker-u-[a-z0-9-]+@example-project[.]iam[.]gserviceaccount[.]com$\""),
       strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "bindingDeltas.action=\"REMOVE\""),
     ])
     error_message = "the deployer alert must fire on an account, or a member, not named swarm-agent-worker-u-*, and on any removal"
@@ -590,7 +590,7 @@ run "the_front_door_and_tenant_secret_alerts_page_on_the_deployer" {
   # names. Admin Activity, which no sink or exclusion drops.
   assert {
     condition = alltrue([
-      startswith(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
+      startswith(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/example-project/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
       strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
       strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"iap.googleapis.com\""),
       strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.methodName=~\"(?i)setiampolicy$\""),
@@ -604,7 +604,7 @@ run "the_front_door_and_tenant_secret_alerts_page_on_the_deployer" {
   # every var.tenants key, each named in full.
   assert {
     condition = alltrue(concat([
-      startswith(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
+      startswith(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/example-project/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
       strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
       strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"secretmanager.googleapis.com\""),
       strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.methodName=~\"(?i)setiampolicy$\""),
@@ -691,7 +691,7 @@ run "an_image_by_tag_is_refused" {
   }
 
   variables {
-    workspace_apply_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply:dev"
+    workspace_apply_image = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply:dev"
   }
 
   expect_failures = [var.workspace_apply_image]
@@ -705,7 +705,7 @@ run "a_malformed_subnet_is_refused" {
   }
 
   variables {
-    workspace_apply_subnetwork = "agents-staging-vpc"
+    workspace_apply_subnetwork = "peer-vpc"
   }
 
   expect_failures = [var.workspace_apply_subnetwork]
@@ -766,7 +766,7 @@ run "the_slot_creator_without_the_slots_is_refused" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = false
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   expect_failures = [google_project_iam_member.workspace_deployer]

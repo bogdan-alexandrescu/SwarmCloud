@@ -54,7 +54,7 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
-**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). Stage 0's
+**Voice it** (terraform/infra/voice.tf; the owner, 2026-11-05). Stage 0's
 `infra.voice-it` records `outputs["voice_it"]` as `{"enabled": bool}`. A no
 renders `voice_it` "off" on every infra pass. A yes renders voice.tf's three
 steps in its order: "off" on the registry pass, "account" on infra-1 (bootstrap
@@ -166,7 +166,7 @@ DISCOVERY_NAME = "SwarmCloud"
 #: discovery (`swarm_mcp/discovery.py`) landed, the first that reads it.
 PLUGIN_MIN_VERSION = "0.5.74"
 #: The hourly doctor runs DAYONE-DOCTOR-1's code in the swarm-verify image.
-#: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
+#: On from infra pass 2: the owner turned it on (DAYONE-TFVARS-2, review finding 12).
 SCHEDULED_DOCTOR_SHIPPED = True
 
 #: swarm-api's SWARM_CONTRACT_REVIEW (infra's `contract_review_mode`): off, as
@@ -177,7 +177,7 @@ CONTRACT_REVIEW_MODE = "off"
 
 #: swarm-api's SWARM_WORK_CONTRACTS (infra's `work_contracts`): on, so a fresh
 #: deployment's plugins (Config > Plugins) load through a step's signed work
-#: contract, as on the live deployment (BGD, 2026-11-06). Contract review above
+#: contract, as on the live deployment (the owner, 2026-11-06). Contract review above
 #: stays off: a fresh deployment may have no TypeSafe key or internal route.
 WORK_CONTRACTS = "on"
 
@@ -558,6 +558,11 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "admin_users": [installer],
         # Decision 1: swarm-api admits the organisation's own domain.
         "allowed_domains": [org_domain(state)],
+        # Design §2.4: the never-touch list read from config/<env>/deny-list.json
+        # (foundations.config), rendered on swarm-api as SWARM_SHARED_DENY_LIST
+        # and SWARM_SHARED_DENY_LIST_SET. A project that shares nothing passes
+        # [], stated, so the list is always set and never Terraform's default.
+        "shared_deny_list": list(state.deny_list or []),
         "setup_github_org": _required(state, "github_org"),
         "discovery": {
             "name": DISCOVERY_NAME,

@@ -7,8 +7,8 @@ Terraform composes it in one place:
     terraform/infra/main.tf
       module "storage" { name_prefix = var.name_prefix  bucket_suffix = var.project_id }
 
-so the real name is `swarm-artifacts-saga-agents-staging`. Reversed --
-`saga-agents-staging-swarm-artifacts` -- it is the same four words naming a
+so the real name is `swarm-artifacts-example-project`. Reversed --
+`example-project-swarm-artifacts` -- it is the same four words naming a
 bucket that has never been created, and every failure it produces points
 somewhere else:
 

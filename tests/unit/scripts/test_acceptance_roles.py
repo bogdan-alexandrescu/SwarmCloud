@@ -242,8 +242,8 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     env = {"PATH": f"{_fake_gcloud(tmp_path)}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
            "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
-           SETTINGS[0]: "roles-accept", SETTINGS[1]: "swarm-qa@p.iam.gserviceaccount.com",
-           **placeholder_deployment.child_env("swarm-test-project")}
+           SETTINGS[0]: "roles-accept", SETTINGS[1]: "swarm-qa@p.iam.gserviceaccount.com"}
+    env.update(placeholder_deployment.child_env("swarm-test-project"))
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr

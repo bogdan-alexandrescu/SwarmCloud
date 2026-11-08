@@ -13,7 +13,7 @@
 #      a key of var.tenants, never a person's;
 #   3. a person cannot enter var.tenants: terraform/infra refuses a
 #      `kind = "user"` tenant whose principal is not a service account, with
-#      no exception since lane W9 moved u-bogdan out (§3.3);
+#      no exception since lane W9 moved u-pat out (§3.3);
 #
 # and the one Terraform layer that touches personal workers at all -- the
 # bootstrap's workspace job -- names no person: its grants are to the deployer,
@@ -36,22 +36,22 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   # terraform/infra refuses to plan an image with no digest; these only have to
   # pass its validations (infra_guards.tftest.hcl has the same).
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
   frontend_iap_members = ["domain:example.com"]
@@ -96,7 +96,7 @@ run "a_service_account_s_tenant_still_can" {
     tenants = {
       "u-sw-c90291" = {
         kind            = "user"
-        principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+        principal       = "swarm-verify@example-project.iam.gserviceaccount.com"
         directory_group = false
         providers       = []
         max_active      = 4
@@ -129,7 +129,7 @@ run "authoritative_secret_bindings_are_on_terraform_tenants_secrets_only" {
     tenant_secrets = {
       eng = {
         providers = ["anthropic", "git"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
       }
     }
   }
@@ -161,7 +161,7 @@ run "the_workspace_job_s_terraform_names_no_person" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   }
 
   override_data {
@@ -188,7 +188,7 @@ run "the_workspace_job_s_terraform_names_no_person" {
   assert {
     condition = alltrue(concat(
       [for k, m in google_project_iam_member.workspace_deployer : length(regexall("swarm-agent-worker-u-|u-fixture-person|w-[0-9a-f]{6}", m.member)) == 0],
-      [for k, m in google_project_iam_member.forge_personal_slots : m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"],
+      [for k, m in google_project_iam_member.forge_personal_slots : m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"],
       [for k, m in google_project_iam_member.forge_personal_slots : length(regexall("u-fixture-person|swarm-tenant-u-[a-z0-9]", m.condition[0].expression)) == 0],
     ))
     error_message = "the workspace job's grants must name no personal worker, tenant or workspace: they are to swarm-workspace-deployer and swarm-api, over the swarm-tenant-u- prefix"

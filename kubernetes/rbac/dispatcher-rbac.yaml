@@ -23,7 +23,7 @@
 # WHY IAM ALONE DID NOT DO IT. `swarmGkeDispatcher` holds
 # `container.jobs.create` and IS bound to swarm-scheduler -- but with an IAM
 # CONDITION, `resource.name.startsWith(".../clusters/swarm-autopilot")`, added
-# so the project-level grant could not reach `agents-staging`, another team's
+# so the project-level grant could not reach `peer-cluster`, another team's
 # live cluster on this repository's deny-list. The instinct is right and the
 # condition stays. What it cannot do is authorise a NAMESPACED Kubernetes
 # request: the resource in that check is the namespaced object, not the cluster
@@ -33,7 +33,7 @@
 # RBAC IS THE MECHANISM THAT FITS THE INTENT. The error message names it as the
 # alternative, and it scopes BY CONSTRUCTION rather than by an expression that
 # has to be evaluated correctly: these objects exist only inside
-# swarm-autopilot, so `agents-staging` cannot be reached by them at all. That
+# swarm-autopilot, so `peer-cluster` cannot be reached by them at all. That
 # is a stronger guarantee than the condition was attempting, and it is enforced
 # by where the object lives rather than by a string comparison.
 #

@@ -52,7 +52,7 @@
 # forge token (`-git`) and its `-git-u-`/`-git-r-` slots (hex only,
 # FORGE_CREDENTIAL in the frozen models), its provider keys (`-anthropic`,
 # `-typesafe`, ... from an allow-list), the platform's swarm-github-app-* and
-# swarm-account-* secrets, and the other team's agents-* and promptlab-*
+# swarm-account-* secrets, and the other team's agents-* and peer-app-*
 # secrets, which do not start with the prefix at all. The legacy
 # `-typesafe` keys are NOT covered: design §6.1 step 4 adds them as a second
 # arm in this file, in its own lane, when SEC-MIGRATE-TYPESAFE needs it.
@@ -92,7 +92,7 @@
 # WHY HERE AND NOT IN terraform/infra. A custom role cannot be defined there
 # (#79; tests/terraform/custom_roles_out_of_ci.tftest.hcl), and a role
 # carrying versions.access on the CI deployer's grantable list would let CI
-# grant itself read on any secret in saga-agents-staging, the other team's
+# grant itself read on any secret in example-project, the other team's
 # among them (variables.tf's deployer_secret_permissions refuses it). So the
 # owner applies this (dev-iam).
 #
@@ -106,7 +106,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. The name arm starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
-# promptlab-*, so it can match none of them. The grant is to swarm-api alone
+# peer-app-*, so it can match none of them. The grant is to swarm-api alone
 # and touches no cluster, network, bucket or account of theirs.
 
 variable "enable_workspace_secrets" {

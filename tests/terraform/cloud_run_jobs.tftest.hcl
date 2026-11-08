@@ -5,10 +5,10 @@
 mock_provider "google" {}
 
 variables {
-  project_id      = "saga-agents-staging"
-  network         = "projects/saga-agents-staging/global/networks/swarm-vpc"
-  subnetwork      = "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1"
-  artifact_bucket = "swarm-artifacts-saga-agents-staging"
+  project_id      = "example-project"
+  network         = "projects/example-project/global/networks/swarm-vpc"
+  subnetwork      = "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1"
+  artifact_bucket = "swarm-artifacts-example-project"
   labels          = { "managed-by" = "swarm-terraform" }
 
   # Mirrors swarm_common.profiles.RESOURCE_CLASSES.
@@ -23,8 +23,8 @@ variables {
       tenant_id             = "eng"
       runner_profile        = "claude-code"
       resource_class        = "standard"
-      service_account_email = "swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base:test"
+      service_account_email = "swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base:test"
       timeout_seconds       = 7200
       # checkov:skip=CKV_SECRET_6:a Secret Manager secret ID, not a credential. No key material exists in this repository.
       secret_env = { ANTHROPIC_API_KEY = "swarm-tenant-eng-anthropic" }
@@ -34,8 +34,8 @@ variables {
       tenant_id             = "eng"
       runner_profile        = "generic"
       resource_class        = "large"
-      service_account_email = "swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base:test"
+      service_account_email = "swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base:test"
     }
   }
 }
@@ -166,7 +166,7 @@ run "execution_is_private_and_tenant_scoped" {
   assert {
     condition = alltrue([
       for name, job in google_cloud_run_v2_job.this :
-      job.template[0].template[0].service_account == "swarm-agent-worker-${job.labels["swarm-tenant"]}@saga-agents-staging.iam.gserviceaccount.com"
+      job.template[0].template[0].service_account == "swarm-agent-worker-${job.labels["swarm-tenant"]}@example-project.iam.gserviceaccount.com"
     ])
     error_message = "Cloud Run pins the SA on the JOB, so each tenant needs its own Job resource running as its own identity"
   }
@@ -216,12 +216,12 @@ run "a_job_name_outside_the_swarm_prefix_is_refused" {
 
   variables {
     jobs = {
-      "agents-staging-job" = {
+      "peer-cluster-job" = {
         tenant_id             = "eng"
         runner_profile        = "generic"
         resource_class        = "standard"
-        service_account_email = "swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base:test"
+        service_account_email = "swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base:test"
       }
     }
   }

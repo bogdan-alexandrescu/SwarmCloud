@@ -1,13 +1,13 @@
 # The swarm VPC is a NEW, custom-mode network.
 #
-# The project already holds agents-staging-vpc and a default VPC, both owned by
+# The project already holds peer-vpc and a default VPC, both owned by
 # other teams. Nothing in this module may reference either, and the destroy
 # guard's name prefix is the second line of defence behind the label.
 
 mock_provider "google" {}
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
   labels = {
     "managed-by" = "swarm-terraform"
     "swarm-env"  = "test"
@@ -23,7 +23,7 @@ run "custom_mode_vpc_with_private_google_access" {
 
   assert {
     condition     = google_compute_network.this.name == "swarm-vpc"
-    error_message = "the VPC must be swarm-vpc, never the default network and never agents-staging-vpc"
+    error_message = "the VPC must be swarm-vpc, never the default network and never peer-vpc"
   }
 
   assert {
@@ -125,7 +125,7 @@ run "name_prefix_cannot_wander_outside_the_swarm" {
   }
 
   variables {
-    name_prefix = "agents-staging"
+    name_prefix = "peer-cluster"
   }
 
   # destroy.sh is label-scoped and the prefix is the backstop. A prefix that is

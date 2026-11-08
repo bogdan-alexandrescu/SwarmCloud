@@ -1,21 +1,28 @@
-# Copy to terraform.tfvars and edit.
+# The owner's bootstrap root: an example with placeholders
+# (docs/design/generic-repository.md section 3.1). A deployment's real
+# terraform.tfvars is private: it lives under the state bucket's config/
+# prefix, never in this repository.
 #
-#   terraform -chdir=terraform/bootstrap init
-#   terraform -chdir=terraform/bootstrap plan
-#
-# This root uses LOCAL state on purpose -- see the comment in versions.tf.
+#   terraform -chdir=terraform/bootstrap init -backend-config=...
+#   terraform -chdir=terraform/bootstrap plan -var-file=<the private tfvars>
 
-project_id = "saga-agents-staging"
+project_id = "example-project"
 region     = "us-central1"
 location   = "US-CENTRAL1"
 
 # Keyless CI. Leave false until the repository exists and the workflow is ready.
-enable_github_wif = false
-# github_repository   = "saga/agent-swarm-infra"
-# github_allowed_refs = ["refs/heads/main"]
+enable_github_wif   = true
+github_repository   = "example-org/example-repo"
+github_allowed_refs = ["refs/heads/main"]
 
 # The CI fixer's account (ci_fix.tf, docs/ci.md "The CI fixer"): bound to
-# .github/workflows/ci-fix.yml on refs/heads/main and to nothing else. The same
-# email as the repository variable SWARM_CI_FIX_SA, and it must also be in
-# frontend_iap_members as serviceAccount:<email>. Empty binds nothing.
-# ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+# .github/workflows/ci-fix.yml on refs/heads/main and to nothing else. It must
+# also be in frontend_iap_members as serviceAccount:<email>. Empty binds nothing.
+ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
+
+# Who reaches the console through IAP: fully qualified IAM members.
+frontend_iap_members = [
+  "group:eng@example.com",
+  "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com",
+]
+frontend_iap_backends = ["swarm-ui-backend"]

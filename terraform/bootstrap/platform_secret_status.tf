@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # Admin › Platform secrets: swarm-api's METADATA read of swarm-* secrets
-# (docs/design/secrets-scopes.md §5.2, BGD's Q7 answer of 2026-10-23 in §11;
+# (docs/design/secrets-scopes.md §5.2, the owner's Q7 answer of 2026-10-23 in §11;
 # lane SSC-PLATFORM-STATUS, part of #2158).
 # ---------------------------------------------------------------------------
 #
@@ -38,7 +38,7 @@
 #     swarm-tenant-* (provider_keys.tf, browser_logins.tf) already exceeds.
 #
 # WHAT IT REFUSES. Every secret not named swarm-*: the other team's agents-*
-# and promptlab-* secrets in this SHARED project (CLAUDE.md rule 2), and any
+# and peer-app-* secrets in this SHARED project (CLAUDE.md rule 2), and any
 # secret of another project, whose number differs. And every value: the role
 # has no versions.access, so even a swarm-* payload stays unread.
 #
@@ -57,7 +57,7 @@
 # `unreadable: permission_denied` and serves no 500.
 #
 # THE OTHER TEAM'S RESOURCES. The arm starts `projects/<n>/secrets/swarm-`;
-# their secrets are agents-* and promptlab-*, so it matches none of them. The
+# their secrets are agents-* and peer-app-*, so it matches none of them. The
 # grant is to swarm-api alone and touches no cluster, network, bucket or
 # account of theirs.
 

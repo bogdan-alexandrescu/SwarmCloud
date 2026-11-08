@@ -19,7 +19,7 @@ variable "infra_tenants_tfvars" {
     the release deployer holds roles/iam.serviceAccountAdmin on have one source
     -- the file the release applies -- and not a second hand-written copy (#334).
 
-    dev, because dev is what the release deploys into saga-agents-staging.
+    dev, because dev is what the release deploys into example-project.
     prod.tfvars names the same project and the same account ids; pointing this
     at it grants on prod's tenants instead, and a tenant whose account does not
     exist yet fails this root's apply with a 404.
@@ -350,7 +350,7 @@ variable "deployer_roles" {
   # OWNER DECISION 2026-09-29 (#334). Said by name for the same reason.
   validation {
     condition     = !contains(var.deployer_roles, "roles/iam.serviceAccountAdmin")
-    error_message = "roles/iam.serviceAccountAdmin is never granted to CI on the project (#334): it would let CI set the IAM policy of every service account in saga-agents-staging, the other team's and its own included, and no IAM condition can narrow it. It is granted per account in terraform/bootstrap/deployer_service_accounts.tf."
+    error_message = "roles/iam.serviceAccountAdmin is never granted to CI on the project (#334): it would let CI set the IAM policy of every service account in example-project, the other team's and its own included, and no IAM condition can narrow it. It is granted per account in terraform/bootstrap/deployer_service_accounts.tf."
   }
 
   # OWNER DECISION 2026-09-29 (#314). Said by name for the same reason.
@@ -513,10 +513,10 @@ variable "deployer_storage_bucket_prefixes" {
   }
 
   validation {
-    # A one- or two-character prefix is not a scope. "s" would admit
-    # saga-agents-files-staging, which is another team's.
+    # A one- or two-character prefix is not a scope. "p" would admit
+    # peer-bucket, which is another team's.
     condition     = alltrue([for p in var.deployer_storage_bucket_prefixes : length(p) >= 4])
-    error_message = "a prefix shorter than 4 characters is too broad to be a boundary in a shared project; `s` would admit saga-agents-files-staging."
+    error_message = "a prefix shorter than 4 characters is too broad to be a boundary in a shared project; `p` would admit peer-bucket."
   }
 }
 
@@ -578,7 +578,7 @@ variable "frontend_iap_backends" {
   type        = list(string)
   default     = []
 
-  # Nine of the ten backend services in saga-agents-staging belong to another
+  # Nine of the ten backend services in example-project belong to another
   # team, including their Keycloak and ArgoCD. The prefix check keeps any of them
   # out of this list.
   validation {
@@ -593,7 +593,7 @@ variable "frontend_iap_members" {
     boundary, verifying the token, enforcing ALLOWED_DOMAINS and scoping every
     read to the caller's own tenant.
 
-    `domain:saga.xyz` is the intended shape for people: it matches what the API
+    `domain:example.com` is the intended shape for people: it matches what the API
     already enforces, so there is no second list to drift. Service accounts are
     listed individually, each with the reason it needs the front door.
 
@@ -609,7 +609,7 @@ variable "frontend_iap_members" {
 
   validation {
     condition     = alltrue([for m in var.frontend_iap_members : can(regex("^(user|group|domain|serviceAccount):", m))])
-    error_message = "every IAP member must be a fully qualified IAM member, e.g. domain:saga.xyz or group:eng@saga.xyz."
+    error_message = "every IAP member must be a fully qualified IAM member, e.g. domain:example.com or group:eng@example.com."
   }
 
   validation {
@@ -628,7 +628,7 @@ variable "adopt_from_infra_states" {
     terraform/infra state prefixes, in the state bucket this root creates, that
     created the platform's eight custom roles and the quota broker's
     swarmSecretLister grant before they moved here -- "infra/dev" for
-    saga-agents-staging, the prefix scripts/bootstrap.sh gives the dev root.
+    example-project, the prefix scripts/bootstrap.sh gives the dev root.
 
     Non-empty does two things (platform_roles.tf):
       * the `import` blocks adopt the nine live objects into this root's state;
@@ -967,8 +967,8 @@ variable "swarm_workers_log_view_exists" {
     that view's own policy (log_view_read.tf, agent-autonomy.md §3.5).
   EOT
   type        = bool
-  # On: this root's project is dev's, and dev.tfvars turns the view on (BGD,
-  # 2026-10-22, #1960). BGD moved L-1 here on 2026-10-23 (#1960) after CI's
+  # On: this root's project is dev's, and dev.tfvars turns the view on (the owner,
+  # 2026-10-22, #1960). the owner moved L-1 here on 2026-10-23 (#1960) after CI's
   # dev-iam apply of it 403'd (release run 39888771458). Set it false for a
   # project whose infra has the view off: a binding on a view that does not
   # exist fails the apply.

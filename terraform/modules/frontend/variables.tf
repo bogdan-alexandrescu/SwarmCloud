@@ -33,7 +33,7 @@ variable "hostname" {
   description = <<-EOT
     The name the certificate is issued for and the browser connects to.
 
-    DNS for it is NOT managed here -- saga.xyz lives at an external registrar --
+    DNS for it is NOT managed here -- example.com lives at an external registrar --
     so terraform reserves the address and outputs it, and an operator adds the A
     record by hand. Until that record resolves, the managed certificate stays in
     PROVISIONING and the site serves a TLS error. That is expected and can take
@@ -43,7 +43,7 @@ variable "hostname" {
 
   validation {
     condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.hostname))
-    error_message = "hostname must be a fully qualified domain name, lowercase, e.g. swarm.saga.xyz."
+    error_message = "hostname must be a fully qualified domain name, lowercase, e.g. swarm.example.com."
   }
 }
 

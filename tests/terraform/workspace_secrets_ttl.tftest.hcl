@@ -15,7 +15,7 @@ run "release_rows_and_marks_expire_on_expire_at" {
   }
 
   variables {
-    project_id = "saga-agents-staging"
+    project_id = "example-project"
   }
 
   assert {
@@ -48,7 +48,7 @@ run "the_release_ttls_survive_the_audit_ttl_switch" {
   }
 
   variables {
-    project_id      = "saga-agents-staging"
+    project_id      = "example-project"
     event_ttl_field = ""
   }
 

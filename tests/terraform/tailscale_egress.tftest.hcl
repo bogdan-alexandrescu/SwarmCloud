@@ -33,9 +33,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -59,7 +59,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -80,17 +80,17 @@ override_resource {
   target          = module.network.google_compute_subnetwork.this
   override_during = plan
   values = {
-    id = "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1"
+    id = "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1"
   }
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   # No default since DAYONE-TF-1: the tailnet is the deployment's, so a test
   # that renders the egress names it.
-  tailscale_egress_target = "decision-api-staging.taile0bda9.ts.net"
+  tailscale_egress_target = "decision-api.example-tailnet.ts.net"
 
   spec_signature_mode      = "legacy"
   spec_legacy_cutover      = "2026-10-01T12:00:00Z"
@@ -105,18 +105,18 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-egress"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -160,10 +160,10 @@ run "off_by_default_the_container_exists_and_nobody_reads_it" {
     condition = (
       output.tailscale_egress.service == "decision-api"
       && output.tailscale_egress.port == 443
-      && output.tailscale_egress.target == "decision-api-staging.taile0bda9.ts.net"
+      && output.tailscale_egress.target == "decision-api.example-tailnet.ts.net"
       && output.tailscale_egress.kubernetes_secret == "operator-oauth"
     )
-    error_message = "one egress Service, decision-api on 443, to decision-api-staging.taile0bda9.ts.net, mounting operator-oauth"
+    error_message = "one egress Service, decision-api on 443, to decision-api.example-tailnet.ts.net, mounting operator-oauth"
   }
 }
 
@@ -176,7 +176,7 @@ run "on_one_reader_the_deployer_and_a_rendered_manifest" {
 
   variables {
     enable_tailscale_egress  = true
-    deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer_service_account = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
   }
 
   assert {
@@ -190,7 +190,7 @@ run "on_one_reader_the_deployer_and_a_rendered_manifest" {
 
   assert {
     condition = toset(google_secret_manager_secret_iam_binding.tailscale_oauth_accessor[0].members) == toset([
-      "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com",
     ])
     error_message = "the deployer that runs the sync is the secret's ONE reader: no service, no tenant, no pod"
   }
@@ -198,8 +198,8 @@ run "on_one_reader_the_deployer_and_a_rendered_manifest" {
   assert {
     condition = (
       output.tailscale_egress.enabled
-      && strcontains(output.tailscale_egress_manifest, "- decision-api-staging.taile0bda9.ts.net")
-      && strcontains(output.tailscale_egress_manifest, "swarm.saga.xyz/tailnet-fqdn: decision-api-staging.taile0bda9.ts.net")
+      && strcontains(output.tailscale_egress_manifest, "- decision-api.example-tailnet.ts.net")
+      && length(regexall("(?m)[a-z0-9.-]+/tailnet-fqdn: decision-api\\.example-tailnet\\.ts\\.net$", output.tailscale_egress_manifest)) > 0
       && length(regexall("__[A-Z0-9_]+__", output.tailscale_egress_manifest)) == 0
     )
     error_message = "on, the manifest is rendered with the tailnet name and no placeholder left"
@@ -224,7 +224,7 @@ run "on_swarm_api_reaches_the_egress_through_an_internal_load_balancer" {
   variables {
     enable_tailscale_egress       = true
     internal_decision_api_enabled = true
-    deployer_service_account      = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer_service_account      = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
   }
 
   assert {
@@ -268,7 +268,7 @@ run "on_swarm_api_reaches_the_egress_through_an_internal_load_balancer" {
   assert {
     condition = (
       local.service_env["swarm-api"].INTERNAL_DECISION_API_ADDRESS == "10.10.0.77"
-      && local.service_env["swarm-api"].INTERNAL_DECISION_API_URL == "https://decision-api-staging.taile0bda9.ts.net"
+      && local.service_env["swarm-api"].INTERNAL_DECISION_API_URL == "https://decision-api.example-tailnet.ts.net"
       && output.tailscale_egress.swarm_api_address == "10.10.0.77"
       && output.tailscale_egress.internal_service == "decision-api-internal"
     )
@@ -338,7 +338,7 @@ run "the_target_is_one_magicdns_name" {
 
   variables {
     enable_tailscale_egress = true
-    tailscale_egress_target = "decision-api-staging.taile0bda9.ts.net 443 --anything"
+    tailscale_egress_target = "decision-api.example-tailnet.ts.net 443 --anything"
   }
 
   expect_failures = [var.tailscale_egress_target]

@@ -17,7 +17,7 @@ import { classUnits, useResourceClasses } from './Blockers'
 import { pageReads, type Result } from './fetch'
 import { handoffOf, isLiveBrowser, liveBrowserRows, needsYou, ownerQuestionsHold } from './Handoff'
 import { presetLabel } from './LiveBrowser'
-import { LiveThumb, theaterPath } from './LiveThumb'
+import { LiveThumb, theaterPath, type ThumbFrame } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import { listMayStart, panelWaiters, wakePanelWaiters } from './agentPanel'
@@ -118,7 +118,7 @@ export function browserRows(tasks: readonly Task[]): Task[] {
 }
 
 /** What a browser row's outline draws: its session's device, and the presets that size it. */
-type RowDevice = Pick<LiveSession, 'device' | 'presets'>
+export type RowDevice = Pick<LiveSession, 'device' | 'presets'>
 
 /**
  * EVERY BROWSER ROW'S DEVICE, FROM ONE READ PER LIST READ (#2688,
@@ -654,8 +654,24 @@ export function bySpent(a: Pick<Task, 'cost_usd_total'>, b: Pick<Task, 'cost_usd
  * THE INSPECTOR WITH NO AGENT OPEN: every live browser's still, the one
  * waiting on the person first (`liveBrowserRows`), each opening its agent.
  * A starting browser has no picture yet and is counted, not drawn.
+ *
+ * EACH IN ITS DEVICE'S SHAPE (the owner's request, 2026-11-08): a phone,
+ * tablet or desktop frame in the session's orientation (`deviceFrame`), read
+ * from the list's one device read (`devices`, `useRowDevices`), never a read
+ * per card; until it answers, or where the device is not reported, the web
+ * landscape frame the wall always drew.
  */
-export function LiveWall({ tasks, onOpen, title }: { tasks: readonly Task[]; onOpen: (taskId: string) => void; title: (t: Task) => string }) {
+export function LiveWall({
+  tasks,
+  onOpen,
+  title,
+  devices = null,
+}: {
+  tasks: readonly Task[]
+  onOpen: (taskId: string) => void
+  title: (t: Task) => string
+  devices?: ReadonlyMap<string, RowDevice> | null
+}) {
   const live = liveBrowserRows(tasks)
   const starting = tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t)).length
   return (
@@ -671,13 +687,18 @@ export function LiveWall({ tasks, onOpen, title }: { tasks: readonly Task[]; onO
         <ul className="ag-wall-grid" aria-label="Live browsers">
           {live.map((t) => {
             const yours = handoffOf(t) !== null
+            const frame = deviceFrame(devices?.get(t.id) ?? null)
             return (
-              <li key={t.id} className={`ag-wall-card${yours ? ' is-your-turn' : ''}`} data-task-id={t.id}>
+              <li
+                key={t.id}
+                className={`ag-wall-card is-${frame.device} is-${frame.orientation}${yours ? ' is-your-turn' : ''}`}
+                data-task-id={t.id}
+              >
                 <button type="button" className="ag-wall-open" onClick={() => onOpen(t.id)} title={`${title(t)} · ${t.id}`}>
                   <span className="ag-wall-name">{title(t)}</span>
                   {yours && <ToneMark tone="wait">your turn</ToneMark>}
                 </button>
-                <LiveThumb taskId={t.id} workflowId={t.workflow_id ?? null} />
+                <LiveThumb taskId={t.id} workflowId={t.workflow_id ?? null} frame={frame} />
               </li>
             )
           })}
@@ -816,7 +837,10 @@ export function AgentsScreen({
   // ON A PHONE THE WALL IS A SHEET, opened from the toolbar and closed by its back control.
   const [wallOpen, setWallOpen] = useState(false)
   const wallTasks = useMemo(() => browserRows(rows), [rows])
-  const wall = taskId === null && wallTasks.length > 0 ? <LiveWall tasks={rows} onOpen={onOpen} title={nameOf} /> : null
+  // The browsers' devices, from the list's one read (`AgentsBody`'s `onDevices`).
+  const [devices, setDevices] = useState<ReadonlyMap<string, RowDevice> | null>(null)
+  const wall =
+    taskId === null && wallTasks.length > 0 ? <LiveWall tasks={rows} onOpen={onOpen} title={nameOf} devices={devices} /> : null
   const [foldAtRest] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
   const openRowTask = agent === null ? undefined : rows.find((t) => t.id === agent.taskId)
 
@@ -898,6 +922,7 @@ export function AgentsScreen({
             setBrowserUnused={setBrowserUnused}
             nameOf={nameOf}
             onRows={onRows}
+            onDevices={setDevices}
             watchWall={phone && wall !== null ? () => setWallOpen(true) : null}
           />
         )}
@@ -952,6 +977,7 @@ function AgentsBody({
   setBrowserUnused,
   nameOf,
   onRows,
+  onDevices,
   watchWall,
 }: {
   onOpen: (taskId: string) => void
@@ -987,6 +1013,8 @@ function AgentsBody({
   nameOf: (t: Task) => string
   /** Told the rows this page holds, for the wall and the inspector's title around the list. */
   onRows: (tasks: readonly Task[]) => void
+  /** Told the browsers' devices (`useRowDevices`), for the wall's frames. */
+  onDevices: (devices: ReadonlyMap<string, RowDevice> | null) => void
   /** Open the wall's phone sheet; null where there is no sheet to open. */
   watchWall: (() => void) | null
 }) {
@@ -1316,8 +1344,12 @@ function AgentsBody({
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
   // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
   const titleOf = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
-  // The browser rows' outlines, one read for all of them (`RowDevices`).
-  const devices = useRowDevices(rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)).map((t) => t.id), readAt)
+  // The browser rows' outlines and the wall's frames, one read for all of
+  // them (`RowDevices`): the rows on screen and every live browser the page
+  // holds, which the wall draws whatever tab is shown.
+  const deviceIds = [...new Set([...rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)), ...liveBrowserRows(page.tasks)].map((t) => t.id))]
+  const devices = useRowDevices(deviceIds, readAt)
+  useEffect(() => onDevices(devices), [devices, onDevices])
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   // THE NEEDS-YOU ROW reads the rows this page holds, nothing more, named as
@@ -2991,6 +3023,23 @@ export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | n
   return /desktop/i.test(device.preset) ? 'desktop' : 'unknown'
 }
 
+/** A row's orientation: the session's, else portrait for a phone or tablet and landscape for the rest. */
+function deviceOrientation(shape: DeviceShape, session: RowDevice | null): 'portrait' | 'landscape' {
+  return session?.device?.orientation ?? (shape === 'phone' || shape === 'tablet' ? 'portrait' : 'landscape')
+}
+
+/**
+ * The frame a wall card's live picture is drawn in: the row outline's shape
+ * (`deviceShape`) and orientation. A desktop is always the web landscape
+ * frame; a device not reported, or not known, is drawn as one too, as the
+ * wall drew every card before it had shapes.
+ */
+export function deviceFrame(session: RowDevice | null): ThumbFrame {
+  const shape = deviceShape(session)
+  if (shape !== 'phone' && shape !== 'tablet') return { device: 'desktop', orientation: 'landscape' }
+  return { device: shape, orientation: deviceOrientation(shape, session) }
+}
+
 /**
  * A LIVE BROWSER ROW'S DEVICE OUTLINE (§6, "a device thumbnail per row"; lane
  * LB-UX3): a static phone, tablet or desktop outline in the session's
@@ -3012,7 +3061,7 @@ function DeviceThumb({ taskId }: { taskId: string }) {
   const shape = deviceShape(session)
   const device = session?.device ?? null
   // A desktop is landscape and a phone portrait unless the session says otherwise.
-  const orientation = device?.orientation ?? (shape === 'phone' || shape === 'tablet' ? 'portrait' : 'landscape')
+  const orientation = deviceOrientation(shape, session)
   const say =
     device === null
       ? 'Browser device not reported'

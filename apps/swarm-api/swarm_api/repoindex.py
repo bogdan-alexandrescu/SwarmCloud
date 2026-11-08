@@ -175,7 +175,7 @@ MAX_SUMMARY_BYTES = 24 * 1024
 #: and the shard writer. Named here, by swarm-api, never by a caller's image
 #: (invariant 10). The agent-free shape of §6.3 (B) is a later change.
 INDEXER_PROFILE = "indexer"
-#: The model class every index run names (#2524, BGD 2026-10-27: "Sonnet"):
+#: The model class every index run names (#2524, the owner 2026-10-27: "Sonnet"):
 #: the indexer profile accepts it (`profiles.RUNNER_PROFILES["indexer"]`,
 #: terraform/infra/locals.tf) and defaults to opus, which ran all 845 index
 #: runs of the week 2026-10-20..27. An index is extraction and summary over
@@ -200,7 +200,7 @@ FULL_TIMEOUT_SECONDS = 1800
 INCREMENTAL_TIMEOUT_SECONDS = 900
 #: §3.5's table, which applies now the LSP pass exists (lane INDEX-BUDGETS,
 #: part of #1693): (below this many source files, full, incremental). A
-#: fixed 1,800 s gave the pass 540 s whatever the size, so on ai-studio
+#: fixed 1,800 s gave the pass 540 s whatever the size, so on peer-app
 #: (3,795 source files) pyright had 270 s against the ~680-890 s it needed
 #: and timed out in 16 of 16 sampled full runs. The worker's phase budgets
 #: are shares of this timeout (`agent_worker.indexrun.budgets`), so the pass
@@ -374,7 +374,7 @@ STALE_AGE = timedelta(days=7)
 #: this grace is stale -- every run due in that time was missed or failed.
 #: The grace covers a run queued at priority -50 behind tenant work and its
 #: own run time. It replaced "more than 200 commits behind" (#1693): GitHub's
-#: compare counts a merged branch commit by commit, so ai-studio's "77
+#: compare counts a merged branch commit by commit, so peer-app's "77
 #: behind" was one merge (its PR #713) and said how much merged, not how long
 #: the index had been out of date.
 STALE_BEHIND_GRACE = timedelta(hours=12)
@@ -1489,7 +1489,7 @@ def last_full_at(index: Mapping[str, Any]) -> datetime | None:
 
 
 #: `KindChoice.kind` when no run is started: the head is the promoted
-#: index's commit, so a run would rebuild what is already built (#2524, BGD
+#: index's commit, so a run would rebuild what is already built (#2524, the owner
 #: 2026-10-27: no rebuild of an unchanged head). Never a `RUN_KINDS` value.
 NO_RUN = "none"
 #: The poll's `held` reason, and `index.last_skip.reason`, for that skip.

@@ -5,7 +5,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 }
 
 run "named_database_in_region" {
@@ -298,7 +298,13 @@ run "pools_and_tenants_are_materialised_at_provisioning_time" {
       "runner:mock" = { hard_limit = 20 }
     }
     tenant_documents = {
-      eng = { kind = "group", principal = "eng@saga.xyz", credentials = ["anthropic"] }
+      eng = {
+        kind      = "group"
+        principal = "eng@example.com"
+        credentials = [
+          "anthropic",
+        ]
+      }
     }
   }
 

@@ -10,15 +10,15 @@ neither has no budget, and this module is never built for it: its child
 environment, its CLI settings and its supervision are exactly what they were
 before #2459.
 
-WHAT IS COUNTED (BGD, 2026-10-26).
+WHAT IS COUNTED (the owner, 2026-10-26).
   * TOKENS are the runner's own usage reports: input plus output plus cache
     reads, as reported. claude-code's stream-json carries each message's
     `usage` on its `assistant` events (the last copy of each message id
     counts, as `lifecycle._stream_usage` counts it); codex's `--json` stream
-    (the codex profile runs `codex exec --json` since CODEX-JSON, BGD's
+    (the codex profile runs `codex exec --json` since CODEX-JSON, the owner's
     answer to BUDGET-CAP question 6) carries a `turn.completed` event's
     `usage`, once per start, cached input inside its input; WHILE the start
-    runs, its rollout's `token_count` records are read too (ROLLOUT, BGD's
+    runs, its rollout's `token_count` records are read too (ROLLOUT, the owner's
     pick "Also read the rollout", 2026-10-27), a provisional figure the
     start's `turn.completed` replaces. Cache WRITES are not counted:
     the owner's rule names input, output and cache reads.
@@ -239,7 +239,7 @@ class UsageMeter:
     CODEX REPORTS USAGE ONCE A TURN on its stream, and `codex exec` runs ONE
     turn per start (codex-cli 0.154.0, `--json`): that figure reaches the
     meter when the start ends. So the meter ALSO READS THE ROLLOUT
-    (`feed_rollout`, BGD's pick "Also read the rollout", 2026-10-27): codex
+    (`feed_rollout`, the owner's pick "Also read the rollout", 2026-10-27): codex
     records a `token_count` event in `$HOME/.codex/sessions/.../rollout-*.jsonl`
     after every model request, and the runner tails it as the start runs. Its
     readings are PROVISIONAL -- the agent can write that file -- and the

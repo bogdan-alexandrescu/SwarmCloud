@@ -24,7 +24,7 @@ platform admin, audited"), naming the host they approve, so an approval can
 never land on a host that changed under the approver. Changing the host or
 the login's `extra_origin` sets it back to `pending`.
 
-THE IdP TOKEN PATH (QA-IDP-POST; BGD decided 2026-10-23, part of #2067:
+THE IdP TOKEN PATH (QA-IDP-POST; the owner decided 2026-10-23, part of #2067:
 "allow the token path only"). The live gate refuses every write to the
 login's other origin, so an app that refreshes its SSO token after sign-in
 renders signed out. The platform admin who approves the extra origin may
@@ -51,7 +51,7 @@ minting person's email, the tenant and the target, 15 minutes), and is never
 returned, logged or written to Firestore: the target records only
 `credential: {set, set_at, set_by, version}`.
 
-THE CHALLENGE BYPASS (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23: "a QA target
+THE CHALLENGE BYPASS (§2.5; lane CAPTCHA-BYPASS, the owner 2026-10-23: "a QA target
 may carry a challenge bypass its owner configures, and only the gate applies
 it, only on the target's own origins"). The spec, `challenge_bypass: {kind:
 header | cookie, name}`, is a registration field checked by
@@ -112,7 +112,7 @@ answers 204, the common case. Every answer with a target appends a
 `live_audit` row (`qa_target_issued`: the target, the attempt, the
 generation, never a value). The route is in `main.UNCAPTURED_ROUTES`.
 
-DISCOVERY (§4.1; lane QA-DISCOVER, BGD 2026-10-23: "build discovery, so a
+DISCOVERY (§4.1; lane QA-DISCOVER, the owner 2026-10-23: "build discovery, so a
 crawl target is started entirely from the console"). A target that asks to
 `discover` and lists no `screens` runs from what its discovery found. A member
 starts one (`POST /v1/qa-targets/{id}:discover`): `qaspec.render_discovery`'s
@@ -134,7 +134,7 @@ Storing the list never bumps `revision`: the mark a run already carries
 stays the target's, and nothing a caller sends ever writes `discovered`.
 
 WHAT A RUN FOUND (docs/design/qa-environments.md §5, §7; lane QAENV-SETTLE,
-BGD's Q5 (c) and Q8 (a), 2026-10-23, part of #2136). Every capture step of a
+the owner's Q5 (c) and Q8 (a), 2026-10-23, part of #2136). Every capture step of a
 run crawls and writes `capture-<g>/found.json` (§3.5). The same
 `task_finished` push calls `QaTargets.settle_run`: once every capture step of
 a leg's run has ended, each `found.json` is read through the tenant-checked,
@@ -153,7 +153,7 @@ once. Findings are filed per leg: the file step's dedupe key is
 `runnable_legs` mints before it renders.
 
 WHAT AN ADMIN SAID IS NOT A SCREEN (S9b's Remove, docs/web-ui/mockups/
-config-e.html; lane QA-RUN-REMOVE, BGD 2026-10-25, part of #2157). Beside
+config-e.html; lane QA-RUN-REMOVE, the owner 2026-10-25, part of #2157). Beside
 Promote, a workspace admin dismisses a found route
 (`POST /v1/qa-targets/{id}:dismiss-route`, `{route_id}`): its
 `qaspec.route_key` joins the target's `dismissed_routes`, which is the app's
@@ -164,7 +164,7 @@ mistake is one click. Each is one transaction with its `admin_audit` row
 Neither bumps `revision`, and a PATCH keeps the list stored at its commit.
 
 ONE APP, SEVERAL ENVIRONMENTS (docs/design/qa-environments.md §1; lane
-QAENV-MODEL, BGD's Q1 (a), 2026-10-23, part of #2136). A target is an APP: its
+QAENV-MODEL, the owner's Q1 (a), 2026-10-23, part of #2136). A target is an APP: its
 name, repository, screens, discovery settings, flows, exclusions and filing
 rules are stored once. WHERE it is served is a list, `environments: [{name,
 base_url, environment, sign_in, credential, challenge_bypass, host_state,
@@ -197,7 +197,7 @@ a new entry that may hold values, counted at its maxima, or a value, that
 would pass it is refused with a sentence before anything is written.
 Deleting a target removes every `<target_id>/` key and the legacy one.
 
-ONE DISPATCH, SEVERAL LEGS (qa-environments.md §2.1; lane QAENV-RUN, BGD's
+ONE DISPATCH, SEVERAL LEGS (qa-environments.md §2.1; lane QAENV-RUN, the owner's
 Q2 (a), 2026-10-23). `:run` names legs (`environments`, every entry when
 unset). Every named leg is checked (`runnable_legs`: `runnable` and the
 render, per leg) BEFORE ANY submission, so a pending host or a missing
@@ -215,8 +215,8 @@ two submissions, which the run page says. `GET /v1/qa-runs/{group_id}` reads
 the group in its own tenant only (`run_group`).
 
 TWO LEGS ON ONE ORIGIN (§1.5). When a `non_production` entry shares any
-origin with a `production` entry (AI Studio's case: both legs on
-`https://studio.saga.xyz`, a page toggle choosing the backend, F-1), the
+origin with a `production` entry (a peer application's case: both legs on
+`https://studio.example.com`, a page toggle choosing the backend, F-1), the
 worker's answer holds it as production: `mutating` is false for every step,
 and `qaspec.leg` renders it no mutating flow. This only ever turns a write
 permission off.
@@ -2324,7 +2324,7 @@ class QaTargets:
     def settle_run(self, task_id: str, inspection: Any, *, tenant_id: str | None = None) -> bool:
         """A step of a leg's QA run has ended: once every capture step of the
         run has, merge what their crawls found into THAT leg's `discovered`
-        (§5, BGD's Q5 (c)). True when the target was written. A doorbell, as
+        (§5, the owner's Q5 (c)). True when the target was written. A doorbell, as
         `settle_discovery` is: everything is read again, and a task that is
         not a run's, of another tenant than the wake said, or of a run with a
         capture still going or already settled is a no-op.
@@ -2836,7 +2836,7 @@ class QaTargetIssuer:
     @staticmethod
     def _mutating(target: Mapping[str, Any], view: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
         """True only for a flow step of this run whose flow the stored target
-        declares `mutating: true`, on a `non_production` target (§3; BGD,
+        declares `mutating: true`, on a `non_production` target (§3; the owner,
         2026-10-22, lane VQ4-MUTATING). The flow is the task's own `step_id`,
         `flow-<id>` as `qaspec.render` names it (a flow-batch step, `flows-<k>`,
         holds only read-only flows and never matches the prefix, so it is
