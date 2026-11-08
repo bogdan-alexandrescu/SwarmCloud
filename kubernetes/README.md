@@ -169,7 +169,7 @@ as `--pod-cidr`; `render.py` also turns argparse's prefix expansion off, which
 is what let an abbreviation forwarded after the read values replace them).
 `render.py` takes them as inputs with no defaults; given none, it renders RFC 5737 documentation addresses, marks the
 policy `offline-render-not-for-apply`, and `apply.sh` refuses to apply that.
-The policy's `swarm.saga.xyz/*` annotations record what it was rendered for, and
+The policy's `swarm.<org_domain>/*` annotations record what it was rendered for, and
 `scripts/lib/check-cluster-network-parity.sh` compares every applied copy — the
 annotations and the enforced spec — with the live cluster. In CI, with no
 credentials, it skips with a `::notice` rather than passing on nothing.

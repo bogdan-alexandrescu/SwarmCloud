@@ -6,7 +6,7 @@
 #   kubernetes/apply.sh --tenant research --workspace-id w-1a2b3c --confirm
 #                         # a group or service workspace's namespace, as the
 #                         # workspace job's A7 applies it: the Namespace carries
-#                         # swarm.saga.xyz/workspace, which the deployer's scope
+#                         # swarm.<org_domain>/workspace, which the deployer's scope
 #                         # policy admits it by (docs/design/workspace-kinds.md)
 #   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies;
 #                         # refuses this environment's Terraform tenants'
@@ -160,7 +160,7 @@ SERVER_DRY_RUN=0
 CONTEXT=""
 SPEC_VERIFY_KEYS_FILE=""
 # The workspace a group or service namespace is built for (the job's step A7,
-# docs/design/workspace-kinds.md §4.3): rendered as swarm.saga.xyz/workspace on
+# docs/design/workspace-kinds.md §4.3): rendered as swarm.<org_domain>/workspace on
 # the Namespace, which is what the deployer's scope policy admits a namespace
 # outside swarm-tenant-u-* by. Tenant mode only; empty for every other render.
 WORKSPACE_ID=""
