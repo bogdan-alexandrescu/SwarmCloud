@@ -105,6 +105,39 @@ SECURITY_AUDIT = PluginEntry(
 CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK, SECURITY_AUDIT.name: SECURITY_AUDIT}
 
 
+#: A built-in's id in the managed catalogue's data view
+#: (docs/design/managed-plugins.md section 1.4): never an install id
+#: (`p-`/`w-`), so no install can collide with one.
+BUILT_IN_PREFIX = "builtin:"
+
+
+def builtin_entries() -> list[dict[str, object]]:
+    """The built-ins as entries of the managed catalogue's view, beside the
+    Firestore installs (swarm_api.pluginstore.install_view's shape): image-baked,
+    version as the image pins it, no Remove and no Update (an image release
+    updates one). The install path is the image's and is not served."""
+    return [
+        {
+            "install_id": BUILT_IN_PREFIX + entry.name,
+            "name": entry.name,
+            "display_name": entry.name,
+            "scope": "platform",
+            "tenant_id": None,
+            "built_in": True,
+            "state": "active",
+            "source": {"kind": "image"},
+            "current_version": None,
+            "version": entry.version,
+            "runner_profiles": list(entry.runner_profiles),
+            "skills": {mode: list(skills) for mode, skills in entry.skills.items()},
+            "hosts": [],
+            "removable": False,
+            "updatable": False,
+        }
+        for entry in CATALOGUE.values()
+    ]
+
+
 def offered_skills() -> dict[str, dict[str, tuple[str, ...]]]:
     """Per plugin, per mode, the skills it may offer: the shape
     `workcontract.PLUGIN_CATALOGUE` decodes a contract against."""
