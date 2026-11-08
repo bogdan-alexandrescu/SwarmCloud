@@ -1072,10 +1072,15 @@ deployment_setting() {
 }
 
 # deployment_list NAME -> NAME's strings (`NAME = ["a", "b"]`), one per line, or nothing.
+# A one-line list only: a list split over lines reads as nothing (so a script
+# that needs it refuses), and says why on stderr.
 deployment_list() {
   local file line
   file="$(tf_var_file)" || return 1
   line="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\[(.*)\][[:space:]]*(#.*)?$/\\1/p" "${file}" | tail -n 1)"
+  if [[ -z "${line}" ]] && grep -qE "^[[:space:]]*$1[[:space:]]*=[[:space:]]*\[" "${file}"; then
+    err "$1 spans several lines in this deployment's tfvars; it is read from one line only, so it reads as empty"
+  fi
   printf '%s\n' "${line}" | grep -oE '"[^"]+"' | tr -d '"' || true
 }
 

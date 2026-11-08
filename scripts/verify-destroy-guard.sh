@@ -334,10 +334,12 @@ if [[ "${COVERED}" -ne "${EXPECTED_ENTRIES}" ]]; then
   err "covered ${COVERED} of ${EXPECTED_ENTRIES} deny-list entries"
   FAILED=$((FAILED + 1))
 fi
-# And the list the guard judges by must be the same length, or the two halves of
+# And the list the guard judges by must hold as many tokens, or the two halves of
 # this proof are describing different lists.
 # guard_deny_json drops a bare 'default' and adds '(default)' whether or not the
-# list held one, so it gives one token for every other entry, plus one.
+# list held one, so it gives one token for every other entry, plus one. Equal
+# lengths held only while the list carried a bare 'default' (the old literal
+# did); a deployment's own list need not, so the count is computed.
 TOKEN_COUNT="$(jq -r 'length' <<<"${DENY_TOKENS}")"
 EXPECTED_TOKENS=1
 for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
