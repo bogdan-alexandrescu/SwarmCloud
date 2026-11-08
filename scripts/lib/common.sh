@@ -14,7 +14,8 @@
 #      config/<env>/deny-list.json (deny_list_load). destroy.sh, purge-data.sh,
 #      configure-kubectl.sh and the guards all judge by it. A list that cannot
 #      be read refuses every guarded action; it is never treated as empty.
-#      PROJECT_ID, REGION and ZONE have no defaults; unset is an error.
+#      PROJECT_ID, REGION and ZONE have no defaults; an unset PROJECT_ID or
+#      REGION is an error. ZONE is optional: nothing here reads it.
 
 set -euo pipefail
 
@@ -203,10 +204,12 @@ load_env() {
   fi
   # NO DEFAULT for the region or the zone either, for the same reason: both are
   # this deployment's values (generic-repository design, section 2.2), and a
-  # default is a guess at somebody's deployment. The opt-out above covers them.
+  # default is a guess at somebody's deployment. The opt-out above covers the
+  # region. The zone is OPTIONAL: nothing in scripts/ or the workflows reads
+  # it, so it is not required here and stays empty when unset. A script that
+  # comes to need it must call `require_setting ZONE` itself.
   if [[ "${SWARM_NO_PROJECT:-}" != "1" ]]; then
     require_setting REGION
-    require_setting ZONE
   fi
   REGION="${REGION:-}"
   ZONE="${ZONE:-}"
