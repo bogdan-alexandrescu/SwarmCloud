@@ -43,7 +43,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -81,7 +81,7 @@ run "terraform_infra_no_longer_grants_the_broker_swarm_secret_lister" {
   }
 
   variables {
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    artifact_bucket  = "swarm-artifacts-example-project"
     labels           = { "managed-by" = "swarm-terraform" }
     gke_cluster_name = "swarm-autopilot"
     gke_location     = "us-central1"
@@ -113,7 +113,7 @@ run "the_deployer_is_not_granted_role_admin" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
@@ -160,7 +160,7 @@ run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
@@ -180,7 +180,7 @@ run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
         "swarmJobDispatcher",
         "swarmJobReaper",
         "swarmTenantWorkerFirestore",
-      ] : contains(local.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/${id}")
+      ] : contains(local.deployer_grantable_project_roles, "projects/example-project/roles/${id}")
     ])
     error_message = "a custom role terraform/infra still grants at the project level is no longer grantable; the release that next adds or removes one of those grants would 403"
   }
@@ -202,7 +202,7 @@ run "no_role_ci_may_grant_carries_secret_set_iam_policy" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   # Every platform custom role on the grantable list, by key, matched on the
@@ -216,7 +216,7 @@ run "no_role_ci_may_grant_carries_secret_set_iam_policy" {
         ], p)
       ] if contains(local.deployer_grantable_project_roles, "projects/${var.project_id}/roles/${google_project_iam_custom_role.platform[key].role_id}")
     ]))
-    error_message = "a custom role on deployer_grantable_project_roles carries secretmanager.secrets.setIamPolicy or resourcemanager.projects.setIamPolicy: the scoped projectIamAdmin would let CI grant it to itself, unconditioned, and reach the other team's 63 secrets in saga-agents-staging (#69)"
+    error_message = "a custom role on deployer_grantable_project_roles carries secretmanager.secrets.setIamPolicy or resourcemanager.projects.setIamPolicy: the scoped projectIamAdmin would let CI grant it to itself, unconditioned, and reach the other team's 63 secrets in example-project (#69)"
   }
 
   # Predefined roles that carry secretmanager.secrets.setIamPolicy or
@@ -231,7 +231,7 @@ run "no_role_ci_may_grant_carries_secret_set_iam_policy" {
       "roles/iam.securityAdmin",
       "roles/resourcemanager.projectIamAdmin",
     ]))) == 0
-    error_message = "a predefined role that carries secretmanager.secrets.setIamPolicy or project setIamPolicy is on deployer_grantable_project_roles: CI could grant it to itself and reach the other team's 63 secrets in saga-agents-staging (#69)"
+    error_message = "a predefined role that carries secretmanager.secrets.setIamPolicy or project setIamPolicy is on deployer_grantable_project_roles: CI could grant it to itself and reach the other team's 63 secrets in example-project (#69)"
   }
 
   # The control: the custom-role assert above examined the five roles infra
@@ -270,7 +270,7 @@ run "role_admin_cannot_be_put_back_on_the_deployer" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/artifactregistry.admin", "roles/iam.roleAdmin"]
   }
 

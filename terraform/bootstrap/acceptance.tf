@@ -135,7 +135,7 @@ resource "google_project_iam_custom_role" "acceptance_lister" {
 # `warm, smoke and GKE proof (dev)` was red on every run.
 #
 # THE TRADE-OFF THE OWNER ACCEPTED. Unconditioned, this role reaches EVERY
-# Cloud Run job in saga-agents-staging, present and future: the other team's
+# Cloud Run job in example-project, present and future: the other team's
 # jobs in this shared project, and swarm's own merge job
 # (swarm-job-eng-merge), as well as swarm-verify and the worker jobs. What it
 # can do to any of them is what the role holds and no more: get a job, start

@@ -1,10 +1,10 @@
-# u-bogdan LEAVES THIS ROOT -- FORGOTTEN, NOT DESTROYED (docs/workspaces.md
+# THE OWNER'S PERSONAL TENANT LEAVES THIS ROOT -- FORGOTTEN, NOT DESTROYED (docs/workspaces.md
 # §3.3; lane W9 of #847, 2026-10-09).
 #
 # Owner decision WD3, 2026-10-08: a person's workspace is made by the
 # workspace job (scripts/register-tenant.sh --workspace) and lives outside
-# Terraform state, so no plan can change or destroy one. u-bogdan, the owner's
-# personal tenant, predates that and was a key of var.tenants in
+# Terraform state, so no plan can change or destroy one. The owner's
+# personal tenant predates that and was a key of var.tenants in
 # terraform/environments/dev/dev.tfvars. W9 takes it out of that map. Without
 # the blocks below, every resource the map made for it -- its worker account,
 # its provider secret and the authoritative bindings on it, its tenant and pool
@@ -16,7 +16,7 @@
 # `destroy = false` makes the release drop each object from this root's state
 # and touch nothing live. NONE OF THESE BLOCKS MAY EVER BE CHANGED TO DESTROY:
 # from the apply that forgets them, these objects are the workspace record's
-# (`workspaces/u-bogdan`, `migrated = true`), and the only teardown of a
+# (`workspaces/u-<slug>`, `migrated = true`), and the only teardown of a
 # personal workspace is the owner-approved run of §7.
 #
 # EACH OBJECT IS ONE INSTANCE OF A for_each, and a `removed` block cannot name
@@ -28,22 +28,22 @@
 # whose `from` is not in state is a no-op, so a state that never held one of
 # these (a rebuilt environment) plans nothing for it.
 #
-# The addresses are exactly what terraform/infra planned for u-bogdan under
+# The addresses are exactly what terraform/infra planned for the tenant under
 # dev.tfvars before this change, read from a mock-provider plan of it
 # (2026-10-09): 33 instances across artifact_registry, cloud_run,
 # cloud_run_jobs, firestore, scheduler, secret_manager and tenancy.
-# tests/terraform/u_bogdan_removed.tftest.hcl replans that map and fails if
-# one of its u-bogdan instances is missing here, or if a block destroys.
+# tests/terraform/personal_tenant_removed.tftest.hcl replans that map and fails if
+# one of the tenant's instances is missing here, or if a block destroys.
 #
 # THE ONE IN-PLACE CHANGE THIS DOES NOT COVER. modules/storage lists each
 # var.tenants key's tasks/ and verdicts/ prefixes in the artifact bucket's
-# Nearline lifecycle rule (`aged_prefixes`). Without u-bogdan in the map the
+# Nearline lifecycle rule (`aged_prefixes`). Without the tenant in the map the
 # rule loses its two prefixes, so the release plans one in-place update of
 # module.storage.google_storage_bucket.artifacts. Nothing is deleted and the
-# Delete rule is unchanged; u-bogdan's task objects stop moving to Nearline,
+# Delete rule is unchanged; the tenant's task objects stop moving to Nearline,
 # which is the consequence §3.2 already accepts for every personal workspace.
 #
-# WHAT A FORGOTTEN JOB NO LONGER GETS. u-bogdan's four Cloud Run jobs keep the
+# WHAT A FORGOTTEN JOB NO LONGER GETS. the tenant's four Cloud Run jobs keep the
 # label managed-by=swarm-terraform, and the dispatcher refreshes the image only
 # of jobs labelled managed-by=swarm-scheduler
 # (apps/scheduler/scheduler/dispatch.py, `_refresh_image`). So they stay at the

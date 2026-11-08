@@ -76,7 +76,7 @@ locals {
     "terraform.yml",
     "security.yml",
     "iam-refusal-probe.yml",
-    # Publishing a SwarmCloud release (BGD 2026-10-30, "Move publishing into
+    # Publishing a SwarmCloud release (the owner 2026-10-30, "Move publishing into
     # CI now"; DAYONE-RELEASE-CI, docs/runbooks/release.md). Dispatch-only and
     # main-only: its `check` job refuses any other ref. Its `publish` job waits
     # in the GitHub environment `release`, which has a required reviewer. In
@@ -273,9 +273,9 @@ resource "google_project_iam_member" "deployer_secrets" {
 # Cloud Storage are well supported, and the project holds THREE buckets that are
 # not ours --
 #
-#     saga-agents-crawled-media-staging
-#     saga-agents-files-staging
-#     saga-agents-terraform-state-staging
+#     peer-media-bucket
+#     peer-bucket
+#     peer-state-bucket
 #
 # the last of which is another team's TERRAFORM STATE. Unconditioned
 # storage.admin means CI can delete it.
@@ -285,7 +285,7 @@ resource "google_project_iam_member" "deployer_secrets" {
 # `startsWith(".../buckets/swarm-")` looks obviously right and would have broken
 # the build:
 #
-#     saga-agents-staging_cloudbuild
+#     example-project_cloudbuild
 #
 # is where `gcloud builds submit` uploads its source tarball. It is GCP's, not
 # ours and not theirs, it does not carry our prefix, and the release pipeline
@@ -303,8 +303,8 @@ resource "google_project_iam_member" "deployer_secrets" {
 # bucket. If it checked for equality, it would only match the bucket"
 # (docs.cloud.google.com/iam/docs/conditions-attribute-reference). The source
 # tarball `gcloud builds submit` uploads is an OBJECT --
-# `saga-agents-staging_cloudbuild/source/<stamp>-<uuid>.tgz` -- so
-# `resource.name == ".../buckets/saga-agents-staging_cloudbuild"` admitted the
+# `example-project_cloudbuild/source/<stamp>-<uuid>.tgz` -- so
+# `resource.name == ".../buckets/example-project_cloudbuild"` admitted the
 # bucket and refused the upload. Each exact bucket is therefore admitted twice:
 # itself by equality, and its objects by a prefix that ends in `/objects/`, so
 # a bucket merely STARTING with the same name is still refused.
@@ -468,9 +468,9 @@ resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
 # `gcloud builds submit` runs the build as a service account, so the caller
 # needs `iam.serviceAccounts.actAs` on it. The one-line way to grant that is
 # `roles/iam.serviceAccountUser` at the PROJECT, and that is the wrong line to
-# write here: saga-agents-staging is SHARED, and project-level actAs would let
+# write here: example-project is SHARED, and project-level actAs would let
 # any CI run on an allowed ref impersonate every service account in it --
-# including every one on this repository's deny-list (promptlab-runner,
+# including every one on this repository's deny-list (peer-app-runner,
 # api-service, publisher and the rest). CI would be able to become another
 # team's production identity, which is a strictly larger authority than
 # anything else on the deployer and is not needed to build an image.
@@ -481,7 +481,7 @@ resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
 #
 # The legacy Cloud Build service account is `<project-number>@cloudbuild`, which
 # is why the project NUMBER is read rather than spelled: the id is
-# saga-agents-staging and the number is not derivable from it.
+# example-project and the number is not derivable from it.
 data "google_project" "this" {
   count      = local.deployer_enabled
   project_id = var.project_id

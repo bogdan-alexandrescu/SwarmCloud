@@ -253,7 +253,7 @@ locals {
 }
 
 output "swarm_typesafe_fwd_manifest" {
-  description = "The TypeSafe forwarder's Kubernetes objects, rendered, with its egress policy where gke_enable_fqdn_network_policy is set. Apply to swarm-autopilot only (never agents-staging). Null until typesafe_forwarder.serve is set and the image has a digest."
+  description = "The TypeSafe forwarder's Kubernetes objects, rendered, with its egress policy where gke_enable_fqdn_network_policy is set. Apply to swarm-autopilot only (never peer-cluster). Null until typesafe_forwarder.serve is set and the image has a digest."
   value = local.typesafe_fwd_serving && local.typesafe_fwd_image != "" ? replace(replace(replace(replace(replace(
     join("---\n", [for f in local.typesafe_fwd_manifest_files : file(f)]),
     "__SWARM_TYPESAFE_FWD_IMAGE__", local.typesafe_fwd_image),

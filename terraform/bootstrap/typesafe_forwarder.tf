@@ -50,7 +50,7 @@
 # slots, its workspace secrets (`-wsec-<hex>`: hex never spells `typesafe`),
 # its other provider keys (`-anthropic`, ...), an empty tenant, the platform's
 # swarm-github-app-* and swarm-account-* secrets, and the other team's
-# agents-* and promptlab-* secrets, which do not start with the prefix.
+# agents-* and peer-app-* secrets, which do not start with the prefix.
 # tests/terraform/typesafe_forwarder.tftest.hcl evaluates each.
 #
 # WHAT IT STILL REACHES (the residual, for the security review). Any secret
@@ -71,7 +71,7 @@
 # WHY HERE AND NOT IN terraform/infra. A custom role cannot be defined there
 # (#79; tests/terraform/custom_roles_out_of_ci.tftest.hcl), and a role
 # carrying versions.access on the CI deployer's grantable list would let CI
-# grant itself read on any secret in saga-agents-staging, the other team's
+# grant itself read on any secret in example-project, the other team's
 # among them. So the OWNER applies this (dev-iam).
 #
 # NOT VERIFIED LIVE: that IAM evaluates versions.access with resource.name in
@@ -82,7 +82,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. The name arm starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
-# promptlab-*, so it can match none of them. The grant is to the forwarder's
+# peer-app-*, so it can match none of them. The grant is to the forwarder's
 # principal alone and touches no cluster, network, bucket or account of theirs.
 
 variable "enable_typesafe_forwarder_read" {

@@ -63,7 +63,7 @@
 #      Workload Identity binding, the two invokers (swarm-api and the quota
 #      broker), the address, SWARM_VOICE_URL and the manifest; then
 #      `terraform output -raw swarm_voice_manifest` is applied to
-#      swarm-autopilot (never agents-staging).
+#      swarm-autopilot (never peer-cluster).
 #
 # Step 1 changes no IAM. Step 3 does, so a release making it waits at the IAM
 # gate for the owner.
@@ -361,7 +361,7 @@ output "voice" {
 # VOICE_PLANNER_MODEL, the planner on both engines, is the planning class,
 # fable. Nothing to ask at install: the pins are Terraform's.
 output "swarm_voice_manifest" {
-  description = "swarm-voice's Kubernetes objects and NetworkPolicies, rendered. Apply to swarm-autopilot only (never agents-staging). Null until voice_it is on with an image."
+  description = "swarm-voice's Kubernetes objects and NetworkPolicies, rendered. Apply to swarm-autopilot only (never peer-cluster). Null until voice_it is on with an image."
   value = local.voice_on && local.voice_image != "" ? replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
     join("---\n", [
       file("${path.module}/../../kubernetes/swarm-system/swarm-voice.yaml"),

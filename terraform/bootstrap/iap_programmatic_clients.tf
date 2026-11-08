@@ -27,7 +27,7 @@
 # WHY PER BACKEND SERVICE, AND WHY THIS ROOT
 # ------------------------------------------
 # IAP settings can be set at the organisation, folder, project, `iap_web`,
-# `compute` or single-SERVICE level. saga-agents-staging is shared: nine of its
+# `compute` or single-SERVICE level. example-project is shared: nine of its
 # ten IAP backends are another team's, their Keycloak and ArgoCD among them.
 # Anything above the service level would change what those accept. The service
 # level is documented for exactly this -- `gcloud iap settings set

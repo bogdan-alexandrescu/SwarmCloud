@@ -53,7 +53,7 @@ variable "enable_safety_tick_alert" {
 }
 
 variable "gke_cluster_name" {
-  description = "The platform's own GKE Autopilot cluster. The spec-refusal metrics count a worker container's line only from this cluster, never from any other in the shared project -- the other team's agents-staging among them (#346 box 51). Null means the name terraform/infra gives it, \"<name_prefix>-autopilot\"."
+  description = "The platform's own GKE Autopilot cluster. The spec-refusal metrics count a worker container's line only from this cluster, never from any other in the shared project -- the other team's peer-cluster among them (#346 box 51). Null means the name terraform/infra gives it, \"<name_prefix>-autopilot\"."
   type        = string
   default     = null
 }

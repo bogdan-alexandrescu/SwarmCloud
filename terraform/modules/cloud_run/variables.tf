@@ -99,7 +99,7 @@ variable "services" {
     # Startup CPU boost: more CPU than the declared limit while an instance
     # starts, which is bursting, so off for every service that does not set it
     # (CONTRACT.md invariant 7). swarm-api is the one service that sets it, by
-    # BGD's decision of 2026-10-23 (#1816 option (a)); see main.tf.
+    # the owner's decision of 2026-10-23 (#1816 option (a)); see main.tf.
     startup_cpu_boost = optional(bool, false)
   }))
 
@@ -145,7 +145,7 @@ variable "services" {
   #
   # What actually authenticates a caller is unchanged and is all in the app:
   # signature verification against Google's keys, email_verified, the hosted
-  # domain (saga.xyz), and group membership resolved through Cloud Identity to
+  # domain (example.com), and group membership resolved through Cloud Identity to
   # pick the tenant. What keeps the service off the internet is
   # ingress = internal-and-cloud-load-balancing, which is what the spec's
   # "no required service publicly exposed by default" requirement means.
