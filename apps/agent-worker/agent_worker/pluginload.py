@@ -731,9 +731,13 @@ ProviderKey = Callable[[str], "str | None"]
 
 
 def _plugin_env(entry: Entry, private_dir: Path, *, released: Released, provider_key: ProviderKey | None,
-                others: Iterable[str]) -> tuple[dict[str, Any], tuple[str, ...], bool]:
+                others: Iterable[str], secret_env_names: Iterable[str] = (),
+                hard_stop_paths: Iterable[str] = ()) -> tuple[dict[str, Any], tuple[str, ...], bool]:
     """The launcher's env file for one plugin, the variables whose secret was
-    not delivered, and whether the Jev adapter runs it."""
+    not delivered, and whether the Jev adapter runs it. The adapter's block
+    carries the baked gate's outbound filter inputs (`qualitygates.prepare`'s
+    `secret_env_names` and `hard_stop_paths`), so the managed copy filters
+    what the gate it replaces filters (section 12)."""
     secrets_dir = private_dir / SECRETS_DIR / entry.install_id
     files_dir = private_dir / FILES_DIR / entry.install_id
     for folder in (secrets_dir, files_dir):
@@ -780,6 +784,8 @@ def _plugin_env(entry: Entry, private_dir: Path, *, released: Released, provider
             "kind": "typesafe", "module": JEV_ADAPTER, "key_file": str(key_file), "hook": entry.name,
             "variables": sorted(adapter_vars), "calls_file": str(private_dir / JEV_CALLS_FILE),
             "counts_file": str(private_dir / RUNS_DIR / f"{entry.install_id}.jev.jsonl"),
+            "secret_env_names": sorted({n for n in secret_env_names if isinstance(n, str) and n}),
+            "hard_stop_paths": [p for p in hard_stop_paths if isinstance(p, str) and p],
         }
     return document, tuple(missing), key_file is not None
 
@@ -795,6 +801,7 @@ def sideload_disabled(path: Path = MANAGED_SETTINGS) -> bool:
 def load(task: Mapping[str, Any], *, private_dir: Path, store: Any = None,
          environ: Mapping[str, str] | None = None, released: Released | None = None,
          provider_key: ProviderKey | None = None,
+         secret_env_names: Iterable[str] = (), hard_stop_paths: Iterable[str] = (),
          managed_settings: Path = MANAGED_SETTINGS) -> Load | None:
     """Install every plugin of the step's signed set before the agent, or
     None for a step with none. Raises PluginRefused, before the agent, for a
@@ -804,7 +811,15 @@ def load(task: Mapping[str, Any], *, private_dir: Path, store: Any = None,
     to this attempt; `provider_key` resolves a binding. A secret neither
     delivers is left unset for its plugin and counted in the record
     (`secrets_missing`): the plugin still loads, as the release route lets a
-    plugin go without a secret removed after submission."""
+    plugin go without a secret removed after submission.
+
+    `secret_env_names` and `hard_stop_paths` are the step's registered secret
+    names and the repository's hard-stop paths, the baked gate's filter
+    inputs, which a TypeSafe-bound plugin's adapter applies too. The load
+    file says per plugin whether its adapter runs (`adapter`): the runner
+    drops a built-in gate only for a managed Jev plugin that has its key."""
+    secret_env_names = tuple(secret_env_names)
+    hard_stop_paths = tuple(hard_stop_paths)
     wanted = entries(task)
     if not wanted:
         return None
@@ -841,14 +856,17 @@ def load(task: Mapping[str, Any], *, private_dir: Path, store: Any = None,
         runs.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         runs.unlink(missing_ok=True)
         document, missing, adapter = _plugin_env(entry, private_dir, released=released,
-                                                 provider_key=provider_key, others=every_variable)
+                                                 provider_key=provider_key, others=every_variable,
+                                                 secret_env_names=secret_env_names,
+                                                 hard_stop_paths=hard_stop_paths)
         _write_private(private_dir / ENV_DIR / f"{entry.install_id}.json",
                        json.dumps(document, indent=2, sort_keys=True))
         opts = options(found, entry)
         loaded.append(Loaded(entry=entry, directory=root, options=opts, runs_file=runs,
                              secrets_missing=missing, adapter=adapter))
         plugin_dirs.append({"install_id": entry.install_id, "name": entry.name, "dir": str(root),
-                            "options": opts, "disabled_skills": list(entry.disabled_skills)})
+                            "options": opts, "disabled_skills": list(entry.disabled_skills),
+                            "adapter": adapter})
     load_file = _write_private(private_dir / PLUGINS_DIR / LOAD_FILE,
                                json.dumps({"plugins": plugin_dirs}, indent=2, sort_keys=True))
     return Load(plugins=tuple(loaded),

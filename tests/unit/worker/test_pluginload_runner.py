@@ -25,6 +25,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -143,10 +145,10 @@ def _gate_modes(settings: dict[str, Any]) -> list[str]:
     return [c.rsplit(" ", 1)[1] for c in commands if claude_code.JEV_GATES_LAUNCHER in c]
 
 
-def _with(tmp_path: Path, monkeypatch, names: list[str]) -> None:
+def _with(tmp_path: Path, monkeypatch, names: list[str], *, adapter: bool = True) -> None:
     private = tmp_path / "private"
     path = _load_file(private, [{"name": n, "dir": str(_plugin(private / "plugins", n)), "options": {},
-                                 "disabled_skills": []} for n in names])
+                                 "disabled_skills": [], "adapter": adapter} for n in names])
     monkeypatch.setenv(claude_code.PLUGIN_LOAD_ENV, str(path))
 
 
@@ -171,6 +173,21 @@ def test_both_managed_jev_plugins_leave_no_built_in_gate(tmp_path, monkeypatch, 
     assert _gate_modes(settings) == []
     assert "Stop" not in settings["hooks"] or all(
         claude_code.JEV_GATES_LAUNCHER not in h["command"] for g in settings["hooks"]["Stop"] for h in g["hooks"])
+
+
+def test_a_keyless_managed_jev_plugin_keeps_the_built_in_gate(tmp_path, monkeypatch, gates):
+    # Its adapter got no TypeSafe key, so its hooks fail open: the step keeps
+    # the built-in gates rather than running with no Jev gate at all.
+    _with(tmp_path, monkeypatch, ["jev-belay", "jev-enforce"], adapter=False)
+    assert sorted(_gate_modes(_settings(tmp_path))) == ["belay", "enforce-edit", "enforce-stop"]
+
+
+def test_a_load_file_without_the_adapter_flag_replaces_no_gate(tmp_path, monkeypatch, gates):
+    private = tmp_path / "private"
+    path = _load_file(private, [{"name": "jev-belay", "dir": str(_plugin(private / "plugins", "jev-belay")),
+                                 "options": {}, "disabled_skills": [], "adapter": "yes"}])
+    monkeypatch.setenv(claude_code.PLUGIN_LOAD_ENV, str(path))
+    assert sorted(_gate_modes(_settings(tmp_path))) == ["belay", "enforce-edit", "enforce-stop"]
 
 
 # --- swarm-plugin-exec --------------------------------------------------------
@@ -334,6 +351,62 @@ def test_the_adapter_sets_the_key_in_the_bound_variable_and_guards_fetch(node, t
 def test_without_a_readable_key_the_adapter_sets_nothing(node, tmp_path):
     seen, counts = _adapt(node, tmp_path, None)
     assert seen["key"] is None and seen["guarded"] is False and not counts.exists()
+
+
+class _Jev(BaseHTTPRequestHandler):
+    seen: list[str] = []
+
+    def do_POST(self) -> None:  # noqa: N802 -- http.server's spelling
+        type(self).seen.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
+        out = b'{"answers": {}}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *_args: Any) -> None:
+        return
+
+
+SEND = """
+const res = await fetch("https://api.typesafe.ai/v1/systemone", { method: "POST", body: JSON.stringify({
+  state: { files: [{ path: "secrets/prod.env", content: process.env.STOPPED_TEXT },
+                   { path: "src/app.py", content: "ok" }],
+           note: "with " + process.env.MY_PASSPHRASE } }) });
+await res.json();
+"""
+
+
+def test_the_adapter_filters_hard_stop_content_and_registered_secrets_as_the_baked_gate_does(node, tmp_path):
+    server = HTTPServer(("127.0.0.1", 0), _Jev)
+    _Jev.seen = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        passphrase, stopped = "pp-" + secrets.token_hex(8), "stop-" + secrets.token_hex(8)
+        shim = tmp_path / "shim"
+        shim.write_text(json.dumps({"shim_url": f"http://127.0.0.1:{server.server_port}/v1/systemone",
+                                    "token": secrets.token_hex(16)}))
+        counts = tmp_path / "counts.jsonl"
+        config = tmp_path / "env.json"
+        config.write_text(json.dumps({"install_id": ENFORCE, "adapter": {
+            "kind": "typesafe", "key_file": str(shim), "variables": ["TYPESAFE_API_KEY"],
+            "calls_file": str(tmp_path / "calls"), "counts_file": str(counts), "hook": "managed_plugin",
+            "redaction_python": sys.executable, "secret_env_names": ["MY_PASSPHRASE"],
+            "hard_stop_paths": ["secrets/"]}}))
+        environ = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "SWARM_JEV_ADAPTER_CONFIG": str(config),
+                   "MY_PASSPHRASE": passphrase, "STOPPED_TEXT": stopped}
+        done = subprocess.run([node, "--import", ADAPTER.as_uri(), "--input-type=module", "-e", SEND],
+                              env=environ, capture_output=True, text=True, timeout=60, check=False)
+    finally:
+        server.shutdown()
+    assert done.returncode == 0, done.stderr
+    (body,) = _Jev.seen
+    assert passphrase not in body and "<redacted>" in body
+    assert stopped not in body and "secrets/prod.env" in body and '"ok"' in body
+    (row,) = [json.loads(line) for line in counts.read_text().splitlines()]
+    assert row["calls"] == 1 and row["denied"] == 1
 
 
 def test_the_baked_gates_and_the_adapter_share_one_definition():

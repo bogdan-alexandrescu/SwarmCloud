@@ -11,7 +11,9 @@
 // does (`adaptProcess` in swarm-jev-gate.mjs, one definition for both): reads
 // the key file the worker wrote (the key, or the forwarder's shim), replaces
 // `fetch` with one that sends only to TypeSafe's API or the shim, every body
-// through THE OUTBOUND FILTER, every call recorded in the calls file the
+// through THE OUTBOUND FILTER (the step's registered secrets replaced, the
+// repository's hard-stop paths withheld: the config's `secret_env_names` and
+// `hard_stop_paths`, as the baked gate's), every call recorded in the calls file the
 // worker already settles; removes the variables that would point the tool
 // elsewhere; and sets the key in the bound variables only. At exit, one line
 // of counts, never text, to the plugin's counts file.
@@ -43,7 +45,7 @@ export function installAdapter(env = process.env) {
   const variables = (Array.isArray(adapter.variables) ? adapter.variables : []).filter((v) => typeof v === "string" && VARIABLE.test(v));
   const hook = typeof adapter.hook === "string" ? adapter.hook : "managed_plugin";
   const counter = adaptProcess({
-    found, env, secretNames: [], hardStop: adapter.hard_stop_paths, cwd: process.cwd(),
+    found, env, secretNames: adapter.secret_env_names, hardStop: adapter.hard_stop_paths, cwd: process.cwd(),
     python: adapter.redaction_python, callsFile: adapter.calls_file, hook, variables, keepOptions: true,
   });
   const countsFile = typeof adapter.counts_file === "string" ? adapter.counts_file : "";

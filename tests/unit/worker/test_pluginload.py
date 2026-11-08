@@ -379,7 +379,9 @@ def test_a_typesafe_binding_brings_the_adapter_and_writes_the_key_file_only(tmp_
         asked.append(provider)
         return key
 
-    (plugin,) = _load(_task({ENFORCE: entry}), tmp_path, store, provider_key=provider_key).plugins
+    (plugin,) = _load(_task({ENFORCE: entry}), tmp_path, store, provider_key=provider_key,
+                      secret_env_names=["MY_PASSPHRASE", "", "MY_PASSPHRASE"],
+                      hard_stop_paths=["secrets/", "deploy.env"]).plugins
     assert asked == ["typesafe"] and plugin.adapter
     document = json.loads((tmp_path / "private" / "plugin-env" / f"{ENFORCE}.json").read_text())
     adapter = document["adapter"]
@@ -387,6 +389,13 @@ def test_a_typesafe_binding_brings_the_adapter_and_writes_the_key_file_only(tmp_
     assert Path(adapter["key_file"]).read_text() == key
     # The calls file the worker already settles (judge/account.py).
     assert adapter["calls_file"] == str(tmp_path / "private" / "jev-gates.calls")
+    # The baked gate's outbound filter inputs, so the copy that replaces it
+    # filters as much (section 12).
+    assert adapter["secret_env_names"] == ["MY_PASSPHRASE"]
+    assert adapter["hard_stop_paths"] == ["secrets/", "deploy.env"]
+    # The load file tells the runner this plugin's adapter has its key.
+    load_file = json.loads((tmp_path / "private" / "plugins" / "load.json").read_text())
+    assert [p["adapter"] for p in load_file["plugins"]] == [True]
     # The key is no plain secret of the plugin: only the adapter sets it.
     assert document["secrets"] == {} and key not in json.dumps(document)
 
@@ -399,6 +408,9 @@ def test_a_secret_nobody_delivered_leaves_the_plugin_loaded_and_counted(tmp_path
     (plugin,) = _load(_task({ENFORCE: entry}), tmp_path, store).plugins
     assert plugin.secrets_missing == ("TYPESAFE_API_KEY",) and not plugin.adapter
     assert pluginload.record(plugin, [])["secrets_missing"] == 1
+    # The runner keeps the built-in gate for a plugin whose adapter has no key.
+    load_file = json.loads((tmp_path / "private" / "plugins" / "load.json").read_text())
+    assert [p["adapter"] for p in load_file["plugins"]] == [False]
 
 
 def test_the_entry_swarm_api_signs_is_the_entry_this_worker_loads(tmp_path, store):

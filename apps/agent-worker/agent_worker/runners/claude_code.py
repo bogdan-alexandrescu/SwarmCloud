@@ -974,6 +974,7 @@ def managed_plugins(environ: Mapping[str, str] | None = None) -> list[dict[str, 
                         if isinstance(k, str) and _PLUGIN_OPTION.match(k)
                         and isinstance(v, (str, int, float, bool, list))},
             "disabled_skills": [d for d in disabled if isinstance(d, str) and _PLUGIN_SKILL.match(d)],
+            "adapter": item.get("adapter") is True,
         })
     return out
 
@@ -988,8 +989,11 @@ def plugin_dir_args(plugins: list[dict[str, Any]]) -> list[str]:
 
 
 def replaced_gates(plugins: list[dict[str, Any]]) -> set[str]:
-    """The built-in gate modes a managed Jev plugin of this step replaces."""
-    return {mode for p in plugins for mode in MANAGED_JEV_REPLACES.get(p["name"], ())}
+    """The built-in gate modes a managed Jev plugin of this step replaces:
+    only one whose adapter got the TypeSafe key (the load file's `adapter`).
+    A keyless managed copy fails open, so the built-in gate keeps running."""
+    return {mode for p in plugins if p.get("adapter") is True
+            for mode in MANAGED_JEV_REPLACES.get(p["name"], ())}
 
 
 #: The first sentence of the live-browser note, per selection.
@@ -1430,7 +1434,8 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
         # stop; jev-enforce's edit hook only records the edit (`end` mode).
         # A managed jev-belay or jev-enforce of this step replaces its gate
         # (the owner's answer to Q14): the managed copy runs, the baked one
-        # does not.
+        # does not -- only when the managed copy's adapter has the key; a
+        # keyless one fails open, so the baked gate stays.
         settings["env"][JEV_ENFORCE_MODE_ENV] = "end"
         stop_hooks = [hook for mode, hook in (
             ("belay", _jev_gate_hook(gates, "belay", JEV_BELAY_TIMEOUT)),

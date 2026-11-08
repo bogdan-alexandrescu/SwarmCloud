@@ -415,7 +415,8 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
           install_paths: Mapping[str, Path] | None = None,
           private_dir: Path | None = None, store: Any = None,
           released: pluginload.Released | None = None,
-          provider_key: pluginload.ProviderKey | None = None) -> Started | None:
+          provider_key: pluginload.ProviderKey | None = None,
+          secret_env_names: Iterable[str] = (), hard_stop_paths: Iterable[str] = ()) -> Started | None:
     """Set up the step's plugins before the agent, or None for a step with
     none. Raises PluginUnavailable, before anything is linked, for a plugin
     this worker cannot run or an image without its install, and
@@ -473,7 +474,8 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
     if managed_entries:
         loaded = pluginload.load(
             task, private_dir=Path(private_dir) if private_dir is not None else Path(work).parent / "private",
-            store=store, environ=environ, released=released, provider_key=provider_key)
+            store=store, environ=environ, released=released, provider_key=provider_key,
+            secret_env_names=secret_env_names, hard_stop_paths=hard_stop_paths)
         if loaded is not None:
             managed = loaded.plugins
             env.update(loaded.env)
