@@ -977,11 +977,12 @@ locals {
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
       # The never-touch twin (docs/design/generic-repository.md section 2.4):
-      # rendered always, "[]" when the list is empty, so swarm-api tells a
-      # written list from a service that was never rendered (it refuses an
-      # infrastructure issue run when _SET is absent).
-      SWARM_SHARED_DENY_LIST     = jsonencode(var.shared_deny_list)
-      SWARM_SHARED_DENY_LIST_SET = "1"
+      # "1" and the JSON list only when the deployment wrote one ("[]"
+      # included); "0" and "" when shared_deny_list is null, so swarm-api
+      # refuses an infrastructure issue run rather than read a forgotten
+      # entry as a project that shares nothing.
+      SWARM_SHARED_DENY_LIST     = var.shared_deny_list == null ? "" : jsonencode(var.shared_deny_list)
+      SWARM_SHARED_DENY_LIST_SET = var.shared_deny_list == null ? "0" : "1"
 
       # The workflow-rollup jobs' identity (modules/scheduler, D17): may call
       # POST /v1/admin/workflows/rollup and no other route

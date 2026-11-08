@@ -645,13 +645,17 @@ variable "shared_deny_list" {
     on swarm-api as SWARM_SHARED_DENY_LIST (JSON) with
     SWARM_SHARED_DENY_LIST_SET = "1", and refused as the GKE cluster's name.
     The live list lives only in the deployment's private tfvars, never in this
-    repository. Empty (the default) is a project that shares nothing.
+    repository. [] is a project that shares nothing. Null (the default) is a
+    list nobody wrote: SWARM_SHARED_DENY_LIST_SET renders "0" and swarm-api
+    refuses every infrastructure issue run until the list is written, so a
+    tfvars file that forgot the entry fails closed instead of emptying the
+    guard.
   EOT
   type        = list(string)
-  default     = []
+  default     = null
 
   validation {
-    condition     = alltrue([for e in var.shared_deny_list : trimspace(e) != ""])
+    condition     = alltrue([for e in coalesce(var.shared_deny_list, []) : trimspace(e) != ""])
     error_message = "shared_deny_list entries are resource names; an empty or blank entry is refused."
   }
 }

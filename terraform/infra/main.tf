@@ -180,7 +180,9 @@ module "gke_autopilot" {
   region       = var.region
   cluster_name = "${var.name_prefix}-autopilot"
 
-  refused_cluster_names = var.shared_deny_list
+  # Null (no list written) refuses no name here; the module's "swarm-" prefix
+  # rule still keeps the cluster off any other team's name.
+  refused_cluster_names = coalesce(var.shared_deny_list, [])
 
   network             = module.network.network_id
   subnetwork          = module.network.subnetwork_id
