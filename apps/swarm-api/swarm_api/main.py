@@ -76,6 +76,7 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    plugin_catalogue,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -457,6 +458,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's allowed agent plugins, from the platform's closed
     # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
     app.include_router(plugin_settings.router)
+    # The managed plugin catalogue (docs/design/managed-plugins.md, lane 5):
+    # installs, versions, updates and removal, platform and per workspace,
+    # and the intake job's callback; admins only, audited.
+    app.include_router(plugin_catalogue.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
