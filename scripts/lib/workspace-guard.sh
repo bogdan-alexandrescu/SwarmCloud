@@ -537,10 +537,19 @@ def child_values(entry, what):
     return {k: plain(v) for k, v in found.items() if k in ("name", "namespace", "kind")}
 
 
-# The workspace label key the deployment names, from the expectation (the shell passes
-# its namespace_label_key). None names no key: no label is read, so C7 admits
-# no group or service Namespace.
-LABEL = os.environ.get("GUARD_LABEL_KEY", "") or None
+# The workspace label key the deployment names: namespace_label_key in the
+# expectation (the shell passes the file). None names no key: no label
+# is read, so C7 admits no group or service Namespace.
+def label_key():
+    try:
+        with open(os.environ.get("GUARD_EXPECTATION", ""), encoding="utf-8") as handle:
+            key = json.load(handle).get("namespace_label_key")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return key if isinstance(key, str) and key else None
+
+
+LABEL = label_key()
 LABEL_LINE = re.compile(r"^( +)([A-Za-z0-9][A-Za-z0-9_./-]*):(?:[ \t]+(.*))?$")
 
 
@@ -994,8 +1003,7 @@ guard_judge() {
         if [[ -n "${GUARD_MANIFEST_ERR}" ]]; then
           objects_err="${GUARD_MANIFEST_ERR}"
         elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" \
-              | GUARD_LABEL_KEY="$(jq -r '.namespace_label_key // ""' "${exp}" 2>/dev/null || true)" \
-                  python3 -c "${GUARD_MANIFEST_PY}")"; then
+              | GUARD_EXPECTATION="${exp}" python3 -c "${GUARD_MANIFEST_PY}")"; then
           # The judge reads it as JSON; what is not JSON, null or false is "the
           # manifest could not be read", as `jq -e .` used to decide here.
           objects_read=true

@@ -2954,10 +2954,10 @@
       }
     },
     "service": {
-      "name": "projects/example-project/databases/swarm/documents/workspaces/u-re-75c2e5",
+      "name": "projects/example-project/databases/swarm/documents/workspaces/u-re-35a908",
       "fields": {
         "tenant_id": {
-          "stringValue": "u-re-75c2e5"
+          "stringValue": "u-re-35a908"
         },
         "workspace_id": {
           "stringValue": "w-3f9a2c"
