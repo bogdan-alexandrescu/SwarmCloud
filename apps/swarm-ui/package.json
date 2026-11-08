@@ -20,6 +20,7 @@
     "@visx/group": "4.0.0",
     "@visx/scale": "4.0.0",
     "@visx/shape": "4.0.0",
+    "onnxruntime-web": "1.31.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vis-network": "10.1.2"
