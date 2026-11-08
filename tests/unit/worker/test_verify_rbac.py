@@ -33,7 +33,9 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
-import re
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -59,13 +61,25 @@ def _load_renderer() -> Any:
 render = _load_renderer()
 
 
-def _deny_list_from_common_sh() -> list[str]:
-    """SHARED_DENY_LIST as scripts/lib/common.sh declares it, read at run time
-    so no other team's resource name is written here (CLAUDE.md rule 2)."""
-    text = (REPO / "scripts/lib/common.sh").read_text()
-    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
-    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
-    names = re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
+def _deny_list() -> list[str]:
+    """The never-touch list, read at run time the way every script reads it:
+    through deny_list_load in scripts/lib/common.sh, from a config object, so
+    no other team's resource name is written here (CLAUDE.md rule 2). The
+    repository holds no deployment's list (docs/design/generic-repository.md,
+    section 2.4), so the object is the placeholder one,
+    scripts/lib/deny-list.example.json, laid out by deny_list_use_example in a
+    directory of this test's own."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PROJECT_ID", "ENVIRONMENT", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME")}
+        env.update(SWARM_NO_PROJECT="1", SWARM_ENV_FILE=str(Path(tmp) / "absent.env"), NO_COLOR="1")
+        proc = subprocess.run(
+            ["bash", "-c", 'set -euo pipefail; source "$1"; deny_list_use_example "$2"; '
+             'printf "%s\\n" "${SHARED_DENY_LIST[@]}"', "_", str(REPO / "scripts/lib/common.sh"), tmp],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+    assert proc.returncode == 0, proc.stderr
+    names = proc.stdout.splitlines()
     assert names, "SHARED_DENY_LIST is empty"
     return names
 
@@ -232,7 +246,7 @@ def test_the_rbac_file_names_no_other_identity_and_no_other_cluster():
     text = (KUBERNETES / "rbac" / "verify-rbac.yaml").read_text()
     live = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     # "default" is a namespace name every cluster has, not another team's resource.
-    named = [name for name in _deny_list_from_common_sh() if name != "default" and name in live]
+    named = [name for name in _deny_list() if name != "default" and name in live]
     assert not named, f"{len(named)} deny-listed resource name(s) of the shared project appear in the RBAC file"
     # Only the two verify placeholders are subjects; no literal identity.
     assert "@" not in live, "an identity is spelled literally; it must come from __VERIFY_GSA__/__VERIFY_UID__"
