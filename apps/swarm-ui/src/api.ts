@@ -15509,7 +15509,7 @@ function fixtureCatalogue(): Record<string, unknown> {
 
 let fixturePluginDefaults: string[] = []
 
-async function fixtureAnswer<T>(target: ApiRoute, value: T): Promise<Result<T>> {
+async function pluginFixture<T>(target: ApiRoute, value: T): Promise<Result<T>> {
   await new Promise((r) => setTimeout(r, 40))
   noteFixtureProbe(target, 40, true)
   return { status: 'ok', fetchedAt: Date.now(), data: value }
@@ -15523,14 +15523,14 @@ function mapPlugin<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> 
 /** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`: the built-ins, the platform's installs and this workspace's own. */
 export async function loadWorkspaceCatalogue(tenantId: string): Promise<Result<WorkspaceCatalogue>> {
   const target = route(PLUGIN_CATALOGUE_OF, { tenant_id: tenantId })
-  if (USE_FIXTURES) return fixtureAnswer(target, normWorkspaceCatalogue(fixtureCatalogue()))
+  if (USE_FIXTURES) return pluginFixture(target, normWorkspaceCatalogue(fixtureCatalogue()))
   return mapPlugin(await read<unknown>(target, () => false), normWorkspaceCatalogue)
 }
 
 /** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: the plugins on for every step. */
 export async function loadPluginDefaults(tenantId: string): Promise<Result<PluginDefaults>> {
   const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
-  if (USE_FIXTURES) return fixtureAnswer(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  if (USE_FIXTURES) return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
   return mapPlugin(await read<unknown>(target, () => false), normPluginDefaults)
 }
 
@@ -15539,7 +15539,7 @@ export async function savePluginDefaults(tenantId: string, defaults: readonly st
   const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
   if (USE_FIXTURES) {
     fixturePluginDefaults = [...new Set(defaults)].sort()
-    return fixtureAnswer(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+    return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
   }
   return mapPlugin(await write(target, 'PUT', { defaults: [...defaults] }), normPluginDefaults)
 }

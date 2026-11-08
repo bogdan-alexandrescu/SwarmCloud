@@ -605,7 +605,7 @@ function AddPage({ data, onBack, onInstalled, onOpen }: {
   }
 
   async function install() {
-    if (busy || !ready || parsedOverlay === 'invalid') return
+    if (busy || !ready) return
     setBusy(true)
     setFailed(null)
     setIntake(null)
