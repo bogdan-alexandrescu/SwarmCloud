@@ -412,7 +412,7 @@ def test_the_rfb_module_has_no_way_to_send_cut_text() -> None:
 def test_a_frame_reaches_the_viewer_as_it_was_captured() -> None:
     async def main() -> None:
         gate = Gate()
-        # Nothing is painted over a frame in any situation (BGD, 2026-10-25):
+        # Nothing is painted over a frame in any situation (the owner, 2026-10-25):
         # the viewer receives the captured pixels.
         gate.hub.publish(_frame(rgb=(200, 100, 50)))
         viewer = await gate.connect("viewer-a")

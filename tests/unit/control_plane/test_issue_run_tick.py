@@ -48,7 +48,7 @@ from . import forge_fakes
 from .conftest import api_settings
 from .test_issue_runs import PLAN, _create, _docs, _finish_planner, _integrator_opened, _run
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
 

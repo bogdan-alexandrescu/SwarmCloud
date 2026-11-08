@@ -129,14 +129,14 @@ was.** `iap.googleapis.com` is absent from the API list terraform enables
 `gcloud services list --enabled`. IAP also needs an OAuth brand/consent screen
 (`google_iap_brand`, internal type), which is **org-scoped and typically needs
 Workspace-admin rights** — the same rights `terraform/environments/dev/dev.tfvars:232`
-already records as missing for creating `swarm-admins@saga.xyz`. So the brand may be a
+already records as missing for creating `swarm-admins@example.com`. So the brand may be a
 human step outside this repository, and it should be started before anyone schedules the
 UI work, not discovered during it.
 
 **DNS and the certificate are an external dependency, possibly a blocking one.**
 `google_compute_managed_ssl_certificate` cannot provision until the hostname's A record
 points at the global address, and `gcloud dns managed-zones list` returned **Forbidden**
-for bogdan@saga.xyz — so saga.xyz DNS may not be manageable from this project or by this
+for owner@example.com — so example.com DNS may not be manageable from this project or by this
 operator at all. Until someone confirms who owns that zone, "one hostname" is an
 assumption, not a plan. A self-managed cert or a `*.run.app`-style placeholder does not
 rescue this: IAP needs a stable hostname the browser trusts.
@@ -174,7 +174,7 @@ What the app does **today** with an authenticated request, verified line by line
 | Pick a credential | `deps.py:139-165` | Reads both `Authorization` and `X-Serverless-Authorization`, **preferring the latter** |
 | Split it | `auth.py:125-152` | Splits on `,` and returns every `Bearer` credential, because Starlette joins repeated headers |
 | Verify | `auth.py:93-109` | `google.oauth2.id_token.verify_oauth2_token` against Google's OAuth2 certs; requires `email`; rejects `email_verified` only when explicitly `False` |
-| Domain | `identity.py:92-98` | `email.rsplit("@",1)[1]` must be in `ALLOWED_DOMAINS` (`saga.xyz`). **Nothing reads an `hd` claim anywhere in this repository** |
+| Domain | `identity.py:92-98` | `email.rsplit("@",1)[1]` must be in `ALLOWED_DOMAINS` (`example.com`). **Nothing reads an `hd` claim anywhere in this repository** |
 | Groups | `groups.py:152-168` | One `checkTransitiveMembership` per registered tenant/admin group, cached per `(caller, group)` for `GROUP_CACHE_TTL_SECONDS` (default 120, `settings.py:74`) |
 | Tenant | `identity.py:101-113` | First match in admin-ordered `TENANT_GROUPS` wins; otherwise `u-<local part>` |
 | Admin | `auth.py:225-226` | `is_admin` = membership in any `ADMIN_GROUPS` entry |
@@ -198,11 +198,11 @@ Three rules the implementation must not get wrong:
 - **Verify the signed assertion. Never trust `X-Goog-Authenticated-User-Email`.** That
   header is a plain string. Ingress admits any load balancer in this shared project, and
   `allUsers` holds `run.invoker`, so a header-derived identity is forgeable by anyone who
-  can create a serverless NEG in `saga-agents-staging`.
+  can create a serverless NEG in `example-project`.
 - **Require the audience when hardened.** `ApiSettings.hardened` (`settings.py:102-105`)
   is False for `ENVIRONMENT=dev`, which is why `GoogleTokenVerifier` currently runs with
   the `aud` check *off* — `API_AUDIENCE` is not set on the live revision at all, so any
-  `saga.xyz` Google ID token authenticates. Reproduce the same `require_audience` guard
+  `example.com` Google ID token authenticates. Reproduce the same `require_audience` guard
   for the IAP verifier (`auth.py:74-82`) or you rebuild the identical silent hole.
 - **Precedence.** Prefer a valid IAP assertion; fall back to the `Authorization` /
   `X-Serverless-Authorization` path for machine callers. Do not delete the bearer path:
@@ -233,13 +233,13 @@ becomes a hard break the day `ENVIRONMENT` is not `dev`.
 2. **IAP's 403 page**, for an authenticated Google account that lacks
    `roles/iap.httpsResourceAccessor`. Also not ours. It is Google's generic
    "You don't have access" page. This is the page a new engineer hits before anyone adds
-   them to `eng@saga.xyz`, so the grant must be to the group, not to individuals.
+   them to `eng@example.com`, so the grant must be to the group, not to individuals.
 3. **Our own "authenticated, but not admitted" page** — the one we do own, reached when
    IAP let them in but swarm-api refused. Full-bleed, one column, max 420pt wide,
    centred. It shows: the email IAP asserted, and exactly one of four reasons, each with
    its own copy and its own next step:
    - `403 forbidden` / `domain <x> is not permitted` (`identity.py:96`) — "SwarmCloud
-     accepts saga.xyz accounts. You are signed in as `<email>`." + a "switch account"
+     accepts example.com accounts. You are signed in as `<email>`." + a "switch account"
      link. *Resolved 2026-10-14 (SIGNOUT): the `/_gcp_iap/clear_login_cookie` path this
      note asked to confirm appears on no current IAP page; the documented form is
      `?gcp-iap-mode=CLEAR_LOGIN_COOKIE`, and that is what the console uses — see
@@ -313,7 +313,7 @@ set at `main.py:104-105` (and again on the `AuthError` handler at `main.py:116`)
 **WHAT IT CANNOT SHOW YET.** Nothing here renders at all until the ALB and IAP exist and
 the IAP verifier ships — prerequisites **P1, P2, P3** in §6. Until then the entire product
 is unreachable; this is not a screen that degrades, it is a screen that does not exist.
-Also: we cannot show "you are not in eng@saga.xyz, ask X to add you", because the API
+Also: we cannot show "you are not in eng@example.com, ask X to add you", because the API
 never reports *which* groups were checked — `groups_for` returns only the matches
 (`groups.py:170-219`) and `GET /v1/tenants/me` returns `principal.groups` (the matches)
 but never the candidate list. Adding `tenant_groups_checked` to that response is three
@@ -321,7 +321,7 @@ lines in `routes/tenants.py`; without it the copy has to stay generic.
 
 **REFRESH AND COST.** Zero polling. One `GET /v1/tenants/me` on mount: one Firestore
 document read, plus up to two Cloud Identity round trips on a cold auth (two registered
-groups today, `TENANT_GROUPS=eng@saga.xyz,swarm-smoke@saga.xyz` on the live revision),
+groups today, `TENANT_GROUPS=eng@example.com,swarm-smoke@example.com` on the live revision),
 cached 120s. **But note the side effect in §4's second warning: this endpoint writes.**
 
 **PHONE LAYOUT.** This is the one screen that is already phone-shaped. Single column,
@@ -382,7 +382,7 @@ creation), so showing anything else would contradict what the scheduler enforces
   (`settings.py:34`, called at `settings.py:122`) turns that into `()`; `auth.py:225-226`
   then computes membership against an empty set. `terraform/infra/variables.tf:228-250`
   documents empty as the deliberate dev default, `dev.tfvars` sets `admin_groups`
-  nowhere at all, and `dev.tfvars:232` records that `swarm-admins@saga.xyz` **does not
+  nowhere at all, and `dev.tfvars:232` records that `swarm-admins@example.com` **does not
   exist in this Workspace** and creating it needs Workspace-admin rights. So the admin
   badge is correct-but-permanently-dark, and every `/v1/admin/*` screen and `/metrics`
   403s. The bar must therefore render a specific line — *"admin surface unavailable: no
@@ -555,7 +555,7 @@ Referenced throughout as P1–P5. They are not equal and they are not parallel.
 | | Prerequisite | Owner | Unblocks | Blocked on |
 |---|---|---|---|---|
 | **P1** | External global ALB: serverless NEG, backend services, URL map, target HTTPS proxy, managed cert, global address, forwarding rule | Track C (`terraform/`) | Everything. Nothing in this product renders without it | A hostname and a DNS zone nobody has confirmed we can write to (§1) |
-| **P2** | IAP: enable `iap.googleapis.com`, OAuth brand + client, `iap {}` on both backend services, `roles/iap.httpsResourceAccessor` to `eng@saga.xyz` | Track C, plus a human | F1, and any identity at all | The brand is org-scoped and typically needs Workspace-admin — the same rights already missing for `swarm-admins@saga.xyz` |
+| **P2** | IAP: enable `iap.googleapis.com`, OAuth brand + client, `iap {}` on both backend services, `roles/iap.httpsResourceAccessor` to `eng@example.com` | Track C, plus a human | F1, and any identity at all | The brand is org-scoped and typically needs Workspace-admin — the same rights already missing for `swarm-admins@example.com` |
 | **P3** | IAP assertion verifier alongside `GoogleTokenVerifier`, selected by settings | Track A (`apps/`) | Every authenticated route. Without it IAP admits the user and swarm-api rejects them | P2 (needs a real `aud`) |
 | **P4** | `swarm-ui` Cloud Run service: SA, max-instances entry, env entry, build target, image | Tracks C and D | Serving the SPA same-origin, which is what deletes CORS | Nothing — can start now |
 | **P5** | `ADMIN_GROUPS` set to a group that exists | Track C, plus a Workspace admin | Every `/v1/admin/*` screen and `/metrics`. **Independent of P1–P4**: fixing the network changes nothing here | A Google group that does not exist in this Workspace |

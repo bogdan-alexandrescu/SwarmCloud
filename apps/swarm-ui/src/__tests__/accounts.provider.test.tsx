@@ -62,7 +62,7 @@ function account(label: string, over: Partial<PoolAccount> = {}): PoolAccount {
     provider: 'anthropic',
     state: 'AVAILABLE',
     reason: '',
-    lend_to: ['smoke', 'u-bogdan'],
+    lend_to: ['smoke', 'u-owner'],
     assigned: 0,
     observed_at: new Date(now - 5 * 60_000).toISOString(),
     stale: false,
@@ -147,7 +147,7 @@ describe('the table names each account’s provider in words', () => {
     expect(cells[1]!.querySelector('.raw')!.textContent).toBe('eng:devops-team')
     expect(cells[1]!.textContent).toContain('Example · Team')
     expect(cells[7]!.textContent).toBe('0 of 6')
-    expect(cells[8]!.textContent).toBe('smoke, u-bogdan')
+    expect(cells[8]!.textContent).toBe('smoke, u-owner')
   })
 })
 
@@ -180,7 +180,7 @@ describe('a plan’s sign-in section', () => {
     expect(section.textContent).not.toContain('Provider mismatch')
     expect(sheet.textContent).not.toContain('Provider mismatch')
     expect(section.querySelector('[data-cmd]')!.textContent).toBe(
-      'sc account add --label codex-plan --provider openai --lend-to smoke --lend-to u-bogdan',
+      'sc account add --label codex-plan --provider openai --lend-to smoke --lend-to u-owner',
     )
     expect(section.textContent).toContain('localhost:1455')
     // No control in it starts a browser sign-in, so nothing can post one.
@@ -218,7 +218,7 @@ describe('a Claude account’s sign-in is unchanged, and an unknown provider is 
     expect(section.querySelector('[data-cmd]')).toBeNull()
     fireEvent.click(within(section).getByRole('button', { name: 'Start a replacement sign-in' }))
     expect(api.beginAccountSignIn).toHaveBeenCalledTimes(1)
-    expect(api.beginAccountSignIn.mock.calls[0]![0]).toEqual({ label: 'devops-team', lend_to: ['smoke', 'u-bogdan'] })
+    expect(api.beginAccountSignIn.mock.calls[0]![0]).toEqual({ label: 'devops-team', lend_to: ['smoke', 'u-owner'] })
   })
 
   it('refuses a provider the API cannot sign in as a mismatch, naming both', async () => {

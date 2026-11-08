@@ -306,7 +306,7 @@ def test_a_withheld_server_fails_the_attempt_before_the_agent(
 ])
 def test_a_workflow_steps_lapsed_credential_parks_for_its_caller_before_the_agent(
         db, worker_factory, agent, upstream, reason, code):
-    """BGD 2026-10-26 (registered-mcp-servers.md §4.10): a workflow step whose
+    """the owner 2026-10-26 (registered-mcp-servers.md §4.10): a workflow step whose
     per-run credential lapsed between admission and the attach waits for its
     caller to re-store it, PARKED CREDENTIAL_MISSING, its lease released,
     with the detail a caller watches for. The agent never starts."""

@@ -1,7 +1,7 @@
 /**
  * The reason copy speaks of workspaces, not tenants (VQ-056, TENANT-WORDING-C).
  *
- * BGD decided on 2026-10-26 that every reader-facing "tenant" becomes
+ * The owner decided on 2026-10-26 that every reader-facing "tenant" becomes
  * "workspace". `REASON_COPY` is printed at a reader verbatim -- an agent parked
  * CREDENTIAL_MISSING shows its sentence on the agent page and in the timeline --
  * so its keys keep the contract's enum names and its sentences do not.

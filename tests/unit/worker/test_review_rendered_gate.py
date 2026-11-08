@@ -1,6 +1,6 @@
 """A UI lane's MERGE counts only from a review that saw the pages rendered (#2184).
 
-BGD's decision, 2026-10-24: on 2026-10-23 ten mock-up lanes' reviews ran on
+the owner's decision, 2026-10-24: on 2026-10-23 ten mock-up lanes' reviews ran on
 `claude-code`, with no browser, and gave MERGE on pages they had only read as
 HTML; the pages had clipped frames and contradictory counts. Now a review
 whose patch touches `apps/swarm-ui/**` or `docs/web-ui/**` has its MERGE

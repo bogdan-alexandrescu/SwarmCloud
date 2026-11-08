@@ -1,13 +1,13 @@
 # User-scoped secrets in group tenants: a credential broker in swarm-api
 
-**Status: BUILT, SWITCHED OFF (#1041, steps 1-4).** Designed 2026-10-11:
+**Status: BUILT, SWITCHED OFF (steps 1-4).** Designed 2026-10-11:
 the broker route, the scheduler's nonce and the worker's client are in the
 repository, behind their own switch, `forge_broker` (FORGE_BROKER,
 `terraform/infra/child_tasks.tf`), which is **off by default and off in
 every environment, dev included**. Dev has had `enable_child_tasks = true`
 since 2026-10-11 (for the live browser), so the child key alone is not the
 broker's switch: without `forge_broker` the broker would have gone live in
-dev on the next deploy. Off, everything is as it was before #1041: the
+dev on the next deploy. Off, everything is as it was before an earlier issue: the
 worker reads a person's slot with its own account through
 `forge_slot_reader`, which **stays** in
 `terraform/bootstrap/forge_user_slots.tf`. Step 5, removing that binding,
@@ -46,7 +46,7 @@ What the design settles, in one line each:
 
 ## 1. The defect
 
-**What exists (#780).** A person's forge credential is a user slot,
+**What exists.** A person's forge credential is a user slot,
 `swarm-tenant-<tenant>-git-u-<16 hex>`. There are two kinds:
 
 * the App slot, `git-u-` plus 16 hex of sha256 of the lower-cased email
@@ -126,7 +126,7 @@ It still needs a per-attempt identity switch at dispatch, chosen from
 document the tenant can write, which is the same trust problem in a new place.
 It also does not make Alice's slot safe from Alice's other agents, so it buys
 nothing over (a) on that point. Onboarding a member would become a Terraform
-apply, against D3's "self-service is the point of #780".
+apply, against D3's "self-service is the point of an earlier issue".
 
 ### (c) Personal work only in the personal workspace: rejected
 
@@ -139,7 +139,7 @@ It fails this issue's acceptance criterion: **an agent Alice submits in `eng`
 pushes as Alice.** Under (c), Alice's agents in `eng` would push with the
 tenant token or not at all. Under enforcement (`REPOSITORY_GRANTS_ENFORCED`)
 that means "not at all", because a person's agent never falls back to `git`.
-It would also make personal workspaces (#847) a dependency of every group
+It would also make personal workspaces a dependency of every group
 tenant's pushes.
 
 ## 3. The protocol
@@ -314,7 +314,7 @@ Phase 2 adds a person-signature check between steps 7 and 8 (a user slot is rele
 **The answer:**
 
 A `200` with `Cache-Control: no-store`. Its JSON body has two fields:
-`secret`, the slot's name (for example `swarm-tenant-eng-git-u-` and its 16
+`secret`, the slot's name (for example `swarm-tenant-example-tenant-git-u-` and its 16
 hex), and `token`, the slot's current value.
 
 Every refusal is a JSON error with a code and a sentence, and **never a
@@ -329,9 +329,9 @@ Firestore, a response header or an error message.
   calls Secret Manager for a `git-u-` name -- while `FORGE_BROKER` is on.
   With it off (the default, and dev's setting although dev hands its
   workers `SWARM_API_URL`) the worker reads the slot with its own account,
-  exactly as before #1041, which IAM allows while `forge_slot_reader`
+  exactly as before an earlier issue, which IAM allows while `forge_slot_reader`
   stands (§5, "The rollout order"). The primary repository and every
-  additional repository (#1434) take the same path. `git` and `git-r-` stay direct
+  additional repository take the same path. `git` and `git-r-` stay direct
   reads (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`).
 * **With the broker on, it fails closed**, a missing `SWARM_API_URL` included. A user-slot agent fails with a named error
   (`CredentialMissing` or `SecretError` in
@@ -384,7 +384,7 @@ condition to swarm-api (`forge_refresh_reader`). The change that removes it
 also turns that run into "no tenant worker holds `secretAccessor` on a
 `-git-u-` name". Destroying the binding will need no `removed` block; the
 one `removed` pair that names `forge_slot_reader` is W9's
-(`terraform/bootstrap/removed.tf`), which forgets u-bogdan's personal grant
+(`terraform/bootstrap/removed.tf`), which forgets u-member's personal grant
 with `destroy = false` and is unchanged.
 
 A personal tenant's worker (`u-<user>`) still reads its own slots, through
@@ -447,7 +447,7 @@ environment:
    swarm-api's route answers `503 forge_credential_unavailable` before
    reading anything, the scheduler keys no child for its slot and hands no
    worker `FORGE_BROKER`, and the worker reads a person's slot with its own
-   account, exactly as before #1041
+   account, exactly as before an earlier issue
    (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`,
    `forgebroker.ForgeBroker.deployed`;
    `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`,
@@ -502,7 +502,7 @@ stands (step 1 of the rollout order).
 ## 6. Provider keys: team or personal
 
 **This classification is a recommendation, awaiting the owner's
-confirmation.** The owner confirms it on #1041. Nothing built in
+confirmation.** The owner confirms it on an earlier issue. Nothing built in
 steps 2-5 depends on the answer: every provider key below is read exactly as
 before.
 

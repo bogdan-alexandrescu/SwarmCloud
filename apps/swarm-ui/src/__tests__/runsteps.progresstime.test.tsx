@@ -1,6 +1,6 @@
 // chrome-C16 (visual QA pass 1, QA1-FIX-24, part of #2596): a run's progress
 // line printed the local clock with no zone, so '10-27 17:02:06' could not be
-// set beside a log line or a CI run's time. BGD's rule: UTC times are written
+// set beside a log line or a CI run's time. the owner's rule: UTC times are written
 // with Z.
 
 import { afterEach, describe, expect, it } from 'vitest'

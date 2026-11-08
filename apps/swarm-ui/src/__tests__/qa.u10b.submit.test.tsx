@@ -3,7 +3,7 @@
  * Submit.
  *
  *   D23  /submit/issue after Read: the summary card wrapped the reference at
- *        the owner's hyphen ("bogdan- / alexandrescu/…"), and the body preview
+ *        the owner's hyphen ("example- / org/…"), and the body preview
  *        printed raw markdown ("### What are you trying to do?"). The
  *        reference is one line, cut, whole in its title; the body is the
  *        console's own safe markdown (React elements, never HTML).
@@ -39,9 +39,9 @@ const BODY = '### What are you trying to do?\nSee what a finished workflow cost.
 function read() {
   return {
     issue: {
-      ref: 'bogdan-alexandrescu/SwarmCloud#454', owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454,
-      url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/454',
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+      ref: 'example-org/example-repo#454', owner: 'example-org', repo: 'SwarmCloud', number: 454,
+      url: 'https://github.com/example-org/example-repo/issues/454',
+      repository_url: 'https://github.com/example-org/example-repo',
       title: 'The workflow list shows no cost column', body: BODY,
       body_truncated: false, body_redacted: false, labels: [], state: 'open', comments: 0,
     },
@@ -66,7 +66,7 @@ describe('D23: the issue as read', () => {
   it('keeps the reference in the summary card on one line, cut, with its title', () => {
     document.body.innerHTML =
       '<aside class="sbf-side"><div class="sbf-send in-send"><ul class="ctl-facts"><li class="ctl-fact"><b>issue</b>' +
-      '<span><code class="in-ref-code" title="bogdan-alexandrescu/SwarmCloud#454">bogdan-alexandrescu/SwarmCloud#454</code> · open</span></li></ul></div></aside>'
+      '<span><code class="in-ref-code" title="example-org/example-repo#454">example-org/example-repo#454</code> · open</span></li></ul></div></aside>'
     const code = document.querySelector('code')!
     expect(painted(code, 'white-space', WIDE)).toBe('nowrap')
     expect(painted(code, 'text-overflow', WIDE)).toBe('ellipsis')

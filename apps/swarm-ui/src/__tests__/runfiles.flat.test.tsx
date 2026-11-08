@@ -89,7 +89,7 @@ function record(id: string, over: Partial<CheckpointRecord> = {}): CheckpointRec
     attempt_created_at: iso(30),
     attempt_completed_at: null,
     prefix: `${PREFIX}/${id}`,
-    uri: `gs://swarm-workspaces/${PREFIX}/${id}`,
+    uri: `gs://swarm-artifacts-example-project/${PREFIX}/${id}`,
     is_latest_pointer: false,
     objects: [
       { name: 'manifest.json', key: `${PREFIX}/${id}/manifest.json`, bytes: 412 },
@@ -151,7 +151,7 @@ function stream(name: 'stdout' | 'stderr', over: Partial<LogStream> = {}): LogSt
     status: 'ok',
     detail: null,
     key: `tenants/acme/tasks/tsk_files/logs/att_1.${name}`,
-    uri: `gs://swarm-logs/tenants/acme/tasks/tsk_files/logs/att_1.${name}`,
+    uri: `gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_files/logs/att_1.${name}`,
     content: '[13:42:01] cloning\n[13:42:09] ready\n',
     total_bytes: 4096,
     offset: 0,
@@ -425,7 +425,7 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
           listing({
             checkpoints: [],
             latest_checkpoint: {
-              pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00009/`,
+              pointer: `gs://swarm-artifacts-example-project/${PREFIX}/ckpt-00009/`,
               status: 'missing',
               checkpoint_id: 'ckpt-00009',
               detail,
@@ -442,10 +442,10 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
 })
 
 describe('the restore fact says what a retry would restore from', () => {
-  const OUTSIDE = 'gs://swarm-workspaces/tenants/acme/tasks/tsk_other/attempts/att_7/checkpoints/ckpt-00004/'
+  const OUTSIDE = 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_other/attempts/att_7/checkpoints/ckpt-00004/'
   const UNSET = { pointer: null, status: 'unset', checkpoint_id: null } as const
   const GONE = {
-    pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00009/`,
+    pointer: `gs://swarm-artifacts-example-project/${PREFIX}/ckpt-00009/`,
     status: 'missing',
     checkpoint_id: 'ckpt-00009',
     detail: 'the pointer names a checkpoint of this task that is no longer in the bucket; it may have been reclaimed',
@@ -527,7 +527,7 @@ describe('the restore fact says what a retry would restore from', () => {
     // only `task.latest_checkpoint` (#347, `Worker._recorded_checkpoint`) and
     // nothing when that is refused, so the planted row is never the answer.
     const planted = record('ckpt-00099', { attempt_id: 'att_9', created_at: iso(0), seq: 99 })
-    const pointed = { pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00002/`, status: 'present', checkpoint_id: 'ckpt-00002' } as const
+    const pointed = { pointer: `gs://swarm-artifacts-example-project/${PREFIX}/ckpt-00002/`, status: 'present', checkpoint_id: 'ckpt-00002' } as const
     const cases = [
       { latest: pointed, rows: [planted, ...resumableRows().map((r) => (r.checkpoint_id === 'ckpt-00002' ? { ...r, is_latest_pointer: true } : r))] },
       { latest: UNSET, rows: [planted, ...resumableRows()] },
@@ -825,7 +825,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
   // other than this stream's uri; or take the row header's `.uri` out of the
   // stacked block's rule, in either copy of it (the page's and the
   // inspector's).
-  const URI = 'gs://swarm-logs/tenants/acme/tasks/tsk_files/logs/att_1.stdout'
+  const URI = 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_files/logs/att_1.stdout'
 
   it('keeps the whole uri in its title, with the copy action beside it, which copies that uri', async () => {
     const writeText = vi.fn(async (_: string) => {})

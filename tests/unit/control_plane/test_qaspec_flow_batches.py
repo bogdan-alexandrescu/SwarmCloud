@@ -1,7 +1,7 @@
 """A target's flows run in batches, several flows a live-browser step (QA-FLOWS-CAP, part of #2136).
 
-BGD, 2026-10-26: a QA target may hold many more flows -- AI Studio's
-ai-studio-staging needs 132 read-only frame-state flows -- and a leg's flows
+the owner, 2026-10-26: a QA target may hold many more flows -- a peer application's
+peer-app-staging needs 132 read-only frame-state flows -- and a leg's flows
 run in BATCHES, several flows per live-browser step, the batch size chosen
 when a run starts (`flows_per_step`, 1-30) or by the workspace's default
 (`qa_flows_per_step`, 15).
@@ -49,7 +49,7 @@ def _target(**over: Any) -> dict[str, Any]:
     target: dict[str, Any] = {
         "id": "qat_3f9a",
         "revision": 4,
-        "name": "AI Studio",
+        "name": "A peer application",
         "tenant_id": "tenant-a",
         "base_url": "https://studio.example.com",
         "repository": "https://github.com/example-org/studio",

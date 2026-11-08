@@ -60,7 +60,7 @@ from swarm_common.states import EventType, TaskState
 
 from worker_seeds import TENANT, seed_tenant
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock"
 SHORT = "swarm-job-eng-mock-9ngvq"

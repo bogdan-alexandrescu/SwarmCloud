@@ -34,6 +34,7 @@ not observed here.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 
 import pytest
@@ -51,6 +52,10 @@ from .test_release_prod_gate import (
     _shell,
 )
 from .test_release_reuses_ci_images import REPO, _evaluate, _needs, _upstream, _workflow
+
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(placeholders)
 
 INFRA = "infrastructure"
 _STEP_OUTPUT = re.compile(r"^\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$")
@@ -321,7 +326,7 @@ def test_the_checksum_is_taken_of_the_plan_that_was_classified():
 def test_the_owner_has_the_command_that_protects_dev_iam():
     """The environment is a repository setting the owner creates."""
     doc = (REPO / "docs" / "ci.md").read_text()
-    assert "repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam" in doc
+    assert f"repos/{placeholders.GITHUB_REPOSITORY}/environments/dev-iam" in doc
     assert re.search(r"gh api[^\n]*-X PUT[^\n]*environments/dev-iam", doc) or re.search(
         r"gh api --method PUT[^\n]*\n?[^\n]*environments/dev-iam", doc
     ), "docs/ci.md has no `gh api` PUT for the dev-iam environment"

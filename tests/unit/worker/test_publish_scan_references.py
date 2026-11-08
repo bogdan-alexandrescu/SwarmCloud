@@ -361,8 +361,8 @@ def test_a_single_quoted_whole_reference_publishes():
 
 
 # ---------------------------------------------------------------------------
-# #2030 (SCAN-FP; BGD's decision, 2026-10-23): fix the false positives and the
-# advice, add no setting. Product Oracle's task was refused three attempts in a
+# #2030 (SCAN-FP; the owner's decision, 2026-10-23): fix the false positives and the
+# advice, add no setting. A peer application's task was refused three attempts in a
 # row over two lines of `web/lib/api/mock/interviews.ts` that hold nothing.
 # REPRODUCED on main before the fix (90ee564), through `_credential_in`:
 # * line 70 is the fixture's DOC COMMENT, ``/** The fixture's link token:
@@ -380,7 +380,7 @@ _ORACLE = "web/lib/api/mock/interviews.ts"
 #: The fixture's value: a reference by `_REFERENCE_SHAPE` (`...-token`), not a
 #: credential, so it is written as it was committed.
 _MOCK_LINK = "i-mock-token"
-#: The lines as Product Oracle committed them (lines 70, 71 and 387).
+#: The lines as a peer application committed them (lines 70, 71 and 387).
 _ORACLE_LINES = (
     f"/** The fixture's link token: `{_MOCK_LINK}` works on a freshly seeded mock. */\n",
     f'export const MOCK_INTERVIEW_TOKEN = "{_MOCK_LINK}";\n',
@@ -395,7 +395,7 @@ def _random40() -> str:
 
 
 @pytest.mark.parametrize("line", _ORACLE_LINES, ids=["doc-comment", "fixture", "template"])
-def test_the_product_oracle_lines_publish(line):
+def test_the_peer_service_lines_publish(line):
     # MUTATION: drop the comment-line or the runtime-template exemption from
     # `_match_counts` and the doc-comment or template case turns red.
     assert _rule(_ORACLE, line) is None
@@ -525,7 +525,7 @@ def test_the_repair_prompt_names_why_and_never_advises_splitting(tmp_path):
 
 # -- a bare identifier with a digit run (SCAN-IDENT, #2030) --------------------
 #
-# BGD, 2026-10-23: an unquoted camelCase, PascalCase or snake_case identifier
+# the owner, 2026-10-23: an unquoted camelCase, PascalCase or snake_case identifier
 # holding one short digit run is code, not a credential. Quoted values, values
 # that are not word segments, longer or repeated digit runs, high entropy,
 # vendor prefixes and password names are still refused. `token = <name>` is

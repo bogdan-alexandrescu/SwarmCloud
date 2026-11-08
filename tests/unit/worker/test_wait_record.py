@@ -9,7 +9,7 @@ serves a fact as null when no writer records it. Owner decision 2026-10-21
     failed -- beside `pending`, and `pull_request`, in the PARKED event and in
     `metadata.merge_wait`. A check is judged by its latest run, so a run
     cancelled and superseded by a success is not failed. Since CHECK-RULE
-    (BGD 2026-10-22, part of #1999 and #1778) the merge decision reads the
+    (the owner 2026-10-22, part of #1999 and #1778) the merge decision reads the
     same latest run, per event, so the record and the decision agree.
   * A HUMAN_REQUIRED park (`handoff.park_human_required`) records
     `expires_at`: the park instant plus the scheduler's

@@ -1,6 +1,6 @@
-"""docs/cost-control.md records the claude-code prompt-cache TTL, and the runner sets none (#323).
+"""docs/cost-control.md records the claude-code prompt-cache TTL, and the runner sets none.
 
-#323 measured the 1-hour versus 5-minute prompt-cache TTL over 47 claude-code
+The prompt-cache TTL measurement write-up measured the 1-hour versus 5-minute prompt-cache TTL over 47 claude-code
 tasks, and the owner decided on 2026-09-29 to change nothing yet and to park
 the controlled A/B. The finding, the decision and the knob live in the doc's
 "Provider tokens: the prompt-cache TTL" section, which says plainly that no TTL
@@ -26,7 +26,7 @@ DOC = REPO / "docs" / "cost-control.md"
 
 _STALE = (
     "docs/cost-control.md states that no prompt-cache TTL is set and Claude "
-    "Code's default TTL is in force (#323); update the doc in the same change "
+    "Code's default TTL is in force; update the doc in the same change "
     "that wires a TTL, then this test"
 )
 
@@ -51,8 +51,8 @@ def test_the_doc_records_the_ttl_finding_and_the_knob():
         "CLAUDE_CODE_ARGS",
     ):
         assert name in section, f"the TTL section does not name {name}; {_STALE}"
-    assert "https://github.com/bogdan-alexandrescu/SwarmCloud/issues/323" in section, (
-        f"the TTL section does not link issue #323; {_STALE}"
+    assert "the prompt-cache TTL measurement write-up" in section, (
+        f"the TTL section does not point at the prompt-cache TTL measurement write-up; {_STALE}"
     )
     assert "default is in force" in section, f"the TTL section no longer says so; {_STALE}"
 

@@ -1,6 +1,6 @@
 # Day One: what went wrong standing up the live deployment
 
-These are the failures from standing up and running the live SwarmCloud deployment (project `saga-agents-staging`, 2026-09-15 onwards). Each one becomes an installer check: P2's plan maps every lesson to a manifest entry in `manifest.draft.yaml`, or says why none is needed.
+These are the failures from standing up and running the live SwarmCloud deployment (project `example-project`, 2026-09-15 onwards). Each one becomes an installer check: P2's plan maps every lesson to a manifest entry in `manifest.draft.yaml`, or says why none is needed.
 
 Source of the list: the history research pass of 2026-10-28, which read git history, `docs/DEPLOY_STATE.md`, `docs/runbooks/`, `docs/ci.md`, `docs/operations.md`, `docs/deploying-without-an-organisation.md`, `docs/incidents/`, the open issues and the operator's notes.
 
@@ -27,16 +27,16 @@ Every entry has the same parts:
    - **What broke:** `scripts/prerequisites.sh` (18 APIs, without `cloudkms` and `iap`), `terraform/infra/main.tf` and `terraform/bootstrap/variables.tf` each list different APIs. `containerscanning` is deliberately off. The Cloud KMS signing quota was never checked; if it runs out, every submission fails with a 503 (contract request 34).
    - **Rule:** one canonical API list, plus a KMS quota check.
 5. **Defaults that name the live project.**
-   - **What broke:** `saga-agents-staging` is the default in `scripts/lib/common.sh:158`, `.env.example` and the bootstrap tfvars, and appears in about 70 files. `SHARED_DENY_LIST` names the other team's resources.
+   - **What broke:** `example-project` is the default in `scripts/lib/common.sh:158`, `.env.example` and the bootstrap tfvars, and appears in about 70 files. `SHARED_DENY_LIST` names the other team's resources.
    - **Rule:** no live-project default anywhere an install reads.
 6. **The default compute service account holds Editor.**
-   - **What broke:** With Editor on the project it can act as every swarm account (#1020).
+   - **What broke:** With Editor on the project it can act as every swarm account.
    - **Rule:** remove the grant on day one, and give Cloud Build its own least-privilege account.
 
 ## B. Bootstrap, Terraform state and order
 
 7. **Bootstrap state lived on one laptop.**
-   - **When:** 2026-10-07 (#827, eb7aa0344).
+   - **When:** 2026-10-07 (eb7aa0344).
    - **What broke:** A run from a fresh worktree planned "9 to import, 91 to add".
    - **Rule:** state lives in the bucket from the first run; an empty state is refused while the deployer exists.
 8. **Infra applied before bootstrap.**
@@ -46,7 +46,7 @@ Every entry has the same parts:
    - **What broke:** No image digests exist yet on a fresh project.
    - **Rule:** freshness is decided by Terraform state, never by reading the registry.
 10. **CI was left without its `projectIamAdmin` grant for about a minute.**
-    - **When:** 2026-09-28 (#275, fixed in #277).
+    - **When:** 2026-09-28 (fixed in an earlier issue).
     - **What broke:** The old grant was destroyed first, and the new one was then refused because `hasOnly()` held more than 10 entries.
     - **Rule:** lint every IAM condition (`iamPolicies:lintPolicy`), and create the new grant before destroying the old one. Known limits:
       - `hasOnly()` takes at most 10 entries;
@@ -62,7 +62,7 @@ Every entry has the same parts:
     - **What broke:** Homebrew terraform 1.3.6 refuses the state; 1.16.2 is required. kubectl 1.22 and 1.25 silently drop manifest fields. Bootstrap fails with "Module not installed" without `init`.
     - **Rule:** pinned tool versions are checked in preflight.
 13. **A laptop plan would have deleted the GitHub receiver.**
-    - **When:** 2026-10-21 (#1878).
+    - **When:** 2026-10-21.
     - **What broke:** The state's `image_refs` had no digest for that image.
     - **Rule:** `plan.sh` refuses such a plan; the engine pins every image by digest.
 14. **Adding a metric label failed every release.**
@@ -95,7 +95,7 @@ Every entry has the same parts:
 20. **Group lookups failed.**
     - **When:** 2026-09-20.
     - **What broke:** Service accounts cannot read Cloud Identity groups through GCP IAM. Delegation's `with_subject` works only with key files.
-    - **Rule:** fixed with a keyless `signJwt`. A `signJwt` 403 is a GCP grant; `unauthorized_client` is the Admin console. Day One prefers the Workspace Groups Reader admin role (design §8, BGD 2026-10-29).
+    - **Rule:** fixed with a keyless `signJwt`. A `signJwt` 403 is a GCP grant; `unauthorized_client` is the Admin console. Day One prefers the Workspace Groups Reader admin role (design §8, the owner 2026-10-29).
 21. **Auth and routing traps.**
     - **When:** 2026-09-16 to 09-24.
     - **What broke:**
@@ -112,7 +112,7 @@ Every entry has the same parts:
     - **What broke:** 44 of 45 runs failed. What ran was a laptop deploy.
     - **Rule:** the first deploy runs as the deployer identity, never as an owner (D20).
 23. **The first release past IAP lacked `actAs`.**
-    - **When:** 2026-09-24 (#35).
+    - **When:** 2026-09-24.
     - **What broke:**
       - The deployer lacked `actAs` on every runtime account.
       - An alert failed on "Cannot find metric": a labelled counter has no descriptor until its first sample.
@@ -124,7 +124,7 @@ Every entry has the same parts:
     - **What broke:** An `assertion.sub` pin could not admit jobs gated by an environment.
     - **Rule:** print the real OIDC claims before writing the condition; pin `job_workflow_ref` and verify it (`scripts/verify-deployer-trust.sh`).
 25. **A prod release moved the `:prod` tag before approval.**
-    - **When:** 2026-09-24 (#52).
+    - **When:** 2026-09-24.
     - **What broke:** GitHub creates a missing environment unprotected.
     - **Rule:** one approval before promotion; the environments are checked, not assumed (CI add-on).
 26. **A held `dev-iam` plan blocked every later release.**
@@ -132,8 +132,8 @@ Every entry has the same parts:
     - **Rule:** IAM changes wait for a typed approval in `upgrade`, and the wait says what it blocks.
 27. **Runner and CVE stalls.**
     - **What broke:**
-      - Image builds queued on hosted runners until release timeouts (#2438).
-      - CI depends on the separate `saga-ci-runners` project.
+      - Image builds queued on hosted runners until release timeouts.
+      - CI depends on the separate `a separate CI runners project` project.
       - The trivy HIGH-CVE gate stopped all releases four times in October.
     - **Rule:** the installer says what is accepted and until when, and never skips a scan.
 28. **Deployed-version traps.**
@@ -161,19 +161,19 @@ Every entry has the same parts:
     - **What broke:** It listed Jobs at cluster scope, which it was never granted, so it saw nothing.
     - **Rule:** namespaced reads; `doctor` checks that the reconciler can see Jobs.
 31. **A new tenant cannot run anything until its namespace is created by hand.**
-    - **When:** 2026-10-19 (#1590).
+    - **When:** 2026-10-19.
     - **What broke:** `APPLY_TENANT_NAMESPACES` was unset. One tenant also lacked its `swarm-spec-verify-keys` ConfigMap.
     - **Rule:** `team add` and releases apply namespaces and keys.
 32. **A hand-applied namespace got the wrong quota.**
-    - **When:** 2026-10-23 (#2039).
+    - **When:** 2026-10-23.
     - **What broke:** It took `render.py`'s default instead of the tenant record's.
     - **Rule:** the quota is rendered from the tenant record.
 33. **Admission policy refused Jobs.**
-    - **When:** 2026-10-20 (#1820).
+    - **When:** 2026-10-20.
     - **What broke:** The scheduler shipped new sizes before the policy allowed them. 54 to 56 dispatches failed, and nobody was alerted.
     - **Rule:** policies are applied before the code that depends on them.
 34. **The Job-count quota filled with finished Jobs.**
-    - **When:** 2026-10-28 (#2661).
+    - **When:** 2026-10-28.
     - **What broke:** Finished Jobs were kept for 3,600 s.
     - **Rule:** finished-Job TTL of 10 minutes; refusals park instead of failing (contract request 123).
 35. **Cloud Run Jobs the scheduler created had no VPC access.**
@@ -200,14 +200,14 @@ Every entry has the same parts:
     - **What broke:** A Cloud Run revision that names such a secret never starts.
     - **Rule:** key first, then the switch.
 40. **New-tenant order.**
-    - **What broke:** The tenant's worker SA, then the owner's bootstrap `deployer_admin` grant, must come before the release (#334). Re-running `register-tenant --providers` replaces credentials.
+    - **What broke:** The tenant's worker SA, then the owner's bootstrap `deployer_admin` grant, must come before the release. Re-running `register-tenant --providers` replaces credentials.
     - **Rule:** use `--add-provider`.
 41. **All 21 alert policies notified nobody.**
-    - **What broke:** `alert_emails = []` (#1817).
+    - **What broke:** `alert_emails = []`.
     - **Rule:** a notification channel is required at install.
 42. **Secrets are scoped to the user.**
     - **When:** 2026-10-11.
-    - **What broke:** Members of a group tenant share one service account (#1041).
+    - **What broke:** Members of a group tenant share one service account.
     - **Rule:** recorded in the design's secret model.
 
 ## G. GitHub Apps and quota
@@ -217,7 +217,7 @@ Every entry has the same parts:
     - **What broke:** Background ticks used a personal access token.
     - **Rule:** background reads use App installation tokens.
 44. **Agents could not push workflow files.**
-    - **When:** 2026-10-08 to 10-23 (#2046).
+    - **When:** 2026-10-08 to 10-23.
     - **What broke:** The `-git-wf` slot never had a version.
     - **Rule:** a per-repo App token behind a per-repo `workflow_files` switch. Changing App permissions needs the owner's acceptance on each installation.
 45. **The wrong token-permission key.**

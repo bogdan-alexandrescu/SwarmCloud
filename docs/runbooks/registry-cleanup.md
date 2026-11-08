@@ -1,15 +1,15 @@
 # swarm-images cleanup: read the dry run, then turn deletion on
 
-Artifact Registry `swarm-images` (saga-agents-staging, us-central1) carries six
+Artifact Registry `swarm-images` (example-project, us-central1) carries six
 cleanup policies, declared in
 [`terraform/modules/artifact_registry/main.tf`](../../terraform/modules/artifact_registry/main.tf)
 and held by
 [`tests/terraform/registry_cleanup.tftest.hcl`](../../tests/terraform/registry_cleanup.tftest.hcl).
-dev ran them in **dry run** from 2026-10-21 (owner, #1886): Artifact Registry
+dev ran them in **dry run** from 2026-10-21 (owner): Artifact Registry
 evaluated them and deleted nothing. **Since 2026-10-22 dev deletes for real**
 (`cleanup_dry_run = false` in
 [`terraform/environments/dev/dev.tfvars`](../../terraform/environments/dev/dev.tfvars);
-owner, "Go live via a PR", PR 1932). Data Access audit logs were off, so the
+owner, "Go live via a PR", the dry-run-off PR). Data Access audit logs were off, so the
 dry run wrote no list (§1); the owner approved the list computed by §2 from every
 version's tags and age against the live policies instead. At 06:50Z it held 4,233
 of 13,568 versions (about 1.2 TB) and none of the 11 images then deployed on
@@ -60,7 +60,7 @@ gcloud logging read '
   AND protoPayload.methodName:"BatchDeleteVersions"
   AND protoPayload.request.validateOnly=true
   AND protoPayload.request.parent:"repositories/swarm-images"' \
-  --project saga-agents-staging --freshness 2d --format json \
+  --project example-project --freshness 2d --format json \
   > build/registry-would-delete.json
 jq length build/registry-would-delete.json
 jq -r '.[].protoPayload.request.names[]?' build/registry-would-delete.json \
@@ -85,7 +85,7 @@ should hold:
 
 ```bash
 gcloud artifacts docker images list \
-  us-central1-docker.pkg.dev/saga-agents-staging/swarm-images \
+  us-central1-docker.pkg.dev/example-project/swarm-images \
   --include-tags --format json > build/registry-versions.json
 
 jq -r --arg since "$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
@@ -144,7 +144,7 @@ name and its tag. Nothing reads them: every release, Job and pin names
 policies cannot remove them, because `keep-recent` keeps the newest 20
 versions of **every package** and each of these packages has one version, so
 they are kept forever. The owner approved deleting them once, by hand
-(BGD, 2026-10-27, #1886): the operator lists them, **shows BGD the list**, and
+([the owner], 2026-10-27): the operator lists them, **shows [the owner] the list**, and
 only then runs the delete below. This step is not a script and is not run by
 CI or by an agent.
 
@@ -156,7 +156,7 @@ zsh would not split them the same way.
 ```bash
 mkdir -p build
 gcloud artifacts packages list \
-  --repository swarm-images --location us-central1 --project saga-agents-staging \
+  --repository swarm-images --location us-central1 --project example-project \
   --format 'value(name)' \
   | sed 's#.*/packages/##' \
   | grep -E '^agent-runtime-base[0-9a-f]{7,40}$' \
@@ -177,12 +177,12 @@ bring what you found to the owner instead.
 while IFS= read -r pkg; do
   gcloud artifacts versions list \
     --package "${pkg}" --repository swarm-images --location us-central1 \
-    --project saga-agents-staging --format json \
+    --project example-project --format json \
     | jq -r --arg p "${pkg}" '
         "\($p)\tversions=\(length)\t"
         + ([.[] | .createTime] | join(","))'
   gcloud artifacts docker tags list \
-    "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/${pkg}" \
+    "us-central1-docker.pkg.dev/example-project/swarm-images/${pkg}" \
     --format 'value(tag)' | sed "s#^#${pkg}\ttag=#"
 done < build/registry-misnamed.txt | tee build/registry-misnamed-detail.tsv
 
@@ -190,7 +190,7 @@ git grep -nE 'agent-runtime-base[0-9a-f]{7,40}([^0-9a-f]|$)' -- ':!docs/' \
   || echo "repository: no reference"
 
 for kind in services jobs; do
-  gcloud run "${kind}" list --region us-central1 --project saga-agents-staging \
+  gcloud run "${kind}" list --region us-central1 --project example-project \
     --format json | jq -r '.. | .image? // empty'
 done | grep -E '/agent-runtime-base[0-9a-f]{7,40}[:@]' || echo "Cloud Run: no reference"
 ```
@@ -202,9 +202,9 @@ What must hold before going on:
   mark means something released it, and the owner decides again);
 * both greps print their "no reference" line: nothing in the repository and no
   Cloud Run service or Job names one of them. `docs/` is left out of the first
-  because this runbook and #1886's notes name the packages on purpose.
+  because this runbook and this cleanup's notes name the packages on purpose.
 
-Send BGD `build/registry-misnamed.txt` and `build/registry-misnamed-detail.tsv`
+Send [the owner] `build/registry-misnamed.txt` and `build/registry-misnamed-detail.tsv`
 (seven names and their tags; digests, not secrets) and wait for an explicit
 go-ahead on **that** list. An approval of a different list is not an approval
 of this one.
@@ -224,9 +224,9 @@ fi
 list=build/registry-misnamed.txt
 [[ -s "${list}" ]] || { echo "no ${list}: run 4a first" >&2; exit 1; }
 
-# Re-list now and refuse if the registry no longer matches what BGD approved.
+# Re-list now and refuse if the registry no longer matches what [the owner] approved.
 gcloud artifacts packages list \
-  --repository swarm-images --location us-central1 --project saga-agents-staging \
+  --repository swarm-images --location us-central1 --project example-project \
   --format 'value(name)' </dev/null \
   | sed 's#.*/packages/##' \
   | { grep -E '^agent-runtime-base[0-9a-f]{7,40}$' || true; } | sort > build/registry-misnamed.now
@@ -257,7 +257,7 @@ IFS= read -r answer <&3
 deleted=0
 while IFS= read -r pkg; do
   gcloud artifacts packages delete "${pkg}" \
-    --repository swarm-images --location us-central1 --project saga-agents-staging \
+    --repository swarm-images --location us-central1 --project example-project \
     --quiet </dev/null
   deleted=$((deleted + 1))
   echo "deleted ${deleted} of ${count}: ${pkg}"
@@ -277,14 +277,14 @@ what is left.
 
 ```bash
 gcloud artifacts packages list \
-  --repository swarm-images --location us-central1 --project saga-agents-staging \
+  --repository swarm-images --location us-central1 --project example-project \
   --format 'value(name)' | sed 's#.*/packages/##' \
   | grep -cE '^agent-runtime-base[0-9a-f]{7,40}$' || true
 ```
 
 It must print `0`, and `agent-runtime-base` and `agent-runtime-base-nocodex`
 must still be listed. Record the date, the seven names and that count in a
-comment on #1886. There is no undo (see Rollback); nothing referenced these
+comment on the tracking issue for this cleanup. There is no undo (see Rollback); nothing referenced these
 packages, which is why the owner approved deleting them rather than rebuilding.
 
 ## Rollback

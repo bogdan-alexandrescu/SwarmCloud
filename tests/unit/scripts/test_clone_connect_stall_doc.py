@@ -169,7 +169,7 @@ def test_b_is_recorded_open_and_not_started():
 
 
 def test_c_is_recorded_retired_with_the_measurement_that_retired_it():
-    """(c) shipped as clone bundles (#940) and was retired on 2026-10-11.
+    """(c) shipped as clone bundles (the clone-bundle project) and was retired on 2026-10-11.
 
     The section says so, gives the numbers the decision rests on (forge p50
     3.19 s against bundle+delta p50 4.69 s), and points at the document that
@@ -177,9 +177,9 @@ def test_c_is_recorded_retired_with_the_measurement_that_retired_it():
     section = _section(_text(), "(c)")
     assert "**Status: retired 2026-10-11.**" in section, "(c) is not marked retired"
     assert "built, not yet measured" not in section, "(c) still says it is awaiting a measurement"
-    for number in ("3.19 s", "4.69 s", "#939"):
+    for number in ("3.19 s", "4.69 s", "the runner profiles moved to GKE"):
         assert number in section, f"(c) does not give {number}, which the retirement rests on"
-    assert "#940" in section, "(c) does not name #940"
+    assert "the clone-bundle project" in section, "(c) does not name the clone-bundle project"
     assert "](../clone-bundles.md" in section, "(c) does not link docs/clone-bundles.md"
     assert (DOC.parent.parent / "clone-bundles.md").is_file()
     assert "not started" not in section, "(c) is built; it still says not started"

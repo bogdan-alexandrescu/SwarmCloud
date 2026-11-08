@@ -78,7 +78,7 @@ from .conftest import (
     seed_tenant,
 )
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 BUCKET = f"swarm-artifacts-{PROJECT}"
 REPO_URL = "https://github.com/example-org/widgets"

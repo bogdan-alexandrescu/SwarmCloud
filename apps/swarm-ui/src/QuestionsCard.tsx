@@ -477,7 +477,7 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
  * "QUESTIONS HOLDING THIS MERGE" (MERGE-PARK-QUESTIONS, #2313). A merge step
  * whose review named unanswered owner questions parks PARKED(HUMAN_REQUIRED)
  * on them (`ownerQuestionsHold`); the console drew a browser hand-off for it,
- * and BGD asked why a merge needs a browser and his input (2026-10-25). It
+ * and the owner asked why a merge needs a browser and their input (2026-10-25). It
  * needs neither a browser nor a Ready press: the answer that clears the last
  * named question resumes it on its own (QUESTION-WAKE).
  *

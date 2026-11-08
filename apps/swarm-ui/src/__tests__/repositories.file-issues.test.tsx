@@ -2,7 +2,7 @@
 // repository (AU-0 REG-FLAG, docs/design/agent-autonomy.md §3.2, owner
 // decision Q2).
 //
-// WHERE THE SWITCH IS (BGD's answer to VQ-043, 2026-10-26: "Show state only on
+// WHERE THE SWITCH IS (the owner's answer to VQ-043, 2026-10-26: "Show state only on
 // the card"). The card says the state in one read-only line; the switch is on
 // the repository's own page (the card's Open), Settings tab.
 //
@@ -143,7 +143,7 @@ describe('Repositories: the card says whether agents may file issues, and has no
     // The role is read before the absence is: a card still carrying the switch draws it for an admin at once,
     // and for a member until the role read answers.
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/tenants/me')).toBe(true), WAIT)
-    // MUTATION: put the Turn on / Turn off back on the card (BGD's VQ-043 pick moved it to the page) -> fails.
+    // MUTATION: put the Turn on / Turn off back on the card (the owner's VQ-043 pick moved it to the page) -> fails.
     expect(off.querySelector('button')).toBeNull()
     expect(on.querySelector('button')).toBeNull()
     expect(off.closest('.ur-card')!.querySelector('[data-file-issues-set]')).toBeNull()

@@ -146,7 +146,7 @@ def test_a_pointer_at_another_tenants_checkpoint_resolves_to_nothing(store, tmp_
     victim = _write_foreign_checkpoint(store, tmp_path)
     mine = _manager(store)
 
-    # `gs://bucket/tenants/research/tasks/task_victim/...` -- a pointer an
+    # `gs://swarm-artifacts-example-project/tenants/research/tasks/task_victim/...` -- a pointer an
     # attacker with write access to the task document could plant.
     assert mine.find_by_uri(victim.uri) is None
     assert mine.find_latest() is None

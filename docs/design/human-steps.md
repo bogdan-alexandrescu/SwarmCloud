@@ -1,6 +1,6 @@
 # Human steps: a workflow waits for a tenant member, at no cost, for up to a day, and resumes on their answer
 
-**Status: design, revised by lane HW-DESIGN-B (2026-10-17, part of #1436) for
+**Status: design, revised by lane HW-DESIGN-B (2026-10-17) for
 the owner's answers to the first draft's eleven questions. Nothing here is
 built.** The first draft (lane HUMAN-WAIT-DESIGN, PR 1462) asked them in §7.
 The owner answered on 2026-10-17, in PR 1462's comments. Four answers depart
@@ -67,9 +67,9 @@ What the design settles, in one line each:
 
 ## 1. The problem, as measured
 
-### 1.1 What #1436 reports
+### 1.1 What an earlier issue reports
 
-The owner's issue (#1436, 2026-10-16) wants to run a **draft -> human review ->
+The owner's issue (2026-10-16) wants to run a **draft -> human review ->
 revision** loop as one workflow: an agent writes a draft, a person reviews it
 ("minutes to days later", in the issue; at most 24 hours per round, by the
 owner's answer to Q4), and the next agent revises it using the review.
@@ -120,7 +120,7 @@ this feature, and none of them is it:
 | Merge-step CI wait (`CI_PENDING`, contract request 49) | a pull request's checks | A sweep promotes it. No person answers it. |
 
 The closest relative is the MERGE-verdict integrator that swarm-api publishes
-without a worker (#748, contract request 52). It is a workflow step that sits
+without a worker (contract request 52). It is a workflow step that sits
 `PARKED`, holds nothing, and is ended `SUCCEEDED` by swarm-api in one guarded
 transaction. Its dependants are then released by the `task_finished` wake.
 This design copies that shape.
@@ -345,7 +345,7 @@ tick ends expired waits.
   admission refusal in the scheduler. One new submission field. A console
   card with an upload, a bell source and an inbox projection. An MCP tool
   and plugin wording. A small worker change to stage attachments. Roughly
-  the size of #748's control-plane publish, which this copies, plus the
+  the size of an earlier issue's control-plane publish, which this copies, plus the
   multipart path.
 * **Migration.** None. These are new fields on new agents. Every existing
   document decodes as before.
@@ -381,7 +381,7 @@ its read-only grant.
   **23 s** p50 on GKE and a **128 s** median on Cloud Run (CONTRACT.md,
   request 53).
 * **Money.** One lease and one execution per answer, for work a single
-  transaction can do. That is the cost #748 was filed to remove.
+  transaction can do. That is the cost an earlier issue was filed to remove.
 * **What it breaks.** The payload travels **inline through Firestore** until
   the worker copies it out, which `WorkflowStep.input_from`'s comment
   forbids. With the owner's Q6 it is impossible outright: 16 MiB of files
@@ -476,7 +476,7 @@ fails CI until someone decides which list it is on.
 only design in which waiting, answering and resuming all cost nothing beyond
 the answer itself. It keeps artifacts, and now files, in GCS. It reuses a
 transition the owner has already accepted (request 52) and a wake that is
-already proven (#748). It makes the person part of the DAG, so the console
+already proven. It makes the person part of the DAG, so the console
 and `when` can see them. Its costs are a narrow, create-only write grant for
 swarm-api and a bounded upload path. B avoids the grant by spending a
 container start, and cannot carry files at all. C avoids a step type by
@@ -620,7 +620,7 @@ model that has to hold without it.
    tenant, as with approvals. `is_admin` is about the caller, not the tenant
    (`auth.py::_select_tenant`), and the route never reads it.
 
-   > **Amended 2026-10-19 (ROLES-DOCS, part of #1518): step 3 is
+   > **Amended 2026-10-19 (ROLES-DOCS): step 3 is
    > superseded for group workspaces** by
    > [workspace-roles.md](workspace-roles.md) §4.2.3, owner answer Q5. A
    > platform admin is `admin` in every registered group workspace, member
@@ -677,7 +677,7 @@ and the design keeps what is left:
 
 #### 4.2.1 Amendment, 2026-10-18: a service tenant's own principal (HW-SERVICE-ANSWER)
 
-**Owner decision, 2026-10-18 (part of #1436).** Q2 said agents and service
+**Owner decision, 2026-10-18.** Q2 said agents and service
 accounts are always refused. It now has **one exception**: in a **service
 tenant**, the tenant's own principal may answer the steps of workflows in
 that tenant.
@@ -687,7 +687,7 @@ service account: `u-or-9a0792` for oracle-api, `u-sw-c90291` for
 swarm-verify (docs/multi-tenancy.md, "Service tenants"). Its only member is
 that service account. Under step 1, nobody could answer its steps, so a
 client application that runs its own review loop through a workflow (the
-case #1568 admitted oracle-api for) could never finish one. The application
+case an earlier issue admitted oracle-api for) could never finish one. The application
 collects the person's answer in its own UI and relays it. The rule is
 generic, so it holds for **every** service tenant: swarm-verify's
 `u-sw-c90291`, the acceptance identity's, gains it too, for its own
@@ -752,7 +752,7 @@ it to submit the workflow at all. Its agents still cannot answer, because
 they run as the worker, not the principal.
 
 **Served, so a service need not find out by answering (FEATURES-READ, part of
-#1748, 2026-10-20).** `GET /v1/tenants/me` carries `features.service_answer`,
+An earlier issue, 2026-10-20).** `GET /v1/tenants/me` carries `features.service_answer`,
 `service_principal` CALLED for the workspace the request acts in: `true` for
 a service tenant's own principal in its own tenant, `false` in a group or
 personal workspace, `"unknown"` -- never `false` -- when the tenant read
@@ -762,7 +762,7 @@ fails. Beside it, `features.await_input` is the catalogue's
 
 #### 4.2.2 Amendment, 2026-10-19: release acceptance answers in swarm-verify's own service tenant (HW-ACCEPT-ID)
 
-**Owner decision, 2026-10-19 (part of #1436).** Release acceptance answers
+**Owner decision, 2026-10-19.** Release acceptance answers
 its await-input step **as swarm-verify, in swarm-verify's own service tenant
 `u-sw-c90291`**: the path oracle-api takes in `u-or-9a0792` (§4.2.1), so the
 release check proves that path too. No new account, no new secret, and **no
@@ -1586,7 +1586,7 @@ reports blockers and majors on the PR; minors go to the wave epic.
 | 3 | **HW-UI** | `apps/swarm-ui/src/AwaitInputCard.tsx` (new), `awaitInput.ts` (new), `Workflows.tsx`, `RunSteps.tsx`, `Approvals.tsx`, `SubmitWorkflow.tsx`, their vitest files | the card renders each form; Approve posts `MERGE`; the picker refuses an eleventh file and a total over 16 MiB before sending; the warning is shown above the picker and beside Send; `max_files: 0` shows no picker; an expired or answered step shows who, when and how and offers no form; the pill reads "waiting for a member"; an image attachment is offered as a download, not rendered |
 | 3 | **HW-MCP** | `apps/swarm-mcp/swarm_mcp/awaitinput.py` (new), `server.py`, `workflows.py`, `check.py`, `plugin/commands/sc.md`, `plugin/skills/sc/SKILL.md`, `plugin/README.md`, `tests/unit/mcp/test_await_input_bridge.py` (new) | `swarm_workflow_input` takes the answer only from the elicitation, so a tool call whose arguments carry a verdict sends nothing the person did not type; a host that cannot elicit is refused with the console link; files the person declines are not sent; a file list over the bound is refused before anything is sent; `swarm_inputs` lists the tenant's waits; `/sc check` lists a fresh wait as `awaiting_input` and not STUCK, and as STUCK two ticks past `expires_at` |
 | 3 | **HW-DOCS** | `docs/workflows.md`, `docs/notifications.md`, this file ("What was built") | `test_docs_describe_what_was_built` (the 24-hour bound, the 16 MiB and ten-file bounds, the allowed types and the form names read from code) |
-| 4 | **HW-ACCEPT** | `scripts/acceptance/groups/workflow.sh` | on dev, with `mock` for draft and revise: zero leases while parked; `revise` leased within one drain of the answer and RUNNING within a 120 s start budget of that lease (owner amendment 2026-10-21, #1876: the job's own start measured 71-93 s); `revise`'s workspace holds the posted form and one attached file (sha256 equal for both); a second workflow with `expires_after_seconds: 300` and `on_expire: "default"` ends SUCCEEDED with the default and its `when`-gated step takes the declared branch |
+| 4 | **HW-ACCEPT** | `scripts/acceptance/groups/workflow.sh` | on dev, with `mock` for draft and revise: zero leases while parked; `revise` leased within one drain of the answer and RUNNING within a 120 s start budget of that lease (owner amendment 2026-10-21, an earlier issue: the job's own start measured 71-93 s); `revise`'s workspace holds the posted form and one attached file (sha256 equal for both); a second workflow with `expires_after_seconds: 300` and `on_expire: "default"` ends SUCCEEDED with the default and its `when`-gated step takes the declared branch |
 | 5 | **HW-ENABLE** (owner applies) | request D | none: it is one word, applied once HW-ACCEPT is green |
 | later | **HW-GITHUB** (Q3) | `apps/swarm-github-hooks/…`, the App's event subscription | an unconnected login is answered with a reply and no answer; a connected login answers as its member with `via: "github"` and passes the same fresh membership check; a bot login is refused; a comment is a form only |
 
@@ -1652,7 +1652,7 @@ and the author must guess the names in advance.
 
 ## 8. What was built
 
-**HW-DOCS (2026-10-18, part of #1436).** `docs/workflows.md` has a section,
+**HW-DOCS (2026-10-18).** `docs/workflows.md` has a section,
 "Waiting for a person: `await-input`", and a row for `await_input` in its
 step-field table; `docs/notifications.md` has "A workflow step waiting for a
 person" and names the source in its `task` row and its tenant-isolation
@@ -1677,7 +1677,7 @@ lanes still to land: the console card (HW-UI) and the plugin's
 `swarm_workflow_input` and `swarm_inputs` (HW-MCP). Their sections in the
 docs are theirs to write when they merge.
 
-**HW-UI (2026-10-18, part of #1436).** The console's half, in
+**HW-UI (2026-10-18).** The console's half, in
 `apps/swarm-ui/src/AwaitInputCard.tsx` and `apps/swarm-ui/src/awaitInput.ts`.
 An `await-input` step's node on Work › Workflows reads "waiting for a
 member", its tooltip names the tenant, and its row says when it expires;
@@ -1700,7 +1700,7 @@ Where the build differs from §4.5: the `answers` form is drawn from the
 questions the step's own route serves, not through `QuestionsCard.tsx`,
 whose Answer posts to the agent's answers route rather than the step's.
 
-**ROLES-DOCS (2026-10-19, part of #1518).** §4.2's step 3 carries the
+**ROLES-DOCS (2026-10-19).** §4.2's step 3 carries the
 amendment above: workspace roles (`docs/design/workspace-roles.md`) let a
 platform admin answer in a group workspace and require `member` of every
 answerer. ROLES-GATES-DECIDE built it in the answer route, held by

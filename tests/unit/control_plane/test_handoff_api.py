@@ -747,7 +747,7 @@ def test_human_ready_forgets_a_recorded_return(live_client, db):
 
 
 def test_a_gate_raised_request_is_recorded_with_its_origin(live_client, db):
-    """BGD, 2026-10-23: the gate raises the hand-off when it sees a CAPTCHA, and
+    """the owner, 2026-10-23: the gate raises the hand-off when it sees a CAPTCHA, and
     the event log and the console tell it from an agent's own request."""
     seed_tenant(db, "eng")
     attempt = Attempt()
@@ -787,7 +787,7 @@ def _needs_you(client, user: str) -> list[dict[str, Any]]:
 def test_a_gate_raised_hand_off_is_agent_needs_you_with_the_captcha_reason_to_the_same_people(
     live_client, db
 ):
-    """Console bell only (BGD, 2026-10-23): no other channel, and the same
+    """Console bell only (the owner, 2026-10-23): no other channel, and the same
     audience as an agent's own request (`handoff.may_control`)."""
     seed_tenant(db, "eng")
     seed_tenant(db, "research")

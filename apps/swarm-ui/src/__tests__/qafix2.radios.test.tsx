@@ -116,7 +116,7 @@ describe('work-b-006: the chosen and the disabled ring stay distinct from the un
         // The disabled ring shares the live ring's 3:1 `--ctl-bd` colour on
         // purpose (QA-046: on the hairline a refused runner read as a card
         // with no control), so what sets it apart is its line and its fill.
-        // BGD's decision of 2026-10-23 kept QA-046 and amended this assertion
+        // the owner's decision of 2026-10-23 kept QA-046 and amended this assertion
         // from "a different colour" to "a different border-style or fill".
         // MUTATION: make the disabled ring `solid` on `--surface` and the two
         // are the same ring under two declarations.

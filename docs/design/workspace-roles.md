@@ -1,6 +1,6 @@
 # Workspace roles: a workspace decides whether each person only reads it, works in it, or administers it
 
-**Status: designed 2026-10-18 (lane ROLES-DESIGN, part of #1518); revised
+**Status: designed 2026-10-18 (lane ROLES-DESIGN); revised
 the same day for the owner's answers (lane ROLES-DESIGN-B).** §7 records the
 thirteen answers (Q12 and Q13 on 2026-10-18, after the first eleven);
 nothing is open.
@@ -20,7 +20,7 @@ accept.yml's smoke job; it SKIPs until the owner provisions its identities
 and test workspace (§8).
 
 The owner asked for this on 2026-10-18, answering the Settings › Profile
-design (#1505, PR 1506, question Q7):
+design (PR 1506, question Q7):
 
 > Give each workspace real roles, so that what a person may do in a workspace
 > (approve a step, answer a waiting step, manage its repositories and secrets,
@@ -47,7 +47,7 @@ What the design settles, in one line each:
 * **Membership still comes from Google, and a role only limits what a member
   may do** (Q3). A role never admits anyone. A grant to someone not yet in
   the group is stored and applies when they join. A personal workspace's
-  person is its `admin`, fixed. **Amended for join requests (#2325):** a
+  person is its `admin`, fixed. **Amended for join requests:** a
   grant still never admits; an approved join request does, under the join
   design's A (Q3's amendment, §4.6).
 * **A group workspace has one default role and per-person overrides** (Q4).
@@ -841,10 +841,10 @@ disabling) are unchanged and out of its scope.
 | any role change in a personal workspace | nobody | `personal_workspace_roles_fixed` |
 
 **Q3's amendment, join requests (2026-10-25, [join-requests.md](join-requests.md),
-#2325).** A role grant still never admits anyone: everything in this section
+An earlier issue).** A role grant still never admits anyone: everything in this section
 holds, and a grant to a non-member is still stored and still says
 `member: false`. What changed is that the group is no longer the only way in.
-BGD chose design A for join requests: when a workspace's `admin` or a
+The owner chose design A for join requests: when a workspace's `admin` or a
 platform admin **approves a person's join request**, swarm-api writes a
 signed platform-side membership beside the Google group, and while
 `PLATFORM_MEMBERSHIPS` is on that membership admits the person exactly as the
@@ -997,7 +997,7 @@ names every person a switch would refuse before it refuses them.
   * This is a Settings route, not a `SECTIONS` tab. The issue forms' "Where"
     list (`tests/unit/scripts/test_issue_forms.py`) is unchanged.
 * **Where a workspace admin finds their workspaces** (amended 2026-10-19,
-  lane NAV-ADMIN-ROLE; part of #1633, owner decision "All under Profile;
+  lane NAV-ADMIN-ROLE, owner decision "All under Profile;
   Admin by role"): **Admin › Workspaces you admin**, `/admin/workspaces`
   (`WorkspacesYouAdmin.tsx`).
   * It lists each GROUP workspace whose stored role for the caller is
@@ -1042,7 +1042,7 @@ Each is a `Forbidden` (or `Conflict`, `ValidationFailed`) subclass in
 two on existing routes are raised through `refusals.refuse` and registered in
 `refusals.SWITCHES`, default off: **one switch per code** (Q10). The ones
 raised only by new routes are listed in `NOT_SWITCHABLE_CODES` with the
-reason routes in #868 and LB-L10 gave: no existing caller can be refused by
+reason routes in an earlier issue and LB-L10 gave: no existing caller can be refused by
 them, and continuing past one is the breach itself.
 
 | code | status | raised by | switch? | the Switch's `why` |
@@ -1080,7 +1080,7 @@ person knows whom to ask. That is not a leak: every member can already read
 the roster (Q7).
 
 **Amended 2026-10-19: the dev rollout (owner decision "Viewer gate + reach
-now", lane ROLES-ON-DEV, part of #1518).** In dev, `role_member_required` is
+now", lane ROLES-ON-DEV).** In dev, `role_member_required` is
 on: `terraform/environments/dev/dev.tfvars`'s `api_refusals` holds
 `role_member_required = true` beside `index_refresh_failed`, which renders
 `REFUSAL_ROLE_MEMBER_REQUIRED=on` into swarm-api. A `viewer` is refused 403
@@ -1281,7 +1281,7 @@ so the UI is three lanes.
 | phase | lane | files | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **ROLES-INDEX** (Track C) | `terraform/modules/firestore/indexes.tf`, `tests/terraform/firestore.tftest.hcl` | the plan has a composite index on `workspace_role_grants` (`tenant_id`, `subject`, `granted_at` DESC) and one on `admin_audit` (`target_tenant_id`, `at` DESC) |
-| 1 | **ROLES-REACH** (security review, blocking) | `apps/swarm-api/swarm_api/auth.py`, `admins.py`, `settings.py` (both new settings, `platform_admin_reach` and CORE's `role_cache_seconds`, so CORE need not touch it), `tests/unit/control_plane/test_platform_admin_reach.py` (new), `tests/unit/control_plane/test_tenant_switcher.py` (new cases only) | with `platform_admin_reach` on, against fake directory and settings: **(1) a platform admin selects a group workspace they are not in** (`X-Swarm-Tenant: eng`, Cloud Identity says no for `eng@`): the request succeeds with `tenant_id == "eng"`, `tenant_principal == "eng@saga.xyz"`, `tenant_via == "platform_admin"`, and the directory fake records **no** extra call; **(2) a platform admin is refused any personal workspace but their own**: `X-Swarm-Tenant: u-carol` is 403 `tenant_not_member` with today's message, a registered group `u-carol@example.com` is not in `platform_reach`, and the admin's own `u-` still selects with `tenant_via == ""`; **(3) a non-admin is still membership-checked**: the same `eng` header from a non-admin is 403 `tenant_not_member`, `platform_reach` is empty, and the directory fake records exactly one `checkTransitiveMembership` per registered group with `x-goog-user-project`. Also: a headerless request from a platform admin lands in the same default tenant as before the change; `admin_unresolved` with a reach header is 503, not 403; with the setting off every case above behaves as today; `may_act_in` answers `"platform_admin"` for a group tenant and `""` for a `u-` tenant; `holds_admin(fresh=True)` reads past the cache |
+| 1 | **ROLES-REACH** (security review, blocking) | `apps/swarm-api/swarm_api/auth.py`, `admins.py`, `settings.py` (both new settings, `platform_admin_reach` and CORE's `role_cache_seconds`, so CORE need not touch it), `tests/unit/control_plane/test_platform_admin_reach.py` (new), `tests/unit/control_plane/test_tenant_switcher.py` (new cases only) | with `platform_admin_reach` on, against fake directory and settings: **(1) a platform admin selects a group workspace they are not in** (`X-Swarm-Tenant: eng`, Cloud Identity says no for `eng@`): the request succeeds with `tenant_id == "eng"`, `tenant_principal == "eng@example.com"`, `tenant_via == "platform_admin"`, and the directory fake records **no** extra call; **(2) a platform admin is refused any personal workspace but their own**: `X-Swarm-Tenant: u-carol` is 403 `tenant_not_member` with today's message, a registered group `u-carol@example.com` is not in `platform_reach`, and the admin's own `u-` still selects with `tenant_via == ""`; **(3) a non-admin is still membership-checked**: the same `eng` header from a non-admin is 403 `tenant_not_member`, `platform_reach` is empty, and the directory fake records exactly one `checkTransitiveMembership` per registered group with `x-goog-user-project`. Also: a headerless request from a platform admin lands in the same default tenant as before the change; `admin_unresolved` with a reach header is 503, not 403; with the setting off every case above behaves as today; `may_act_in` answers `"platform_admin"` for a group tenant and `""` for a `u-` tenant; `holds_admin(fresh=True)` reads past the cache |
 | 2 | **ROLES-API-CORE** (after REACH) | `apps/swarm-api/swarm_api/roles.py` (new), `routes/roles.py` (new), `deps.py`, `main.py`, `errors.py`, `refusals.py`, `metrics.py`, `routes/tenants.py`, `tests/unit/control_plane/test_roles*.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (only `NOT_SWITCHABLE_CODES` entries with reasons) | an empty grant set resolves every group member to `member` and a personal workspace's person to `admin`; a platform admin resolves to `admin` in a group workspace with no grant read (the fake records no query) and a grant naming them `viewer` changes nothing; a grant with a bad MAC, another tenant's `tenant_id`, or a copied older `granted_at` does not win (a fake Firestore with create/update but no list); a `"*"` grant with role `admin` is skipped; 61 unsigned newer grants give `role_unavailable`, never a wider role; `PUT /person` by a `member` is 403 `role_admin_required` and writes nothing (documents before and after); `PUT /default {admin}` is 409; a `u-` tenant write is 409; a service account is 403 `role_person_required`; a write and its `admin_audit` row commit together (an injected failure leaves neither); no response contains a grant document id (scan every body in the suite); **a non-member platform admin's `POST` writes one `platform_admin_acted` row before the route body runs, with the route template and no body field, and an injected audit failure gives 503 `platform_admin_audit_unavailable` with the route body never called; the first `GET` of an hour writes one `platform_admin_viewed` row (`{route, hour}`, no body) and a second `GET` in the same hour writes no second; a `GET` in the next UTC hour writes another; an injected audit failure on a read gives 503 `platform_admin_audit_unavailable`; a member platform admin whose own role is enough writes none; a member platform admin narrowed to `viewer` who `POST`s a submit writes one `platform_admin_acted` row before the route body runs and reads write the hourly row (the narrowed-member case, Q12), and an injected audit failure there is also 503 with the body never called**; `GET /v1/tenants/mine` carries `role` and `via`; `POST /v1/tenants/me/credentials` by a `member` logs `refusal report-only code=role_admin_required` with the switch off and is 403 with it on; switch on and Firestore failing gives 503 `role_unavailable`, switch off lets it through |
 | 3 | **ROLES-GATES-WORK** (after CORE) | `routes/tasks.py`, `routes/workflows.py`, `routes/runs.py`, `routes/live.py`, `routes/browser_logins.py`, `agent_questions.py`, their tests | with the switch on: a `viewer` is 403 `role_member_required` on `POST /v1/tasks`, `/batch`, `/workflows`, `/runs`, and nothing is written (count agents before and after); a `viewer` cannot cancel their own agent or another's; a `member` cancels another's; `run_owner_auth` fails a run whose creator was narrowed to `viewer`, and advances one whose creator is a non-member platform admin with a `platform_admin_acted` row; with the switch off, all of the above go through and log the code |
 | 3 | **ROLES-GATES-DECIDE** (after CORE) | `routes/approvals.py`, `approvals.py`, `ghapprove.py`, the human-step answer route's file if HW-API-ANSWER has merged, their tests | with the switch on, a `viewer` is 403 `role_member_required` on `:approve`, `:reject`, `plan:approve`, and the item stays pending; a `member` approves; a non-member platform admin approves through the reach, and a gate `approvers` list that does not name them still refuses them; a gate `approvers` list naming a `viewer` still refuses them; the decision reads the role fresh (a cache primed with `member`, a grant to `viewer`, then approve: refused); a `/swarmcloud approve` comment from a `viewer` is refused with the code in the reply |
@@ -1322,7 +1322,7 @@ against dev. That is the operator's step, run in CI.
 |---|---|---|---|
 | Q1 | the role set | **three roles, viewer < member < admin** (departs from the five-role recommendation); member = today's member exactly; admin = member + Q6 + roles (widened by Q13 to include the workspace's settings) | §3.3, §4.1, §4.9 |
 | Q2 | who names a group workspace's first admin | a platform admin, in Admin › People, audited | §4.3, §4.6 |
-| Q3 | may a grant admit, or share a personal workspace | no; Google owns membership; a grant to a non-member is stored and applies when they join (`member: false`); a personal workspace's person is its fixed admin. **Amended (#2325):** a grant still never admits; an approved join request does, under the join design's A, while `PLATFORM_MEMBERSHIPS` is on | §4.5, §4.6 |
+| Q3 | may a grant admit, or share a personal workspace | no; Google owns membership; a grant to a non-member is stored and applies when they join (`member: false`); a personal workspace's person is its fixed admin. **Amended:** a grant still never admits; an approved join request does, under the join design's A, while `PLATFORM_MEMBERSHIPS` is on | §4.5, §4.6 |
 | Q4 | Google groups bound to roles | not in this build; one default per workspace plus per-person overrides | §3.2 |
 | Q5 | a platform admin in a workspace | **admin in every group workspace, member or not, no grant row** (departs from the recommendation); not in personal workspaces; tenant resolution lets them select any registered group workspace; every action in a non-member workspace audited `via=platform_admin` | §4.2 |
 | Q6 | may a workspace admin manage secrets, MCP servers and tenant keys | yes | §4.1, §4.8 |
@@ -1373,7 +1373,7 @@ but §4.2.3 did not list. **The reach is on in dev only:**
 2026-10-19; §4.9's amendment).
 
 **WK-REACH (owner, 2026-10-19).** The reach also covers group workspaces
-the workspace job made (#847), not only `TENANT_GROUPS`:
+the workspace job made, not only `TENANT_GROUPS`:
 `apps/swarm-api/swarm_api/auth.py::Authenticator._tenant_groups` appends the
 registry's `ready` job-made groups after the configured ones, and `may_act_in`
 checks the same list through `_registered_reach`. Personal and service
@@ -1433,7 +1433,7 @@ Departures:
   walk `Authenticator._reachable_groups` makes" is true only of Terraform's
   groups.
 
-**WORKSPACE-ADMIN-FIELDS (2026-10-25, part of #2157; config-e.html S6c).**
+**WORKSPACE-ADMIN-FIELDS (2026-10-25; config-e.html S6c).**
 `POST /v1/admin/workspaces` takes an optional `first_admin`, a platform
 admin's only (`admin_auth`, as the rest of the body). It is checked before
 anything is created: a group workspace only, one person's address through
@@ -1576,10 +1576,10 @@ workspaces) and this section, held by
 `tests/unit/scripts/test_docs_describe_what_was_built.py`.
 
 **ROLES-ACCEPT (not built on 2026-10-19; built on 2026-10-28, lane
-accept-roles-and-labels, #1518).** The probe is
+accept-roles-and-labels).** The probe is
 `scripts/acceptance/groups/roles.sh`, run by
 `.github/workflows/accept.yml`'s smoke job as `verify-remote.sh
-acceptance/groups/roles` (BGD, 2026-10-28: the smoke job, not a new
+acceptance/groups/roles` (the owner, 2026-10-28: the smoke job, not a new
 acceptance group or the tenant-isolation job). It acts as two identities that
 are not swarm-verify's own, each through an impersonated ID token
 (`acc_api_as` in `scripts/acceptance/lib.sh`), in a group workspace of its
@@ -1595,7 +1595,7 @@ API's code or audit action, and
 codes. Departures from §6 row 6:
 
 * **The grant is the workspace's default role, not a person's.** The planned
-  viewer is the QA service account (swarm-qa, #1649), and a role write naming
+  viewer is the QA service account (swarm-qa), and a role write naming
   a service account is 403 `role_person_required` (§4.6). The workspace
   default is the one grant that reaches it, which is why the probe narrows a
   workspace of its own and refuses to run in `smoke`, where every other
@@ -1609,7 +1609,7 @@ codes. Departures from §6 row 6:
   in that workspace's group (`ROLES_VIEWER_SA`), a platform-admin identity
   outside it (`ROLES_ADMIN_SA`), another identity's personal workspace
   (`ROLES_OTHER_WORKSPACE`), and roles/iam.serviceAccountTokenCreator for
-  swarm-verify on both identities. A skip is never a pass; #1518's last
+  swarm-verify on both identities. A skip is never a pass; an earlier issue's last
   criterion is met when the probe first passes live.
 
 **What is left, in order.** The owner provisions ROLES-ACCEPT's identities

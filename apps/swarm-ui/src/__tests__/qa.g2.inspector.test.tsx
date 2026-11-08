@@ -228,7 +228,7 @@ describe('G2-01: on a phone the inspector scrolls, and the strip sticks only whe
 })
 
 /*
- * AGENT-HEAD-B (BGD's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30,
+ * AGENT-HEAD-B (the owner's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30,
  * part of #2596). On desktop the head -- state, title, facts, Copy link, Take
  * control, Stop -- held about 569px of a 1440x900 window's column and never
  * moved. G2-01's phone rule now holds at every width: the column is the one
@@ -493,7 +493,7 @@ describe('G2-11: the memory tile says its figure is a peak', () => {
 
 describe('G2-12: a checkpoint reclaimed after the task finished is not a warning', () => {
   const PREFIX = `tenants/eng/tasks/${ID}/attempts/`
-  const POINTER = `gs://swarm-artifacts/${PREFIX}att_1/checkpoints/ckpt-00003/`
+  const POINTER = `gs://swarm-artifacts-example-project/${PREFIX}att_1/checkpoints/ckpt-00003/`
   function page(): CheckpointsPage {
     return {
       task_id: ID,

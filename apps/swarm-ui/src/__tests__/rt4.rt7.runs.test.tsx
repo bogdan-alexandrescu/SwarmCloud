@@ -1,7 +1,7 @@
 /**
  * RT-4 and RT-7, the Runs page's server findings (live QA, 2026-10-11).
  *
- *   * RT-4: run_e525710be66e4d4fbb29 (ai-studio#258, PR 261) sat CHECKING for
+ *   * RT-4: run_e525710be66e4d4fbb29 (peer-app#258, PR 261) sat CHECKING for
  *     15 hours with `pull_request.checks` null, and the card said "not read
  *     yet". The CI loop had stored why on `pull_request.read_error`, but the
  *     API did not serve it. It does now, with `checked_at`, and the card says
@@ -23,18 +23,18 @@ const said = (li: Element | null) => visible(li).slice(visible(li?.querySelector
 // Built at runtime: a long hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'ab'.repeat(32)
 const HEAD = '4e1f0aa' + '3c'.repeat(16) + '7'
-const REF = 'example-org/ai-studio#258'
-const ISSUE_URL = 'https://github.com/example-org/ai-studio/issues/258'
-const PR_URL = 'https://github.com/example-org/ai-studio/pull/261'
+const REF = 'example-org/peer-app#258'
+const ISSUE_URL = 'https://github.com/example-org/peer-app/issues/258'
+const PR_URL = 'https://github.com/example-org/peer-app/pull/261'
 const RUN_ID = 'run_e525710be66e4d4fbb29'
 const WF = 'wf_0a1b2c3d4e5f60718293'
 const READ_ERROR = 'checks_forbidden: GitHub refused the tenant\'s forge credential for the commit statuses at '
-  + 'example-org/ai-studio@4e1f0aa3c3c3 (HTTP 403): the credential needs `statuses: read` on the repository'
+  + 'example-org/peer-app@4e1f0aa3c3c3 (HTTP 403): the credential needs `statuses: read` on the repository'
 
 const SUMMARY_ROW = {
   id: RUN_ID, tenant_id: 'eng', state: 'CHECKING', terminal: false,
-  issue: { ref: REF, owner: 'example-org', repo: 'ai-studio', number: 258, url: ISSUE_URL,
-    repository_url: 'https://github.com/example-org/ai-studio' },
+  issue: { ref: REF, owner: 'example-org', repo: 'peer-app', number: 258, url: ISSUE_URL,
+    repository_url: 'https://github.com/example-org/peer-app' },
   plan_approval: 'auto', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner258',
   plan_digest: DIGEST, plan_shape: '1 step in 1 stage, then review and fix', plan_revision: 1, plan_edited_by: null,
   workflow_id: WF, created_by: 'operator@example.com', created_at: '2026-10-10T18:00:00Z', updated_at: '2026-10-11T09:00:00Z',

@@ -1,5 +1,5 @@
 // THE KEY PAGE'S OLD ADDRESSES (lane KEYS-UI, then SSC-UI, part of #2158).
-// `/settings/keys` was Settings › API keys until BGD moved it into Config ›
+// `/settings/keys` was Settings › API keys until owner moved it into Config ›
 // Secrets as Keys for agents and MCP (2026-10-23 23:57Z), and
 // `/settings/keys/typesafe?scope=..&t=..` is the one-time link
 // `POST /v1/provider-keys/typesafe/links` still mints (docs/provider-keys.md

@@ -27,7 +27,7 @@ from quota_broker.accounts import (
 NOW = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
 
 
-def _acct(label, owner="u-bogdan", *, state=AccountState.AVAILABLE, lend_to=(),
+def _acct(label, owner="u-owner", *, state=AccountState.AVAILABLE, lend_to=(),
           five_hour=0.0, seven_day=0.0, observed=NOW, assigned=0, resets_in=3.0):
     windows = {}
     if five_hour is not None:
@@ -52,14 +52,14 @@ def test_an_account_serves_only_its_owner_by_default():
     """CONTRACT.md invariant 9. A tenant reaching another tenant's account is
     the same failure as reaching their provider key, because it IS their
     provider key."""
-    a = _acct("personal", owner="u-bogdan")
-    assert a.may_serve("u-bogdan")
+    a = _acct("personal", owner="u-owner")
+    assert a.may_serve("u-owner")
     assert not a.may_serve("eng")
     assert not a.may_serve("")
 
 
 def test_lending_is_explicit_per_account_and_not_transitive():
-    a = _acct("personal", owner="u-bogdan", lend_to=("eng",))
+    a = _acct("personal", owner="u-owner", lend_to=("eng",))
     assert a.may_serve("eng")
     # research was never named, and eng cannot pass the loan along.
     assert not a.may_serve("research")
@@ -69,13 +69,13 @@ def test_a_borrowed_account_is_spent_after_the_tenants_own():
     """A loan is a courtesy. Burning a lender's quota while your own sits idle
     is how lending stops being offered."""
     mine = _acct("mine", owner="eng", five_hour=0.5)
-    borrowed = _acct("theirs", owner="u-bogdan", lend_to=("eng",), five_hour=0.0)
+    borrowed = _acct("theirs", owner="u-owner", lend_to=("eng",), five_hour=0.0)
     # The borrowed one has MORE headroom and still must not win.
     assert choose([mine, borrowed], "eng", NOW).label == "mine"
 
 
 def test_a_tenant_with_no_eligible_account_gets_none_not_someone_elses():
-    a = _acct("personal", owner="u-bogdan")
+    a = _acct("personal", owner="u-owner")
     assert choose([a], "eng", NOW) is None
 
 
@@ -107,28 +107,28 @@ def test_the_account_with_the_most_headroom_wins():
     low = _acct("low", five_hour=0.8)
     high = _acct("high", five_hour=0.1)
     mid = _acct("mid", five_hour=0.4)
-    assert choose([low, high, mid], "u-bogdan", NOW).label == "high"
+    assert choose([low, high, mid], "u-owner", NOW).label == "high"
 
 
 def test_load_is_spread_rather_than_stacked_when_headroom_ties():
     busy = _acct("busy", five_hour=0.2, assigned=4)
     idle = _acct("idle", five_hour=0.2, assigned=0)
-    assert choose([busy, idle], "u-bogdan", NOW).label == "idle"
+    assert choose([busy, idle], "u-owner", NOW).label == "idle"
 
 
 def test_a_nearly_spent_account_is_not_handed_to_a_NEW_agent():
     """An agent started at 2% headroom hits the wall almost immediately and has
     to be rescued by the swap machinery. Not starting it there is cheaper."""
     nearly = _acct("nearly", five_hour=0.95)
-    assert choose([nearly], "u-bogdan", NOW) is None
+    assert choose([nearly], "u-owner", NOW) is None
 
 
 def test_an_unobserved_account_is_assignable():
     """Otherwise onboarding is a chicken and egg: an account cannot report
     utilisation until something runs on it."""
-    fresh = Account(account_id="u-bogdan:new", owner_tenant="u-bogdan", label="new")
+    fresh = Account(account_id="u-owner:new", owner_tenant="u-owner", label="new")
     assert fresh.headroom(NOW) == pytest.approx(1.0)
-    assert choose([fresh], "u-bogdan", NOW) is not None
+    assert choose([fresh], "u-owner", NOW) is not None
 
 
 def test_a_stale_reading_is_discounted_but_not_treated_as_exhausted():
@@ -137,12 +137,12 @@ def test_a_stale_reading_is_discounted_but_not_treated_as_exhausted():
     stalling a quiet pool."""
     stale = _acct("stale", five_hour=0.0, observed=NOW - timedelta(hours=2))
     assert stale.headroom(NOW) == pytest.approx(0.5)
-    assert choose([stale], "u-bogdan", NOW) is not None
+    assert choose([stale], "u-owner", NOW) is not None
 
 
 def test_choosing_is_deterministic():
     a, b = _acct("aaa", five_hour=0.2), _acct("bbb", five_hour=0.2)
-    assert choose([a, b], "u-bogdan", NOW).label == choose([b, a], "u-bogdan", NOW).label
+    assert choose([a, b], "u-owner", NOW).label == choose([b, a], "u-owner", NOW).label
 
 
 # -- state -----------------------------------------------------------------
@@ -151,7 +151,7 @@ def test_choosing_is_deterministic():
     AccountState.PAUSED, AccountState.DRAINING, AccountState.REAUTH_REQUIRED,
 ])
 def test_only_an_available_account_takes_new_agents(state):
-    assert choose([_acct("a", state=state)], "u-bogdan", NOW) is None
+    assert choose([_acct("a", state=state)], "u-owner", NOW) is None
 
 
 def test_a_newer_reading_wins_and_an_older_one_is_discarded():
@@ -183,7 +183,7 @@ def test_every_account_is_swept_including_ones_nobody_is_using():
     """
     busy = _acct("busy", assigned=3)
     idle = _acct("idle", assigned=0)
-    never_used = Account(account_id="u-bogdan:new", owner_tenant="u-bogdan", label="new")
+    never_used = Account(account_id="u-owner:new", owner_tenant="u-owner", label="new")
     due = due_for_refresh([busy, idle, never_used], NOW)
     assert {a.label for a in due} == {"busy", "idle", "new"}
 
@@ -228,7 +228,7 @@ def test_the_secret_name_is_derived_never_supplied():
     """A caller who could name the secret could name someone else's."""
     # Two dashes between tenant and label: a single one made
     # ("acme-prod","x") and ("acme","prod-x") the same secret.
-    assert secret_name("u-bogdan", "personal") == "swarm-account-u-bogdan--personal"
+    assert secret_name("u-owner", "personal") == "swarm-account-u-owner--personal"
 
 
 @pytest.mark.parametrize("bad", [
@@ -350,13 +350,13 @@ def test_a_recorded_secret_name_survives_a_change_to_how_names_are_made():
     from quota_broker.accounts import Account
 
     recorded = Account(
-        account_id="u-bogdan:personal",
-        owner_tenant="u-bogdan",
+        account_id="u-owner:personal",
+        owner_tenant="u-owner",
         label="personal",
-        secret_ref="swarm-account-u-bogdan-personal",   # the pre-change name
+        secret_ref="swarm-account-u-owner-personal",   # the pre-change name
     )
-    assert recorded.secret == "swarm-account-u-bogdan-personal"
-    assert recorded.secret != secret_name("u-bogdan", "personal")
+    assert recorded.secret == "swarm-account-u-owner-personal"
+    assert recorded.secret != secret_name("u-owner", "personal")
 
 
 def test_a_document_written_before_the_field_existed_still_resolves():

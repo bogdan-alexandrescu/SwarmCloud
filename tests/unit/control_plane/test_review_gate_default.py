@@ -1,6 +1,6 @@
 """The default review gate, its workspace setting, risk paths, and the requirements check (#2524).
 
-docs/workflows.md "The review gate". BGD 2026-10-28:
+docs/workflows.md "The review gate". the owner 2026-10-28:
 
   * "every review step": a review step that names no gate carries the
     default block (test_review_gate_default_submit.py), resolved here

@@ -6,7 +6,7 @@
  *
  * WHY IT IS DRAWN AT ALL. The 2026-10-25 audit of tenant eng found browser
  * pods that never touched their browser, and found them only by reading
- * agent logs by hand. BGD decided that every task records whether its browser
+ * agent logs by hand. owner decided that every task records whether its browser
  * was used and that unused browser time is visible, so the Agents list and the
  * inspector say it on the row, and Platform counts sums it.
  *

@@ -1,9 +1,9 @@
-"""The Cloud Run start finding of 2026-10-07 is recorded, and the support case is drafted (#625).
+"""The Cloud Run start finding of 2026-10-07 is recorded, and the support case is drafted.
 
 WHY THIS EXISTS. docs/worker-images.md explained claude-code's 71 s -> ~167 s
 start on Cloud Run Jobs as image weight, and its table tied the 10-04/05 step
 to the repo-index toolchain. The operator's registry bisect (2026-10-05)
-refuted that, and the measurement of 2026-10-07 (#625's second comment) put
+refuted that, and the measurement of 2026-10-07 put
 90-95 % of DISPATCHED -> STARTING in Cloud Run's own `ResourcesAvailable ->
 Started`, with the 27.6 MB swarm-verify job moving the same way. The owner
 decided the same day that a Cloud Run support case is drafted for them to file.
@@ -42,7 +42,7 @@ INDEX = RUNBOOKS / "README.md"
 DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
 
-SECTION = "## Why the repository index has its own image (#625)"
+SECTION = "## Why the repository index has its own image"
 WHERE = "### Where each profile starts today"
 
 # A row of the "where each profile starts" table: | `name` | `BACKEND` | ...

@@ -13,7 +13,7 @@
 // What is held here, against the real `AgentDetailScreen` and the real fetch
 // helpers, with `fetch` mocked by URL and tenant header:
 //
-//   1. a 404 under u-bogdan and a 200 under eng draws "This agent is in
+//   1. a 404 under u-owner and a 200 under eng draws "This agent is in
 //      Engineering, not Your workspace." and a `Switch to Engineering`
 //      control, which switches and re-reads;
 //   2. a 404 under every workspace draws today's copy and no offer;
@@ -40,7 +40,7 @@ const WAIT = { timeout: 15_000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
 const MINE = [
-  { tenant_id: 'u-bogdan', display_name: 'Your workspace (u-bogdan)', kind: 'user' },
+  { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user' },
   { tenant_id: 'eng', display_name: 'Engineering', group: 'eng@example.com', kind: 'group' },
   { tenant_id: 'ops', display_name: 'Operations', group: 'ops@example.com', kind: 'group' },
   { tenant_id: 'finance', display_name: 'Finance', group: 'finance@example.com', kind: 'group', via: 'platform_admin' },
@@ -59,9 +59,9 @@ function profile(acting: string) {
     is_default: false,
   })
   return {
-    identity: { email: 'bogdan@example.com' },
-    workspaces: [row('u-bogdan', 'Your workspace (u-bogdan)', 'user'), row('eng', 'eng@example.com', 'group'), row('ops', 'ops@example.com', 'group')],
-    default_workspace: { tenant_id: 'u-bogdan', source: 'personal', ignored: null },
+    identity: { email: 'owner@example.com' },
+    workspaces: [row('u-owner', 'Your workspace (u-owner)', 'user'), row('eng', 'eng@example.com', 'group'), row('ops', 'ops@example.com', 'group')],
+    default_workspace: { tenant_id: 'u-owner', source: 'personal', ignored: null },
     connections: {},
     revision: 1,
     unavailable: [],
@@ -106,7 +106,7 @@ function serve(holders: readonly string[], failing: readonly string[] = []) {
     const tenant = new Headers(init?.headers).get(TENANT_HEADER)
     sent.push({ path, tenant })
     if (path.endsWith('/v1/tenants/mine')) return ok(MINE)
-    if (path.endsWith('/v1/profile')) return ok(profile(tenant ?? 'u-bogdan'))
+    if (path.endsWith('/v1/profile')) return ok(profile(tenant ?? 'u-owner'))
     if (tenant !== null && failing.includes(tenant) && path.endsWith(`/v1/tasks/${TASK_ID}`)) {
       return new Response(JSON.stringify({ code: 'unavailable', message: 'Firestore did not answer.' }), { status: 503, headers: JSON_HEADERS })
     }
@@ -124,7 +124,7 @@ const taskReads = (sent: readonly Sent[]) => sent.filter((s) => s.path.endsWith(
 
 beforeEach(() => {
   forgetReads()
-  window.sessionStorage.setItem(TENANT_PREF, 'u-bogdan')
+  window.sessionStorage.setItem(TENANT_PREF, 'u-owner')
 })
 
 afterEach(() => {
@@ -145,7 +145,7 @@ describe('a task 404 under the chosen workspace asks the person’s other worksp
     const notice = offer.closest('.tenant-switch-offer') as HTMLElement | null
     expect(notice?.style.marginTop).toBe('var(--ctl-s3)')
     // Offered, never made: the choice is still the caller's own.
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
 
     fireEvent.click(offer)
     expect(chosenTenant()).toBe('eng')
@@ -166,11 +166,11 @@ describe('a task 404 under the chosen workspace asks the person’s other worksp
       WAIT,
     )
     // Every other workspace was asked once.
-    await waitFor(() => expect([...taskReads(sent).map((s) => s.tenant)].sort()).toEqual(['eng', 'ops', 'u-bogdan']), WAIT)
+    await waitFor(() => expect([...taskReads(sent).map((s) => s.tenant)].sort()).toEqual(['eng', 'ops', 'u-owner']), WAIT)
     await waitFor(() => expect(document.querySelector('[data-elsewhere]')).toBeNull(), WAIT)
     expect(screen.queryByRole('button', { name: /^Switch to/ })).toBeNull()
     expect(document.body.textContent).not.toContain('This agent is in')
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
   })
 
   it('never sends a workspace the profile did not list, nor a platform admin’s reach', async () => {
@@ -178,12 +178,12 @@ describe('a task 404 under the chosen workspace asks the person’s other worksp
     render(<AgentDetailScreen taskId={TASK_ID} onClose={() => {}} />)
 
     await screen.findByRole('button', { name: 'Switch to Engineering' }, WAIT)
-    const listed = new Set(['u-bogdan', 'eng', 'ops'])
+    const listed = new Set(['u-owner', 'eng', 'ops'])
     const tenants = sent.map((s) => s.tenant)
     expect(tenants.every((t) => t === null || listed.has(t))).toBe(true)
     expect(tenants).not.toContain('finance')
     // The chosen tenant's own 404 is not asked again as a probe.
-    expect(taskReads(sent).filter((s) => s.tenant === 'u-bogdan')).toHaveLength(1)
+    expect(taskReads(sent).filter((s) => s.tenant === 'u-owner')).toHaveLength(1)
   })
 
   it('says a failed read plainly, and offers the workspace it could be in', async () => {
@@ -193,7 +193,7 @@ describe('a task 404 under the chosen workspace asks the person’s other worksp
 
     await waitFor(() => expect(document.body.textContent).toContain('Could not tell which of your workspaces holds this agent.'), WAIT)
     expect(document.body.textContent).toContain('Reading it in Operations failed')
-    expect(chosenTenant()).toBe('u-bogdan')
+    expect(chosenTenant()).toBe('u-owner')
     fireEvent.click(screen.getByRole('button', { name: 'Back to the list' }))
     expect(closed).toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Operations' }))

@@ -136,6 +136,12 @@ that tracks it. The console's workflow page heads with both, so write them
 for a person who opens the workflow cold. They are sent as
 `metadata.description` and `metadata.feature`; a malformed one is refused
 before anything is sent, and a longer description is refused, never cut.
+`swarm_dispatch` takes the same optional `description` for one task and for
+each entry of `tasks`, sent as `metadata.description` and shown on the
+console's agent page. A workflow's `title` and `label` and a single task's
+`label` are capped at 30 characters, so a name fits one row of the console: a
+longer one is refused before anything is sent, and the detail belongs in
+`description`.
 A spec should send `about: {purpose, goals, output}` -- why the work exists
 (one sentence, at most 300 characters), up to three goals (at most 120 each)
 and what lands (one sentence, at most 300) -- sent as `metadata.about` and
@@ -325,7 +331,7 @@ reply's `arm_watch` (null when nothing was launched).
 
 At session start the plugin's SessionStart hook names the SwarmCloud work
 still running that this session should track -- and here, at session start
-only, it is WIDER than every other verb (BGD, 2026-10-25: "at start also try
+only, it is WIDER than every other verb (the owner, 2026-10-25: "at start also try
 to run attach and see if there are any workflows that the project its
 starting in has any work running in sc that needs to be attached and tracked
 here"). It names this Claude Code session's own work AND the work still
@@ -620,7 +626,7 @@ attach, run or new session arms the watch again until `/sc watch`, and every
 ### Layouts: rows, the pane, or the band
 
 How this session follows SwarmCloud work in Claude Code (SC-BROWSER-BUILD,
-#2318; BGD picked proposal B, Two columns, on 2026-10-25, and added the band
+#2318; the owner picked proposal B, Two columns, on 2026-10-25, and added the band
 on 2026-10-26, SC-BAND). Three layouts, and a toggle between them that is
 remembered per project and switches without restarting the session:
 
@@ -632,7 +638,7 @@ remembered per project and switches without restarting the session:
   `/sc-pane` (or by `/sc layout pane`), plus ONE quiet `sc:finish` row per
   workflow in /workflows, labelled `SC ∴ <name>`. At session start the pane
   opens by itself, drawing "not read yet" with Refresh, after ONE
-  `swarm_layout` call and no list read (BGD, 2026-10-25: "open it with no
+  `swarm_layout` call and no list read (the owner, 2026-10-25: "open it with no
   read"); the engine seats a pane nobody asked for only from 144 terminal
   columns, so on a narrower terminal it waits, a one-line toast says so, and
   `/sc-pane` opens it. The pane is drawn as B
@@ -658,7 +664,7 @@ remembered per project and switches without restarting the session:
   does, so a quiet stage costs one call per half hour, not one per step
   change. A single task keeps its own `sc:task` row, one per task.
 * **`band`** -- the same levels in a **strip above the prompt**, with ONE
-  summary line **below** the prompt, and **no /workflows row at all** (BGD,
+  summary line **below** the prompt, and **no /workflows row at all** (the owner,
   2026-10-26: in Claude Code's fullscreen layout a pane docks on the right,
   where a plugin cannot move it, and a /workflows row is a model agent). The
   strip's first line sums it up, `SwarmCloud · 6 running · 1 waits on you ·
@@ -683,7 +689,7 @@ band`** -- one
 `swarm_layout {layout}` call, which saves the choice for this project under
 the bridge's config directory (it outranks the plugin's `layout` option) --
 or the pane's own `[Layout]` control. Bare `/sc layout` says which is set
-(`swarm_layout {}`). A switch ALSO RE-ATTACHES (BGD, 2026-10-25: "Also
+(`swarm_layout {}`). A switch ALSO RE-ATTACHES (the owner, 2026-10-25: "Also
 re-attach automatically"): once `/sc layout rows|pane` (or the pane's
 `[Layout]` control) saves the choice, it queues `/sc attach --all`, one chat
 turn, so rows in the new layout start beside the old ones, which keep running
@@ -759,7 +765,7 @@ gets the API's 403, which is the answer; report it verbatim.
 
 ### `secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]]`
 
-**A SECRET'S VALUE NEVER PASSES THROUGH THIS SESSION** (BGD, Q8 of
+**A SECRET'S VALUE NEVER PASSES THROUGH THIS SESSION** (the owner, Q8 of
 docs/design/secrets-scopes.md §11): not in chat, not as a tool argument, not
 in a command line. Never ask the developer for it, and if they paste one
 anyway, do not repeat it, do not pass it to any tool or command, and tell them

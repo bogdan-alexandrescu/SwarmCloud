@@ -117,6 +117,13 @@ TOTAL = len(QUICK_CHECKS) + len(RUNS)
 INDEXED_SHAPE = "code-intelligence"
 INDEXED_KEY = f"plugin-{INDEXED_SHAPE}"
 
+
+def run_label(shape: str) -> str:
+    """The `--label` of the plugin run of `shape`: a name holds at most 30
+    characters, so it fits one row of the console, and
+    `swarm-verify-code-intelligence` is exactly 30."""
+    return f"swarm-verify-{shape}"
+
 #: Where each console run's id is in `verify_runs`: swarm-api writes these two
 #: keys into the console document when Admin › Setup starts them (INTERFACE
 #: SHEET), and the engine copies them into state.outputs.
@@ -1192,7 +1199,7 @@ class EndToEndStep(_Base):
         if surface == "console":
             return "waiting", f"{key} ({run_id}) {state}; Admin › Setup starts it again {attempt}"
         repository = str(ctx.outputs.get("verify_repository") or "")
-        launched[slot] = self.runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
+        launched[slot] = self.runs.launch(ctx, surface, shape, repository, run_label(shape))
         remember(ctx, outputs={"verify_runs": dict(launched)})
         return "waiting", f"{key} ({run_id}) {state}; relaunched {attempt} as {launched[slot]}"
 
@@ -1237,7 +1244,7 @@ class EndToEndStep(_Base):
             return launched, (f"{INDEXED_KEY} (starts once the code graph has indexed {repository}; its index "
                               "run was requested when verify started)")
         launched = {**launched, INDEXED_KEY: self.runs.launch(ctx, "plugin", INDEXED_SHAPE, repository,
-                                                                f"swarm-install-verify-{INDEXED_KEY}")}
+                                                                run_label(INDEXED_SHAPE))}
         remember(ctx, outputs={"verify_runs": dict(launched)})
         return launched, ""
 
@@ -1338,7 +1345,7 @@ class EndToEndStep(_Base):
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
             if surface == "plugin" and key not in launched and (indexed or key != INDEXED_KEY):
-                launched[key] = self.runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
+                launched[key] = self.runs.launch(ctx, surface, shape, repository, run_label(shape))
                 remember(ctx, outputs={"verify_runs": dict(launched)})
         write_progress(ctx, self.check_name, len(QUICK_CHECKS))
 

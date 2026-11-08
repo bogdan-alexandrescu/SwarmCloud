@@ -2,7 +2,7 @@
 
 PR 2272 made every change to a schedule whose STORED `scope.mode` is
 `platform` need a platform admin, `:run` included. Approving such a
-schedule's gated run has the effect of `:run`, so BGD decided on 2026-10-24
+schedule's gated run has the effect of `:run`, so the owner decided on 2026-10-24
 ("Platform admins only"): `POST /v1/approvals/{id}:approve` and `:reject`
 refuse anyone else, with the same 403 `platform_admin_required` and the same
 log line, when the item's stored schedule reference names a platform-scope

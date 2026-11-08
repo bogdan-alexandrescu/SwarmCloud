@@ -34,7 +34,7 @@ function wideStage(n: number): Workflow {
   return {
     workflow_id: 'wf_wide',
     state: 'RUNNING',
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     stored_state: 'RUNNING',
     state_source: 'derived',
     rollup: {

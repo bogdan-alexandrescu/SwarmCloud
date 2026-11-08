@@ -1,5 +1,5 @@
 /**
- * THE WORKFLOW PAGE'S NEEDS YOU CARD AND QUESTIONS SECTION (BGD, 6 November
+ * THE WORKFLOW PAGE'S NEEDS YOU CARD AND QUESTIONS SECTION (owner, 6 November
  * 2026: "We need to have a way to act on questions in the workflow page", and
  * the Needs you card "start off as a one line collapsed section"; part of
  * #2688). The fixture: `design` asked one question (finished), `build` is

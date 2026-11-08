@@ -30,15 +30,15 @@ const pool = (name: string) => ({
   active: 2, available: 8, enabled: true, updated_at: '2026-10-02T10:00:00Z',
 })
 const CAPACITY = {
-  pools: [pool('global'), pool('tenant:u-bogdan')],
+  pools: [pool('global'), pool('tenant:u-owner')],
   runner_profiles: {
     'claude-code': { resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
-      pools: ['global', 'tenant:u-bogdan'], admission },
+      pools: ['global', 'tenant:u-owner'], admission },
   },
-  tenant_id: 'u-bogdan',
+  tenant_id: 'u-owner',
   generated_at: '2026-10-02T10:00:00Z',
 }
-const PROVIDERS = { tenant_id: 'u-bogdan', providers: [{ provider: 'anthropic', credential_registered: true }], generated_at: '2026-10-02T10:00:00Z' }
+const PROVIDERS = { tenant_id: 'u-owner', providers: [{ provider: 'anthropic', credential_registered: true }], generated_at: '2026-10-02T10:00:00Z' }
 
 const ISSUE = {
   ref: 'example-org/agent-swarm-infra#512', owner: 'example-org', repo: 'agent-swarm-infra', number: 512,
@@ -56,7 +56,7 @@ function preview(top: Record<string, unknown> = {}) {
 
 function run(id: string, state: string, over: Record<string, unknown> = {}) {
   return {
-    id, tenant_id: 'u-bogdan', state, terminal: false, issue: ISSUE, plan_approval: 'required', auto_merge: false, fix_rounds: 3,
+    id, tenant_id: 'u-owner', state, terminal: false, issue: ISSUE, plan_approval: 'required', auto_merge: false, fix_rounds: 3,
     planner_task_id: 'task_p', plan_digest: null, plan_revision: 1, plan_edited_by: null, workflow_id: null,
     created_by: 'operator@example.com', created_at: '2026-10-02T09:00:00Z', updated_at: '2026-10-02T09:00:00Z',
     approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null, error: null,
@@ -92,7 +92,7 @@ const RUNS = {
       run('run_e1sewhere', 'RUNNING', { issue: { ...ISSUE, ref: 'example-org/agent-swarm-infra#9', number: 9 } }),
     ],
     next_page_token: null,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
   },
 }
 
@@ -147,7 +147,7 @@ describe('runs2-35: open runs by state and age, linked', () => {
       body: {
         runs: [run('run_4c1e09d2', 'PLANNED', { created_at: ago(10) }), run('run_19ab77e0', 'RUNNING', { created_at: ago(3) })],
         next_page_token: null,
-        tenant_id: 'u-bogdan',
+        tenant_id: 'u-owner',
       },
     }
     serve({ status: 200, body: preview() }, runs)

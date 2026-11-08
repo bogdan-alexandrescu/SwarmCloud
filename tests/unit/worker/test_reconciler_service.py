@@ -116,7 +116,7 @@ def test_an_unset_allowlist_is_a_no_op_and_says_so(monkeypatch):
 
 
 def test_a_configured_allowlist_rejects_a_caller_with_no_bearer_token(monkeypatch):
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@saga-agents-staging.iam.gserviceaccount.com")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@example-project.iam.gserviceaccount.com")
     for header in (None, "", "Basic abc", "bearer"):
         with pytest.raises(HTTPException) as exc:
             _verify_invoker(header, build_logger())
@@ -124,7 +124,7 @@ def test_a_configured_allowlist_rejects_a_caller_with_no_bearer_token(monkeypatc
 
 
 def test_a_token_that_cannot_be_verified_is_401_not_500(monkeypatch):
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@saga-agents-staging.iam.gserviceaccount.com")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@example-project.iam.gserviceaccount.com")
     with pytest.raises(HTTPException) as exc:
         _verify_invoker("Bearer not-a-real-token", build_logger())
     assert exc.value.status_code == 401
@@ -134,7 +134,7 @@ def test_a_verified_caller_off_the_allowlist_is_403(monkeypatch):
     """403 rather than 401: the token was good, the identity was not. Telling
     those apart is the difference between "fix your auth" and "you are not
     allowed to terminate other people's work"."""
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@saga-agents-staging.iam.gserviceaccount.com")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@example-project.iam.gserviceaccount.com")
     monkeypatch.setattr(
         "google.oauth2.id_token.verify_oauth2_token",
         lambda token, request: {"email": "someone-else@example.com"},
@@ -255,7 +255,7 @@ class _RaisingCancelClient(FakeExecutionsClient):
 
     This is the production shape. Cloud Run does not report "the cancellation
     failed" and "the execution did not succeed" differently: all three failures
-    seen on saga-agents-staging arrive as an exception out of
+    seen on example-project arrive as an exception out of
     `cancel_execution`/`operation.result()` while the execution itself is
     already terminal.
     """
@@ -328,10 +328,10 @@ def test_an_execution_that_is_already_gone_counts_as_confirmed():
 # ... and an execution Cloud Run reports as FINISHED is confirmed too
 #
 # Three shapes of "the cancel did not ack but the execution is over" have been
-# observed on saga-agents-staging, and each stranded the slot for at least a
+# observed on example-project, and each stranded the slot for at least a
 # full pass:
 #
-#   400 Execution 'swarm-job-u-bogdan-mock-w8g2g' cannot be cancelled because
+#   400 Execution 'swarm-job-u-owner-mock-w8g2g' cannot be cancelled because
 #       it is not running.                        (16 leases held, 2026-09-20)
 #   409 Task swarm-verify-dc9fl-task0 failed with exit code: 1 ...
 #                                                       (LRO error code 10)

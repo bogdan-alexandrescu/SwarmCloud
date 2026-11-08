@@ -1,4 +1,4 @@
-"""A checkpoint's IMAGE member, served as its own bytes (BGD, 2026-11-06).
+"""A checkpoint's IMAGE member, served as its own bytes (the owner, 2026-11-06).
 
 The Changes view draws an image a step CHANGED from the step's checkpoint:
 the patch holds a changed image as a delta against bytes it does not carry.

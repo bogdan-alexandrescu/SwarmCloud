@@ -51,7 +51,7 @@ Because two things are true at once:
 * the message names `container.jobs.create`, an IAM permission, and
 * the scheduler's IAM binding for that permission carries a **condition**:
   `resource.name.startsWith(".../clusters/swarm-autopilot")`, added so a
-  project-level grant in a shared project could not reach `agents-staging`,
+  project-level grant in a shared project could not reach `peer-cluster`,
   another team's live cluster.
 
 So the permission looks conditional, the condition looks like the sort of thing
@@ -103,7 +103,7 @@ Jobs in `swarm-tenant-eng`. `scripts/register-tenant.sh` carried a third copy
 of the short spelling and wrote it into the tenant document's `namespace`
 field — which `GkeJobDispatcher.namespace_for` *prefers* over its own template,
 so the Firestore record was overriding the one spelling that was correct.
-It happened again on 2026-10-11, to `tenants/u-bogdan` (`swarm-u-bogdan`). Since
+It happened again on 2026-10-11, to `tenants/example-tenant` (`swarm-example-tenant`). Since
 then the stored value is verified, not trusted: the scheduler and the
 reconciler ignore one outside `swarm-tenant-` for the derived name and log
 `tenant_namespace_mismatch` at ERROR, which a log-based metric and alert in

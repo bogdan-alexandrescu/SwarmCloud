@@ -1,6 +1,6 @@
 """A moved HEAD publishes nothing, and its line is kept as a bundle (#2094).
 
-REPORTED by Product Oracle's session on 5 November 2026 (about 06:20
+REPORTED by a peer application's session on 5 November 2026 (about 06:20
 Pacific): task_884a993427ce44feb7a6 FAILED with "published_nothing: HEAD moved
 off this task's branch (to rebuild/pr-1233)". The refusal was right -- a line
 that does not stand on this step's work is never pushed onto its branch -- but

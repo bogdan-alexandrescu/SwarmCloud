@@ -136,7 +136,7 @@ def test_the_design_doc_has_both_triggers_and_says_incremental_or_full():
 
 def test_the_design_doc_names_the_consumers_and_the_tests_query():
     body = _section(_text(DESIGN), _heading(_text(DESIGN), "## 4. "))
-    for needle in ("#454", "planner", "by name", "merge step", "changed paths", "implement", "fix"):
+    for needle in ("### 4.1 The issue-run planner", "planner", "by name", "merge step", "changed paths", "implement", "fix"):
         assert needle in body, needle
 
 
@@ -375,7 +375,7 @@ def test_test_selection_for_merge_says_how_green_reaches_the_forge_and_the_merge
         "swarmcloud/selected-tests",
         "check run",
         "required check",
-        "#295",
+        "decisions are recorded on the merge-step design",
         "M1a",
         "app_id",
         "workflow_dispatch",

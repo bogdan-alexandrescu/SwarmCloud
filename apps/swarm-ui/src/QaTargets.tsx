@@ -70,7 +70,7 @@ import './styles/repositories.css'
  * words. The approved target the API answers is drawn at once, until a read
  * of a later revision replaces it.
  *
- * DISCOVERY (lane QA-DISCOVER, §4.1; BGD 2026-10-23: "build discovery, so a
+ * DISCOVERY (lane QA-DISCOVER, §4.1; owner 2026-10-23: "build discovery, so a
  * crawl target is started entirely from the console"). A target with
  * `discover` shows Run discovery (Run discovery again once it has discovered
  * screens) to any member, as Run is. While one runs the card says
@@ -110,7 +110,7 @@ import './styles/repositories.css'
  * the admin is signed in here, and the value is a key the owner made for
  * these runs rather than a person's own password.
  *
- * THE FLOW BROWSER (lane VQ9-TOOL; BGD, 2026-10-23: "flows default to
+ * THE FLOW BROWSER (lane VQ9-TOOL; owner, 2026-10-23: "flows default to
  * Playwright; a target, or one run, may choose Jev", after batch
  * bench3-2026-10-23, docs/browser-bench.md). The form's Flow browser is the
  * target's `flows_browser_tool`, Playwright unless Jev is chosen, sent on a
@@ -120,7 +120,7 @@ import './styles/repositories.css'
  * (`browser_tool`); left on the target's, nothing is sent and the target's
  * applies. Capture stays the fixed capture tool either way.
  *
- * FLOWS PER STEP (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; BGD,
+ * FLOWS PER STEP (lane QA-FLOWS-UI over QA-FLOWS-CAP, part of #2136; owner,
  * 2026-10-26). A run's read-only flows run in batches, several flows to one
  * live-browser step. Beside Run, a target with flows draws "Flows per step",
  * prefilled from the workspace's `qa_flows_per_step` (`GET /v1/qa-settings`,
@@ -936,7 +936,7 @@ function typedHost(text: string): string {
  * origin when one is declared (§1.2). Nothing is sent until what is typed is
  * the target's own; the API checks the same again and says its refusal.
  * With an extra origin, the admin may name its IdP token path: the one path
- * there the gate lets a POST through to after its sign-in (QA-IDP-POST, BGD
+ * there the gate lets a POST through to after its sign-in (QA-IDP-POST, owner
  * 2026-10-23, #2067). It starts as the approved one, and an approval sent
  * without it clears it.
  */
@@ -1086,7 +1086,7 @@ function CredentialForm({
   const [failed, setFailed] = useState<string | null>(null)
   const isBypass = link.field === 'challenge_bypass'
   // The entry is one unbroken run: at 390 the title broke at the name's own
-  // hyphen ("ai-studio-prod · prod-" / "reviewer"). An entry is at most 20
+  // hyphen ("peer-app-prod · prod-" / "reviewer"). An entry is at most 20
   // characters (`ENTRY_NAME`), so it always fits a line.
   const where =
     link.environment === null ? (

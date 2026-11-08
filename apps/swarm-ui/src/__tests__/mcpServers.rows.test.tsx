@@ -1,4 +1,4 @@
-// CONFIG › MCP SERVERS' ROWS (MCP-ROWS; part of #2157, BGD's pick of proposal
+// CONFIG › MCP SERVERS' ROWS (MCP-ROWS; part of #2157, the owner's pick of proposal
 // E, docs/web-ui/mockups/config-e.html S5a desktop, S5d phone).
 //
 // WHAT EACH CASE HOLDS:

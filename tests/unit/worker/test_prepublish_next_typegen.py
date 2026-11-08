@@ -4,7 +4,7 @@ Next.js writes `PageProps`/`LayoutProps` only during `next build` or `next
 typegen`. The gate ran `tsc` alone on a clean checkout -- it fell back to
 `--noEmit -p tsconfig.json` for any `typecheck` script that was not a plain
 `tsc ...`, so `next typegen && tsc --noEmit` lost its typegen -- and tsc
-reported 17 errors in route files the lane never touched (Product Oracle's
+reported 17 errors in route files the lane never touched (A peer application's
 lanes, 2026-10-21). So, for a package that depends on `next` or whose
 typecheck script runs `next typegen`, the check runs the package's own `next
 typegen` first, inside the same time budget; when typegen cannot run, tsc's

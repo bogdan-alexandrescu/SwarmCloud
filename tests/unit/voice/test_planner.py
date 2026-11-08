@@ -510,7 +510,7 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert said == [{"type": "session.commentary.append", "event_id": f"planner_{delegation_id}",
                                  "delegation_id": delegation_id, "content": "The question is on screen."}]
                 call = planner.calls[0]
-                assert call["person"] == "bogdan@saga.xyz" and call["grant"] is not None
+                assert call["person"] == "owner@example.com" and call["grant"] is not None
                 assert call["grant"].session_id == grant.session_id
                 assert call["transcript"] == [("person", "Ask me which repository.")]
                 # The live engine plans on the model the start read from Settings too.
@@ -522,7 +522,7 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
     async def _ok(token: str) -> str:
         if token != "caller-token":
             raise PermissionError("not swarm-api")
-        return "swarm-api@voice-test-project.iam.gserviceaccount.com"
+        return "swarm-api@example-project.iam.gserviceaccount.com"
 
     asyncio.run(asyncio.wait_for(main(), 20))
 

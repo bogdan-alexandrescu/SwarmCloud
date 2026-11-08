@@ -1,17 +1,17 @@
 # The per-agent budget: a limit in tokens or dollars that stops a runaway step
 
-Issue #2459. Backend built by lane BUDGET-CAP (2026-10-26). The console's
+An earlier issue. Backend built by lane BUDGET-CAP (2026-10-26). The console's
 controls are a separate lane.
 
 ## 1. Why
 
-Until #2459 the only limit on an agent was its step's timeout. On 2026-10-26
+Until an earlier issue the only limit on an agent was its step's timeout. On 2026-10-26
 four steps ran their full 7,200 s; one of them spent two hours with its CPU
 pegged and $2.34 of model use, and others moved accounts mid-run on
-exhausted quota (#2457). A timeout bounds wall time, not spend: an agent
+exhausted quota. A timeout bounds wall time, not spend: an agent
 looping fast spends more in the same two hours than one waiting on a build.
 
-## 2. BGD's decisions (2026-10-26), and where each lives
+## 2. The owner's decisions (2026-10-26), and where each lives
 
 | Decision | Where |
 |---|---|
@@ -46,7 +46,7 @@ Why not read the workspace setting in the worker at each attempt:
   the `budget` block is signed only since contract request 119, and only
   for a tenant on the MAC cutover. A worker that read it live would enforce
   whatever another tenant's agent wrote wherever it is not.
-* **Workers are moving off direct Firestore access** (#1457, design B).
+* **Workers are moving off direct Firestore access** (design B).
 * **It is the platform's pattern.** `timeout_seconds` is pinned at
   submission, and so are `max_additional_repositories` and its budget:
   "a task already submitted keeps what it was pinned with".
@@ -61,11 +61,11 @@ counts each attempt's own usage, so a continuation of a step that ended
 * **The ceiling alone turns nothing on.** With no workspace default and no
   step budget there is no budget at all, whatever the ceiling says ("off
   until a workspace admin sets one"). Once either is set, the ceiling is one
-  of the three limits in the min. BGD kept this on 2026-10-26 (~22:15Z,
+  of the three limits in the min. The owner kept this on 2026-10-26 (~22:15Z,
   question 4): a ceiling does not cap a workspace that sets nothing.
 * **A ceiling lowered under a default saved earlier still binds**: the min
   takes it at the next submission.
-* **Both refusals ship ON** (`refusals.SWITCHES`, `default=True`), by BGD's
+* **Both refusals ship ON** (`refusals.SWITCHES`, `default=True`), by the owner's
   answer of 2026-10-26 (~22:15Z, question 5, "enforce at once") rather than
   the 2026-10-08 rule's report-only start: `budget_above_limit` (a step
   asking for more than the default or the ceiling, 422 naming both) and
@@ -108,7 +108,7 @@ live run has not reported its cost (claude-code prints `total_cost_usd`
 only in its last event), so the running figure is the per-model usage priced
 by swarm-api (`POST /v1/attempts/{id}/spend-estimate`, `spendprice`) -- the
 same estimate a stopped run's `cost_usd` is -- at most every 20 s. The
-worker holds no price table (#1481). A dollar figure swarm-api cannot give
+worker holds no price table. A dollar figure swarm-api cannot give
 (no route, a model it has no price for) counts as nothing: the token limit,
 if any, still binds, and the log says the figure was not priced.
 
@@ -142,10 +142,10 @@ finished run, not as a budget stop.
 ## 6. What it does not do
 
 * **codex's stream alone would meter it once per start.** The `codex`
-  profile runs `codex exec --json` (BGD, 2026-10-26, question 6), whose
+  profile runs `codex exec --json` (the owner, 2026-10-26, question 6), whose
   stream reports usage only at `turn.completed` -- and a `codex exec` start
   runs one turn, so that figure arrives when the start ends. So the runner
-  ALSO READS THE ROLLOUT (BGD's pick "Also read the rollout", 2026-10-27,
+  ALSO READS THE ROLLOUT (the owner's pick "Also read the rollout", 2026-10-27,
   CODEX-JSON question 0): codex appends a `token_count` record to
   `$HOME/.codex/sessions/.../rollout-*.jsonl` after every model request, and
   `budgetwatch` reads what each rollout gains while the start runs, from the
@@ -169,7 +169,7 @@ finished run, not as a budget stop.
 
 118 `EndCause.BUDGET_EXCEEDED`; 119 a `budget` block in
 `SETTINGS_MAC_FIELDS`; 120 `Task.budget` / `WorkflowStep.budget`; 121
-`EventType.BUDGET_WARNING`. BGD ACCEPTED all four on 2026-10-26 (~22:15Z);
+`EventType.BUDGET_WARNING`. The owner ACCEPTED all four on 2026-10-26 (~22:15Z);
 lane BUDGET-CONTRACT applied them on 2026-10-27 and switched the readers and
 writers over, keeping the old forms readable for one release. Each is in
 [contract-change-requests.md](../contract-change-requests.md).

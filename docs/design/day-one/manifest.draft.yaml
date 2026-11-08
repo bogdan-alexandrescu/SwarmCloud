@@ -1,4 +1,4 @@
-# SwarmCloud Day One: the dependency inventory (DRAFT, P0; part of #2688)
+# SwarmCloud Day One: the dependency inventory (DRAFT, P0; part of the Day One install program)
 #
 # What this is. Every dependency a from-scratch install of SwarmCloud into a
 # NEW Google Cloud project needs, as the code and Terraform at main 17e2ec1
@@ -288,11 +288,11 @@ entries:
     apply: "human step, ideally BEFORE first project API enablement: enforce this policy so the default compute service account (<project-number>-compute@developer.gserviceaccount.com) never receives roles/editor automatically"
     verify: "gcloud projects get-iam-policy $P --flatten='bindings[].members' --filter='bindings.role:roles/editor' shows no <number>-compute@developer.gserviceaccount.com member"
     explain: "this repo's own deployer's serviceAccountUser grant on that default compute account (terraform/bootstrap/wif.tf) inherits every permission of whatever role the default account holds; today that is roles/editor, which carries logging.logEntries.list -- documented as an open, unclosed privilege-escalation route"
-    guards: "docs/ci.md:2187 names it route #1 'closed by a condition? no'; terraform/bootstrap/workspace_deployer.tf:658-664 calls it explicit 'RESIDUAL RISK, NOT TOUCHED HERE ... it is Google's legacy default grant, the other team's workloads may rely on it, and it is removed together with that team, never from this file'"
+    guards: "docs/ci.md:2187 names it route 1 'closed by a condition? no'; terraform/bootstrap/workspace_deployer.tf:658-664 calls it explicit 'RESIDUAL RISK, NOT TOUCHED HERE ... it is Google's legacy default grant, the other team's workloads may rely on it, and it is removed together with that team, never from this file'"
     secret_entry: null
     depends_on: ["switch.project-create-right"]
     evidence: ["docs/ci.md:2187", "docs/ci.md:2198", "terraform/bootstrap/workspace_deployer.tf:658-666"]
-    notes: "SURPRISE for a fresh install: the code's own comment says this risk is 'never' closed in THIS file because saga-agents-staging is shared and the default SA might be the other team's dependency. On a fresh, single-tenant project that excuse does not apply -- nothing in terraform/bootstrap or terraform/infra removes roles/editor from the fresh project's default compute SA, so either this org policy must be enforced at project creation or an operator must manually strip the grant; no script here does either"
+    notes: "SURPRISE for a fresh install: the code's own comment says this risk is 'never' closed in THIS file because example-shared-project is shared and the default SA might be the other team's dependency. On a fresh, single-tenant project that excuse does not apply -- nothing in terraform/bootstrap or terraform/infra removes roles/editor from the fresh project's default compute SA, so either this org policy must be enforced at project creation or an operator must manually strip the grant; no script here does either"
   - id: "org-policy.cmek"
     kind: "org-policy"
     scope: "core"
@@ -354,7 +354,7 @@ entries:
     scope: "core"
     stage: 0
     provider: "engine"
-    check: "gcloud storage cat gs://swarmcloud/releases/$V/SHA256SUMS (anonymous read)"
+    check: "gcloud storage cat gs://<release-bucket>/releases/$V/SHA256SUMS (anonymous read)"
     apply: "published by the release pipeline (design section 6)"
     verify: "every file's SHA-256 matches SHA256SUMS and SHA256SUMS' signature verifies against the pinned release key"
     explain: "D5: the module, CLI, manifest and image digests come from one signed release; a company never needs SwarmCloud's CI or repository."
@@ -457,7 +457,7 @@ entries:
     secret_entry: null
     depends_on: []
     evidence: ["scripts/prerequisites.sh:150-171"]
-    notes: "not verified: this repository documents saga-agents-staging as an already-existing shared project and nowhere narrates who created it or what right that took; stated here from the standard GCP precondition, not from a line this repo asserts"
+    notes: "not verified: this repository documents example-shared-project as an already-existing shared project and nowhere narrates who created it or what right that took; stated here from the standard GCP precondition, not from a line this repo asserts"
 
   # ---- stage 1 ----
   - id: "bucket.state"
@@ -469,7 +469,7 @@ entries:
     apply: "scripts/bootstrap.sh (gcloud storage buckets create, BEFORE terraform init) then terraform/bootstrap/state_bucket.tf resource \"google_storage_bucket\" \"state\""
     verify: "gcloud storage buckets describe gs://<bucket> shows versioning_enabled=True, uniform_bucket_level_access=True, public_access_prevention=enforced"
     explain: "Holds the state of every other root (terraform/infra and this root's own, under prefix bootstrap/). Loss of this bucket is unrecoverable-by-replay: terraform no longer knows which resources in the SHARED project are ours."
-    guards: "#827 (local-state-to-GCS migration); state_bucket.tf's four properties each guard a specific loss mode"
+    guards: "an earlier issue (local-state-to-GCS migration); state_bucket.tf's four properties each guard a specific loss mode"
     secret_entry: null
     depends_on: ["api.storage"]
     evidence: ["scripts/bootstrap.sh:96-114", "terraform/bootstrap/state_bucket.tf:47-109", "terraform/bootstrap/backend.tf:29"]
@@ -493,14 +493,14 @@ entries:
     stage: 1
     provider: "engine"
     check: "grep -n '^project_id' terraform/bootstrap/terraform.tfvars"
-    apply: "terraform/bootstrap/terraform.tfvars:6 project_id = \"saga-agents-staging\""
+    apply: "terraform/bootstrap/terraform.tfvars:6 project_id = \"example-project\""
     verify: "terraform -chdir=terraform/bootstrap workspace show; gcloud config get-value project"
     explain: "Every resource and every condition in this root is parameterised off this one value. For a NEW project this MUST change; it is the single highest-leverage live-instance hardcode in the whole root."
     guards: null
     secret_entry: null
     depends_on: []
     evidence: ["terraform/bootstrap/terraform.tfvars:1-8"]
-    notes: "terraform.tfvars is committed with the live saga-agents-staging project id. A day-one install that runs `make bootstrap` against this file unmodified reconfigures the WRONG, shared project."
+    notes: "terraform.tfvars is committed with the live example-project project id. A day-one install that runs `make bootstrap` against this file unmodified reconfigures the WRONG, shared project."
   - id: "api.artifactregistry"
     kind: "gcp-api"
     scope: "core"
@@ -643,8 +643,8 @@ entries:
     check: "gcloud services list --enabled --project=$P --filter=config.name=eventarc.googleapis.com"
     apply: "module.project_services (terraform/infra/main.tf:44)"
     verify: "not verified: the Eventarc trigger itself is created in terraform/bootstrap/workspace_dispatch.tf, outside this track"
-    explain: "Enabled here by the release, ahead of the owner's bootstrap apply, for the personal-workspace dispatch path: an Eventarc trigger on swarm-workspace-apply starts a Workflow that runs the Cloud Run job swarm-workspace-apply (docs/workspaces.md §2.1, option ii, #847 W4b)."
-    guards: "#847, W4b"
+    explain: "Enabled here by the release, ahead of the owner's bootstrap apply, for the personal-workspace dispatch path: an Eventarc trigger on swarm-workspace-apply starts a Workflow that runs the Cloud Run job swarm-workspace-apply (docs/workspaces.md §2.1, option ii, an earlier issue W4b)."
+    guards: "an earlier issue, W4b"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/infra/main.tf:40-44"]
@@ -709,7 +709,7 @@ entries:
     check: "gcloud services list --enabled --project=$P --filter=config.name=monitoring.googleapis.com"
     apply: "module.project_services (terraform/infra/main.tf:52)"
     verify: "gcloud alpha monitoring policies list --project=$P shows the 21 swarm policies"
-    explain: "Backs module.monitoring: dashboard, notification channel, 21 alert policies (#1817)."
+    explain: "Backs module.monitoring: dashboard, notification channel, 21 alert policies."
     guards: null
     secret_entry: null
     depends_on: []
@@ -828,7 +828,7 @@ entries:
     apply: "NEW: gcloud projects remove-iam-policy-binding $P --member=serviceAccount:<number>-compute@developer.gserviceaccount.com --role=roles/editor (typed confirmation)"
     verify: "the check prints nothing; a Cloud Run revision still starts (no service runs as the default SA)"
     explain: "Older orgs auto-grant Editor to the default compute SA; anything that runs as it holds project-wide write. The live project kept it because the project is shared with another team; a dedicated project has no such reason."
-    guards: "#1020"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.compute"]
     evidence: ["terraform/bootstrap/workspace_deployer.tf:658-666", "docs/ci.md:2187"]
@@ -886,7 +886,7 @@ entries:
     secret_entry: null
     depends_on: []
     evidence: ["terraform/infra/main.tf:32-39"]
-    notes: "On a NEW project this API is off by default anyway, so there is nothing to disable; the comment's hand-disable step is only relevant on saga-agents-staging where it was once on."
+    notes: "On a NEW project this API is off by default anyway, so there is nothing to disable; the comment's hand-disable step is only relevant on example-project where it was once on."
   - id: "other.billing-link"
     kind: "other"
     scope: "core"
@@ -907,10 +907,10 @@ entries:
     stage: 1
     provider: "engine"
     check: "gcloud iam service-accounts describe swarm-tf-deployer@$P.iam.gserviceaccount.com; tf -chdir=terraform/bootstrap state list"
-    apply: "scripts/bootstrap.sh lines 279-330 (THE EMPTY-STATE GUARD, #827)"
+    apply: "scripts/bootstrap.sh lines 279-330 (THE EMPTY-STATE GUARD)"
     verify: "an empty remote bootstrap state WITH the deployer account already existing hard-refuses to plan, rather than offering to re-create the live deployer and every grant it holds"
     explain: "Guards against the exact incident from 2026-10-07: a git worktree with no remote-state migration planned '9 to import, 91 to add' against the live deployer. On a genuinely fresh project (no deployer yet) an empty state is correct and the guard lets it proceed."
-    guards: "#827, incident 2026-10-07"
+    guards: "an earlier issue, incident 2026-10-07"
     secret_entry: null
     depends_on: []
     evidence: ["scripts/bootstrap.sh:279-330"]
@@ -922,8 +922,8 @@ entries:
     check: "test ! -e terraform/bootstrap/terraform.tfstate && gcloud storage objects describe gs://swarm-tfstate-$P/bootstrap/default.tfstate --project $P (read-only: no local state to migrate, and the remote state object is where scripts/bootstrap.sh:171-173 and scripts/lib/common.sh:191,197 put it)"
     apply: "scripts/bootstrap.sh --migrate-state code path, lines 213-266: terraform init -migrate-state -force-copy, after a typed confirmation that ignores --yes and SWARM_ASSUME_YES"
     verify: "post-migration resource-instance COUNT in the GCS state equals the pre-migration local state's count exactly, or the script dies without proceeding"
-    explain: "One-time move of a pre-#827 local terraform.tfstate into the shared GCS backend. Irrelevant to a from-scratch install (there is no local state to migrate), but still fires its own guards if an operator mistakenly copies an old terraform.tfstate file into a fresh checkout."
-    guards: "#827; backs up the local file under build/ (gitignored, mode 077) before terraform touches it"
+    explain: "One-time move of a pre-an earlier issue local terraform.tfstate into the shared GCS backend. Irrelevant to a from-scratch install (there is no local state to migrate), but still fires its own guards if an operator mistakenly copies an old terraform.tfstate file into a fresh checkout."
+    guards: "an earlier issue; backs up the local file under build/ (gitignored, mode 077) before terraform touches it"
     secret_entry: null
     depends_on: []
     evidence: ["scripts/bootstrap.sh:21-26", "scripts/bootstrap.sh:213-266"]
@@ -961,14 +961,14 @@ entries:
     stage: 1
     provider: "engine"
     check: "grep -n '^project_id' terraform/environments/dev/dev.tfvars terraform/environments/prod/prod.tfvars"
-    apply: "terraform/environments/dev/dev.tfvars:8 and terraform/environments/prod/prod.tfvars:13 BOTH hardcode project_id = \"saga-agents-staging\""
+    apply: "terraform/environments/dev/dev.tfvars:8 and terraform/environments/prod/prod.tfvars:13 BOTH hardcode project_id = \"example-project\""
     verify: "the two tfvars files currently resolve to the SAME GCP project -- 'dev' and 'prod' are two Terraform workspaces/roots pointed at one shared project, not two projects"
-    explain: "CLAUDE.md names saga-agents-staging as a SHARED project holding another team's live GKE cluster, VPC, buckets and service accounts, on the SHARED_DENY_LIST. A from-scratch install into a NEW project MUST change project_id in both tfvars files before any apply, or every resource in this inventory is planned against the existing shared, deny-listed project instead of the new one."
+    explain: "CLAUDE.md names example-shared-project as a SHARED project holding another team's live GKE cluster, VPC, buckets and service accounts, on the SHARED_DENY_LIST. A from-scratch install into a NEW project MUST change project_id in both tfvars files before any apply, or every resource in this inventory is planned against the existing shared, deny-listed project instead of the new one."
     guards: "SHARED_DENY_LIST (scripts/lib/common.sh), CLAUDE.md rule 2"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/environments/dev/dev.tfvars:8", "terraform/environments/prod/prod.tfvars:13"]
-    notes: "TOP FIRST-INSTALL TRAP: this is the single most important finding for a day-one install into a new project. Every other entry in this file assumes $P has already been corrected away from saga-agents-staging."
+    notes: "TOP FIRST-INSTALL TRAP: this is the single most important finding for a day-one install into a new project. Every other entry in this file assumes $P has already been corrected away from example-project."
   - id: "switch.manage_project_services"
     kind: "switch"
     scope: "core"
@@ -1033,7 +1033,7 @@ entries:
     check: "dig +short $H"
     apply: "human/DNS-provider step, not Terraform: point var.frontend_hostname's A record at network.global-ip's address ALSO: human step, outside this repo's Terraform if the zone is not Google-managed: point the deployment hostname's A record at network.global-ip's reserved address"
     verify: "dig +short $H returns the reserved global IP"
-    explain: "Without this the managed cert never leaves FAILED_NOT_VISIBLE and the frontend is unreachable by name. ALSO: frontend_hostname (swarm.saga.xyz in dev.tfvars:599) must resolve to the LB's IP before Google can issue the managed certificate for it"
+    explain: "Without this the managed cert never leaves FAILED_NOT_VISIBLE and the frontend is unreachable by name. ALSO: frontend_hostname (swarm.example.com in dev.tfvars:599) must resolve to the LB's IP before Google can issue the managed certificate for it"
     guards: null
     secret_entry: null
     depends_on: ["network.global-ip"]
@@ -1089,7 +1089,7 @@ entries:
     check: "gcloud compute addresses describe ${name_prefix}-lb-ip --global --project=$P"
     apply: "terraform/modules/frontend/main.tf:99 google_compute_global_address.this ALSO: terraform/modules/frontend (global external IP resource); status must reach RESERVED before DNS and the managed cert can be meaningfully pointed at it"
     verify: "the address has IN_USE status once the forwarding rule is created"
-    explain: "The one stable public IP the DNS A record and the managed cert point at. ALSO: the load balancer's one stable address; swarm.saga.xyz's A record and the managed cert's domain validation both depend on this not changing"
+    explain: "The one stable public IP the DNS A record and the managed cert point at. ALSO: the load balancer's one stable address; swarm.example.com's A record and the managed cert's domain validation both depend on this not changing"
     guards: "scripts/lib/common.sh .env.example: 'THE *.run.app URL IS NOT THE ADDRESS OF THIS API' -- the front door is this global IP behind the load balancer, never the run.app hostname"
     secret_entry: null
     depends_on: ["api.compute", "switch.project-create-right"]
@@ -1115,7 +1115,7 @@ entries:
     stage: 2
     provider: "human-in-console"
     check: "gcloud iap settings get --project=$P --resource-type=compute --service=<backend> --format='value(accessSettings.oauthSettings.programmaticClients)' lists the client id (docs/runbooks/iap-desktop-client.md:115-116). Partial: it proves the id is allowlisted on each backend, not that a Desktop client with that id exists; no API lists OAuth clients since the IAP OAuth Admin API was deprecated, so existence is shown by verify (`sc login`). Not run."
-    apply: "Created BY HAND in the GCP console (the IAP OAuth Admin API that could create clients is deprecated); referenced via terraform/bootstrap/terraform.tfvars:169 frontend_iap_programmatic_clients = [\"209012342332-deadkn6c5s1ghe0s5lnq3khmekogn2tv.apps.googleusercontent.com\"] ALSO: console: Google Auth Platform -> Clients -> Create client -> Application type: Desktop app -> name 'SwarmCloud sc CLI'. One client per deployment, used by every developer's `sc login`"
+    apply: "Created BY HAND in the GCP console (the IAP OAuth Admin API that could create clients is deprecated); referenced via terraform/bootstrap/terraform.tfvars:169 frontend_iap_programmatic_clients = [\"123456789012-example.apps.googleusercontent.com\"] ALSO: console: Google Auth Platform -> Clients -> Create client -> Application type: Desktop app -> name 'SwarmCloud sc CLI'. One client per deployment, used by every developer's `sc login`"
     verify: "`sc login` mints an ID token IAP accepts for this client id"
     explain: "IAP's Google-managed OAuth client cannot be used programmatically; this Desktop app client is the one documented way for `sc` to sign a developer in to an IAP-protected backend without impersonating a service account. ALSO: a gcloud user token is refused by IAP (401, error code 900) because the deployment's IAP front door uses a Google-managed OAuth client, which cannot programmatically authenticate anyone; a Desktop client is Google's documented way for a person to sign in from a CLI through IAP"
     guards: "owner decision 2026-09-25; docs/runbooks/iap-desktop-client.md has the exact console steps ALSO: docs/runbooks/iap-desktop-client.md:15-35; the client secret is NOT confidential by Google's own classification but must still never go into Terraform or a public channel -- it lives in the team password manager and the plugin's sensitive userConfig field"
@@ -1145,7 +1145,7 @@ entries:
     check: "gcloud secrets describe swarm-iap-desktop-client-secret --project=$P"
     apply: "NEW: the engine creates the container (labelled managed-by=swarm-install) right after the Desktop client is made"
     verify: "gcloud secrets versions list swarm-iap-desktop-client-secret --filter=state=ENABLED --limit=1 lists one version"
-    explain: "The Desktop OAuth client's secret is kept today in the team's password manager and handed to each teammate as the plugin's oauth_client_secret; Secret Manager makes it recoverable by the deployment and servable by the discovery endpoint if BGD chooses that (design section 9.3)."
+    explain: "The Desktop OAuth client's secret is kept today in the team's password manager and handed to each teammate as the plugin's oauth_client_secret; Secret Manager makes it recoverable by the deployment and servable by the discovery endpoint if the owner chooses that (design section 9.3)."
     guards: null
     secret_entry: "hidden terminal prompt in stage 2 (the create-secrets.sh --stdin contract); never pasted into a chat"
     depends_on: ["oauth-client.desktop-sc", "api.secretmanager"]
@@ -1162,7 +1162,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"bucket_metadata_reader\"]"
     verify: "permissions == [storage.buckets.get] only"
     explain: "Lets GCS FUSE / client libraries mount the artifact bucket without granting objects.list across the whole bucket (legacyBucketReader would)."
-    guards: "#79"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:301-312"]
@@ -1187,8 +1187,8 @@ entries:
     check: "gcloud iam roles describe swarmGkeDispatcher --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"gke_dispatcher\"]"
     verify: "permissions limited to container.clusters.get/namespaces/jobs/pods/events read+create-job; no secret access"
-    explain: "Granted to swarm-scheduler, conditioned to the swarm Autopilot cluster only (keeps agents-staging, the other team's cluster, out of reach)."
-    guards: "#79"
+    explain: "Granted to swarm-scheduler, conditioned to the swarm Autopilot cluster only (keeps peer-cluster, the other team's cluster, out of reach)."
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:143-163"]
@@ -1201,7 +1201,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"gke_reaper\"]"
     verify: "permissions: container.jobs.delete, container.pods.delete; reconciler-only"
     explain: "Delete finished Jobs and stuck Pods on the swarm cluster only."
-    guards: "#79"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:167-182"]
@@ -1214,7 +1214,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"image_puller\"], permissions = var.image_puller_permissions"
     verify: "permissions carry no `list`, no create/update/delete/setIamPolicy (variables.tf validations enforce this at plan)"
     explain: "Pull-only access to the swarm-images Artifact Registry repo for tenant workers; cannot enumerate image names it was not given."
-    guards: "#79; validated 2026-09-16 against gcloud iam list-testable-permissions"
+    guards: "an earlier issue; validated 2026-09-16 against gcloud iam list-testable-permissions"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:314-324", "terraform/bootstrap/variables.tf:620-675"]
@@ -1226,8 +1226,8 @@ entries:
     check: "gcloud iam roles describe swarmJobDispatcher --project=$P"
     apply: "terraform/bootstrap/platform_roles.tf resource \"google_project_iam_custom_role\" \"platform\" [\"job_dispatcher\"], id from terraform/modules/custom_role_ids"
     verify: "gcloud iam roles describe shows exactly the 12 run.jobs/executions/tasks/operations permissions, no delete, no IAM"
-    explain: "Granted by terraform/infra to swarm-scheduler, unconditioned: create and run per-tenant-per-profile Cloud Run Job resources. Moved from terraform/infra to this owner-applied root on 2026-09-25 (#79) because roles/iam.roleAdmin (needed to define roles there) could not be conditioned on CI."
-    guards: "#79, owner decision 2026-09-25"
+    explain: "Granted by terraform/infra to swarm-scheduler, unconditioned: create and run per-tenant-per-profile Cloud Run Job resources. Moved from terraform/infra to this owner-applied root on 2026-09-25 because roles/iam.roleAdmin (needed to define roles there) could not be conditioned on CI."
+    guards: "an earlier issue, owner decision 2026-09-25"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:93-117", "terraform/modules/custom_role_ids/main.tf:53-54"]
@@ -1241,7 +1241,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"job_reaper\"]"
     verify: "permissions include run.jobs.delete, run.executions.cancel/delete; no create"
     explain: "Granted to swarm-reconciler only: the single identity permitted to delete executions and GC Job resources (CONTRACT.md invariant)."
-    guards: "#79"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:120-137"]
@@ -1254,7 +1254,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"secret_lister\"]"
     verify: "permissions: secretmanager.secrets.list/create/get/getIamPolicy/setIamPolicy, versions.list/destroy, plus versions.add only while broker_secret_lister_project_wide_versions_add is true"
     explain: "swarm-quota-broker's discovery and account-provisioning role; project-wide secrets.list in a SHARED project is an accepted, deliberate risk bounded by code (quota_broker.secretstore.owned_by_this_platform), not IAM."
-    guards: "#69, owner decision 2026-09-25 (moved versions.add off deployer's grantable list to narrow CI's reach)"
+    guards: "an earlier issue, owner decision 2026-09-25 (moved versions.add off deployer's grantable list to narrow CI's reach)"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:186-260"]
@@ -1268,7 +1268,7 @@ entries:
     apply: "terraform/bootstrap/platform_roles.tf google_project_iam_custom_role.platform[\"worker_firestore\"]"
     verify: "permissions: datastore.databases.get, entities.get/create/update; no entities.delete, no entities.list"
     explain: "Granted to every tenant worker by modules/tenancy. No delete (hostile worker can't erase another tenant's documents); no list/query (can't enumerate other tenants' task/lease ids)."
-    guards: "#79"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/bootstrap/platform_roles.tf:262-299"]
@@ -1280,7 +1280,7 @@ entries:
     check: "grep -n adopt_from_infra_states terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:16 adopt_from_infra_states = [\"infra/dev\"]"
     verify: "terraform -chdir=terraform/bootstrap plan shows 0 imports when this is []"
-    explain: "Drives the import blocks in platform_roles.tf that adopt the 8 custom roles + broker grant from terraform/infra's state (a one-time historical migration, #79/#69), and gates every platform-role plan on that state's custom_roles_owner output reading 'terraform/bootstrap'."
+    explain: "Drives the import blocks in platform_roles.tf that adopt the 8 custom roles + broker grant from terraform/infra's state (a one-time historical migration, an earlier issue/#69), and gates every platform-role plan on that state's custom_roles_owner output reading 'terraform/bootstrap'."
     guards: "platform_roles.tf:53-61 explicitly documents step-2-before-step-1 is refused"
     secret_entry: null
     depends_on: []
@@ -1308,7 +1308,7 @@ entries:
     check: "grep -n deployer_storage_bucket_prefixes terraform/bootstrap/variables.tf"
     apply: "terraform/bootstrap/variables.tf:465-486, default [\"swarm-\"]"
     verify: "every bucket this platform creates starts with this prefix"
-    explain: "The prefix half of the scoped storage.admin condition; validated to be at least 4 characters (a 1-2 char prefix like 's' would admit saga-agents-files-staging)."
+    explain: "The prefix half of the scoped storage.admin condition; validated to be at least 4 characters (a 1-2 char prefix like 's' would admit peer-bucket)."
     guards: null
     secret_entry: null
     depends_on: []
@@ -1319,7 +1319,7 @@ entries:
     stage: 3
     provider: "engine"
     check: "grep -n deployer_storage_buckets_exact terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars"
-    apply: "terraform/bootstrap/variables.tf:488-501 default [\"saga-agents-staging_cloudbuild\"]; not overridden in terraform.tfvars"
+    apply: "terraform/bootstrap/variables.tf:488-501 default [\"example-project_cloudbuild\"]; not overridden in terraform.tfvars"
     verify: "the value equals \"$P_cloudbuild\""
     explain: "GCP's own Cloud Build source-staging bucket, named after the project id and un-renameable. Must track the live project id exactly or image builds fail at the pre-upload bucket-ownership check."
     guards: "comment: \"the day it first worked\" -- this exact bucket name omission broke the release pipeline once"
@@ -1346,7 +1346,7 @@ entries:
     stage: 3
     provider: "engine"
     check: "grep -n github_repository terraform/bootstrap/terraform.tfvars"
-    apply: "terraform/bootstrap/terraform.tfvars:21 github_repository = \"bogdan-alexandrescu/SwarmCloud\""
+    apply: "terraform/bootstrap/terraform.tfvars:21 github_repository = \"example-org/example-repo\""
     verify: "matches the repository that will actually run the CI workflows"
     explain: "The whole WIF trust boundary's repository half (attribute_condition in wif.tf). Must be this new install's own fork/repo."
     guards: null
@@ -1388,7 +1388,7 @@ entries:
     apply: "terraform/bootstrap/wif.tf resource \"google_project_iam_member\" \"deployer_roles\" (for_each = deployer_roles minus deployer_scoped_roles)"
     verify: "policy shows exactly the roles in var.deployer_roles (artifactregistry.admin, cloudbuild.builds.editor, cloudscheduler.admin, compute.networkAdmin, compute.securityAdmin, container.admin, datastore.owner, iam.serviceAccountCreator, logging.configWriter, monitoring.editor, pubsub.admin, resourcemanager.projectIamAdmin, run.admin, serviceusage.serviceUsageAdmin) minus any role in deployer_scoped_roles, each unconditioned"
     explain: "CI's project-wide authority to manage terraform/infra. Deliberately excludes roles/owner, roles/editor, roles/iam.roleAdmin, roles/iam.serviceAccountAdmin, roles/iam.workloadIdentityPoolAdmin and any secretmanager.versions.access-carrying role (validations at variables.tf:303-341 refuse them being added back)."
-    guards: "#79, #314, #334: each refused role is a specific privilege-escalation path CI used to have"
+    guards: "an earlier issue, an earlier issue: each refused role is a specific privilege-escalation path CI used to have"
     secret_entry: null
     depends_on: ["sa.swarm-tf-deployer"]
     evidence: ["terraform/bootstrap/wif.tf:207-213", "terraform/bootstrap/variables.tf:190-372"]
@@ -1432,7 +1432,7 @@ entries:
     secret_entry: null
     depends_on: ["sa.swarm-tf-deployer", "declared-value.deployer_storage_buckets_exact"]
     evidence: ["terraform/bootstrap/wif.tf:247-318"]
-    notes: "NEW PROJECT TRAP: deployer_storage_buckets_exact defaults to [\"saga-agents-staging_cloudbuild\"], the OLD project's Cloud Build staging bucket. For a new project this must be \"<new-project-id>_cloudbuild\" or `gcloud builds submit` 403s on storage.buckets.list for its own staging bucket and every image build fails."
+    notes: "NEW PROJECT TRAP: deployer_storage_buckets_exact defaults to [\"example-project_cloudbuild\"], the OLD project's Cloud Build staging bucket. For a new project this must be \"<new-project-id>_cloudbuild\" or `gcloud builds submit` 403s on storage.buckets.list for its own staging bucket and every image build fails."
   - id: "iam-binding.deployer-verify-logs-read"
     kind: "iam-binding"
     scope: "addon:ci"
@@ -1454,8 +1454,8 @@ entries:
     check: "gcloud iam service-accounts get-iam-policy swarm-tf-deployer@$P.iam.gserviceaccount.com"
     apply: "terraform/bootstrap/wif.tf resource \"google_service_account_iam_member\" \"deployer_wif\" (one per deployer_workflows x github_allowed_refs pair)"
     verify: "policy shows roles/iam.workloadIdentityUser for principalSet://.../attribute.job_workflow_ref/<repo>/.github/workflows/<file>@<ref>, one entry per (release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml) x refs/heads/main"
-    explain: "Pins trust to the WORKFLOW FILE (job_workflow_ref), not just repo+ref: closes the #457 gap where every workflow on main (including a merged test) could mint a deploy token."
-    guards: "#457, owner decision 2026-10-02"
+    explain: "Pins trust to the WORKFLOW FILE (job_workflow_ref), not just repo+ref: closes the earlier issue's gap where every workflow on main (including a merged test) could mint a deploy token."
+    guards: "an earlier issue, owner decision 2026-10-02"
     secret_entry: null
     depends_on: ["sa.swarm-tf-deployer", "other.wif-github-pool-and-provider"]
     evidence: ["terraform/bootstrap/wif.tf:57-73", "terraform/bootstrap/wif.tf:194-200"]
@@ -1483,11 +1483,11 @@ entries:
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_crypto_key\" \"step_spec\", ASYMMETRIC_SIGN / EC_SIGN_P256_SHA256 / SOFTWARE"
     verify: "gcloud kms keys versions list shows at least one ENABLED version; prevent_destroy is set in Terraform"
     explain: "swarm-api signs every step's canonical spec with this key at submission; every worker verifies before trusting the spec. Without it a step parked behind an earlier one would run whatever that earlier agent rewrote."
-    guards: "contract request 34, #342; prevent_destroy set because a destroyed version makes every task it signed permanently unverifiable"
+    guards: "contract request 34; prevent_destroy set because a destroyed version makes every task it signed permanently unverifiable"
     secret_entry: null
     depends_on: ["kms-key.step-spec-ring"]
     evidence: ["terraform/bootstrap/spec_signing.tf:95-130"]
-    notes: "No per-version public-key read happens in THIS root (would be a hard plan error on first creation, #360/#361); terraform/infra reads the public keys separately once the key exists."
+    notes: "No per-version public-key read happens in THIS root (would be a hard plan error on first creation, an earlier issue/#361); terraform/infra reads the public keys separately once the key exists."
   - id: "kms-key.step-spec-ring"
     kind: "kms-key"
     scope: "core"
@@ -1496,7 +1496,7 @@ entries:
     check: "gcloud kms keyrings describe swarm-dev-specs --location=$R --project=$P"
     apply: "terraform/bootstrap/spec_signing.tf resource \"google_kms_key_ring\" \"step_spec\" for_each var.spec_signing_environments (default [\"dev\",\"prod\"])"
     verify: "keyring exists at the declared region; cannot be deleted even by terraform destroy (KMS has no delete)"
-    explain: "One ring per environment so a spec signed by dev's key can never verify in prod's worker (contract request 34, #342)."
+    explain: "One ring per environment so a spec signed by dev's key can never verify in prod's worker (contract request 34)."
     guards: "neither a key ring nor a key can ever be deleted in Cloud KMS; the name is taken forever once created"
     secret_entry: null
     depends_on: ["api.cloudkms", "switch.manage_project_services"]
@@ -1509,7 +1509,7 @@ entries:
     check: "gcloud kms keys list --keyring=<swarm-keyring> --location=$R --project=$P"
     apply: "terraform/infra/spec_signing.tf:95 module.spec_signing_key, :111 data.google_kms_crypto_key_versions.step_spec (reads existing versions, does not create them)"
     verify: "SPEC_VERIFY_KEYS (rendered into swarm-api/scheduler, locals.tf ~1005-1010) lists only public keys, never a private key material"
-    explain: "Contract request 34: step-spec signing keys. swarm_api.verdictpublish verifies a gated step's signed spec before trusting its forge_credential/forge_access for a control-plane push (#748)."
+    explain: "Contract request 34: step-spec signing keys. swarm_api.verdictpublish verifies a gated step's signed spec before trusting its forge_credential/forge_access for a control-plane push."
     guards: null
     secret_entry: null
     depends_on: ["api.iam"]
@@ -1524,7 +1524,7 @@ entries:
     apply: "N/A (absence by design): ci_fix.yml and accept.yml are deliberately NOT in wif.tf's local.deployer_workflows list"
     verify: "expect 0: neither file can federate as swarm-tf-deployer"
     explain: "A workflow that only comments on a PR, or only starts verification after a deploy, never needs projectIamAdmin; each gets its own minimal account instead (sa.swarm-accept, declared-value.ci_fix_service_account)."
-    guards: "#457, tests/unit/scripts/test_workflow_id_token_scope.py enforces this at CI time"
+    guards: "an earlier issue, tests/unit/scripts/test_workflow_id_token_scope.py enforces this at CI time"
     secret_entry: null
     depends_on: ["other.wif-github-pool-and-provider"]
     evidence: ["terraform/bootstrap/wif.tf:57-68", "terraform/bootstrap/acceptance.tf:12-20", "terraform/bootstrap/ci_fix.tf:8-15"]
@@ -1550,7 +1550,7 @@ entries:
     check: "gcloud iam service-accounts describe swarm-mcp-test-server@$P.iam.gserviceaccount.com --project=$P"
     apply: "terraform/infra/mcp_test_server.tf:110 google_service_account.mcp_test_server"
     verify: "the mcp_test_server Cloud Run revision runs as this identity"
-    explain: "A test MCP server used to exercise the registered-MCP-servers feature (#1433) in CI/acceptance without depending on a real third-party MCP server."
+    explain: "A test MCP server used to exercise the registered-MCP-servers feature in CI/acceptance without depending on a real third-party MCP server."
     guards: null
     secret_entry: null
     depends_on: ["api.iam"]
@@ -1564,7 +1564,7 @@ entries:
     apply: "terraform/modules/iam/service_accounts.tf resource \"google_service_account\" \"platform\" [\"swarm-api\"], applied via terraform/infra by CI (NOT by this root) ALSO: module.iam -> terraform/modules/iam/service_accounts.tf:34 google_service_account.platform[\"swarm-api\"], names from terraform/modules/service_account_ids/main.tf:32-35"
     verify: "account exists with managed-by=swarm-terraform in its description"
     explain: "Created by terraform/infra applying modules/iam (in this agent's territory because terraform/modules/iam is in scope), named/used throughout terraform/bootstrap by string (module.service_account_ids.platform), never by a cross-root reference. Nearly every bootstrap grant in this inventory targets it. ALSO: Authenticates callers, resolves tenants, writes tasks. Also runs swarm-ui (reused, since the UI is static files and calls nothing Google)."
-    guards: "#334: bootstrap grants roles/iam.serviceAccountAdmin on this account to the deployer PER-ACCOUNT, never project-wide ALSO: no create_ignore_already_exists: a release that meets a 409 on this account fails rather than silently adopting someone else's account (#334 security review)"
+    guards: "an earlier issue: bootstrap grants roles/iam.serviceAccountAdmin on this account to the deployer PER-ACCOUNT, never project-wide ALSO: no create_ignore_already_exists: a release that meets a 409 on this account fails rather than silently adopting someone else's account (an earlier issue security review)"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/modules/iam/service_accounts.tf:14-41", "terraform/modules/service_account_ids/main.tf:31-48", "terraform/modules/iam/service_accounts.tf:20-39", "terraform/modules/service_account_ids/main.tf:32-35"]
@@ -1578,7 +1578,7 @@ entries:
     apply: "terraform/modules/iam/service_accounts.tf resource \"google_service_account\" \"platform\" [\"swarm-quota-broker\"], applied via terraform/infra ALSO: terraform/modules/iam/service_accounts.tf:34 google_service_account.platform[\"swarm-quota-broker\"]"
     verify: "account exists; holds swarmSecretLister only once grant_broker_secret_lister is applied from this root"
     explain: "Owns provider quota state; the target of platform_roles.tf's broker_secret_lister grant. ALSO: Owns provider quota state (the account pool); control-plane data only."
-    guards: "#69"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: ["api.iam"]
     evidence: ["terraform/modules/iam/service_accounts.tf:34-41", "terraform/bootstrap/platform_roles.tf:361-386", "terraform/modules/service_account_ids/main.tf:40-43"]
@@ -1672,7 +1672,7 @@ entries:
     check: "gcloud iam service-accounts describe swarm-verify@$P.iam.gserviceaccount.com --project=$P"
     apply: "terraform/infra/verify.tf:38 google_service_account.verify"
     verify: "the verify Cloud Run job runs as this identity and can call swarm-api, read Firestore, read Cloud Run, read the artifacts bucket"
-    explain: "Runs the in-VPC verification gate (acceptance/smoke) as a non-domain identity; ALLOWED_USERS exists in swarm-api's auth specifically so this non-saga.xyz identity is admitted (locals.tf:1012-1015)."
+    explain: "Runs the in-VPC verification gate (acceptance/smoke) as a non-domain identity; ALLOWED_USERS exists in swarm-api's auth specifically so this non-example.com identity is admitted (locals.tf:1012-1015)."
     guards: null
     secret_entry: null
     depends_on: ["api.iam"]
@@ -1740,13 +1740,13 @@ entries:
     provider: "org-admin"
     check: "head -1 images/*/Dockerfile apps/*/Dockerfile | grep syntax="
     apply: "every one of the 15 Dockerfiles under images/ and apps/*/ (scripts/build-images.sh's 16 ALL_TARGETS minus the shared agent-runtime-base-nocodex recipe)"
-    verify: "a build in a brand-new project either succeeds because that project's Cloud Build SA has artifactregistry.reader on saga-agents-staging's swarm-mirror-ghcr/swarm-mirror-dockerhub repos, or fails pulling the syntax frontend / FROM base with a permission error"
-    explain: "EVERY Dockerfile's first line is `# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...`, and every Dockerfile that declares them defaults ARG MIRROR_DOCKER_HUB / ARG MIRROR_GHCR to `us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-{dockerhub,ghcr}` -- all pointing at the SHARED staging project's Artifact Registry remote-repository cache (terraform/infra/build_mirror.tf), not at the new project's own mirror"
-    guards: "CLAUDE.md rule 2 (saga-agents-staging is a shared project); OPS-MIRROR, part of #1030"
+    verify: "a build in a brand-new project either succeeds because that project's Cloud Build SA has artifactregistry.reader on example-project's swarm-mirror-ghcr/swarm-mirror-dockerhub repos, or fails pulling the syntax frontend / FROM base with a permission error"
+    explain: "EVERY Dockerfile's first line is `# syntax=us-central1-docker.pkg.dev/example-project/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...`, and every Dockerfile that declares them defaults ARG MIRROR_DOCKER_HUB / ARG MIRROR_GHCR to `us-central1-docker.pkg.dev/example-project/swarm-mirror-{dockerhub,ghcr}` -- all pointing at the SHARED staging project's Artifact Registry remote-repository cache (terraform/infra/build_mirror.tf), not at the new project's own mirror"
+    guards: "CLAUDE.md rule 2 (example-shared-project is a shared project); OPS-MIRROR"
     secret_entry: "null"
     depends_on: []
     evidence: ["images/swarm-api/Dockerfile:1", "images/swarm-api/Dockerfile:44-45", "scripts/lib/build-mirror.sh:11-30", "tests/unit/scripts/test_build_mirror.py:150-172"]
-    notes: "FIRST-INSTALL TRAP. test_build_mirror.py:169-172 asserts the Dockerfiles name the repositories terraform creates 'under the default prefix, in the dev project' -- i.e. the intended design is that each environment's own terraform/infra/build_mirror.tf creates its OWN ${name_prefix}-mirror-ghcr/${name_prefix}-mirror-dockerhub, but the Dockerfile literals are hardcoded to the project id `saga-agents-staging` itself, not derived from any variable. A new project's build either needs a cross-project artifactregistry.reader grant from the OTHER team on their mirror repos (a company-external ask, and arguably a rule-2 violation to even request), or every Dockerfile's `# syntax=` line and MIRROR_* defaults must be repointed at the new project before the first image build -- and the `# syntax=` line is parsed by BuildKit before any --build-arg is applied, so it cannot be overridden at build time at all, only edited in the file."
+    notes: "FIRST-INSTALL TRAP. test_build_mirror.py:169-172 asserts the Dockerfiles name the repositories terraform creates 'under the default prefix, in the dev project' -- i.e. the intended design is that each environment's own terraform/infra/build_mirror.tf creates its OWN ${name_prefix}-mirror-ghcr/${name_prefix}-mirror-dockerhub, but the Dockerfile literals are hardcoded to the project id `example-project` itself, not derived from any variable. A new project's build either needs a cross-project artifactregistry.reader grant from the OTHER team on their mirror repos (a company-external ask, and arguably a rule-2 violation to even request), or every Dockerfile's `# syntax=` line and MIRROR_* defaults must be repointed at the new project before the first image build -- and the `# syntax=` line is parsed by BuildKit before any --build-arg is applied, so it cannot be overridden at build time at all, only edited in the file."
   - id: "declared-value.image_refs"
     kind: "declared-value"
     scope: "core"
@@ -1767,14 +1767,14 @@ entries:
     stage: 4
     provider: "engine"
     check: "grep -n workspace_apply_image terraform/bootstrap/terraform.tfvars; gcloud artifacts docker images describe <value>"
-    apply: "terraform/bootstrap/terraform.tfvars:192 us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:7a03ed...028a"
+    apply: "terraform/bootstrap/terraform.tfvars:192 us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@sha256:7a03ed...028a"
     verify: "the digest exists in the TARGET project's swarm-images repository, not the old project's"
     explain: "Pins exactly what runs as swarm-workspace-deployer. Read from the release's promotion manifest (build/deployed-images-<env>.json); a push to main alone never changes what this identity runs."
     guards: "docs/workspaces.md §2.4 R1"
     secret_entry: null
     depends_on: ["declared-value.project_id"]
     evidence: ["terraform/bootstrap/terraform.tfvars:180-192", "terraform/bootstrap/variables.tf:699-719"]
-    notes: "Hardcoded to a digest that exists ONLY in saga-agents-staging's Artifact Registry. A new project must build and promote its own workspace-apply image first (make build / make push) and update this value, or the google_cloud_run_v2_job precondition (local.workspace_image_parts.project == var.project_id) fails the plan outright."
+    notes: "Hardcoded to a digest that exists ONLY in example-project's Artifact Registry. A new project must build and promote its own workspace-apply image first (make build / make push) and update this value, or the google_cloud_run_v2_job precondition (local.workspace_image_parts.project == var.project_id) fails the plan outright."
   - id: "image.agent-runtime-base"
     kind: "image"
     scope: "core"
@@ -1788,7 +1788,7 @@ entries:
     secret_entry: null
     depends_on: ["registry.swarm", "registry.mirror-dockerhub", "registry.mirror-ghcr"]
     evidence: ["terraform/infra/locals.tf:59-304", "terraform/infra/images.json:1-8", "scripts/build-images.sh:169", "images/agent-runtime-base/Dockerfile:1", "images/agent-runtime-base/Dockerfile:61-62"]
-    notes: "its first line pins `# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...` -- the SHARED staging project, by literal hardcoded path, not derived from $P or any terraform output; see the cross-cutting note on every Dockerfile below"
+    notes: "its first line pins `# syntax=us-central1-docker.pkg.dev/example-project/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...` -- the SHARED staging project, by literal hardcoded path, not derived from $P or any terraform output; see the cross-cutting note on every Dockerfile below"
   - id: "image.agent-runtime-base-nocodex"
     kind: "image"
     scope: "core"
@@ -1816,7 +1816,7 @@ entries:
     secret_entry: "null"
     depends_on: ["image.agent-runtime-base-nocodex"]
     evidence: ["scripts/build-images.sh:169", "images/agent-runtime-browser/Dockerfile:1"]
-    notes: "declares no MIRROR_* build arg at all -- its only external pull is the `# syntax=` frontend itself (scripts/lib/build-mirror.sh:43-46 comment), so there is nothing a --build-arg override can redirect for this image; only editing the Dockerfile's first line moves it off saga-agents-staging"
+    notes: "declares no MIRROR_* build arg at all -- its only external pull is the `# syntax=` frontend itself (scripts/lib/build-mirror.sh:43-46 comment), so there is nothing a --build-arg override can redirect for this image; only editing the Dockerfile's first line moves it off example-project"
   - id: "image.agent-runtime-indexer"
     kind: "image"
     scope: "core"
@@ -1908,7 +1908,7 @@ entries:
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-github-hooks --limit=5"
     apply: "apps/swarm-github-hooks/Dockerfile; terraform/infra/github_hooks.tf deploys the Cloud Run service only once image_refs has this digest"
     verify: "a GitHub webhook delivery's signature verifies and the receiver processes it"
-    explain: "the public GitHub push receiver's image (GS-HOOKS, part of #1384); copies apps/common and apps/redaction, nothing of the worker"
+    explain: "the public GitHub push receiver's image (GS-HOOKS); copies apps/common and apps/redaction, nothing of the worker"
     guards: "null"
     secret_entry: "null"
     depends_on: ["registry.swarm"]
@@ -1935,7 +1935,7 @@ entries:
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-graph --limit=5"
     apply: "apps/swarm-graph/Dockerfile; copies apps/agent-worker in, so a worker change rebuilds it too; terraform/infra/graph_service.tf renders its manifest only once image_refs has this digest"
     verify: "the Deployment in swarm-graph.yaml runs it and answers a graph query"
-    explain: "the shared graph service's image (GS-INFRA, part of #1384)"
+    explain: "the shared graph service's image (GS-INFRA)"
     guards: "null"
     secret_entry: "null"
     depends_on: ["registry.swarm", "image.agent-runtime-base"]
@@ -2031,7 +2031,7 @@ entries:
     check: "gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-typesafe-fwd --limit=5"
     apply: "apps/swarm-typesafe-fwd/Dockerfile; terraform/infra/typesafe_fwd.tf renders its manifest only once image_refs has this digest"
     verify: "the Deployment in swarm-typesafe-fwd.yaml runs it and verifies a minted ticket"
-    explain: "the TypeSafe forwarder's image (SEC-INJECT-B, part of #1347)"
+    explain: "the TypeSafe forwarder's image (SEC-INJECT-B)"
     guards: "null"
     secret_entry: "null"
     depends_on: ["registry.swarm"]
@@ -2045,7 +2045,7 @@ entries:
     check: "gcloud artifacts docker images list ${region}-docker.pkg.dev/$P/${artifact_registry_repository}/swarm-typesafe-fwd --project=$P"
     apply: "gated image, terraform/infra/images.json:29-32, outputs=[swarm_typesafe_fwd_manifest]"
     verify: "the swarm_typesafe_fwd_manifest output's image field carries a digest once the forwarder is turned on"
-    explain: "GKE workload fronting Saga's decision API over Tailscale (see addon.tailscale-egress-target)."
+    explain: "GKE workload fronting the company's decision API over Tailscale (see addon.tailscale-egress-target)."
     guards: null
     secret_entry: null
     depends_on: ["registry.swarm"]
@@ -2091,7 +2091,7 @@ entries:
     secret_entry: "null"
     depends_on: ["registry.swarm"]
     evidence: ["scripts/build-images.sh:169", "images/workspace-apply/Dockerfile:1", "images/workspace-apply/Dockerfile:94", "kubernetes/render.py:524"]
-    notes: "terraform/bootstrap/terraform.tfvars:192 pins workspace_apply_image to a `saga-agents-staging`/swarm-images digest literally; a from-scratch install must replace this tfvars value with the new project's own pushed digest before bootstrap applies, or the deployer job runs the OTHER team's image"
+    notes: "terraform/bootstrap/terraform.tfvars:192 pins workspace_apply_image to a `example-project`/swarm-images digest literally; a from-scratch install must replace this tfvars value with the new project's own pushed digest before bootstrap applies, or the deployer job runs the OTHER team's image"
   - id: "other.image-digest-refusal"
     kind: "other"
     scope: "core"
@@ -2143,7 +2143,7 @@ entries:
     apply: "terraform/infra/acceptance_fixture.tf:44 google_storage_bucket.acceptance_fixture, :76 the one fixture.html object"
     verify: "curl -s https://storage.googleapis.com/<bucket>/fixture.html returns 200 with no auth header"
     explain: "The release acceptance browser-profile suite needs one publicly reachable, fixed-content page; this is that page, one object, nothing else."
-    guards: "owner-approved public read, #1628, trivy AVD-GCP-0001 and checkov CKV_GCP_28 explicitly skipped in code"
+    guards: "owner-approved public read, trivy AVD-GCP-0001 and checkov CKV_GCP_28 explicitly skipped in code"
     secret_entry: null
     depends_on: ["api.storage"]
     evidence: ["terraform/infra/acceptance_fixture.tf:44-76"]
@@ -2209,8 +2209,8 @@ entries:
     check: "gcloud run services describe swarm-api --project=$P --region=$R"
     apply: "module.cloud_run -> terraform/infra/main.tf:321-413, terraform/modules/cloud_run/main.tf"
     verify: "a GET of https://$H/healthz with a member's IAP-accepted ID token (sc login) returns 200; min 2 warm instances always present"
-    explain: "The control plane's front door: auth, tenant resolution, task writes. min_instances=2 ALWAYS (not 1, not 0) because every worker heartbeat/checkpoint/park/release goes through it (design B); a cold gap past the 120s lease timeout fences live attempts. request_timeout=660s (not the module default 300s) so long git pushes under gitexec.CALL_DEADLINE_SECONDS=600 don't get cut with a 504 the worker reads as api_unavailable. startup_failure_threshold=36 (not 12) and startup_cpu_boost=true, both named exceptions to defaults (#1816)."
-    guards: "#1457 Q6(a) two-warm-instances; #2576 request_timeout; #1816 startup threshold and CPU boost"
+    explain: "The control plane's front door: auth, tenant resolution, task writes. min_instances=2 ALWAYS (not 1, not 0) because every worker heartbeat/checkpoint/park/release goes through it (design B); a cold gap past the 120s lease timeout fences live attempts. request_timeout=660s (not the module default 300s) so long git pushes under gitexec.CALL_DEADLINE_SECONDS=600 don't get cut with a 504 the worker reads as api_unavailable. startup_failure_threshold=36 (not 12) and startup_cpu_boost=true, both named exceptions to defaults."
+    guards: "an earlier issue Q6(a) two-warm-instances; an earlier issue request_timeout; an earlier issue startup threshold and CPU boost"
     secret_entry: null
     depends_on: ["sa.swarm-api", "network.subnet", "secret.swarm-settings-key.container"]
     evidence: ["terraform/infra/main.tf:321-413"]
@@ -2294,7 +2294,7 @@ entries:
     secret_entry: null
     depends_on: ["firestore.bootstrap-documents"]
     evidence: ["terraform/infra/variables.tf:440-457"]
-    notes: "On a brand-new project, dev.tfvars/prod.tfvars both currently list live saga.xyz tenants (eng, smoke, u-sw-c90291, u-or-9a0792 / eng, research, smoke) -- see the top-level reply's surprises for why these cannot simply be copied as-is into a new project."
+    notes: "On a brand-new project, dev.tfvars/prod.tfvars both currently list live example.com tenants (eng, smoke, u-sw-c90291, u-or-9a0792 / eng, research, smoke) -- see the top-level reply's surprises for why these cannot simply be copied as-is into a new project."
   - id: "firestore.backup-schedule"
     kind: "firestore"
     scope: "core"
@@ -2355,8 +2355,8 @@ entries:
     check: "gcloud firestore databases describe --database=${firestore_database} --project=$P"
     apply: "module.firestore -> terraform/modules/firestore/main.tf:8 google_firestore_database.this, location=var.region"
     verify: "a write to the pool/global document succeeds and PITR/backup-schedule is attached"
-    explain: "The control plane's one datastore: tasks, attempts, leases, pools, tenants, schedules, workflows. delete_protection is its own switch (var.firestore_delete_protection), deliberately NOT tied to var.deletion_protection, because dev turns that off for GKE/Cloud Run but a deleted swarm database takes its point-in-time history with it (#1818)."
-    guards: "#1818: a deleted swarm Firestore db is total control-plane loss"
+    explain: "The control plane's one datastore: tasks, attempts, leases, pools, tenants, schedules, workflows. delete_protection is its own switch (var.firestore_delete_protection), deliberately NOT tied to var.deletion_protection, because dev turns that off for GKE/Cloud Run but a deleted swarm database takes its point-in-time history with it."
+    guards: "an earlier issue: a deleted swarm Firestore db is total control-plane loss"
     secret_entry: null
     depends_on: ["api.firestore"]
     evidence: ["terraform/infra/main.tf:139-172", "terraform/modules/firestore/main.tf:8"]
@@ -2557,7 +2557,7 @@ entries:
     secret_entry: null
     depends_on: ["declared-value.var-tenants-freeze"]
     evidence: ["terraform/environments/dev/dev.tfvars:320-400"]
-    notes: "On a NEW project these 4 tenant entries (eng@saga.xyz, smoke@saga.xyz, and two u- personal tenants) are specific to the CURRENT saga.xyz Workspace domain and the CURRENT project's live history; they cannot be copied verbatim into an unrelated organization's new project without first deciding what the new project's real tenants are."
+    notes: "On a NEW project these 4 tenant entries (eng@example.com, smoke@example.com, and two u- personal tenants) are specific to the CURRENT example.com Workspace domain and the CURRENT project's live history; they cannot be copied verbatim into an unrelated organization's new project without first deciding what the new project's real tenants are."
   - id: "other.log-view-swarm-workers"
     kind: "other"
     scope: "core"
@@ -2592,7 +2592,7 @@ entries:
     check: "gcloud pubsub subscriptions describe <api-task-finished-sub> --project=$P"
     apply: "terraform/modules/scheduler/main.tf:114 google_pubsub_subscription.api_task_finished"
     verify: "a worker's task_finished publish releases that task's dependants before the next safety tick"
-    explain: "#636: a worker publishes task_finished when it ends a task so dependants are released immediately rather than waiting on the next tick."
+    explain: "an earlier issue: a worker publishes task_finished when it ends a task so dependants are released immediately rather than waiting on the next tick."
     guards: null
     secret_entry: null
     depends_on: ["pubsub.wake-topic"]
@@ -2644,7 +2644,7 @@ entries:
     check: "gcloud pubsub topics describe ${execution_cancel_topic} --project=$P"
     apply: "terraform/modules/scheduler/execution_cancel.tf:31 google_pubsub_topic.execution_cancel"
     verify: "swarm-api's publish of a cancelled attempt reaches the reconciler"
-    explain: "#627: swarm-api publishes a cancelled task's attempt; the reconciler (which already holds the stop permissions) is pushed it."
+    explain: "an earlier issue: swarm-api publishes a cancelled task's attempt; the reconciler (which already holds the stop permissions) is pushed it."
     guards: null
     secret_entry: null
     depends_on: ["api.pubsub"]
@@ -2684,7 +2684,7 @@ entries:
     apply: "module.artifact_registry -> terraform/modules/artifact_registry/main.tf:6 google_artifact_registry_repository.this"
     verify: "an image pushed by CI with a digest can be pulled by a tenant worker's pull role and not listed by it"
     explain: "The one repository every promoted image (swarm-api, workers, addons) lives in; var.immutable_image_tags and the cleanup policy (var.cleanup_dry_run, var.untagged_ttl, var.keep_recent_versions) live here too."
-    guards: "#1886 registry cleanup ships dry-run until the owner reads the would-delete list"
+    guards: "an earlier issue registry cleanup ships dry-run until the owner reads the would-delete list"
     secret_entry: null
     depends_on: ["api.artifactregistry"]
     evidence: ["terraform/infra/main.tf:83-120", "terraform/modules/artifact_registry/main.tf:6"]
@@ -2696,7 +2696,7 @@ entries:
     check: "gcloud scheduler jobs list --project=$P --location=$R --filter='name~issue-run-advance'"
     apply: "terraform/modules/scheduler/jobs.tf:228 google_cloud_scheduler_job.issue_run_advance, for_each=var.rollup_tenant_ids, target=api_endpoint + '/v1/admin/runs/advance?tenant_id=<t>', schedule default '* * * * *'"
     verify: "one job named ${name_prefix}-issue-run-advance-<tenant> exists per tenant"
-    explain: "#454: advances each tenant's issue runs without a reader present. Reader-visible, unlike the rollup, so it runs every minute."
+    explain: "an earlier issue: advances each tenant's issue runs without a reader present. Reader-visible, unlike the rollup, so it runs every minute."
     guards: null
     secret_entry: null
     depends_on: ["cloud-run-service.swarm-api", "sa.swarm-rollup-sweeper"]
@@ -2787,7 +2787,7 @@ entries:
     check: "gcloud scheduler jobs describe ${name_prefix}-workspace-secrets-rotation-sweep --project=$P --location=$R"
     apply: "terraform/modules/scheduler/jobs.tf:696 google_cloud_scheduler_job.secrets_rotation_sweep, target=api_endpoint + var.secrets_rotation_sweep_path, schedule default '41 * * * *', created unconditionally (literal in main.tf:590)"
     verify: "a rotated-out workspace secret version is disabled at most 1 hour after its 24h grace ends"
-    explain: "#1347 Q5: ends a rotated-out workspace secret's 24-hour grace. Hourly at :41 (clear of :00 and the other sweeps' minutes)."
+    explain: "an earlier issue Q5: ends a rotated-out workspace secret's 24-hour grace. Hourly at :41 (clear of :00 and the other sweeps' minutes)."
     guards: null
     secret_entry: null
     depends_on: ["cloud-run-service.swarm-api"]
@@ -2800,7 +2800,7 @@ entries:
     check: "gcloud scheduler jobs list --project=$P --location=$R --filter='name~stranded-pr-sweep'"
     apply: "terraform/modules/scheduler/jobs.tf:308 google_cloud_scheduler_job.stranded_pr_sweep, for_each=var.rollup_tenant_ids, target=api_endpoint + '/v1/admin/stranded-prs/sweep?tenant_id=<t>', schedule default '19,49 * * * *'"
     verify: "one job named ${name_prefix}-stranded-pr-sweep-<tenant> exists per tenant"
-    explain: "#295: finds each tenant's SwarmCloud-opened PRs nothing is going to merge; redrive is false, read-only plus a logged metric the monitoring module alerts on (monitoring.pr-stranded)."
+    explain: "an earlier issue: finds each tenant's SwarmCloud-opened PRs nothing is going to merge; redrive is false, read-only plus a logged metric the monitoring module alerts on (monitoring.pr-stranded)."
     guards: null
     secret_entry: null
     depends_on: ["cloud-run-service.swarm-api", "sa.swarm-rollup-sweeper"]
@@ -2827,7 +2827,7 @@ entries:
     check: "gcloud scheduler jobs describe ${name_prefix}-workspace-sweep --project=$P --location=$R"
     apply: "terraform/modules/scheduler/jobs.tf:624 google_cloud_scheduler_job.workspace_sweep, target=api_endpoint + var.workspace_sweep_path, schedule default '*/10 * * * *', created unconditionally (literal enable_workspace_sweep=true in main.tf:584, not a tfvars switch)"
     verify: "runs even while switch.workspace_apply_publish is off; an approved workspace record is logged workspace_stuck (reason publishing_off) instead of silently doing nothing"
-    explain: "#847: calls swarm-api's personal-workspace dispatch sweep; a record stuck 15 minutes with no dispatch attempt, or 30 with one nobody claimed, pages through the workspace-stuck alert."
+    explain: "an earlier issue: calls swarm-api's personal-workspace dispatch sweep; a record stuck 15 minutes with no dispatch attempt, or 30 with one nobody claimed, pages through the workspace-stuck alert."
     guards: null
     secret_entry: null
     depends_on: ["cloud-run-service.swarm-api"]
@@ -2853,7 +2853,7 @@ entries:
     check: "gcloud secrets list --project=$P --filter='name~swarm-tenant-'"
     apply: "module.secret_manager -> terraform/modules/secret_manager/main.tf:76 google_secret_manager_secret.this, for_each over module.tenancy.secret_inputs, one per (tenant, provider) pair in var.tenants[t].providers ALSO: EITHER scripts/create-secrets.sh (describe-then-gcloud-secrets-create if missing, user-managed replication pinned to $R) OR swarm-api's CredentialWriter.put_credential (apps/swarm-api/swarm_api/credentials.py create_secret, project-level unconditioned-by-name create grant from terraform/bootstrap/provider_keys.tf) -- TWO WRITERS, see notes"
     verify: "a secret swarm-tenant-<t>-<provider> exists for every provider in that tenant's providers list"
-    explain: "Holds the actual per-tenant, per-provider credential (e.g. swarm-tenant-eng-anthropic). Created EMPTY; scripts/create-secrets.sh --stdin adds the value, never Terraform. ALSO: one container per (tenant, provider in {anthropic,openai,git,typesafe}); the worker and swarm-api read the value under Tenant.secret_name()"
+    explain: "Holds the actual per-tenant, per-provider credential (e.g. swarm-tenant-example-tenant-anthropic). Created EMPTY; scripts/create-secrets.sh --stdin adds the value, never Terraform. ALSO: one container per (tenant, provider in {anthropic,openai,git,typesafe}); the worker and swarm-api read the value under Tenant.secret_name()"
     guards: "admin_members is per-tenant, not global: a single shared admin list would let any one tenant's admin replace another tenant's provider key with one pointing at a proxy they control ALSO: null"
     secret_entry: "scripts/create-secrets.sh --tenant <t> --provider <provider> --stdin"
     depends_on: ["api.secretmanager", "sa.tenant-worker", "sa.swarm-api"]
@@ -2868,7 +2868,7 @@ entries:
     apply: "terraform/infra/qa_targets.tf:39 google_secret_manager_secret.qa_target, secret_id='swarm-tenant-<t>-qa', for_each over a QA-targets map ALSO: terraform/infra/qa_targets.tf:39-43 google_secret_manager_secret.qa_target, for_each over tenants, declared EMPTY (lane VQ-3)"
     verify: "only the declared adder/accessor members can write/read this secret"
     explain: "Per-tenant QA target credential/config used by the acceptance/judge machinery, not a production provider credential. ALSO: one Secret Manager secret per tenant holding the visual-QA login credential JSON keyed by target id; until this terraform is applied every QA credential read/write answers 503 qa_credential_unavailable"
-    guards: "VQ-3, VQ-Q2, #1933"
+    guards: "VQ-3, VQ-Q2, an earlier issue"
     secret_entry: "scripts/create-secrets.sh --tenant <t> --qa --stdin"
     depends_on: ["api.secretmanager"]
     evidence: ["terraform/infra/qa_targets.tf:39-103", "terraform/infra/qa_targets.tf:39-107", "apps/swarm-api/swarm_api/qatargets.py:42-50", "apps/swarm-api/swarm_api/qatargets.py:295", "apps/swarm-api/swarm_api/qatargets.py:505", "apps/swarm-api/swarm_api/qatargets.py:775"]
@@ -2907,14 +2907,14 @@ entries:
     stage: 6
     provider: "org-admin"
     check: "terraform state show var.tailscale_egress_target 2>/dev/null; grep -n tailscale_egress_target terraform/environments/*/*.tfvars"
-    apply: "terraform/infra/tailscale.tf:84 variable \"tailscale_egress_target\", default 'decision-api-staging.taile0bda9.ts.net'"
+    apply: "terraform/infra/tailscale.tf:84 variable \"tailscale_egress_target\", default 'decision-api.example-tailnet.ts.net'"
     verify: "the forwarder dials exactly this one MagicDNS name on 443; the variable's regex validation rejects anything that is not <host>.<tailnet>.ts.net"
-    explain: "Saga's decision API (owner decision 2026-10-14); /jev and /laya paths and the root are all behind this one host, so one forwarder serves both internal judgment backends."
+    explain: "the company's decision API (owner decision 2026-10-14); /jev and /laya paths and the root are all behind this one host, so one forwarder serves both internal judgment backends."
     guards: null
     secret_entry: null
     depends_on: ["secret.swarm-tailscale-oauth.container"]
     evidence: ["terraform/infra/tailscale.tf:76-91"]
-    notes: "HARDCODED LIVE VALUE: this default names a specific live tailnet host (Saga's staging decision API) belonging to the CURRENT project's addon setup. A from-scratch install into a new project almost certainly needs a different value here, or the addon dials somebody else's staging backend."
+    notes: "HARDCODED LIVE VALUE: this default names a specific live tailnet host (the company's staging decision API) belonging to the CURRENT project's addon setup. A from-scratch install into a new project almost certainly needs a different value here, or the addon dials somebody else's staging backend."
   - id: "cloud-run-job.verify"
     kind: "cloud-run-job"
     scope: "core"
@@ -2950,7 +2950,7 @@ entries:
     check: "gcloud run services describe swarm-mcp-test-server --project=$P --region=$R"
     apply: "terraform/infra/mcp_test_server.tf:128 google_cloud_run_v2_service.mcp_test_server"
     verify: "a registered MCP server pointed at this service's URL round-trips a tool call in acceptance"
-    explain: "A real but disposable MCP server for exercising registered-MCP-servers (#1433) in CI without a third-party dependency."
+    explain: "A real but disposable MCP server for exercising registered-MCP-servers in CI without a third-party dependency."
     guards: null
     secret_entry: null
     depends_on: ["sa.mcp-test-server"]
@@ -2963,8 +2963,8 @@ entries:
     check: "gcloud iam roles describe swarmForgeSlotCreator --project=$P"
     apply: "terraform/bootstrap/forge_user_slots.tf resource \"google_project_iam_custom_role\" \"forge_slot_creator\", count=switch.enable_forge_user_slots"
     verify: "permissions == [secretmanager.secrets.create] only"
-    explain: "swarm-api creates each GitHub user's credential slot (swarm-tenant-<t>-git-u-<hex>) at onboarding, self-service (#780). Create-only: no read, version, delete or IAM."
-    guards: "#780, lane OB2"
+    explain: "swarm-api creates each GitHub user's credential slot (swarm-tenant-<t>-git-u-<hex>) at onboarding, self-service. Create-only: no read, version, delete or IAM."
+    guards: "an earlier issue, lane OB2"
     secret_entry: null
     depends_on: ["switch.enable_forge_user_slots"]
     evidence: ["terraform/bootstrap/forge_user_slots.tf:206-220"]
@@ -2977,7 +2977,7 @@ entries:
     apply: "terraform/bootstrap/forge_user_slots.tf resource \"google_project_iam_custom_role\" \"forge_slot_version_manager\", count=switch.enable_forge_user_slots"
     verify: "permissions: versions.disable + versions.enable only -- no versions.destroy (OB3: a disconnect is reversible)"
     explain: "Disable a GitHub user slot's versions on 'Disconnect GitHub' and re-enable on reconnect."
-    guards: "OB3, PR #821, owner decision 2026-10-07"
+    guards: "OB3, owner decision 2026-10-07"
     secret_entry: null
     depends_on: ["switch.enable_forge_user_slots"]
     evidence: ["terraform/bootstrap/forge_user_slots.tf:252-268"]
@@ -3003,8 +3003,8 @@ entries:
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-api@* AND (bindings.role:swarmForgeSlotCreator OR bindings.role:swarmForgeSlotVersionManager OR bindings.role=roles/secretmanager.secretVersionAdder OR bindings.role=roles/secretmanager.secretAccessor)'"
     apply: "terraform/bootstrap/forge_user_slots.tf: forge_slot_creator (unconditioned), forge_slot_version_adder (per-tenant condition), forge_slot_version_manager (per-tenant), forge_refresh_reader (per-tenant secretAccessor, base+refresh), forge_repo_slot_reader (per-tenant, -git-r- slots), plus forge_personal_* (personal tenants) and forge_member_slots_any_tenant (K3, any tenant, behind enable_workspace_kinds)"
     verify: "each per-tenant condition narrows to projects/<n>/secrets/swarm-tenant-<t>-git-u-* (or -git-r- for repo slots); forge_slot_reader (the WORKER's read of base slots) still exists and is NOT yet removed -- superseded-but-kept until terraform/infra's forge_broker has run live in dev"
-    explain: "Self-service GitHub user credential slots: create, publish, disable/enable, and read (refresh token + current access token) for onboarding, refresh and disconnect/reconnect, per Owner decisions D2/D3/D7 (2026-10-07/08) and the user-scoping fix of 2026-10-11 (#1041)."
-    guards: "#780; #1041 (user-scoping fix: a group tenant's worker could otherwise read ANY member's slot by name, not just the submitter's)"
+    explain: "Self-service GitHub user credential slots: create, publish, disable/enable, and read (refresh token + current access token) for onboarding, refresh and disconnect/reconnect, per Owner decisions D2/D3/D7 (2026-10-07/08) and the user-scoping fix of 2026-10-11."
+    guards: "an earlier issue; an earlier issue (user-scoping fix: a group tenant's worker could otherwise read ANY member's slot by name, not just the submitter's)"
     secret_entry: "scripts/create-secrets.sh is never used; swarm-api writes slot values at onboarding/refresh time"
     depends_on: ["role.custom.swarmForgeSlotCreator", "role.custom.swarmForgeSlotVersionManager", "sa.swarm-api", "declared-value.infra_tenants_tfvars"]
     evidence: ["terraform/bootstrap/forge_user_slots.tf:222-541"]
@@ -3016,8 +3016,8 @@ entries:
     provider: "engine"
     check: "grep -n 'ALLOWED_USERS' terraform/infra/locals.tf"
     apply: "terraform/infra/locals.tf:1012-1015 (comment + usage inside local.api_secret_env / service env construction) -- the ALLOWED_USERS env var itself is NOT set by any .tf or .tfvars file in this track today"
-    verify: "swarm-verify@<project>.iam.gserviceaccount.com can authenticate against swarm-api despite its domain not being saga.xyz"
-    explain: "swarm-api admits a caller through ALLOWED_USERS or through the frozen domain check against allowed_domains (saga.xyz). A service account is not a Workspace principal and cannot pass the domain check, so ALLOWED_USERS exists in swarm_api.settings/auth.py specifically for the verify job's identity."
+    verify: "swarm-verify@<project>.iam.gserviceaccount.com can authenticate against swarm-api despite its domain not being example.com"
+    explain: "swarm-api admits a caller through ALLOWED_USERS or through the frozen domain check against allowed_domains (example.com). A service account is not a Workspace principal and cannot pass the domain check, so ALLOWED_USERS exists in swarm_api.settings/auth.py specifically for the verify job's identity."
     guards: null
     secret_entry: null
     depends_on: ["sa.swarm-verify"]
@@ -3031,7 +3031,7 @@ entries:
     check: "gcloud scheduler jobs describe ${name_prefix}-forge-refresh --project=$P --location=$R"
     apply: "terraform/modules/scheduler/jobs.tf:489 google_cloud_scheduler_job.forge_refresh, count gated by var.enable_forge_refresh (default false), target=api_endpoint + var.forge_refresh_path, schedule default '*/15 * * * *'"
     verify: "created only once switch.enable_forge_refresh is true and swarm-api serves POST /v1/admin/forge/refresh"
-    explain: "D2 (#780, OB2): refreshes GitHub user access tokens. 15 minutes: a token lives 8 hours and is refreshed with 2+ left, so 8 ticks fit the margin and a missed one costs nothing."
+    explain: "D2 (OB2): refreshes GitHub user access tokens. 15 minutes: a token lives 8 hours and is refreshed with 2+ left, so 8 ticks fit the margin and a missed one costs nothing."
     guards: null
     secret_entry: null
     depends_on: ["switch.enable_forge_refresh", "cloud-run-service.swarm-api"]
@@ -3044,7 +3044,7 @@ entries:
     check: "gcloud scheduler jobs describe ${name_prefix}-mcp-credentials-sweep --project=$P --location=$R"
     apply: "terraform/modules/scheduler/jobs.tf:787 google_cloud_scheduler_job.mcp_credentials_sweep, count gated by var.enable_mcp_credentials_sweep (= var.mcp_servers_enabled, not a separate switch), target=api_endpoint + '/v1/admin/mcp-credentials/sweep', schedule literal '3-59/10 * * * *'"
     verify: "created only once switch.mcp_servers_enabled is true, and only once terraform/bootstrap's enable_mcp_credentials grant exists"
-    explain: "#1433 Q2: deletes a per-run MCP credential once its task has ended, every 10 minutes."
+    explain: "an earlier issue Q2: deletes a per-run MCP credential once its task has ended, every 10 minutes."
     guards: "without terraform/bootstrap's enable_mcp_credentials grant, swarm-api cannot read a stored credential at attach, so any attempt naming a dispatch server fails before its agent starts"
     secret_entry: null
     depends_on: ["switch.mcp_servers_enabled", "cloud-run-service.swarm-api"]
@@ -3099,7 +3099,7 @@ entries:
     check: "gcloud secrets describe swarm-github-app-client-secret --project=$P"
     apply: "terraform/modules/secret_manager/main.tf:254 google_secret_manager_secret.github_app[\"client-secret\"], gated by var.github_app_secrets_enabled (= var.enable_github_app) ALSO: terraform (modules/secret_manager, per platform_secrets.py:96-97 TERRAFORM marker)"
     verify: "only swarm-api holds secretAccessor; no tenant and no other platform SA does"
-    explain: "Turns an OAuth authorization code into a user access token (#780, OB2). ALSO: paired with the private key to complete the GitHub App's OAuth flow for member sign-in"
+    explain: "Turns an OAuth authorization code into a user access token (OB2). ALSO: paired with the private key to complete the GitHub App's OAuth flow for member sign-in"
     guards: "created EMPTY always, like every secret here -- the slot word pattern (create-secrets.sh --github-app <slot>) means a typo in the script can never create an unbound twin of this id ALSO: null"
     secret_entry: "scripts/create-secrets.sh --github-app client-secret --stdin"
     depends_on: ["switch.enable_github_app", "api.secretmanager", "sa.swarm-api"]
@@ -3181,10 +3181,10 @@ entries:
     stage: 6
     provider: "engine"
     check: "gcloud secrets describe swarm-settings-key --project=$P"
-    apply: "terraform/infra/settings_mac.tf:39 google_secret_manager_secret.settings_mac_key ALSO: terraform (per #1457, docs/design/tenant-settings-integrity.md §5)"
+    apply: "terraform/infra/settings_mac.tf:39 google_secret_manager_secret.settings_mac_key ALSO: terraform (docs/design/tenant-settings-integrity.md §5)"
     verify: "swarm-api and the scheduler both reference SWARM_SETTINGS_KEY once switch.settings_mac_key_ready is true"
     explain: "MAC key over tenant settings documents; lets swarm-api/scheduler detect a re-signed vs tampered settings document. ALSO: MACs every workspace_settings block swarm-api writes; the scheduler verifies before acting on one"
-    guards: "false by default BECAUSE a Cloud Run revision referencing a secret with no version fails to start, and the very first apply creates the container with no version -- flip settings_mac_key_ready only in the apply AFTER scripts/create-secrets.sh --settings-mac-key has run (owner decision on #1457, 2026-10-17) ALSO: #1457"
+    guards: "false by default BECAUSE a Cloud Run revision referencing a secret with no version fails to start, and the very first apply creates the container with no version -- flip settings_mac_key_ready only in the apply AFTER scripts/create-secrets.sh --settings-mac-key has run (owner decision on an earlier issue, 2026-10-17) ALSO: an earlier issue"
     secret_entry: "scripts/create-secrets.sh --settings-mac-key --stdin"
     depends_on: ["api.secretmanager"]
     evidence: ["terraform/infra/settings_mac.tf:39-67", "terraform/infra/variables.tf:1292-1302", "scripts/create-secrets.sh:152-166"]
@@ -3197,7 +3197,7 @@ entries:
     check: "gcloud secrets describe swarm-tailscale-oauth --project=$P"
     apply: "terraform/infra/tailscale.tf:116 google_secret_manager_secret.tailscale_oauth ALSO: terraform/infra/tailscale.tf"
     verify: "the tailscale forwarder authenticates to the tailnet and can reach tailscale.tf:84's target"
-    explain: "Tailscale OAuth client credential the forwarder uses to join the tailnet that fronts decision-api-staging. ALSO: the Tailscale OAuth client (tag:swarmcloud) the tailnet egress logs in with"
+    explain: "Tailscale OAuth client credential the forwarder uses to join the tailnet that fronts decision-api. ALSO: the Tailscale OAuth client (tag:swarmcloud) the tailnet egress logs in with"
     guards: "null"
     secret_entry: "scripts/create-secrets.sh --tailscale-oauth --stdin"
     depends_on: ["api.secretmanager", "cluster.autopilot"]
@@ -3211,12 +3211,12 @@ entries:
     check: "gcloud secrets describe swarm-typesafe-fwd-key --project=$P"
     apply: "terraform/infra/typesafe_fwd.tf:146 google_secret_manager_secret.typesafe_fwd_key ALSO: terraform/infra/typesafe_fwd.tf"
     verify: "only swarm-api (mints) and the forwarder's KSA (verifies) can read it"
-    explain: "HMAC key for the TypeSafe forwarder's ticket scheme (docs/design/workspace-secrets.md §3.5, 'inject' delivery mode, #1347). Dials tailscale.tf's single target, decision-api-staging.taile0bda9.ts.net. ALSO: swarm-api mints attempt TypeSafe tickets; the forwarder verifies them (docs/design/workspace-secrets.md §3.5)"
+    explain: "HMAC key for the TypeSafe forwarder's ticket scheme (docs/design/workspace-secrets.md §3.5, 'inject' delivery mode). Dials tailscale.tf's single target, decision-api.example-tailnet.ts.net. ALSO: swarm-api mints attempt TypeSafe tickets; the forwarder verifies them (docs/design/workspace-secrets.md §3.5)"
     guards: "null"
     secret_entry: "scripts/create-secrets.sh --typesafe-fwd-key --stdin"
     depends_on: ["api.secretmanager", "cluster.autopilot"]
     evidence: ["terraform/infra/typesafe_fwd.tf:1-30", "terraform/infra/typesafe_fwd.tf:146-173", "scripts/create-secrets.sh:65-73"]
-    notes: "Addon scope: typesafe. Per-tenant swarm-tenant-*-typesafe secret versions.access is granted by a custom role only terraform/bootstrap can define/grant (#79) -- cross-track dependency. ALSO: null"
+    notes: "Addon scope: typesafe. Per-tenant swarm-tenant-*-typesafe secret versions.access is granted by a custom role only terraform/bootstrap can define/grant -- cross-track dependency. ALSO: null"
   - id: "secret.swarm-workspace-grant-key.container"
     kind: "secret-container"
     scope: "core"
@@ -3406,7 +3406,7 @@ entries:
     check: "grep -n enable_forge_user_slots terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:178 enable_forge_user_slots = true"
     verify: "plan false removes all forge_user_slots.tf resources"
-    explain: "#780 lane OB2; accounts must already exist (terraform/infra's swarm-api, scripts/register-tenant.sh's workers)."
+    explain: "an earlier issue lane OB2; accounts must already exist (terraform/infra's swarm-api, scripts/register-tenant.sh's workers)."
     guards: null
     secret_entry: null
     depends_on: ["sa.swarm-api"]
@@ -3513,7 +3513,7 @@ entries:
     apply: "terraform/bootstrap/browser_logins.tf resource \"google_project_iam_custom_role\" \"browser_session_provisioner\", count=switch.enable_browser_logins"
     verify: "permissions: secretmanager.secrets.create/get/getIamPolicy/setIamPolicy only"
     explain: "swarm-api creates a personal tenant's browser-session secret and sets that one secret's IAM to its own worker, per-secret (never a project-wide worker grant)."
-    guards: "live browser LB-7, lane L8b/L8c of #1030"
+    guards: "live browser LB-7, lane L8b/L8c of an earlier issue"
     secret_entry: null
     depends_on: ["switch.enable_browser_logins"]
     evidence: ["terraform/bootstrap/browser_logins.tf:142-172"]
@@ -3539,7 +3539,7 @@ entries:
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"front_door_reader\", count = workspace_kinds_on && !front_door_admitter_on"
     verify: "permissions == [iap.webServices.getIamPolicy] only; VERIFIED LIVE 2026-10-20 (file's own record: applied 06:09Z, a retried workspace passed S2 at 06:11Z)"
     explain: "FRONT-DOOR-READ fallback while K1 (admit/write) is off: lets the job check whether the owner already admitted a service account, without granting any write. roles/iap.admin was tried here first and 403'd; this custom role was not, for reasons the file says are 'not known'."
-    guards: "owner decision 2026-10-20, part of #847"
+    guards: "owner decision 2026-10-20"
     secret_entry: null
     depends_on: ["switch.enable_workspace_kinds"]
     evidence: ["terraform/bootstrap/workspace_deployer.tf:945-997"]
@@ -3552,7 +3552,7 @@ entries:
     apply: "terraform/bootstrap/github_hooks_role.tf resource \"google_project_iam_custom_role\" \"github_hooks_dedup\", count=switch.enable_github_hooks_dedup_role"
     verify: "permissions == [datastore.entities.create] only"
     explain: "GitHub push receiver's redelivery dedup (github_deliveries/{delivery-id}, 409 on redelivery). Replaces roles/datastore.user (read-write on every Firestore collection) on a public-facing service."
-    guards: "lane HOOKS-ROLE, part of #1384, owner decision 2026-10-16"
+    guards: "lane HOOKS-ROLE, owner decision 2026-10-16"
     secret_entry: null
     depends_on: ["switch.enable_github_hooks_dedup_role"]
     evidence: ["terraform/bootstrap/github_hooks_role.tf:87-97"]
@@ -3580,7 +3580,7 @@ entries:
     apply: "terraform/bootstrap/mcp_credentials.tf resource \"google_project_iam_custom_role\" \"mcp_credential_accessor\", count=switch.enable_mcp_credentials"
     verify: "permissions: secretmanager.versions.access + secrets.delete only"
     explain: "swarm-api reads a per-run MCP dispatch credential for an attempt's relay and deletes it when the task ends (every 10 minutes via the sweep)."
-    guards: "lane MCP-IAM, part of #1433"
+    guards: "lane MCP-IAM"
     secret_entry: null
     depends_on: ["switch.enable_mcp_credentials"]
     evidence: ["terraform/bootstrap/mcp_credentials.tf:143-158"]
@@ -3606,7 +3606,7 @@ entries:
     apply: "terraform/bootstrap/platform_secret_status.tf resource \"google_project_iam_custom_role\" \"secret_status_viewer\", count=switch.enable_platform_secret_status"
     verify: "permissions: secrets.get + versions.list only, no versions.access"
     explain: "Backs Admin > Platform secrets: whether each platform secret is set, version count and newest age -- metadata only, never a value."
-    guards: "lane SSC-PLATFORM-STATUS, part of #2158"
+    guards: "lane SSC-PLATFORM-STATUS"
     secret_entry: null
     depends_on: ["switch.enable_platform_secret_status"]
     evidence: ["terraform/bootstrap/platform_secret_status.tf:98-111"]
@@ -3619,7 +3619,7 @@ entries:
     apply: "terraform/bootstrap/typesafe_forwarder.tf resource \"google_project_iam_custom_role\" \"typesafe_forwarder_accessor\", count=switch.enable_typesafe_forwarder_read"
     verify: "permissions == [secretmanager.versions.access] only"
     explain: "The TypeSafe forwarder (kubernetes/swarm-system/swarm-typesafe-fwd.yaml) reads exactly the TypeSafe key version an attempt ticket names, under its own WIF-for-GKE identity, so the key never enters the agent pod ('inject' delivery mode)."
-    guards: "lane SEC-INJECT-A, part of #1347"
+    guards: "lane SEC-INJECT-A"
     secret_entry: null
     depends_on: ["switch.enable_typesafe_forwarder_read"]
     evidence: ["terraform/bootstrap/typesafe_forwarder.tf:122-134"]
@@ -3631,7 +3631,7 @@ entries:
     check: "gcloud iam roles describe swarmWorkspaceAccountAdmin --project=$P"
     apply: "terraform/bootstrap/workspace_deployer.tf resource \"google_project_iam_custom_role\" \"workspace\" [\"workspace_account_admin\"]"
     verify: "permissions: iam.serviceAccounts.create/get/getIamPolicy/list/setIamPolicy/serviceAccountKeys.list -- no delete, disable, key create, token, signBlob or actAs"
-    explain: "Project-wide because IAM gives serviceAccountAdmin no resource-name condition (same #334 finding as the deployer's grant); bounded by the call guard and 5 alerts, not by IAM."
+    explain: "Project-wide because IAM gives serviceAccountAdmin no resource-name condition (same an earlier issue finding as the deployer's grant); bounded by the call guard and 5 alerts, not by IAM."
     guards: "docs/workspaces.md §2.4"
     secret_entry: null
     depends_on: ["sa.swarm-workspace-deployer"]
@@ -3684,7 +3684,7 @@ entries:
     apply: "terraform/bootstrap/workspace_secrets.tf resource \"google_project_iam_custom_role\" \"workspace_secret_accessor\", count=switch.enable_workspace_secrets"
     verify: "permissions == [secretmanager.versions.access] only"
     explain: "swarm-api is the ONLY reader of workspace secrets (-wsec-); it releases an attempt's granted secrets to its worker per-request, signed and generation-fenced. No tenant worker holds any read on -wsec-."
-    guards: "lane SEC-IAM, part of #1347, design option B"
+    guards: "lane SEC-IAM, design option B"
     secret_entry: null
     depends_on: ["switch.enable_workspace_secrets"]
     evidence: ["terraform/bootstrap/workspace_secrets.tf:146-160"]
@@ -3723,12 +3723,12 @@ entries:
     check: "grep -n -A10 '^frontend_iap_members' terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:149-155"
     verify: "gcloud iap web get-iam-policy --resource-type=backend-services --service=swarm-ui-backend shows exactly these members"
-    explain: "Who passes the IAP outer gate: domain:saga.xyz plus 4 specific live service-account emails (swarm-verify, oracle-api, swarm-ci-fix, qa-console), each with its own owner-decision comment."
+    explain: "Who passes the IAP outer gate: domain:example.com plus 4 specific live service-account emails (swarm-verify, oracle-api, swarm-ci-fix, qa-console), each with its own owner-decision comment."
     guards: null
     secret_entry: null
     depends_on: ["declared-value.frontend_iap_backends"]
     evidence: ["terraform/bootstrap/terraform.tfvars:130-155"]
-    notes: "Every entry here is a live-instance value: the saga.xyz domain and 4 service-account emails at saga-agents-staging.iam.gserviceaccount.com. A new install must replace all 5 or IAP admits nobody (frontend_iap_members may not be empty -- variables.tf:543-545 -- so an operator who blanks it entirely also fails validation)."
+    notes: "Every entry here is a live-instance value: the example.com domain and 4 service-account emails at example-project.iam.gserviceaccount.com. A new install must replace all 5 or IAP admits nobody (frontend_iap_members may not be empty -- variables.tf:543-545 -- so an operator who blanks it entirely also fails validation)."
   - id: "declared-value.infra_tenants_tfvars"
     kind: "declared-value"
     scope: "core"
@@ -3738,7 +3738,7 @@ entries:
     apply: "terraform/bootstrap/variables.tf:11-34, default \"../environments/dev/dev.tfvars\"; not overridden in terraform.tfvars"
     verify: "the file exists and parses a tenants = { ... } block by the fmt-dependent regex in deployer_service_accounts.tf"
     explain: "The ONE source deployer_service_accounts.tf reads tenant ids from, so the deployer's per-account admin grants never drift from the release's own dev.tfvars. For a tenant-adding PR, the owner applies this root from main pointing at a `git show` copy of the branch's dev.tfvars, never the branch's live code."
-    guards: "#334"
+    guards: "an earlier issue"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/bootstrap/variables.tf:11-34", "terraform/bootstrap/deployer_service_accounts.tf:61-76"]
@@ -3762,14 +3762,14 @@ entries:
     stage: 7
     provider: "engine"
     check: "grep -n -A3 typesafe_user_key_readers terraform/bootstrap/terraform.tfvars"
-    apply: "terraform/bootstrap/terraform.tfvars:224-226 typesafe_user_key_readers = { eng = [\"u-bogdan\"] }"
-    verify: "gcloud secrets get-iam-policy swarm-tenant-u-bogdan-typesafe shows swarm-agent-worker-eng as an accessor"
-    explain: "Lets EVERY member of group tenant eng's worker read u-bogdan's personal TypeSafe key for jev-browser MCP tools (JEV-RUNNER, owner decision 2026-10-14); a documented, consented widening (the worker runs every member's tasks)."
-    guards: "owner decision 2026-10-14, part of #1030"
+    apply: "terraform/bootstrap/terraform.tfvars:224-226 typesafe_user_key_readers = { eng = [\"u-member\"] }"
+    verify: "gcloud secrets get-iam-policy swarm-tenant-team-a-typesafe shows swarm-agent-worker-eng as an accessor"
+    explain: "Lets EVERY member of group tenant eng's worker read u-member's personal TypeSafe key for jev-browser MCP tools (JEV-RUNNER, owner decision 2026-10-14); a documented, consented widening (the worker runs every member's tasks)."
+    guards: "owner decision 2026-10-14"
     secret_entry: null
     depends_on: ["declared-value.infra_tenants_tfvars"]
     evidence: ["terraform/bootstrap/terraform.tfvars:218-226", "terraform/bootstrap/typesafe_user_keys.tf:83-102"]
-    notes: "Tenant-specific live value (eng, u-bogdan) meaningless on a new install; also has a precondition (typesafe_user_keys.tf:96-100) requiring 'eng' to be a tenant in infra_tenant_ids, or the plan fails."
+    notes: "Tenant-specific live value (eng, u-member) meaningless on a new install; also has a precondition (typesafe_user_keys.tf:96-100) requiring 'eng' to be a tenant in infra_tenant_ids, or the plan fails."
   - id: "iam-binding.acceptance-fixture-allusers"
     kind: "iam-binding"
     scope: "addon:ci"
@@ -3779,7 +3779,7 @@ entries:
     apply: "terraform/infra/acceptance_fixture.tf:99 google_storage_bucket_iam_member.acceptance_fixture_public_read, role roles/storage.legacyObjectReader, member allUsers"
     verify: "an unauthenticated curl to the fixture URL succeeds (see bucket.acceptance-fixture verify)"
     explain: "allUsers read is the entire point of this bucket: the acceptance browser profile must load the fixture with no credential."
-    guards: "#1628, 2026-10-19, owner-approved exception to public-bucket scanning"
+    guards: "an earlier issue, 2026-10-19, owner-approved exception to public-bucket scanning"
     secret_entry: null
     depends_on: ["bucket.acceptance-fixture"]
     evidence: ["terraform/infra/acceptance_fixture.tf:95-104"]
@@ -3805,8 +3805,8 @@ entries:
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-quota-broker@* AND bindings.role:swarmSecretLister'"
     apply: "terraform/bootstrap/platform_roles.tf resource \"google_project_iam_member\" \"broker_secret_lister\", for_each gated by switch.grant_broker_secret_lister"
     verify: "the role (and this grant) exists only while swarm-quota-broker already exists"
-    explain: "Project-wide secrets.list/create/getIamPolicy/setIamPolicy/versions.list/destroy(+add while the legacy switch is on), unconditioned by design -- bounded in CODE (quota_broker.secretstore.owned_by_this_platform regex) rather than IAM, an owner-accepted trade from #69."
-    guards: "#69, 2026-09-25; precondition requires every state in adopt_from_infra_states to show custom_roles_owner == terraform/bootstrap"
+    explain: "Project-wide secrets.list/create/getIamPolicy/setIamPolicy/versions.list/destroy(+add while the legacy switch is on), unconditioned by design -- bounded in CODE (quota_broker.secretstore.owned_by_this_platform regex) rather than IAM, an owner-accepted trade from an earlier issue."
+    guards: "an earlier issue, 2026-09-25; precondition requires every state in adopt_from_infra_states to show custom_roles_owner == terraform/bootstrap"
     secret_entry: null
     depends_on: ["sa.swarm-quota-broker", "role.custom.swarmSecretLister", "switch.grant_broker_secret_lister"]
     evidence: ["terraform/bootstrap/platform_roles.tf:361-386"]
@@ -3858,7 +3858,7 @@ entries:
     apply: "terraform/bootstrap/deployer_service_accounts.tf resource \"google_service_account_iam_member\" \"deployer_admin\" (one per account in module.service_account_ids.infra_managed minus swarm-ci-fix/swarm-tf-deployer)"
     verify: "roles/iam.serviceAccountAdmin bound per-account (never project-wide); swarm-ci-fix and swarm-tf-deployer never appear"
     explain: "Replaces a project-wide roles/iam.serviceAccountAdmin (could set IAM on ANY account in the shared project, the other team's included) with per-account grants, exactly on the accounts terraform/infra manages."
-    guards: "#334, owner decision 2026-09-29, from the security review of contract request 30 (#314)"
+    guards: "an earlier issue, owner decision 2026-09-29, from the security review of contract request 30"
     secret_entry: null
     depends_on: ["declared-value.infra_tenants_tfvars"]
     evidence: ["terraform/bootstrap/deployer_service_accounts.tf:92-115"]
@@ -3992,7 +3992,7 @@ entries:
     apply: "terraform/bootstrap/browser_logins.tf resource \"google_project_iam_member\" \"browser_session_provisioner\" + \"browser_login_revoker\""
     verify: "conditions narrow to projects/<n>/secrets/swarm-tenant-u-*-browser-*; secrets.create itself cannot be narrowed (checked on the project) -- documented residual"
     explain: "No worker holds any project-level -browser- grant; swarm-api provisions each secret and grants only that tenant's worker, per secret."
-    guards: "L8b/L8c, #1030; owner-accepted residual deferred to security epic #476 (alert on SetIamPolicy naming anything but swarm-agent-worker-u-*)"
+    guards: "L8b/L8c; owner-accepted residual deferred to security an earlier epic (alert on SetIamPolicy naming anything but swarm-agent-worker-u-*)"
     secret_entry: "swarm-api writes the secret VALUE at runtime (session cookie), never via Terraform or scripts/create-secrets.sh"
     depends_on: ["role.custom.swarmBrowserSessionProvisioner", "role.custom.swarmBrowserLoginRevoker", "sa.swarm-api"]
     evidence: ["terraform/bootstrap/browser_logins.tf:198-234"]
@@ -4069,7 +4069,7 @@ entries:
     provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten='bindings[].members' --filter='bindings.members:swarm-agent-worker-'"
     apply: "terraform/modules/tenancy/main.tf:179 google_project_iam_member.worker_firestore, :201 .worker_telemetry, :219/:246/:260 bucket metadata/read/write, :297 .act_as, :309 .workload_identity"
-    verify: "a tenant worker SA can read/write its own GCS prefix and Firestore namespace but not another tenant's; var.worker_firestore_access=false removes the per-tenant Firestore binding entirely (#1457 design B's last step)"
+    verify: "a tenant worker SA can read/write its own GCS prefix and Firestore namespace but not another tenant's; var.worker_firestore_access=false removes the per-tenant Firestore binding entirely (an earlier issue design B's last step)"
     explain: "Per-tenant grants: Firestore access, telemetry, bucket metadata/read/write scoped by IAM condition to tenants/<id>/, actAs for the services allowed to run as this SA, and the Workload Identity Federation binding letting a GKE pod present this identity."
     guards: "var.worker_firestore_off_tenants_iam lets one tenant's binding be destroyed without touching any other tenant's (one Terraform apply, not a blanket toggle)"
     secret_entry: null
@@ -4093,7 +4093,7 @@ entries:
     scope: "addon:typesafe"
     stage: 7
     provider: "engine"
-    check: "gcloud secrets get-iam-policy swarm-tenant-u-bogdan-typesafe --project=$P"
+    check: "gcloud secrets get-iam-policy swarm-tenant-team-a-typesafe --project=$P"
     apply: "terraform/bootstrap/typesafe_user_keys.tf resource \"google_project_iam_member\" \"typesafe_user_key_reader\""
     verify: "roles/secretmanager.secretAccessor bound to the group's worker, condition pins the exact secret (name + /versions/) by project number"
     explain: "Row-per-(group,person): a person not listed is never readable; a listed group's worker can read, but the IAM grant cannot say 'only for that person's own submitted tasks' -- the worker's own code is what narrows that."
@@ -4108,9 +4108,9 @@ entries:
     provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-verify@* AND bindings.role=roles/container.clusterViewer'"
     apply: "terraform/bootstrap/verify_cluster_read.tf resource \"google_project_iam_member\" \"verify_views_swarm_cluster\""
-    verify: "condition pins resource.name to exactly projects/$P/locations/$R/clusters/swarm-autopilot (and sub-paths); agents-staging (the other team's cluster) cannot match a bare startsWith either, since its name does not start with ours"
+    verify: "condition pins resource.name to exactly projects/$P/locations/$R/clusters/swarm-autopilot (and sub-paths); peer-cluster (the other team's cluster) cannot match a bare startsWith either, since its name does not start with ours"
     explain: "Lets scripts/e2e-test.sh's check [10] ('no task holding capacity against a GKE execution that is gone') read the swarm cluster's endpoint/CA. clusterViewer, not container.viewer, so it carries no Kubernetes object read at all -- only what verify-rbac.yaml's Role binds inside the cluster."
-    guards: "#1754, owner decision 2026-10-20; VERIFY-GKE-READ-2 (owner decision 2026-10-21): must live here, never in terraform/infra, because CI's scoped projectIamAdmin would otherwise need clusterViewer on its grantable list and could then grant it to anyone, reaching agents-staging"
+    guards: "an earlier issue, owner decision 2026-10-20; VERIFY-GKE-READ-2 (owner decision 2026-10-21): must live here, never in terraform/infra, because CI's scoped projectIamAdmin would otherwise need clusterViewer on its grantable list and could then grant it to anyone, reaching peer-cluster"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/bootstrap/verify_cluster_read.tf:46-65"]
@@ -4334,7 +4334,7 @@ entries:
     apply: "terraform/bootstrap/deployer_conditions.tf locals.deployer_type_scoped / deployer_conditions, consumed by the five single resources: deployer_network_admin, deployer_security_admin, deployer_container_admin, deployer_datastore_owner, deployer_logging_config_writer, deployer_project_iam_admin (chunked), deployer_secrets_scoped"
     verify: "each of the six conditions is count-gated on var.deployer_scoped_roles and does nothing while its role is absent from that list"
     explain: "Written-but-mostly-inactive design for scoping the remaining 8 unconditioned deployer roles one release at a time; only roles/resourcemanager.projectIamAdmin and (implicitly ready) swarmSecretProvisioner are wired to go live by naming them in deployer_scoped_roles."
-    guards: "measured against a live 2026-09-24 gcloud listing of saga-agents-staging for every 'ours vs theirs' resource name claim"
+    guards: "measured against a live 2026-09-24 gcloud listing of example-project for every 'ours vs theirs' resource name claim"
     secret_entry: null
     depends_on: ["iam-binding.deployer-project-roles"]
     evidence: ["terraform/bootstrap/deployer_conditions.tf:1-480"]
@@ -4398,29 +4398,29 @@ entries:
     scope: "core"
     stage: 7
     provider: "engine"
-    check: "terraform -chdir=terraform/infra state list | grep broker_secret_lister_moved_to_bootstrap; grep -n saga-agents-staging terraform/infra/*.tf"
-    apply: "terraform/infra/custom_roles_moved_to_bootstrap.tf:115 moved { from = module.iam.google_project_iam_member.plain[\"swarm-quota-broker:projects/saga-agents-staging/roles/swarmSecretLister\"] to = module.iam.google_project_iam_member.broker_secret_lister_moved_to_bootstrap }"
-    verify: "terraform plan on a project other than saga-agents-staging does not spuriously try to move/destroy this resource (the moved block's FROM key is hardcoded to the one project's name)"
+    check: "terraform -chdir=terraform/infra state list | grep broker_secret_lister_moved_to_bootstrap; grep -n example-project terraform/infra/*.tf"
+    apply: "terraform/infra/custom_roles_moved_to_bootstrap.tf:115 moved { from = module.iam.google_project_iam_member.plain[\"swarm-quota-broker:projects/example-project/roles/swarmSecretLister\"] to = module.iam.google_project_iam_member.broker_secret_lister_moved_to_bootstrap }"
+    verify: "terraform plan on a project other than example-project does not spuriously try to move/destroy this resource (the moved block's FROM key is hardcoded to the one project's name)"
     explain: "Records that the broker's swarmSecretLister grant moved from this root to terraform/bootstrap; output custom_roles_owner (same file) is bootstrap's evidence that infra has let go of custom-role ownership."
     guards: "terraform/bootstrap refuses to adopt the nine custom roles until it reads terraform/bootstrap in this root's state (comment above the moved block)"
     secret_entry: null
     depends_on: ["iam-binding.broker-version-adder"]
     evidence: ["terraform/infra/custom_roles_moved_to_bootstrap.tf:105-135"]
-    notes: "SURPRISE / HARDCODED LIVE VALUE: this moved block's FROM address is LITERALLY \"projects/saga-agents-staging/roles/...\" -- the shared staging project's name baked into a resource address string in terraform/infra/*.tf. On a from-scratch install into a NEW project this moved block's source address never existed in the new project's state, so terraform should simply no-op on it (moved blocks are harmless when the FROM resource never existed) -- but it is a clear sign this root's history was written against one specific live project and never fully genericized. Confirm with `terraform plan` on the new project before trusting this is inert."
+    notes: "SURPRISE / HARDCODED LIVE VALUE: this moved block's FROM address is LITERALLY \"projects/example-project/roles/...\" -- the shared staging project's name baked into a resource address string in terraform/infra/*.tf. On a from-scratch install into a NEW project this moved block's source address never existed in the new project's state, so terraform should simply no-op on it (moved blocks are harmless when the FROM resource never existed) -- but it is a clear sign this root's history was written against one specific live project and never fully genericized. Confirm with `terraform plan` on the new project before trusting this is inert."
   - id: "other.removed-tf-forgotten-grants-pattern"
     kind: "other"
     scope: "core"
     stage: 7
     provider: "engine"
-    check: "tf -chdir=terraform/bootstrap state list | grep u_bogdan"
-    apply: "terraform/bootstrap/removed.tf: moved{} + removed{ lifecycle { destroy = false } } pairs for 5 resource instances tied to tenant u-bogdan"
+    check: "tf -chdir=terraform/bootstrap state list | grep u_member"
+    apply: "terraform/bootstrap/removed.tf: moved{} + removed{ lifecycle { destroy = false } } pairs for 5 resource instances tied to tenant u-member"
     verify: "the 5 live grants (deployer_admin on the worker SA, 3 forge-slot grants, 1 forge_slot_reader) are forgotten from Terraform state but untouched live"
-    explain: "Demonstrates the pattern this codebase uses to let a tenant's workspace leave Terraform management (because a person's workspace lives outside Terraform, WD3) WITHOUT destroying its live IAM grants. Specific to the live saga-agents-staging tenant u-bogdan; irrelevant content for a new project but the PATTERN is reusable."
-    guards: "docs/workspaces.md §3.3, lane W9 of #847; file states explicitly these blocks must NEVER be changed to destroy=true"
+    explain: "Demonstrates the pattern this codebase uses to let a tenant's workspace leave Terraform management (because a person's workspace lives outside Terraform, WD3) WITHOUT destroying its live IAM grants. Specific to the live example-project tenant u-member; irrelevant content for a new project but the PATTERN is reusable."
+    guards: "docs/workspaces.md §3.3, lane W9 of an earlier issue; file states explicitly these blocks must NEVER be changed to destroy=true"
     secret_entry: null
     depends_on: ["declared-value.infra_tenants_tfvars"]
     evidence: ["terraform/bootstrap/removed.tf:1-104"]
-    notes: "On a fresh project this file's moved/removed blocks reference resource instances (keyed on \"u-bogdan\") that will never have existed in the new state, so they are harmless no-ops there -- but they are dead, project-specific content worth deleting or templating out for a true day-one fork."
+    notes: "On a fresh project this file's moved/removed blocks reference resource instances (keyed on \"u-member\") that will never have existed in the new state, so they are harmless no-ops there -- but they are dead, project-specific content worth deleting or templating out for a true day-one fork."
   - id: "other.url-map"
     kind: "other"
     scope: "core"
@@ -4509,8 +4509,8 @@ entries:
     check: "gcloud secrets list --project $P --filter='name:swarm-tenant-$T-browser-'"
     apply: "swarm-api's BrowserSlots.provision (browser_slots.py:175-236 SecretManagerSlotVault.provision), reached only via POST /v1/tasks/{task_id}/browser-session/slot, WORKER ONLY, under swarmBrowserSessionProvisioner's PROJECT-LEVEL create (terraform/bootstrap/browser_logins.tf)"
     verify: "gcloud secrets get-iam-policy swarm-tenant-$T-browser-<kind>-<name> shows EXACTLY secretAccessor+secretVersionAdder bound to swarm-agent-worker-<tenant> and nobody else (policy is overwritten, not merged, on every provision)"
-    explain: "three slot shapes under one tenant: -browser-wf-<workflow id> (carry), -browser-park-<task id> (resumed-attempt park, #1362), -browser-login-<name> (saved login); only a personal (u-<id>) tenant may hold one"
-    guards: "#1362, LB-7, LB-L8c, owner decision 2026-10-11"
+    explain: "three slot shapes under one tenant: -browser-wf-<workflow id> (carry), -browser-park-<task id> (resumed-attempt park), -browser-login-<name> (saved login); only a personal (u-<id>) tenant may hold one"
+    guards: "an earlier issue, LB-7, LB-L8c, owner decision 2026-10-11"
     secret_entry: "null (worker-triggered API path only)"
     depends_on: ["sa.swarm-api"]
     evidence: ["apps/agent-worker/agent_worker/browser_login.py:202-225", "apps/agent-worker/agent_worker/browser_login.py:336-357", "apps/swarm-api/swarm_api/browser_slots.py:1-40", "apps/swarm-api/swarm_api/browser_slots.py:160-236", "terraform/bootstrap/browser_logins.tf:1-63", "terraform/bootstrap/browser_logins.tf:142-167"]
@@ -4537,8 +4537,8 @@ entries:
     check: "gcloud secrets list --project $P --filter='name:swarm-tenant-$T-git-u-'"
     apply: "swarm-api at onboarding (forgeapp.py:447 create_secret), under terraform/bootstrap/forge_user_slots.tf's swarmForgeSlotCreator role: secretmanager.secrets.create ONLY, granted at the PROJECT (unconditioned by name, since create cannot see a resource name)"
     verify: "gcloud secrets get-iam-policy swarm-tenant-$T-git-u-<hex> shows only that person's grant"
-    explain: "a member's own per-owner GitHub credential slot, `git-u-<16 hex of sha256(email|owner)>`; self-service at onboarding (#780)"
-    guards: "#780, #1225"
+    explain: "a member's own per-owner GitHub credential slot, `git-u-<16 hex of sha256(email|owner)>`; self-service at onboarding"
+    guards: "an earlier issue, an earlier issue"
     secret_entry: "null"
     depends_on: ["sa.swarm-api"]
     evidence: ["apps/swarm-api/swarm_api/forgeapp.py:17", "apps/swarm-api/swarm_api/forgeapp.py:62-64", "apps/swarm-api/swarm_api/forgeapp.py:291", "apps/swarm-api/swarm_api/forgeapp.py:447", "terraform/bootstrap/forge_user_slots.tf:1-72", "terraform/bootstrap/forge_user_slots.tf:206-231"]
@@ -4552,7 +4552,7 @@ entries:
     apply: "swarm-api's McpCredentials.store at MCP-SUBMIT (mcp_credentials.py:180-192 create_secret, with Secret Manager's own ttl field set)"
     verify: "gcloud secrets describe swarm-tenant-$T-mcpc-<hex> shows an expire_time/ttl and labels managed-by=swarm-api, swarm-kind=mcp-credential"
     explain: "one secret per (submission, server); self-expires via Secret Manager's ttl (expires_in + TTL_MARGIN) so a sweep that never runs still cannot leave it behind"
-    guards: "#1433, MCP-API"
+    guards: "an earlier issue, MCP-API"
     secret_entry: "null (API only)"
     depends_on: ["sa.swarm-api"]
     evidence: ["apps/swarm-api/swarm_api/mcp_credentials.py:1-45", "apps/swarm-api/swarm_api/mcp_credentials.py:147", "apps/swarm-api/swarm_api/mcp_credentials.py:180-192", "apps/swarm-api/swarm_api/mcp_credentials.py:412-414", "terraform/bootstrap/mcp_credentials.tf:11-38", "terraform/bootstrap/mcp_credentials.tf:140-176"]
@@ -4580,7 +4580,7 @@ entries:
     apply: "swarm-api at workspace-secret create (workspace_secrets.py:315-333 create_secret), under terraform/bootstrap/workspace_secrets.tf's conditioned read-only IAM role for swarm-api (the create call itself still needs a project-level unconditioned grant, same shape as forge_user_slots.tf)"
     verify: "gcloud secrets get-iam-policy swarm-tenant-$T-wsec-<hex> shows NO tenant worker account bound -- workspace_secrets.py:38 says the worker is never bound, so the agent cannot mint its own read"
     explain: "a workspace's stored secret (8 random hex + 8 hex of the owning id); release to a worker is phase 2 (SEC-RELEASE), not in this module"
-    guards: "#1347 phase 1 (SEC-STORE-API)"
+    guards: "an earlier issue phase 1 (SEC-STORE-API)"
     secret_entry: "null (API only: create/rotate routes)"
     depends_on: ["sa.swarm-api"]
     evidence: ["apps/swarm-api/swarm_api/workspace_secrets.py:1-60", "apps/swarm-api/swarm_api/workspace_secrets.py:874-906", "apps/swarm-api/swarm_api/workspace_secrets.py:1086-1087", "apps/swarm-api/swarm_api/workspace_secrets.py:1807-1808", "terraform/bootstrap/workspace_secrets.tf:10-47", "terraform/bootstrap/workspace_secrets.tf:99-178"]
@@ -4650,7 +4650,7 @@ entries:
     apply: "McpCredentials.store, called from MCP-SUBMIT's submission path after every other check passes"
     verify: "the attach route (routes/attempts_mcp.py) reads it for an authorized attempt and the MCP call succeeds"
     explain: "value is a local of the submission call, goes to one add_version; the Firestore row carries only the secret's name/version, HMAC-attested under swarm-child-key, never the value"
-    guards: "#1433"
+    guards: "an earlier issue"
     secret_entry: "null (API only)"
     depends_on: ["secret.swarm-tenant-mcpc.container"]
     evidence: ["apps/swarm-api/swarm_api/mcp_credentials.py:28-33"]
@@ -4664,7 +4664,7 @@ entries:
     apply: "workspace_secrets.py create/rotate routes, a workspace admin (group) or the owning person (personal), through SecretWriter.add_version"
     verify: "a release that reads this workspace secret (phase 2, SEC-RELEASE) succeeds for an authorized attempt"
     explain: "value is a local of the call and goes to exactly one add_version call; no record, audit row, log line or error echoes it"
-    guards: "#1347 phase 1"
+    guards: "an earlier issue phase 1"
     secret_entry: "null (API only)"
     depends_on: ["secret.swarm-tenant-wsec.container"]
     evidence: ["apps/swarm-api/swarm_api/workspace_secrets.py:54-60"]
@@ -4691,7 +4691,7 @@ entries:
     apply: "terraform/bootstrap/workspace_dispatch.tf resource \"google_service_account\" \"workspace_dispatch\""
     verify: "its OWN iam-policy is authoritatively empty (no actAs for anyone)"
     explain: "Runs the Eventarc trigger and the dispatch workflow: checks the approval's workspace id/mode against regexes and starts exactly one job execution with those two values. Cannot touch environment, task count or timeout."
-    guards: "docs/workspaces.md §2.1 option (ii), owner decision 2026-10-10, lane W4b of #847"
+    guards: "docs/workspaces.md §2.1 option (ii), owner decision 2026-10-10, lane W4b of an earlier issue"
     secret_entry: null
     depends_on: ["switch.enable_workspace_deployer"]
     evidence: ["terraform/bootstrap/workspace_dispatch.tf:1-93"]
@@ -4704,7 +4704,7 @@ entries:
     apply: "terraform/bootstrap/terraform.tfvars:128 deployer_scoped_roles = [\"roles/resourcemanager.projectIamAdmin\"]"
     verify: "gcloud projects get-iam-policy $P shows the deployer's resourcemanager.projectIamAdmin binding split into exactly 2 condition-chunk bindings (hasOnly() over <=10 roles each) with NO unconditioned sibling binding remaining"
     explain: "First (and, as committed, only) role moved from the deployer's project-wide grant to a conditioned one. One role is added per release, applied between releases, never during one, by explicit owner runbook (the file documents a 6-step, hands-on gcloud sequence, not a pure terraform apply, to avoid a window with zero projectIamAdmin)."
-    guards: "#275 (a prior outage from doing the swap in one step); #68 queue item 16j"
+    guards: "an earlier issue (a prior outage from doing the swap in one step); an earlier issue queue item 16j"
     secret_entry: null
     depends_on: ["iam-binding.deployer-project-roles"]
     evidence: ["terraform/bootstrap/terraform.tfvars:36-128", "terraform/bootstrap/deployer_conditions.tf:551-578"]
@@ -4730,8 +4730,8 @@ entries:
     check: "grep -n broker_secret_lister_project_wide_versions_add terraform/bootstrap/variables.tf"
     apply: "terraform/bootstrap/variables.tf:603-618, default true; not set in terraform.tfvars"
     verify: "swarmSecretLister's permission list includes versions.add only while this is true"
-    explain: "Legacy project-wide write path being retired in favour of terraform/infra's scoped broker_version_adder (modules/iam/custom_roles.tf), which is already live for saga-agents-staging. Flipping false too early (before 7 minutes of IAM propagation on the replacement) can brick an in-flight credential refresh."
-    guards: "measured: swarm-tenant-u-bogdan-anthropic reached 1,816 versions, zero ever destroyed, before retention was added (2026-09-22)"
+    explain: "Legacy project-wide write path being retired in favour of terraform/infra's scoped broker_version_adder (modules/iam/custom_roles.tf), which is already live for example-project. Flipping false too early (before 7 minutes of IAM propagation on the replacement) can brick an in-flight credential refresh."
+    guards: "measured: swarm-tenant-team-a-anthropic reached 1,816 versions, zero ever destroyed, before retention was added (2026-09-22)"
     secret_entry: null
     depends_on: ["switch.grant_broker_secret_lister"]
     evidence: ["terraform/bootstrap/variables.tf:603-618"]
@@ -4758,7 +4758,7 @@ entries:
     apply: "terraform/bootstrap/terraform.tfvars:251 enable_github_hooks_dedup_role = true"
     verify: "role shows up on deployer_grantable_project_roles only while this is on (deployer_conditions.tf)"
     explain: "Also shifts the resourcemanager.projectIamAdmin hasOnly() chunk boundaries (one more role in the sorted, chunked list) -- deployer_conditions.tf's own comment calls this out."
-    guards: "#1384, PR 1423"
+    guards: "an earlier issue, PR 1423"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/bootstrap/terraform.tfvars:246-251"]
@@ -4770,7 +4770,7 @@ entries:
     check: "grep -n enable_mcp_credentials terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:264 enable_mcp_credentials = true"
     verify: "plan false removes role+grant"
-    explain: "MCP-IAM, PR 1503, #1433. Must be applied before SWARM_MCP_SERVERS / dev's mcp_servers_enabled is turned on in terraform/infra."
+    explain: "MCP-IAM, PR 1503, an earlier issue. Must be applied before SWARM_MCP_SERVERS / dev's mcp_servers_enabled is turned on in terraform/infra."
     guards: null
     secret_entry: null
     depends_on: ["sa.swarm-api"]
@@ -4783,7 +4783,7 @@ entries:
     check: "grep -n enable_platform_secret_status terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:276 enable_platform_secret_status = true"
     verify: "plan false removes role+grant"
-    explain: "SSC-PLATFORM-STATUS, PR 2218, #2158. File notes committed ahead of the owner's own apply."
+    explain: "SSC-PLATFORM-STATUS, PR 2218, an earlier issue. File notes committed ahead of the owner's own apply."
     guards: null
     secret_entry: null
     depends_on: ["sa.swarm-api"]
@@ -4824,7 +4824,7 @@ entries:
     apply: "terraform/bootstrap/terraform.tfvars:191 enable_workspace_deployer = true"
     verify: "plan false tears down the whole job/topic/workflow/trigger/account/log-routing tree"
     explain: "Gates the whole personal-workspace subsystem. Requires one-time owner steps first (docs/workspaces.md §10): the image built and promoted, Workflows+Eventarc APIs enabled by an infra release, and forge user slots on."
-    guards: "W4, #847"
+    guards: "W4, an earlier issue"
     secret_entry: null
     depends_on: ["declared-value.workspace_apply_image", "switch.enable_forge_user_slots"]
     evidence: ["terraform/bootstrap/terraform.tfvars:180-192", "terraform/bootstrap/variables.tf:682-697"]
@@ -4837,7 +4837,7 @@ entries:
     apply: "terraform/bootstrap/terraform.tfvars:202 enable_workspace_kinds = true"
     verify: "plan false removes K2/K3 grants; K1 requires swarmFrontDoorAdmitter ALSO added to workspace_deployer_roles, which is NOT in that variable's default and not added in the committed tfvars"
     explain: "Lets the same job build group and service workspaces, not only personal ones. K1 (front-door admit) needs an extra owner step (O1) that this repository's own history records as FAILED (IAP refused the number-form condition, 2026-10-19), so K1 stays off even with this switch on."
-    guards: "docs/design/workspace-kinds.md §4.5, #847; validation requires enable_workspace_deployer AND enable_forge_user_slots both true"
+    guards: "docs/design/workspace-kinds.md §4.5; validation requires enable_workspace_deployer AND enable_forge_user_slots both true"
     secret_entry: null
     depends_on: ["switch.enable_workspace_deployer", "switch.enable_forge_user_slots"]
     evidence: ["terraform/bootstrap/terraform.tfvars:194-202", "terraform/bootstrap/variables.tf:851-880"]
@@ -4849,7 +4849,7 @@ entries:
     check: "grep -n enable_workspace_secrets terraform/bootstrap/terraform.tfvars"
     apply: "terraform/bootstrap/terraform.tfvars:234 enable_workspace_secrets = true"
     verify: "plan false removes the role/grant"
-    explain: "SEC-IAM, PR 1356, #1347. File notes it was applied live 2026-10-15."
+    explain: "SEC-IAM, PR 1356, an earlier issue. File notes it was applied live 2026-10-15."
     guards: null
     secret_entry: null
     depends_on: ["sa.swarm-api"]
@@ -4876,7 +4876,7 @@ entries:
     apply: "terraform/bootstrap/variables.tf:898-912, default TRUE; not overridden in terraform.tfvars"
     verify: "gcloud logging views describe swarm-workers --bucket=swarm-worker-logs --location=$R --project=$P exists before this is true"
     explain: "Gates log_view_read.tf's IAM row L-1 (swarm-api's read of the swarm-workers log view)."
-    guards: "BGD, 2026-10-23, #1960, lane LOG-VIEW-BOOT; moved here from terraform/infra after a release failed with a 403 setting IAM on a view CI could not touch"
+    guards: "the owner, 2026-10-23, lane LOG-VIEW-BOOT; moved here from terraform/infra after a release failed with a 403 setting IAM on a view CI could not touch"
     secret_entry: null
     depends_on: []
     evidence: ["terraform/bootstrap/variables.tf:898-912"]
@@ -4906,7 +4906,7 @@ entries:
     apply: "terraform/bootstrap/qa_identity.tf resource \"google_project_iam_custom_role\" \"qa_jwt_signer\""
     verify: "permissions == [iam.serviceAccounts.signJwt] only -- never roles/iam.serviceAccountTokenCreator (which also carries getAccessToken/getOpenIdToken/signBlob/implicitDelegation)"
     explain: "Bound ONLY on qa-console's own account policy, authoritatively, to swarm-api alone -- never at the project."
-    guards: "#1649, QI-IAM"
+    guards: "an earlier issue, QI-IAM"
     secret_entry: null
     depends_on: ["sa.qa-console"]
     evidence: ["terraform/bootstrap/qa_identity.tf:148-158"]
@@ -4915,7 +4915,7 @@ entries:
     scope: "core"
     stage: 8
     provider: "engine"
-    check: "echo \"${ALLOWED_DOMAINS:-saga.xyz}\" (read from .env, defaulted in apps/common/swarm_common/config.py:46,110)"
+    check: "echo \"${ALLOWED_DOMAINS:-example.com}\" (read from .env, defaulted in apps/common/swarm_common/config.py:46,110)"
     apply: "operator sets ALLOWED_DOMAINS to the fresh deployment's own hosted domain(s) in .env, or ALLOWED_USERS as an additive explicit list for anyone without a domain of their own"
     verify: "an out-of-domain sign-in is refused (register-tenant.sh's own check: 'die ... is outside the allowed hosted domain(s)')"
     explain: "there is no shared bearer token in this platform; hosted-domain allow-listing is the entire authentication boundary beyond a valid Google ID token. Leaving the default of ['gmail.com'] (the only value that would admit a domain-less solo developer) would admit every Google account on earth"
@@ -4933,7 +4933,7 @@ entries:
     apply: "terraform/bootstrap/qa_identity.tf data \"google_iam_policy\" \"qa_identity\" + resource \"google_service_account_iam_policy\" \"qa_identity\""
     verify: "policy holds exactly one binding: swarmQaJwtSigner -> serviceAccount:swarm-api@$P.iam.gserviceaccount.com; nothing else, ever (authoritative, so a hand-added member is removed on next apply)"
     explain: "Whoever can run code as swarm-api can sign a JWT as qa-console; this is the design's accepted trade, documented in full as 'WHAT IT STILL ALLOWS'."
-    guards: "QI-IAM, #1649; precondition at qa_identity.tf:141-144 requires serviceAccount:qa-console@... already in frontend_iap_members"
+    guards: "QI-IAM; precondition at qa_identity.tf:141-144 requires serviceAccount:qa-console@... already in frontend_iap_members"
     secret_entry: null
     depends_on: ["sa.qa-console", "role.custom.swarmQaJwtSigner", "sa.swarm-api"]
     evidence: ["terraform/bootstrap/qa_identity.tf:160-177"]
@@ -4984,13 +4984,13 @@ entries:
     provider: "human-in-console"
     check: "gcloud identity groups lookup --group-email=swarm-admins@<domain>"
     apply: "human step, NOT done in this deployment: create a dedicated swarm-admins@<domain> group and put it in ADMIN_GROUPS / admin_groups so the admin surface is group-governed rather than one named user"
-    verify: "terraform/environments/prod/prod.tfvars:145 names 'group:swarm-admins@saga.xyz' already, but terraform/environments/dev/dev.tfvars:538 documents it does NOT exist in this Workspace"
+    verify: "terraform/environments/prod/prod.tfvars:145 names 'group:swarm-admins@example.com' already, but terraform/environments/dev/dev.tfvars:538 documents it does NOT exist in this Workspace"
     explain: "admin_groups governs who may act across every tenant in swarm-api (reading other tenants' tasks, non-tenant-scoped platform routes); empty is the safe default (no admin at all)"
-    guards: "terraform/environments/dev/dev.tfvars:538-549: 'group:swarm-admins@saga.xyz does not exist in this Workspace, and creating it needs Workspace-admin rights. For dev the platform admin is a NAMED USER, which satisfies the same constraint... Create the group and switch this back before prod, where one named human is a single point of failure' -- and it must never be a tenant's own group, which terraform/infra/variables.tf's validation enforces by construction only for secret_admin_members, not for admin_groups generally"
+    guards: "terraform/environments/dev/dev.tfvars:538-549: 'group:swarm-admins@example.com does not exist in this Workspace, and creating it needs Workspace-admin rights. For dev the platform admin is a NAMED USER, which satisfies the same constraint... Create the group and switch this back before prod, where one named human is a single point of failure' -- and it must never be a tenant's own group, which terraform/infra/variables.tf's validation enforces by construction only for secret_admin_members, not for admin_groups generally"
     secret_entry: null
     depends_on: ["workspace-group.cloud-identity-presence"]
     evidence: ["terraform/environments/dev/dev.tfvars:533-551", "terraform/environments/prod/prod.tfvars:145", "terraform/infra/variables.tf:700-765"]
-    notes: "SURPRISE: prod.tfvars already names a group that dev.tfvars documents as never created in this Workspace -- prod's config is therefore unproven to actually resolve until someone creates swarm-admins@saga.xyz by hand. A fresh install inherits the same gap unless it creates its own admin group before first use of its prod-shaped tfvars"
+    notes: "SURPRISE: prod.tfvars already names a group that dev.tfvars documents as never created in this Workspace -- prod's config is therefore unproven to actually resolve until someone creates swarm-admins@example.com by hand. A fresh install inherits the same gap unless it creates its own admin group before first use of its prod-shaped tfvars"
   - id: "workspace-group.cloud-identity-presence"
     kind: "workspace-group"
     scope: "core"
@@ -5051,7 +5051,7 @@ entries:
     stage: 9
     provider: "engine"
     check: "grep -n ci_fix_service_account terraform/bootstrap/terraform.tfvars; gcloud iam service-accounts describe swarm-ci-fix@$P.iam.gserviceaccount.com"
-    apply: "terraform/bootstrap/terraform.tfvars:34 ci_fix_service_account = \"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\""
+    apply: "terraform/bootstrap/terraform.tfvars:34 ci_fix_service_account = \"swarm-ci-fix@example-project.iam.gserviceaccount.com\""
     verify: "the account exists and is bound in ci_fix.tf's google_service_account_iam_member.ci_fix_wif"
     explain: "The CI-fix bot's identity, federated from ci-fix.yml@refs/heads/main only. This account is NOT created anywhere in terraform/bootstrap or the modules in scope -- it must already exist."
     guards: "ci_fix.tf precondition refuses naming the deployer's own account (would give a PR-comment-only workflow projectIamAdmin)"
@@ -5081,7 +5081,7 @@ entries:
     apply: "human step, PER INSTALLATION (an org's owners must separately accept any permission the App newly requests -- the platform cannot grant itself anything): accept the App's Commit statuses: Read update on the org's installation settings page (review_url)"
     verify: "a merge no longer fails token_lacks_rights on /commits/{sha}/status"
     explain: "the merge step reads the combined commit status on every merge (not only when a status check is required), so this permission's absence is the single most commonly missed grant: it is a silent gap until a merge actually needs it"
-    guards: "docs/onboarding.md:342-346 and docs/merge-step.md:857-866: on 2026-10-11 every merge on sagaxyz/ai-studio failed with token_lacks_rights because the App had been changed to request Commit statuses: read but the org had not accepted the update, and nothing in the console said so before the console permissions-health feature (GET /v1/forge/permissions) was built in response"
+    guards: "docs/onboarding.md:342-346 and docs/merge-step.md:857-866: on 2026-10-11 every merge on example-org/peer-app failed with token_lacks_rights because the App had been changed to request Commit statuses: read but the org had not accepted the update, and nothing in the console said so before the console permissions-health feature (GET /v1/forge/permissions) was built in response"
     secret_entry: null
     depends_on: ["github-app-setting.tenant-forge-app"]
     evidence: ["docs/onboarding.md:342-382", "docs/merge-step.md:855-866"]
@@ -5091,15 +5091,15 @@ entries:
     scope: "addon:ci"
     stage: 9
     provider: "human-in-console"
-    check: "gh variable list --repo bogdan-alexandrescu/SwarmCloud ; gh secret list --repo bogdan-alexandrescu/SwarmCloud (names only, never values)"
-    apply: "human step, THIS REPOSITORY's own CI only, entirely separate from the tenant-facing GitHub App above: create a second GitHub App 'swarmcloud-merge' (Contents RW, Pull requests RW, Workflows RW, Actions variables RW, Metadata R-auto), install it ONLY on bogdan-alexandrescu/SwarmCloud, generate a private key, then gh variable set MERGE_APP_ID and gh secret set MERGE_APP_PRIVATE_KEY on this repo"
+    check: "gh variable list --repo example-org/example-repo ; gh secret list --repo example-org/example-repo (names only, never values)"
+    apply: "human step, THIS REPOSITORY's own CI only, entirely separate from the tenant-facing GitHub App above: create a second GitHub App 'swarmcloud-merge' (Contents RW, Pull requests RW, Workflows RW, Actions variables RW, Metadata R-auto), install it ONLY on example-org/example-repo, generate a private key, then gh variable set MERGE_APP_ID and gh secret set MERGE_APP_PRIVATE_KEY on this repo"
     verify: "a ready-labelled PR's auto-merge.yml run shows 'queue for auto-merge' green and, after merge, application.yml and release.yml both start on the push to main (proof the merge went through the App's token, which raises a push event, not the workflow's own GITHUB_TOKEN, which does not)"
     explain: "a merge made with the workflow's own GITHUB_TOKEN raises no push event, so the one image build (application.yml) and release.yml never run for main; this App exists solely to make auto-merge on THIS repository's own PRs raise that event. It is unrelated to any tenant's own forge token and shares no credential with it"
     guards: "docs/runbooks/merge-app.md:54-68: the App was first set up with only Contents/Pull requests/Workflows, and every scheduled judge run failed minting a token with 'permissions requested are not granted' until Variables RW was added (2026-10-26) -- and even then it failed once more because create-github-app-token's permission-variables input must be spelled permission-actions-variables (GitHub's API key for the 'Variables' permission is actions_variables, not variables)"
-    secret_entry: "gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < <downloaded .pem>, file deleted immediately after"
+    secret_entry: "gh secret set MERGE_APP_PRIVATE_KEY --repo example-org/example-repo < <downloaded .pem>, file deleted immediately after"
     depends_on: []
     evidence: ["docs/runbooks/merge-app.md:1-68", "docs/runbooks/merge-app.md:186-246"]
-    notes: "a fresh install that forks or copies this repository needs its OWN merge App, its own MERGE_APP_ID/MERGE_APP_PRIVATE_KEY, installed on ITS fork -- bogdan-alexandrescu/SwarmCloud throughout this runbook and the workflow files is this repository's own hard-coded identity, not a deployment parameter (see p4-hardcoded.md)"
+    notes: "a fresh install that forks or copies this repository needs its OWN merge App, its own MERGE_APP_ID/MERGE_APP_PRIVATE_KEY, installed on ITS fork -- example-org/example-repo throughout this runbook and the workflow files is this repository's own hard-coded identity, not a deployment parameter (see p4-hardcoded.md)"
   - id: "github-app-setting.push-webhook"
     kind: "github-app-setting"
     scope: "core"
@@ -5119,10 +5119,10 @@ entries:
     stage: 9
     provider: "human-in-console"
     check: "an App owner reads its permissions at https://github.com/settings/apps/<slug>/permissions (or GET /app with the App's own JWT)"
-    apply: "human step: Settings -> Developer settings -> GitHub Apps -> New GitHub App, on an org the owner controls (not one person's account). Homepage https://swarm.saga.xyz, Callback https://swarm.saga.xyz/onboarding/github/callback, Expire user tokens ticked, Request user authorization during installation ticked, Device Flow unticked, Webhook unticked until Step 9"
+    apply: "human step: Settings -> Developer settings -> GitHub Apps -> New GitHub App, on an org the owner controls (not one person's account). Homepage https://swarm.example.com, Callback https://swarm.example.com/onboarding/github/callback, Expire user tokens ticked, Request user authorization during installation ticked, Device Flow unticked, Webhook unticked until Step 9"
     verify: "repository permissions match exactly: Contents RW, Pull requests RW, Issues RW, Checks R, Metadata R (mandatory), Actions RW, Workflows RW, Secrets RW, Environments RW -- nothing else, and NOT Administration"
     explain: "every tenant's forge access (clone/push, PR open/update, CI read, merge, Actions secrets writing) runs through this one App's installation tokens, minted per-tenant from the stored client secret + private key"
-    guards: "docs/runbooks/github-app.md:170-198 lists the exact permission table with per-row rationale; Workflows:RW was added 2026-10-23 (#2029) and each installation's owner must separately accept it before a workflow-touching push works; Secrets/Environments RW added for SSC-ACTIONS-API (#2158)"
+    guards: "docs/runbooks/github-app.md:170-198 lists the exact permission table with per-row rationale; Workflows:RW was added 2026-10-23 and each installation's owner must separately accept it before a workflow-touching push works; Secrets/Environments RW added for SSC-ACTIONS-API"
     secret_entry: "scripts/create-secrets.sh --github-app client-secret --stdin ; scripts/create-secrets.sh --github-app private-key --stdin < downloaded .pem, then the .pem file is deleted"
     depends_on: ["oauth-brand.iap"]
     evidence: ["docs/runbooks/github-app.md:150-198", "docs/runbooks/github-app.md:216-230"]
@@ -5132,10 +5132,10 @@ entries:
     stage: 9
     provider: "engine"
     check: "gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-accept@*'"
-    apply: "terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED, #965) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix)"
+    apply: "terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix)"
     verify: "swarmAcceptanceRunner/Lister carry no create/update/delete/IAM permission"
-    explain: "The run.jobs.* grant is project-wide and UNCONDITIONED by owner decision (#965): Cloud Run exposes no resource.name to IAM Conditions, so a job-name condition was tried and silently matched nothing (measured against the IAM Policy Troubleshooter). What bounds the account is that only accept.yml@main can become it, not a condition -- it can start/cancel ANY Cloud Run job in the shared project, including the other team's."
-    guards: "#965, owner-accepted trade-off, 2026-10-09"
+    explain: "The run.jobs.* grant is project-wide and UNCONDITIONED by owner decision: Cloud Run exposes no resource.name to IAM Conditions, so a job-name condition was tried and silently matched nothing (measured against the IAM Policy Troubleshooter). What bounds the account is that only accept.yml@main can become it, not a condition -- it can start/cancel ANY Cloud Run job in the shared project, including the other team's."
+    guards: "an earlier issue, owner-accepted trade-off, 2026-10-09"
     secret_entry: null
     depends_on: ["sa.swarm-accept"]
     evidence: ["terraform/bootstrap/acceptance.tf:85-194"]
@@ -5203,7 +5203,7 @@ entries:
     apply: "terraform/bootstrap/acceptance.tf resource \"google_service_account\" \"acceptance\", count=wif_enabled"
     verify: "repository variable GCP_ACCEPT_SA equals this account's email"
     explain: "Post-deploy acceptance's identity (accept.yml, outside the release's lock): starts swarm-verify and worker jobs, reads their executions, reads the swarm-verify log view and releases/ state-bucket prefix. Cannot plan, apply, promote or touch IAM."
-    guards: "owner decision 2026-10-08, #965 (cuts A and C of the release timing report)"
+    guards: "owner decision 2026-10-08, an earlier issue (cuts A and C of the release timing report)"
     secret_entry: null
     depends_on: ["other.wif-github-pool-and-provider"]
     evidence: ["terraform/bootstrap/acceptance.tf:68-75"]
@@ -5254,7 +5254,7 @@ entries:
     check: "grep -n forge_broker terraform/environments/*/*.tfvars"
     apply: "terraform/infra/child_tasks.tf:70, type bool, default false"
     verify: "a worker obtains a person's git-u- slot ONLY from swarm-api, proven with its attempt key, and fails closed without this on"
-    explain: "#1041: turns on the forge-credential broker, rendered as FORGE_BROKER into swarm-api and the scheduler."
+    explain: "an earlier issue: turns on the forge-credential broker, rendered as FORGE_BROKER into swarm-api and the scheduler."
     guards: null
     secret_entry: null
     depends_on: []
@@ -5538,11 +5538,11 @@ entries:
     apply: "kubernetes/namespaces/tenant-namespace.yaml:44 (Namespace), rendered by kubernetes/render.py and applied by kubernetes/apply.sh --tenant $T --confirm; ALSO the release workflow's release-namespaces job, but ONLY when vars.APPLY_TENANT_NAMESPACES is 'true' (off by default -- see notes)"
     verify: "kubectl get ns swarm-tenant-$T -o yaml shows the expected labels; a worker Job dispatches into it"
     explain: "one namespace per tenant; NAMESPACE_PREFIX + tenant id"
-    guards: "#1590"
+    guards: "an earlier issue"
     secret_entry: "null"
     depends_on: ["cluster-policy.swarm-workspace-deployer-scope"]
     evidence: ["kubernetes/render.py:399-419", "kubernetes/namespaces/tenant-namespace.yaml:44"]
-    notes: "APPLY_TENANT_NAMESPACES (a GitHub Actions vars.* flag) is OFF by default as of docs/workspaces.md:136 ('which is the case today'); until an operator sets it true, CI's release-namespaces job applies NOTHING for tenant namespaces, so a from-scratch install's first tenant namespace must be applied by hand with kubernetes/apply.sh --tenant $T --confirm, or the var must be flipped first (#1590, docs/design/workspace-kinds.md:99,874)"
+    notes: "APPLY_TENANT_NAMESPACES (a GitHub Actions vars.* flag) is OFF by default as of docs/workspaces.md:136 ('which is the case today'); until an operator sets it true, CI's release-namespaces job applies NOTHING for tenant namespaces, so a from-scratch install's first tenant namespace must be applied by hand with kubernetes/apply.sh --tenant $T --confirm, or the var must be flipped first (docs/design/workspace-kinds.md:99,874)"
   - id: "namespace-object.tenant-resourcequota"
     kind: "namespace-object"
     scope: "core"
@@ -5552,7 +5552,7 @@ entries:
     apply: "kubernetes/namespaces/tenant-namespace.yaml:87 (ResourceQuota), same document stream as the namespace"
     verify: "kubectl describe resourcequota -n swarm-tenant-$T shows the flat ceiling; a pod over it is refused at admission with the quota's own message, not a scheduling stall"
     explain: "a FLAT ceiling for every tenant (owner decision, render.py:1597); a GKE-path backstop, NOT a platform-wide cap -- the Cloud Run worker path is unaffected (kubernetes/README.md:266-272)"
-    guards: "#2039"
+    guards: "an earlier issue"
     secret_entry: "null"
     depends_on: ["namespace-object.tenant-namespace"]
     evidence: ["kubernetes/namespaces/tenant-namespace.yaml:87", "kubernetes/render.py:1597", "kubernetes/README.md:19", "kubernetes/README.md:266-272"]
@@ -5565,8 +5565,8 @@ entries:
     check: "kubectl --context $E -n swarm-tenant-$T get configmap swarm-spec-verify-keys"
     apply: "kubernetes/render.py:1166,1289 renders it from 'terraform output -json spec_verify_keys_configmap'; applied by kubernetes/apply.sh --spec-verify-keys (apply.sh:1096-1098)"
     verify: "kubectl get configmap swarm-spec-verify-keys -n swarm-tenant-$T -o yaml; its data matches the current step-spec signing key version"
-    explain: "the GKE worker's FALLBACK source of step-spec verification keys; the primary path is SPEC_VERIFY_KEYS in the scheduler-set pod env at Job creation (owner decision 2026-10-08, since #346)"
-    guards: "#346, docs/runbooks/spec-signing-rollout.md"
+    explain: "the GKE worker's FALLBACK source of step-spec verification keys; the primary path is SPEC_VERIFY_KEYS in the scheduler-set pod env at Job creation (owner decision 2026-10-08, since an earlier issue)"
+    guards: "an earlier issue, docs/runbooks/spec-signing-rollout.md"
     secret_entry: "null"
     depends_on: ["namespace-object.tenant-namespace"]
     evidence: ["kubernetes/render.py:1166", "kubernetes/render.py:1289", "kubernetes/render.py:1582", "kubernetes/apply.sh:228", "kubernetes/apply.sh:1096", "kubernetes/apply.sh:1098", "kubernetes/worker-templates/worker-job.yaml:253", "kubernetes/worker-templates/worker-job.yaml:294"]
@@ -5732,7 +5732,7 @@ entries:
     check: "grep -n repository_grants_enforced terraform/environments/*/*.tfvars"
     apply: "terraform/infra/variables.tf:981, type bool, default false"
     verify: "turn on only once people can connect GitHub (switch.enable_github_app is on and registered)"
-    explain: "swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4): whether a person's task on a repo they haven't chosen under Access is refused 403 REPOSITORY_NOT_GRANTED. A service-account submission always keeps the tenant token regardless."
+    explain: "swarm-api's REPOSITORY_GRANTS_ENFORCED (an earlier issue D4): whether a person's task on a repo they haven't chosen under Access is refused 403 REPOSITORY_NOT_GRANTED. A service-account submission always keeps the tenant token regardless."
     guards: null
     secret_entry: null
     depends_on: ["switch.enable_github_app"]
@@ -5776,8 +5776,8 @@ entries:
     check: "gcloud alpha monitoring policies list --project=$P --format='value(displayName)' | wc -l"
     apply: "module.monitoring -> terraform/modules/monitoring/alerts.tf (13 policies: safety_tick_absent, service_errors, job_failures, generation_fenced, dead_letter_backlog, wake_backlog, tasks_dead_lettered, dispatch_failing_by_backend, reconciler_blind, spec_signature_invalid, worker_action_ended, schedule_needs_attention, workspace_stuck) + terraform/modules/monitoring/stranded_prs.tf:89 (pr_stranded) + terraform/modules/monitoring/tenant_namespace.tf:99 (tenant_namespace_mismatch) + terraform/modules/monitoring/workspace_alerts.tf:370 for_each over 6 keys (outside_personal_workers, foreign_runtime, job_changed, foreign_run, front_door_iam, tenant_secret_iam) = 21 total"
     verify: "gcloud alpha monitoring policies list --project=$P --format='value(displayName)' returns exactly 21 swarm-prefixed policies, and each has at least one notification channel attached"
-    explain: "Every pool/fencing/dispatch/reconciler/workspace failure mode this platform knows about has an alert. #1817: until 2026-10-21, every one of the 21 policies had NO notification channel -- they fired and notified nobody. A guard (require_alert_channels) now fails the plan if no channel is set."
-    guards: "#1817 -- 21 policies reached nobody; guarded now by a plan-time error_message requiring extra_notification_channels and/or urgent_notification_channels to be set"
+    explain: "Every pool/fencing/dispatch/reconciler/workspace failure mode this platform knows about has an alert. An earlier issue: until 2026-10-21, every one of the 21 policies had NO notification channel -- they fired and notified nobody. A guard (require_alert_channels) now fails the plan if no channel is set."
+    guards: "an earlier issue -- 21 policies reached nobody; guarded now by a plan-time error_message requiring extra_notification_channels and/or urgent_notification_channels to be set"
     secret_entry: null
     depends_on: ["monitoring.notification-channel", "api.monitoring"]
     evidence: ["terraform/modules/monitoring/alerts.tf:14-173", "terraform/modules/monitoring/stranded_prs.tf:89", "terraform/modules/monitoring/tenant_namespace.tf:99", "terraform/modules/monitoring/workspace_alerts.tf:224-373"]
@@ -5919,7 +5919,7 @@ entries:
     secret_entry: "the merge App's key, stored with create-secrets.sh --stdin; never in the repository (owner rule 2026-09-25)"
     depends_on: ["other.ready-screen"]
     evidence: ["terraform/bootstrap/wif.tf:72", "terraform/bootstrap/ci_fix.tf:29-34", "docs/runbooks/merge-app.md:54-68"]
-    notes: "merge-train.yml:98 checks a literal repository name; the runner label bogdan-ci is hard-coded in workflows."
+    notes: "merge-train.yml:98 checks a literal repository name; the runner label example-ci is hard-coded in workflows."
   - id: "addon.typesafe"
     kind: "addon"
     scope: "addon:typesafe"
@@ -5960,7 +5960,7 @@ entries:
     secret_entry: null
     depends_on: []
     evidence: ["plugin/.claude-plugin/plugin.json:72-76", "docs/runbooks/iap-desktop-client.md:223-229"]
-    notes: "hard-coded live value: the repository owner/name (bogdan-alexandrescu/SwarmCloud) and the exact tag (sc-v0.5.74) are both literal in plugin.json; see p4-hardcoded.md"
+    notes: "hard-coded live value: the repository owner/name (example-org/example-repo) and the exact tag (sc-v0.5.74) are both literal in plugin.json; see p4-hardcoded.md"
   - id: "other.ready-screen"
     kind: "other"
     scope: "core"
@@ -6162,7 +6162,7 @@ entries:
     stage: 0
     provider: "company-external"
     check: "curl -fsI https://storage.googleapis.com/swarmcloud/channels/stable"
-    apply: "NEW (DAYONE-RELHOME-1, run by BGD in project swarmcloud-prod): Artifact Registry us-docker.pkg.dev/swarmcloud-prod/swarmcloud, bucket gs://swarmcloud, KMS key swarmcloud-release/cosign, public read under the one org-policy exception (Q4)"
+    apply: "NEW (DAYONE-RELHOME-1, run by the owner in project swarmcloud-prod): Artifact Registry us-docker.pkg.dev/swarmcloud-prod/swarmcloud, bucket gs://<release-bucket>, KMS key swarmcloud-release/cosign, public read under the one org-policy exception (Q4)"
     verify: "an unauthenticated read of the stable channel and an image manifest by digest both answer 200"
     explain: "D25: where a company's install fetches the release; its deployment never depends on it after the copy (D21)."
     guards: null
@@ -6176,7 +6176,7 @@ entries:
     stage: 15
     provider: "company-external"
     check: "curl -fsS https://storage.googleapis.com/swarmcloud/marketplace.json | jq -e '.plugins[] | select(.name == \"sc\")'"
-    apply: "NEW (DAYONE-RELEASE-1): marketplace.json and releases/<V>/plugin/ published to gs://swarmcloud"
+    apply: "NEW (DAYONE-RELEASE-1): marketplace.json and releases/<V>/plugin/ published to gs://<release-bucket>"
     verify: "the D28 line installs sc@swarmcloud with deployment_url as its only value"
     explain: "D28: the marketplace lives in the release home, not the deployment."
     guards: null
@@ -6248,7 +6248,7 @@ entries:
     check: "gcloud run services describe swarm-api --format=json | jq '.spec.template.spec.containers[0].env[] | select(.name==\"GROUPS_AUTH\")'"
     apply: "NEW (DAYONE-IDENTITY-1 reads it, DAYONE-TF-2 renders it, DAYONE-ENGINE-3 sets admin_role for installs)"
     verify: "stage 8's probe passes through swarm-api in the mode it runs"
-    explain: "Q2: installs read groups with the Groups Reader admin role; the live deployment keeps delegation until BGD flips it."
+    explain: "Q2: installs read groups with the Groups Reader admin role; the live deployment keeps delegation until the owner flips it."
     guards: "lesson 20"
     secret_entry: null
     depends_on: ["workspace-delegation.groups-reader-admin-role"]
@@ -6288,7 +6288,7 @@ entries:
     stage: 4
     provider: "engine"
     check: "the public key file in the engine wheel equals the KMS public key of swarmcloud-release/cosign"
-    apply: "NEW (DAYONE-ENGINE-3, after BGD runs scripts/release-home.sh): swarm_install/release_key.pub"
+    apply: "NEW (DAYONE-ENGINE-3, after the owner runs scripts/release-home.sh): swarm_install/release_key.pub"
     verify: "cosign verify of every image digest passes with the pinned key before the copy"
     explain: "D21: signatures are verified on install and upgrade against a key the engine carries, not one fetched beside the images."
     guards: null

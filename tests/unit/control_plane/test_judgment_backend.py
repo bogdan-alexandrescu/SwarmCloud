@@ -38,11 +38,12 @@ from swarm_api.groups import StaticGroups
 from swarm_api.judgment import (
     AUDIT_JUDGMENT_SET,
     BACKENDS,
+    DECISION_API_TAILNET_NAME_ENV,
     DEFAULT_BACKEND,
-    INTERNAL_DECISION_ORIGIN,
     INTERNAL_JEV,
     INTERNAL_LAYA,
     LABELS,
+    NAME_UNSET,
     SETTINGS_COLLECTION,
     TYPESAFE_BACKEND,
     availability,
@@ -57,6 +58,18 @@ from .fakes import FakeFirestore
 from .test_provider_keys import fake_key, seed_personal
 
 ROUTE = "/v1/workspaces/{}/judgment-backend"
+
+
+#: A placeholder tailnet name, as the platform renders it in
+#: SWARM_DECISION_API_TAILNET_NAME; INTERNAL_DECISION_API_URL is its origin.
+TAILNET_NAME = "decision-api.example-tailnet.ts.net"
+INTERNAL_DECISION_ORIGIN = f"https://{TAILNET_NAME}"
+
+
+@pytest.fixture(autouse=True)
+def tailnet_name(monkeypatch) -> str:
+    monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, TAILNET_NAME)
+    return TAILNET_NAME
 
 
 @pytest.fixture
@@ -125,7 +138,7 @@ def test_the_three_backends_and_the_default_are_the_owners():
     assert (INTERNAL_LAYA, TYPESAFE_BACKEND) == ("internal-laya", "typesafe")
     assert LABELS[INTERNAL_JEV] == "Jev (Internal)"
     assert LABELS[TYPESAFE_BACKEND] == "Jev (TypeSafe)"
-    assert INTERNAL_DECISION_ORIGIN == "https://decision-api-staging.taile0bda9.ts.net"
+    assert DECISION_API_TAILNET_NAME_ENV == "SWARM_DECISION_API_TAILNET_NAME"
 
 
 # -- availability: a pure matrix ------------------------------------------------
@@ -146,6 +159,23 @@ def test_availability_matrix(internal_enabled, typesafe_key):
     assert (reason is None) is typesafe_key
     if not typesafe_key:
         assert "TypeSafe key" in reason
+
+
+@pytest.mark.parametrize("name", ["", "decision-api", INTERNAL_DECISION_ORIGIN])
+def test_the_internal_backends_on_without_the_tailnet_name_are_refused(monkeypatch, name):
+    """INTERNAL_DECISION_API_URL set and SWARM_DECISION_API_TAILNET_NAME unset
+    or misshapen: the internal backends are unavailable with the fixed reason,
+    never offered against a guessed host."""
+    monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, name)
+    table = availability(internal_enabled=True, typesafe_key=True)
+    assert table[INTERNAL_JEV] == table[INTERNAL_LAYA] == (False, NAME_UNSET)
+    assert "SWARM_DECISION_API_TAILNET_NAME is unset" in NAME_UNSET
+    assert table[TYPESAFE_BACKEND] == (True, None)
+    status = jev_status(INTERNAL_JEV, internal_enabled=True, typesafe_key=False)
+    assert status["available"] is False and status["reason"] == NAME_UNSET
+    # Given explicitly, the name decides; the environment is not read.
+    assert availability(internal_enabled=True, typesafe_key=False,
+                        tailnet_name=TAILNET_NAME)[INTERNAL_JEV] == (True, None)
 
 
 def test_the_status_says_the_chosen_backend_its_label_and_whether_it_works():

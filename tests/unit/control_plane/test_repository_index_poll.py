@@ -461,7 +461,7 @@ def test_a_refused_read_is_recorded_as_the_reason_nothing_was_built(
         ({"current_sha": ONE}, TWO, TWO, 121, ("change", "change")),
         ({"current_sha": ONE}, TWO, TWO, 10, (None, "throttled")),
         # 30 minutes was the default before #2524; 120 is. A stored 30 reads
-        # literally as 30 (BGD 2026-10-28: migrated by a script, not on read).
+        # literally as 30 (the owner 2026-10-28: migrated by a script, not on read).
         ({"current_sha": ONE}, TWO, TWO, 31, (None, "throttled")),
         ({"current_sha": ONE, "min_change_interval_minutes": 30}, TWO, TWO, 31,
          ("change", "change")),

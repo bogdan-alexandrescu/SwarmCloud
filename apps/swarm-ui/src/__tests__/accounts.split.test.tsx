@@ -162,7 +162,7 @@ describe('the list is the ranked table, with Add account in its header (#503, #2
     expect(document.querySelector('.acct-add-bar')).toBeNull()
   })
 
-  // #2222 (proposal A, BGD 2026-10-24): one table ranked by when each account
+  // #2222 (proposal A, owner 2026-10-24): one table ranked by when each account
   // can take a new agent replaced A1's compact list.
   it('is one ranked row per account, under the group it ranks in', async () => {
     await mount(TWO)

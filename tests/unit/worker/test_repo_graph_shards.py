@@ -473,23 +473,23 @@ class FakeGcloud:
 
 def test_the_gcs_store_writes_blobs_without_clobbering_and_the_manifest_last(shards):
     fake = FakeGcloud()
-    store = shards.GcsStore("swarm-artifacts-test", run=fake)
+    store = shards.GcsStore("swarm-artifacts-example-project", run=fake)
     report = shards.write_graph(graph_doc(), store, tenant_id=TENANT, repo_id=REPO_ID)
     uploads = [c for c in fake.calls if c[2] == "cp" and c[-1].startswith("gs://")]
-    assert uploads[-1][-1] == f"gs://swarm-artifacts-test/{report['manifest']}"
+    assert uploads[-1][-1] == f"gs://swarm-artifacts-example-project/{report['manifest']}"
     # The blobs in one batch (lane IX1), never clobbering; the manifest last.
     assert len(uploads) == 2 and "--no-clobber" in uploads[0]
-    assert f"gs://swarm-artifacts-test/{report['manifest']}" in fake.objects
+    assert f"gs://swarm-artifacts-example-project/{report['manifest']}" in fake.objects
     for call in fake.calls:
-        assert all(part.startswith(f"gs://swarm-artifacts-test/tenants/{TENANT}/")
+        assert all(part.startswith(f"gs://swarm-artifacts-example-project/tenants/{TENANT}/")
                    for part in call if part.startswith("gs://")), call
 
 
 def test_the_gcs_sweep_reads_creation_times_and_removes_old_orphans(shards):
     fake = FakeGcloud()
-    store = shards.GcsStore("swarm-artifacts-test", run=fake)
+    store = shards.GcsStore("swarm-artifacts-example-project", run=fake)
     shards.write_graph(graph_doc(), store, tenant_id=TENANT, repo_id=REPO_ID)
-    root = f"gs://swarm-artifacts-test/{shards.graph_root(TENANT, REPO_ID)}"
+    root = f"gs://swarm-artifacts-example-project/{shards.graph_root(TENANT, REPO_ID)}"
     orphan = f"{root}/blobs/{hashlib.sha256(b'o').hexdigest()}{shards.BLOB_SUFFIX}"
     fake.objects[orphan] = b"o"
     fake.created[orphan] = "2026-09-01T00:00:00Z"
@@ -646,7 +646,7 @@ def test_the_writer_refuses_to_run_with_no_tenant_at_all(shards, tmp_path, capsy
 
 def test_the_writer_resolves_the_bucket_from_its_configuration(shards, tmp_path, monkeypatch):
     _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT,
-               ARTIFACT_BUCKET="swarm-dev-artifacts")
+               ARTIFACT_BUCKET="swarm-artifacts-example-project")
     opened: list[str] = []
     local = tmp_path / "bucket"
 
@@ -658,19 +658,19 @@ def test_the_writer_resolves_the_bucket_from_its_configuration(shards, tmp_path,
     code = shards.main(["write", "--graph", str(_graph_file(tmp_path)), "--repo-id", REPO_ID,
                         "--destination", _destination(), "--no-sweep"])
     assert code == 0
-    assert opened == ["gs://swarm-dev-artifacts"]
+    assert opened == ["gs://swarm-artifacts-example-project"]
 
 
 def test_the_writer_refuses_a_bucket_its_configuration_does_not_name(
     shards, tmp_path, monkeypatch, capsys
 ):
     _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT,
-               ARTIFACT_BUCKET="swarm-dev-artifacts")
+               ARTIFACT_BUCKET="swarm-artifacts-example-project")
     code = shards.main(["write", "--graph", str(_graph_file(tmp_path)),
-                        "--store", "gs://someone-elses-bucket", "--repo-id", REPO_ID,
+                        "--store", "gs://peer-bucket", "--repo-id", REPO_ID,
                         "--no-sweep"])
     assert code == 1
-    assert "someone-elses-bucket" in capsys.readouterr().err
+    assert "peer-bucket" in capsys.readouterr().err
 
 
 def test_the_writer_with_no_bucket_and_no_store_says_so(shards, tmp_path, monkeypatch, capsys):

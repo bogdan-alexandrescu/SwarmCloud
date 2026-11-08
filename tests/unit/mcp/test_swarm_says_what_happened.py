@@ -342,7 +342,7 @@ def test_doctor_reads_identity_from_the_nested_route_and_trusts_the_measurement(
         cli,
         "detect",
         lambda deployment=None: Detection(
-            Tier.IMPERSONATE, "impersonating sa@example.iam.gserviceaccount.com", []
+            Tier.IMPERSONATE, "impersonating sa@example-project.iam.gserviceaccount.com", []
         ),
     )
     monkeypatch.setattr(cli, "SwarmClient", lambda *a, **k: swarm)
@@ -447,7 +447,7 @@ def test_the_access_token_is_minted_once_and_reused(monkeypatch):
     --impersonate-service-account`, about a second each, until tail timed out."""
     minted: list[list[str]] = []
     monkeypatch.setattr(mcp_client, "_run", lambda argv, **kw: minted.append(argv) or "TOKEN")
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     monkeypatch.delenv("SWARM_ACCESS_TOKEN", raising=False)
     client = SwarmClient(base_url="https://swarm.example.com", tier=Tier.IMPERSONATE)
 
@@ -466,7 +466,7 @@ def test_a_cached_token_refused_with_401_is_reminted_once(monkeypatch):
     monkeypatch.setattr(
         mcp_client, "_run", lambda argv, **kw: minted.append(argv) or f"TOKEN{len(minted)}"
     )
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     monkeypatch.delenv("SWARM_ACCESS_TOKEN", raising=False)
     sent: list[str] = []
 

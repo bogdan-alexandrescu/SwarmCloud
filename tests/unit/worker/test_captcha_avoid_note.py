@@ -1,6 +1,6 @@
 """The live-browser note steers an agent away from what provokes a challenge (CAPTCHA-AVOID; part of #2058).
 
-BGD decided on 2026-10-23 to avoid triggers: the 2026-10-15 benchmark logged
+the owner decided on 2026-10-23 to avoid triggers: the 2026-10-15 benchmark logged
 11 to 21 Google 429s per batch, from agents typing searches into google.com in
 the live browser. So the note an agent with the live browser is given says:
 search with the WebSearch tool, never a search engine's page; prefer a site's

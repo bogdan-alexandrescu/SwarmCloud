@@ -283,7 +283,7 @@ describe('editing a class', () => {
     expect(put).toEqual({ base_version: 2, reason: 'memory is idle', classes: { standard: { memory_gib: 4 } }, confirm_below_recent_peak: true })
   })
 
-  it('carries its explanations behind (i)s beside their labels, never as lines (BGD, 2026-11-05)', async () => {
+  it('carries its explanations behind (i)s beside their labels, never as lines (owner, 2026-11-05)', async () => {
     await mount()
     await waitFor(() => expect(card('standard')).not.toBeNull(), WAIT)
     const page = document.querySelector<HTMLElement>('.rs-page')!
@@ -366,7 +366,7 @@ describe('the readings and their hints (§4.9)', () => {
     await waitFor(() => expect(visible(card('standard')!.querySelector('.rs-recent'))).toContain('29 attempts'), WAIT)
     // MUTATION: compare with `>= 29`, or drop the threshold.
     expect(card('standard')!.querySelector('.rs-hint')).toBeNull()
-    // BGD's no-prose rule (2026-11-05): the why is the readings' (i), not a line.
+    // the owner's no-prose rule (2026-11-05): the why is the readings' (i), not a line.
     // MUTATION: draw `.rs-hints-few` again.
     expect(seen(card('standard'))).not.toContain('Fewer than 30 attempts')
     expect(tipOf(card('standard')!, 'About the last 7 days’ readings')).toBe('Fewer than 30 attempts in 7 days: the readings are shown without hints.')

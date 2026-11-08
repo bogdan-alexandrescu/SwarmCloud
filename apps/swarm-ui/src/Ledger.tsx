@@ -841,7 +841,7 @@ export function LatencyCard({ data }: { data: Outcomes }) {
 // ---------------------------------------------------------------------------
 
 // THE READER SEES "WORKSPACE", THE ROUTE STILL SAYS `tenant_id` (VQ-056,
-// BGD 2026-10-26): the console names a tenant a workspace wherever it prints
+// owner 2026-10-26): the console names a tenant a workspace wherever it prints
 // the word; the group's key, the query and the API field keep their names.
 
 const GROUP_LABEL: Record<GroupBy, string> = {

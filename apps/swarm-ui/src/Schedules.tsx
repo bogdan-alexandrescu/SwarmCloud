@@ -3,7 +3,7 @@
  * schedules, read-only, beside the recurring work the platform runs for it on
  * its own (the index's cadence, §8.3), and Overview's "Waiting on you" card.
  *
- * THE LANDING IS PROPOSAL A's FRAME A1 (BGD's picks, 2026-10-26, #2417): a
+ * THE LANDING IS PROPOSAL A's FRAME A1 (the owner's picks, 2026-10-26, #2417): a
  * lead naming what needs the reader, the schedules with each one's served
  * `state_word`, and an approvals card counting every inbox item with the
  * oldest one's expiry. A row carries no actions: they are on the schedule's
@@ -111,7 +111,7 @@ function useSessionAdmin(): boolean | null | 'unknown' {
 }
 
 /**
- * "Mine | All workspaces" (BGD on #2157, 2026-10-23: Automate › Schedules keeps
+ * "Mine | All workspaces" (owner on #2157, 2026-10-23: Automate › Schedules keeps
  * its "All workspaces" switch; VQ-030): links, so either side opens in a new tab
  * and reads as where you are. The console says workspace, never tenant.
  */
@@ -625,7 +625,7 @@ type Listed = Schedule & { state_word?: StateWord }
 
 /**
  * `GET /v1/schedules`'s `summary` (`schedules.summarize`). `pending_approvals`
- * counts EVERY inbox item, not only the schedules' (BGD, 2026-10-26), and is
+ * counts EVERY inbox item, not only the schedules' (owner, 2026-10-26), and is
  * null when the inbox could not be read, `unread` saying why: an unknown
  * count is never 0. `oldest_expires_at` is the OLDEST item's expiry, null
  * when nothing waits or the oldest never expires.
@@ -637,7 +637,7 @@ interface ListSummary {
   unread?: string | null
 }
 
-/** The words as the reader reads them. A disabled schedule reads paused (BGD, 2026-10-26). */
+/** The words as the reader reads them. A disabled schedule reads paused (owner, 2026-10-26). */
 export const STATE_WORD_SAID: Readonly<Record<StateWord, string>> = {
   active: 'active',
   paused: 'paused',

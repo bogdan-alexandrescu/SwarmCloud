@@ -2114,7 +2114,7 @@ export function layoutOf(
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
   // below is in terms of it rather than of NODE_W, which is now only the full
   // tier's value.
-  // A LINEAR CHAIN'S NODES KEEP THEIR TIER'S WIDTH (VQ-014, BGD 2026-10-26,
+  // A LINEAR CHAIN'S NODES KEEP THEIR TIER'S WIDTH (VQ-014, owner 2026-10-26,
   // "Drop the chain widening on the page"). QA G3-27 drew a chain -- one step
   // per level -- at up to twice NODE_W (about 510px), so its dependency line
   // would not wrap mid-filename. That card was 510x180 under Auto, and a

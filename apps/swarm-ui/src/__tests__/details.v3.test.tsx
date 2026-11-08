@@ -200,7 +200,7 @@ describe('the header is two lines: state, name and the elapsed headline; then on
       return h!
     })
     const lines = [...head.children].filter((c) => !c.classList.contains('ag-parent'))
-    // TWO LINES (VQ-010, BGD's visual QA 2026-10-26): the id is on the meta line.
+    // TWO LINES (VQ-010, the owner's visual QA 2026-10-26): the id is on the meta line.
     expect(lines.map((l) => l.className.split(' ')[0])).toEqual(['ag-head-row', 'ag-head-facts'])
     const row = head.querySelector('.ag-head-row')!
     expect(row.querySelector('.ag-head-title')?.textContent).toBe('refactor-backoff')
@@ -432,7 +432,7 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
 })
 
 describe('Progress takes the pane; Resources is folded under its row (DETAILS-BUILDING)', () => {
-  // The two columns are gone (BGD 2026-10-27): the Resources card moved under
+  // The two columns are gone (owner 2026-10-27): the Resources card moved under
   // the one Resources row, so Progress stands alone at every pane width.
   it('draws Progress outside the disclosure and the Resources card inside it, with no column grid left', () => {
     const el = host(runOf())
@@ -466,7 +466,7 @@ describe('Progress takes the pane; Resources is folded under its row (DETAILS-BU
     expect(painted(strip, 'position', { width: 1440, container: 380 }) ?? 'static').toBe('static')
   })
 
-  // AGENT-HEAD-B (BGD's pick AH1 B, 2026-10-28, part of #2596): in the split
+  // AGENT-HEAD-B (the owner's pick AH1 B, 2026-10-28, part of #2596): in the split
   // the COLUMN scrolls, so the strip's sticky inset is measured from the
   // column's content edge, under the stuck tab strip. At `top: 0` it stuck
   // 18px down, behind the tabs; it sits at the tabs' foot, the strip's height
@@ -539,7 +539,7 @@ describe('the detail has ONE scroll container', () => {
     })
     // The tab strip scrolls sideways only (Q4); it is not a vertical scroller.
     const vertical = scrollers.filter((n) => !n.classList.contains('c-tabs'))
-    // The COLUMN, not its pane (AGENT-HEAD-B, BGD's pick AH1 B, 2026-10-28):
+    // The COLUMN, not its pane (AGENT-HEAD-B, the owner's pick AH1 B, 2026-10-28):
     // the head scrolls away with the detail and the tab strip sticks.
     expect(vertical, 'a scroller other than the column').toEqual([split])
     // And no inline style makes one either (the prompt's own 320px box).

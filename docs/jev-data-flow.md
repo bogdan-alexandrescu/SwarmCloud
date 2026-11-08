@@ -1,13 +1,13 @@
 # Jev data flow: what a Jev call may carry, and the code and test that hold each rule
 
-**Read 2026-10-18 at `9c5726f`** (main), for the security pass (#476) and
-#1336; rule 4 and rule 6 updated the same day by lane JEV-SCRUB, which
+**Read 2026-10-18 at `9c5726f`** (main), for the security pass and
+the JEV-SCRUB issue; rule 4 and rule 6 updated the same day by lane JEV-SCRUB, which
 threaded the agent profile's registered secrets into Jev's config and
 amended §5.4 to say where the audit lands. "When a call may be made" added
 2026-11-02 at `5117e12` by lane JEV-JUDGMENTS-RUN, which made the judgments
 run (the decision API's address, the signed opt-in, the setup order, the
 monthly cap and the per-agent count). "Jev spend on the state routes" added
-2026-11-03 at `272a7fd`, from the code lane AQ-JEV-ACCOUNTING merged (#3111),
+2026-11-03 at `272a7fd`, from the code lane AQ-JEV-ACCOUNTING merged,
 when the owner chose a doc follow-up for that lane. Rule 2 and "The order a
 send goes through" reworded 2026-11-04, when the owner chose to correct the
 wording after the credential check moved into `swarm_redaction.credentials`,
@@ -77,7 +77,7 @@ the attempt's outputs stay byte-identical to the local-only run (§5.6).
 
 ## Jev spend on the state routes
 
-Lane AQ-JEV-ACCOUNTING (#3111, merged 2026-11-03). A tenant switched to the
+Lane AQ-JEV-ACCOUNTING (merged 2026-11-03). A tenant switched to the
 state routes (`SWARM_STATE_VIA_API`) builds no Firestore client, so the direct
 path above never ran for it: its calls were never settled, its earlier
 attempts were not carried, and with a monthly cap set every call was
@@ -413,7 +413,7 @@ not dropped (Known gaps). Both files are applied by the owner by hand
 
 ## The lane hooks
 
-Lane JEV-LANES (BGD, 2026-10-31; #642: 25% of lane PRs were red on their
+Lane JEV-LANES ([the owner], 2026-10-31; 25% of lane PRs were red on their
 first CI run). A claude-code lane in a workspace whose owner or admin turned
 `workspace_settings/{tenant}.quality_gates.jev` on (`swarm_api.qualitygates`,
 audited like `code_intelligence.jev`, default off) runs two Claude Code

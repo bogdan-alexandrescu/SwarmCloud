@@ -8,8 +8,8 @@ on a fixed 30 s and ended it FAILED at `max_attempts`: 28 steps FAILED (3
 attempts; merge steps 10) without running once. On 2026-10-20 an admission
 policy did the same to 11-13 agents (#1820).
 
-BGD's standing rule (2026-09-14): "never fail workflows when quotas are
-reached. just pause them and resume them when new quota is refreshed." BGD
+the owner's standing rule (2026-09-14): "never fail workflows when quotas are
+reached. just pause them and resume them when new quota is refreshed." the owner
 accepted contract request 123 on 2026-10-28, and these tests hold what it
 built (docs/contract-change-requests.md request 123):
 
@@ -163,7 +163,7 @@ def test_a_successful_dispatch_resets_the_refusal_count(db):
 def test_the_sixth_consecutive_refusal_leaves_it_parked_not_failed(db):
     # MUTATION: end the task FAILED once `platform_refusals` passes
     # PLATFORM_REFUSED_MAX_PARKS (request 123 as first proposed) and the sixth
-    # drain reads FAILED -- what BGD's rule of 2026-09-14 forbids.
+    # drain reads FAILED -- what the owner's rule of 2026-09-14 forbids.
     scheduler, backend, clock = _world(db, "gke_job_quota_exceeded")
     waits = []
     for _ in range(PLATFORM_REFUSED_MAX_PARKS + 3):

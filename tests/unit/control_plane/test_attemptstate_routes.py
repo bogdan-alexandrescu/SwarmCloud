@@ -126,8 +126,8 @@ def test_checkpoint_refuses_a_uri_outside_this_tasks_prefix(client, db):
     worker = Worker()
     opened(client, db, worker)
     before = copy.deepcopy(db.docs)
-    for uri in ("gs://bucket/tenants/research/tasks/x/c.tar",
-                f"gs://bucket/elsewhere/tenants/eng/tasks/{TASK}/c.tar",
+    for uri in ("gs://swarm-artifacts-example-project/tenants/research/tasks/x/c.tar",
+                f"gs://swarm-artifacts-example-project/elsewhere/tenants/eng/tasks/{TASK}/c.tar",
                 f"https://example.com/tenants/eng/tasks/{TASK}/c.tar"):
         body = {**POST_BODIES["checkpoint"], "uri": uri}
         assert worker.post(client, "checkpoint", body).status_code == 422, uri

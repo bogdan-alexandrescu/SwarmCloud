@@ -23,7 +23,7 @@ import { cleanup, render, waitFor } from '@testing-library/react'
 import { PersonName, firstName } from '../PersonName'
 import type { Me } from '../types'
 
-const EMAIL = 'bogdan@example.com'
+const EMAIL = 'owner@example.com'
 
 const marker = (root: ParentNode) => root.querySelector<HTMLElement>('[data-person-name]')
 
@@ -34,31 +34,31 @@ afterEach(() => {
 
 describe('PersonName variants', () => {
   it('`first` (the default) prints the first word and the email, with the full name in the title', () => {
-    const { container } = render(<PersonName email={EMAIL} name="Bogdan Alexandrescu" />)
+    const { container } = render(<PersonName email={EMAIL} name="Alex Example" />)
     const box = marker(container)!
-    expect(box.querySelector('.person-name-name')!.textContent).toBe('Bogdan')
+    expect(box.querySelector('.person-name-name')!.textContent).toBe('Alex')
     expect(box.querySelector('.person-name-email')!.textContent).toBe(EMAIL)
-    expect(box.textContent).toBe(`Bogdan · ${EMAIL}`)
-    expect(box.getAttribute('title')).toBe(`Bogdan Alexandrescu · ${EMAIL}`)
+    expect(box.textContent).toBe(`Alex · ${EMAIL}`)
+    expect(box.getAttribute('title')).toBe(`Alex Example · ${EMAIL}`)
   })
 
   it('`first` said explicitly is the default', () => {
-    const { container } = render(<PersonName email={EMAIL} name="Bogdan Alexandrescu" variant="first" />)
-    expect(marker(container)!.textContent).toBe(`Bogdan · ${EMAIL}`)
+    const { container } = render(<PersonName email={EMAIL} name="Alex Example" variant="first" />)
+    expect(marker(container)!.textContent).toBe(`Alex · ${EMAIL}`)
   })
 
   it('`full` prints the whole name', () => {
-    const { container } = render(<PersonName email={EMAIL} name="Bogdan Alexandrescu" variant="full" />)
+    const { container } = render(<PersonName email={EMAIL} name="Alex Example" variant="full" />)
     const box = marker(container)!
-    expect(box.querySelector('.person-name-name')!.textContent).toBe('Bogdan Alexandrescu')
-    expect(box.textContent).toBe(`Bogdan Alexandrescu · ${EMAIL}`)
-    expect(box.getAttribute('title')).toBe(`Bogdan Alexandrescu · ${EMAIL}`)
+    expect(box.querySelector('.person-name-name')!.textContent).toBe('Alex Example')
+    expect(box.textContent).toBe(`Alex Example · ${EMAIL}`)
+    expect(box.getAttribute('title')).toBe(`Alex Example · ${EMAIL}`)
   })
 
   it('a one-word name prints whole, in either variant', () => {
     for (const variant of ['first', 'full'] as const) {
-      const { container, unmount } = render(<PersonName email={EMAIL} name="Bogdan" variant={variant} />)
-      expect(marker(container)!.textContent, variant).toBe(`Bogdan · ${EMAIL}`)
+      const { container, unmount } = render(<PersonName email={EMAIL} name="Alex" variant={variant} />)
+      expect(marker(container)!.textContent, variant).toBe(`Alex · ${EMAIL}`)
       unmount()
     }
   })
@@ -113,7 +113,7 @@ const json = (status: number, body: unknown): Response =>
 function me(): Me {
   return {
     tenant: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       kind: 'user',
       principal: EMAIL,
       display_name: 'Your workspace',
@@ -123,9 +123,9 @@ function me(): Me {
       monthly_budget_usd: null,
       enabled: true,
       credentials: ['anthropic'],
-      service_account: 'swarm-agent-worker-u-bogdan@example.iam.gserviceaccount.com',
-      gcs_prefix: 'tenants/u-bogdan',
-      namespace: 'swarm-tenant-u-bogdan',
+      service_account: 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com',
+      gcs_prefix: 'tenants/u-owner',
+      namespace: 'swarm-tenant-u-owner',
     },
     principal: { email: EMAIL, domain: 'example.com', groups: [], is_admin: false },
     environment: 'dev',
@@ -160,9 +160,9 @@ const line = (c: HTMLElement) => c.querySelector<HTMLElement>('.sk-pfoot .sk-pfr
 
 describe("the panel's signed-in line", () => {
   it("shows the caller's saved first name, the full name in its title, and the email in the role line's title", async () => {
-    const { container, asked } = await shell(json(200, { identity: { email: EMAIL, display_name: 'Bogdan Alexandrescu' } }))
-    await waitFor(() => expect(line(container)?.textContent).toBe('Bogdan'), { timeout: 4000 })
-    expect(line(container)!.getAttribute('title')).toBe('Bogdan Alexandrescu')
+    const { container, asked } = await shell(json(200, { identity: { email: EMAIL, display_name: 'Alex Example' } }))
+    await waitFor(() => expect(line(container)?.textContent).toBe('Alex'), { timeout: 4000 })
+    expect(line(container)!.getAttribute('title')).toBe('Alex Example')
     expect(container.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe(EMAIL)
     // Once per session, not once per render.
     expect(asked()).toBe(1)
@@ -171,13 +171,13 @@ describe("the panel's signed-in line", () => {
   it('shows the local part when the profile has no saved name', async () => {
     const { container, asked } = await shell(json(200, { identity: { email: EMAIL, display_name: null } }))
     await waitFor(() => expect(asked()).toBe(1), { timeout: 4000 })
-    await waitFor(() => expect(line(container)?.textContent).toBe('bogdan'), { timeout: 4000 })
+    await waitFor(() => expect(line(container)?.textContent).toBe('owner'), { timeout: 4000 })
     expect(container.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe(EMAIL)
   })
 
   it('shows the local part when the profile cannot be read', async () => {
     const { container, asked } = await shell(json(503, { error: { code: 'unavailable', message: 'down' } }))
     await waitFor(() => expect(asked()).toBe(1), { timeout: 4000 })
-    await waitFor(() => expect(line(container)?.textContent).toBe('bogdan'), { timeout: 4000 })
+    await waitFor(() => expect(line(container)?.textContent).toBe('owner'), { timeout: 4000 })
   })
 })

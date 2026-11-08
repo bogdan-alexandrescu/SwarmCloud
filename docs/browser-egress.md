@@ -5,7 +5,7 @@
 10 and 11 record what was built and how it differs from this design). Until
 `browser_egress` names a tenant and is enabled, no pod is labelled or
 proxied. Designed in lane
-EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT), part of #1030.
+EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT).
 
 ## 0. Why this exists
 
@@ -309,8 +309,8 @@ from one template per vendor. It is never built in the pod.
 * **Two tenants never share a session id**, because the id includes
   `tenant_id`.
 
-**Stable per-tenant egress is the recommendation** (CAPTCHA-AVOID, BGD
-2026-10-23; part of #2058). Sites score challenges per source address: a
+**Stable per-tenant egress is the recommendation** (CAPTCHA-AVOID, [the owner]
+2026-10-23). Sites score challenges per source address: a
 CAPTCHA or a `/sorry` page is what an address earns from its own history, so
 an address that one tenant's agents use politely, a navigation a second on a
 site and searches through the WebSearch tool rather than a search engine's
@@ -320,7 +320,7 @@ history; an address that changes for every attempt has none, and starts each
 attempt as a stranger. So a tenant keeps one address, or one small pool of
 ISP addresses mapped as above, across its attempts, and two tenants do not
 share one. Rotating addresses to get *past* a challenge is the opposite of
-this and out of scope: #2058 rules out detection evasion, because a CAPTCHA
+this and out of scope: the owner's ruling against detection evasion rules it out, because a CAPTCHA
 is a site's owner saying no. The benchmark's `challenges` column
 ([browser-bench.md](browser-bench.md#what-is-measured-and-where-it-comes-from))
 is how a change of egress shows up, provided the egress is held fixed for the
@@ -384,7 +384,7 @@ whole batch.
 
 * **The live view is unchanged.** Frames come from Xvfb in the sidecar and
   leave on the gate's tunnel, which does not go through the proxy. The input
-  path is unchanged, and nothing is painted over the frames (BGD, 2026-10-25;
+  path is unchanged, and nothing is painted over the frames ([the owner], 2026-10-25;
   [live-browser.md](design/live-browser.md) §5.3).
 * **The person in control sees the site as a residential visitor in the
   targeted country.** Google is served in that country's locale. A sign-in
@@ -917,7 +917,7 @@ Steps 1-3 were **done on 2026-10-14**, by the owner, outside the repository.
      from.
 6. **dev turns it on** in `terraform/environments/dev/dev.tfvars` (owner
    decision 2026-10-14). The settings are `enable_browser_egress = true` and
-   `browser_egress = { enabled = true, tenants = ["u-bogdan"], profiles = ["claude-code-browser"], country = "us" }`.
+   `browser_egress = { enabled = true, tenants = ["example-tenant"], profiles = ["claude-code-browser"], country = "us" }`.
    That is residential egress through Bright Data, US exit, for the owner's
    personal tenant's live browser only. The $150/month cap is the
    `monthly_cap_usd` default, which comes to 18.75 GB at $8/GB.
@@ -931,7 +931,7 @@ Steps 1-3 were **done on 2026-10-14**, by the owner, outside the repository.
    implementation as the relay's roll:
    * it applies through `kubernetes/apply.sh --swarm-system --confirm`, which
      applies the relay, swarm-system's policies and swarm-egress in one stream;
-   * it refuses the shared `agents-staging` cluster by the deny-list in
+   * it refuses the shared `peer-cluster` cluster by the deny-list in
      `scripts/lib/common.sh`, whether that cluster arrives by flag, by context
      or by terraform's own output;
    * it waits for `rollout status statefulset/swarm-egress`;

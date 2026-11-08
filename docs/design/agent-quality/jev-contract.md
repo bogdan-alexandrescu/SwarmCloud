@@ -10,7 +10,7 @@
 | Enabled in configuration | **no**: the work contracts themselves ship off (`SWARM_WORK_CONTRACTS` unset everywhere) |
 | Live-verified | **not read from here** |
 
-The owner decided on 3 November 2026 (BGD) to use Jev to make the work
+The owner decided on 3 November 2026 (the owner) to use Jev to make the work
 contract better and more enforceable, both ways:
 
 1. **At submission**, Jev reviews the contract and flags the parts no worker
@@ -25,7 +25,7 @@ contract better and more enforceable, both ways:
 This document is the design only. It builds on the work contract package:
 `docs/design/agent-quality/work-contract.md` and
 `apps/swarm-api/swarm_api/workcontract.py`, on branch
-`swarm/task_bebb5bf41b054bc1b584` (part of #2688, not yet on main when this was
+`swarm/task_bebb5bf41b054bc1b584` (part of the Day One install program, not yet on main when this was
 written), and on main's Jev machinery: [jev-data-flow.md](../../jev-data-flow.md),
 the Jev rows of the [capability matrix](capability-matrix.md#2-jev-accounting-and-adapter),
 [baseline.md](baseline.md), [known-failures.md](known-failures.md) and
@@ -408,7 +408,7 @@ short should reach a person, not fail as if it had crashed.
 requirement: the verdict, the reason, the cited hunk and the probability,
 labelled as Jev's judgment, with the call id that produced it.
 
-**Where it is read, and what is stored** (the owner's picks on PR #3255).
+**Where it is read, and what is stored** (the owner's picks on an earlier pull request).
 The step's `contract_acceptance` keeps the TEXT of each hunk a verdict cites
 (`hunks`, keyed by the item `i<n>`), not only its path: the published branch
 can move or be deleted after the judgment, and the person deciding should read
@@ -424,7 +424,7 @@ decide path (approve and reject answer 404, as an await-input step's do): a
 model judgment is not an authorization (section 1, rule 1), so the inbox
 shows the evidence and links to the step. No route yet records an owner's
 acceptance of a step waiting on them; what that verb does is the owner's
-choice, asked on PR #3255, not decided here.
+choice, asked on an earlier pull request, not decided here.
 
 ## 6. The strict acceptance default
 
@@ -669,7 +669,7 @@ each piece, "not implemented" until lanes 4 to 6 land.
 ## 14. Open choices
 
 All were in the pull request's `questions.json`, with options and a
-recommendation. The owner answered all twelve on 3 November 2026 (BGD, about
+recommendation. The owner answered all twelve on 3 November 2026 (the owner, about
 12:39 universal time). **The owner's answer overrides this document wherever
 the two differ**: four answers (Q5, Q7, Q8 and Q9) differ from the
 recommendation, Q1's adds that the Day One install carries the route, and the

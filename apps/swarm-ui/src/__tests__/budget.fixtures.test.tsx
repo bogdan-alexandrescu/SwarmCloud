@@ -2,7 +2,7 @@
 //
 // The agent's Budget card (AgentBudget.tsx, BUDGET-UI-AGENT) had no task in
 // the console's fixture build to draw it, so neither a developer nor a visual
-// QA run could open it. BGD's answer, 2026-10-27: add them BY ID, OFF THE
+// QA run could open it. the owner's answer, 2026-10-27: add them BY ID, OFF THE
 // LISTS. Three agents a per-task read answers -- a running one past its 80%
 // warning, one the worker stopped on its budget, one with no budget -- that no
 // list read returns, because other tests pin every list and every count.

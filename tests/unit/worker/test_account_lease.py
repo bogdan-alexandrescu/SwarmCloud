@@ -244,7 +244,7 @@ def test_a_pool_with_no_accounts_registered_falls_back(db, worker_factory, secre
 def test_a_broker_that_cannot_be_reached_is_asked_again_then_parks(
     db, worker_factory, secrets, tmp_path
 ):
-    """PARK, DO NOT FALL BACK (#2560, BGD 2026-10-28). The workspace has a
+    """PARK, DO NOT FALL BACK (#2560, the owner 2026-10-28). The workspace has a
     pool, so the tenant's own secret is not how it runs: task_d212c88b fell
     back to it and Anthropic refused the key. Asked once more, then parked,
     and the tenant secret is never read."""

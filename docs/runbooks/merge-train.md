@@ -8,7 +8,7 @@ before, and the train workflow only runs when someone dispatches it.
 
 ## Why
 
-Ruleset `main-protection` (id 24160219) requires strict up-to-date checks. A
+Ruleset `main-protection` requires strict up-to-date checks. A
 green `ready` pull request that is behind main cannot merge until its branch
 is brought up to date and its CI runs again, so every merge to main sends the
 other green pull requests round once more. Measured on 2026-10-14: a median
@@ -72,7 +72,7 @@ nothing reaches main without having been in a green train.
 ## 1. Run a train without landing anything
 
 ```bash
-gh workflow run merge-train.yml -R bogdan-alexandrescu/SwarmCloud -f dry_run=true
+gh workflow run merge-train.yml -R example-org/example-repo -f dry_run=true
 ```
 
 While `MERGE_TRAIN` is not `on`, every train is a dry run, whatever the input
@@ -102,15 +102,15 @@ requests. Once strict is off it would merge them on their own, without the
 train having tested them together:
 
 ```bash
-gh pr list -R bogdan-alexandrescu/SwarmCloud --state open --json number,autoMergeRequest \
+gh pr list -R example-org/example-repo --state open --json number,autoMergeRequest \
   --jq '.[] | select(.autoMergeRequest != null) | .number' |
-while read -r n; do gh pr merge "$n" -R bogdan-alexandrescu/SwarmCloud --disable-auto; done
+while read -r n; do gh pr merge "$n" -R example-org/example-repo --disable-auto; done
 ```
 
 Then turn the train on:
 
 ```bash
-gh variable set MERGE_TRAIN -R bogdan-alexandrescu/SwarmCloud --body on
+gh variable set MERGE_TRAIN -R example-org/example-repo --body on
 ```
 
 Then change the ruleset: strict up-to-date OFF, and `merge-train` added to the
@@ -119,7 +119,8 @@ today (read on 2026-10-14). A `PUT` replaces the whole ruleset, so this sends
 all of it:
 
 ```bash
-gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 --input - <<'JSON'
+RULESET_ID="$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')"
+gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" --input - <<'JSON'
 {
   "name": "main-protection",
   "target": "branch",
@@ -161,7 +162,8 @@ JSON
 Read it back:
 
 ```bash
-gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+RULESET_ID="$(gh api repos/example-org/example-repo/rulesets --jq '.[] | select(.name=="main-protection") | .id')"
+gh api repos/example-org/example-repo/rulesets/"$RULESET_ID" \
   --jq '.rules[] | select(.type == "required_status_checks") | .parameters'
 ```
 
@@ -188,7 +190,7 @@ choice is the owner's.
 
 ## A red train
 
-BGD, 6 November 2026, after CLD measured the train from 4 November 06:28Z to
+[the owner], 6 November 2026, after CLD measured the train from 4 November 06:28Z to
 6 November 05:30Z: 74 of 139 trains were red, mostly on checks known to fail
 at random (`format / unit tests`, `swarm-ui typecheck / component tests`,
 single shards such as `unit tests (1/10)`), and 6 of the 18 ejected pull
@@ -257,7 +259,7 @@ Strict comes back on and `merge-train` is no longer required. Then
 `auto-merge.yml` arms native auto-merge on `ready` again:
 
 ```bash
-gh variable set MERGE_TRAIN -R bogdan-alexandrescu/SwarmCloud --body off
+gh variable set MERGE_TRAIN -R example-org/example-repo --body off
 ```
 
 Then run the same `PUT` as above with `"strict_required_status_checks_policy": true`

@@ -1,12 +1,12 @@
 # Voice it's own speech: an engine on our own L4 beside GPT-Live
 
 **Status:** design only, nothing built. Written 2026-11-05 (UTC) against `main` at `b24d496`, part
-of #2688. It extends [voice-it.md](voice-it.md); everything that design settles (the planner, the
+of the Day One install program. It extends [voice-it.md](voice-it.md); everything that design settles (the planner, the
 session grant, the card catalogue, the ledger, the safety table) stands unless this file says
-otherwise. BGD answered its four open questions at 02:49 UTC the same day (§17); every section
+otherwise. The owner answered its four open questions at 02:49 UTC the same day (§17); every section
 below says what they decided.
 
-**The owner's ask (BGD, 2026-11-05, 02:01 to 02:24 UTC).** A second engine for Voice it:
+**The owner's ask (the owner, 2026-11-05, 02:01 to 02:24 UTC).** A second engine for Voice it:
 speech-to-text and text-to-speech on a GPU machine SwarmCloud runs itself, chosen in a new Settings
 section beside GPT-Live, measured in a new Telemetry section, with a read-back before any
 destructive spoken command, and a Talk page that presents visuals to discuss and annotate.
@@ -15,9 +15,9 @@ destructive spoken command, and a Talk page that presents visuals to discuss and
 
 ## 1. Decision record
 
-BGD's picks; they are settled and this design builds to them.
+The owner's picks; they are settled and this design builds to them.
 
-| # | BGD picked | Where it lands |
+| # | The owner picked | Where it lands |
 |---|---|---|
 | 1 | Speech-to-text on **our own machine**: one `g2-standard-4` (4 vCPU, 16 GB, one NVIDIA L4), **on-demand**, kept **stopped, not deleted**, between sessions. Qwen3-ASR-0.6B (vLLM's own Qwen3-ASR model, streaming through vLLM), Silero voice detection. Starts on Start, stops on Stop or after 5 minutes without speech or tool activity. About $0.71 an hour while running; chosen over Cloud Run with an L4 (about $1.05 an hour plus up to 15 idle minutes) and over a hosted service | §3, §4, §5 |
 | 2 | Voice it **speaks** its replies: Kokoro (82M) on the same L4. The Presence layout's voice trace stays | §3.3, §9 |
@@ -44,7 +44,7 @@ front of it**: it answers each spoken sentence at once and hands planning and ac
 | The planner's tools are read and `draw_<kind>` only today (`apps/swarm-voice/swarm_voice/tools_read.py`, `planner.py`); act tools are voice-it.md §10 phase 3 (`tools_act.py`, not yet written) | The read-back gate is built into the act path as it lands, enforced in swarm-api's grant check, not in the prompt (§7) |
 | The OpenAI key is a quota-broker pool account of provider `openai-api` (`apps/swarm-api/swarm_api/schemas.py:821`, `apps/quota-broker/quota_broker/openai_api_key.py`), set through the `voice-api-key` one-time link (`apps/swarm-api/swarm_api/setup_links.py:49`) minted from `Accounts.tsx:3159` | The link kind and the broker's store do not change; only the button moves (§10.3) |
 | Ledger caps `SESSION_CAP_USD = 100.0`, `DAY_CAP_USD = 300.0` (`apps/swarm-api/swarm_api/voice/ledger.py:77-78`), computed, never counted | Machine minutes become one more computed line (§13) |
-| L4 quota `NVIDIA_L4_GPUS` in us-central1: 16, 0 used (BGD, 02:01 UTC) | Quota is not the risk; zone stock is (§4.7) |
+| L4 quota `NVIDIA_L4_GPUS` in us-central1: 16, 0 used (the owner, 02:01 UTC) | Quota is not the risk; zone stock is (§4.7) |
 | The project's other two networks (the other team's VPC and the default network) are on `SHARED_DENY_LIST` (`scripts/lib/common.sh`) | Nothing in this design or its lanes may reference either; the machine is on swarm-vpc only |
 
 ## 3. Architecture
@@ -53,7 +53,7 @@ front of it**: it answers each spoken sentence at once and hands planning and ac
 
 ```mermaid
 flowchart LR
-  subgraph BR["BGD's browser: Voice it, Talk"]
+  subgraph BR["the owner's browser: Voice it, Talk"]
     MIC[Microphone] --> VAD["Silero VAD (onnxruntime-web)"]
     VAD -->|"speech only, 16 kHz PCM"| WS[Audio socket]
     WS --> PLAY["Audio out + voice trace"]
@@ -137,7 +137,7 @@ ChatGPT plan, is only the fallback when this engine cannot start (§4.1).
    sees it as remote audio. Not verified that Chrome's canceller covers that path (§14, M6);
    headphones remain the fallback.
 
-**Captions** are the partials and finals for BGD's side and `say.start`'s text for the agent's,
+**Captions** are the partials and finals for the owner's side and `say.start`'s text for the agent's,
 drawn as they arrive and stored as text mode's are (redacted by swarm-voice before storage,
 voice-it.md §3.9).
 
@@ -231,7 +231,7 @@ trace, nothing more (§9).
 A Firestore document `voice_speech/machine` is the lease: `{session_id, person, generation, state,
 started_at, heartbeat_at, activity_at, zone}`. Start takes it in a transaction that also checks the
 person's `voice_live` marker; a live lease for another session refuses with "the speech machine is
-in use" (Bogdan only for now, so this is a guard, not a queue). Each take bumps `generation`; every
+in use" (the owner only for now, so this is a guard, not a queue). Each take bumps `generation`; every
 stop and every telemetry write carries it, and a holder with a stale generation stops writing
 without touching the machine, the same rule as invariant 5's fencing.
 
@@ -300,7 +300,7 @@ session.
 second machine idling on a $15-a-month disk. The zone is `voice_speech.zone`, set at install;
 Settings **show** it (pick 5) but cannot change it: a new zone is a new machine, a Terraform change.
 
-## 6. IAM, as rows for BGD to approve
+## 6. IAM, as rows for the owner to approve
 
 | # | Principal | Role | On | Why |
 |---|---|---|---|---|
@@ -308,7 +308,7 @@ Settings **show** it (pick 5) but cannot change it: a new zone is a new machine,
 | I2 | swarm-api's service account | `iam.serviceAccountUser` | the machine's service account only | Only if `start` or `setMetadata` requires acting as the attached account; M3 checks, and the row is dropped if not |
 | I3 | `swarm-speech` (new, created in `terraform/bootstrap/platform_service_accounts.tf` as the others are) | `roles/artifactregistry.reader` | the platform's Artifact Registry repository only | Pull its own image |
 | I4 | the Cloud Scheduler job's service account (the existing scheduler invoker) | `run.invoker` on swarm-api (already held for `doctor.tf`'s job) | swarm-api | The sweep; no new grant if the doctor's account is reused |
-| I5 | `swarm-speech` | `roles/logging.logWriter` | the project (the role has no narrower resource) | **Its own logs** (BGD, Q2): the Ops Agent ships the speech server container's stdout and stderr, and the systemd units' journal (image pull, model fetch, watchdog power-off) to Cloud Logging, under `logName` `swarm-speech`. So a machine that fails before swarm-api's socket opens, or powers itself off, leaves its reason in Logging, where it outlives the boot, not only in serial output. The server logs counts, phases and errors, never audio, words or the ID token |
+| I5 | `swarm-speech` | `roles/logging.logWriter` | the project (the role has no narrower resource) | **Its own logs** (the owner, Q2): the Ops Agent ships the speech server container's stdout and stderr, and the systemd units' journal (image pull, model fetch, watchdog power-off) to Cloud Logging, under `logName` `swarm-speech`. So a machine that fails before swarm-api's socket opens, or powers itself off, leaves its reason in Logging, where it outlives the boot, not only in serial output. The server logs counts, phases and errors, never audio, words or the ID token |
 | I6 | `swarm-speech` | `roles/monitoring.metricWriter` | the project | The Ops Agent's host and GPU metrics (its NVML receiver), at its 60 s default, for operators when no session holds a socket (§12.1). Write only: neither role reads anything |
 
 No secret is created, read or written by any of this; nothing goes into Terraform but names. The
@@ -444,11 +444,11 @@ voice trace. When the speech ends, the ring fades; notes stay as pins.
 
 Only: the voice trace, the status word or two, both sides' captions, the visual in focus with its
 note pins, the proposal and read-back cards, the budget meter's line, Start/Stop, mute and
-push-to-talk. **No prose**: no explanations, tips or first-use notes (BGD, pick 7).
+push-to-talk. **No prose**: no explanations, tips or first-use notes (the owner, pick 7).
 
 ### 9.2 Screens and states for the mock-ups
 
-Two directions each, drawn in the real console before any build (BGD's mock-up practice,
+Two directions each, drawn in the real console before any build (the owner's mock-up practice,
 `docs/web-ui/mockups/PICKS.md`): (1) at rest; (2) starting: `starting machine`, `updating speech
 server`, `fetching model`, `loading models`; (3) listening, hearing (partials), thinking, speaking
 with the trace; (4) a visual in focus (mock-up, diagram, code slice, log) with pins; (5) the agent
@@ -539,7 +539,7 @@ zone:       voice_speech.zone, read only: shown, never written (Q1)
 ```
 
 The settings lane reads every other machine's on-demand us-central1 price (machine plus L4) from the
-Cloud Billing Catalog API and writes it with its date; only g2-standard-4's $0.71 is BGD's figure.
+Cloud Billing Catalog API and writes it with its date; only g2-standard-4's $0.71 is the owner's figure.
 Qwen3-ASR-1.7B and other models are added later as entries, never as free text.
 
 ### 11.3 Routes and who may write
@@ -606,7 +606,7 @@ power-off). The two are never added together.
 * **Per session:** `voice_speech_sessions/{session}`: start phases, percentiles (p50, p90, max) of
   every per-utterance and per-synthesis metric, totals, peaks of the 5 s readings, minutes and cost,
   the generation. Kept 400 days.
-* **Per day:** **computed on read** from the session summaries of that day (BGD's saved time zone),
+* **Per day:** **computed on read** from the session summaries of that day (the owner's saved time zone),
   never a second counter, the ledger's rule.
 
 ### 12.4 Routes, and live versus over time
@@ -658,9 +658,9 @@ three UI files.
 
 | # | Lane | Files | Tests | Waits on |
 |---|---|---|---|---|
-| L1 | **The speech machine exists, stopped, on swarm-vpc** | `terraform/infra/voice_speech.tf`, `terraform/infra/variables.tf` (`voice_speech`), `terraform/bootstrap/platform_service_accounts.tf` (`swarm-speech`), `install/manifest.d/voice-speech-machine.yaml`, `terraform/environments/*/*.tfvars` (off) | `tests/unit/terraform/test_voice_speech.py`: on-demand, labels, no external IP, tag, firewall pair, instance-scoped IAM, I5 and I6 on `swarm-speech` and no other role, the Ops Agent's startup script, TTL field, `desired_status`, exactly one instance (`zone` a string); nothing names a deny-listed network | BGD's IAM rows (§6). First measurements M1-M3 |
+| L1 | **The speech machine exists, stopped, on swarm-vpc** | `terraform/infra/voice_speech.tf`, `terraform/infra/variables.tf` (`voice_speech`), `terraform/bootstrap/platform_service_accounts.tf` (`swarm-speech`), `install/manifest.d/voice-speech-machine.yaml`, `terraform/environments/*/*.tfvars` (off) | `tests/unit/terraform/test_voice_speech.py`: on-demand, labels, no external IP, tag, firewall pair, instance-scoped IAM, I5 and I6 on `swarm-speech` and no other role, the Ops Agent's startup script, TTL field, `desired_status`, exactly one instance (`zone` a string); nothing names a deny-listed network | The owner's IAM rows (§6). First measurements M1-M3 |
 | L2 | **The speech server streams words and speech** | `apps/swarm-speech/` (server, Dockerfile, systemd unit, watchdog, `pyproject.toml`, `uv.lock`) | `tests/unit/speech/test_server.py` with a fake ASR and TTS: framing, ID-token check, warm-up, `boot` phases, metrics frames, watchdog timing | none; M2, M4, M5 on the machine |
-| L3 | **The release builds and pins swarm-speech** | `.github/workflows/release.yml`, `security.yml`, as `workflow-lines.patch` | none in the repository | L2; BGD pushes the patch |
+| L3 | **The release builds and pins swarm-speech** | `.github/workflows/release.yml`, `security.yml`, as `workflow-lines.patch` | none in the repository | L2; the owner pushes the patch |
 | L4 | **swarm-api relays speech and runs the machine's lifecycle** | `swarm_api/voice/speech_machine.py`, `swarm_api/voice/speech_relay.py`, `swarm_api/routes/voice_speech.py`, `terraform/infra/locals.tf` (`SWARM_SPEECH_*` env) | `tests/unit/voice/test_speech_machine.py`, `test_speech_relay.py`: start, readiness, rotation, lease and generation, idle stop, tab close, crash, stock-out fallback with no second zone tried, sweep, a delegated turn's planner line spoken after the front's | L1's names; L6's `VoiceSessions.delegation` |
 | L5 | **The sweep runs every two minutes** | `terraform/infra/voice_speech_sweep.tf` (the job signs as the tick account, which held no `run.invoker` on swarm-api, so row I4 is one new grant, on swarm-api only, while `voice_speech` is on) | `tests/unit/terraform/test_voice_speech_sweep.py` | L4's route |
 | L6 | **Start picks the engine from Settings** | `swarm_api/voice/sessions.py`, `swarm_api/routes/voice.py` (and the `include_router` of L4's, L7's, L8's, L9's and L10's routers there), `apps/swarm-voice/swarm_voice/main.py` (the speech start on `claudefront.FrontSessions`, `/turn` routed by mode, and mounting `swarm_voice/readback.py`'s `/readback` and `claudefront.py`'s `/delegations`) | `tests/unit/voice/test_sessions_engine.py` (with `VoiceSessions.delegation`, the client of `/delegations/{id}`), `tests/unit/voice/test_main_speech_start.py`: a `speech` start never builds `textchat.py`'s session; a front refusal is the text fallback | L4, L7, L8, L9, L10, L12 (each tests its own router directly; L6 mounts them) |
@@ -669,7 +669,7 @@ three UI files.
 | L9 | **Visuals and notes are stored and served** | `swarm_api/voice/visuals.py`, `swarm_api/routes/voice_visuals.py`, `apps/swarm-voice/swarm_voice/tools_visual.py` (`show_file`, `show_diff`, `show_log`, `add_note`, `notes_to_work`), `planner.py` and `prompts.py` (serving them; `speak`'s `point_at`) | `tests/unit/voice/test_visuals.py`, `test_tools_visual.py`: anchors, tenant prefix, repository grant scope, note to work | L8 (owns `cards.py` and `grant.py`, so `spec` and the grant routes land there) |
 | L10 | **Telemetry is stored and served** | `swarm_api/voice/speech_telemetry.py`, `swarm_api/routes/voice_telemetry.py` | `tests/unit/voice/test_speech_telemetry.py`: sample write with generation, summaries, day computed on read, retention field | L4's frames |
 | M | **Mock-ups: Talk, Settings, Telemetry** | `docs/web-ui/mockups/voice-own-speech/` | none | this design |
-| U1 | **The Talk page speaks through our own speech** | `apps/swarm-ui/src/voice/speechSocket.ts`, `voice/vad.ts`, `voice/Talk.tsx` | `src/__tests__/voiceSpeechSocket.test.ts`, `voiceVad.test.ts` | L4, U2 (Talk.tsx mounts U2's components), BGD's pick on M |
+| U1 | **The Talk page speaks through our own speech** | `apps/swarm-ui/src/voice/speechSocket.ts`, `voice/vad.ts`, `voice/Talk.tsx` | `src/__tests__/voiceSpeechSocket.test.ts`, `voiceVad.test.ts` | L4, U2 (Talk.tsx mounts U2's components), the owner's pick on M |
 | U2 | **The Talk page shows visuals, notes and read-backs** | `voice/Visual.tsx`, `voice/Notes.tsx`, `voice/cards/ReadbackCard.tsx`, `voice/cards.ts` (its renderer registration; four files, one a one-line entry) | `src/__tests__/voiceVisual.test.tsx`, `voiceReadback.test.tsx` | L8, L9, M |
 | U3 | **Voice it › Settings** | `voice/Settings.tsx`, `voice/Section.tsx`, `Accounts.tsx` (remove the key button) | `src/__tests__/voiceSettings.test.tsx`, the Accounts test's key-button case moved | L7, M |
 | U4 | **Voice it › Telemetry** | `voice/Telemetry.tsx`, `voice/telemetryCharts.tsx` | `src/__tests__/voiceTelemetry.test.tsx` | L10, M; U3 for `Section.tsx` |
@@ -695,7 +695,7 @@ child per sentence.
   two sentences, one choice: answer or `delegate`) is a mechanical step, what that class is for;
   `opus` and `fable` would slow every sentence for planning the front never does. M8 checks it.
 * **The planner runs the planning class, `fable`** (`claude-fable-5-1`), as Q3 says, on both
-  engines, through `VOICE_PLANNER_MODEL` (BGD is asked to confirm its cost in questions.json).
+  engines, through `VOICE_PLANNER_MODEL` (the owner is asked to confirm its cost in questions.json).
 * **One warm child per session.** `claude -p --input-format stream-json --output-format
   stream-json`, started at the session's start with claudeturn.py's rules (built environment, `--tools
   ""`, `--strict-mcp-config` with only `delegate`, private HOME, scrubbed output); each final is one
@@ -714,7 +714,7 @@ child per sentence.
 ## 15. The installer's part (Day One)
 
 A fresh deployment gets own speech through the installer, in **its own lane, L11, "The installer
-offers own speech"** (BGD, Q4); no other lane edits the installer for it:
+offers own speech"** (the owner, Q4); no other lane edits the installer for it:
 
 * An **optional choice** in stage 0 beside Voice it: "Voice it's own speech engine (one stopped L4
   machine; about $0.71 an hour while used, $15 a month for its disk)". Yes sets
@@ -751,9 +751,9 @@ offers own speech"** (BGD, Q4); no other lane edits the installer for it:
 **No frozen contract change**: `apps/common/swarm_common/` is read for the model class names only
 (the pins come from Terraform's `runner_models`), never extended.
 
-## 17. Decided (BGD, 2026-11-05, 02:49 UTC)
+## 17. Decided (the owner, 2026-11-05, 02:49 UTC)
 
-BGD answered the design's four open questions; each answer wins over any earlier default.
+The owner answered the design's four open questions; each answer wins over any earlier default.
 
 * **Q1. One zone.** One stopped machine; a stock-out falls back to text mode, and no second machine
   or zone is provisioned (§4.7, §5.1, §5.4, §11).

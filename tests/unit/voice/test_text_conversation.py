@@ -9,7 +9,7 @@ broker, both on an `httpx.MockTransport`, this holds that:
   Live session and answers `mode: text` with no SDP;
 * a turn's reply is read from `response.output_item.done`, while the terminal
   `response.completed` carries `output == []`;
-* every request carries the wire AI Studio measured: the headers, `stream: true`,
+* every request carries the wire a peer application measured: the headers, `stream: true`,
   `store: false`, the include, and never `max_output_tokens`, a temperature, a
   top_p or a response_format; `build_body` refuses to build one;
 * the plan's usage-limit refusal is a 429 with when it resets;
@@ -44,8 +44,8 @@ from swarm_voice import textchat as tc  # noqa: E402
 from swarm_voice.main import create_app  # noqa: E402
 from swarm_voice.planner import TurnResult  # noqa: E402
 
-PERSON = "bogdan@saga.xyz"
-CALLER = "swarm-api@voice-test-project.iam.gserviceaccount.com"
+PERSON = "owner@example.com"
+CALLER = "swarm-api@example-project.iam.gserviceaccount.com"
 BROKER = "https://broker.test"
 VOICE_ID = "vs_" + "f00dfeed12"
 RESET_EPOCH = 4_102_444_800  # 2100-01-01T00:00:00Z
@@ -250,7 +250,7 @@ def test_the_reply_is_read_from_output_item_done_not_the_terminal_event(caplog):
         body = r.json()
         assert body["reply"] == "Sure, here is how."
         assert body["cards"] == [] and body["turn_id"].startswith("vt_")
-        # The wire AI Studio measured, header for header.
+        # The wire a peer application measured, header for header.
         sent = h.codex.headers[0]
         assert sent["authorization"].removeprefix("Bearer ") in h.codex.valid
         assert sent["openai-beta"] == "responses=experimental"

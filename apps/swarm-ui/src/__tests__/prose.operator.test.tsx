@@ -1,4 +1,4 @@
-// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// THE APP-WIDE RATCHET IS proseapp.tsx (THE OWNER'S RULE, 2026-11-05): every
 // page the nav reaches shows no more words or arrowed links than it did on the
 // change's base. This file keeps its own screen-level budget.
 //
@@ -113,7 +113,7 @@ function capacity(): Capacity {
   return {
     pools: [
       pool('global'),
-      pool('provider:anthropic:tenant:u-bogdan', { hard_limit: 5, effective_limit: 5, active: 5 }),
+      pool('provider:anthropic:tenant:u-owner', { hard_limit: 5, effective_limit: 5, active: 5 }),
       pool('runner:claude-code', { enabled: false }),
     ],
     runner_profiles: {
@@ -122,7 +122,7 @@ function capacity(): Capacity {
         backend: 'cloudrun',
         provider: 'anthropic',
         units: 1,
-        pools: ['global', 'provider:anthropic:tenant:u-bogdan'],
+        pools: ['global', 'provider:anthropic:tenant:u-owner'],
       },
       codex: {
         resource_class: 'standard',
@@ -154,7 +154,7 @@ function stats(): Stats {
 function quota(): QuotaState[] {
   const row = (over: Partial<QuotaState>): QuotaState => ({
     provider: 'anthropic',
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     state: 'HEALTHY',
     updated_at: '2026-09-22T10:00:00Z',
     configured_hard_max: 20,
@@ -205,22 +205,22 @@ const BUDGET = {
   // failed read is drawn as in this file's offline fixtures, both run into
   // their neighbours by `textContent`. The figures are a table and cost
   // nothing; no sentence was added.
-  // RAISED 42 -> 60, 2026-10-25, BY BGD'S S10 RULE FOR EVERY ADMIN PAGE
+  // RAISED 42 -> 60, 2026-10-25, BY owner'S S10 RULE FOR EVERY ADMIN PAGE
   // (proposal E, config-e.html, picked for #2157; lane ADMIN-LEADS): "Every
   // Admin page opens with what needs an admin now, in one sentence with one
   // button". Measured 42 before it and 57 with it: this fixture's
-  // `provider:anthropic:tenant:u-bogdan` is at 5 of 5, so the lead is its
+  // `provider:anthropic:tenant:u-owner` is at 5 of 5, so the lead is its
   // longest branch -- the kicker, "Pool <name> is at 100% of its ceiling",
   // "5 of 5 units in use." and the Open button, 15 tokens. The green lead is 6.
   // The margin is three tokens: a renamed word fits, a second sentence does not.
-  // RAISED 60 -> 67, 2026-10-28, BY BGD'S VISUAL QA PASS 1 (admin-shell-03,
+  // RAISED 60 -> 67, 2026-10-28, BY owner'S VISUAL QA PASS 1 (admin-shell-03,
   // part of #2596; lane QA1-FIX-04): the lead names the pool as its row does,
-  // "anthropic · u-bogdan" (three tokens where the key was one), in the
+  // "anthropic · u-owner" (three tokens where the key was one), in the
   // headline and the button, with the key on a mono line of its own. Measured
   // 60 before (main, at the ceiling) and 64 with it: a name and an id, no
   // sentence. The margin stays three tokens.
   'Pool limits': 67,
-  // RAISED 32 -> 46, 2026-10-25, BY BGD'S DECISION OF 2026-10-25 (COUNTS-ONE-RUN,
+  // RAISED 32 -> 46, 2026-10-25, BY owner'S DECISION OF 2026-10-25 (COUNTS-ONE-RUN,
   // #2149): the page in mock-up F1's order, Over time first and the state
   // counts under F1's own heading, "Right now: agents in each state", with
   // its one line, "A snapshot, read by the same Run." -- twelve words that
@@ -242,7 +242,7 @@ const BUDGET = {
   // not a sentence of prose; the margin is the same as before, so one more
   // job fits and a paragraph still does not.
   'Platform ticks': 195,
-  // OVER TIME, MOUNTED ON PLATFORM COUNTS BY COUNTS-PAGE (#2149, BGD's pick
+  // OVER TIME, MOUNTED ON PLATFORM COUNTS BY COUNTS-PAGE (#2149, the owner's pick
   // of 2026-10-24, counts-a.html). Measured on its own, as the ticks are, so
   // its words neither hide inside Platform counts' 32 nor raise it: 196 at the
   // mount, before its Run, with the roster refused so the price reads per

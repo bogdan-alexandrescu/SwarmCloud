@@ -1,5 +1,5 @@
 // SETTINGS › PROFILE: A GROUP WORKSPACE IS NAMED, NOT ADDRESSED (lane
-// ROLE-EFFECTIVE-CELL, part of #2391; BGD 2026-10-26, VQ-056).
+// ROLE-EFFECTIVE-CELL, part of #2391; owner 2026-10-26, VQ-056).
 //
 // `GET /v1/profile` names a group workspace with no stored name by its group
 // email ('eng@…'), so Profile read 'eng@… · admin (platform admin)' where the
@@ -124,7 +124,7 @@ describe('Profile names each group workspace as the switcher does (VQ-056)', () 
 })
 
 // `GET /v1/profile` now serves a group row's stored name itself, with the
-// group email as `principal` (BGD, 2026-11-04; part of #2688): the page draws
+// group email as `principal` (owner, 2026-11-04; part of #2688): the page draws
 // that name even when the switcher's read is not there to supply it.
 describe("Profile draws the name GET /v1/profile serves for a group workspace", () => {
   const SERVED: Json = {

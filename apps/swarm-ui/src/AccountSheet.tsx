@@ -357,7 +357,7 @@ export function SheetAccount({
  * pair (`duplicate_of`, the broker's organisation id) withholds the newer
  * registration; a possible one (identical readings on two polls) is advisory
  * and both are still handed out. The other side is named only when this read
- * holds it, which is only inside this workspace (BGD, Q2); otherwise it is
+ * holds it, which is only inside this workspace (owner, Q2); otherwise it is
  * "another workspace", and nothing more.
  */
 export function SheetDuplicate({
@@ -426,7 +426,7 @@ export function SheetDuplicate({
   )
 }
 
-/** This account's own forecast, from today's reading (BGD, "From today's readings"). */
+/** This account's own forecast, from today's reading (owner, "From today's readings"). */
 export function SheetForecast({ a, now }: { a: PoolAccount; now: number }) {
   const p = accountPaceOf(a, now)
   // A RESET ALREADY PAST (visual QA pass 2 cap2-05): the reading is from the

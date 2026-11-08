@@ -1,5 +1,5 @@
 // CONFIG › SECRETS › REPOSITORY › GITHUB ACTIONS (lane SSC-UI-ACTIONS, part of
-// #2158; docs/design/secrets-scopes.md §3 and §6.1, as BGD's answers in §11
+// #2158; docs/design/secrets-scopes.md §3 and §6.1, as the owner's answers in §11
 // changed them; mock-up config-e.html S4b2, S4f and S4c's Actions branch).
 //
 // The §9 row's tests, adjusted by §11:

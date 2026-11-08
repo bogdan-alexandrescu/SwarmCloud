@@ -48,7 +48,7 @@ from swarm_typesafe_fwd.keyring import KeyRing, SecretCache
 from swarm_typesafe_fwd.server import make_server
 from swarm_typesafe_fwd.upstream import UpstreamResponse, UpstreamTimeout
 
-PROJECT = "swarm-test-project"
+PROJECT = "example-project"
 SERVICE_HOST = "swarm-typesafe-fwd.swarm-system.svc.cluster.local"
 PATH = "/v1/systemone"
 LOGGER = "swarm_typesafe_fwd"

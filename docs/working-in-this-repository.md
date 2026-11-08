@@ -2,9 +2,9 @@
 
 [`CLAUDE.md`](../CLAUDE.md) is read on every turn of every agent working here,
 so it carries the rules and a one-line form of each laptop rule, and this file
-carries the explanations behind them. A token analysis of 2026-10-20..27 (#2524)
+carries the explanations behind them. A token analysis of 2026-10-20..27
 found 97% of the pool's tokens were cache reads of long contexts, and the
-25.6 KB `CLAUDE.md` was in every one of them; BGD decided on 2026-10-27 to keep
+25.6 KB `CLAUDE.md` was in every one of them; [the owner] decided on 2026-10-27 to keep
 an agent-facing core of about 10 KB there and move the rest here. No rule was
 dropped in the move: every section below is the text `CLAUDE.md` used to carry,
 verbatim except for link paths and three words this directory's vocabulary rule
@@ -253,7 +253,7 @@ finishes** (`uv run pytest tests/unit -q` narrowed to its area, and vitest for
 `apps/swarm-ui`), and fixes what they catch. CI is still the gate, and a
 green run in the container proves nothing CI has not. Owner decision,
 2026-09-28, after 2 of the first 6 SwarmCloud fix PRs arrived red on failures
-a unit run would have caught (#248, #249). A brief written for a SwarmCloud
+a unit run would have caught. A brief written for a SwarmCloud
 step must therefore not repeat "do not run tests"; a brief for a local lane
 still must. Its one pre-finish command is **`scripts/changed-guards.sh`**,
 after the area run: it runs the repo-wide guard set (`GUARD_TESTS` in
@@ -267,11 +267,11 @@ CI-seconds (`unit_test_durations.json`) is not one call: run without
 part alone, and an agent whose command limit is ten minutes runs the n parts
 as n commands, which the script's warning spells out. A narrowed
 area run never reaches those guards, and they were most of the 25% of lane PRs
-red on their first CI run (#642). Until 2026-11-01 every SwarmCloud agent ran
+red on their first CI run. Until 2026-11-01 every SwarmCloud agent ran
 it, and any brief, wherever it was written, named it.
 
 **Since 2026-11-01 an agent under the pre-publish gate does not run it.**
-Owner decision, 2026-11-01 (#2981), after the code intelligence experiment
+Owner decision, 2026-11-01, after the code intelligence experiment
 measured it. The claude-code runner (`claude-code-lightpanda` included; its
 `CliAgentSpec` sets `prepublish=True`, `agent_worker/prepublish.py`) runs
 `scripts/changed-guards.sh` itself in its pre-publish gate after the agent's
@@ -295,12 +295,12 @@ pytest files that import or name a changed path and the vitest files that
 import a changed UI module, as a few runs of named files. Never vitest without
 file arguments; never pytest over a whole directory or with `-n auto` across
 the suite; never parallel shards or background test batches polled with
-`sleep`. Owner decision 2026-10-20 (#1694): 36 unfiltered vitest runs cost
+`sleep`. Owner decision 2026-10-20: 36 unfiltered vitest runs cost
 2.05 h, 8 whole-directory pytest runs 0.73 h, and both out-of-memory kills came
 from four vitest shards started with `&`
 ([docs/ci.md](ci.md#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)).
 The rule then ended "`scripts/changed-guards.sh` once at the end"; since
-2026-11-01 (#2981, the paragraph above) that holds only on a runner without
+2026-11-01 (the paragraph above) that holds only on a runner without
 the pre-publish gate (codex), and under the gate (claude-code) the agent
 leaves the script to the gate.
 
@@ -369,7 +369,7 @@ up as a runbook step someone follows at 3am.
 
 Bugs, fixes and improvements we mean to do later are filed as GitHub issues,
 through the forms in [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/). The
-forms and the rules below were adopted from saga-prompt-lab on 2026-09-24, at
+forms and the rules below were adopted from a peer application's repository on 2026-09-24, at
 the owner's request: the structure is theirs, the content is this platform's.
 A finding that lives only in a session transcript or a PR description is lost
 the day that session ends; an issue is where it survives.
@@ -379,7 +379,7 @@ bug from documented behaviour, and a lot that looks wrong here is the contract:
 a `READY` or `PARKED` agent that holds no capacity and shows no progress is
 invariant 1 working. **Severity S0 is reserved for the guarantees this platform
 exists to keep** — tenant isolation, the other team's resources in
-`saga-agents-staging`, capacity accounting, fencing, and secrets — and an S0 is
+`example-project`, capacity accounting, fencing, and secrets — and an S0 is
 looked at before anything else. A secret is reported by *where* it appeared,
 never pasted.
 
@@ -413,8 +413,8 @@ also an entry in
 [`docs/contract-change-requests.md`](contract-change-requests.md), because
 rule 1 says so.
 
-**AN EPIC CLOSES ON ITS COMMENTS, NEVER ON ITS INDEX.** In saga-prompt-lab,
-#871 closed over two live defects its body's index never listed. Enumerate the
+**AN EPIC CLOSES ON ITS COMMENTS, NEVER ON ITS INDEX.** In a peer application's repository,
+an epic closed over two live defects its body's index never listed. Enumerate the
 boxes from the comments, reconcile them against anything the body lists, and if
 the two disagree the epic is not closeable. So an epic's body carries **no checklist
 item at all** — not from the CLI, and not from the form, which has no
@@ -423,8 +423,8 @@ filed body as `- [X]` items, and a required acknowledgement would arrive as a
 ticked box no comment matches, on every epic.
 
 **`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE.** GitHub reads the keyword
-and drops every qualifier around it: "Closes #12 except the GKE half" closes
-#12. For a partial fix write `part of #N` and say what is left.
+and drops every qualifier around it: "Closes #N except the GKE half" closes
+#N anyway. For a partial fix write `part of #N` and say what is left.
 
 **FINDINGS ABOUT OTHER ISSUES GO IN A PR COMMENT, NOT THE PR BODY.** Keep
 reporting them — but an issue cited in the body reads as the PR's own subject,

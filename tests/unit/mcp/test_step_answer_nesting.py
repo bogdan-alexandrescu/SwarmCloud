@@ -213,7 +213,7 @@ def test_a_task_row_nested_one_level_too_deep_keeps_every_field(tmp_path):
         "task_control": _documented(control),
     })
     # MUTATION: followTaskRow reading the answer without stepAnswer's unwrap
-    # nulls every field of the two measured Product Oracle rows.
+    # nulls every field of the two measured a peer application rows.
     assert {k: rows["task_2a8fa001a602413086d9"].get(k) for k in _FIELDS} == _expected(first)
     assert {k: rows["task_a8380238991242adadfb"].get(k) for k in _FIELDS} == _expected(second)
     # MUTATION: an unwrap that fires on the documented shape nulls the control.

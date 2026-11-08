@@ -63,7 +63,7 @@ def _task(db, *, task_id: str = "task_a", **fields: Any) -> dict[str, Any]:
             "result_summary": {
                 "runner": {"summary": f"I could not log in with {LITERAL}.", "exit_code": 1},
                 "artifacts": [{"name": LOOKALIKE_NAME, "bytes": 12,
-                               "uri": f"gs://bucket/tenants/eng/tasks/{task_id}/attempts/att_1/artifacts/{LOOKALIKE_NAME}"}],
+                               "uri": f"gs://swarm-artifacts-example-project/tenants/eng/tasks/{task_id}/attempts/att_1/artifacts/{LOOKALIKE_NAME}"}],
             },
         }
     )
