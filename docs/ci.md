@@ -3481,8 +3481,8 @@ gh api --method PUT \
       {"context": "trivy (repo)", "app_id": 15368},
       {"context": "secret scan", "app_id": 15368},
       {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
-      {"context": "platform policy assertions", "app_id": 15368},
-      {"context": "deployment-values", "app_id": 15368}
+      {"context": "deployment-values", "app_id": 15368},
+      {"context": "platform policy assertions", "app_id": 15368}
     ]
   },
   "enforce_admins": false,
