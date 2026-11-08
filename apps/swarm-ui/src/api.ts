@@ -15175,6 +15175,365 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
 }
 
 // --------------------------------------------------------------------------
+// The managed plugin catalogue (docs/design/managed-plugins.md §1, §2;
+// swarm-api routes/plugin_catalogue.py). Admin › Plugins reads the platform
+// catalogue; a workspace's private plugins answer the same shapes.
+// --------------------------------------------------------------------------
+
+/** Which catalogue a call names: the platform's (a platform admin's), or one workspace's. */
+export type PluginCatalogueScope = { kind: 'platform' } | { kind: 'workspace'; tenantId: string }
+
+export const PLATFORM_PLUGIN_CATALOGUE: PluginCatalogueScope = { kind: 'platform' }
+
+/** Each catalogue route, the platform's template and the workspace's, as the router declares them. */
+const CATALOGUE_ROUTES = {
+  catalogue: ['/v1/admin/plugin-catalogue', '/v1/workspaces/{tenant_id}/plugin-catalogue'],
+  installs: ['/v1/admin/plugin-catalogue/installs', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs'],
+  uploads: ['/v1/admin/plugin-catalogue/uploads', '/v1/workspaces/{tenant_id}/plugin-catalogue/uploads'],
+  intake: ['/v1/admin/plugin-catalogue/intakes/{intake_id}', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}'],
+  start: ['/v1/admin/plugin-catalogue/intakes/{intake_id}/start', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}/start'],
+  versions: ['/v1/admin/plugin-catalogue/installs/{install_id}/versions', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs/{install_id}/versions'],
+} as const
+
+function catalogueRoute(scope: PluginCatalogueScope, which: keyof typeof CATALOGUE_ROUTES, params: Readonly<Record<string, string>> = {}): ApiRoute {
+  const [platform, workspace] = CATALOGUE_ROUTES[which]
+  return scope.kind === 'platform' ? route(platform, params) : route(workspace, { ...params, tenant_id: scope.tenantId })
+}
+
+/** Where a plugin came from, as the install or version records it. */
+export interface CatalogueSource {
+  /** `github`, `marketplace`, `upload`, or `image` for a built-in. */
+  kind: string
+  repository: string | null
+  ref: string | null
+  commit: string | null
+  subdir: string | null
+  /** The marketplace entry's name. */
+  plugin: string | null
+  /** An upload's file name. */
+  filename: string | null
+}
+
+/** One card of the catalogue: `pluginstore.install_view`, or a built-in entry. */
+export interface CatalogueEntry {
+  install_id: string
+  name: string
+  display_name: string
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  built_in: boolean
+  source: CatalogueSource
+  version: string | null
+  description: string | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts per component kind; a built-in's skills come from its modes. */
+  components: { skills: number; commands: number; agents: number; hooks: number; mcp_servers: number }
+  runner_profiles: string[]
+  removable: boolean
+  updatable: boolean
+  updated_at: string | null
+  updated_by: string | null
+  /** In a workspace's view of the platform's installs: whether it allows the plugin. */
+  allowed: boolean | null
+}
+
+export interface PluginCatalogue {
+  scope: 'platform' | 'workspace'
+  built_in: CatalogueEntry[]
+  installs: CatalogueEntry[]
+  /** The platform view's workspace installs; a workspace view's platform installs. */
+  others: CatalogueEntry[]
+  /** The intake's caps (the owner's Q8 answer), or null from an API that did not serve them. */
+  limits: { max_packed_bytes: number; max_unpacked_bytes: number; max_files: number; max_expansion_ratio: number } | null
+  can_install: boolean
+}
+
+/** One fetch or upload in flight: `routes.plugin_catalogue.intake_view`. */
+export interface PluginIntake {
+  intake_id: string
+  /** `awaiting_upload`, `running`, `pinned` or `refused`. */
+  state: string
+  install_id: string | null
+  version_id: string | null
+  source: CatalogueSource | null
+  /** A fixed code; `sentence` is swarm-api's own for its codes, null for one the intake job reported. */
+  refusal: { code: string; sentence: string | null; entry_index: number | null } | null
+  deadline: string | null
+}
+
+/** One pinned version: `pluginstore.version_view`. */
+export interface PluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  source: CatalogueSource | null
+  source_sha256: string | null
+  runnable_sha256: string | null
+  runnable_bytes: number | null
+  files: number | null
+  unpacked_bytes: number | null
+  manifest: Record<string, unknown>
+  components: {
+    skills: { name: string }[]
+    commands: { name: string }[]
+    agents: { name: string }[]
+    hooks: { event: string; matcher: string | null; command: string }[]
+    mcp_servers: { name: string; command: string | null }[]
+  }
+  /** Runtimes the intake found or the overlay declared, as `name` or `name >= min`. */
+  runtimes: string[]
+  profiles: string[]
+  hosts: string[]
+  created_at: string | null
+  created_by: string | null
+}
+
+export interface PluginVersions {
+  install: CatalogueEntry
+  versions: PluginVersion[]
+}
+
+/** A GitHub repository or a marketplace entry, as Add plugin sends it (`SourceBody`). */
+export interface PluginSourceInput {
+  kind: 'github' | 'marketplace'
+  repository: string
+  ref: string
+  subdir: string
+  plugin: string | null
+}
+
+/** The signed upload URL `POST .../uploads` answers: valid ten minutes, never kept. */
+export interface PluginUploadTarget {
+  method: string
+  url: string
+  headers: Record<string, string>
+}
+
+function catStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function catNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normCatalogueSource(raw: unknown): CatalogueSource {
+  const r = pluginRecord(raw)
+  return {
+    kind: catStr(r.kind) ?? 'unknown',
+    repository: catStr(r.repository),
+    ref: catStr(r.ref),
+    commit: catStr(r.commit),
+    subdir: catStr(r.subdir),
+    plugin: catStr(r.plugin),
+    filename: catStr(r.filename),
+  }
+}
+
+function normCatalogueEntry(raw: unknown): CatalogueEntry | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.install_id)
+  const name = catStr(r.name)
+  if (id === null || name === null) return null
+  const counts = pluginRecord(r.components)
+  const count = (k: string) => catNum(counts[k]) ?? 0
+  // A built-in serves its skills per mode; the card counts the distinct ones.
+  const modeSkills = new Set(Object.values(pluginRecord(r.skills)).flatMap(pluginStrings))
+  return {
+    install_id: id,
+    name,
+    display_name: catStr(r.display_name) ?? name,
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    tenant_id: catStr(r.tenant_id),
+    built_in: r.built_in === true,
+    source: normCatalogueSource(r.source),
+    version: catStr(r.version),
+    description: catStr(r.description),
+    runnable_sha256: catStr(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: { skills: Math.max(count('skills'), modeSkills.size), commands: count('commands'), agents: count('agents'), hooks: count('hooks'), mcp_servers: count('mcp_servers') },
+    runner_profiles: pluginStrings(r.runner_profiles),
+    removable: r.removable === true,
+    updatable: r.updatable === true,
+    updated_at: catStr(r.updated_at),
+    updated_by: catStr(r.updated_by),
+    allowed: typeof r.allowed === 'boolean' ? r.allowed : null,
+  }
+}
+
+function catEntries(v: unknown): CatalogueEntry[] {
+  return (Array.isArray(v) ? v : []).map(normCatalogueEntry).filter((e): e is CatalogueEntry => e !== null)
+}
+
+/** `GET {base}`: the catalogue's built-ins, its installs and the other scope's. */
+export function normPluginCatalogue(raw: unknown): PluginCatalogue {
+  const r = pluginRecord(raw)
+  const l = pluginRecord(r.limits)
+  const packed = catNum(l.max_packed_bytes)
+  return {
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    built_in: catEntries(r.built_in),
+    installs: catEntries(r.installs),
+    others: catEntries(r.scope === 'workspace' ? r.platform_installs : r.workspace_installs),
+    limits: packed === null ? null : { max_packed_bytes: packed, max_unpacked_bytes: catNum(l.max_unpacked_bytes) ?? 0, max_files: catNum(l.max_files) ?? 0, max_expansion_ratio: catNum(l.max_expansion_ratio) ?? 0 },
+    can_install: r.can_install === true,
+  }
+}
+
+export function normPluginIntake(raw: unknown): PluginIntake | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.intake_id)
+  const state = catStr(r.state)
+  if (id === null || state === null) return null
+  const refusal = pluginRecord(r.refusal)
+  const code = catStr(refusal.code)
+  return {
+    intake_id: id,
+    state,
+    install_id: catStr(r.install_id),
+    version_id: catStr(r.version_id),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    refusal: code === null ? null : { code, sentence: catStr(refusal.sentence), entry_index: catNum(refusal.entry_index) },
+    deadline: catStr(r.deadline),
+  }
+}
+
+function catNamed(v: unknown): { name: string }[] {
+  return (Array.isArray(v) ? v : []).flatMap((x) => {
+    const n = catStr(pluginRecord(x).name)
+    return n === null ? [] : [{ name: n }]
+  })
+}
+
+function catRuntimes(requires: Record<string, unknown>): string[] {
+  const out = new Set<string>()
+  for (const part of ['suggested', 'declared']) {
+    for (const rt of Array.isArray(pluginRecord(requires[part]).runtimes) ? (pluginRecord(requires[part]).runtimes as unknown[]) : []) {
+      if (typeof rt === 'string') out.add(rt)
+      const o = pluginRecord(rt)
+      const n = catStr(o.name)
+      if (n !== null) out.add(catStr(o.min_version) === null ? n : `${n} >= ${String(o.min_version)}`)
+    }
+  }
+  return [...out].sort()
+}
+
+function normPluginVersion(raw: unknown): PluginVersion | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.version_id)
+  if (id === null) return null
+  const c = pluginRecord(r.components)
+  const requires = pluginRecord(r.requires)
+  return {
+    version_id: id,
+    current: r.current === true,
+    version: catStr(r.version),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    source_sha256: catStr(r.source_sha256),
+    runnable_sha256: catStr(r.runnable_sha256),
+    runnable_bytes: catNum(r.runnable_bytes),
+    files: catNum(r.files),
+    unpacked_bytes: catNum(r.unpacked_bytes),
+    manifest: pluginRecord(r.manifest),
+    components: {
+      skills: catNamed(c.skills),
+      commands: catNamed(c.commands),
+      agents: catNamed(c.agents),
+      hooks: (Array.isArray(c.hooks) ? c.hooks : []).flatMap((x) => {
+        const h = pluginRecord(x)
+        const event = catStr(h.event)
+        return event === null ? [] : [{ event, matcher: catStr(h.matcher), command: catStr(h.command) ?? '' }]
+      }),
+      mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).flatMap((x) => {
+        const s = pluginRecord(x)
+        const n = catStr(s.name)
+        return n === null ? [] : [{ name: n, command: catStr(s.command) }]
+      }),
+    },
+    runtimes: catRuntimes(requires),
+    profiles: pluginStrings(pluginRecord(requires.declared).profiles),
+    hosts: pluginStrings(r.hosts),
+    created_at: catStr(r.created_at),
+    created_by: catStr(r.created_by),
+  }
+}
+
+export function normPluginVersions(raw: unknown): PluginVersions | null {
+  const r = pluginRecord(raw)
+  const install = normCatalogueEntry(r.install)
+  if (install === null) return null
+  return { install, versions: (Array.isArray(r.versions) ? r.versions : []).map(normPluginVersion).filter((v): v is PluginVersion => v !== null) }
+}
+
+/** `GET {base}`: the catalogue, as its reader may see it. */
+export async function loadPluginCatalogue(scope: PluginCatalogueScope): Promise<Result<PluginCatalogue>> {
+  return readAs(catalogueRoute(scope, 'catalogue'), normPluginCatalogue)
+}
+
+/** `GET {base}/installs/{install_id}/versions`: an install and its pinned versions. */
+export async function loadPluginVersions(scope: PluginCatalogueScope, installId: string): Promise<Result<PluginVersions | null>> {
+  return readAs(catalogueRoute(scope, 'versions', { install_id: installId }), normPluginVersions)
+}
+
+/** `GET {base}/intakes/{intake_id}`: an intake's state; reading it also finishes one whose report is in. */
+export async function loadPluginIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<PluginIntake | null>> {
+  return readAs(catalogueRoute(scope, 'intake', { intake_id: intakeId }), normPluginIntake)
+}
+
+function catIntake(r: Result<unknown>): Result<PluginIntake | null> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPluginIntake(r.data) }
+  return r
+}
+
+/** `POST {base}/installs`: resolve a GitHub ref or a marketplace entry, fetch it into quarantine, start the intake. */
+export async function startPluginInstall(scope: PluginCatalogueScope, source: PluginSourceInput, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake | null>> {
+  const body = {
+    source: source.kind === 'github'
+      ? { kind: 'github', repository: source.repository, ref: source.ref, subdir: source.subdir }
+      : { kind: 'marketplace', repository: source.repository, ref: source.ref, plugin: source.plugin },
+    ...(overlay === null ? {} : { overlay }),
+  }
+  return catIntake(await writeTo(catalogueRoute(scope, 'installs'), 'POST', body))
+}
+
+/** `POST {base}/uploads`: an intake awaiting its archive, and the signed URL to put it at. */
+export async function openPluginUpload(
+  scope: PluginCatalogueScope,
+  file: { name: string; size: number },
+  subdir: string,
+  overlay: Record<string, unknown> | null,
+): Promise<Result<{ intake: PluginIntake; upload: PluginUploadTarget } | null>> {
+  const r = await writeTo(catalogueRoute(scope, 'uploads'), 'POST', { filename: file.name, size: file.size, subdir, ...(overlay === null ? {} : { overlay }) })
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const raw = pluginRecord(r.data)
+  const intake = normPluginIntake(raw.intake)
+  const u = pluginRecord(raw.upload)
+  const url = catStr(u.url)
+  const headers = Object.fromEntries(Object.entries(pluginRecord(u.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  return { ...r, data: intake === null || url === null ? null : { intake, upload: { method: catStr(u.method) ?? 'PUT', url, headers } } }
+}
+
+/**
+ * The archive's bytes, straight to Cloud Storage at the signed URL, so they
+ * never pass through swarm-api (§2.2). Answers whether the store took them;
+ * the URL is never logged or kept.
+ */
+export async function putPluginArchive(upload: PluginUploadTarget, file: Blob): Promise<boolean> {
+  try {
+    const r = await fetch(upload.url, { method: upload.method, headers: upload.headers, body: file, credentials: 'omit' })
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
+/** `POST {base}/intakes/{intake_id}/start`: the upload arrived, run the intake. */
+export async function startPluginIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<PluginIntake | null>> {
+  return catIntake(await writeTo(catalogueRoute(scope, 'start', { intake_id: intakeId }), 'POST'))
+}
+
+// --------------------------------------------------------------------------
 // Voice it › Settings (swarm-api routes/voice_settings.py)
 // --------------------------------------------------------------------------
 
