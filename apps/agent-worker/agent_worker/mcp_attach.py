@@ -44,7 +44,7 @@ WHEN IT FAILS (§4.7):
     Retryable only for `unreadable` (owner decision Q2: a retry is an attempt
     of the same task); `credential_expired` and every other reason are final
     -- EXCEPT a workflow step's per-run credential that lapsed
-    (`Attached.lapsed_credentials`): its caller can re-store it (BGD
+    (`Attached.lapsed_credentials`): its caller can re-store it (the owner
     2026-10-26, registered-mcp-servers.md §4.10), so the step parks
     CREDENTIAL_MISSING with `credential: "mcp"` instead;
   * swarm-api unreachable or refusing is `mcp_attach_unavailable`, before the

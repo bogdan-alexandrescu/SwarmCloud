@@ -7,7 +7,7 @@ runs noVNC; between it and this module are swarm-api and the relay, which
 carry each viewer's RFB byte stream through the tunnel as its own connection
 with its own id. This module speaks RFB 3.8 on one such stream.
 
-FRAMES AS CAPTURED (§5.3; owner decision, BGD 2026-10-25). `FrameHub.publish`
+FRAMES AS CAPTURED (§5.3; owner decision, 2026-10-25). `FrameHub.publish`
 takes the captured `Frame` as it is: nothing is painted over any part of it,
 in any situation. The pointer is painted on each viewer's own copy (THE
 POINTER, below), never on the published frame.
@@ -200,7 +200,7 @@ ENCODING_TIGHT = 7
 ENCODING_DESKTOP_SIZE = -223
 ENCODING_CURSOR = -239
 ENCODING_DESKTOP_NAME = -307
-#: THUMBNAIL MODE (LIVE-THUMBS-SMALL-JPEG, part of #2688; BGD's pick of
+#: THUMBNAIL MODE (LIVE-THUMBS-SMALL-JPEG, part of #2688; the owner's pick of
 #: 2026-11-06). A private pseudo-encoding: a viewer that names
 #: `ENCODING_THUMB_WIDTH_0 + w` (w from 1 to `_THUMB_WIDTH_SPAN`) in its
 #: SetEncodings, with Tight and DesktopSize, is sent the frame scaled to w

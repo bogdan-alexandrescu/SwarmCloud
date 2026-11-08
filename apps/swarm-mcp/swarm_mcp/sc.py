@@ -1272,7 +1272,7 @@ def session_start_context(
     saved, the context asks the session to arm the watch at the default --
     CronList first, so a session that already has one makes no second.
 
-    `project` (SC-BROWSER-FOLLOWUP, BGD 2026-10-25): this checkout's origin
+    `project` (SC-BROWSER-FOLLOWUP, the owner 2026-10-25): this checkout's origin
     repository, `host/owner/repo`, when the listings were widened to the
     project's running work (`own_or_project`): entries another session
     started say so, and the attach asked for is `/sc attach --all --project`
@@ -1347,7 +1347,7 @@ def session_start_context(
             " ".join(parts)
             + " Named: the work this Claude Code session started, and the work still running for "
             f"this project (repository {project}) whichever session started it -- at session start "
-            "only (BGD, 2026-10-25); another repository's work from another session, and untagged "
+            "only (the owner, 2026-10-25); another repository's work from another session, and untagged "
             "work outside this project, is not named. `/sc check` and the watch stay scoped to "
             "this session."
         )
@@ -1394,7 +1394,7 @@ def own_or_project(listing: dict[str, Any] | None, key: str, sid: str | None,
                    repository: str | None) -> dict[str, Any] | None:
     """`listing` (`running_workflows` or `running_tasks`) with the entries
     under `key` this session started and -- the session start's widening
-    (SC-BROWSER-FOLLOWUP, BGD 2026-10-25) -- those that clone `repository`,
+    (SC-BROWSER-FOLLOWUP, the owner 2026-10-25) -- those that clone `repository`,
     whichever session started them; each kept entry marked `this_session`.
     `repository` None keeps this session's alone (`own_only`)."""
     from .check import repo_key
@@ -1500,7 +1500,7 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
                 # hook hands over the session id it read on stdin, and work
                 # another session started -- or nobody tagged -- is not named.
                 sid = session.current()
-                # AND THIS PROJECT'S RUNNING WORK (SC-BROWSER-FOLLOWUP, BGD
+                # AND THIS PROJECT'S RUNNING WORK (SC-BROWSER-FOLLOWUP, the owner
                 # 2026-10-25), at session start only: whatever clones this
                 # checkout's origin repository, whichever session started it.
                 # `/sc check` and the watch stay this session's.
@@ -2126,7 +2126,7 @@ def _masked(text: str, secrets: Sequence[str]) -> str:
 
 
 #: The account kinds `sc account add` signs in to. `anthropic` is the Claude
-#: subscription pool; `openai` a ChatGPT plan for the codex runner (#2688, BGD
+#: subscription pool; `openai` a ChatGPT plan for the codex runner (#2688, the owner
 #: 2026-11-01: codex runs on ChatGPT plans from a shared pool).
 ACCOUNT_PROVIDERS = ("anthropic", "openai")
 

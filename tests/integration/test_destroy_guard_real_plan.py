@@ -833,6 +833,8 @@ def test_the_filters_fallback_prefix_is_guard_name_prefix():
     MUTATION: change the default in destroy-guard.jq to "swarm" and this fails.
     """
     env = {key: value for key, value in os.environ.items() if key != "SWARM_NAME_PREFIX"}
+    # The prefix does not depend on the project; lets common.sh source without PROJECT_ID.
+    env["SWARM_NO_PROJECT"] = "1"
     proc = subprocess.run(
         ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
         capture_output=True, text=True, timeout=60, env=env,

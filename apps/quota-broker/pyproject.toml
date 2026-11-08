@@ -7,7 +7,7 @@ dependencies = [
     "swarm-common",
     # The credential patterns swarm-api and the worker use. The broker
     # redacts every account health message before it is stored
-    # (`accountstore.health_message`; BGD, 2026-10-25). Standard library only.
+    # (`accountstore.health_message`; the owner, 2026-10-25). Standard library only.
     "swarm-redaction",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

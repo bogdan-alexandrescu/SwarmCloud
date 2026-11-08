@@ -70,7 +70,7 @@ case "${args}" in
   *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
@@ -101,7 +101,7 @@ case "${args}" in
   *"container clusters list"*)        echo "@PEER_CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0

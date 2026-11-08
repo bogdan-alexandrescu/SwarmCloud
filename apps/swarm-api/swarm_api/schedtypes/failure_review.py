@@ -1,7 +1,7 @@
 """`failure-review`: root-cause every failure of the last 7 hours and run its fix
 (docs/schedules.md §3.16, docs/design/failure-review.md; lane FR-3 TYPE, part of #1933).
 
-The owner's request (BGD, 2026-10-22): "run every 6 hrs and investigate all of
+The owner's request (the owner, 2026-10-22): "run every 6 hrs and investigate all of
 the agents and workflows that failed in the past 7 hrs ... Propose a solution
 or a fix and, for each proposed solution, dispatch a workflow to design, plan,
 implement, review test and merge each fix".
@@ -516,7 +516,7 @@ def _window(review: Mapping[str, Any]) -> str:
 
 
 # `plain`, `prose` and `code` live in `issuecomments` now: every writer that
-# posts to GitHub writes plain text, as this one did first (BGD, 2026-10-26,
+# posts to GitHub writes plain text, as this one did first (the owner, 2026-10-26,
 # part of #2391).
 
 

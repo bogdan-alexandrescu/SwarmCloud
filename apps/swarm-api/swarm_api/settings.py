@@ -378,10 +378,10 @@ class ApiSettings:
     #:
     #: terraform/infra/variables.tf already refuses that shape -- it validates
     #: secret_admin_members against var.tenants and caught it once, when
-    #: bogdan@saga.xyz was both the secret admin and the principal of the
-    #: u-bogdan fallback tenant. But that validation can only see DECLARED
+    #: owner@example.com was both the secret admin and the principal of the
+    #: example-tenant fallback tenant. But that validation can only see DECLARED
     #: tenants, and `Store.ensure_tenant` creates a self-service tenant for any
-    #: allowed-domain caller on first sight. On 2026-09-21 admin@saga.xyz --
+    #: allowed-domain caller on first sight. On 2026-09-21 admin@example.com --
     #: the platform account the tfvars comment describes as one that "owns no
     #: tenant" -- signed in to the web UI and became the principal of tenant
     #: u-admin, bypassing the validation entirely.
@@ -653,7 +653,7 @@ class ApiSettings:
     #: from SWARM_VOICE_AUDIENCE; empty means the URL itself.
     voice_audience: str = ""
     #: Who may talk to Voice it (lower-cased emails), from VOICE_IT_PEOPLE.
-    #: Version one is BGD's only (voice-it.md §1, "Who uses it"), so unset
+    #: Version one is the owner's only (voice-it.md §1, "Who uses it"), so unset
     #: means exactly the platform owner (PLATFORM_OWNER), and with neither
     #: set nobody may start a session.
     voice_people: tuple[str, ...] = ()
@@ -771,7 +771,7 @@ class ApiSettings:
     #: The tenants whose job-made workspace worker gets NO Firestore role
     #: (WORKER_FIRESTORE_OFF_TENANTS, comma-separated, or `*` for every
     #: tenant): #1457 design B's per-tenant cutover (owner decision Q7: dev
-    #: first, u-bogdan, then eng, then all) on the in-cloud workspace path,
+    #: first, example-tenant, then eng, then all) on the in-cloud workspace path,
     #: the twin of terraform/modules/tenancy `worker_firestore_access` for a
     #: Terraform tenant. People writes `worker_firestore_access` on the record
     #: from it at every approval, retry and ceiling change, and the workspace

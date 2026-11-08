@@ -12,7 +12,7 @@ still read whole -- and does two things:
     the next TURN BOUNDARY (`budget.UsageMeter.feed`), so the agent loses no
     turn it took; `kill` at once, the one mid-turn stop (a turn past 120%).
 
-THE ROLLOUT, TOO (codex; BGD's pick "Also read the rollout", 2026-10-27).
+THE ROLLOUT, TOO (codex; the owner's pick "Also read the rollout", 2026-10-27).
 codex's stream reports usage once per start, when its one turn ends, so a
 start is also measured from the files `tap(usage_files)` lists -- codex's
 rollouts -- read from the size each had when the start began: what an

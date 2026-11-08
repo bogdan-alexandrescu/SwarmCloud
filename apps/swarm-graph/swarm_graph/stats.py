@@ -1,7 +1,7 @@
 """The read-only stats a replica serves on its stats port
 (docs/design/graph-answer-cache.md §5.3; lane CACHE-1-STATS, part of #1835).
 
-The console's Cache section (BGD's pick C, 2026-10-27) reads every replica
+The console's Cache section (the owner's pick C, 2026-10-27) reads every replica
 live. swarm-api mints a STATS TICKET (ticket.py) and calls one replica's
 `GET /v1/stats`; that replica answers for itself and reads every peer's
 `GET /v1/stats/local` with the same ticket. The routes are server.py's, on

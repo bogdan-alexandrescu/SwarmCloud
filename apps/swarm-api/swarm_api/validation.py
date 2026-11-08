@@ -163,7 +163,7 @@ PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
 #: restates them.
 BROWSER_TOOL_INPUT_KEY = "browser_tool"
 
-#: A review step's runtime, chosen from its diff (#2322, BGD 2026-10-25: "if a
+#: A review step's runtime, chosen from its diff (#2322, the owner 2026-10-25: "if a
 #: review only does code review and a UI review or UI QA is not needed, it
 #: should not dispatch a review task with a browser runtime"). A WORKFLOW STEP
 #: may carry `metadata.runtime = {"policy": "browser_if_ui", "browser":
@@ -251,7 +251,7 @@ def resolve_runtime_policy(
     return dict(shape)
 
 
-#: A review step's gate (#2524, BGD 2026-10-27: "Risk paths + over 300 lines;
+#: A review step's gate (#2524, the owner 2026-10-27: "Risk paths + over 300 lines;
 #: reuse renders"). A WORKFLOW STEP may carry `metadata.review_gate =
 #: {"min_lines": 300, "risk_paths": [...]}`: the scheduler holds it PARKED
 #: when its parents end, swarm-api reads what they changed (`reviewgate`) and
@@ -262,7 +262,7 @@ def resolve_runtime_policy(
 #: field, for the reason `metadata.runtime` is not: `swarm_common` is frozen.
 REVIEW_GATE_METADATA_KEY = "review_gate"
 REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
-#: EVERY REVIEW STEP IS GATED BY DEFAULT (BGD 2026-10-28, page M8: "every
+#: EVERY REVIEW STEP IS GATED BY DEFAULT (the owner 2026-10-28, page M8: "every
 #: review step"). A step another step's `when` reads a verdict from is a
 #: review; one whose metadata names no `review_gate` is stored with this
 #: block (`default_review_gate_steps`, stamped by `submit_workflow`), and
@@ -275,13 +275,13 @@ REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
 #: the gate off for that step, and its review always runs. Never accepted
 #: from a caller (it is not in `REVIEW_GATE_KEYS`).
 REVIEW_GATE_DEFAULT_BLOCK: Mapping[str, Any] = MappingProxyType({"default": True})
-#: An issue run's requirements check (#2524, BGD 2026-10-28 ~18:25Z): a step
+#: An issue run's requirements check (#2524, the owner 2026-10-28 ~18:25Z): a step
 #: carrying `review_gate.requirements_check` is held like a gated review and
 #: runs ONLY when the review it stands beside is skipped
 #: (`reviewgate.is_requirements_check`). It follows the default policy, as
 #: that review does, unless it names its own.
 REVIEW_GATE_REQUIREMENTS_CHECK = "requirements_check"
-#: BGD's value, read by `reviewgate.DEFAULT_MIN_LINES`.
+#: the owner's value, read by `reviewgate.DEFAULT_MIN_LINES`.
 REVIEW_GATE_DEFAULT_MIN_LINES = 300
 #: Bounds on what a caller may write: a gate is a short list of globs, and
 #: the whole block sits in a task document read on every promotion.
@@ -301,7 +301,7 @@ def resolve_review_gate(
 ) -> dict[str, Any] | None:
     """A step's `review_gate` block, checked and normalised; None when it has none.
 
-    A switch (`refusals.SWITCHES["invalid_review_gate"]`), on by BGD's
+    A switch (`refusals.SWITCHES["invalid_review_gate"]`), on by the owner's
     decision of 2026-10-27. Turned off, a malformed block is not refused and
     is not stored either (None): the step's review then always runs, as it
     did before gates existed.
@@ -1237,7 +1237,7 @@ LANE_FIX_ROUNDS_DEFAULT = 2
 #: red CI with its own loop (`--fix-rounds`, `issueci._start_round`) before it
 #: submits its merge, so its merge step keeps no rounds of its own unless
 #: asked: two loops on one pull request would race each other's pushes.
-#: Reserved (BGD, 2026-11-04): the issue-run code alone writes it, through
+#: Reserved (the owner, 2026-11-04): the issue-run code alone writes it, through
 #: `issue_run_mark_allowed`, so no caller's work reads as an issue run's.
 ISSUE_RUN_METADATA_KEY = "issue_run"
 
@@ -1594,7 +1594,7 @@ RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 #: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`).
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 
-#: The continuations at the time limit whose attempt was refunded (BGD,
+#: The continuations at the time limit whose attempt was refunded (the owner,
 #: 2026-11-02), counted against `attemptstate.TIME_LIMIT_MAX_CONTINUATIONS`.
 #: A caller who set it would choose how many more time limits the task may
 #: run past. The worker restates it
@@ -2742,7 +2742,7 @@ def issue_run_mark_allowed(mark: Any) -> Iterator[None]:
     the link travels in the spec's metadata. The mark is the run's id on the
     planner and `{run_id, issue, ...}` on a workflow. Only
     `issueruns.submitting` enters this block, which routes/runs.py and
-    issueci.py wrap around their own submissions (BGD, 2026-11-04).
+    issueci.py wrap around their own submissions (the owner, 2026-11-04).
     """
     token = _ISSUE_RUN_MARK.set(copy.deepcopy(mark))
     try:
@@ -3612,7 +3612,7 @@ def merge_sources(
     ONE pull request's merge (`resolve_integrator_step` says why).
 
     `loop` is the workflow's `fix-loop` step, as `resolve_fix_loop` checked
-    it (docs/design/fix-loop.md §4.6, BGD Q8). The pull request is the one
+    it (docs/design/fix-loop.md §4.6, the owner Q8). The pull request is the one
     the loop works on -- the fix's under `integrate`, the implementer's under
     `direct-pr` -- and the merge reads the loop (`review_loop`), not a review:
     the loop's last re-review is the verdict, whichever round wrote it.
@@ -3728,7 +3728,7 @@ def rereview_step_for(
     from the integrator's diff (`scheduler.runtime.resolve`).
 
     A review PINNED to `claude-code`, with no block, gets one on its
-    re-review (#2275, BGD 2026-10-27, Q-2275): a `claude-code` review of a
+    re-review (#2275, the owner 2026-10-27, Q-2275): a `claude-code` review of a
     UI lane can never say MERGE, and a re-review copying its profile could
     not either, so no fix round reached the merge. The re-review is
     submitted on the pair's browser profile with `browser_if_ui`, catalogue
@@ -5044,18 +5044,18 @@ def resolve_await_input(
 # The `fix-loop` step (docs/design/fix-loop.md §4.1, FL-SUBMIT, part of #2509)
 # --------------------------------------------------------------------------
 
-#: The catalogue profile (contract request 124, BGD Q10 (a)). `control_plane`,
+#: The catalogue profile (contract request 124, the owner Q10 (a)). `control_plane`,
 #: so no container runs it and the scheduler never leases it: swarm-api drives
 #: its rounds as steps of their own (FL-DRIVE).
 FIX_LOOP_PROFILE = "fix-loop"
 #: The step's block, as `WorkflowStepCreate.fix_loop` takes it and as the loop
-#: task's signed `metadata.dispatch.fix_loop` stores it (BGD Q10 (a)).
+#: task's signed `metadata.dispatch.fix_loop` stores it (the owner Q10 (a)).
 FIX_LOOP_FIELD = "fix_loop"
 #: A fix loop round's signed record in its `metadata.dispatch` (FL-DRIVE, §4.3),
 #: and the unsigned copy beside it in `metadata` that `cifix.ROUND_KINDS` reads.
 FIX_LOOP_ROUND_FIELD = "fix_loop_round"
 #: `fix_loop.max_rounds`: the fix agents the loop's workflow may run in all,
-#: the declared `fix` counted as round 1. 1-5 and 3 when absent (BGD Q5 (a)):
+#: the declared `fix` counted as round 1. 1-5 and 3 when absent (the owner Q5 (a)):
 #: the same range and default as `MERGE_FIX_ROUNDS_MAX` and an issue run's
 #: `fix_rounds`. A person may add rounds past it up to the ceiling FL-DRIVE
 #: holds (Q4), never at submission.

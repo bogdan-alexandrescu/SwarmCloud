@@ -99,6 +99,9 @@ export FIRESTORE_EMULATOR_HOST="${EMULATOR_HOST}"
 export PROJECT_ID="${DEV_PROJECT}"
 export FIRESTORE_DATABASE="${DEV_FIRESTORE_DATABASE:-(default)}"
 export ENVIRONMENT="local"
+# swarm-api refuses to start when ALLOWED_DOMAINS and ALLOWED_USERS are both
+# empty; a local run that sets neither signs in under the placeholder domain
+# from scripts/guards/placeholders.json, never a live deployment's.
 export ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-example.com}"
 
 # Seed the pools the scheduler expects. Against the emulator there are no

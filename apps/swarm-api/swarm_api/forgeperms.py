@@ -2,7 +2,7 @@
 
     GET /v1/forge/permissions[?refresh=true]   the caller's tenant's answer
 
-On 2026-10-11 sagaxyz/ai-studio's merges failed with `token_lacks_rights`
+On 2026-10-11 example-org/peer-app's merges failed with `token_lacks_rights`
 because the App lacked `statuses: read`, and nothing in the console said so.
 This read says it before a run fails, in four parts:
 
@@ -29,7 +29,7 @@ This read says it before a run fails, in four parts:
 
 WORKFLOW FILES (#2029, WF-APP-TOKEN). A repository whose registration has
 `workflow_files` switched on is pushed to with an App token that needs
-`workflows: write` (BGD's decision 4: the App requests "Workflows: Read and
+`workflows: write` (the owner's decision 4: the App requests "Workflows: Read and
 write", each installation's owner accepts it). That requirement,
 `WORKFLOW_FILES_REQUIREMENT`, is checked for a switched-on registration ONLY,
 and its row carries the capability `workflow_files`: false with the gap in
@@ -148,7 +148,7 @@ REQUIRED: tuple[Requirement, ...] = (
     # merge step re-runs the failed jobs of a run whose failure was a flake
     # (mergewake._rerun_first -> forgewrite.GitHubWriter.rerun_failed_jobs,
     # `POST actions/runs/{id}/rerun-failed-jobs`); GitHub answers a read-only
-    # token 403, and the merge fails `checks_failed` (BGD, 2026-11-05).
+    # token 403, and the merge fails `checks_failed` (the owner, 2026-11-05).
     # Report-only like every row here: nothing refuses work on it.
     Requirement("actions", "write",
                 "ci-flake-hunter and release-health can't read workflow runs, "
