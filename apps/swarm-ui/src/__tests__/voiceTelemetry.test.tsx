@@ -302,6 +302,25 @@ describe('the Telemetry tab', () => {
     expect(await screen.findByRole('heading', { name: 'Telemetry' })).toBeTruthy()
   })
 
+  // ITS OWN ROUTE OPENS IT (owner's pick, 2026-11-08): /voice/telemetry
+  // renders the screen with tab="telemetry", and going to /voice/settings
+  // keeps it mounted. MUTATION: ignore the prop after the first render.
+  it('opens the tab its route names, and follows the route to the other', async () => {
+    serve({ admin: true })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { VoiceSettingsSectionScreen } = await import('../voice/Section')
+    const { rerender } = render(<VoiceSettingsSectionScreen tab="telemetry" />)
+    const tabs = await screen.findByRole('tablist')
+    expect(within(tabs).getByRole('tab', { name: 'Telemetry' }).getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Telemetry' })).toBeTruthy()
+    await act(async () => {
+      rerender(<VoiceSettingsSectionScreen tab="settings" />)
+    })
+    expect(within(tabs).getByRole('tab', { name: 'Settings' }).getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+  })
+
   it('is not shown to anyone else, and no telemetry is read', async () => {
     const calls = serve({ admin: false })
     await section()

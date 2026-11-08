@@ -85,7 +85,7 @@ import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
-import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
+import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceSettingsSectionScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 import { HomeScreen } from './Home'
 
@@ -643,6 +643,12 @@ export const SECTIONS: SectionDef[] = [
       { id: 'talk', label: 'Talk' },
       { id: 'projects', label: 'Projects' },
       { id: 'preferences', label: 'Preferences' },
+      // Settings and Telemetry, one page's two tabs, each its own route
+      // (owner's pick, 2026-11-08). Telemetry reads swarm-api's platform
+      // telemetry view, a platform admin's alone, so it is marked and the
+      // panel draws it for platform admins only (Spine.tsx `voicePagesFor`).
+      { id: 'settings', label: 'Settings' },
+      { id: 'telemetry', label: 'Telemetry', admin: true },
     ],
   },
 ]
@@ -2600,6 +2606,10 @@ function SectionBody({
       return <VoiceProjectsScreen />
     case 'voice/preferences':
       return <VoicePreferencesScreen />
+    case 'voice/settings':
+      return <VoiceSettingsSectionScreen tab="settings" />
+    case 'voice/telemetry':
+      return <VoiceSettingsSectionScreen tab="telemetry" />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
