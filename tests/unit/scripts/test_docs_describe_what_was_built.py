@@ -64,7 +64,7 @@ def _section(text: str, heading: str) -> str:
     return rest[: nxt.start()] if nxt else rest
 
 
-#: dispatch.py, as the docs cite it: `path::qualname` (#647, lane CITD).
+#: dispatch.py, as the docs cite it: `path::qualname` (lane CITD).
 DISPATCH_PY = "apps/scheduler/scheduler/dispatch.py"
 MANIFEST = "GkeJobDispatcher._manifest"
 
@@ -367,7 +367,7 @@ def test_contract_amendments_section_records_gvisor_and_the_account_pool():
 
 
 # --------------------------------------------------------------------------
-# #72: spend is recorded on every exit, and the coverage shape is the route's
+# Spend is recorded on every exit, and the coverage shape is the route's
 # --------------------------------------------------------------------------
 
 _STALE_SPEND_CLAIMS = ("clean-exit path only", "`lifecycle.py:694`")
@@ -383,7 +383,7 @@ def test_no_web_ui_doc_says_spend_is_recorded_on_the_clean_exit_path_only():
     stale = []
     for doc in docs:
         for paragraph in re.split(r"\n[ \t]*\n", _text(doc)):
-            if "Corrected for #72" in paragraph:
+            if "Corrected for spend on every exit" in paragraph:
                 continue
             stale += [f"{doc.name}: {c}" for c in _STALE_SPEND_CLAIMS if c in paragraph]
     assert not stale, f"the clean-exit-only spend claim is still stated: {stale}"
@@ -412,7 +412,7 @@ def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# HW-DOCS (part of #1436): a workflow step waits for a tenant member's answer
+# HW-DOCS: a workflow step waits for a tenant member's answer
 # --------------------------------------------------------------------------
 #
 # docs/workflows.md and docs/notifications.md describe the await-input step
@@ -610,7 +610,7 @@ def test_await_input_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# MCP-DOCS (part of #1433): a task's agent queries its caller's MCP server
+# MCP-DOCS: a task's agent queries its caller's MCP server
 # --------------------------------------------------------------------------
 #
 # docs/design/registered-mcp-servers.md was written before any lane built it.
@@ -757,7 +757,7 @@ def test_mcp_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# MODEL-DOCS (part of #1435): a workflow step picks its model class by name
+# MODEL-DOCS: a workflow step picks its model class by name
 # --------------------------------------------------------------------------
 #
 # docs/design/model-per-step.md was written before any lane built it. Its §8
@@ -932,7 +932,7 @@ def test_model_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# WK-DOCS (part of #847): an admin creates a personal, group or service
+# WK-DOCS: an admin creates a personal, group or service
 # workspace from Admin › Tenants, and the in-cloud job builds it
 # --------------------------------------------------------------------------
 #
@@ -1121,7 +1121,7 @@ def test_workspace_kinds_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# ROLES-DOCS (part of #1518): a workspace's people are viewers, members or
+# ROLES-DOCS: a workspace's people are viewers, members or
 # admins, and a platform admin reaches every group workspace
 # --------------------------------------------------------------------------
 #
@@ -1145,7 +1145,7 @@ ANSWER_GATE = "apps/swarm-api/swarm_api/awaitinput.py::member_refusal"
 SECRETS_GATE = "apps/swarm-api/swarm_api/workspace_secrets.py::require_manager"
 #: The two refusal codes on existing routes, one switch each (§4.9, Q10).
 ROLE_CODES = ("role_member_required", "role_admin_required")
-#: Lanes the owner added after §6 was written (#1518, comment of 2026-10-19).
+#: Lanes the owner added after §6 was written (the owner's comment of 2026-10-19).
 ROLES_ADDED_LANES = ("WK-REACH", "ROLES-ADMIN-LIST")
 
 
@@ -1278,7 +1278,7 @@ def test_workspace_roles_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# QI-DOCS (part of #1649): a browser agent signs in to the console as the QA
+# QI-DOCS: a browser agent signs in to the console as the QA
 # identity, and the documents say what was built
 # --------------------------------------------------------------------------
 #
@@ -1326,7 +1326,7 @@ def _qi_built(lane: str) -> bool:
 
     QI-INSTRUCT landed in the claude-code runner's live-browser note
     (`QA_IDENTITY_NOTE`), not in the browser image's `swarm_browser.py` its
-    §6 row names, so it is read where it was built (#1649)."""
+    §6 row names, so it is read where it was built."""
     runner = _text(REPO / QI_INSTRUCT_PY)
     accept = _text(REPO / "tests" / "acceptance" / "test_live_browser.py")
     marks = {
@@ -1498,7 +1498,7 @@ def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# Stale status headers (#1384, #1649): graph-service.md and visual-qa.md
+# Stale status headers: graph-service.md and visual-qa.md
 # --------------------------------------------------------------------------
 #
 # Both documents were written as designs and still opened with "Nothing
@@ -1592,7 +1592,7 @@ def test_visual_qa_header_no_longer_says_nothing_is_built():
 
 
 # --------------------------------------------------------------------------
-# LIVE-NOMASK (part of #2298): the live gate paints nothing over the screen
+# LIVE-NOMASK: the live gate paints nothing over the screen
 # --------------------------------------------------------------------------
 #
 # The owner decided on 2026-10-25 that no part of what the live browser shows is
@@ -1617,9 +1617,10 @@ def _lb_53() -> str:
 
 def test_live_browser_5_3_records_bgds_decision_and_why():
     body = _flat(_lb_53())
-    assert "the owner's decision, 2026-10-25" in body and LB_DECISION in body
-    for issue in ("#1030", "#1340", "#1344"):
-        assert issue in body, issue
+    assert "The owner's decision, 2026-10-25" in body and LB_DECISION in body
+    for cause in ("(GREY-TAIL)", "iframe boxes", "under BROWSER-ENFORCE (LIVE-BLANK)"):
+        assert cause in body, cause
+    assert not re.search(r"#\d", body), re.findall(r".{0,40}#\d+", body)
     # What the gate still does with the page, as built.
     for kept in ("`SHOWN_IN_CONTROL`", "`LiveGate._on_challenge`", "`Target.setAutoAttach`",
                  "`REASON_BROWSER_CLOSED`", "`FrameHub.publish`", "`report.py`", "`pointer.py`"):
@@ -1665,7 +1666,7 @@ def test_the_recorder_and_other_docs_no_longer_say_frames_are_masked():
 
 
 # --------------------------------------------------------------------------
-# Runner sizes: docs/design/runner-sizes.md §6 lane SIZES-DOCS (part of #1689)
+# Runner sizes: docs/design/runner-sizes.md §6 lane SIZES-DOCS
 # --------------------------------------------------------------------------
 #
 # The design's status line said "designed" while nine lanes of §6 shipped;
@@ -1738,7 +1739,7 @@ def test_runner_sizes_status_line_names_every_merged_lane():
             assert f"`{lane}` (not built" not in status, lane
         else:
             assert f"`{lane}` (not built" in status, f"{lane} is not on this tree; the status must say so"
-    # MUTATION: drop the canary's record (issue #1689's comment) -> red.
+    # MUTATION: drop the canary's record (the runner-sizes issue's comment) -> red.
     assert "canary passed 2026-10-20" in status
     # MUTATION: drop the history the build lanes cite -> red.
     assert "designed 2026-10-20" in status and "every §7 question took its recommendation" in status
@@ -1883,7 +1884,7 @@ def test_runner_sizes_docs_cite_only_what_resolves(doc: Path):
 
 
 # --------------------------------------------------------------------------
-# Test services: docs/design/test-services.md §11 (TS-DOCS-GUARDS, part of #1627)
+# Test services: docs/design/test-services.md §11 (TS-DOCS-GUARDS)
 # --------------------------------------------------------------------------
 #
 # TS-DOCS (PR 2214) wrote §11, what each lane of §7 built and where the code
@@ -2242,7 +2243,7 @@ def test_test_services_checks_fail_on_a_one_line_mutation(check, doc, old, new, 
 
 
 # --------------------------------------------------------------------------
-# SSC-DOCS (part of #2158): a secret is the workspace's, a person's or a
+# SSC-DOCS: a secret is the workspace's, a person's or a
 # repository's, and GitHub Actions is a write-only destination
 # --------------------------------------------------------------------------
 #
@@ -2259,7 +2260,7 @@ def test_test_services_checks_fail_on_a_one_line_mutation(check, doc, old, new, 
 
 SSC_DESIGN = DOCS / "design" / "secrets-scopes.md"
 PROVIDER_KEYS = DOCS / "provider-keys.md"
-SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
+SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS)"
 SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
 SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not"
 #: §9's lanes that are not built, each for a reason the status line gives:
@@ -2268,9 +2269,9 @@ SSC_UNBUILT = ("SSC-SECRETS-APP",)
 #: Lanes marked built by their own lane, before their PR had a number: §9
 #: says "(built, lane <name>" and §12 has a "**<name> (lane <name>" entry.
 SSC_BUILT_BY_LANE = ("SSC-UI",)
-#: The lane that mounted SSC-UI-ACTIONS' pane on Config › Secrets (part of #2158).
+#: The lane that mounted SSC-UI-ACTIONS' pane on Config › Secrets.
 SSC_MOUNT = "SECRETS-ACTIONS-MOUNT"
-#: Lanes the build added, each answered on #2158 from §2.1's rule.
+#: Lanes the build added, each answered on the secrets-scopes issue from §2.1's rule.
 SSC_ADDED = {"SSC-REPO-DELETE": 2239, "SSC-REPO-DELETE-TXN": 2245, "SSC-UNREGISTER-TXN": 2249,
              "LINK-ADMIN-WRITES": 2229, "PLATFORM-SECRETS-500": 2221}
 #: The new refusals the lanes shipped off (refusals.SWITCHES).
@@ -2437,8 +2438,8 @@ _SSC_MUTATIONS = [
     ("lanes", "| 1 | **SSC-OVERVIEW** (built, PR 2248) |", "| 1 | **SSC-OVERVIEW** |"),
     ("lanes", "**SSC-OVERVIEW (PR 2248).** §4 and §6.2: `GET /v1/secrets/overview` reads",
      "**SSC-OVERVIEW.** §4 and §6.2: `GET /v1/secrets/overview` reads"),
-    ("status", "**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0.** Designed 2026-10-23",
-     "**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0.** Nothing in this document is built. 2026-10-23"),
+    ("status", "**Status: built 2026-10-24 (lane SSC-DOCS), except phase 0.** Designed 2026-10-23",
+     "**Status: built 2026-10-24 (lane SSC-DOCS), except phase 0.** Nothing in this document is built. 2026-10-23"),
     ("lanes", "| 3 | **SSC-UI-ACTIONS** (built, PR 2300; mounted on Config › Secrets by lane SECRETS-ACTIONS-MOUNT, §12) |",
      "| 3 | **SSC-UI-ACTIONS** (built, PR 2300; `Secrets.tsx` does not mount it yet, §12) |"),
     ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
@@ -2459,7 +2460,7 @@ def test_secrets_scopes_checks_fail_on_a_one_line_mutation(check: str, old: str,
         run(text.replace(old, new))
 
 
-# -- QAENV-DOCS: one visual-QA dispatch over an app's environments (#2136) ----
+# -- QAENV-DOCS: one visual-QA dispatch over an app's environments ----------
 #
 # docs/design/qa-environments.md §8's phase 4, after QAENV-MODEL, -GATE,
 # -CRAWL, -RUN, -SETTLE, -UI-RUNPAGE, -UI-FORM and -SC merged. The design's
@@ -2473,7 +2474,7 @@ QAENV_DESIGN = DOCS / "design" / "qa-environments.md"
 QAENV_ANY_APP = DOCS / "design" / "visual-qa-any-app.md"
 SCHEDULES = DOCS / "schedules.md"
 QAENV_BUILT = "## 11. What was built"
-QAENV_ANY_APP_BUILT = "## 10. Environments, the run group and discovery during QA (built, #2136)"
+QAENV_ANY_APP_BUILT = "## 10. Environments, the run group and discovery during QA (built)"
 QAENV_SCHEDULE = "### 3.17 `visual-qa`"
 QAENV_QASPEC = "apps/swarm-api/swarm_api/qaspec.py"
 QAENV_TARGETS = "apps/swarm-api/swarm_api/qatargets.py"
@@ -2618,7 +2619,7 @@ def test_qa_environments_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
 
 
-# -- The visual-QA sign-in gate's waits, stated twice (part of #2688) -------
+# -- The visual-QA sign-in gate's waits, stated twice ----------------------
 #
 # visual-qa-any-app.md §2.2 step 3 and its start clicks write out the gate's
 # waits and retries (3, 30, 60, 10 and 5 seconds, two retries, 95 seconds in
