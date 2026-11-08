@@ -1,5 +1,5 @@
 """The claude-code runner puts the QA target's notice in the agent's prompt
-(VQ4-WIRE, part of #1933; BGD, 2026-10-22: "Wire it + prompt notice").
+(VQ4-WIRE, part of #1933; the owner, 2026-10-22: "Wire it + prompt notice").
 
 The worker writes `$SWARM_HANDOFF/qa-target.md` (`qa_target.NOTICE_NAME`)
 when the gate could not sign the agent in to its QA target: a pending host,

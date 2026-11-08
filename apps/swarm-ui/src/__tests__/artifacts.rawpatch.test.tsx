@@ -1,7 +1,7 @@
 // #1857: THE OWNER-ONLY RAW PATCH, AS THE CONSOLE OFFERS IT.
 //
 // A served `.patch` is redacted at read time, so credential-shaped test
-// fixtures in it come back masked and it no longer applies. BGD decided on
+// fixtures in it come back masked and it no longer applies. owner decided on
 // 2026-10-27: the masking stays, and the task's SUBMITTER may download the
 // patch as stored (`GET /v1/tasks/{id}/artifacts/raw?redaction=none`). The
 // console offers "Download raw patch" beside the normal download, with a
@@ -48,7 +48,7 @@ const REF = 'task_5be0c1a7d2e94f3a8c61'
 const SUBMITTER = 'alice@example.com'
 const MEMBER = 'dave@example.com'
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
-const uri = (name: string) => `gs://swarm-artifacts/tenants/eng/tasks/${REF}/attempts/att_9a01/artifacts/${name}`
+const uri = (name: string) => `gs://swarm-artifacts-example-project/tenants/eng/tasks/${REF}/attempts/att_9a01/artifacts/${name}`
 
 const PATCH = [
   'diff --git a/tests/test_login.py b/tests/test_login.py',

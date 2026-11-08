@@ -180,7 +180,7 @@ def _seed_rich(db) -> str:
             "browser_use": {"tool_calls": 3, "mcp_calls": 1, "command_calls": 0,
                             "images": 2, "seconds": 12.5, "complete": True},
         },
-        "latest_checkpoint": "gs://bucket/ckpt/1",
+        "latest_checkpoint": "gs://swarm-artifacts-example-project/ckpt/1",
         "end_cause": "agent_failed",
         "attempt_count": 2,
         "current_generation": 2,

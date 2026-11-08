@@ -271,7 +271,7 @@ def test_the_golden_vector_names_an_example_identity():
     on the company's real domain, in the dict and in the bytes alike."""
     assert GOLDEN_DOC["submitted_by"] == "alice@example.com"
     assert b'"submitted_by":"alice@example.com"' in GOLDEN_BYTES
-    assert b"saga" not in GOLDEN_BYTES
+    assert GOLDEN_BYTES.count(b"@") == 1  # no address but the example one
 
 GOLDEN_BYTES_V2 = (
     GOLDEN_BYTES.replace(b'"format":1,', b'"format":2,')

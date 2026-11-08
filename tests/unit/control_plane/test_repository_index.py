@@ -612,7 +612,7 @@ def test_freshness_states():
 
 
 def test_a_merged_branch_counted_as_many_commits_is_behind_not_stale():
-    """#1693: ai-studio read "77 commits behind" for one merged branch (its
+    """#1693: peer-app read "77 commits behind" for one merged branch (its
     PR #713), which GitHub's compare counts commit by commit. A count says
     how much merged, not how long the index has been out of date, so a head
     that moved past the index ten minutes ago is behind, however many

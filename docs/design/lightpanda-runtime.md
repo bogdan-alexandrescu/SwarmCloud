@@ -1,7 +1,7 @@
 # Lightpanda as a runtime for browser agents
 
 **Status:** analysis and design, 2026-10-31 (lane LIGHTPANDA-ANALYSIS, part of
-#2688); partly built, as read on main on 2026-10-31. Its one contract change,
+the Day One install program); partly built, as read on main on 2026-10-31. Its one contract change,
 request 127 in
 [`docs/contract-change-requests.md`](../contract-change-requests.md), is
 accepted and applied: the frozen catalogue has `claude-code-lightpanda`.
@@ -25,12 +25,12 @@ vitest (rest of L9); and the dev acceptance run (L11). Where the build
 differs from this text, the build is described in the docs above: the image's
 `/usr/share/doc/lightpanda/` also holds `LICENSING.md` and `FONTS-LICENSE`.
 
-**Owner's ask (BGD, 2026-10-31):** "do a detailed analysis of this project and
+**Owner's ask (the owner, 2026-10-31):** "do a detailed analysis of this project and
 determine if this would provide additional value or a new capability if we
 build a runtime for browser agents using lightpanda-io browser, in parallel
 with having playwright and jev-browser flavors. If there is additional value,
 plan on designing and then implementing this additional capability in
-swarmcloud." BGD is away and said to go with the recommended options, so every
+swarmcloud." the owner is away and said to go with the recommended options, so every
 decision below ends in one recommendation.
 
 **Verdict, in one paragraph.** Build it, as a **new runner profile,
@@ -194,7 +194,7 @@ Binary measured: release **1.0.2** (2026-10-23).
   * 25 tagged releases since v0.1.0 (2026-01-07). 1.0.0 shipped 2026-10-02,
     then 1.0.1 (10-15) and 1.0.2 (10-23): **a release every one to three
     weeks**.
-  * Main merges PRs daily (#4321 on 2026-10-31).
+  * Main merges PRs daily (an earlier issue on 2026-10-31).
   * The 1.0.2 notes are mostly new Web APIs and behaviour fixes, so the API
     surface is still moving.
   * The open-issue count and the classes of open bugs were **not read**: the
@@ -440,7 +440,7 @@ direction with §3.2.
 * **Units do not shrink.** `units_for` is at least 1 per agent, so a Lightpanda
   agent costs **1 unit**, like a browser agent. A smaller class (say 2 CPU /
   4 GiB) would still be 1 unit. It would halve the GKE request but squeeze
-  the Claude Code CLI, which #1926 found OOM-killed at 8 GiB. **No new class.**
+  the Claude Code CLI, which an earlier issue found OOM-killed at 8 GiB. **No new class.**
 * **The pool moves.** On `standard`, a Lightpanda agent leases
   `resource:standard` (100 in prod), not `resource:browser` (20). DOM-only
   browser work stops queuing behind visual work, and 20 browser slots stay for
@@ -498,7 +498,7 @@ measured.
 | **(2)** a new profile, `claude-code-lightpanda`, on `standard`, one container, no display | 1 unit in `resource:standard`; frees the browser pool | none, and the profile says so (`live_browser=False`) | one catalogue entry (request 127), mirrored as `claude-code-large` was (request 113) | `standard` already holds it: memory request = limit, CPU 4 ≤ limit 8 ≤ 2×4 | holds: a caller names the profile; image and command come from the catalogue | **recommended** |
 | **(3)** both | (2)'s, plus (1)'s cost | | both changes | | | not now: (1) has no measured value of its own |
 | **(4)** a `browser` input on `claude-code` (Lightpanda in `agent-runtime-base`) | as (2) | none | changes claude-code's inputs | holds | holds | **not built.** It ships an AGPL 76 MB binary in every claude-code image, and every claude-code agent carries the licence notice and source obligation |
-| **(5)** a smaller class, e.g. `lite` 2 CPU / 4 GiB | still 1 unit (`units_for` floor) | none | a new class, units, admin bounds | needs its own split | holds | **not built.** No unit saving, and it risks the CLI's memory (#1926) |
+| **(5)** a smaller class, e.g. `lite` 2 CPU / 4 GiB | still 1 unit (`units_for` floor) | none | a new class, units, admin bounds | needs its own split | holds | **not built.** No unit saving, and it risks the CLI's memory |
 
 **Recommended: (2).** It is the only shape that saves real capacity
 (`resource:browser`), and the only one where "this task never receives
@@ -740,7 +740,7 @@ hostname** (guard test). The console text above names neither.
   source archive**, `https://github.com/lightpanda-io/browser/archive/refs/tags/1.0.2.tar.gz`.
   The source archive's sha256 is recorded at the first mirror run, since it
   was not computed here.
-* The release bundle in `gs://swarmcloud` carries
+* The release bundle in `gs://<release-bucket>` carries
   `third-party/lightpanda/1.0.2/source.tar.gz` next to the image. That is the
   §6(d) "equivalent access" location named in the image's SOURCE file.
 * **`terraform/infra/images.json`** lists platform and gated images. Runner
@@ -839,7 +839,7 @@ red-first test.
 | **L8 LP-PARITY** | L1, L4, L5 | `scripts/lib/check-contract-parity.sh` (§6.5), its test under `tests/unit/scripts/` | the parity test red against a fixture missing the profile |
 | **L9 LP-UI** | L1 | `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/__tests__/submit.lightpanda.test.tsx` | the new vitest file red: no entry |
 | **L10 LP-DOCS** | L4 | `docs/worker-images.md`, `docs/browser-qa.md`, `docs/browser-egress.md` (and `execution-backends.md`, `mirrored-values.md`) | the docs guards (`tests/unit/scripts/test_docs_*`) the selection names |
-| **L11 LP-ACCEPT** | all, deployed to dev | none in-repo: one `claude-code-lightpanda` agent in dev reading three of §3's pages, one iframe page that it must hand to a `claude-code-browser` child, and ten pages in parallel; then `make smoke` | the agent's result and the child's existence, recorded on #2688 |
+| **L11 LP-ACCEPT** | all, deployed to dev | none in-repo: one `claude-code-lightpanda` agent in dev reading three of §3's pages, one iframe page that it must hand to a `claude-code-browser` child, and ten pages in parallel; then `make smoke` | the agent's result and the child's existence, recorded on the Day One install program |
 
 **Needs request 127 applied first:** L4, L5, L6, L8, L9, L10 and L11.
 **Does not:** L2, L3 and L7.

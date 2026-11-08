@@ -28,7 +28,7 @@ afterEach(() => vi.unstubAllEnvs())
 function detail(index: Record<string, unknown>) {
   return {
     repository: {
-      ...repo({ repo_id: ID, repo: 'ai-studio' }, { current_sha: sha('9f8e7d6'), head_sha: sha('9f8e7d6'), ...index }),
+      ...repo({ repo_id: ID, repo: 'peer-app' }, { current_sha: sha('9f8e7d6'), head_sha: sha('9f8e7d6'), ...index }),
       graph: { depth: 3, min_confidence: 0.2 },
       selection_policy: { policy: null, mode: null, inherited_from_tenant: true },
     },
@@ -55,7 +55,7 @@ async function mount() {
   vi.resetModules()
   const { RepositoriesScreen } = await import('../Repositories')
   render(<RepositoriesScreen view={`repo=${ID}&tab=settings`} go={vi.fn()} />)
-  await waitFor(() => expect(document.querySelector('h1')?.textContent).toBe('example-org/ai-studio'), WAIT)
+  await waitFor(() => expect(document.querySelector('h1')?.textContent).toBe('example-org/peer-app'), WAIT)
 }
 
 const input = () => screen.findByRole('spinbutton', { name: 'Index history kept' }, WAIT) as Promise<HTMLInputElement>

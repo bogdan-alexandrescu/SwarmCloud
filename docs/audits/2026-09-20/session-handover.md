@@ -8,7 +8,7 @@ reconstruct it. Everything below was verified unless it says otherwise.
 ## What is live
 
 All 26 buildable screens of the web UI, behind the external ALB and IAP at
-`https://swarm.saga.xyz`. Seven nav tabs: Home (Control Room), Trouble,
+`https://swarm.example.com`. Seven nav tabs: Home (Control Room), Trouble,
 Capacity, Agents, Workflows, Activity, Tenants.
 
 Five Cloud Run services, each verified serving the **digest** the manifest
@@ -20,7 +20,7 @@ fooled us earlier today.
 | Claim | Evidence |
 |---|---|
 | IAP protects every path | `curl` with no credential → 302 to accounts.google.com on `/v1/capacity`, `/healthz`, `/openapi.json` and an unknown path |
-| Authenticated API works | 19 endpoints swept through a real IAP browser session; `/v1/capacity` 200 with real pools, `tenant_id: u-bogdan` |
+| Authenticated API works | 19 endpoints swept through a real IAP browser session; `/v1/capacity` 200 with real pools, `tenant_id: u-member` |
 | Composite indexes are built | `/v1/tasks?state=FAILED|PARKED|READY` all 200. The spec called a missing index (500 FAILED_PRECONDITION) the single most likely first-run failure. It is not present |
 | 404s carry a proper envelope | `/v1/tasks/task_does_not_exist` → `{"code":"not_found","message":"task '…' not found"}` |
 | Admin gating works | `/v1/admin/{dispatch,tenants,pools}` → 403 `forbidden` for a non-admin |
@@ -66,14 +66,14 @@ for any other upstream failure.
 ## Three things that need you
 
 1. **IAP OAuth client id.** `gcloud iap oauth-clients list
-   projects/209001918367.../brands/…` is PERMISSION_DENIED for a project
+   projects/123456789012.../brands/…` is PERMISSION_DENIED for a project
    editor. Needed as `API_AUDIENCE` so scripts can authenticate through IAP.
 2. **A root terraform output for the front-door URL.** The frontend module
    already exposes `url`; `terraform/infra/outputs.tf` does not surface it,
    which is why `tf_output api_url` is empty. Track C's file.
 3. **Workspace Group Reader for `swarm-api`.** Cloud Identity does not use
    GCP IAM; the service account is not a Workspace principal, so it cannot
-   read `eng@saga.xyz`. Blocked today because Google refuses the Admin SDK
+   read `eng@example.com`. Blocked today because Google refuses the Admin SDK
    OAuth scope to the gcloud client in this domain.
 
 ## Agreed next step
@@ -102,7 +102,7 @@ for deliberate, working access:
 
 ```
 gcloud organizations remove-iam-policy-binding 1089083879749 \
-  --member=serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com \
+  --member=serviceAccount:swarm-api@example-project.iam.gserviceaccount.com \
   --role=roles/cloudidentity.groupsReader
 ```
 

@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Plan diagrams, proposal B, "Diagram canvas beside the plan" (PLANS-DIAG-B, part of #2585).
+ * Plan diagrams, proposal B, "Diagram canvas beside the plan" (PLANS-DIAG-B).
  * Built on proposal D as merged (plans-d.html, PR 2587): its tokens, chrome, plan blocks and
  * decision bar are copied whole; the rail, diagrams, chat and Automate › Settings are this proposal's.
  * PICKS.md rules: 12px type floor, no all-caps, a theme toggle, an unknown figure is a dash.
@@ -622,12 +622,12 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-DIAG-B · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-DIAG-B · drawn 2026-10-28 · not picked</p>
 <h1>Plan diagrams, proposal B: Diagram canvas beside the plan</h1>
-<p class="lede">One of three competing proposals for diagrams in plans, drawn on proposal D's decision page as merged (plans-d.html, PR 2587, BGD's pick on 2026-10-28 for the plan and its conversation). This one gives the diagrams <b>their own place</b>: D's margin gains a sticky <b>canvas</b> with tabs (Overview, one per step, Asked). Scrolling the document puts the part you are reading on the canvas; clicking a node scrolls the document to the step it names. Drawing on demand is a <b>Draw…</b> composer on the canvas, a request in the anchored thread, or a line in the <b>chat with the plan-review agent</b>, which sits under the canvas in the same rail.</p>
+<p class="lede">One of three competing proposals for diagrams in plans, drawn on proposal D's decision page as merged (plans-d.html, PR 2587, the owner's pick on 2026-10-28 for the plan and its conversation). This one gives the diagrams <b>their own place</b>: D's margin gains a sticky <b>canvas</b> with tabs (Overview, one per step, Asked). Scrolling the document puts the part you are reading on the canvas; clicking a node scrolls the document to the step it names. Drawing on demand is a <b>Draw…</b> composer on the canvas, a request in the anchored thread, or a line in the <b>chat with the plan-review agent</b>, which sits under the canvas in the same rail.</p>
 
 <div class="rules">
-  <b>What BGD asked for, 2026-10-28</b>
+  <b>What the owner asked for, 2026-10-28</b>
   <ul>
     <li>(1) “generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform … by default on but toggleable from the automation settings”</li>
     <li>(2) “the interactive conversational part of the plan review … to also be able to provide on demand schematics and diagrams during the plan review process”</li>
@@ -654,8 +654,8 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <b>What every frame obeys</b>
   <ul>
     <li>PICKS.md: nothing below 12px, no all-caps, a light / dark / system toggle (top of the page and every frame's panel foot), an unknown figure is a dash with its reason, never 0, and state words are lower-case words, never the API's enums.</li>
-    <li>D's tokens, decision page, revision bar, decision bar and margin, copied whole. Automate's tabs are the built Schedules and Approvals, Pipeline (BGD's PL1 pick, proposal C, not built yet) and <b>Settings</b>, which this proposal adds.</li>
-    <li>The canonical plan is the real <code>run_fba2dc8f6ec9494dae2f</code> (issue #2583, from the failure-review schedule). It carries no diagram today, so <b>every diagram, chat message, cost and later revision is an example</b> and says so; each diagram is drawn from <code>stamp()</code>'s own order of checks in <code>apps/swarm-api/swarm_api/cifix.py</code>. Example data is read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner.</li>
+    <li>D's tokens, decision page, revision bar, decision bar and margin, copied whole. Automate's tabs are the built Schedules and Approvals, Pipeline (the owner's PL1 pick, proposal C, not built yet) and <b>Settings</b>, which this proposal adds.</li>
+    <li>The canonical plan is the real <code>run_fba2dc8f6ec9494dae2f</code> (the issue the frames draw, from the failure-review schedule). It carries no diagram today, so <b>every diagram, chat message, cost and later revision is an example</b> and says so; each diagram is drawn from <code>stamp()</code>'s own order of checks in <code>apps/swarm-api/swarm_api/cifix.py</code>. Example data is read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner.</li>
     <li>The SVGs stand for what the renderer would draw from each diagram's source; D4 shows the source and its text alternative.</li>
   </ul>
 </div>
@@ -710,7 +710,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <div class="flabel"><span class="fid">D5</span><h2>The switch: Automate › Settings, and a per-schedule override</h2></div>
   <p>A new Settings tab under Automate holds the workspace default for diagrams in plans: <b>on</b> unless someone turns it off. Each schedule that plans can follow it, or override it on or off. One switch covers both kinds: off means the planner draws none and nobody can ask for one (no Draw…, no draw in the thread or chat).</p>
   <figure class="sub" id="D5a" data-frame="D5a"><div class="sl"><span class="sid">D5a</span><b>On, the default</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="d5a"></div>
-  <figcaption>The examples of where the planner draws and where it does not are BGD's words, shown so the switch's meaning is on the screen. The override column is per schedule (<code>gate.plan_diagrams</code>, new); the docs sweep's <i>off</i> is an example. Schedules that propose issues, not plans, have no plan to draw in and show a dash.</figcaption></figure>
+  <figcaption>The examples of where the planner draws and where it does not are the owner's words, shown so the switch's meaning is on the screen. The override column is per schedule (<code>gate.plan_diagrams</code>, new); the docs sweep's <i>off</i> is an example. Schedules that propose issues, not plans, have no plan to draw in and show a dash.</figcaption></figure>
   <div class="pair">
     <figure class="sub" id="D5b" data-frame="D5b"><div class="sl"><span class="sid">D5b</span><b>Off for the workspace</b><span class="dim">the setting</span></div><div class="scroller solo" data-f="d5b"></div>
     <figcaption>Turning it off says what changes and is recorded with who and when. Existing plans keep the diagrams already in their revisions: a digest never changes behind an approval.</figcaption></figure>
@@ -770,7 +770,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
     <tr><td><code>POST /v1/runs/{id}:plan-diagram-add</code></td><td>Adds a draft to the plan as a new revision; refused <code>409 plan_changed</code> on a stale digest.</td><td>Add to plan and Pin to plan; the old revision keeps its set.</td><td>D3d, D8c</td></tr>
     <tr><td><code>plan_chat[]</code> and <code>POST /v1/runs/{id}:plan-chat</code></td><td>The chat's messages (words or a draft diagram), the agent's runner and model, its state (typing, drawing), cost so far and the chat's cap per plan.</td><td>The chat section. Kept apart from <code>plan_thread[]</code>: the chat goes to the review agent, the thread to the planner.</td><td>D7c, D8</td></tr>
     <tr><td>Draw cost while running</td><td>The draw or chat run's cost so far and its elapsed time, read while it runs.</td><td>The waiting state names what it has cost.</td><td>D3b, D8b</td></tr>
-    <tr><td><code>automate_settings.plan_diagrams</code> on the workspace</td><td>On or off (default on), who changed it and when.</td><td>Automate › Settings, BGD's “by default on but toggleable from the automation settings”.</td><td>D5</td></tr>
+    <tr><td><code>automate_settings.plan_diagrams</code> on the workspace</td><td>On or off (default on), who changed it and when.</td><td>Automate › Settings, the owner's “by default on but toggleable from the automation settings”.</td><td>D5</td></tr>
     <tr><td><code>gate.plan_diagrams</code> on a schedule</td><td>Follow the workspace, on, or off.</td><td>The per-schedule override, and D6c's state.</td><td>D5a, D6c</td></tr>
     <tr><td><code>diagrams_7d</code> on a schedule</td><td>Plans with diagrams and plans without, in 7 days.</td><td>The Settings table's counts.</td><td>D5a</td></tr>
   </tbody></table></div>
@@ -812,7 +812,7 @@ function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu'
 const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:${(w||640)>=900?"none":"100%"};background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
 
 /* ---------- the canonical plan, in its own words ---------- */
-const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
+const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='example-org/example-repo#2583';
 const DIG='sha256:be162b53886ee<span style="white-space:nowrap">2620…</span>';
 const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
 const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
@@ -833,7 +833,7 @@ function blkWhy(){
 const blkSum=()=>`<section class="blk"><h5>Summary</h5><p>${SUMMARY}</p><div class="fold">${I('chevd')}Show the whole summary</div></section>`;
 const blkReq=(extra)=>`<section class="blk"><h5>Requirements <small>7 · what the review checks, and what decides Closes</small></h5><ol><li>${REQ1}</li>${extra||''}</ol><div class="fold">${I('chevd')}Requirements 2 to 7</div></section>`;
 const blkOv=()=>`<section class="blk"><h5>Overlaps with work in flight <small>5</small></h5>`+
-  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>bogdan-alexandrescu</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
+  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>example-org</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
   `<div class="fold">${I('chevd')}Overlaps 2 to 5</div><p class="hint" style="margin-top:6px">The plan’s action is <i>none</i> when it does nothing about the overlap and <i>required</i> when it must; a comment on an overlap asks the planner to change that.</p></section>`;
 function stepBlk(o){
   o=o||{};
@@ -880,7 +880,7 @@ function panel(x){
   return `<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`+
     `<div class="wsb"><span class="tg">PL</span><span class="tt"><b>platform</b><small>you are the platform owner</small></span>${I('chevd')}</div>`+
     `<div class="sec">Automate</div>`+PI(pg==='s','cal','Schedules','<span class="sm12 dim">8</span>')+PI(pg==='pl','overview','Pipeline',C(WAITN+' waiting','wn'))+PI(pg==='a','check','Approvals','<span class="sm12 dim">3</span>')+PI(pg==='set','gear','Settings',C('new','in'))+
-    `<p class="pnote">Pipeline is BGD's PL1 pick (proposal C), not built yet. Settings is this proposal's.</p>`+
+    `<p class="pnote">Pipeline is the owner's PL1 pick (proposal C), not built yet. Settings is this proposal's.</p>`+
     `<span class="pgrow"></span><div class="pf"><div class="who"><span class="av">OP</span><span><b>Operator</b><small>platform owner</small></span></div>`+
     `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></aside>`;
 }

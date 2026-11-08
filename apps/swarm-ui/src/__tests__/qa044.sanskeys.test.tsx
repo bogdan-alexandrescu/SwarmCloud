@@ -4,7 +4,7 @@
 // QA-044 (visual QA run wf_9e9bf74834634db7bcc3, crop admin-005) saw Pool
 // limits' phone card keys in mono, beside sans column heads. QAFIX5 switched
 // Pool limits alone, with an override in styles/admin.css, and asked whether
-// the key face should change console-wide. BGD decided on 2026-10-23 (~17:30Z,
+// the key face should change console-wide. owner decided on 2026-10-23 (~17:30Z,
 // QA-044, recorded on task_7f0095fb2fd9481790cc q0): console-wide. The shared
 // rule in styles.css (`.is-stacked > table > tbody > tr > td[data-label]::before`)
 // now sets the key in `var(--font)`, and the Pool limits override is gone
@@ -78,7 +78,7 @@ function capacity(pools: Pool[]): Capacity {
 
 function tenant(): Tenant {
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     kind: 'user',
     principal: 'alice@example.com',
     display_name: null,
@@ -88,7 +88,7 @@ function tenant(): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic'],
-    service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
   } as Tenant
@@ -149,7 +149,7 @@ describe('QA-044, console-wide: the shared stacked-record rule sets the key in s
     // mono again, and this reads `... var(--mono)`.
     expect(painted(td, 'font', PHONE, 'before')).toBe(KEY_FONT)
     // MUTATION: change the key's colour along with its face: the face was the
-    // only thing BGD's decision moved.
+    // only thing the owner's decision moved.
     expect(painted(td, 'color', PHONE, 'before')).toBe(KEY_COLOUR)
     // MUTATION: widen or narrow the key column with the face change: values
     // start at a new x on every record in the console.
@@ -230,7 +230,7 @@ describe('QA-044 at 390: a Tenants record (Settings) draws its key in sans and t
     api.loadTenants.mockResolvedValue(ok({ tenants: [tenant()] }))
     api.loadCapacity.mockResolvedValue(ok(capacity([])))
     const { container } = render(<TenantsScreen />)
-    await screen.findByText('u-bogdan', undefined, WAIT)
+    await screen.findByText('u-owner', undefined, WAIT)
     expect(container.querySelector('.table-wrap.is-stacked'), 'the roster is stacked at 390').not.toBeNull()
     const cells = [...container.querySelectorAll('tbody td[data-label]')]
     expect(cells.length).toBeGreaterThanOrEqual(4)

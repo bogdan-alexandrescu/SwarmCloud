@@ -1,5 +1,5 @@
 /* ADMIN › PLATFORM COUNTS, OVER TIME (PlatformOverTime.tsx, COUNTS-TIME-VIEW,
-   #2149). Built to BGD's pick, Counts proposal A (docs/web-ui/mockups/
+   #2149). Built to the owner's pick, Counts proposal A (docs/web-ui/mockups/
    counts-a.html, F2 to F6): a row of five tiles, the agents chart, the cost
    card and the breakdown table. Every colour is a token; agents are
    `--series-1` and retries `--series-5` on their own lane, with a legend
@@ -180,7 +180,7 @@
      26 picked weeks. Then main's Unused browser row made the figures eight,
      with three covers of up to 37 characters. The room over the chart, 248px
      at 1440, holds three rows with one extra line of cover between them, and
-     nine cells: so Estimated cost, whose covers are BGD's words, takes two
+     nine cells: so Estimated cost, whose covers are the owner's words, takes two
      columns and keeps them on one line each, and a one-column cover that does
      not fit its 136px shows its short form (`brief` in PlatformOverTime.tsx).
      The full words are clipped to nothing, not removed, so a screen reader
@@ -227,7 +227,7 @@
 .pot-fold { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin: 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .pot-body { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
 /* THE TABLE FITS A 1440 PAGE (review, 2026-10-24): with every head on one
-   line it was ~1,300px in a 1,030px card, and the cost column -- the one BGD
+   line it was ~1,300px in a 1,030px card, and the cost column -- the one owner
    asked for -- sat past the scroll edge. A head wraps rather than set its
    column's width; the figures keep the table's mono (`.ctl-table td.is-num`). */
 .pot-table .ctl-table th[role='columnheader'] { white-space: normal; min-width: 64px; vertical-align: bottom; }
@@ -237,7 +237,7 @@
 .pot-tile-floor { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .pot-table th[role='rowheader'] .pot-cov { white-space: normal; max-width: 22ch; }
 
-/* A BREAKDOWN STACKS THE AGENTS CHART (BGD's answer 1, 2026-10-24; mock-up
+/* A BREAKDOWN STACKS THE AGENTS CHART (the owner's answer 1, 2026-10-24; mock-up
    A's F3 and F4): the five series colours in the route's order, the busiest
    at the bottom, and "all others" in a neutral of its own -- --series-5 is
    already the fifth layer and the retries lane, so "all others" is that slate

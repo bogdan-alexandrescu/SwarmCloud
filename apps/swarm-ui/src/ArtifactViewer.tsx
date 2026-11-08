@@ -427,7 +427,7 @@ export function offersRawPatch(name: string): boolean {
 }
 
 /**
- * THE OWNER-ONLY RAW PATCH (#1857, BGD's decision 2026-10-27). A served
+ * THE OWNER-ONLY RAW PATCH (#1857, the owner's decision 2026-10-27). A served
  * `.patch` is redacted at read time, so credential-shaped test fixtures in it
  * come back masked and it no longer applies; the masking stays, and the task's
  * submitter may take the patch as stored. Drawn ONLY for the submitter -- the

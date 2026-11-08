@@ -178,7 +178,7 @@ describe('QA12-18: the tab bar fits', () => {
 
 describe('QA12-18: the sheet draws More at the end of the bar', () => {
   const ENVS: CascadeEnv[] = [{ width: 1440 }, { width: 390, height: 844 }]
-  // MORE GIVES WAY, THE FITTED STRIP NEVER DOES (VQ-008, BGD's visual QA
+  // MORE GIVES WAY, THE FITTED STRIP NEVER DOES (VQ-008, the owner's visual QA
   // 2026-10-26): More held its whole width and the strip shrank, so at 390 a
   // 405px More left the open tab 0px wide. The strip that holds only tabs
   // measured to fit (`is-fitted`) keeps its width; More shrinks, its label cut.

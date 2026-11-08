@@ -1,6 +1,6 @@
 // AN AGENT'S QUESTIONS ARE ANSWERED FROM ANY TAB OF ITS PAGE (part of #2688).
 //
-// BGD, 2026-11-06 ~06:00Z: "We need to have a way to act on questions in the
+// owner, 2026-11-06 ~06:00Z: "We need to have a way to act on questions in the
 // workflow page and in the agent page." The agent page drew its questions
 // only in Details (QuestionsCard, HeldQuestionsCard), so on Logs, Changes,
 // Attempts, Artifacts or Checkpoints nothing said the agent asked anything.
@@ -171,7 +171,7 @@ describe('the questions row on a tab that is not Details', () => {
 
   it('opens the card in place under the row, posts the answer to the task, and folds back', async () => {
     api.loadTask.mockResolvedValue(ok(asking()))
-    api.answerQuestion.mockResolvedValue(ok(asked(ID, [LONG, 'Ship it behind a flag?'], [answer('Yes', 'bgd@example.com')])))
+    api.answerQuestion.mockResolvedValue(ok(asked(ID, [LONG, 'Ship it behind a flag?'], [answer('Yes', 'owner@example.com')])))
     render(<Routed start="attempts" />)
     await waitFor(() => expect(row()).not.toBeNull(), SPLIT)
     fireEvent.click(within(row()!).getByRole('button', { name: 'Answer' }))
@@ -213,7 +213,7 @@ describe('the questions row on a tab that is not Details', () => {
   it('reads answered with who and when once all are answered, and is gone on the next visit', async () => {
     let answered = false
     api.loadQuestions.mockImplementation(async () =>
-      ok(asked(ID, ['One?', 'Two?'], answered ? [answer('Yes', 'bgd@example.com'), answer('No', 'bgd@example.com')] : [])),
+      ok(asked(ID, ['One?', 'Two?'], answered ? [answer('Yes', 'owner@example.com'), answer('No', 'owner@example.com')] : [])),
     )
     api.loadTask.mockResolvedValue(ok(asking()))
     const view = render(<Routed start="logs" />)
@@ -223,7 +223,7 @@ describe('the questions row on a tab that is not Details', () => {
     answered = true
     fireEvent.click(within(row()!).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(row()?.textContent ?? '').toContain('answered'), SPLIT)
-    expect(row()!.textContent).toContain('bgd@example.com')
+    expect(row()!.textContent).toContain('owner@example.com')
     expect(row()!.textContent).toContain('ago')
     view.unmount()
     render(<Routed start="logs" />)

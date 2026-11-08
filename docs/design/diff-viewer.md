@@ -14,7 +14,7 @@ viewer that exists today is described in
 why the five differ, what each would cost, and which one to build. The owner's decisions of 2026-10-08 are in §3.
 
 **Fixture.** Every diff in the mock-ups is real. It is 11 of the 29 files of
-commit `dbf6708` on main (2026-10-04, #553), with that commit's
+commit `dbf6708` on main (2026-10-04), with that commit's
 `git show -M --numstat` counts and hunks: an added file (`AgentLogs.tsx`,
 +680), a deleted file (`LogDock.tsx`, −767), and a rename
 (`logdock.test.tsx → logs.tab.test.tsx`, 79% similar). The page caps each

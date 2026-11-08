@@ -1,20 +1,20 @@
-# Onboarding acceptance: the four checks of #780, run by the owner
+# Onboarding acceptance: the four checks of the per-person-slots migration, run by the owner
 
 **Who:** the deployment's owner, with a second person in the same tenant.
 **Where:** dev, against the release that carries OB10. **Takes:** about an
 hour. That covers two GitHub orgs, two people, one issue run per person per
 org, and an org removal. **Why:**
-[#780](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/780) says how
+The per-person-slots migration's issue says how
 it would be known to work, in four lines. They need real GitHub accounts, an
-org that enforces SAML SSO (`sagaxyz`), and the App's installation there. No
+org that enforces SAML SSO (`example-org`), and the App's installation there. No
 lane can do that, so each line is a check below. Each check names what you
 should see, and the observation that would show it **failed**. The design
 is [docs/onboarding.md](../onboarding.md). This page is lane OB10 of its §5.
 
 The two people are **A**, who sets up from the console, and **B**, who sets up
 from `/sc:setup` in Claude Code. Each has a personal GitHub account and is a
-member of `sagaxyz`. Each needs one scratch repository on their personal
-account, plus one `sagaxyz` repository they may push to and one they will not
+member of `example-org`. Each needs one scratch repository on their personal
+account, plus one `example-org` repository they may push to and one they will not
 choose. Below, `<login>` is a person's GitHub login and `<repo>` a scratch
 repository. Nothing here is a token: a fallback token is typed at a prompt
 and never pasted into this page, an issue, a pull request or a chat.
@@ -47,7 +47,7 @@ and never pasted into this page, an issue, a pull request or a chat.
 
 The issue's line: a new user, starting from the console or from `/sc`, ends
 with SwarmCloud able to clone, push and open PRs as themselves, on
-repositories they chose, in two orgs: their personal account and `sagaxyz`.
+repositories they chose, in two orgs: their personal account and `example-org`.
 
 **A, from the console.**
 
@@ -55,16 +55,16 @@ repositories they chose, in two orgs: their personal account and `sagaxyz`.
    GitHub**, authorise the App at GitHub, and come back. `github_connected`
    now says *connected as `<login>`*.
 2. Install the App on your personal account, selecting `<repo>`. For
-   `sagaxyz`: if you are one of its owners, install it there. If not, press
+   `example-org`: if you are one of its owners, install it there. If not, press
    **Request install** on Access. The owner shows `ORG_APPROVAL_PENDING` with its
-   copy until an org owner approves. If `sagaxyz` will not install the App,
+   copy until an org owner approves. If `example-org` will not install the App,
    use the fallback: the **GitHub fallback token** card under Admin › Pool
-   limits (the Admin settings page), owner `sagaxyz`, with a fine-grained
-   token whose resource owner is `sagaxyz`. The form
+   limits (the Admin settings page), owner `example-org`, with a fine-grained
+   token whose resource owner is `example-org`. The form
    clears the field whatever the answer, and shows the token's name, never
    its value.
 3. On Work › Access, enable both owners. Choose `<login>/<repo>` and one
-   `sagaxyz` repository, each **Write**.
+   `example-org` repository, each **Write**.
 4. Press **Verify** on both grants. Then, on one write grant, run the
    **push test**. It creates and deletes `swarmcloud/onboarding-check-<nonce>`
    in that repository.
@@ -75,17 +75,17 @@ repositories they chose, in two orgs: their personal account and `sagaxyz`.
 
 **B, from `/sc`.** In Claude Code, run `/sc:setup`. It drives the same
 checklist through the bridge tools: connect in the browser, then enable
-owners and grant repositories. For `sagaxyz`, B uses the fallback token path
+owners and grant repositories. For `example-org`, B uses the fallback token path
 so that D5's CLI route is exercised:
 
 ```bash
-uv run sc setup token --owner sagaxyz      # the token is read from stdin, with no echo
+uv run sc setup token --owner example-org      # the token is read from stdin, with no echo
 uv run sc access orgs
 uv run sc access grant <login>/<repo> --write
-uv run sc access grant sagaxyz/<repo> --write
-uv run sc access verify <login>/<repo> sagaxyz/<repo>
-uv run sc access verify sagaxyz/<repo> --push-test   # type the repository to confirm
-uv run sc run --issue sagaxyz/<repo>#<n> --follow
+uv run sc access grant example-org/<repo> --write
+uv run sc access verify <login>/<repo> example-org/<repo>
+uv run sc access verify example-org/<repo> --push-test   # type the repository to confirm
+uv run sc run --issue example-org/<repo>#<n> --follow
 ```
 
 **You should see**, for each person and each of the two owners:
@@ -104,7 +104,7 @@ uv run sc run --issue sagaxyz/<repo>#<n> --follow
 submitter's (the tenant token's account means the agent ran as the tenant).
 It also failed if `forge_credential_source` reads "tenant token, service
 submission" for a person's agent. Other failures: a clone, push or pull
-request that only one of the two owners allows; the `sagaxyz` leg refused
+request that only one of the two owners allows; the `example-org` leg refused
 with `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED` or `FINE_GRAINED_PAT_PENDING`
 after its recovery copy was followed; and a `swarmcloud/onboarding-check-*`
 branch still present after the push test.
@@ -123,7 +123,7 @@ The issue's line: every step shows its verified state.
    when it was checked. The push test shows its own result.
 3. **The control: the state must be able to come out the other way.** Before
    step 1 of check 1, `github_connected` is `[ ]`. Once the App is installed
-   on the personal account only, `orgs_enabled` names `sagaxyz` as not
+   on the personal account only, `orgs_enabled` names `example-org` as not
    installed, or as `ORG_APPROVAL_PENDING` once requested, and is not done
    for it. On a **Read** grant, `push` and `pull_request` are not required,
    and the push test is refused.
@@ -139,11 +139,11 @@ the result is unknown and re-checks.
 
 The issue's line: a repository they did not choose is refused.
 
-1. As B, pick a `sagaxyz` repository B can reach at GitHub but did **not**
+1. As B, pick a `example-org` repository B can reach at GitHub but did **not**
    grant under Access, and start a run on it:
 
    ```bash
-   uv run sc run --issue sagaxyz/<not-chosen>#<n>
+   uv run sc run --issue example-org/<not-chosen>#<n>
    ```
 
 2. As A, do the same from the console's Work › Submit from a GitHub issue.
@@ -151,7 +151,7 @@ The issue's line: a repository they did not choose is refused.
 
 **You should see** steps 1 and 2 refused at submission, before anything is
 stored or queued: 403 `REPOSITORY_NOT_GRANTED`, "repository
-sagaxyz/<not-chosen> is not granted to you: choose it under Access". This is
+example-org/<not-chosen> is not granted to you: choose it under Access". This is
 the refusal `REPOSITORY_GRANTS_ENFORCED` turns on (checked in "Before you
 start"). For step 3, the run is accepted, because a read grant may read.
 Its step that pushes or opens a pull request ends before its agent runs,
@@ -168,41 +168,41 @@ grant's run appears on GitHub.
 
 The issue's line: removing an org revokes SwarmCloud's access to it.
 
-1. As B, who enabled `sagaxyz` through the fallback token, remove it:
+1. As B, who enabled `example-org` through the fallback token, remove it:
 
    ```bash
-   uv run sc access remove-org sagaxyz       # type the owner to confirm
+   uv run sc access remove-org example-org       # type the owner to confirm
    ```
 
    This is `DELETE /v1/access/orgs/{owner}`. It deletes the owner and every
    grant under it in one write. Because B enabled it through a token, it
-   also disables every version of B's `sagaxyz` slot. The answer says
+   also disables every version of B's `example-org` slot. The answer says
    `token_revoked` and how many slot versions were disabled.
-2. As A, who enabled `sagaxyz` through the App, remove it from Work › Access.
+2. As A, who enabled `example-org` through the App, remove it from Work › Access.
    The page offers the installation's settings link. The App stays installed
    until an org owner removes it, and the page says so.
-3. Each of them starts a run on the `sagaxyz` repository they had granted:
-   `uv run sc run --issue sagaxyz/<repo>#<n>`.
+3. Each of them starts a run on the `example-org` repository they had granted:
+   `uv run sc run --issue example-org/<repo>#<n>`.
 4. For B's token, read Secret Manager's record of the slot (names and
    states only, never `access`):
    `gcloud secrets versions list swarm-tenant-<tenant>-git-u-<16 hex>`, where
    the slot's name is the one the token answer named in check 1.
 
 **You should see** step 3 refused with `REPOSITORY_NOT_GRANTED` for both. The
-`sagaxyz` owner and its grants should be gone from Access and from
+`example-org` owner and its grants should be gone from Access and from
 `uv run sc access list`, while the personal-account owner and grant remain.
-Every version of B's `sagaxyz` slot should be `DISABLED`. A run already going
+Every version of B's `example-org` slot should be `DISABLED`. A run already going
 when the org was removed is refused at its next push or pull request, where
 the worker re-reads the grant.
 
-**It failed if** a run on a `sagaxyz` repository is accepted after the
-removal. It also failed if any version of B's `sagaxyz` slot is still
-`ENABLED`, if `sagaxyz` still lists in Access, or if the personal-account
+**It failed if** a run on a `example-org` repository is accepted after the
+removal. It also failed if any version of B's `example-org` slot is still
+`ENABLED`, if `example-org` still lists in Access, or if the personal-account
 grant went too (a removal reaches only the owner removed).
 
 ## Recording the result
 
-Write the outcome on #780 as a comment, one line per check: passed, or the
+Write the outcome on the per-person-slots migration's issue as a comment, one line per check: passed, or the
 observation that failed. Name the date, the release (the swarm-api revision)
 and the two people's roles, never their tokens. A failed check is a `bug`
 issue in the form's sections, linked from that comment.

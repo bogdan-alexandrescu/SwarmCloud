@@ -550,7 +550,7 @@
 .ag-split > .ag-split-pane { container: ag-pane / inline-size; }
 .ag-split > .ctl-agent-back { align-self: flex-start; }
 /* THE HEAD SCROLLS AWAY ON DESKTOP TOO; THE TAB STRIP STICKS (AGENT-HEAD-B,
-   BGD's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30, part of #2596).
+   the owner's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30, part of #2596).
    Held still above the pane, the head -- state, title, facts, Copy link,
    Take control, Stop -- and the strip left 569px of tab at 1440x900 and 445
    at 1280x800 (the AGENT-HEAD-MOCKS measures). G2-01's phone rule (below)
@@ -1118,7 +1118,7 @@
      each kept whole, rather than run off the edge. The tail is no box of its
      own here at all now (VQ-012, below), so its controls wrap as the tools
      group's own items. */
-  /* THE PROFILE AND THE SORT SHARE A ROW (VQ-012, BGD's visual QA
+  /* THE PROFILE AND THE SORT SHARE A ROW (VQ-012, the owner's visual QA
      2026-10-26). At 390 the filters stacked three high -- search, profile,
      sort -- and pushed the first agent below the fold: the select asked for
      its 16em cap and the sort for its words, more than the 358px line. Here
@@ -1183,7 +1183,7 @@
    the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
    on the bar and puts the rest under More, at its end, on the bar's own
    underline; More opens the shared `.c-menu` under it. */
-/* MORE GIVES WAY, THE OPEN TAB NEVER DOES (BT-004, #2423; VQ-008, BGD's
+/* MORE GIVES WAY, THE OPEN TAB NEVER DOES (BT-004, #2423; VQ-008, the owner's
    visual QA, 2026-10-26): at 390 a 448 px More that would not shrink
    squeezed the strip, and the open tab in it, to 0 px, and ran past the
    drawer's edge. More is a short `More 7` now. A fitted strip (`is-fitted`,
@@ -1333,7 +1333,7 @@
 .app.has-inspector > .work .c-phead .c-acts > .c-refresh { flex: 0 1 auto; }
 
 /* A CANCELLED RUN'S SPAN IS A NOTE WITH ITS SENTENCE AS ITS TITLE (D20).
-   NOT UNDERLINED (live QA WA-22): `mock · bogdan · to cancel`, dotted, read
+   NOT UNDERLINED (live QA WA-22): `mock · owner · to cancel`, dotted, read
    as an action, a link to cancel something. It is a qualifier of the elapsed
    figure, so it is drawn as one: muted and plain. */
 .cr-sub .when-note { color: var(--text-faint); }

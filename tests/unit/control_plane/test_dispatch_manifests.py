@@ -1333,7 +1333,7 @@ def test_the_403_classifier_reads_the_status_and_falls_back_to_the_text():
 
 
 def test_a_finished_gke_job_frees_its_quota_slot_after_ten_minutes(settings, tenant):
-    """BGD 2026-10-28: ttlSecondsAfterFinished 3600 -> 600.
+    """the owner 2026-10-28: ttlSecondsAfterFinished 3600 -> 600.
 
     A finished Job keeps its `count/jobs.batch` slot until its TTL expires. On
     2026-10-28 ~09:30-11:15Z eng's 240 slots filled with FINISHED Jobs and 28

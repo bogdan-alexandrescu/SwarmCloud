@@ -1,9 +1,9 @@
-"""Reviews only where they matter (#2524, BGD 2026-10-27: "Risk paths + over 300 lines").
+"""Reviews only where they matter (#2524, the owner 2026-10-27: "Risk paths + over 300 lines").
 
 docs/workflows.md "Reviews only where they matter, and no-op steps refused".
 A workflow step carrying `metadata.review_gate` is held PARKED by the
 scheduler, as the #748 integrator is, and decided by swarm-api on its
-parent's `task_finished` wake (`swarm_api.reviewgate`, BGD 2026-10-28: no
+parent's `task_finished` wake (`swarm_api.reviewgate`, the owner 2026-10-28: no
 contract change, swarm-api ends it PARKED -> SUCCEEDED). It runs when its
 parents' change touches a risk path or more than `min_lines` lines, or
 cannot be told; otherwise it ends SUCCEEDED without an agent, and its
@@ -141,7 +141,7 @@ def test_the_scheduler_holds_a_gated_review_and_never_ends_it(db, make_scheduler
     assert report.held_dependencies == 1, report.to_dict()
     assert _review_doc(db)["state"] == "PARKED"
     assert _leases(db) == [] and dispatcher.dispatched == []
-    # BGD 2026-10-28: the scheduler is not a second writer of PARKED -> SUCCEEDED.
+    # the owner 2026-10-28: the scheduler is not a second writer of PARKED -> SUCCEEDED.
     assert not hasattr(SchedulerStore, "succeed_without_worker")
     assert not hasattr(scheduler_gate, "end_if_skipped")
 

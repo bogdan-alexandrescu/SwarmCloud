@@ -1,7 +1,7 @@
 /**
  * BUILDING, NOW, ONE RESOURCES ROW (DETAILS-BUILDING, part of #2391).
  *
- * BGD, 2026-10-27, on the agent's Details page: "too much prose on this page,
+ * owner, 2026-10-27, on the agent's Details page: "too much prose on this page,
  * we don't need so much text for showing resource consumption. Rather it
  * would be more useful to quickly understand exactly what the agent is
  * currently doing and building, maybe derived from the prompt the agent

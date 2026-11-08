@@ -1,6 +1,6 @@
 """Re-sending work the platform failed before it ran (part of #2688).
 
-The Product Oracle session, 6 November 2026: its task was failed by the
+The a peer application session, 6 November 2026: its task was failed by the
 reconciler before it ever ran -- no attempt, no cost -- and dispatching the
 same work again was refused by the repeat guard ("this exact prompt ... was
 already dispatched once in this session"), so the session had to change its

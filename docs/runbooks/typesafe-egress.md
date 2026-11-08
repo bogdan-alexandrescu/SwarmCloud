@@ -132,17 +132,17 @@ kind, and a refused call stops the job, so `apply.sh --tenant` under the guard
 the job made carries no `swarm-allow-typesafe-direct` until the guard admits
 both; that change is the owner's question in this lane's pull request.
 
-Neither policy is applied to `agents-staging`: every path above goes through
+Neither policy is applied to `peer-cluster`: every path above goes through
 apply.sh's cluster check (CLAUDE.md rule 2).
 
 ### Checking one cluster by hand
 
-Use the context of `swarm-autopilot`, never `agents-staging`, and a current
+Use the context of `swarm-autopilot`, never `peer-cluster`, and a current
 `kubectl` (`kubectl_bin` in `scripts/lib/common.sh`: an old client silently
 drops manifest fields).
 
 ```bash
-CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
+CTX=gke_example-project_us-central1_swarm-autopilot
 
 # Does the cluster serve the kind? No output means it does not, and neither
 # policy is applied there.

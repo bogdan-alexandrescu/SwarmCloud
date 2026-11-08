@@ -3,7 +3,7 @@
 // under plain node (tests/unit/mcp/test_sc_browser_pane.py) and the hooks
 // module (../pane.tsx) only turns these lines into elements.
 //
-// PROPOSAL B, TWO COLUMNS, FOR EVERY FRAME (BGD, 2026-10-25, #2318; the
+// PROPOSAL B, TWO COLUMNS, FOR EVERY FRAME (the owner, 2026-10-25, #2318; the
 // mock-ups are docs/design/mockups/sc-browser-b.html in PR 2328): the open
 // workflow's stages on the left, the selected stage's agents -- then one
 // agent's details -- on the right; Level 1 a full-width list of this
@@ -379,7 +379,7 @@ function listFrame(state: PaneState, view: View): Line[] {
   out.push(rule(cols))
   const rows = state.workflows || []
   if (!failure && state.workflows === null) {
-    // UNREAD (BGD, 2026-10-25: "open it with no read"): the pane the session
+    // UNREAD (the owner, 2026-10-25: "open it with no read"): the pane the session
     // start opened, before anyone pressed Refresh. Never the empty state: no
     // read said there is nothing.
     const left: Line[] = [[plain(' Stages')], [plain(' none: no')], [plain(' workflow open')]]
@@ -821,7 +821,7 @@ export async function act(state: PaneState, action: string, call: Call, now: () 
 }
 
 // --------------------------------------------------------------------------
-// The band above the prompt (SC-BAND, BGD 2026-10-26)
+// The band above the prompt (SC-BAND, the owner 2026-10-26)
 // --------------------------------------------------------------------------
 //
 // WHY A BAND. In Claude Code's fullscreen layout a Pane docks on the right,

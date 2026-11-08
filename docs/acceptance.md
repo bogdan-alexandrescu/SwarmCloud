@@ -51,7 +51,7 @@ deployer"](ci.md#its-identity-is-not-the-deployer)). Its custom role
 `swarmAcceptanceRunner` — get a job, start an execution, read executions and
 agents, cancel a running execution; no create, update, delete or IAM — is
 granted at **project level with no condition**. Owner decision 2026-10-09
-(#965).
+.
 
 Why no condition: the grant used to be conditioned to `swarm-verify` and
 `swarm-job-*` by job name, and that condition never matched anything. Cloud
@@ -61,7 +61,7 @@ IAM Policy Troubleshooter evaluated `resource.name.endsWith("/jobs/swarm-verify"
 as false with the name supplied), so the account was denied `run.jobs.get` on
 swarm-verify and every acceptance run failed before its first check.
 
-The trade-off, accepted by the owner: `saga-agents-staging` is a shared
+The trade-off, accepted by the owner: `example-project` is a shared
 project, and the unconditioned grant reaches **every Cloud Run job in it,
 present and future**, including the other team's and swarm's own merge job
 (`swarm-job-eng-merge`). It can start, read and cancel their executions; it
@@ -72,9 +72,9 @@ job-name condition: Cloud Run would deny every job again.
 
 Every agent is submitted for the **`smoke` tenant** (`X-Swarm-Tenant: smoke`)
 and clones the **private sandbox repository**
-`bogdan-alexandrescu/swarmcloud-sandbox`, where the direct-pr and integrate
+`example-org/example-repo-sandbox`, where the direct-pr and integrate
 checks open their pull requests. Both are stated once, in
-`scripts/acceptance/config.sh` (owner decision 2026-10-05, #628). Until then
+`scripts/acceptance/config.sh` (owner decision 2026-10-05). Until then
 acceptance ran in `eng` against this platform's public repository: 58 fixture
 pull requests there in five days, each running full CI, and 62% of eng's agents.
 
@@ -169,8 +169,7 @@ registry.
 Bad arguments -- a command outside the catalogue, no command, a path that is a
 flag or escapes the workspace, a make target that is a flag, an escaping
 working directory, an `argv`, a timeout above the platform's -- must each be a
-422 `invalid_input` at the door. That door is contract request 32 (#218, PR
-#345); until it is deployed the check skips, because a bad argument would
+422 `invalid_input` at the door. That door is contract request 32; until it is deployed the check skips, because a bad argument would
 become an agent the runner refuses rather than a refusal.
 
 ### claude-code
@@ -199,7 +198,7 @@ that file.**
   only for the file name the issue is about, and the answer
   (`GET /tasks/{id}/answer`) must name `sandbox-probe.sh` -- which only that
   issue's text says. `sandbox-sync.sh` opens it on an empty sandbox and
-  refuses a sandbox whose #1 says something else. Contract request 28 (#265);
+  refuses a sandbox whose #1 says something else. Contract request 28;
   whether it is deployed is probed at the door.
 
 ### workflow
@@ -210,11 +209,11 @@ that file.**
 | expected_outputs | `a`'s `metadata.expected_outputs` names the file `b` stages; a parent that writes the wrong file ends `FAILED outputs_missing`, `result_summary.expected_outputs_missing` names the file, it was retried to `max_attempts`, and its child ends `CANCELLED` having never held a lease |
 | on_step_failure | a failing root's child and grandchild both end `CANCELLED workflow_sweep` with no lease ever, and the workflow's derived state is `FAILED` (the fail_workflow sweep in `apps/scheduler/scheduler/loop.py` `_sweep_failed_workflow` cancels every not-started step of the workflow ahead of the per-parent `failed_parent` cascade, dependent or not, and always records `end_cause=WORKFLOW_SWEEP`) |
 | integrate chain | implement (fix the bug, stage its `change.diff`) -> review (apply the staged `change.diff`, judge it, write `verdict.json`, then reverse the patch) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, review's `result_summary.staged_inputs` lists implement's `change.diff` (without it review would be judging repository_ref's unfixed fixture, not implement's work -- strategy `integrate` gives a non-integrator step no other way to see an upstream step's tree, docs/workflows.md), exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line (those two are read back from the private sandbox, and are a SKIP in a run with no token for it, as the release's is). Then the pull request and every branch are cleaned up |
-| carry | docs/workflows.md's park-and-carry recipe: `a` (mock, `quota_exhausted` + `artifact_before_park`) writes `notes.md` and parks, then succeeds on a later attempt that writes nothing; `a`'s `result_summary.artifacts` has one `notes.md`, whose `carried_from` is the attempt the `parked` event names and whose `uri` is that attempt's object, none under the finishing attempt's prefix; `b` succeeds, its `staged_inputs` names that object, and its checkpoint's `notes.md` is `a`'s bytes. It exists because #166 was reopened by a live dev measurement (a 403), and only a live measurement the other way closes it: the owner asked for this one on 2026-10-08 |
+| carry | docs/workflows.md's park-and-carry recipe: `a` (mock, `quota_exhausted` + `artifact_before_park`) writes `notes.md` and parks, then succeeds on a later attempt that writes nothing; `a`'s `result_summary.artifacts` has one `notes.md`, whose `carried_from` is the attempt the `parked` event names and whose `uri` is that attempt's object, none under the finishing attempt's prefix; `b` succeeds, its `staged_inputs` names that object, and its checkpoint's `notes.md` is `a`'s bytes. It exists because the park-and-carry 403 finding was reopened by a live dev measurement (a 403), and only a live measurement the other way closes it: the owner asked for this one on 2026-10-08 |
 
 ### browser
 
-The pages are **third-party sites** (owner decision on #358, 2026-09-29).
+The pages are **third-party sites** (the third-party-fixture-pages decision, 2026-09-29).
 Nothing this repository owns serves an `.html` file as HTML:
 `raw.githubusercontent.com` and jsDelivr answer `text/plain` with
 `X-Content-Type-Options: nosniff` (measured 2026-09-29), so Chromium would show a
@@ -233,7 +232,7 @@ fixture's source instead of rendering it.
 in documentation examples without needing permission." So the title carries
 the "Example Domain" assertion and the text assertion uses the body sentence.
 The page also asks not to be relied on for testing and monitoring; one request
-per dev release is the whole use. Its background is `light-dark(#eee,#222)`:
+per dev release is the whole use. Its background is `light-dark(#eee)`:
 `#eee` under the light scheme headless Chromium renders by default.
 
 **httpbin.org** is the form page because it exists to echo requests: filling a
@@ -241,10 +240,10 @@ form there sends test data to a service built to receive it, and its response
 proves the fill reached the field and the click submitted the form. It is not
 always available, which is why its outage is a SKIP.
 
-These need contract request 32 (#218, PR #345) deployed, and the group skips
+These need contract request 32 deployed, and the group skips
 until it is.
 
-#### The browser fixture page is ours (#1628, 2026-10-19)
+#### The browser fixture page is ours (2026-10-19)
 
 The smoke suite's browser check and `scripts/prove-gke-dispatch.sh` (both
 `t_check_browser_fixture` in `scripts/lib/testlib.sh`, and both gate a release)
@@ -252,10 +251,10 @@ are a different check from the table above: a browser agent loads a page whose
 colour (`#c2185b`), title (`Swarm acceptance fixture`) and text
 (`swarm-fixture-<run id>`) the check chose, and the check asserts all three came
 back. Until 2026-10-19 that page came from httpbin.org's `/base64/<page>` route,
-the third party #358 had chosen. **Acceptance run 39249979130 failed its GKE
+the third party that decision had chosen. **Acceptance run 39249979130 failed its GKE
 proof on an httpbin.org `502 Bad Gateway`**: an outage elsewhere turned a release
-gate red, with a message that read like ours. The owner's decision on #1628,
-which reverses #358 for this check only, is that we serve the page ourselves, so
+gate red, with a message that read like ours. The owner's decision, which reverses the third-party-fixture-pages decision
+for this check only, is that we serve the page ourselves, so
 the check fails only when SwarmCloud does.
 
 So the page is `scripts/acceptance/fixture.html`, uploaded by
@@ -267,7 +266,7 @@ that bucket, and opened as
 
 **Public, so it shows nothing a URL chooses.** The runner opens it without a
 credential from both the Cloud Run worker's and the GKE browser pod's egress, so
-it cannot sit behind IAP or on `swarm.saga.xyz`'s cookie origin. A public route
+it cannot sit behind IAP or on `swarm.example.com`'s cookie origin. A public route
 that rendered HTML from its URL, as httpbin's does, would make us a phishing and
 XSS host; this page's markup is fixed. Its one input is `?run=`, accepted only
 when it matches `^[a-z0-9-]{1,80}$` and set with `textContent`; anything else
@@ -290,7 +289,7 @@ form check above still uses httpbin.org, and still SKIPs when httpbin is
 unreachable.
 
 **`pngcheck.py` uses the standard library only** (`zlib` and the five PNG row
-filters). The swarm-verify image carries `python3` for it (#358). Wherever the
+filters). The swarm-verify image carries `python3` for it. Wherever the
 suite runs without `python3`, the pixel checks SKIP saying so. It decodes at
 most the top 4000 rows (`--max-rows`): a real site's full-page screenshot can
 be tens of thousands of rows, which pure Python unfilters in minutes, and
@@ -314,7 +313,7 @@ watches ends after `human_unwatched_seconds` (60 s); the worker then parks
 the agent on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
 other-tenant probes (six API calls and a socket that may wait 20 s for its
 refusal) used to run first, and the scheduled runs of 2026-10-15..19 failed
-`returned` with the agent PARKED at the 900 s settle (#1333). They now run
+`returned` with the agent PARKED at the 900 s settle. They now run
 while the viewer's socket is open and the page is on screen, on a thread of
 their own, so the viewer goes on reading its socket for the whole hold as a
 person's open tab does. The viewer reads the hold's deadline after its join
@@ -349,7 +348,7 @@ holding the value.
 |---|---|---|
 | hand-off | `GET /v1/tasks/{id}/live/session` shows the session `available` with a `human_wait` (Q2: the field, not a state) | a hand-off the console cannot see is a hand-off nobody answers |
 | another tenant | as a member of another tenant (the identity's other membership from `GET /v1/tenants/mine`, or `SWARM_ACCEPTANCE_OTHER_TENANT`), the agent, `live/session`, `live/ticket`, `live/control` and `live/audit` are each a 404; a real viewer ticket whose `tenant_id` is rewritten to that tenant is closed `4404` on the socket | LB-2 and invariant 9. A 403 would confirm the agent exists, and a ticket that could be pointed at a tenant the caller also belongs to would select it |
-| frames as drawn | the viewer opens `wss://.../v1/live/{session}/stream` with the ticket as its first message (never in the URL), takes control, clicks the field and types. In every frame that shows the page, the field's box -- found from the cyan marker 80 CSS px above it -- is the field's own magenta as Chromium drew it (its dots and caret are magenta too; at least 95% of the box, the rest being the pointer's arrow this viewer is sent painted on its copy) and holds none of the old mask's `#222222`. At least one such frame arrived while the person typed | BGD's decision of 2026-10-25 ([live-browser.md](design/live-browser.md) §5.3): the gate paints nothing over the screen. Until then this row required the box to be entirely the mask's paint (LB-3). The marker shows the page is on screen, so a frame without the page is not counted |
+| frames as drawn | the viewer opens `wss://.../v1/live/{session}/stream` with the ticket as its first message (never in the URL), takes control, clicks the field and types. In every frame that shows the page, the field's box -- found from the cyan marker 80 CSS px above it -- is the field's own magenta as Chromium drew it (its dots and caret are magenta too; at least 95% of the box, the rest being the pointer's arrow this viewer is sent painted on its copy) and holds none of the old mask's `#222222`. At least one such frame arrived while the person typed | [the owner]'s decision of 2026-10-25 ([live-browser.md](design/live-browser.md) §5.3): the gate paints nothing over the screen. Until then this row required the box to be entirely the mask's paint (LB-3). The marker shows the page is on screen, so a frame without the page is not counted |
 | recording as drawn | segments `rec-<13 digits>.live.webm` exist under the agent's `attempts/<a>/live/`, nothing else under `live/` but `actions-*.live.jsonl`; decoded with `ffmpeg` at 5 fps, every recorded frame that shows the page has the same box in the field's magenta (VP8 is lossy: within 32 per channel, 90% of the box, at most 5% of it the old mask's colour) | LB-4 records the stream the gate publishes; a recorder that took frames from anywhere else, or anything painting over frames on the way, would show it here |
 | returned | after Return control, the agent `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the agent ending some other way |
 | no password | the password is in no object under `tenants/<t>/tasks/<task>/`, read from the bucket itself (not through the API, which redacts on the way out), gzip members decompressed: the transcript (`logs/agent_stdout.log`), every other log, every checkpoint archive, every output and the recording. Nor in the task document, its events, its live audit and session, or its answer. Each of transcript, logs, checkpoints and outputs must have at least one object read, and an object that could not be read FAILS the check | section 5.4: the agent's CDP is paused while a person types and the fields are cleared before it resumes. An unread category is not a clean one |
@@ -391,7 +390,7 @@ issue of its own. It goes back into wave 2 when
 
 ### git-tools
 
-The runner git tools' acceptance (#1225; docs/runner-git-tools.md, section 7,
+The runner git tools' acceptance (docs/runner-git-tools.md, section 7,
 lane G7): five checks, one per row of that lane. The shell half is
 `scripts/acceptance/groups/git-tools.sh`: it submits the agents, waits on them
 with the suite's own settle, and saves each agent's state, document,
@@ -425,11 +424,11 @@ the push's authorship check refuses.
 
 | check | asserts | why that and not less |
 |---|---|---|
-| rebase | a `direct-pr` continuation of the lane's pull request fetches its branch (so swarm-api records the tip to lease), `git_rebase_onto main` lists `planted.txt` as conflicted, the agent resolves it, the audited push replaced exactly the fetched tip with `rewrite: true` (Q1 = A), `pr_checks` read the lane's pull request at the pushed head, and the lane ended `SUCCEEDED`. Its `env_report.py` artifact, names only, shows no forge credential: no name `env \| grep -i token` would find except `CLAUDE_CODE_OAUTH_TOKEN` (owner, 2026-10-13), no `GH_TOKEN`, `GITHUB_TOKEN` or `GIT_*` credential variable, no `GIT_CONFIG_KEY_<n>` naming a credential helper, extra header or `insteadOf`, and no value shaped like a GitHub token or private key | #1225's first acceptance item, end to end. The report prints names, never values, because the environment holds the Claude login. The agent cannot know the forge slot's value, so a value is judged by its shape |
+| rebase | a `direct-pr` continuation of the lane's pull request fetches its branch (so swarm-api records the tip to lease), `git_rebase_onto main` lists `planted.txt` as conflicted, the agent resolves it, the audited push replaced exactly the fetched tip with `rewrite: true` (Q1 = A), `pr_checks` read the lane's pull request at the pushed head, and the lane ended `SUCCEEDED`. Its `env_report.py` artifact, names only, shows no forge credential: no name `env \| grep -i token` would find except `CLAUDE_CODE_OAUTH_TOKEN` (owner, 2026-10-13), no `GH_TOKEN`, `GITHUB_TOKEN` or `GIT_*` credential variable, no `GIT_CONFIG_KEY_<n>` naming a credential helper, extra header or `insteadOf`, and no value shaped like a GitHub token or private key | the git-tools forge-audit finding's first acceptance item, end to end. The report prints names, never values, because the environment holds the Claude login. The agent cannot know the forge slot's value, so a value is judged by its shape |
 | read_private | the reader reads an allowlisted repository's file at a branch, then at the sha that read resolved to, both audited `ok`. When that repository is the sandbox, the content must be this build's `planted.txt`. A repository on no list, and on no forge, is refused `repo_not_allowlisted` | the allowlist is the gate (Q3 = A). The refused control shows the check could have come out the other way |
 | push to main | the reader's push to `main` is answered `protected_branch` or `not_this_tasks_branch`, swarm-api accepted no push of the reader's at all, and main's tip, fetched through the tools before and after, is the same | a refusal the agent was told about is not enough. The branch must not have moved |
 | push to another agent's branch | the same, aimed at the lane's branch. The branch may move only by the rebase lane's own audited pushes, because the two run at the same time | another agent's branch is exactly what `not_this_tasks_branch` exists for |
-| a failed push fails | an `integrate` contributor pushes its branch mid-run, then commits off it (`git reset --hard HEAD~1`), so its final push cannot fast-forward and is refused, never forced. The step ends `FAILED` with `publish_failed:` (G1), not `SUCCEEDED`. If the mid-run push never landed, the check FAILs saying the failure was never set up. If the final push succeeded, it FAILs saying a new way to fail a push is needed | #1225's lost final pushes were contributors that read `SUCCEEDED` with no branch |
+| a failed push fails | an `integrate` contributor pushes its branch mid-run, then commits off it (`git reset --hard HEAD~1`), so its final push cannot fast-forward and is refused, never forced. The step ends `FAILED` with `publish_failed:` (G1), not `SUCCEEDED`. If the mid-run push never landed, the check FAILs saying the failure was never set up. If the final push succeeded, it FAILs saying a new way to fail a push is needed | the git-tools forge-audit finding's lost final pushes were contributors that read `SUCCEEDED` with no branch |
 
 The reader is `collect` with `carrier: branches`, so it MAY push its own
 branch. A strategy that pushes nothing is refused `strategy_pushes_nothing`
@@ -459,8 +458,7 @@ how the probe opts in. With the worker's own credential, from its pod's
 metadata server, it asks Firestore to update `workspace_settings/<B>`, get
 `tenants/<B>` and create under `leases/`, for a tenant id B that does not
 exist. Each must be answered 403 `PERMISSION_DENIED`. Every write carries a
-precondition that cannot hold, so nothing is written either way (#1457,
-[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §6).
+precondition that cannot hold, so nothing is written either way ([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §6).
 
 There are three checks, one per question. Each is judged from the probe's own
 `ISO-ACCEPT-RESULT` line for it, read from stdout's tail when the agent

@@ -1,4 +1,4 @@
-"""One question, counted once, whatever its options (BGD's overnight grant, 6 November 2026).
+"""One question, counted once, whatever its options (the owner's overnight grant, 6 November 2026).
 
 Two follow-ups of the merged "count a question only while it holds work"
 change. (1) The worker writes `result_summary.question_text_digests`, one key

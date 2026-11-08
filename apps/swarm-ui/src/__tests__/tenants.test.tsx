@@ -57,7 +57,7 @@ const PHONE: CascadeEnv = { width: 390 }
  * Identities as long as the live roster's: service accounts of 55-65
  * characters, and a principal that is itself a service account.
  */
-const LONG_SA = 'swarm-agent-worker-u-sw-c90291@example.iam.gserviceaccount.com'
+const LONG_SA = 'swarm-agent-worker-u-sw-c90291@example-project.iam.gserviceaccount.com'
 const LONG_PRINCIPAL = 'swarm-verify@example-project.iam.gserviceaccount.com'
 
 function tenant(over: Partial<Tenant>): Tenant {
@@ -72,7 +72,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic', 'openai'],
-    service_account: 'swarm-agent-worker-eng@example.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-eng@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,

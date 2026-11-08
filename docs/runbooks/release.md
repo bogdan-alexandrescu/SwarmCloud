@@ -1,7 +1,6 @@
 # Publish a SwarmCloud release, then promote it
 
-Since BGD's "Move publishing into CI now" (2026-10-30, DAYONE-RELEASE-CI, part of
-#2688), CI publishes a release, not a laptop. A person still decides every step
+Since [the owner]'s "Move publishing into CI now" (2026-10-30, DAYONE-RELEASE-CI), CI publishes a release, not a laptop. A person still decides every step
 that matters: they dispatch the run, they approve it, and they promote by hand.
 
 The release home is project `swarmcloud-prod`: images in
@@ -48,14 +47,14 @@ The release home is project `swarmcloud-prod`: images in
    Viewer reads metadata only. A second run grants nothing.
 
 2. In the repository's settings, create the environment `release`: a required
-   reviewer (BGD), and deployment branches limited to `main`.
+   reviewer ([the owner]), and deployment branches limited to `main`.
 
 3. Let the deployer's trust admit the workflow. `publish` authenticates as
    `vars.GCP_DEPLOY_SA` through `attribute.job_workflow_ref`, and the deployer
    trusts only the files in `terraform/bootstrap/wif.tf` `deployer_workflows`;
    until `publish-release.yml` is applied there, its auth step fails with
    `Permission 'iam.serviceAccounts.getAccessToken' denied`, having published
-   nothing. The bootstrap root is applied by a person, on BGD's yes, with
+   nothing. The bootstrap root is applied by a person, on [the owner]'s yes, with
    [deployer-trust-pin.md](deployer-trust-pin.md): the plan shows one member
    added, `deployer_wif["publish-release.yml@refs/heads/main"]`, and
    `scripts/verify-deployer-trust.sh` then ends `checked 7 members, all pinned

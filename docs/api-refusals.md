@@ -22,7 +22,7 @@ enforced. None of them was switched off.
 
 ## Why
 
-On 2026-10-07, #845 deployed `403 REPOSITORY_NOT_GRANTED` before #840. #840
+On 2026-10-07, the REPOSITORY_NOT_GRANTED-refusal change deployed `403 REPOSITORY_NOT_GRANTED` before the GitHub-App-id-and-slug change. The GitHub-App-id-and-slug change
 delivered the GitHub App id and slug, which a person needs before they can
 connect GitHub and grant repositories at all. The refusal itself was correct,
 but nobody could satisfy it, so every person's submission was refused for
@@ -99,8 +99,7 @@ setting and sits in the established list.
 
 ## Join requests: refusals with no switch, and why
 
-Join requests ([design/join-requests.md](design/join-requests.md) §4.9,
-#2325) added these codes, all in [`errors.py`](../apps/swarm-api/swarm_api/errors.py).
+Join requests ([design/join-requests.md](design/join-requests.md) §4.9) added these codes, all in [`errors.py`](../apps/swarm-api/swarm_api/errors.py).
 **None has a switch**, and the rule above does not apply to them: the rule
 exists so a new refusal cannot lock a person out of something they could do
 yesterday, and every one of these gates a route or a store that did not exist

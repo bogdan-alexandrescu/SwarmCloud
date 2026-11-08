@@ -124,11 +124,11 @@ async function renderQuota(): Promise<void> {
     quota: [
       quota({ provider: 'anthropic', tenant_id: 'eng' }),
       quota({ provider: 'openai', tenant_id: 'eng', state: 'EXHAUSTED', effective_limit: 0, rate_limit_count: 41 }),
-      quota({ provider: 'openai', tenant_id: 'u-bogdan', state: 'UNKNOWN', effective_limit: 0, success_count: 0 }),
+      quota({ provider: 'openai', tenant_id: 'u-owner', state: 'UNKNOWN', effective_limit: 0, success_count: 0 }),
     ],
   }))
   render(<QuotaDetailScreen />)
-  await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+  await screen.findAllByRole('rowheader', { name: 'u-owner' }, WAIT)
 }
 
 function quotaRow(provider: string, tenant: string): HTMLElement {
@@ -239,7 +239,7 @@ describe('a11y-keyboard-003: every capacity table has an accessible name', () =>
     // MUTATION: drop `aria-labelledby` from PoolTable's <table> -- each of
     // these is an unnamed table again and none is found.
     // `tenant:eng` is lowered (10 of 20), so it leads in Needs a look (VQ-031,
-    // BGD 2026-10-26) and Tenants has no table of its own.
+    // owner 2026-10-26) and Tenants has no table of its own.
     for (const name of ['Needs a look · 1', 'Global', 'Runner profiles', 'Backends', 'Providers']) {
       expect(screen.getByRole('table', { name }), `the ${name} table has no name`).toBeTruthy()
     }
@@ -279,9 +279,9 @@ describe('a11y-keyboard-003: every capacity table has an accessible name', () =>
 })
 
 describe('capacity-004: an `unknown` quota row is not drawn in the exhausted red', () => {
-  it('washes u-bogdan\'s unknown row amber and leaves eng\'s exhausted row red, in both themes', async () => {
+  it('washes u-owner\'s unknown row amber and leaves eng\'s exhausted row red, in both themes', async () => {
     await renderQuota()
-    const unknown = quotaRow('openai', 'u-bogdan')
+    const unknown = quotaRow('openai', 'u-owner')
     const exhausted = quotaRow('openai', 'eng')
     for (const theme of THEMES) {
       const env = { ...WIDE, theme }

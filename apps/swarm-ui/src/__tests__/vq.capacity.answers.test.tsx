@@ -1,4 +1,4 @@
-// VISUAL QA PASS 1 (#2391), BGD'S ANSWERS OF 2026-10-26 08:20-08:30Z, LANE
+// VISUAL QA PASS 1 (#2391), owner'S ANSWERS OF 2026-10-26 08:20-08:30Z, LANE
 // VQ-CAPACITY-BUILD (PR 2414).
 //
 //   VQ-031  "Needs a look, as the mock-up draws it". Pools' top group is

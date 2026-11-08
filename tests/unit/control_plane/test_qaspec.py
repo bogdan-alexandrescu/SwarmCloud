@@ -131,7 +131,7 @@ def test_discovery_is_capped_at_sixty_pages_and_depth_three() -> None:
 
 
 def test_a_qa_runs_review_steps_run_on_sonnet() -> None:
-    """QA-REVIEW-SONNET (part of #2524): BGD, 2026-10-27, a QA run's
+    """QA-REVIEW-SONNET (part of #2524): the owner, 2026-10-27, a QA run's
     `review-<group>` step runs on the Sonnet class, not Opus."""
     steps = _steps(qaspec.render(_target()))
     reviews = sorted(s for s in steps if s.startswith("review-"))
@@ -175,7 +175,7 @@ def test_the_steps_are_the_designs_shapes() -> None:
 
 
 # --------------------------------------------------------------------------
-# The flows' browser tool (lane VQ9-TOOL; BGD, 2026-10-23: Playwright by
+# The flows' browser tool (lane VQ9-TOOL; the owner, 2026-10-23: Playwright by
 # default, after batch bench3-2026-10-23; a target, or one run, may choose Jev)
 # --------------------------------------------------------------------------
 
@@ -264,7 +264,7 @@ def test_the_spec_names_no_console_path_localhost_or_npm() -> None:
     ))
     # MUTATION: copy the console capture prompt's `npm ci` / `npm run dev`
     # line, or its `--routes apps/swarm-ui/qa/routes.json`, and this fails.
-    for word in ("localhost", "npm", "apps/swarm-ui", "5173", "bogdan-alexandrescu/SwarmCloud"):
+    for word in ("localhost", "npm", "apps/swarm-ui", "5173", "example-org/example-repo"):
         assert word not in text, word
     assert "https://app.example.com" in text
 
@@ -482,7 +482,7 @@ def test_an_unknown_preset_is_refused(width: str) -> None:
 
 
 def test_a_target_may_name_phone_380_and_its_steps_carry_it() -> None:
-    """PHONE-380 (BGD 2026-10-26, part of #2136): AI Studio's phone mock-up
+    """PHONE-380 (the owner 2026-10-26, part of #2136): A peer application's phone mock-up
     frame, 380 x 800, is a width a target names, as a preset."""
     # The target names both themes: since PR #2522 a target naming none is
     # captured in light only.
@@ -733,10 +733,10 @@ def test_the_refusals_redact_what_they_quote() -> None:
 
 
 # --------------------------------------------------------------------------
-# Start clicks (§2.2; BGD, 2026-10-23: a chooser before the IdP's form)
+# Start clicks (§2.2; the owner, 2026-10-23: a chooser before the IdP's form)
 # --------------------------------------------------------------------------
 
-#: AI Studio's chooser: a Staging | Production toggle, then "Sign in".
+#: A peer application's chooser: a Staging | Production toggle, then "Sign in".
 _CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
 
 
@@ -810,7 +810,7 @@ def test_the_capture_flow_and_discovery_prompts_name_the_start_clicks_in_order_o
 
 
 # --------------------------------------------------------------------------
-# Route-based label rules (QA-TARGET-FILE, #2062; AI Studio, 2026-10-23)
+# Route-based label rules (QA-TARGET-FILE, #2062; a peer application, 2026-10-23)
 # --------------------------------------------------------------------------
 
 _AGENT_RULE = {"paths": ["/agents/"], "labels": ["agent-page-rework"]}

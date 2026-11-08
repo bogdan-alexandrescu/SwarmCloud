@@ -1,6 +1,6 @@
 """How many flows a live-browser step runs: the run's choice, else the workspace's (QA-FLOWS-CAP, part of #2136).
 
-BGD, 2026-10-26: the batch size is configurable when a run starts and as a
+the owner, 2026-10-26: the batch size is configurable when a run starts and as a
 per-workspace default.
 
     POST /v1/qa-targets/{id}:run                   optional `flows_per_step`, 1-30

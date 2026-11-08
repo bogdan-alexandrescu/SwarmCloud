@@ -108,7 +108,7 @@ the Python LSP pass `timed_out` inside its 540 s budget (knowledge-graph.md
   index is stale when it has been behind the head for longer than its
   interval and a 12-hour grace (`behind_since`), when it was built over 7 days
   ago, or when it is not an ancestor (`swarm_api.repoindex.freshness`); never
-  by a commit count, which a merged branch inflates (#1693).
+  by a commit count, which a merged branch inflates.
 * The push webhook (RI8) is not built.
 
 **Where people see it.** Work › Repositories (`Repositories.tsx`) and a
@@ -185,8 +185,8 @@ and `select_checks` has no `terraform fmt`. §3 shows that matters.
   * It calls the same `start_run` with `created_by=schedule:<id>`.
   * Defaults: plan approval **auto**, merge approval required,
     `max_live_runs` 8.
-  * `sch_6ecbe1307511` fires at `7,37 * * * *` (from #1133's body).
-* **Since 2026-10-12** (#1150) the sweep passes over issues a live workflow
+  * `sch_6ecbe1307511` fires at `7,37 * * * *` (from an earlier issue's body).
+* **Since 2026-10-12** the sweep passes over issues a live workflow
   or a fresh merge is working on: a partial fix for §3's duplicate class.
 
 ### 1.5 Jev today
@@ -212,15 +212,15 @@ and `select_checks` has no `terraform fmt`. §3 shows that matters.
     personal tenant, else the agent tenant's key (`resolve_provider_key`).
   * docs/provider-keys.md says "Nothing uses these keys yet".
   * The `agent-runtime-browser` image carries a patched jev-browser (JEV-IMAGE,
-    #1296).
-* **Not on main yet:** the first consumer, JEV-RUNNER (#1297, open). Its
+    an earlier issue).
+* **Not on main yet:** the first consumer, JEV-RUNNER (open). Its
   worker-side key path is the one §5 reuses:
   * `agent_worker/jevkey.py` resolves the key in the worker process.
   * The key is written to `<attempt>/private/` with mode 0600, never into the
     agent's environment.
   * Only the launcher process reads it.
 * **The "jev-browser assessment"** the brief points to is docs/design/live-browser.md
-  §3.2.2. It exists on #1297's branch, not on main.
+  §3.2.2. It exists on an earlier issue's branch, not on main.
 * **There is no Code intelligence setting anywhere yet.** Settings has only
   API keys. A repository's Settings tab has no context toggle.
 
@@ -229,7 +229,7 @@ and `select_checks` has no `terraform fmt`. §3 shows that matters.
 ## 2. Baseline quality, measured
 
 **Window.** The last 150 *merged* SwarmCloud lane PRs (head `swarm/task_*`),
-#1104-#1296, created 2026-10-11 12:41Z to 2026-10-14 12:46Z. That is three
+a run of earlier issues, created 2026-10-11 12:41Z to 2026-10-14 12:46Z. That is three
 days of production lane output. Read 2026-10-14 from:
 * the public GitHub API (PRs, Actions runs, issues);
 * the PR heads fetched as `refs/pull/*/head`.
@@ -248,7 +248,7 @@ CTXQ-M script reads it with an operator's credentials.
 | **First-pass application CI** | **122 / 150 = 81.3%** green | The PR's earliest completed `application` run is `success` |
 | **Review NOT_YET** | **8 / 150 = 5.3%** | PR body line `Review verdict: **NOT_YET**` |
 | **Red after a MERGE verdict** | **33 / 37** red PRs had a MERGE review | The review ran before CI and passed what CI then failed |
-| **Hand fix-up** | **20 / 150 = 13.3%** (25 commits) | The PR head carries a non-merge commit authored by the operator's own identity (`bogdan-alexandrescu`), not the worker's (`bogdan`). Commits brought in from main (`Bogdan Alexandrescu`) are excluded |
+| **Hand fix-up** | **20 / 150 = 13.3%** (25 commits) | The PR head carries a non-merge commit authored by the operator's own identity (`example-org`), not the worker's (`owner`). Commits brought in from main (authored under the owner's name) are excluded |
 | **Needed anything after the agent** | **45 / 150 = 30%** | Red CI, NOT_YET or a hand commit (union) |
 | **Source PRs that touched no test** | **0 / 147** | Every lane PR that changed `apps/`, `scripts/`, `images/`, `terraform/`, `kubernetes/` or `plugin/` also changed a test file |
 
@@ -258,7 +258,7 @@ CTXQ-M script reads it with an operator's credentials.
 * The earlier 23% hand fix-up counted operator-side commits of any kind,
   including owner-answer doc commits. §3 classifies 3 of the 20 here as
   owner input rather than defects.
-* #642's 25% first-push red rate, which KG5's success measure uses, matches
+* An earlier issue's 25% first-push red rate, which KG5's success measure uses, matches
   24.7% here.
 
 ### 2.2 CI: which jobs went red
@@ -287,14 +287,14 @@ All 8 NOT_YET verdicts, findings quoted from the PR bodies:
 
 | PR | Finding, abridged | Class (§3) |
 |---|---|---|
-| #1262 | The patch carried a different lane's whole change (runner git tools, about 2,000 lines) under this lane's title | parallel lane |
-| #1181 | `_audited` classifies rows in Firestore stream order, which depends on random IDs, though its sibling `audit_entries` already sorts by `(at, id)`. And no test can fail on it: the fake streams in insertion order | missed sibling idiom + test adequacy |
-| #1180 | The wiring that puts "parked since" in the banner has no test; deleting the line leaves every test green | test adequacy |
-| #1148 | Added a group to `GROUPS`, but `accept.yml`, which the lane cannot push, still lists five, so a unit test is red | territory constraint |
-| #1141 | The guard is red on 30 leftovers in other lanes' files, and touched vitest files are red | guard not run + missed tests |
-| #1132 | The socket is opened before noVNC attaches, so the first frame is dropped | reasoning (race) |
-| #1107 | Fixed the finding on the detail page, but the list card the finding was about still says "1,000 edges" | missed caller surface |
-| #1105 | Half fix (a 200-agent page), and the fixture never puts an agent off the page | reasoning + test adequacy |
+| An earlier issue | The patch carried a different lane's whole change (runner git tools, about 2,000 lines) under this lane's title | parallel lane |
+| An earlier issue | `_audited` classifies rows in Firestore stream order, which depends on random IDs, though its sibling `audit_entries` already sorts by `(at, id)`. And no test can fail on it: the fake streams in insertion order | missed sibling idiom + test adequacy |
+| An earlier issue | The wiring that puts "parked since" in the banner has no test; deleting the line leaves every test green | test adequacy |
+| An earlier issue | Added a group to `GROUPS`, but `accept.yml`, which the lane cannot push, still lists five, so a unit test is red | territory constraint |
+| An earlier issue | The guard is red on 30 leftovers in other lanes' files, and touched vitest files are red | guard not run + missed tests |
+| An earlier issue | The socket is opened before noVNC attaches, so the first frame is dropped | reasoning (race) |
+| An earlier issue | Fixed the finding on the detail page, but the list card the finding was about still says "1,000 edges" | missed caller surface |
+| An earlier issue | Half fix (a 200-agent page), and the fixture never puts an agent off the page | reasoning + test adequacy |
 
 **The reviewer is cheap insurance with low recall.** 33 of the 37 PRs that
 went red had passed review. A reviewer that cannot see which tests cover the
@@ -302,37 +302,37 @@ change cannot be expected to know which will fail.
 
 ### 2.4 Escaped defects
 
-* **Bugs citing a PR in the window:** #1151 and #1152. CLAUDE.md and
-  docs/ci.md still said "5 acceptance groups" after #1148 made it 6. A doc
+* **Bugs citing a PR in the window:** earlier issues. CLAUDE.md and
+  docs/ci.md still said "5 acceptance groups" after an earlier issue made it 6. A doc
   restating a changed fact was missed.
 * **Latent defects in earlier merges that turned PRs red in this window:**
   * the repo-index fixture's pinned `built_at` aged past `STALE_AGE`
     (`tests/unit/control_plane/repo_index_fakes.py`). It turned 4 PRs red on
-    2026-10-12 (#1162, #1167, #1169, #1170);
+    2026-10-12;
   * a time-of-day test (`qa.g5.accounts.test.tsx`) red between 00:00 and
-    03:00. It turned 4 PRs red (#1126, #1129, #1138, #1142);
+    03:00. It turned 4 PRs red;
   * each was fixed **independently, four times**, by four fixers who could
     not see the others' identical fix.
-* **Wave epic #1194** (2026-10-12) holds 18 out-of-territory findings. One
+* **An earlier wave epic** (2026-10-12) holds 18 out-of-territory findings. One
   matters to this design directly: "every claude-code attempt ignores the
   repository's 23 `permissions.allow` entries because the CLI never trusted
-  the workspace". It was fixed by #1196 (WK-TRUST). Until 2026-10-12 the
+  the workspace". It was fixed by an earlier issue (WK-TRUST). Until 2026-10-12 the
   agents' own project settings were not even loaded.
 
 ### 2.5 Issue runs, as GitHub sees them
 
-* **11 issue-run PRs** (body marker `swarmcloud-issue-run:`), #970-#1155,
+* **11 issue-run PRs** (body marker `swarmcloud-issue-run:`), a run of earlier issues,
   2026-10-09 to 2026-10-12:
   * 7 merged;
   * 1 open;
   * **3 closed unmerged, every one a duplicate of a lane already in flight**:
-    * **#1136** — the sweep started it at 22:12Z; a lane for the same issue
+    * **An earlier issue** — the sweep started it at 22:12Z; a lane for the same issue
       started at 22:20Z and edited the same 3 files.
-    * **#1094** — built its own PERM-1 with a different response shape from
-      the one already merged as #1090.
-    * **#1080** — superseded by the MERGE-GAPS lane on `merge.py`.
-* **Plan quality as GitHub shows it:** #1155 kept the run inside the issue and
-  named the sibling defect (#1152) as left out on purpose, which is the
+    * **An earlier issue** — built its own PERM-1 with a different response shape from
+      the one already merged as an earlier issue.
+    * **An earlier issue** — superseded by the MERGE-GAPS lane on `merge.py`.
+* **Plan quality as GitHub shows it:** an earlier issue kept the run inside the issue and
+  named the sibling defect as left out on purpose, which is the
   behaviour wanted. Plan edits and rejections are in swarm-api (§2.6).
 
 ### 2.6 Metric definitions for the script (lane CTXQ-M)
@@ -369,7 +369,7 @@ instead of lines. Line coverage is option §8 Q7.
 * all 37 red-CI PRs, with each red run's cause read from the fix commit that
   followed it and the PR's `## Continuation` section (47 rows);
 * all 11 findings of the 8 NOT_YET reviews;
-* the 4 hand-fixed PRs that never went red, plus #1217's apply-time fix (5);
+* the 4 hand-fixed PRs that never went red, plus an earlier issue's apply-time fix (5);
 * the 3 duplicate issue runs;
 * the 3 escaped bugs.
 
@@ -377,19 +377,19 @@ instead of lines. Line coverage is option §8 Q7.
 
 | Class | Context? | n | % | Examples |
 |---|---|---|---|---|
-| **G: guard or house rule not met** | context | 14 | 20% | Refusal-switch guard (`test_new_refusals_ship_off.py`) on #1215, #1221, #1255, #1261 and #1273. Import-time guard (`test_collection_stays_cheap.py`) on #1148 and #1271. `NotImplementedError` marker on #1149 and #1273. Typescale or letter-spacing CSS guard on #1113 and #1164 (×2). `terraform fmt` on #1217. Real-zero guard on #1141 |
-| **P: parallel lane or main moved** | context | 9 | 13% | UX1 replaced a select under #1167 and #1169. LB-CURSOR under #1198. A removed route under #1142. A test from #1264 under #1266. Another lane's change carried in #1262. 3 duplicate issue runs |
-| **T: covering test not run** | context | 8 | 12% | The build-report test (#1248). The LiveTicket fixture (#1146). The nav-heading test (#1114). The RT-31 clamp test (#1105). The phone-layout budget (#1162). The node tests outside `__tests__` (#1141 ×2). The guard self-test (#1217) |
-| **X: caller or callee contract** | context | 5 | 7% | `refusals.refuse` raises when its switch is on (#1273). UI calls to routes swarm-api does not serve (#1132). A case-only name collision with `SignOut.tsx` (#1293). The sibling's sort idiom (#1181). The other surface of the same finding (#1107) |
-| **D: doc restates the changed fact** | context | 2 | 3% | #1151, #1152 |
-| **W: path the lane cannot push** | context | 2 | 3% | `release.yml` (#1179), `accept.yml` (#1148) |
-| **TA: test that cannot fail** | partly | 3 | 4% | #1180, #1181, #1105 |
+| **G: guard or house rule not met** | context | 14 | 20% | Refusal-switch guard (`test_new_refusals_ship_off.py`) on an earlier issue, earlier issues. Import-time guard (`test_collection_stays_cheap.py`) on earlier issues. `NotImplementedError` marker on earlier issues. Typescale or letter-spacing CSS guard on earlier issues (×2). `terraform fmt` on an earlier issue. Real-zero guard on an earlier issue |
+| **P: parallel lane or main moved** | context | 9 | 13% | UX1 replaced a select under earlier issues. LB-CURSOR under an earlier issue. A removed route under an earlier issue. A test from an earlier issue under an earlier issue. Another lane's change carried in an earlier issue. 3 duplicate issue runs |
+| **T: covering test not run** | context | 8 | 12% | The build-report test. The LiveTicket fixture. The nav-heading test. The RT-31 clamp test. The phone-layout budget. The node tests outside `__tests__` (an earlier issue ×2). The guard self-test |
+| **X: caller or callee contract** | context | 5 | 7% | `refusals.refuse` raises when its switch is on. UI calls to routes swarm-api does not serve. A case-only name collision with `SignOut.tsx`. The sibling's sort idiom. The other surface of the same finding |
+| **D: doc restates the changed fact** | context | 2 | 3% | An earlier issue, an earlier issue |
+| **W: path the lane cannot push** | context | 2 | 3% | `release.yml`, `accept.yml` |
+| **TA: test that cannot fail** | partly | 3 | 4% | An earlier issue, an earlier issue |
 | **L: latent defect from an earlier merge** | no | 8 | 12% | 2 root defects (§2.4) × 4 PRs each |
-| **R: reasoning or logic** | no | 7 | 10% | hashchange ordering (#1242), per-mutation `getComputedStyle` (#1258), socket race (#1132), half fix (#1105), unchecked index type (#1140, #1141), sweep firing bug (#1133) |
-| **E: environment the container cannot reproduce** | no | 4 | 6% | CI-runner identity (#1207, 10 red runs), Playwright metadata in the image build (#1296), Chromium path (#1149), GCP's 300-character role description (#1217) |
-| **U: unexplained** (green on rerun, no change) | no | 3 | 4% | #1145, #1229, #1232 |
-| **O: owner input, not a defect** | no | 3 | 4% | design answers recorded (#1226, #1263), adds-only parity (#1216) |
-| **H: hygiene** | no | 1 | 1% | stray sed backup (#1244) |
+| **R: reasoning or logic** | no | 7 | 10% | hashchange ordering, per-mutation `getComputedStyle`, socket race, half fix, unchecked index type, sweep firing bug |
+| **E: environment the container cannot reproduce** | no | 4 | 6% | CI-runner identity (10 red runs), Playwright metadata in the image build, Chromium path, GCP's 300-character role description |
+| **U: unexplained** (green on rerun, no change) | no | 3 | 4% | An earlier issue, an earlier issue |
+| **O: owner input, not a defect** | no | 3 | 4% | design answers recorded, adds-only parity |
+| **H: hygiene** | no | 1 | 1% | stray sed backup |
 | **Total** | | **69** | | **context 40 (58%)**, test adequacy 3, other 26 |
 
 ### 3.2 What the taxonomy decides
@@ -415,7 +415,7 @@ instead of lines. Line coverage is option §8 Q7.
      calls to routes.
    * Feeding `tests_for` of the changed files into the gate and into
      CONTEXT.md covers all 8 T rows.
-   * One caveat: #1141's node tests under `apps/swarm-ui/tests/` would need to
+   * One caveat: an earlier issue's node tests under `apps/swarm-ui/tests/` would need to
      be classified as test files. That is a gap to check in lane CTXQ-H.
 4. **P is the costliest per instance: a whole lane thrown away.**
    * Neither the graph nor the checkout can see it. It needs a live
@@ -700,7 +700,7 @@ workspace opts in (§5.2 call J0).
 
 **The planner's in-flight check is the one structural change.** The sweep
 has plan approval **auto**, so a duplicate plan runs unseen. That is exactly
-what produced #1094 and #1136.
+what produced earlier issues.
 * With layer I in the planner's prompt, the planner can answer NOT_READY
   (`kind: duplicate`, naming the lane).
 * With J5 (opt-in), a duplicate scoring ≥ 0.85 holds an auto-approved plan
@@ -720,8 +720,8 @@ and keep its contract: one fix turn, and publish anyway with a PR section.
    * **vitest files run with `npx vitest run <files>`**, and `tsc --noEmit`
      runs when `apps/swarm-ui` changed.
    * `terraform fmt -check` runs on changed `.tf` files.
-   * This closes T and the vitest and fmt part of G. #1140, #1141, #1113,
-     #1164 and #1217 would each have met their failure in the container.
+   * This closes T and the vitest and fmt part of G. An earlier issue,
+     earlier issues would each have met their failure in the container.
 2. **In-flight re-check (advisory).**
    * Layer I is read again before the rebase.
    * A new overlap since the start adds a line to the PR body and a
@@ -828,7 +828,7 @@ flat shape, so two routers never register the same path.
 ### 5.1 Where Jev runs: the worker process, never the agent, never swarm-api
 
 * **Every Jev call is made by the worker process** (`agent_worker`), with the
-  key resolved by #1297's `jevkey` order: the submitter's confirmed personal
+  key resolved by an earlier issue's `jevkey` order: the submitter's confirmed personal
   key, else the tenant's key, else none.
 * The key file stays in `<attempt>/private/`. **The agent's process tree never
   holds the key**, and it is never put in the agent's environment.
@@ -1152,13 +1152,13 @@ that reopen a file run only after the earlier lane has merged.
 |---|---|---|---|---|
 | **CTXQ-M** | 0 | the §2.6 metrics as a script; reads GitHub and, with credentials, swarm-api | new `scripts/quality-baseline.sh`, new `scripts/lib/quality_metrics.py`, new `tests/unit/scripts/test_quality_metrics.py` | each metric over recorded fixtures (runs, PR bodies, commit authors): cancelled runs are excluded, a main-merge commit is not a hand fix-up, a `## Continuation` is counted once |
 | **CTXQ-H** | 1 | indexer layers H (history and co-change) and R (rules: docs and guards by path, plus cannot-push); the swarm-ui `tests/` node files classified as tests | `images/agent-runtime-indexer/repo-index/repo_graph_shards.py`, new `repo-index/repo_index_history.py`, new `tests/unit/worker/test_repo_index_history.py` | on a fixture repo: a guard that co-changes with refusal additions is linked to `refusals.py`; a doc naming a path is a rule row; the node tests are test edges; the shard cap holds |
-| **CTXQ-S** | 1 | snapshot staging (absorbs KG5); the stored-setting decision (§4.7); `swarm-graph` registered for claude-code and codex; the A/B arm | new `agent_worker/graphstage.py`, `runners/claude_code.py`, `runners/codex.py`, `lifecycle.py` (one call in the attempt setup, beside `jevkey.prepare` once #1297 merges) | staged only for format ≥ 3 and an ancestor sha; `mcp.json` names the server only when staged; arm assignment is deterministic; a staging failure never fails the attempt |
+| **CTXQ-S** | 1 | snapshot staging (absorbs KG5); the stored-setting decision (§4.7); `swarm-graph` registered for claude-code and codex; the A/B arm | new `agent_worker/graphstage.py`, `runners/claude_code.py`, `runners/codex.py`, `lifecycle.py` (one call in the attempt setup, beside `jevkey.prepare` once an earlier issue merges) | staged only for format ≥ 3 and an ancestor sha; `mcp.json` names the server only when staged; arm assignment is deterministic; a staging failure never fails the attempt |
 | **CTXQ-P** | 1 | pack builder: retrieval, local ranking, quotas, CONTEXT.md and `pack.json`, the prompt line, per-type checklists | new `agent_worker/contextpack/` package, `runners/cliagent.py` | per type, the seeds produce the expected rows on a fixture snapshot; in-flight and cannot-push rows are never cut; the cap holds; stale rows are marked; the file is outside the checkout and never committed |
 | **CTXQ-T** | 1 | graphmcp tools `similar_changes` and `rules_for` | `agent_worker/graphmcp/tools.py`, `graphmcp/snapshot.py` | the schema budget stays under 2k tokens; answers stay under 4 KiB with paging; zero rows is `UNKNOWN` |
 | **CTXQ-G** | 1 | gate additions: graph-selected pytest, vitest, `tsc`, `terraform fmt`; test reach; self-check presence; the advisory PR section | `agent_worker/prepublish.py` | §3's T and G rows replayed as fixtures (a changed `.tsx` selects its vitest file; a changed `.tf` runs fmt); a missing tool is `skipped`, never sent to the agent as a failure |
 | **CTXQ-I** | 2 | in-flight route and the `in_flight` remote tool | new `swarm_api/attemptcontext.py`, new `swarm_api/routes/attemptcontext.py`, `swarm_api/main.py` (router line), `agent_worker/graphmcp/remote.py` (new) | unproven is 403; fenced is 409; another tenant's lane is never listed; no network gives `UNKNOWN` |
-| **CTXQ-PL** | 2 | planner: layer I and H in `plancontext`; a NOT_READY `duplicate` kind | `swarm_api/plancontext.py`, `swarm_api/issueruns.py` | #1094, #1136 and #1080 replayed as fixtures: the planner prompt lists the colliding lane; the 24 KiB allowance holds |
-| **CTXQ-RV** | 2 | review and fix: callers and tests outside the diff, the sibling idiom, earlier fixes of the same test (H) | `swarm_api/reviewcontext.py`, `swarm_api/issueci.py` | #1181's sibling sort is listed; the second time-bomb fixer is shown the first fix |
+| **CTXQ-PL** | 2 | planner: layer I and H in `plancontext`; a NOT_READY `duplicate` kind | `swarm_api/plancontext.py`, `swarm_api/issueruns.py` | An earlier issue, earlier issues replayed as fixtures: the planner prompt lists the colliding lane; the 24 KiB allowance holds |
+| **CTXQ-RV** | 2 | review and fix: callers and tests outside the diff, the sibling idiom, earlier fixes of the same test (H) | `swarm_api/reviewcontext.py`, `swarm_api/issueci.py` | An earlier issue's sibling sort is listed; the second time-bomb fixer is shown the first fix |
 | **CTXQ-SET** | 3 | settings API: `workspace_settings/{tenant}.code_intelligence` (owner decision 2026-10-14, §4.7), repository `context` override | new `swarm_api/codeintel.py`, new `swarm_api/routes/codeintel.py`, `swarm_api/main.py` (router line), `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only the owner or an admin sets the workspace default (a member 403, another workspace 404); `inherit` clears; an audit row is written in the same transaction, and a failed write writes neither; `judgment_backend` and `merge` are unchanged by a write |
 | **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`; `App.tsx` and `Spine.tsx` for the new `/settings/workspace` page and its link), the issue forms' "Where" list and `test_issue_forms.py` | vitest: the toggle shows off by default and says what leaves the platform; only an owner or admin sees it enabled; the repository tab writes on/off/inherit; the issue-forms test follows the new nav entry |
 | **CTXQ-J** | 3 | Jev client in the worker: §5.2 shapes, §5.4 redaction, §5.5 breaker, budget, audit | new `agent_worker/judge/` package | fake Jev: timeout, 429 and malformed answers fall back; a credential-shaped excerpt (built at runtime) is dropped, not masked; the denied paths send names only; no key, no call |
@@ -1185,7 +1185,7 @@ on it.
   field of the existing `workspace_settings/{tenant_id}` document (§4.7), so
   no new document shape and no issue;
 * the Jev data-flow decision record (what §5.4 sends) for the security epic
-  #476's review, because credentials and tenant isolation get a review.
+  an earlier issue's review, because credentials and tenant isolation get a review.
 
 ---
 
@@ -1230,7 +1230,7 @@ Recommendation first in each. They are also in this lane's `questions.json`.
 **Q6. Whether Jev is a tool the agent can call mid-run.**
 * **A. No. The worker calls Jev at fixed points, and the key never enters the
   agent's process tree.** *Recommended.*
-* B. Yes, as a `jev` MCP tool, as #1297 does for the live browser. That puts
+* B. Yes, as a `jev` MCP tool, as an earlier issue does for the live browser. That puts
   the key one process away from the agent.
 
 **Q7. Line coverage.**
@@ -1261,12 +1261,12 @@ Run 2026-10-14 against the public repository, with no credentials.
 ```bash
 # PR heads and main, history only
 git init -q m && cd m
-git fetch -q --filter=blob:none https://github.com/bogdan-alexandrescu/SwarmCloud.git \
+git fetch -q --filter=blob:none https://github.com/example-org/example-repo.git \
   '+refs/heads/main:refs/remotes/main' '+refs/pull/*/head:refs/pr/*'
 
 # the last 300 closed PRs (3 pages); keep the 150 newest merged swarm/* lanes
 for p in 1 2 3; do
-  curl -s "https://api.github.com/repos/bogdan-alexandrescu/SwarmCloud/pulls?state=closed&per_page=100&page=$p&sort=created&direction=desc" >"closed$p.json"
+  curl -s "https://api.github.com/repos/example-org/example-repo/pulls?state=closed&per_page=100&page=$p&sort=created&direction=desc" >"closed$p.json"
 done
 jq -s '[add[] | select(.merged_at != null and (.head.ref | startswith("swarm/")))]
        | sort_by(.number) | reverse | .[:150]' closed*.json >lanes150.json
@@ -1278,7 +1278,7 @@ jq -s '[add[] | select(.merged_at != null and (.head.ref | startswith("swarm/"))
 
 # M1-M3: join runs to PRs on head_branch; drop cancelled, skipped and null conclusions
 # M4: grep 'Review verdict: \*\*NOT_YET' in each PR body
-# M6: git log --no-merges refs/remotes/main..refs/pr/N, author name bogdan-alexandrescu
+# M6: git log --no-merges refs/remotes/main..refs/pr/N, author name example-org
 # M8: PR bodies with '<!-- swarmcloud-issue-run:', plus the closing comment
 ```
 

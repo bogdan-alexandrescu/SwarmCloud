@@ -7,7 +7,7 @@ community layer and its issue and lane overlays (§4.7), and its acceptance is
 The page is [`docs/web-ui/mockups/graph-overlays.html`](../web-ui/mockups/graph-overlays.html).
 It has four variants, each drawn in both of the repository graph's views:
 **Structure** (the console's SVG) and **Network** (vis-network). GR3 built both
-views in PR #929, which was not on main at `2887032` when this was drawn
+views in an earlier pull request, which was not on main at `2887032` when this was drawn
 (2026-10-09). Each variant has a 1280px desktop frame and a 390px phone frame,
 in light and dark. The frames are clickable: the layer toggles, Structure /
 Network, opening a region, selecting a lane, and the matrix cells all work.
@@ -41,7 +41,7 @@ answer.
     name);
   * a second, invented PR.
 
-  #929 is real, and so is its file list.
+  an earlier issue is real, and so is its file list.
 * **The Network frames are SVG, not vis-network.** They are drawn with a
   precomputed force layout so that they look like GR3's canvas. The costs
   below were measured with vis-network itself.
@@ -54,7 +54,7 @@ without drawing a hairball. It is also the shape both design notes already
 chose:
 
 * knowledge-graph.md §4.7 asks to "collapse a community to a node";
-* [graph-rendering.md](https://github.com/bogdan-alexandrescu/SwarmCloud/blob/gfy-graph-rendering/docs/design/graph-rendering.md)
+* [graph-rendering.md](https://github.com/example-org/example-repo/blob/gfy-graph-rendering/docs/design/graph-rendering.md)
   §3.4 says the explorer "must start aggregated and open by focus".
 
 The communities that hold a declared file are that focus. Variant 2 spends no
@@ -222,5 +222,5 @@ The same questions, with options, are in the run's `questions.json`.
   Chromium in a container, not a laptop GPU. Read them as relative.
 * **The bundle figures.** These are a proxy plus an estimate. No TSX was
   written.
-* **The live state of #929.** It was read from its branch, not from GitHub:
+* **The live state of an earlier issue.** It was read from its branch, not from GitHub:
   this container has no GitHub credentials.

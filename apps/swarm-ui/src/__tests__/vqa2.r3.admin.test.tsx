@@ -169,7 +169,7 @@ describe('V026, V186: the key is whole unless the column cannot hold it, then cu
       return Number(parts.length === 1 ? parts[0] : parts[1])
     }
     // ANY SHRINK FACTOR ABOVE 0 GIVES THE KEY A SHARE OF THE OVERFLOW WHILE
-    // THE HEAD IS STILL WIDE (V186): at 1440, 0.05px of `u-bogdan@`, which
+    // THE HEAD IS STILL WIDE (V186): at 1440, 0.05px of `u-owner@`, which
     // drew `u-bogda…` with client 72 == scroll 72 (Chromium, 2026-10-16).
     // MUTATION: `flex: 0 1 auto` on the key (the first fix for V026) reads 1.
     expect(shrink(key)).toBe(0)
@@ -216,7 +216,7 @@ describe('V079, V186: every Tenants column is sized to what it holds at 1440', (
     // 20px of their word. MUTATION: Status back to 10% (105px).
     expect((pct('status') / 100) * TABLE - NEEDS.status!).toBeLessThan(20)
     expect((pct('kind') / 100) * TABLE - NEEDS.kind!).toBeLessThan(20)
-    // The Identity keeps its key whole: 2ch of prefix, `…u-bogdan@…` (72px)
+    // The Identity keeps its key whole: 2ch of prefix, `…u-owner@…` (72px)
     // and 2ch of domain beside its copy control (V186: `sw… u-bogda… s…`).
     expect((pct('identity') / 100) * TABLE).toBeGreaterThanOrEqual(16 + 72 + 16 + 8 + 46 + 20)
     // A long tenant id still breaks at its hyphens only (V079).

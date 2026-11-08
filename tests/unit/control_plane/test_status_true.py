@@ -1,6 +1,6 @@
 """Status reads stay true while a merge step's CI-fix round runs (STATUS-TRUE, part of #1914).
 
-Owner decision 2026-10-22 (BGD), measured on `wf_15160fca1d07438ab594`
+Owner decision 2026-10-22 (the owner), measured on `wf_15160fca1d07438ab594`
 (QAFIX4-RUNS, PR 1905) 01:25-01:35Z: `ci-gate` concluded FAILURE, the merge
 step's wake tick submitted round `ci-fix:1` and appended it to the lane's
 workflow, and yet

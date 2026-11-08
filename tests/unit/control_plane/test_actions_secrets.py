@@ -1,6 +1,6 @@
 """GitHub Actions secrets, written write-only (SSC-ACTIONS-API, part of #2158).
 
-Design: docs/design/secrets-scopes.md §3 and §6.2, with BGD's answers in its
+Design: docs/design/secrets-scopes.md §3 and §6.2, with the owner's answers in its
 §11: the EXISTING App mints (Q3), SwarmCloud never creates, edits or deletes
 an environment (Q4), swarm-api seals with PyNaCl (Q5), and the writer is a
 workspace manager whom GitHub calls admin of the repository (Q6).
@@ -385,7 +385,7 @@ def test_the_permission_table_asks_no_more_than_the_writes_need():
     assert asked <= {("secrets", "write"), ("secrets", "read"), ("environments", "write"),
                      ("environments", "read"), ("actions", "read")}
     assert all(len(perms) == 1 for perms in ACTIONS_PERMISSIONS.values())
-    # What the runbook asks BGD to grant is exactly the writes' permissions,
+    # What the runbook asks the owner to grant is exactly the writes' permissions,
     # and the rule read needs nothing beyond what REQUIRED already asks.
     assert {(r.permission, r.access) for r in ACTIONS_SECRETS_REQUIREMENTS} == \
         {("secrets", "write"), ("environments", "write")}

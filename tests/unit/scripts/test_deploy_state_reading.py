@@ -13,16 +13,20 @@ H18); these tests hold the doc to that reading:
   * the 2026-09-24 reading survives as a dated "previous reading" note, which
     CLAUDE.md's "Issues" section still quotes;
   * the two states the triage asked to be read are recorded: `swarm-authprobe`
-    and the `swarm-issue-sweep-u-bogdan` scheduler job, both absent.
+    and the tenant's `swarm-issue-sweep-<tenant>` scheduler job, both absent.
 
 Offline: reads only the markdown file.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(placeholders)
 DOC = REPO / "docs" / "DEPLOY_STATE.md"
 
 READ_DATE = "2026-10-27"
@@ -79,5 +83,5 @@ def test_swarm_authprobe_and_the_issue_sweep_job_are_recorded_as_read():
     assert "`swarm-authprobe` is absent" in authprobe, authprobe
     assert "Cannot find service [swarm-authprobe]" in authprobe, authprobe
     ticks = _section(text, "## Scheduler ticks")
-    assert "`swarm-issue-sweep-u-bogdan` is absent" in ticks, ticks
+    assert f"`swarm-issue-sweep-{placeholders.TENANT}` is absent" in ticks, ticks
     assert "NOT_FOUND" in ticks, ticks

@@ -7,7 +7,7 @@ you are landing the GKE dispatch fix for the first time.
 
 **What it changes.** One tenant namespace on the swarm's own Autopilot cluster
 (`swarm-autopilot`). Nothing outside it. If any command here mentions
-`agents-staging`, `agents-staging-vpc` or anything else on the deny-list in
+`peer-cluster`, `peer-vpc` or anything else on the deny-list in
 `scripts/lib/common.sh`, stop — you are on the wrong cluster and the guards in
 `kubernetes/apply.sh` should already have refused.
 
@@ -170,7 +170,7 @@ path the scheduler actually uses. Confirm the number against the account itself:
 
 ```bash
 gcloud iam service-accounts describe \
-  swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com \
+  swarm-scheduler@example-project.iam.gserviceaccount.com \
   --format='value(uniqueId)'
 ```
 
@@ -187,7 +187,7 @@ Then authorisation, asked as the scheduler rather than as you:
 ```bash
 kubectl auth can-i create jobs \
   --namespace swarm-tenant-eng \
-  --as swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com
+  --as swarm-scheduler@example-project.iam.gserviceaccount.com
 ```
 
 Expect `yes`. This needs impersonation rights on your own account; if it comes
@@ -351,7 +351,7 @@ kubectl describe job -n swarm-tenant-eng <job-name>
 * **Applying to every tenant.** There is no bulk target; run step 2 per tenant.
 * **Tenants provisioned before 2026-09-24.** Their tenant document may carry
   `namespace: swarm-<id>`, the old spelling. Until 2026-10-11 the dispatcher
-  *preferred* that over its own template unchecked, which is how u-bogdan's
+  *preferred* that over its own template unchecked, which is how example-tenant's
   agents went to a namespace that did not exist. Since then the scheduler and
   the reconciler ignore a stored value outside `swarm-tenant-`, use the derived
   name, and log `tenant_namespace_mismatch` at ERROR (the

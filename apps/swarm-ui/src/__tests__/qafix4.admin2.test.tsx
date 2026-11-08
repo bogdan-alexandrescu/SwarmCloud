@@ -3,7 +3,7 @@
 // 2026-10-21). Each case asserts what the operator saw as wrong, through the
 // cascade (`painted`) or the rendered markup.
 //
-//   admin-005  a pool at its ceiling (anthropic · u-bogdan, 5 of 5) had no
+//   admin-005  a pool at its ceiling (anthropic · u-owner, 5 of 5) had no
 //              mark; decided 2026-10-22 (Console Design Calls 2, c04): a
 //              neutral 'full' tag after edit, where 'over ceiling' goes
 //   admin-004  'N /M' -- `6 /10` -- drew its figure flush left in a 6ch slot,
@@ -107,8 +107,8 @@ afterEach(() => {
 describe('admin-005 (c04): a pool at its ceiling is marked full, neutrally', () => {
   it("tags 5 of 5 'full' after edit, titled with the row's own numbers", async () => {
     viewport(1440)
-    await limits([pool('provider:anthropic:tenant:u-bogdan', { active: 5, effective_limit: 5, available: 0 })])
-    const full = tags('provider:anthropic:tenant:u-bogdan').get('full')
+    await limits([pool('provider:anthropic:tenant:u-owner', { active: 5, effective_limit: 5, available: 0 })])
+    const full = tags('provider:anthropic:tenant:u-owner').get('full')
     // MUTATION: drop the `active === effective_limit` tag from PoolRow: a pool
     // at 5 of 5 shows nothing after edit again.
     expect(full).toBeDefined()
@@ -214,16 +214,16 @@ describe('admin-004: the in-use and ceiling numerals line up, and N /M stays who
 describe('admin-003: a pool id never breaks right after a colon', () => {
   it('holds each kind:name pair whole and cuts one too long, the whole id on its title', async () => {
     viewport(1440)
-    const id = 'provider:anthropic:tenant:u-bogdan'
+    const id = 'provider:anthropic:tenant:u-owner'
     await limits([pool(id)])
     const sub = document.getElementById(`limit-${id}`)!.querySelector<HTMLElement>('th .ctl-sub')!
     const segs = [...sub.querySelectorAll('.adm-key-seg')]
-    expect(segs.map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-bogdan'])
+    expect(segs.map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-owner'])
     for (const env of [WIDE, PHONE]) {
       for (const s of segs) {
         // MUTATION: put `white-space: normal` with `overflow-wrap: anywhere`
         // back on `.adm-key-seg`: a pair wider than its line breaks anywhere
-        // in itself, `tenant:` / `u-bogdan` included.
+        // in itself, `tenant:` / `u-owner` included.
         expect(painted(s, 'white-space', env)).toBe('nowrap')
         expect(painted(s, 'overflow-wrap', env) ?? 'normal').not.toMatch(/anywhere|break-word/)
         // A pair too long for the cell is cut, never run past the card (V160).
@@ -249,7 +249,7 @@ describe('limits-header: the scroller holding .adm-ceilings clears the bar, filt
     // MUTATION: drop the `.ctl-scroll:has(.adm-ceilings …)` scroll-padding
     // rule: a row scrolled into view stops under the filter and the head.
     expect(painted(head.closest('.ctl-scroll')!, 'scroll-padding-top', WIDE)).toBe('calc(48px + 60px + var(--row-h))')
-    // MUTATION: add `scroll-snap-type` to the scroller: BGD chose no snapping.
+    // MUTATION: add `scroll-snap-type` to the scroller: owner chose no snapping.
     expect(painted(head.closest('.ctl-scroll')!, 'scroll-snap-type', WIDE)).toBeNull()
   })
 })

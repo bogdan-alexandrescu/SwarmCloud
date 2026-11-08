@@ -1,5 +1,5 @@
 /**
- * WHERE A PLAN CHANGES, DRAWN (the approvals brief, BGD 6 November 2026): the
+ * WHERE A PLAN CHANGES, DRAWN (the approvals brief, owner 6 November 2026): the
  * files the plan changes, boxed by area in the middle, what calls them on the
  * left and what tests them on the right, each edge labelled. Picking a file
  * lights its neighbours and opens its one-line what, what calls it, what it

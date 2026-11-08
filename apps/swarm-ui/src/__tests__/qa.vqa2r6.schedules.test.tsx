@@ -490,7 +490,7 @@ describe('the approvals inbox (V169, V248, V249)', () => {
   // Reject… form gave way to the reason box beside Reject, and its typed
   // confirmation still takes focus.
   it('V169: holds the decision bar in view while the evidence scrolls', async () => {
-    // A plan reads as its brief now, its decision in the header card (BGD,
+    // A plan reads as its brief now, its decision in the header card (owner,
     // 6 November 2026), so the pinned bar is measured on a run's page.
     // MUTATION: drop the sticky `.ad-bar` rule.
     await mountApprovals(

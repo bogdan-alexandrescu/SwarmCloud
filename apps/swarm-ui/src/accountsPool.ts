@@ -1,5 +1,5 @@
 /**
- * CAPACITY › ACCOUNTS, ANSWER FIRST (#2222, proposal A, BGD 2026-10-24).
+ * CAPACITY › ACCOUNTS, ANSWER FIRST (#2222, proposal A, owner 2026-10-24).
  *
  * The pure half of the page: which accounts can take a new agent, in what
  * order the rest free up, what the waiting list says, and when the pool goes
@@ -48,7 +48,7 @@ export interface CapBlock {
   cap: number
   max_agents: number
 }
-/** Never measured and already holding its one agent (BGD, "One until measured"). */
+/** Never measured and already holding its one agent (owner, "One until measured"). */
 export interface FirstReadingBlock {
   first_reading: 'pending' | string
   assigned: number
@@ -114,7 +114,7 @@ export function isDuplicateBlock(b: BlockEntry): b is DuplicateBlock {
 // ---------------------------------------------------------------------------
 
 /**
- * THE FLOORS AS DEPLOYED (BGD, 2026-10-24 09:16Z; PR 2223): the share of a
+ * THE FLOORS AS DEPLOYED (owner, 2026-10-24 09:16Z; PR 2223): the share of a
  * window that must stay LEFT for the account to take a new agent.
  * `WINDOW_FLOORS` and `DEFAULT_ASSIGN_FLOOR` in quota_broker/accounts.py are
  * the source. The broker serves a floor only inside a `blocked_by` entry, so a
@@ -184,11 +184,11 @@ export function canTake(a: PoolAccount, scope: string | null): boolean | null {
 }
 
 // ---------------------------------------------------------------------------
-// The ranking: "Known clock first" (BGD, 2026-10-24 17:33Z)
+// The ranking: "Known clock first" (owner, 2026-10-24 17:33Z)
 // ---------------------------------------------------------------------------
 
 /**
- * The four groups, in rank order. BGD decided the first three: Can take now ->
+ * The four groups, in rank order. owner decided the first three: Can take now ->
  * Clears at a known time (soonest first) -> Frees when an agent finishes (full,
  * no clock). The fourth holds what none of the three can: an account a PERSON
  * holds (paused, draining, signed out, skipped here, a withheld duplicate) or
@@ -428,7 +428,7 @@ export interface PoolWaiting {
 }
 
 /**
- * The waiting count, "Agents, steps as a note" (BGD): the agents that wait on
+ * The waiting count, "Agents, steps as a note" (owner): the agents that wait on
  * the pool, and the later steps of THEIR workflows that wait on them -- the 32
  * DEPENDENCY_INCOMPLETE parks #2222 counted beside the 28.
  */
@@ -446,7 +446,7 @@ export function poolWaiting(tasks: ReadonlyArray<Pick<Task, 'state' | 'waiting' 
 }
 
 // ---------------------------------------------------------------------------
-// The forecast: "From today's readings" (BGD, 2026-10-24 17:33Z)
+// The forecast: "From today's readings" (owner, 2026-10-24 17:33Z)
 // ---------------------------------------------------------------------------
 
 /**
@@ -614,7 +614,7 @@ export function accountPaceOf(a: PoolAccount, now: number): AccountPace | null {
 /**
  * The detail's head chip: `Can take a new agent · 6 of 6 slots free`,
  * `Full · 6 of 6 agents`, `Cannot take a new agent`, or null when the broker
- * does not say. A never-measured account counts one slot (BGD, "One until
+ * does not say. A never-measured account counts one slot (owner, "One until
  * measured").
  */
 export function slotsLine(a: PoolAccount, scope: string | null): string | null {

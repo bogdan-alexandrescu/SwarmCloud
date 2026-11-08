@@ -1,6 +1,6 @@
 """QA flows that write say what they write, behind a workspace switch (part of #2688).
 
-BGD, 2026-11-05, "declared writes plus a switch, on by default"
+the owner, 2026-11-05, "declared writes plus a switch, on by default"
 (docs/design/qa-environments.md §6):
 
   * a flow with `mutating: true` carries `writes`, one plain sentence of at

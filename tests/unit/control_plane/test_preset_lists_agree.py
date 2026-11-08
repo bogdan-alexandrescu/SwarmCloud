@@ -95,7 +95,7 @@ def test_the_capture_tools_to_the_end_presets_are_the_gates() -> None:
 
 
 def test_phone_380_is_in_every_list_at_380_by_800() -> None:
-    """BGD, 2026-10-26: AI Studio's phone mock-up frame."""
+    """the owner, 2026-10-26: A peer application's phone mock-up frame."""
     assert (PRESETS["phone-380"].width, PRESETS["phone-380"].height) == (380, 800)
     assert "phone-380" in qaspec.PRESETS
     assert {"name": "phone-380", "width": 380, "height": 800, "scale": 3.0,

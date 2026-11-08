@@ -167,7 +167,7 @@ rolebinding`, and dispatch still failed — cause 6 was inside this very file.
 but with an IAM condition —
 `resource.name.startsWith("projects/<p>/locations/<l>/clusters/swarm-autopilot")`
 — added so that a project-level grant in a shared project could not reach
-`agents-staging`, another team's live cluster.
+`peer-cluster`, another team's live cluster.
 
 The intent is right and the condition stays. What it cannot do is authorise a
 **namespaced** Kubernetes request: the resource in that check is the namespaced
@@ -233,7 +233,7 @@ jobs.batch is forbidden: User "117405034245659033603" cannot create
 resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
 
 $ gcloud iam service-accounts describe \
-    swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com \
+    swarm-scheduler@example-project.iam.gserviceaccount.com \
     --format='value(uniqueId)'
 117405034245659033603
 ```
@@ -358,10 +358,10 @@ scale-down. It is now on the pod template too. The contract request to document
 `RunnerProfile.command` as child argv is request 18 in
 [contract-change-requests.md](../contract-change-requests.md). The owner
 accepted it on 2026-09-24 in its stronger form: the field is now
-`RunnerProfile.runner_argv` (PR #44). This record keeps the old name where it
+`RunnerProfile.runner_argv`. This record keeps the old name where it
 describes what the code did at the time.
 
-*Two things the first version of the fix missed (review of PR #31).*
+*Two things the first version of the fix missed (review of the runner_argv fix).*
 
 * **Jobs created before the fix kept the override.** Removing `command=` from
   `_build_job` changes only Jobs created afterwards. `ensure_job` returned as

@@ -1,6 +1,6 @@
 """swarm-api decides a required check by the latest run of EACH event, as the merge step does (CHECK-RULE; part of #1999 and #1778).
 
-Owner decision, BGD 2026-10-22: (1) a required check is decided by the
+Owner decision, the owner 2026-10-22: (1) a required check is decided by the
 LATEST run of each event that ran it (push, pull_request, any other); a
 re-run replaces the earlier runs of its own event, and every event's latest
 run must be green, so a red push run is never outvoted by a green
@@ -213,7 +213,7 @@ def test_without_actions_read_runs_are_grouped_by_check_suite(status):
 # ---------------------------------------------------------------------------
 # No required check: every check, by the same rule (CHECK-RULE-2)
 # ---------------------------------------------------------------------------
-# BGD, 2026-10-22: "Yes, one rule for every check." `evaluate` with no
+# the owner, 2026-10-22: "Yes, one rule for every check." `evaluate` with no
 # required set judged EVERY run, so a superseded failure, or a superseded run
 # still in progress, held the reading. Now each check (name and App) is judged
 # by the latest run of each event, with `other_check_state`; what it lists
@@ -274,7 +274,7 @@ def test_no_required_checks_of_two_apps_with_one_name_are_judged_apart():
 # A run GitHub concluded but left `in_progress` (CHECK-STUCK, part of #2031)
 # ---------------------------------------------------------------------------
 #
-# BGD, 2026-10-23: a check run that carries a conclusion AND a completed_at
+# the owner, 2026-10-23: a check run that carries a conclusion AND a completed_at
 # is judged by its conclusion, whatever `status` says. PR 2006's `secret
 # scan` read `in_progress` with `conclusion: success` and a `completed_at`
 # while its workflow run was completed/success, and the merge step waited

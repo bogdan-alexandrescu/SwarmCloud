@@ -55,7 +55,7 @@ class VoicePoolBroker(FakePool):
             raise self.pools_error
         row = self.accounts[account_id]
         row["pools"] = list(pools)
-        row["voice_it_people"] = ["bogdan@saga.xyz"] if "voice-it" in pools else []
+        row["voice_it_people"] = ["owner@example.com"] if "voice-it" in pools else []
         row["voice_it_holder"] = None
         return {"account": dict(row)}
 
@@ -203,7 +203,7 @@ def test_an_admin_moves_an_account_forwarding_confirm_label_and_it_is_audited(cl
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["account"]["pools"] == ["workspace", "voice-it"]
-    assert body["account"]["voice_it_people"] == ["bogdan@saga.xyz"]
+    assert body["account"]["voice_it_people"] == ["owner@example.com"]
     assert ("set_pools", "eng:primary", ("workspace", "voice-it"), "primary") in broker.calls
     (row,) = [d for d in db.dump("admin_audit/").values()
               if d.get("action") == api_accounts.ACCOUNT_POOLS_AUDIT_ACTION]
@@ -256,7 +256,7 @@ def test_an_empty_pools_list_is_422_before_the_broker(client, broker):
 
 def _broker(status: int, payload) -> tuple[BrokerClient, list[dict]]:
     transport, seen = _recording_transport(status, payload)
-    return BrokerClient(base_url="https://broker.internal", audience="https://broker.aud",
+    return BrokerClient(base_url="https://broker.internal", audience="https://broker.example",
                         tokens=StaticIdToken(secrets.token_hex(16)), transport=transport), seen
 
 

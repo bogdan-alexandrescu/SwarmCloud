@@ -1,11 +1,11 @@
 /**
- * THE WORKFLOW PAGE'S NEEDS YOU CARD AND ITS QUESTIONS SECTION (BGD, 6
+ * THE WORKFLOW PAGE'S NEEDS YOU CARD AND ITS QUESTIONS SECTION (owner, 6
  * November 2026: "We need to have a way to act on questions in the workflow
  * page", and "lets have the needs you card start off as a one line collapsed
  * section ... it expands when the user clicks on it, one more click on the
  * header and it collapses back again into a row"; part of #2688).
  *
- * `WorkflowNeedsCard` is ONE ROW on every mount (BGD's pick: nothing is
+ * `WorkflowNeedsCard` is ONE ROW on every mount (the owner's pick: nothing is
  * remembered): "Needs you" and one mark per kind waiting, each its glyph and
  * count, its name the tooltip. The row is the header's button
  * (`aria-expanded`); pressed, the items open under it, each with its action:
@@ -100,7 +100,7 @@ export function WorkflowNeedsCard({
   /** An action was accepted (a step re-run): the page reads again. */
   onChanged?: () => void
 }) {
-  // ALWAYS STARTS COLLAPSED (BGD's pick, 6 November 2026): never stored.
+  // ALWAYS STARTS COLLAPSED (the owner's pick, 6 November 2026): never stored.
   const [open, setOpen] = useState(false)
   if (items.length === 0) return null
   const kinds = items.map((i) => cardKindOf(i, taskById))

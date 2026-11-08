@@ -2,7 +2,7 @@
 
 **Status: measured 3 November 2026; this is a spike. No shipped image changes here.** The owner's agent plugins plan
 (`docs/design/agent-plugins.md`, on the open branch `agent-plugins-plan`) bakes gstack into the agent images at a
-pinned version (BGD, 3 November 2026). Before any image changes, the plan asks how big gstack is, what its offered
+pinned version (the owner, 3 November 2026). Before any image changes, the plan asks how big gstack is, what its offered
 skills need, and what breaks when it runs headless and unattended from a read-only install with `HOME` in the
 attempt's workspace. This page records what was measured, how it was measured, what was not measured, and the build
 it supports.

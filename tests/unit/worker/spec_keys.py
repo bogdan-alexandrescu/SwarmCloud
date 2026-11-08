@@ -23,7 +23,7 @@ from swarm_common import specsign
 
 #: The crypto key the worker trusts versions of (`SPEC_SIGNING_KEY`).
 SIGNING_KEY = (
-    "projects/swarm-test/locations/us-central1/keyRings/swarm-test-specs/cryptoKeys/step-spec"
+    "projects/example-project/locations/us-central1/keyRings/swarm-test-specs/cryptoKeys/step-spec"
 )
 #: The one enabled version, by its full resource name.
 KEY_VERSION = f"{SIGNING_KEY}/cryptoKeyVersions/1"

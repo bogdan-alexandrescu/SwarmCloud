@@ -1,6 +1,6 @@
 # Managed plugins: any Claude Code plugin added, configured, updated and removed from the console
 
-**Status: design, 6 November 2026. Nothing here is built.** Part of #2688. It extends
+**Status: design, 6 November 2026. Nothing here is built.** Part of the Day One install program. It extends
 [agent-plugins.md](agent-plugins.md) (the per-step `plugins` field, as built) from a catalogue written in code and
 baked into the images to a catalogue that admins manage from the console. Every fact below was read on `main` at
 `33861db` on 6 November 2026; files are named, lines are not, because they move. Every question that is the owner's
@@ -9,7 +9,7 @@ depends on an answer it says "recommended, pending Qn" and never treats it as de
 
 ## The ask
 
-The owner (BGD) asked on 6 November 2026, at about 01:18 and 01:20 UTC, for "a really well built and all inclusive
+The owner (the owner) asked on 6 November 2026, at about 01:18 and 01:20 UTC, for "a really well built and all inclusive
 way to add plugins and skills directly from the Console UI", "super generic so it supports any plugin and allows
 customization where needed depending on the plugin", "add and remove, basically fully managed plugins directly from
 console", proven by installing and configuring jev-belay and jev-enforce. His answers, at about 01:30 UTC, which this
@@ -688,9 +688,9 @@ in the console. Whether Admin › Setup offers an optional "add a plugin" step i
    `requires`: `node >= 20`, host `api.typesafe.ai`; a declared secret `TYPESAFE_API_KEY` and a declared value
    `JEV_BELAY_CHECK`. The test asserts the intake's `belay.mjs` sha256 equals the file `tests/unit/worker/
    test_quality_gates.py` already pins.
-2. **jev-enforce 1.1.1-bgd.3 as an upload.** The owner's fork of `erkamyaman/jev-enforce`, on no remote, uploaded as
+2. **jev-enforce 1.1.1-owner.3 as an upload.** The owner's fork of `erkamyaman/jev-enforce`, on no remote, uploaded as
    a `.tar.gz` by a workspace admin as a **workspace** plugin. The admin's overlay: `plugin` (name `jev-enforce`,
-   version `1.1.1-bgd.3`); hooks `Stop` → `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js hook stop` and `PostToolUse`
+   version `1.1.1-owner.3`); hooks `Stop` → `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js hook stop` and `PostToolUse`
    matching `Edit|Write|MultiEdit` → `... hook post-edit`, 30 s each; declared settings `JEV_ENFORCE_RULES_ONLY`
    (boolean), `JEV_ENFORCE_MODE` (`end`), a **file** setting `JEV_ENFORCE_RULES_FILE` (the rules file, entered in the
    form), and the secret `TYPESAFE_API_KEY`. The intake refuses the upload if its `package.json` lists dependencies
@@ -733,7 +733,7 @@ lane keeps the prose guard's count where it is or lower, explanations behind (i)
 | 10d | **Console: the builder** (defaults as chips with "off for this step", added managed plugins, non-secret overrides) | `apps/swarm-ui/src/PluginSheet.tsx`, `SubmitWorkflow.tsx`, `types.ts` (plugin types only) | 7, **the mock-ups** | |
 | 10e | **Console: shared wiring** (routes, API calls, navigation) | `apps/swarm-ui/src/api.ts` (plugin calls only), `App.tsx`, `Spine.tsx` | 10a-10d's shapes agreed | |
 | 11 | **Garbage collection and audit views** | `apps/reconciler/reconciler/plugingc.py` (new) | 5, 8 | §9.3 |
-| 12 | **The test** | `scripts/smoke-managed-plugins.sh` (new), `tests/smoke/managed_plugins/` (new) | 8, 10a-10d, 11; and the owner's jev-enforce 1.1.1-bgd.3 archive, which is on no remote: he uploads it through Admin › Plugins himself (the step that proves the upload path), and the smoke reads the stored version | §16 against a deployed environment |
+| 12 | **The test** | `scripts/smoke-managed-plugins.sh` (new), `tests/smoke/managed_plugins/` (new) | 8, 10a-10d, 11; and the owner's jev-enforce 1.1.1-owner.3 archive, which is on no remote: he uploads it through Admin › Plugins himself (the step that proves the upload path), and the smoke reads the stored version | §16 against a deployed environment |
 
 Two lanes never edit the same file: 7 owns `schemas.py` and `service.py` for this wave, 8 owns `agent_worker/plugins.py`,
 10e alone touches `App.tsx`, `Spine.tsx` and `api.ts` (the other console lanes export their pages and calls for it).

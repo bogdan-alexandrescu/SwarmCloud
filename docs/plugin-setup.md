@@ -3,7 +3,7 @@
 The `sc` Claude Code plugin is a **client**, like `gh` or `kubectl`: you point
 it at *your* SwarmCloud deployment, and it signs you in there as yourself. It
 carries no deployment of its own. Until 2026-09-25 it did — it found
-`https://swarm.saga.xyz` by reading this repository's Terraform variables, so
+`https://swarm.example.com` by reading this repository's Terraform variables, so
 everyone who installed it was pointed at this deployment's cluster — and this page
 describes what replaced that.
 
@@ -35,7 +35,7 @@ one-time step for this repository's deployment, and the same shape for any other
 In a Claude Code session:
 
 ```text
-/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin marketplace add example-org/example-repo
 /plugin install sc@swarmcloud
 ```
 
@@ -88,7 +88,7 @@ refresh token is kept, and each new ID token is minted from it silently.
 `sc` is a console script of this repository's `swarm-mcp` package, so outside a
 checkout spell it `uv run --directory <path to a checkout> sc login`, or run it
 from the same package the plugin's server fetches:
-`uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
+`uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
 
 To change any of the three values later: `/plugin configure sc@swarmcloud`.
 The shell command `claude plugin install` never prompts; pass
@@ -169,7 +169,7 @@ there is no browser to sign in with:
 
 ```bash
 export SWARM_URL=https://swarm.example.com
-export SWARM_IMPERSONATE_SA=ci-runner@my-project.iam.gserviceaccount.com
+export SWARM_IMPERSONATE_SA=ci-runner@example-project.iam.gserviceaccount.com
 ```
 
 Impersonation outranks sign-in whenever `SWARM_IMPERSONATE_SA` is set, and that
@@ -204,10 +204,10 @@ process opens and fail if a `.tfvars` file is opened outside this mode.
 
 | Value | |
 |---|---|
-| Deployment URL | `https://swarm.saga.xyz` |
+| Deployment URL | `https://swarm.example.com` |
 | OAuth client ID | created by the owner per [the runbook](runbooks/iap-desktop-client.md); ask for it |
 | OAuth client secret | the team password manager |
-| Who may pass IAP | `domain:saga.xyz` (`frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`) |
+| Who may pass IAP | `domain:example.com` (`frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`) |
 
 These are an example of values an operator hands out, not defaults: nothing in
 the plugin or the bridge names them.

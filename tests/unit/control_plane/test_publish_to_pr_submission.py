@@ -1,6 +1,6 @@
 """`publish_to_pr: <N>` on a workflow spec or a single task (#2183).
 
-Owner approval, BGD, 2026-10-24: a follow-up lane lands its commits on an
+Owner approval, the owner, 2026-10-24: a follow-up lane lands its commits on an
 existing pull request's branch instead of opening a replacement. swarm-api
 checks the spec at submission, before anything is written, and signs what it
 checked into every step's dispatch block as

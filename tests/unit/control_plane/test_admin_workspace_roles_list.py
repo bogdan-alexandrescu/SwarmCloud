@@ -224,7 +224,7 @@ def test_a_forged_grant_is_skipped_as_the_gates_skip_it(client, app_ctx, clock):
 def test_an_id_held_by_another_principal_is_unavailable_and_the_rest_is_served(
         client, app_ctx, clock, db):
     grant(app_ctx, clock, "research", "bob@example.com", "admin")
-    db.document("tenants/eng").set({"tenant_id": "eng", "principal": "eng@partner.com",
+    db.document("tenants/eng").set({"tenant_id": "eng", "principal": "eng@example.org",
                                     "kind": "group"})
     ws = by_id(client.get(LIST, headers=h("ops")).json())
     assert ws["eng"]["unavailable"] is True and ws["eng"]["code"] == "tenant_collision"

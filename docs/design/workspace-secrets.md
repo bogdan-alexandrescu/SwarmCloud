@@ -1,6 +1,6 @@
 # Workspace secrets: one store, granted per consumer by checkbox
 
-**Status: designed 2026-10-15 (lane SECRETS-DESIGN, part of #1347); the
+**Status: designed 2026-10-15 (lane SECRETS-DESIGN); the
 store, its grants, the release and the console are built.** Built: §3.3's IAM
 (lane SEC-IAM, `terraform/bootstrap/workspace_secrets.tf`, applied
 2026-10-15 with `enable_workspace_secrets = true`), phase 1's management API
@@ -14,7 +14,7 @@ SEC-MIGRATE-TYPESAFE is built behind `SWARM_TYPESAFE_INJECT`, which is off
 built. Forge tokens appear only as Config › Secrets' status rows (SSC-OVERVIEW). Phase 2, per-person signed submissions, is designed in §11 (2026-10-27) and not built; its owner questions P1–P10 are open. The owner's answers are in §10; where they differ from §9's
 recommendation (Q5, Q8), the answer wins.
 
-**Extended 2026-10-24 by [secrets-scopes.md](secrets-scopes.md) (#2158).**
+**Extended 2026-10-24 by [secrets-scopes.md](secrets-scopes.md).**
 A secret now has a third scope, **repository**: an ordinary `-wsec-` secret of
 this store, bound to one registered repository and released only to attempts
 that clone it, under a grant signed form `"v2"`. When a person's, a
@@ -26,7 +26,7 @@ SSC-ADMIT-REPO and SSC-OVERVIEW built inside this store; secrets-scopes.md
 §12 records the rest. This store's console moves to Config › Secrets with
 lane SSC-UI, which is not built.
 
-**Amended 2026-10-19 (ROLES-DOCS, part of #1518): Q4 is superseded.** A
+**Amended 2026-10-19 (ROLES-DOCS): Q4 is superseded.** A
 group workspace's secrets are managed by its workspace `admin`, a role that
 [workspace-roles.md](workspace-roles.md) added (its Q6), and still by any
 platform admin. Members keep reading names and grants. §5's "Who may do
@@ -86,7 +86,7 @@ whether or not it is meant to.
 | `swarm-tenant-u-<user>-typesafe` | a person's own TypeSafe key | that person, `PUT /v1/provider-keys/typesafe/user` | as above, when the submitter's **confirmed** personal tenant holds one; it wins over the tenant key (`provider_keys.resolve_provider_key`, restated by `jevkey.candidates`). On a group-tenant agent it is readable only where `terraform/bootstrap/typesafe_user_keys.tf` grants that group's worker account on that one secret (an owner apply per row); otherwise `jev_key_unreadable` and the tenant key is tried | as above |
 | `swarm-tenant-<t>-git` | the tenant forge token | the operator only, `scripts/create-secrets.sh --stdin` | the worker, `secrets.py::resolve_git_token`, written to a git credentials file the agent is never told about (`gitops.py`); swarm-api, `forge.py::SecretManagerForgeTokens`, for issue preview and open work (`var.forge_readers`, `terraform/modules/secret_manager/main.tf` accessor binding) | not through the git tools: since runner-git-tools ([runner-git-tools.md](../runner-git-tools.md)) the agent's container holds no forge token for them |
 | `swarm-tenant-<t>-git-u-<16 hex>` | a person's GitHub App user token (kind `app_user`) and, one per owner, a fallback personal token | swarm-api at onboarding (`gittokens.py::provider_suffix`, `owner_suffix`; `forgeapp.py::ForgeApp.store_owner_token`); refreshed by the 15-minute sweep | the worker, the slot named by the signed `Task.forge_credential`; swarm-api; under one prefix-conditioned grant per tenant, `terraform/bootstrap/forge_user_slots.tf` | as the tenant forge token |
-| `swarm-tenant-<t>-git-merge`, `-git-review` | the retired #295 App keys | none now | `credentials.refuse_unbindable_provider` refuses them before any write, so a worker account is never bound to them | no |
+| `swarm-tenant-<t>-git-merge`, `-git-review` | the retired an earlier issue App keys | none now | `credentials.refuse_unbindable_provider` refuses them before any write, so a worker account is never bound to them | no |
 | `swarm-tenant-u-<user>-browser-login-<name>`, `-browser-wf-<workflow>` | a signed-in browser session (cookie jar), named login ≤ 30 days, workflow carry 24 h | the worker, into a slot swarm-api provisions per secret (`POST /v1/tasks/<task>/browser-session/slot`, attempt-key signed, generation-fenced; `terraform/bootstrap/browser_logins.tf`) | the worker of that person's own tenant (accessor and versionAdder on that one secret) | the session is loaded into the browser the agent drives |
 
 ### 1.2 Platform secrets (not a tenant's)
@@ -259,7 +259,7 @@ only the granted ones.
     cannot bind per person);
   * listing many secrets in one condition runs into the documented limit: a
     `hasOnly()` list holds at most 10 items and two `hasOnly()` calls cannot
-    be combined (`terraform/bootstrap/deployer_conditions.tf`, #275), and
+    be combined (`terraform/bootstrap/deployer_conditions.tf`), and
     `matches()` is refused on GCS and some other services
     (`terraform/modules/iam/bindings.tf`, release run 38114832799). Per-secret
     bindings avoid lists but then each toggle is a `setIamPolicy`, with IAM's
@@ -321,7 +321,7 @@ before the agent is spawned.
   is found in the name, not listed. **Not verified live:** it must be linted
   with `iamPolicies:lintPolicy` and shown to refuse a broken expression first,
   as provider-keys.md §6 did.
-* **Built (lane SEC-IAM, 2026-10-15, part of #1347):** this grant exists as
+* **Built (lane SEC-IAM, 2026-10-15):** this grant exists as
   `terraform/bootstrap/workspace_secrets.tf`, off until the owner sets
   `enable_workspace_secrets = true` and applies bootstrap. It is the custom
   role `swarmWorkspaceSecretAccessor` (`secretmanager.versions.access` and
@@ -330,7 +330,7 @@ before the agent is spawned.
   prints it for the lint. Nothing in it names a tenant worker.
   `tests/terraform/workspace_secrets.tftest.hcl` evaluates the condition
   (admits `swarm-tenant-<t>-wsec-<hex>` and its versions; refuses `-git`,
-  `-typesafe`, the forge slots, `swarm-github-app-*`, `agents-*`, `promptlab-*`,
+  `-typesafe`, the forge slots, `swarm-github-app-*`, `agents-*`, `peerapp-*`,
   another project and the project ID), fails if it is dropped or widened, and
   checks that no bootstrap grant to a tenant worker admits a `-wsec-` name.
   **What the condition still reaches:** `extract()` finds the *first* `-wsec-`,
@@ -473,7 +473,7 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   Never a header, a body, a ticket, a key or a value; each line goes through
   `swarm_redaction` with the key registered.
 
-**What SEC-INJECT-A built (2026-10-15, part of #1347).**
+**What SEC-INJECT-A built (2026-10-15).**
 
 * `POST /v1/attempts/{attempt_id}/typesafe-ticket`
   (`apps/swarm-api/swarm_api/typesafe_ticket.py`, route
@@ -514,14 +514,14 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   grants it to the forwarder's principal under
   `resource.name.startsWith("projects/<NUMBER>/secrets/swarm-tenant-") && resource.name.extract("/secrets/swarm-tenant-{t}-typesafe/versions/") != ""`.
   `tests/terraform/typesafe_forwarder.tftest.hcl` evaluates it: it admits the
-  versions of `swarm-tenant-a-typesafe` and `swarm-tenant-u-x-typesafe` and
+  versions of `swarm-tenant-team-a-typesafe` and `swarm-tenant-example-tenant-typesafe` and
   refuses `-git`, `-wsec-`, `swarm-github-app-*`, `agents-*` and the rest. Its
   residual, a saved browser login whose name ends in `typesafe`, is in the
   file's header. Not verified live: lint it with `iamPolicies:lintPolicy`
   before applying.
 * `scripts/create-secrets.sh --typesafe-fwd-key`.
 
-**What SEC-INJECT-B built (2026-10-16, part of #1347).**
+**What SEC-INJECT-B built (2026-10-16).**
 
 * `apps/swarm-typesafe-fwd/`, the forwarder, to the spec above. The standard
   library serves (`http.server`'s threading server) and calls upstream
@@ -714,7 +714,7 @@ SEC-ADMIT-PARK built", end of §4).
   were given; the next attempt gets the new one. The previous version is
   disabled at once by default (§9 Q5), which `versions enable` can undo.
 
-  **As decided and built (owner decision Q5, #1347).** The previous version
+  **As decided and built (owner decision Q5).** The previous version
   stays **enabled for 24 hours**, then is **disabled, never destroyed**. Two
   pieces make that happen with nobody watching. Each is held by a test:
   * `POST /v1/admin/workspace-secrets/rotation-sweep` disables every version
@@ -777,7 +777,7 @@ collection, holds a value.**
   asserts that a runtime-built fake value is absent from every captured log
   line, as `test_provider_keys.py` does for the write.
 
-### What SEC-RELEASE built (2026-10-15, part of #1347)
+### What SEC-RELEASE built (2026-10-15)
 
 `apps/swarm-api/swarm_api/routes/attempts_secrets.py` (the route, its
 fence, the one payload read and the rows), the release queries at the end of
@@ -856,7 +856,7 @@ from §3.3, and why:
 * **The scheduler's pre-lease park** was left to a later lane, which built it
   next (below).
 
-### What SEC-ADMIT-PARK built (2026-10-15, part of #1347)
+### What SEC-ADMIT-PARK built (2026-10-15)
 
 §4.2's pre-lease park. `apps/scheduler/scheduler/secret_slots.py` states the
 rule: `missing_required_slots(profile, inputs, granted)` is pure, and
@@ -897,7 +897,7 @@ required slot has an enabled grant. Held by
   an agent that requires a slot reads it. No catalogue slot is required yet
   (request 80), so today no pass reads anything extra.
 
-### What SEC-GRANT-ATTEST built (2026-10-15, part of #1347)
+### What SEC-GRANT-ATTEST built (2026-10-15)
 
 Owner decision 2026-10-15, answering SEC-RELEASE's open question "Attest
 grants": swarm-api MACs every grant it writes, and the release ignores a grant
@@ -993,9 +993,9 @@ dropped. Only an unattested grant gets through, and it is logged.
 
 ---
 
-### The cf-access slot (CF-ACCESS-TOKEN, 2026-10-26, part of #2442)
+### The cf-access slot (CF-ACCESS-TOKEN, 2026-10-26)
 
-BGD decided on 2026-10-26, at the AI Studio session's request, that browser
+The owner decided on 2026-10-26, at the peer application session's request, that browser
 visual-QA agents reach a site behind Cloudflare Access with a Cloudflare
 Access SERVICE TOKEN, because an agent cannot pass Access's interactive
 sign-in and second factor. How the admin makes and stores one:
@@ -1112,7 +1112,7 @@ bodies forbidding unnamed fields):
 
 No route takes a tenant, a person, an image or a command.
 
-### What SEC-STORE-API built (2026-10-15, part of #1347)
+### What SEC-STORE-API built (2026-10-15)
 
 `apps/swarm-api/swarm_api/workspace_secrets.py` (records, grants, the
 catalogue, the Secret Manager writer) and `routes/workspace_secrets.py`,
@@ -1149,7 +1149,7 @@ Where the build differs from the sketch, and why:
   `SECRET_LINK_INVALID` outright: these routes are new, so no switch is
   needed to keep an older behaviour.
 
-### What SSC-REPO-SCOPE built (2026-10-24, part of #2158)
+### What SSC-REPO-SCOPE built (2026-10-24)
 
 The repository scope of [secrets-scopes.md](secrets-scopes.md) §2, with the
 owner's answers of its §11 (Q1, Q2, Q9). It is built in this store, not
@@ -1224,7 +1224,7 @@ beside it: `apps/swarm-api/swarm_api/workspace_secrets.py`,
   `grant_attestation_required` is off) releases nothing: `owned_by` keeps a
   marked id off the workspace path, the person's opt-in and `mcp:attach`.
 
-### What SSC-ADMIT-REPO built (2026-10-24, part of #2158)
+### What SSC-ADMIT-REPO built (2026-10-24)
 
 The admission half of [secrets-scopes.md](secrets-scopes.md) §2.3:
 SEC-ADMIT-PARK's pre-lease park counts a repository secret only for an agent
@@ -1261,7 +1261,7 @@ and `credentials.py`, held by
   admission today; it is built so the first required slot does not admit
   wrongly.
 
-### What SSC-OVERVIEW built (2026-10-24, part of #2158)
+### What SSC-OVERVIEW built (2026-10-24)
 
 Config › Secrets' one read, [secrets-scopes.md](secrets-scopes.md) §4 and
 §6.2, with the owner's Q1 of its §11: `GET /v1/secrets/overview?scope=
@@ -1435,7 +1435,7 @@ finishing.
 | phase | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **SEC-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `models.py`, `docs/contract-change-requests.md` | a `worker_action` profile with a slot raises; every `browser_tool` choice but `auto` maps to a `RUNTIME_TOOLS` entry; `consumer_name` round-trips |
-| 1 | **SEC-IAM** | `terraform/bootstrap/workspace_secrets.tf`, `tests/terraform/workspace_secrets.tftest.hcl` | the condition admits `swarm-tenant-a-wsec-<hex>` and its versions, refuses `swarm-tenant-a-git`, `-typesafe` (until §6.1 step 4's arm), `swarm-github-app-*`, `agents-*`, and fails if the condition is dropped or widened |
+| 1 | **SEC-IAM** | `terraform/bootstrap/workspace_secrets.tf`, `tests/terraform/workspace_secrets.tftest.hcl` | the condition admits `swarm-tenant-team-a-wsec-<hex>` and its versions, refuses `swarm-tenant-team-a-git`, `-typesafe` (until §6.1 step 4's arm), `swarm-github-app-*`, `agents-*`, and fails if the condition is dropped or widened |
 | 1 | **SEC-STORE-API** | `apps/swarm-api/swarm_api/workspace_secrets.py`, `routes/workspace_secrets.py`, `validation.py`, `tests/unit/control_plane/test_workspace_secrets.py` | a runtime-built fake value is absent from every response, log line and Firestore document; a consumer outside the catalogue is 422; a kind its slot refuses is 422; another tenant's secret is 404; a non-manager is 403; delete without the typed name is 422; every write has its audit row in the same transaction |
 | 2 | **SEC-RELEASE** | swarm-api `routes/attempts_secrets.py`, `test_no_route_serves_credentials.py` (the explicit carve-out); worker `agent_worker/secretrelease.py`, `lifecycle.py` wiring; `scheduler/dispatch.py::worker_env` (the attempt key for every attempt with a grant); their unit tests | a stale generation gets nothing; an unsigned or wrongly signed call gets nothing; a secret granted only to `tool:jev-browser` is not released to a `browser_tool: playwright` attempt; an untick is honoured by the next attempt; another tenant's secret is never in a release; every file is 0600 under `private/`, none under `work/`, none in the runner's environment; every value is registered for redaction before the runner starts; the release body is in no log |
 | 3 | **SEC-UI** | `apps/swarm-ui/src/WorkspaceSecrets.tsx`, its `App.tsx` route, `paths.ts`, vitest files; the issue forms if the Settings name changes (`test_issue_forms.py`) | no value is rendered after save; the delete button stays disabled until the typed name matches; a disabled cell shows its reason; the link token leaves the address bar |
@@ -1514,9 +1514,9 @@ The owner answered §9 in this session, and these answers bind the build plan in
 | Q8 inject mode | **In the first build, for TypeSafe.** This differs from the recommendation: a platform forwarder adds the TypeSafe key to jev's requests, so the TypeSafe key never enters an agent pod. File delivery remains for other providers |
 | Q9 default grants for migrated TypeSafe keys | **`tool:jev-browser` and `component:judge` enabled** |
 
-**Phase 2: user-signed submissions** (owner, 2026-10-14 ~22:40 PDT, issue #1347):
+**Phase 2: user-signed submissions** (owner, 2026-10-14 ~22:40 PDT):
 - each person gets a signing key (a console passkey, or a key the sc plugin keeps in the OS keychain);
-- every agent submission is signed, building on #342's signed step specs;
+- every agent submission is signed, building on an earlier issue's signed step specs;
 - a personal secret is released only to an agent whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
 - headless jobs (schedules, issue runs, CI-fix rounds) use owner-signed standing grants.
 
@@ -1528,10 +1528,10 @@ This comes after the attempt-signed release of phase 1, so the build plan gains 
 
 ---
 
-## 11. Phase 2: per-person signed submissions (designed 2026-10-27, part of #1347)
+## 11. Phase 2: per-person signed submissions (designed 2026-10-27)
 
 **Status: designed and decided, nothing built.** No code in this change.
-§11.11 has the owner questions P1–P10. BGD answered all ten on 2026-10-27
+§11.11 has the owner questions P1–P10. The owner answered all ten on 2026-10-27
 and 2026-10-28, and the sections below are written to those answers. Three
 answers go against the design's first recommendation (P4, P9 and P10), and
 §11.11 says what the design does instead. The build lanes in §11.10 start
@@ -1540,7 +1540,7 @@ from these answers. Every file and symbol below was read on 2026-10-27 at
 
 The owner's phase 2 decision (§10, 2026-10-14 ~22:40 PDT) asks for four
 things. Each person gets a signing key. Every submission is signed by its
-person, building on #342. A personal secret is released only to an agent whose
+person, building on an earlier issue. A personal secret is released only to an agent whose
 spec the secret's owner signed. A group secret needs a current member's
 signature. Headless jobs run on owner-signed standing grants. The stated
 point: "a compromised scheduler or database, or another member of a group,
@@ -1586,7 +1586,7 @@ against bytes that person signed, with a key that never leaves them.**
 **What phase 2 does not stop: a compromised swarm-api.** swarm-api holds the
 read grant (§3.3) and runs the check, so whoever controls it can skip the
 check. The owner did not name this threat. Q P8 asked whether to move the check
-and the read grant out of swarm-api. BGD's answer: not in phase 2.
+and the read grant out of swarm-api. The owner's answer: not in phase 2.
 
 ### 11.2 Keys: two kinds, one registry
 
@@ -1624,7 +1624,7 @@ for at most 60 s. A revocation is in force within that minute.
   `auth_time` is under 5 minutes old, as the caller, plus proof of possession
   (the new key signs a server challenge). The new key is the caller's only.
   Nobody can enrol a key for someone else, platform admins included.
-* **Each later key** goes through one of three paths. BGD chose all of them
+* **Each later key** goes through one of three paths. The owner chose all of them
   (Q P3, options (a) and (c), 2026-10-27–28):
   1. **Signed by an existing key.** An unrevoked key of the same person
      signs the new key's enrolment. It takes effect at once
@@ -1699,7 +1699,7 @@ tenant, profile, input or repository is not what it sent. The console shows
 the tenant, the steps and their profiles in the passkey prompt's dialog. A
 workflow is one statement and one prompt, however many steps it has.
 
-BGD chose the statement, by prepare then commit (Q P1, option (a),
+The owner chose the statement, by prepare then commit (Q P1, option (a),
 2026-10-27–28).
 
 **Why not sign the request body (Q P1, option b)?** A request signature does
@@ -1766,7 +1766,7 @@ released, and never holds a value. Each of those secrets' release rows
 (§4.4) also gains `via: "platform_admin"` and the admin's email. The group's
 secret page shows "last used by a platform admin" from those rows to the
 group's members, not only to admins, so members can see every time an admin
-used their credentials. The cost BGD accepted: a platform admin can run an
+used their credentials. The cost the owner accepted: a platform admin can run an
 agent with a group's credentials without being in the group. The audit
 record makes that visible after the fact, and does not prevent it.
 
@@ -1852,7 +1852,7 @@ credentials `mcp:attach` may serve under it (§11.4, Q P9). An absent or empty
 list covers nothing on that route. None of the three accepts "all".
 
 **A grant has no expiry unless its grantor sets one (Q P4, decided
-2026-10-27–28 against the recommendation).** BGD chose no expiry, revoked by
+2026-10-27–28 against the recommendation).** The owner chose no expiry, revoked by
 hand, over the recommended 30-day cap. `not_before` stays required.
 `expires_at` is optional: absent means the grant never expires, and a
 grantor may still set one. There is no cap, and no expiry reminder. A grant
@@ -2021,7 +2021,7 @@ P2-REGISTRY, P2-SUBMIT and P2-RELEASE.
 
 ### 11.11 Owner questions
 
-BGD answered all ten on 2026-10-27 and 2026-10-28. Each question below keeps
+The owner answered all ten on 2026-10-27 and 2026-10-28. Each question below keeps
 its options, and its **Answer** line names the option picked. Seven follow
 the recommendation. P3 takes two options together. **P4, P9 and P10 go
 against the recommendation**, and their answers say what the design does
@@ -2048,7 +2048,7 @@ residual).
 the person is notified about and any existing key can cancel** (recommended);
 (b) a fresh sign-in alone, at once (a stolen Google session enrols a key);
 (c) **a platform admin approves recovery.**
-**Answer (2026-10-27–28): (a) and (c) together**, BGD: "+3". Either path
+**Answer (2026-10-27–28): (a) and (c) together**, the owner: "+3". Either path
 works. A new key is signed by an existing key, or, with no key left, a fresh
 sign-in plus a 24 h delay any existing key can cancel. Or a platform admin
 approves the recovery, and the key is usable at once. §11.2 writes the

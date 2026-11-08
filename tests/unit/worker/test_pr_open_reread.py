@@ -2,9 +2,9 @@
 a freshly read forge token (PR-OPEN-RETRY, part of #1623).
 
 MEASURED 2026-10-19: task_194ad2144eb6441c8a7c (tenant u-or-9a0792, direct-pr,
-product-oracle) pushed its branch and then failed "could not open a pull
-request (401): Bad credentials"; the Product Oracle session opened the pull
-request by hand (product-oracle #33). Other tasks in the same hour opened
+peer-service) pushed its branch and then failed "could not open a pull
+request (401): Bad credentials"; the a peer application session opened the pull
+request by hand (peer-service #33). Other tasks in the same hour opened
 theirs. The publish reads the token ONCE (`_publish_git`) and hands that one
 read to the probe, the push and the pull request; only the probe re-read on a
 401. A refresh between the read and the pull request -- each refresh makes

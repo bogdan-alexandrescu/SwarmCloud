@@ -470,7 +470,7 @@ export function ActivityScreen({
   }, [openInView, openAsk])
 
   // ---- the platform half, read once per scope pick (#2149) ----------------
-  // PLATFORM SCOPE STOPS POLLING THE PLATFORM HALF (BGD, 2026-10-23 ~20:39Z,
+  // PLATFORM SCOPE STOPS POLLING THE PLATFORM HALF (owner, 2026-10-23 ~20:39Z,
   // task_875ae68942a241a899f2). Since #2152 `GET /v1/stats` counts every
   // tenant -- twelve more count()s -- only on `?scope=platform` from an admin,
   // and a read on a timer must never bill them (#138). So the card's poll
@@ -2560,7 +2560,7 @@ const OWN_TAIL = 12
  * in the middle; on a PHONE (the stacked record) it is whole, as runs that
  * break before the key and after an `@` or a `.` only (visual QA run 6,
  * 6:admin-008; visual QA pass 1, admin-shell-02): the record
- * let `alice@example` / `.com` and `bogdan@exampl` / `e-` break anywhere.
+ * let `alice@example` / `.com` and `owner@exampl` / `e-` break anywhere.
  */
 export function TenantIdent({ value, noun, tenant, phone }: { value: string; noun: string; tenant: string; phone: boolean }) {
   const parts = identParts(value, tenant)
@@ -2590,7 +2590,7 @@ export function TenantIdent({ value, noun, tenant, phone }: { value: string; nou
       <span className="ten-ident" title={value}>
         {phone ? (
           // AND A BREAK BEFORE THE KEY (visual QA pass 1, admin-shell-02, part
-          // of #2596). `swarm-agent-worker-u-bogdan@` was one run, 235px in a
+          // of #2596). `swarm-agent-worker-u-owner@` was one run, 235px in a
           // 186px value column, so every card cut it to `swarm-agent-worker-…`
           // and hid the tenant's own part -- the one that tells the cards
           // apart, with no hover on a phone to recover it. The record breaks

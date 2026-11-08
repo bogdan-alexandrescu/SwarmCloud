@@ -1,6 +1,6 @@
 """Signing in AS YOURSELF, through IAP, with one OAuth client per deployment.
 
-WHY THIS EXISTS. Measured 2026-09-24 against https://swarm.saga.xyz: a user's
+WHY THIS EXISTS. Measured 2026-09-24 against https://swarm.example.com: a user's
 own gcloud access token is refused by IAP with 401, error code 900, because the
 deployment uses a Google-managed IAP OAuth client and "Google-managed OAuth
 clients cannot programmatically access IAP-protected applications"
@@ -43,7 +43,7 @@ import pytest
 from swarm_mcp import auth, client, sc, server
 from swarm_mcp.client import SwarmClient, SwarmError
 
-CLIENT_ID = "209012342332-abcdef.apps.googleusercontent.com"
+CLIENT_ID = "123456789012-abcdef.apps.googleusercontent.com"
 CLIENT_SECRET = "GOCSPX-fake-desktop-secret"
 EMAIL = "dev@example.test"
 
@@ -347,7 +347,7 @@ def test_the_cli_login_signs_in_and_reports_the_principal(monkeypatch, google, s
 @pytest.mark.parametrize(
     "higher,named",
     [
-        ("SWARM_IMPERSONATE_SA", "ci-runner@example.iam.gserviceaccount.com"),
+        ("SWARM_IMPERSONATE_SA", "ci-runner@example-project.iam.gserviceaccount.com"),
         ("SWARM_ID_TOKEN", "SWARM_ID_TOKEN"),
         ("metadata", "metadata server"),
     ],

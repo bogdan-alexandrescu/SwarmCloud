@@ -19,7 +19,7 @@ them in code only (a marker named in a comment or a string is not one), and
 live skip or quarantine this page does not list (with the row to add) and for a
 row the tree no longer has.
 
-There is no count on this page, on purpose (BGD, 6 November 2026): two green
+There is no count on this page, on purpose (the owner, 6 November 2026): two green
 changes that each add a skip and bump a count conflict or fail when they land
 together; two that each add their own row pass together as each passed alone.
 
@@ -90,7 +90,7 @@ finding for the package that owns it.
 | Context packs and graph tools | Agents with code intelligence did not call the graph: batch two 1, 0, 0, 0, 0, 0 calls; batch three two calls in four steps, both `tests_for` by bare names answered `unknown` | [context-quality.md](../context-quality.md), "Told when, at the system prompt's weight" | fix built (AGENTS-USE-TOOLS-WHEN, 2026-11-03) | Not live-verified after the fix |
 | Jev | Jev-on steps never called `jev_decide` in batches two and three | same | same fix | Not live-verified after the fix |
 | Jev | The browser filter's counts reach the summary only on an attempt whose gates run; an internal-backend browser started without `jev_launch.py` gets neither variable | [jev-data-flow.md](../../jev-data-flow.md), "Known gaps" | "Still open" (owner, 2026-11-02) | Open |
-| Jev | `register_jev_tool` (the agent's `jev_decide` tool) "not built here"; JEV-RUNNER "not on main yet" (#1297) | [context-quality.md](../context-quality.md) §5, "Not built here" and §1 | not built, open | **Stale record**: `agent_worker/judge/mcp.py` serves `jev_decide` and `agent_worker/runners/jev_launch.py` exists |
+| Jev | `register_jev_tool` (the agent's `jev_decide` tool) "not built here"; JEV-RUNNER "not on main yet" | [context-quality.md](../context-quality.md) §5, "Not built here" and §1 | not built, open | **Stale record**: `agent_worker/judge/mcp.py` serves `jev_decide` and `agent_worker/runners/jev_launch.py` exists |
 | Jev | J2's coverage flags are only in `plan-advisory.json`, not on the plan approval screen or in `swarm_runs` | context-quality.md §5, "Not built here" | not built | Open |
 | Context packs and graph tools | Staging reads `tenant_settings`, so a workspace's `context` and `context_ab` do not reach it | context-quality.md, "Not yet read from there by staging" | follow-up | **Stale record**: `graphstage.py` `SETTINGS_COLLECTION = "workspace_settings"` since 2026-11-01 |
 | Index and freshness | GS-RETIRE (removing the staged-graph fallback) waits on a measured `graph_ready` fallback rate | [graph-service.md](../graph-service.md) | not built | Open |

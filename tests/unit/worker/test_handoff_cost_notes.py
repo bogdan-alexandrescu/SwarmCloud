@@ -1,6 +1,6 @@
 """A hand-off to a fresh session inside one attempt keeps its cost and its notes (HANDOFF-COST-NOTES, #2896, part of #2897).
 
-Reported by the Product Oracle session, 2026-10-31 (wf_f27ece6a6d7c4171a9c2):
+Reported by the a peer application session, 2026-10-31 (wf_f27ece6a6d7c4171a9c2):
 
   * #2896: qa4-docs ran ONE 30-minute attempt across several sessions and
     read $0.20, its last 5-turn session alone. A session the context ceiling

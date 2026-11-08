@@ -1,6 +1,6 @@
 """Every platform-membership write goes through the authenticator's one
 MembershipStore, removal as well as approval (docs/design/join-requests.md
-§4.4; lane JOIN-ONE-STORE, part of #2325; BGD's answer to JOIN-WIRE's owner
+§4.4; lane JOIN-ONE-STORE, part of #2325; the owner's answer to JOIN-WIRE's owner
 question, 2026-10-26).
 
 Before this lane `DELETE /v1/workspace/members/person` wrote through

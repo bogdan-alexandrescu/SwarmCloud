@@ -41,7 +41,7 @@ const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, 
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'ab'.repeat(32)
 const HEAD = '7138b1a' + '0f'.repeat(16) + '9'
-const OWNER = 'bogdan-alexandrescu'
+const OWNER = 'example-org'
 const REF = `${OWNER}/SwarmCloud#72`
 const ISSUE_URL = `https://github.com/${OWNER}/SwarmCloud/issues/72`
 const PR_URL = `https://github.com/${OWNER}/SwarmCloud/pull/564`

@@ -20,7 +20,7 @@
 //     than inventing a command;
 //   * a row in the console's own shape is NOT read as a pass or a finding;
 //   * no doctor run says the hourly doctor is off, not drawn as healthy;
-//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     why a check could not look is the tooltip of a tick beside its title,
 //     "no repair command" is the title's tooltip, and what Health is sits
 //     behind an (i) beside the heading; each fact is still in the page.

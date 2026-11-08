@@ -1,9 +1,9 @@
 """The gate's start clicks and its signed-in verdict, read off the page (part of #2688).
 
-AI Studio's staging quality-check run of 4 November 2026 (about 11:53 UTC):
+A peer application's staging quality-check run of 4 November 2026 (about 11:53 UTC):
 
 (1) THE REVIEWER LEG FOUND NO FORM AFTER ITS START CLICKS. The chooser
-    ("Sign in to AI Studio", Staging | Production, then "Sign in") is drawn
+    ("Sign in to a peer application", Staging | Production, then "Sign in") is drawn
     by the server before its script runs, and the gate's own rate limit
     slows the rest of the load. The gate clicked each control the moment it
     was visible, so a click could land before the page listened, did

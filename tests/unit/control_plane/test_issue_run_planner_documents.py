@@ -1,4 +1,4 @@
-"""The planner's design doc and diagrams, served on the run read (BGD, 6 November 2026: "Serve them on the run").
+"""The planner's design doc and diagrams, served on the run read (the owner, 6 November 2026: "Serve them on the run").
 
 The proposal page (/work/runs?proposal=<run>) said "not known here" for the
 design doc and the diagrams, because a run served only its plan.

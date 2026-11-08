@@ -5,11 +5,11 @@
  * held by the property that was false:
  *
  *   QA-028  The tenant card's `copy id` button was named `Copy tenant id
- *           u-bogdan`, which does not contain its visible words (axe
+ *           u-owner`, which does not contain its visible words (axe
  *           label-content-name-mismatch, serious): a speech user saying
  *           "click copy id" matched nothing.
  *   QA-040  Under the Global pool meter, a quarter full, an amber
- *           `provider:anthropic:tenant:u-bogdan full` read as the global pool
+ *           `provider:anthropic:tenant:u-owner full` read as the global pool
  *           being full, in a raw pool key.
  *   QA-055  The active sub-item's highlight ran to the panel's right border;
  *           the top-level rows keep 10px.
@@ -89,14 +89,14 @@ describe('QA-040: the global meter does not wear another pool’s warning as its
   })
 
   it('names the binding pool as a pool, in its label, with the raw key in the title (`a`, not `another`, since admin2-15)', () => {
-    const cap = { pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-bogdan', 3, 3)], runner_profiles: {} } as unknown as Capacity
+    const cap = { pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-owner', 3, 3)], runner_profiles: {} } as unknown as Capacity
     const m = meterOf(cap)!
     // MUTATION: put back `${hot.name} full` in meterOf and the line under
     // the 5 / 20 meter reads as the global pool being full, in a raw key.
-    expect(m.warn).toBe('a pool is full: anthropic · u-bogdan')
+    expect(m.warn).toBe('a pool is full: anthropic · u-owner')
     expect(m.warn).not.toContain('provider:')
     // MUTATION: drop `warnPool` and the exact pool is nowhere on the card.
-    expect(m.warnPool).toBe('provider:anthropic:tenant:u-bogdan')
+    expect(m.warnPool).toBe('provider:anthropic:tenant:u-owner')
   })
 
   it('says the global pool itself is full when it is', () => {

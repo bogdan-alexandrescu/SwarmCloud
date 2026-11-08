@@ -113,11 +113,11 @@ afterEach(() => {
 
 describe('the Manage drawer heading reads the name at 390', () => {
   it('lays the heading out as a row whose name box shrinks and wraps, instead of one atomic line cut to "…"', async () => {
-    await mount(platform([borrower('bogdan@example.com', 7, { display_name: 'Bogdan Alexandrescu' })]))
-    const drawer = await manage('bogdan@example.com')
+    await mount(platform([borrower('owner@example.com', 7, { display_name: 'Alex Example' })]))
+    const drawer = await manage('owner@example.com')
     const h2 = drawer.querySelector<HTMLElement>('.pp-drawer-h h2')!
     const box = h2.querySelector<HTMLElement>('.person-name')!
-    expect(box.querySelector('.person-name-name')?.textContent).toBe('Bogdan Alexandrescu')
+    expect(box.querySelector('.person-name-name')?.textContent).toBe('Alex Example')
     // MUTATION: put back `white-space: nowrap; text-overflow: ellipsis` on a
     // block h2 -> the 1px "Manage " plus the 100%-wide box overflow by 1px and
     // the atomic box is elided whole.
@@ -142,8 +142,8 @@ describe('the Manage drawer heading reads the name at 390', () => {
 
 describe("the Manage drawer's Claude account is the grid's one line", () => {
   it('says seven loans from one lender as a count and the lender once, the accounts folded', async () => {
-    await mount(platform([borrower('bogdan@example.com', 7)]))
-    const section = (await manage('bogdan@example.com')).querySelector<HTMLElement>('[data-section="claude"]')!
+    await mount(platform([borrower('owner@example.com', 7)]))
+    const section = (await manage('owner@example.com')).querySelector<HTMLElement>('[data-section="claude"]')!
     // MUTATION: put back `Now using {claudeText(...)}` -> "lent by Engineering" seven times.
     expect(visible(section.querySelector('.pp-now .pp-loan-sum'))).toBe('7 accounts · lent by Engineering')
     expect(visible(section).match(/lent by Engineering/g)).toHaveLength(1)
@@ -161,8 +161,8 @@ describe("the Manage drawer's Claude account is the grid's one line", () => {
 
 describe('an account id is one token where a phone draws it', () => {
   it('holds ai-eng-4 whole in the drawer, in the summary\'s fold and in a single loan\'s sentence', async () => {
-    await mount(platform([borrower('bogdan@example.com', 7), borrower('kay@example.com', 1)]))
-    let drawer = await manage('bogdan@example.com')
+    await mount(platform([borrower('owner@example.com', 7), borrower('kay@example.com', 1)]))
+    let drawer = await manage('owner@example.com')
     const id = [...drawer.querySelectorAll<HTMLElement>('.pp-loan-list .pp-nobr')].find((s) => s.textContent === 'ai-eng-4')
     // MUTATION: print the id as bare text -> "ai-" over "eng-4" at 390.
     expect(id).toBeDefined()

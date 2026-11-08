@@ -91,7 +91,7 @@ from Work's, over two pages of its own, rather than a widening of Work. The
 note at the top of `SECTIONS` in `apps/swarm-ui/src/App.tsx` records why it
 passes the membership test the collapse below set.
 
-**Voice it** was added on 2026-11-01 by the owner's decision (BGD; the
+**Voice it** was added on 2026-11-01 by the owner's decision (the owner; the
 design is [voice-it.md](../design/voice-it.md), and this is §10's first
 phase-one lane). It is a new section rather than a widening, and it passes
 the membership test on its own terms: the other five each ask what the
@@ -773,7 +773,7 @@ because every other test in that file stays green through it.
   measurement that has been falsified. The translation table in
   [`README.md`](README.md) gained the four new rows.
 
-## Changed, 2026-10-19 — every settings page sits under Profile, the spine's first item (#1633)
+## Changed, 2026-10-19 — every settings page sits under Profile, the spine's first item
 
 Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 1
 (lane NAV-PROFILE; part 2, NAV-ADMIN-ROLE, owns Admin's visibility).
@@ -815,7 +815,7 @@ that grows by one line per lane is not navigation.
 
 `apps/swarm-ui/src/__tests__/spine.profile.test.tsx` holds all of it.
 
-## Changed, 2026-10-19 — Admin is shown only to platform and workspace admins (#1633)
+## Changed, 2026-10-19 — Admin is shown only to platform and workspace admins
 
 Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 2
 (lane NAV-ADMIN-ROLE; part 1, NAV-PROFILE, is the section above).
@@ -863,7 +863,7 @@ the tenant block and then found its pages under Profile.
 `apps/swarm-ui/src/__tests__/spine.adminrole.test.tsx` holds it; it replaces
 `spine.adminlock.test.tsx`, which held the reversed rule.
 
-## Changed, 2026-10-20 — Profile is the spine foot's last item, API reads is a Capacity page, the signed-in name opens Profile (#1672)
+## Changed, 2026-10-20 — Profile is the spine foot's last item, API reads is a Capacity page, the signed-in name opens Profile
 
 Owner request, 2026-10-20, after NAV-PROFILE and NAV-ADMIN-ROLE shipped
 (lane NAV-FOOT).

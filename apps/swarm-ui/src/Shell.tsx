@@ -993,7 +993,7 @@ export function PageHead({
   title: string
   help?: TopicId | readonly TopicId[]
   /**
-   * The page's (i), drawn beside the title, before the `?` (BGD's no-prose
+   * The page's (i), drawn beside the title, before the `?` (the owner's no-prose
    * rule, 2026-11-05; the owner's pick on #3303): what the page is for sits
    * with the name it explains, not among the actions.
    */
@@ -1016,7 +1016,7 @@ export function PageHead({
         {info}
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). A LIST is the screen's
-            index of topics, the footer it replaced (VQ-033, BGD
+            index of topics, the footer it replaced (VQ-033, owner
             2026-10-26): still one glyph, in the section question's place,
             and one `<HelpCard>` in this file for the ration to count. The
             list is LED BY THE SECTION'S QUESTION (Q2), so the head `?` is

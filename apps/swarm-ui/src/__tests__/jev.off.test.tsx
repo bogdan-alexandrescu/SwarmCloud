@@ -1,6 +1,6 @@
 // LANE JEV-OFF (part of #1345): JEV'S UNAVAILABILITY IS VISIBLE, NOT SILENT.
 //
-// Measured 2026-10-15 on u-bogdan, whose judgment backend is internal-jev:
+// Measured 2026-10-15 on u-owner, whose judgment backend is internal-jev:
 // the tailnet egress to your internal decision API is off, so the dispatcher sends no
 // JEV_API_URL, the jev wrapper refuses, and the agent drove Playwright. The
 // Submit picker had offered Jev and the live chip read "Jev". Measured here:
@@ -23,7 +23,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { Judgment, JevBackend } from '../api'
 import type { Result } from '../fetch'
 import type { Capacity } from '../types'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -55,7 +55,7 @@ function ok<T>(data: T): Result<T> {
 function judgment(backend: JevBackend, available: boolean, reason: string | null): Judgment {
   const label = backend === 'typesafe' ? 'Jev (TypeSafe)' : backend === 'internal-laya' ? 'Jev (Internal Laya)' : 'Jev (Internal)'
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     can_edit: true,
     jev: { backend, label, available, reason, default: 'internal-jev', set_at: null, set_by: null, options: [] },
   }
@@ -130,7 +130,7 @@ describe('the Submit picker reads whether Jev can run', () => {
     expect(visible(c.querySelector('.btp-notice'))).toContain('their text stays inside your network.')
     expect(c.querySelector('.btp-hint')?.textContent).toContain('judged inside your network')
     // The company is not named by the picker (#1647).
-    expect(c.textContent).not.toMatch(COMPANY_NAME)
+    expect(listedIn(c.textContent ?? '')).toEqual([])
   })
 
   it('keeps Jev off while the backend read is unanswered or failed, never on a guess', () => {
@@ -185,7 +185,7 @@ describe('the live chip says when the attempt fell back', () => {
     const card = document.getElementById(b.getAttribute('aria-describedby') ?? '')!
     expect(card.textContent).toMatch(/judges with your internal decision API, and this agent has no route to it/)
     // The company is not named on the chip (#1647).
-    expect(card.textContent).not.toMatch(COMPANY_NAME)
+    expect(listedIn(card.textContent ?? '')).toEqual([])
     expect(card.textContent).toMatch(/tailnet egress is off/)
   })
 

@@ -45,7 +45,7 @@ from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
 REGION = "us-central1"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-eng-mock"
 
 #: DERIVED, never spelled again in this file.

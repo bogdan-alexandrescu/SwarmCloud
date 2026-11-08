@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-BGD's decision, 2026-10-23: Admin › Platform counts reads agents over 12
+the owner's decision, 2026-10-23: Admin › Platform counts reads agents over 12
 months from `outcome_days`, "sealed nightly by the existing rollup job". Before
 this change nothing sealed a day unless somebody happened to read it, so a cold
 12-month view spent its 5,000-read derive budget and came back mostly
@@ -56,7 +56,7 @@ from .test_outcomes_route import NOW, WEEK, Clock, at, seed_week, task
 UTC = timezone.utc
 
 #: The address jobs.tf's rollup jobs mint their OIDC token as.
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
 #: 26 Sep, five minutes past the grace that seals 25 Sep.

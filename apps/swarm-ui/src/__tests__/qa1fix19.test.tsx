@@ -152,11 +152,11 @@ function profile(over: Partial<RunnerProfile>): RunnerProfile {
 const CAPACITY: Capacity = {
   tenant_id: 'eng',
   generated_at: '2026-10-28T10:00:00Z',
-  pools: [pool('global', 3, 40), pool('provider:anthropic:tenant:u-bogdan', 5, 5), pool('backend:CLOUD_RUN_JOB', 5, 20)],
+  pools: [pool('global', 3, 40), pool('provider:anthropic:tenant:u-owner', 5, 5), pool('backend:CLOUD_RUN_JOB', 5, 20)],
   runner_profiles: {
     'claude-code': profile({
-      pools: ['global', 'provider:anthropic:tenant:u-bogdan'],
-      admission: admission({ headroom: 0, binding: ['provider:anthropic:tenant:u-bogdan'] }),
+      pools: ['global', 'provider:anthropic:tenant:u-owner'],
+      admission: admission({ headroom: 0, binding: ['provider:anthropic:tenant:u-owner'] }),
     }),
     codex: profile({
       pools: ['global', 'backend:CLOUD_RUN_JOB'],

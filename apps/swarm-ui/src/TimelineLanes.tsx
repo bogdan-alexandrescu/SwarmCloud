@@ -1271,7 +1271,7 @@ export function TimelineLanesScreen({
           Filters · {lanesFiltersSet(view)}
         </button>
         {/* THE LEGEND FOLDS ON A PHONE TOO (VQ-024, "Fold the legend",
-            BGD 2026-10-26): with the filters folded, the legend's seven marks
+            owner 2026-10-26): with the filters folded, the legend's seven marks
             still stood between the strip and the first lane at 390. Closed by
             default there; a wide screen shows it always and has no button.
             The outcome strip's counts are not folded with it. */}

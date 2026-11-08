@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Proposal E, "Guided setup" (CONFIG-MOCKUPS-E, part of #2157).
+ * Proposal E, "Guided setup" (CONFIG-MOCKUPS-E).
  * The tokens are the console's own (apps/swarm-ui/src/styles.css): --bg, --surface,
  * --surface-2, --line, --line-soft, --text, --text-dim, --text-faint, the five state
  * colours and their -ink variants, --ctl-bd and --ctl-onac, light and dark. The page
@@ -363,9 +363,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">CONFIG-MOCKUPS-E · part of #2157 · drawn 2026-10-23 · not picked</p>
+<p class="kick">CONFIG-MOCKUPS-E · drawn 2026-10-23 · not picked</p>
 <h1>Config, Secrets, Admin counts and QA environments: proposal E, Guided setup</h1>
-<p class="lede">One of five competing proposals (A to E) for BGD's new Config section, the Secrets scopes, Admin's role-gated pages, Platform counts over time and QA targets with environments. BGD picks one. Every frame below is drawn at desktop width (1440, or this page's width when the window is narrower) and at 390 wide, and the theme control at the top repaints all of them light, dark or as the system says.</p>
+<p class="lede">One of five competing proposals (A to E) for the owner's new Config section, the Secrets scopes, Admin's role-gated pages, Platform counts over time and QA targets with environments. The owner picks one. Every frame below is drawn at desktop width (1440, or this page's width when the window is narrower) and at 390 wide, and the theme control at the top repaints all of them light, dark or as the system says.</p>
 
 <div class="rules">
   <b>What every frame obeys</b>
@@ -403,7 +403,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "3 to set". Admin is in the spine.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages. Under them, "In Automate" only links to Automate › Schedules and Approvals; Admin draws neither.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin, plus the two links into Automate. No platform page, no lock, no disabled row.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config lists People and roles: every member reads it, only admins change it (BGD, 2026-10-24 00:31Z; S5g, S5h). Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config lists People and roles: every member reads it, only admins change it (the owner, 2026-10-24 00:31Z; S5g, S5h). Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite. Drawn for the platform admin in their own workspace, so Admin stays in the spine; a member's personal workspace has no Admin, as in S1d.</figcaption></figure>
 </div>
 <div class="pair">
@@ -456,7 +456,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <!-- ==================== S5 ==================== -->
 <h2 id="s5"><span class="n">S5</span>Config › MCP servers, Config › People and roles, Admin › People and roles</h2>
-<p>MCP servers and People and roles move from Settings unchanged in body; only the lead and the strip are new. Config's People and roles is this workspace's, in a group workspace only: every member and viewer reads it, and only a workspace admin or platform admin changes it (BGD, 2026-10-24 00:31Z). Admin's People and roles is the cross-workspace view.</p>
+<p>MCP servers and People and roles move from Settings unchanged in body; only the lead and the strip are new. Config's People and roles is this workspace's, in a group workspace only: every member and viewer reads it, and only a workspace admin or platform admin changes it (the owner, 2026-10-24 00:31Z). Admin's People and roles is the cross-workspace view.</p>
 <figure class="fr"><div class="scroller" data-f="mcp-d"></div><figcaption><b>S5a · Config › MCP servers, desktop.</b> As built (registered servers, credential column, Register an MCP server); the lead names the server whose credential is missing.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="cpeople-d"></div><figcaption><b>S5b · Config › People and roles, workspace or platform admin, desktop.</b> As built (roles in this workspace, own roles, set the default, role events), led by the strip's step 4. An admin sees the change controls.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="apeople-d"></div><figcaption><b>S5c · Admin › People and roles, platform admin, desktop.</b> Every person against every workspace; the lead is who is waiting for an admin.</figcaption></figure>
@@ -472,7 +472,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <!-- ==================== S6 ==================== -->
 <h2 id="s6"><span class="n">S6</span>Config › Workspace Settings</h2>
-<p>Settings and Workspace setup (today's Work › Setup, the full checklist behind the strip) on one page, and for a platform admin only a third part, Add a new workspace (BGD, 2026-10-23: the rule of today's Admin › Tenants › New workspace). A workspace admin sees their own workspaces' settings with no such tab or button. A member asks for a workspace as today, through the setup checklist's Request your workspace step.</p>
+<p>Settings and Workspace setup (today's Work › Setup, the full checklist behind the strip) on one page, and for a platform admin only a third part, Add a new workspace (the owner, 2026-10-23: the rule of today's Admin › Tenants › New workspace). A workspace admin sees their own workspaces' settings with no such tab or button. A member asks for a workspace as today, through the setup checklist's Request your workspace step.</p>
 <figure class="fr"><div class="scroller" data-f="wss-d"></div><figcaption><b>S6a · Settings, desktop.</b> Today's Settings › Workspace (code intelligence, off by default) and the workspace's identity.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="wsetup-d"></div><figcaption><b>S6b · Workspace setup, desktop.</b> The checklist the strip summarises: every step id the API serves, its status word and the failing step's copy inline. Show on Overview stays.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="wsnew-d"></div><figcaption><b>S6c · Add a new workspace, desktop.</b> A platform admin's tab only: the same form as Admin › Tenants › New workspace; the progress steps are NewWorkspace.tsx's.</figcaption></figure>
@@ -519,7 +519,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <tr><td>Platform secrets</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td><td>S7</td></tr>
 <tr><td>Schedules and Approvals: links into Automate, not Admin tabs (Automate › Schedules keeps its "All workspaces" switch)</td><td class="yes">links</td><td class="yes">links</td><td class="no">no Admin at all</td><td>S1b, S1c</td></tr>
 </tbody></table></div>
-<p class="hint">Today's <code>SECTIONS</code> Admin tabs are Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin. People becomes People and roles; Platform secrets is new (secrets-scopes.md §5). Every-workspace schedules and approvals stay in Automate: Automate › Schedules keeps its "All workspaces" switch (SCHED-ONE-PAGE, 2026-10-13), and Admin's panel only links to Schedules and Approvals (BGD, 2026-10-23). No Admin tab draws them a second time.</p>
+<p class="hint">Today's <code>SECTIONS</code> Admin tabs are Pool limits, Runner sizes, Tenants, Platform counts, People and Workspaces you admin. People becomes People and roles; Platform secrets is new (secrets-scopes.md §5). Every-workspace schedules and approvals stay in Automate: Automate › Schedules keeps its "All workspaces" switch (SCHED-ONE-PAGE, 2026-10-13), and Admin's panel only links to Schedules and Approvals (the owner, 2026-10-23). No Admin tab draws them a second time.</p>
 <figure class="fr"><div class="scroller" data-f="wya-d"></div><figcaption><b>S10a · Workspaces you admin, desktop (drawn for a workspace admin).</b> Each workspace with its own setup progress, so an admin of several sees which one is behind.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="limits-d"></div><figcaption><b>S10b · Pool limits, desktop.</b> The table as built, led by the pool closest to its ceiling. The cards below it (Additional repositories, Model prices, GitHub fallback token) are unchanged and folded here.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="sizes-d"></div><figcaption><b>S10c · Runner sizes, desktop.</b></figcaption></figure>
@@ -531,13 +531,13 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figure class="fr"><div data-f="tenants-p"></div><figcaption><b>S10i · Tenants, phone.</b></figcaption></figure>
 </div>
 
-<h2 id="notes">What the brief left open, and what BGD has since decided</h2>
+<h2 id="notes">What the brief left open, and what the owner has since decided</h2>
 <ul>
-  <li><b>Decided (BGD, 2026-10-23T23:55Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
+  <li><b>Decided (the owner, 2026-10-23T23:55Z): Settings › API keys</b> moves to Config › Secrets › Keys for agents and MCP, with person and workspace scopes, set through the one-time link as today (S4a, S4d). Settings keeps only Profile; the old addresses redirect.</li>
   <li><b>This proposal's call: "needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
-  <li><b>Decided (BGD, 2026-10-23T23:55Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
-  <li><b>Decided (BGD, 2026-10-23T23:55Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
-  <li><b>Decided (BGD, 2026-10-24T00:31Z): Config › People and roles</b> in a group workspace is readable by every member and viewer, and changeable only by a workspace admin or platform admin (S1d, S1g, S5g, S5h; admin S5b, S5e). A personal workspace has none (S1e). Admin › People and roles stays admin-only and cross-workspace.</li>
+  <li><b>Decided (the owner, 2026-10-23T23:55Z): Add a new workspace</b> in Workspace Settings is for platform admins only (S6c). A workspace admin sees their own workspaces' settings with no such tab (S6d); members keep Request your workspace in the setup checklist.</li>
+  <li><b>Decided (the owner, 2026-10-23T23:55Z): schedules and approvals</b> for every workspace stay in Automate; Admin only links to them (S1b, S1c).</li>
+  <li><b>Decided (the owner, 2026-10-24T00:31Z): Config › People and roles</b> in a group workspace is readable by every member and viewer, and changeable only by a workspace admin or platform admin (S1d, S1g, S5g, S5h; admin S5b, S5e). A personal workspace has none (S1e). Admin › People and roles stays admin-only and cross-workspace.</li>
 </ul>
 </main>
 <style>
@@ -671,7 +671,7 @@ function panel(x){
       h+=`<div class="pg">Platform</div>`+PI(x.page==='limits','config','Pool limits',C('1 near ceiling','wn'))+PI(x.page==='sizes','sizes','Runner sizes','')+PI(x.page==='tenants','building','Tenants',C('1 waiting','wn'))+
       PI(x.page==='counts','counts','Platform counts','')+PI(x.page==='psec','lock','Platform secrets',C('1','wn'));
     } else h+=`<p class="pnote">Showing Example Team and Example Labs, the workspaces you administer. The platform’s own pages are shown to platform admins only.</p>`;
-    /* schedules and approvals stay in Automate (BGD, 2026-10-23T23:55Z): Admin only links there */
+    /* schedules and approvals stay in Automate (the owner, 2026-10-23T23:55Z): Admin only links there */
     h+=`<div class="pg">In Automate</div>`+PI(false,'cal','Schedules ↗',x.role==='platform'?'<span class="sm12 dim">all workspaces</span>':'')+PI(false,'check','Approvals ↗',x.role==='platform'?C('3 waiting','wn'):'');
   } else if(x.sec==='settings'){
     h+=`<div class="sec">Settings</div>`+PI(true,'person','Profile','');
@@ -853,7 +853,7 @@ function mcp(ph){
     ['<span style="white-space:nowrap">docs-search</span>','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
   `<div class="fold">${I('chev')}<b>Addresses to allowlist</b><span class="dim sm12">2 hosts</span></div>`;
 }
-/* a member or viewer reads the same page with every change control taken off (BGD, 2026-10-24T00:31Z) */
+/* a member or viewer reads the same page with every change control taken off (the owner, 2026-10-24T00:31Z) */
 const ROSTER=[['dana@example.com','admin','a platform admin','9 d ago','workspace owner'],['Operator<small>you</small>','member','dana@example.com','6 d ago','runs agents'],['ali@example.com','member','dana@example.com','6 d ago','runs agents'],['mo@example.com','member','dana@example.com','4 d ago',''],['pat@example.com','viewer','dana@example.com','2 d ago','reads results'],['tess@example.com','viewer','dana@example.com','1 d ago','']];
 function cpeopleMember(ph){
   return LEAD('Step 4 of 4 · done','6 people hold a role in Example Team','You hold member, given by dana@example.com 6 d ago. Everyone else signed in to Example Team holds viewer, the default.','','ok')+
@@ -883,7 +883,7 @@ function apeople(ph,ws){
 }
 
 /* ================= S6 Workspace Settings ================= */
-/* Add a new workspace is a platform admin's tab only (BGD, 2026-10-23T23:55Z), the rule of Admin › Tenants › New workspace */
+/* Add a new workspace is a platform admin's tab only (the owner, 2026-10-23T23:55Z), the rule of Admin › Tenants › New workspace */
 const WSHD=(on,plat=true)=>({cr:'Config',h:'Workspace Settings',age:'read 2 min ago',tabs:plat?['Settings','Workspace setup','Add a new workspace']:['Settings','Workspace setup'],on});
 function wss(ph){
   return LEAD('Nothing here needs you','This page is set. Setup’s next step is on Secrets.','',B('Go to Secrets','p'),'ok')+

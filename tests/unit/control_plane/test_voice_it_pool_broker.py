@@ -37,9 +37,9 @@ from quota_broker.accounts import (
 )
 from quota_broker.accountstore import AccountStore
 
-OWNER = "u-bgd"
+OWNER = "u-the owner"
 ENG = "eng"
-PERSON = "bogdan@saga.xyz"
+PERSON = "owner@example.com"
 STRANGER = "someone@example.com"
 
 
@@ -52,7 +52,7 @@ class _Identity:
     def __init__(self) -> None:
         self.tenant: str | None = ENG
         self.platform = False
-        self.email = "eng-worker@test-project.iam.gserviceaccount.com"
+        self.email = "eng-worker@example-project.iam.gserviceaccount.com"
 
     def resolve(self, authorization):  # noqa: ANN001
         return (None, True) if self.platform else (self.tenant, False)
@@ -62,15 +62,15 @@ class _Identity:
 
     def as_tenant(self, tenant_id: str) -> None:
         self.tenant, self.platform = tenant_id, False
-        self.email = f"{tenant_id}-worker@test-project.iam.gserviceaccount.com"
+        self.email = f"{tenant_id}-worker@example-project.iam.gserviceaccount.com"
 
     def as_platform(self) -> None:
         self.tenant, self.platform = None, True
-        self.email = "swarm-api@test-project.iam.gserviceaccount.com"
+        self.email = "swarm-api@example-project.iam.gserviceaccount.com"
 
     def as_voice(self) -> None:
         self.tenant, self.platform = None, False
-        self.email = "swarm-voice@test-project.iam.gserviceaccount.com"
+        self.email = "swarm-voice@example-project.iam.gserviceaccount.com"
 
 
 class _Secrets:
@@ -111,10 +111,10 @@ def client(broker, accounts, monkeypatch):
     from quota_broker.main import create_app
 
     monkeypatch.delenv("PROJECT_ID", raising=False)
-    monkeypatch.setenv("VOICE_SERVICE_ACCOUNTS", "swarm-voice@test-project.iam.gserviceaccount.com")
+    monkeypatch.setenv("VOICE_SERVICE_ACCOUNTS", "swarm-voice@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("VOICE_IT_PEOPLE", PERSON)
     monkeypatch.setenv(
-        "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-worker-{tenant}@test-project.iam.gserviceaccount.com"
+        "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-worker-{tenant}@example-project.iam.gserviceaccount.com"
     )
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=accounts)
@@ -186,7 +186,7 @@ def _lease(client, person: str = PERSON, session: str = "vs-1"):
 
 
 def test_a_voice_only_account_is_never_assigned_to_any_workspace_task(client, accounts, broker):
-    """Engineering borrows it and BGD's personal workspace owns it; the only
+    """Engineering borrows it and the owner's personal workspace owns it; the only
     free openai account is still refused to both."""
     _reserve_lent(broker, client, accounts, OWNER, "chatgpt-1")
     for tenant in (ENG, OWNER):
@@ -512,7 +512,7 @@ def test_an_adder_is_refused_for_any_account_but_a_key(client, accounts):
 def test_a_registered_key_is_in_the_voice_it_pool_only_and_read_by_the_broker_alone(
     client, accounts, caplog
 ):
-    client.app.state.broker_service_account = "swarm-quota-broker@test-project.iam.gserviceaccount.com"
+    client.app.state.broker_service_account = "swarm-quota-broker@example-project.iam.gserviceaccount.com"
     key = "sk-proj-" + secrets.token_hex(24)
     with caplog.at_level("DEBUG"):
         registered = _register_key(client, credential=key)
@@ -525,7 +525,7 @@ def test_a_registered_key_is_in_the_voice_it_pool_only_and_read_by_the_broker_al
     base = accounts.secret_for(account)
     # One secret, the broker its only reader: no worker, no `-refresh`.
     assert client.secrets.accessors == {
-        base: ["serviceAccount:swarm-quota-broker@test-project.iam.gserviceaccount.com"]
+        base: ["serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com"]
     }
     assert key in client.secrets.latest[base]
     served = registered.json()["account"]

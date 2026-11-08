@@ -49,7 +49,7 @@
 .acct-verdict-wait > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* THE (i) (`Info`): a sentence that explained a label is its tooltip (no
-   prose on the surface, BGD 2026-11-05). A 16px ring in the dim ink after the
+   prose on the surface, owner 2026-11-05). A 16px ring in the dim ink after the
    label; the ::before widens its target to 24px without moving the line. */
 .acct-i {
   position: relative;
@@ -231,7 +231,7 @@
 .acct-card-meta { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 .acct-card-meta b { color: var(--text); font-weight: 600; }
 /* The id is pasted into commands, so it is read whole: on a line of its own
-   when it does not fit the rest of the line (`u-bogdan:five-hour-` / `floor`
+   when it does not fit the rest of the line (`u-owner:five-hour-` / `floor`
    at 390), and broken only when it is wider than the card. */
 .acct-card-meta .raw { display: inline-block; max-width: 100%; }
 .acct-card-more { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }

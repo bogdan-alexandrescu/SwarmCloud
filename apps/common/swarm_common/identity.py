@@ -5,7 +5,7 @@ There is no shared platform bearer token anywhere in this system: a shared
 secret carries no identity, and without identity there is no tenant to attribute
 a task to, no way to scope a list response, and no boundary to enforce.
 
-A TENANT IS A GOOGLE GROUP. `eng@saga.xyz` is one tenant whose members share a
+A TENANT IS A GOOGLE GROUP. `eng@example.com` is one tenant whose members share a
 quota budget, provider keys and artifacts. A user in no mapped group falls back
 to a personal tenant so nobody is ever hard-blocked from the platform.
 
@@ -65,9 +65,9 @@ class TenantMember:
     Every field is normalised ONCE, here, rather than at each comparison.
     """
 
-    email: str       # swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+    email: str       # swarm-ci-fix@example-project.iam.gserviceaccount.com
     kind: str        # "group" | "user" -- the tenant's kind
-    principal: str   # eng@saga.xyz -- the tenant's principal
+    principal: str   # eng@example.com -- the tenant's principal
     uid: str         # the account's OAuth2 unique id (the token's `sub`
                      # claim), from Terraform's
                      # data.google_service_account.unique_id -- pinned beside
@@ -166,7 +166,7 @@ def _slug(principal: str, prefix: str = "") -> str:
 
 
 def tenant_id_for_group(group_email: str) -> str:
-    """`eng@saga.xyz` -> `eng`. Stable, collision-free, safe as a k8s namespace."""
+    """`eng@example.com` -> `eng`. Stable, collision-free, safe as a k8s namespace."""
     return _slug(group_email)
 
 

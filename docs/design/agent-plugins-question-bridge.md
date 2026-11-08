@@ -1,6 +1,6 @@
 # The question bridge spike: a headless agent asks, parks and resumes the same session
 
-Part of the agent plugins plan (`docs/design/agent-plugins.md`, branch `agent-plugins-plan`; part of #2688). The
+Part of the agent plugins plan (`docs/design/agent-plugins.md`, branch `agent-plugins-plan`; part of the Day One install program). The
 owner's decisions of 3 November 2026: in **unattended** mode gstack answers the questions that carry a
 recommendation itself, and any other question parks the step until a person answers, then the same step resumes; in
 **planner** and **designer** modes every interview question parks the step, answered on the planning page or in
@@ -88,7 +88,7 @@ under the old directory's slug or the new one. With the file missing it exits 1 
 | `.claude/sessions/<pid>.json` | the running process's registry entry | no |
 | `.claude/session-env/<session>/`, `.claude/shell-snapshots/`, `.claude/backups/`, `.claude.json` | per-process state, settings backups, the trust flag | no (`.claude.json` is rewritten by `trust_workspace`) |
 
-The worker's checkpoint already archives all of `work/.claude/` (`checkpoint.py`, the owner's decision on #244),
+The worker's checkpoint already archives all of `work/.claude/` (`checkpoint.py`, the owner's decision on an earlier issue),
 masking JWT and `Bearer` values in a way that keeps each JSON line valid "so a resumed session reads it".
 
 **7. The question tool is available, so the fallback is not needed.** The brief's alternative, a SwarmCloud tool

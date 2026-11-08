@@ -1,6 +1,6 @@
 """A lane with `publish_to_pr` lands on that pull request's branch (#2183).
 
-Owner approval, BGD, 2026-10-24: ten mock-up review lanes had to open
+Owner approval, the owner, 2026-10-24: ten mock-up review lanes had to open
 replacement pull requests for pull requests that already existed. A step whose
 signed dispatch block carries `publish_to_pr: {number, task_id}` reads that
 pull request before anything is cloned, starts from its head, and at publish

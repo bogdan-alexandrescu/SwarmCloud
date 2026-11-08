@@ -601,7 +601,7 @@ def test_a_check_by_another_app_does_not_satisfy_a_pinned_required_check(
     client, db, objects, writes, clock
 ):
     running = _to_checking(client, db, objects, writes, clock)
-    writes.check(SHA_A, "unit", "success", app_id=999)
+    writes.check(SHA_A, "unit", "success", app_id=12345678)
 
     assert _read(client, clock, running["id"])["state"] == "CHECKING"
 

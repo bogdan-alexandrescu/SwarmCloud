@@ -34,7 +34,7 @@ class MemoryPurger:
     audit writes (`journal`), so a test can see what happened first."""
 
     def __init__(self, journal: list[str]) -> None:
-        self.bucket = "swarm-artifacts-test"
+        self.bucket = "swarm-artifacts-example-project"
         self.objects: dict[str, bytes] = {}
         self.deleted: list[str] = []
         self.listed: list[str] = []
@@ -171,7 +171,7 @@ def test_a_tenant_member_is_refused(client, db, purger):
 
 def test_the_pool_admin_capability_is_refused(db, tokens, group_map, objects, purger):
     _seed(db, purger)
-    gate = "gate@verify-project.iam.gserviceaccount.com"
+    gate = "gate@example-project.iam.gserviceaccount.com"
     tokens = dict(tokens, **{"token-gate": {"email": gate, "email_verified": True,
                                             "sub": "sub-gate"}})
     ctx = build_context(

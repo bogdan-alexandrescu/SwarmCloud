@@ -1,6 +1,6 @@
 """A merge step's CI wait that no re-check will end is handed to a person (part of #2688).
 
-Reported by BGD on 2026-11-06: a speech relay lane's merge step
+Reported by the owner on 2026-11-06: a speech relay lane's merge step
 (task_ffe63d609c5d4662ba8e) waited on CI for 8 hours over 28 attempts and
 nothing raised it. Each re-check is a new attempt and a new park, and
 `first_parked_at` restarts at every head a repair round pushes, so neither
