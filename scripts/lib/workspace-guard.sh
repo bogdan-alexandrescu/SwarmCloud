@@ -205,7 +205,7 @@ def obj_fail($ns; $flagns; $rules; $label):
        # A group or service namespace is admitted by the deployer scope
        # policy only with the job label (workspace-kinds §4.3, C7).
        elif ($label // null) != null and ($o.workspace_label // null) != $label then
-         "Namespace \($ns) does not carry swarm.saga.xyz/workspace: \($label)"
+         "Namespace \($ns) does not carry \($o.workspace_label_key // "the workspace label"): \($label)"
        else empty end)
     elif ($rules.kube_kinds | has_el($k)) | not then "kind \($k | tojson) is not one a tenant namespace holds"
     elif ($o.name // "") == "" then "a \($k) has no name"
@@ -479,7 +479,9 @@ def command_words($c; $rules):
 # that guesses is a reader a manifest can fool. The scope admission policy of
 # docs/workspaces.md §2.3 checks the same objects server-side.
 GUARD_MANIFEST_PY='
+import importlib.util
 import json
+import os
 import re
 import sys
 
@@ -532,7 +534,30 @@ def child_values(entry, what):
     return {k: plain(v) for k, v in found.items() if k in ("name", "namespace", "kind")}
 
 
-LABEL = "swarm.saga.xyz/workspace"
+_LABEL = []
+
+
+def workspace_label():
+    """<prefix>/workspace, the key the deployer scope policy admits a
+    namespace by, from kubernetes/label_prefix.py (the one rule: the setting
+    SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>). With neither, the
+    manifest is refused with the fixed sentence of that rule: a guessed key is one
+    the live policy may not match."""
+    if not _LABEL:
+        path = os.path.join(sys.argv[1], "kubernetes", "label_prefix.py")
+        spec = importlib.util.spec_from_file_location("swarm_guard_label_prefix", path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except OSError:
+            refuse("kubernetes/label_prefix.py could not be read, so no label key is known")
+        try:
+            _LABEL.append(module.label_key("workspace"))
+        except module.LabelPrefixError as exc:
+            refuse(str(exc))
+    return _LABEL[0]
+
+
 LABEL_LINE = re.compile(r"^( +)([A-Za-z0-9][A-Za-z0-9_./-]*):(?:[ \t]+(.*))?$")
 
 
@@ -558,9 +583,9 @@ def block_label(entry):
         if depth != label_indent:
             continue
         match = LABEL_LINE.match(line.rstrip())
-        if match and match.group(2) == LABEL:
+        if match and match.group(2) == workspace_label():
             if found is not None:
-                refuse("metadata.labels." + LABEL + " appears twice")
+                refuse("metadata.labels." + workspace_label() + " appears twice")
             found = plain(match.group(3) or "")
     return found
 
@@ -568,6 +593,8 @@ def block_label(entry):
 def obj(kind, meta, role_ref, label=None):
     item = {"kind": kind, "name": meta.get("name"), "namespace": meta.get("namespace"),
             "workspace_label": label}
+    if kind == "Namespace":
+        item["workspace_label_key"] = workspace_label()
     if role_ref is not None:
         item["role_ref"] = {"kind": role_ref.get("kind"), "name": role_ref.get("name")}
     return item
@@ -595,7 +622,7 @@ if stripped.startswith("{") or stripped.startswith("["):
         if not all(v is None or (isinstance(v, str) and NAME.match(v)) for v in values):
             refuse("a manifest name or kind is not a plain value")
         labels = meta.get("labels")
-        label = labels.get(LABEL) if isinstance(labels, dict) else None
+        label = labels.get(workspace_label()) if isinstance(labels, dict) and labels else None
         if label is not None and not (isinstance(label, str) and NAME.match(label)):
             refuse("a manifest label is not a plain value")
         objects.append(obj(doc.get("kind"), meta, role_ref, label))
@@ -985,7 +1012,7 @@ guard_judge() {
       if [[ "${GUARD_MANIFEST_GIVEN}" -eq 1 ]]; then
         if [[ -n "${GUARD_MANIFEST_ERR}" ]]; then
           objects_err="${GUARD_MANIFEST_ERR}"
-        elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" | python3 -c "${GUARD_MANIFEST_PY}")"; then
+        elif objects_text="$(printf '%s' "${GUARD_MANIFEST}" | python3 -c "${GUARD_MANIFEST_PY}" "${REPO_ROOT}")"; then
           # The judge reads it as JSON; what is not JSON, null or false is "the
           # manifest could not be read", as `jq -e .` used to decide here.
           objects_read=true
@@ -1514,6 +1541,9 @@ cmd_self_test() {
   export SWARM_ENV_FILE="${tmp}/no.env"
   export PROJECT_ID="saga-agents-staging" REGION="us-central1" ENVIRONMENT="dev"
   export FIRESTORE_DATABASE="swarm" GKE_CLUSTER="swarm-autopilot" GKE_LOCATION="us-central1"
+  # The label-key prefix the cases are written with (kubernetes/label_prefix.py):
+  # the placeholder organisation's, swarm.<example.com>, never a deployment's.
+  export SWARM_LABEL_PREFIX="swarm.example.com"
   unset ARTIFACT_BUCKET SWARM_CALL_GUARD_MODE SWARM_KUBECTL SWARM_APPROVAL_PIN
   export SWARM_CALL_GUARD="${tmp}/expect.json"
   # The placeholder never-touch list, keyed to this fixed project, through the

@@ -64,6 +64,8 @@ _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
 #: REGION, ZONE and a never-touch list served for the project a child names
 #: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
 placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The label-key prefix the suite renders with (kubernetes/label_prefix.py).
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 #: The shared project's cluster on the never-touch list the placeholder deployment
 #: serves: what a refusal "by the deny-list" names, never a real cluster.
 PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
@@ -543,7 +545,7 @@ def test_apply_renders_the_network_the_cluster_reports(tmp_path):
         f"the rendered internet rule does not except the cluster's ranges: {sorted(excepts)}"
     )
     annotations = policy["metadata"].get("annotations") or {}
-    assert annotations.get("swarm.saga.xyz/network-source") == SOURCE
+    assert annotations.get(f"{LABEL_PREFIX}/network-source") == SOURCE
 
     # Read from the cluster the context points at, through the context.
     gcloud = cluster.log("gcloud")
@@ -862,8 +864,8 @@ diff -u -N LIVE-3898782905/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker MERG
 @@ -6,7 +6,6 @@
      iam.gke.io/gcp-service-account: {TENANT_GSA}
      kubectl.kubernetes.io/last-applied-configuration: |
-       {{"apiVersion":"v1","automountServiceAccountToken":false,"kind":"ServiceAccount","metadata":{{"annotations":{{"iam.gke.io/gcp-service-account":"{TENANT_GSA}","swarm.saga.xyz/alias-of":"swarm-worker"}},"labels":{{"app.kubernetes.io/component":"agent-worker","app.kubernetes.io/part-of":"swarm","managed-by":"swarm-terraform","swarm-tenant":"eng"}},"name":"swarm-agent-worker","namespace":"{NAMESPACE}"}}}}
--    swarm.saga.xyz/alias-of: swarm-worker
+       {{"apiVersion":"v1","automountServiceAccountToken":false,"kind":"ServiceAccount","metadata":{{"annotations":{{"iam.gke.io/gcp-service-account":"{TENANT_GSA}","{LABEL_PREFIX}/alias-of":"swarm-worker"}},"labels":{{"app.kubernetes.io/component":"agent-worker","app.kubernetes.io/part-of":"swarm","managed-by":"swarm-terraform","swarm-tenant":"eng"}},"name":"swarm-agent-worker","namespace":"{NAMESPACE}"}}}}
+-    {LABEL_PREFIX}/alias-of: swarm-worker
    creationTimestamp: "2026-09-24T03:42:00Z"
    labels:
      app.kubernetes.io/component: agent-worker

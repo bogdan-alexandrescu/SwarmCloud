@@ -2847,7 +2847,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a group's namespace without the job's label",
@@ -2875,7 +2875,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: w-000000\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: w-000000\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a service's namespace with the job's label",
@@ -2889,7 +2889,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.saga.xyz/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
     },
     {
       "name": "a service's namespace without the job's label",

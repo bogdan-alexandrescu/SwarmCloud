@@ -161,8 +161,8 @@ spec:
     - name: labelled
       expression: >-
         has(namespaceObject.metadata.labels) &&
-        'swarm.saga.xyz/workspace' in namespaceObject.metadata.labels &&
-        namespaceObject.metadata.labels['swarm.saga.xyz/workspace'].matches('^w-[0-9a-f]{6}$')
+        '__LABEL_PREFIX__/workspace' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['__LABEL_PREFIX__/workspace'].matches('^w-[0-9a-f]{6}$')
     # What the tenant render produces, by `group/resource`: render.py's
     # TENANT_FILES, LEGACY_KSA_FILES and TENANT_FQDN_FILES (the one hostname
     # policy, rendered only where the cluster serves the kind). Not the spec-verify-keys ConfigMap:
@@ -205,7 +205,7 @@ spec:
       message: >-
         the workspace deployer writes only a Namespace named swarm-tenant-<tenant>,
         an object inside a swarm-tenant-u-<person> namespace, or an object inside
-        a namespace carrying swarm.saga.xyz/workspace, which only the deployer
+        a namespace carrying __LABEL_PREFIX__/workspace, which only the deployer
         writes and only on create. Every other namespace, and every other
         cluster-scoped object, belongs to someone else.
       reason: Forbidden
@@ -258,13 +258,13 @@ spec:
     # absent). oldObject is read only on UPDATE: it is null on CREATE.
     - name: label
       expression: >-
-        has(object.metadata.labels) && 'swarm.saga.xyz/workspace' in object.metadata.labels
-          ? object.metadata.labels['swarm.saga.xyz/workspace'] : ''
+        has(object.metadata.labels) && '__LABEL_PREFIX__/workspace' in object.metadata.labels
+          ? object.metadata.labels['__LABEL_PREFIX__/workspace'] : ''
     - name: old_label
       expression: >-
         request.operation == 'UPDATE' && has(oldObject.metadata.labels) &&
-        'swarm.saga.xyz/workspace' in oldObject.metadata.labels
-          ? oldObject.metadata.labels['swarm.saga.xyz/workspace'] : ''
+        '__LABEL_PREFIX__/workspace' in oldObject.metadata.labels
+          ? oldObject.metadata.labels['__LABEL_PREFIX__/workspace'] : ''
   validations:
     # The worker pod and Job policies in pod-security.yaml bind by this label.
     # A namespace without it is a namespace where Spot, bursting and
@@ -305,7 +305,7 @@ spec:
     - expression: >-
         variables.label == '' || variables.label.matches('^w-[0-9a-f]{6}$')
       message: >-
-        swarm.saga.xyz/workspace names the workspace that created the namespace,
+        __LABEL_PREFIX__/workspace names the workspace that created the namespace,
         w- and six hex digits.
       reason: Forbidden
 
@@ -314,7 +314,7 @@ spec:
         (variables.label != '' && (request.operation == 'CREATE' || variables.old_label != ''))
       message: >-
         a namespace outside swarm-tenant-u-* is created by the workspace deployer
-        only with swarm.saga.xyz/workspace, and updated only when it already
+        only with __LABEL_PREFIX__/workspace, and updated only when it already
         carries it. Labelling an existing namespace does not make it the
         deployer's.
       reason: Forbidden
@@ -322,7 +322,7 @@ spec:
     - expression: >-
         variables.old_label == '' || variables.label == variables.old_label
       message: >-
-        swarm.saga.xyz/workspace never changes and never goes once written.
+        __LABEL_PREFIX__/workspace never changes and never goes once written.
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

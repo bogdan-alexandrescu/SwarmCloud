@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -59,6 +60,12 @@ PYCACHE = Path(tempfile.gettempdir()) / f"swarm-test-pycache-{os.getuid()}"
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 PROJECT = "saga-agents-staging"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The label-key prefix the job's fixed environment carries (images/workspace-apply/
+#: entry.py, from its command's --label-prefix): the placeholder organisation's.
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 WORKSPACE = "w-3f9a2c"
 PRINCIPAL = "alice@example.com"
 TENANT = "u-alice"
@@ -267,6 +274,7 @@ class Job:
             GKE_LOCATION="us-central1",
             SWARM_CALL_GUARD=str(self.expect),
             SWARM_CALL_GUARD_ENFORCE="1",
+            SWARM_LABEL_PREFIX=LABEL_PREFIX,
             SWARM_WORKSPACE_RETRY_DELAYS="0 0 0",
             FAKE_WORLD=str(self.world_file),
             PYTHONPYCACHEPREFIX=str(PYCACHE),
@@ -785,6 +793,20 @@ def test_an_unreachable_cluster_fails_retryable_at_the_namespace(job: Job) -> No
     assert _field(record, "failure", "retryable") is True
     assert job.read()["k8s"] == {}
     assert job.doc(f"tenants/{TENANT}") is None, "A8 runs only after the namespace (§4.2's order)"
+
+
+def test_no_label_prefix_stops_the_run_after_a1_before_any_write(job: Job) -> None:
+    """The job's fixed environment names no SWARM_LABEL_PREFIX (a job command
+    without --label-prefix): the run stops with the one rule's fixed sentence
+    before A2, and nothing in the cluster or IAM is made under a guessed key."""
+    env = {k: v for k, v in job.env.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+    proc = job.create(env=env)
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the label-key prefix is not configured: set SWARM_LABEL_PREFIX" in out, out
+    assert "nothing past A1 can run" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1786,7 +1808,7 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
     namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
-    assert namespace["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    assert namespace["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"] == WORKSPACE
     tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
             _field(tenant, "service_account"), _field(tenant, "display_name")) == (
@@ -1953,9 +1975,9 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert world["secrets"][twin]["policy"].get("bindings", []) == []
     # A7: the label, on the Namespace and nowhere else.
     labelled = [k for k, v in world["k8s"].items()
-                if "swarm.saga.xyz/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
+                if f"{LABEL_PREFIX}/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
     assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
-    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"] == WORKSPACE
     # A8: a group tenant the directory resolves.
     tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
@@ -2046,7 +2068,7 @@ def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> Non
 def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
     world = copy.deepcopy(group_created["world"])
     world["calls"], world["writes"] = [], []
-    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"]
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"]
     job.write(world)
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)

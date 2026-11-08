@@ -256,6 +256,55 @@ def test_an_id_and_a_mode_reach_the_exec(entry, tmp_path, mode):
     assert env["SWARM_CALL_GUARD_ENFORCE"] == "1"
 
 
+#: The command's optional third element: the deployment's label-key prefix,
+#: the placeholder organisation's here.
+LABEL = "--label-prefix=swarm.example.com"
+
+
+@pytest.mark.parametrize("mode", ["create", "limits"])
+def test_the_commands_label_prefix_reaches_the_exec_as_the_setting(entry, tmp_path, mode):
+    """The job spec's --label-prefix is the one value of the fixed environment
+    that names the deployment's label keys (kubernetes/label_prefix.py)."""
+    rc, rec = _call(entry, tmp_path, [PIN, SIGNING, LABEL, WORKSPACE, mode], _cloud_run_env())
+    assert rc == 0
+    [(_, args, env)] = rec.execs
+    assert args[-2:] == [WORKSPACE, mode]
+    assert set(env) == FIXED | {"SWARM_LABEL_PREFIX"}
+    assert env["SWARM_LABEL_PREFIX"] == "swarm.example.com"
+
+
+def test_without_the_label_prefix_the_environment_carries_none(entry, tmp_path):
+    """Not a default: register-tenant.sh then stops after A1 with the one
+    rule's fixed sentence (test_register_tenant_workspace.py)."""
+    rc, rec = _call(entry, tmp_path, _pinned([WORKSPACE, "create"]),
+                    _cloud_run_env(SWARM_LABEL_PREFIX="swarm.example.net", SWARM_ORG_DOMAIN="example.net"))
+    assert rc == 0
+    [(_, _, env)] = rec.execs
+    assert "SWARM_LABEL_PREFIX" not in env and "SWARM_ORG_DOMAIN" not in env
+
+
+@pytest.mark.parametrize("argv", [
+    pytest.param([PIN, SIGNING, "--label-prefix=Swarm.Example.com", WORKSPACE, "create"], id="upper-case"),
+    pytest.param([PIN, SIGNING, "--label-prefix=swarm", WORKSPACE, "create"], id="no-dot"),
+    pytest.param([PIN, SIGNING, "--label-prefix=swarm.example.com/x", WORKSPACE, "create"], id="slash"),
+    pytest.param([PIN, SIGNING, "--label-prefix=", WORKSPACE, "create"], id="empty"),
+    pytest.param([PIN, SIGNING, "--label-prefix=swarm.example.com\nx", WORKSPACE, "create"], id="newline"),
+    pytest.param([PIN, SIGNING, WORKSPACE, LABEL, "create"], id="after-the-id"),
+    pytest.param([LABEL, PIN, SIGNING, WORKSPACE, "create"], id="first"),
+    pytest.param([PIN, SIGNING, LABEL, LABEL, WORKSPACE, "create"], id="twice"),
+])
+def test_a_label_prefix_out_of_place_or_shape_is_refused(entry, tmp_path, argv):
+    rc, rec = _call(entry, tmp_path, argv, _cloud_run_env())
+    _ran_nothing(rc, rec, tmp_path)
+
+
+def test_the_label_prefix_pattern_is_the_one_rules(entry):
+    spec = importlib.util.spec_from_file_location("swarm_entry_label_prefix", REPO / "kubernetes" / "label_prefix.py")
+    rule = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rule)
+    assert entry.LABEL_PREFIX_RE.pattern == f"--label-prefix=({rule.PREFIX.pattern})"
+
+
 @pytest.mark.parametrize("argv", [
     pytest.param([], id="none"),
     pytest.param([WORKSPACE, "create", "extra"], id="three"),

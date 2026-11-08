@@ -277,7 +277,7 @@ esac
 #            A6 makes the TEAM slot swarm-tenant-<g>-git and its -refresh twin,
 #            empty, the worker on the slot only; members' own slots are the
 #            credential broker's (Q6 (a)). A7 labels the namespace
-#            swarm.saga.xyz/workspace=<w-id>, the label the deployer's scope
+#            <prefix>/workspace=<w-id>, the label the deployer's scope
 #            policy admits it by. A8 writes kind=group and directory_group.
 #   service  a service account of THIS project (Q7 (a)), filed under its
 #            personal id. A1 refuses a decision or a retry by anyone but the
@@ -301,9 +301,11 @@ WS_TENANT_RE='^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 WS_GROUP_TENANT_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # A group's directory check is good for this long (§4.1, `directory`).
 WS_DIRECTORY_MAX_AGE=86400
-# The label A7 puts on a group's or a service's namespace (kubernetes/render.py
-# WORKSPACE_LABEL); A9 reads it back.
-WS_NAMESPACE_LABEL="swarm.saga.xyz/workspace"
+# The key of the label A7 puts on a group's or a service's namespace
+# (kubernetes/render.py workspace_label()); A9 reads it back. Its prefix is the
+# deployment's setting (kubernetes/label_prefix.py), so ws_load_names reads it
+# after A1, never this file.
+WS_NAMESPACE_LABEL=""
 # Lower-cased, as swarm-api stores a principal; narrow enough that an address
 # is safe in a Firestore document path and a jq string.
 WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
@@ -800,6 +802,12 @@ ws_load_names() {
   WS_FORGE_SLOT="$(ws_expect forge_slot)"
   WS_FORGE_TWIN="$(ws_expect forge_slot_twin)"
   WS_LABEL="$(ws_expect namespace_label)"
+  # The label's key, from the one rule (SWARM_LABEL_PREFIX, else
+  # swarm.<SWARM_ORG_DOMAIN>). With neither the run stops here, before any
+  # write past A1: A7's render would refuse anyway, and A9 must never read a
+  # namespace back under a guessed key.
+  WS_NAMESPACE_LABEL="$(python3 "${REPO_ROOT}/kubernetes/label_prefix.py" --key workspace)" \
+    || die "the label-key prefix is not configured (above); nothing past A1 can run"
   WS_SERVICE="$(ws_expect service_principal)"
   WS_FRONT_DOOR="$(ws_expect front_door_backend)"
   WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"

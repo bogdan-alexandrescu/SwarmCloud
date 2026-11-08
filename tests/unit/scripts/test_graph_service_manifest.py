@@ -72,8 +72,14 @@ def _constant(path: Path, name: str) -> str:
     return found.group(1).strip()
 
 
+#: The label-key prefix kubernetes/apply.sh fills over the template's
+#: __LABEL_PREFIX__ (kubernetes/label_prefix.py): the placeholder organisation's.
+LABEL_PREFIX = "swarm.example.com"
+
+
 def _rendered() -> list[dict[str, Any]]:
     text = TEMPLATE.read_text()
+    text = text.replace("__LABEL_PREFIX__", LABEL_PREFIX)
     text = text.replace("__GRAPH_CONFIG_JSON__", '{"enabled":false}')
     text = text.replace("__SWARM_API_EGRESS_CIDR__", FAKE_API_CIDR)
     text = text.replace("__GRAPH_STATS_ADDRESS__", FAKE_STATS_ADDRESS)
@@ -348,7 +354,7 @@ def test_the_kill_switch_is_a_mounted_directory_with_exactly_its_keys():
     assert volume["name"] == mount["name"]
     assert volume["configMap"]["name"] == "swarm-graph-config"
     annotations = _deployment()["spec"]["template"]["metadata"]["annotations"]
-    assert "swarm.saga.xyz/config-sha256" in annotations
+    assert f"{LABEL_PREFIX}/config-sha256" in annotations
 
 
 def test_the_rendered_setting_has_exactly_the_keys_the_service_accepts():
@@ -361,7 +367,9 @@ def test_the_rendered_setting_has_exactly_the_keys_the_service_accepts():
 
 
 def test_the_placeholders_are_the_ones_terraform_fills():
-    placeholders = set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text()))
+    # And the label prefix, which kubernetes/apply.sh fills, not terraform.
+    placeholders = set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) - {"__LABEL_PREFIX__"}
+    assert "__LABEL_PREFIX__" in TEMPLATE.read_text()
     assert placeholders == {"__SWARM_GRAPH_IMAGE__", "__GRAPH_TICKET_KEY_VERSION__",
                             "__GRAPH_BUCKET__", "__GRAPH_CONFIG_JSON__",
                             "__GRAPH_CONFIG_SHA256__", "__SWARM_API_EGRESS_CIDR__",

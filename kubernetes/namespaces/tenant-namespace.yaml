@@ -59,9 +59,9 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/warn-version: latest
   annotations:
-    swarm.saga.xyz/tenant: __TENANT_ID__
-    swarm.saga.xyz/service-account: __GSA_EMAIL__
-    swarm.saga.xyz/description: >-
+    __LABEL_PREFIX__/tenant: __TENANT_ID__
+    __LABEL_PREFIX__/service-account: __GSA_EMAIL__
+    __LABEL_PREFIX__/description: >-
       Agent swarm tenant namespace. Workers here hold the tenant's own Google
       service account through Workload Identity and can reach nothing belonging
       to any other tenant.

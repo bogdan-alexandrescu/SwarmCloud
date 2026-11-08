@@ -144,6 +144,9 @@ def _relay_manifest(api_cidr: str = FAKE_API_CIDR) -> str:
         "__LIVE_KEY_VERSION__": f"projects/{PROJECT}/secrets/swarm-live-key/versions/latest",
         "__SWARM_LIVE_ILB_IP__": "10.123.16.42",
         "__SWARM_API_EGRESS_CIDR__": api_cidr,
+        # terraform leaves the key prefix for kubernetes/apply.sh to fill
+        # (kubernetes/label_prefix.py).
+        "__LABEL_PREFIX__": f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}",
     }
     text = RELAY_TEMPLATE.read_text()
     for placeholder, value in values.items():
@@ -222,9 +225,14 @@ def test_every_tenant_namespace_carries_the_label_the_relay_admits_and_swarm_sys
 #: acceptance criterion of LB-L6: "the existing policy renders byte-identical".
 #: A deliberate later change to one of these files updates its digest here,
 #: with the reason in the commit.
+#: Re-read for the label-key prefix (2026-11-08, part of #2688): every key is
+#: `__LABEL_PREFIX__/<name>`, and these digests are of the render under the
+#: placeholder organisation's prefix (conftest.py's SWARM_ORG_DOMAIN). With
+#: SWARM_LABEL_PREFIX set to the prefix the files carried before, both files
+#: render to the digests recorded at 28d6988 byte for byte.
 PRE_L6_DIGESTS = {
-    "network-policies/default-deny.yaml": "3cafd43f2f6c5412cc53eeb2f222bd4d9a5f84c688bfaa79f027125bc33bbb68",
-    "network-policies/allow-egress.yaml": "0a3754646d11bba7a0abb3961b8f9c3ac698f7ae1ca19f2b1d95cc0d26382d28",
+    "network-policies/default-deny.yaml": "a0add065effff597a39797b24e8cd4469f4bfea834ad28da20d8197a05d59c30",
+    "network-policies/allow-egress.yaml": "61971de50a43220e61e5831dbe19e1cc0769e6e405892b42bddc688d68652af7",
 }
 #: Re-read for CACHE-PVC (2026-10-15): the tenant ResourceQuota admits one cache
 #: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
@@ -238,7 +246,11 @@ PRE_L6_DIGESTS = {
 #: Re-read for the generic-repository program (2026-11-08, part of #2688): the
 #: tenant manifests' comments name roles and placeholders; every rendered
 #: document parses to the same objects as before.
-PRE_L6_TENANT_RENDER = "9688fcb01407ed3cd95900cb91ae2a6e828984108d75b557db44b25e2efa96f0"
+#: Re-read for the label-key prefix (2026-11-08, part of #2688): rendered
+#: under the placeholder organisation's prefix; with SWARM_LABEL_PREFIX set to
+#: the prefix the manifests carried before, the render's digest is the one
+#: this constant held until then, byte for byte.
+PRE_L6_TENANT_RENDER = "26326d485285f50dc1b31fb3b8f003fc06ca3c790a8a1032c2f24382fccf0b5a"
 
 
 def _tenant_values() -> dict[str, str]:
@@ -323,14 +335,14 @@ def test_the_relay_admits_only_tcp_8080_from_labelled_pods_and_swarm_apis_range(
 
 def test_the_rendered_range_is_recorded_on_the_policy(system_docs):
     annotations = _one(system_docs, parity.LIVE_INGRESS_POLICY)["metadata"]["annotations"]
-    assert annotations[parity.API_CIDR_ANNOTATION] == FAKE_API_CIDR
-    assert annotations[parity.SOURCE_ANNOTATION] == f"run/{PROJECT}/us-central1/swarm-api/{FAKE_SUBNET}"
+    assert annotations[parity.api_cidr_annotation()] == FAKE_API_CIDR
+    assert annotations[parity.source_annotation()] == f"run/{PROJECT}/us-central1/swarm-api/{FAKE_SUBNET}"
 
 
 def test_an_offline_swarm_system_render_is_marked_not_for_apply():
     docs = _docs(_run("swarm-system"))
     annotations = _one(docs, parity.LIVE_INGRESS_POLICY)["metadata"]["annotations"]
-    assert annotations[parity.SOURCE_ANNOTATION] == parity.OFFLINE_SOURCE
+    assert annotations[parity.source_annotation()] == parity.OFFLINE_SOURCE
 
 
 @pytest.mark.parametrize(
@@ -374,7 +386,7 @@ def _mutants_of_ingress(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     mutant("a range that is not swarm-api's")["spec"]["ingress"][-1]["from"][0]["ipBlock"]["cidr"] = "10.40.0.0/16"
     mutant("every pod in swarm-system")["spec"]["podSelector"] = {}
     mutant("egress too")["spec"]["policyTypes"].append("Egress")
-    mutant("an annotation that disagrees")["metadata"]["annotations"][parity.API_CIDR_ANNOTATION] = "10.1.0.0/20"
+    mutant("an annotation that disagrees")["metadata"]["annotations"][parity.api_cidr_annotation()] = "10.1.0.0/20"
     mutant("another namespace")["metadata"]["namespace"] = "default"
     mutant("a rule with no source")["spec"]["ingress"].append({"ports": [{"protocol": "TCP", "port": parity.LIVE_PORT}]})
     return mutants
