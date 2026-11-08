@@ -1120,7 +1120,7 @@ def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run
     add a job from application.yml/terraform.yml to the required list."""
     text = CI_DOC.read_text()
     match = re.search(
-        r"```bash\n([^`]*?gh api --method PUT \\\n\s+repos/"
+        r"```bash\n(gh api --method PUT \\\n\s+repos/"
         + re.escape(placeholders.GITHUB_REPOSITORY)
         + r"/branches/main/protection.*?)```",
         text,
@@ -1128,7 +1128,7 @@ def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run
     )
     assert match, "docs/ci.md does not carry the branch-protection `gh api` command"
     block = match.group(1)
-    payload_match = re.search(r"<<'JSON' \|\n(.*?)\nJSON\ngh api --method PUT ", block, re.DOTALL)
+    payload_match = re.search(r"<<'JSON'\n(.*?)\nJSON", block, re.DOTALL)
     assert payload_match, block
     payload = json.loads(payload_match.group(1))
     required = payload["required_status_checks"]
@@ -1136,24 +1136,7 @@ def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run
     # hold every pull request that fell behind main forever.
     assert required["strict"] is False, required
     checks = required["checks"]
-    assert checks, required
-    # Pinned to GitHub Actions: the App id is read at run time (the number
-    # itself is a value the deployment-values guard refuses on an added line)
-    # and jq sets it on every check before the PUT reads it from stdin.
-    assert 'actions_app_id="$(gh api apps/github-actions --jq .id)"' in block, block
-    assert (
-        """jq --argjson app "$actions_app_id" '.required_status_checks.checks[].app_id = $app'"""
-        in block
-    ), block
-    assert block.rstrip().endswith("--input -"), block
-    filter_match = re.search(r"jq --argjson app \"\$actions_app_id\" '([^']+)'", block)
-    assert filter_match, block
-    app_id = sum(map(ord, "github-actions"))  # any id: the filter must copy it onto every check
-    pinned = json.loads(subprocess.run(
-        ["jq", "--argjson", "app", str(app_id), filter_match.group(1)],
-        input=payload_match.group(1), capture_output=True, text=True, check=True,
-    ).stdout)
-    assert all(check.get("app_id") == app_id for check in pinned["required_status_checks"]["checks"]), pinned
+    assert checks and all(check.get("app_id") == 15368 for check in checks), checks
     contexts = {check["context"] for check in checks}
 
     always_run = _job_check_names(WORKFLOWS / ALWAYS_RUN_WORKFLOW)

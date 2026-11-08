@@ -79,7 +79,7 @@
       "pytest.org", "mypy-lang.org", "checkov.io", "aquasec.com", "trivy.dev", "chromium.org",
       "gitlab.com", "bitbucket.org", "httpbin.org", "opencollective.com"
     ],
-    "_rulings": "The owner's rulings of 2026-11-07 (part of #2688): the entries below are public or generic, not deployment values. Each carries its reason in `why`. Nothing on the private pattern list may be added here; a tenant slug that a list entry matches is reported regardless (deployment_values.py, Allow.screened).",
+    "_rulings": "The owner's rulings of 2026-11-07 (part of #2688): the entries below are public or generic, not deployment values. Each carries its reason in `why`. Nothing on the private pattern list may be added here; a tenant slug that a list entry matches is reported regardless (deployment_values.py, Allow.screened). The one exception is `code_owner_handles`, by the owner's ruling of 2026-11-08: the owner's code-owner handle, allowed in .github/CODEOWNERS only and recorded as a sha256 digest, so this file names no person.",
     "public_product_hosts": [
       {"host": "api.typesafe.ai", "why": "the TypeSafe provider's public API host; the worker, scheduler, API and forwarder call it"},
       {"host": "eu.typesafe.ai", "why": "the TypeSafe provider's public regional API host; a compatibility test passes it on purpose"},
@@ -158,6 +158,22 @@
       {"slug": "u-alice-browser-login-github", "why": "the placeholder person's browser-login secret stem in a Terraform test"},
       {"slug": "u-a-browser-login-github", "why": "a one-letter person's browser-login secret stem in a unit test"},
       {"slug": "u-owner", "why": "the personal placeholder workspace the console's fixtures name; a generic test workspace"}
+    ],
+    "public_app_ids": [
+      {"id": "15368", "why": "GitHub Actions' public App id; docs/ci.md's branch-protection command pins every required check to it, so a check of the same name posted by any other App cannot satisfy the rule"}
+    ],
+    "release_home": {
+      "_why": "The owner's ruling of 2026-11-08 (part of #2688): the release home is a product address, not a deployment value. It is the public bucket and project every release is published to and every install fetches from (scripts/release-home.sh, scripts/release/publish.sh).",
+      "buckets": [
+        {"bucket": "swarmcloud", "why": "the release home's public bucket: releases are uploaded to it and installs download from it"}
+      ],
+      "projects": [
+        {"project": "swarmcloud-prod", "why": "the release home's project, which holds the bucket, the image repository and the signing key"},
+        {"project": "swarmcloud-releases", "why": "the release home's alternate project id, which publish.sh also accepts as the release home"}
+      ]
+    },
+    "code_owner_handles": [
+      {"path": ".github/CODEOWNERS", "sha256": "28b24dcd1b56bffeb683ba1c335ecefac4a1e9d2e1a86ed173fc950cae6d018a", "why": "the owner's ruling of 2026-11-08 (part of #2688): the owner's code-owner handle is allowed in this one file, nowhere else; the digest is of the handle as written, @ included"}
     ],
     "exempt_lines": [
       {"path": "LICENSE", "line": 3, "why": "the licence holder's copyright line, kept by the owner's legal decision of 2026-11-07"}

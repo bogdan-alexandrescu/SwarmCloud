@@ -93,14 +93,19 @@ class Allow:
     url_paths: tuple[str, ...] = ()
     tenant_slugs: frozenset[str] = frozenset()
     exempt: frozenset[tuple[str, int]] = frozenset()
+    #: The owner's rulings of 2026-11-08: (path, sha256 of the handle) pairs; a
+    #: handle is allowed only in its one file (placeholders.json `code_owner_handles`).
+    handles: frozenset[tuple[str, str]] = frozenset()
 
     @classmethod
     def load(cls, path: Path = PLACEHOLDERS) -> Allow:
         data = json.loads(path.read_text(encoding="utf-8"))
         allow = data["allowlist"]
         domains = tuple(allow["domains"])
+        home = allow["release_home"]
         return cls(
-            projects=frozenset([*data["projects"].values(), *allow["public_projects"]]),
+            projects=frozenset([*data["projects"].values(), *allow["public_projects"],
+                                *(e["project"] for e in home["projects"])]),
             numbers=frozenset(data["project_numbers"].values()),
             domains=domains,
             reserved_tlds=frozenset(allow["reserved_tlds"]),
@@ -109,14 +114,17 @@ class Allow:
                                  *(e["address"].lower() for e in allow["public_service_addresses"])]),
             hosts=domains + tuple(allow["public_hosts"]) + tuple(e["host"] for e in allow["public_product_hosts"]),
             tailnet=data["tailnet"],
-            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"]]),
+            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"],
+                               *(e["bucket"] for e in home["buckets"])]),
             tenants=frozenset(data["tenants"]),
-            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"]]),
+            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"],
+                               *(e["id"] for e in allow["public_app_ids"])]),
             repository=data["github"]["repository"],
             cluster_suffixes=frozenset(e["suffix"] for e in allow["cluster_dns_suffixes"]),
             url_paths=tuple(e["path"] for e in allow["public_url_paths"]),
             tenant_slugs=frozenset(e["slug"] for e in allow["tenant_slugs"]),
             exempt=frozenset((e["path"], int(e["line"])) for e in allow["exempt_lines"]),
+            handles=frozenset((e["path"], e["sha256"]) for e in allow["code_owner_handles"]),
         )
 
     def screened(self, entries: list[Entry]) -> Allow:
@@ -457,6 +465,21 @@ def _mask_address(source: Source, address: str | None, allow: Allow) -> str:
     return re.sub(re.escape(address), allow.repository, source.text, flags=re.IGNORECASE)
 
 
+#: A forge handle as CODEOWNERS writes it: `@name`, not part of an address.
+_HANDLE = re.compile(r"(?<![A-Za-z0-9_.-])@[A-Za-z0-9][A-Za-z0-9-]{0,38}(?![A-Za-z0-9_-])")
+
+
+def _mask_handles(path: str, text: str, allow: Allow) -> str:
+    """TEXT with each handle allowed in PATH replaced by the placeholder owner's,
+    so neither layer reads it. Elsewhere the same handle is still found."""
+    digests = {d for p, d in allow.handles if p == path}
+    if not digests:
+        return text
+    placeholder = "@" + allow.repository.split("/", 1)[0]
+    return _HANDLE.sub(
+        lambda m: placeholder if hashlib.sha256(m.group(0).encode()).hexdigest() in digests else m.group(0), text)
+
+
 def scan(sources: Iterable[Source], allow: Allow, entries: list[Entry], *, archive_refs: bool,
          address: str | None) -> list[Finding]:
     rules = SHAPE_RULES + ((ARCHIVE_RULE,) if archive_refs else ())
@@ -466,6 +489,7 @@ def scan(sources: Iterable[Source], allow: Allow, entries: list[Entry], *, archi
             found.add(Finding(source.path, 1, "C10", "tracked-file"))
         if not source.text or source.lines == set():
             continue
+        source = replace(source, text=_mask_handles(source.path, source.text, allow))
         starts = [0] + [m.end() for m in re.finditer("\n", source.text)]
 
         def line_of(offset: int) -> int:

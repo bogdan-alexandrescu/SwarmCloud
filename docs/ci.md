@@ -3470,17 +3470,19 @@ skipped by a path filter as **pending, forever**, not as passed, so a required
 check list may hold only checks that report on every pull request:
 
 ```bash
-actions_app_id="$(gh api apps/github-actions --jq .id)"
-jq --argjson app "$actions_app_id" '.required_status_checks.checks[].app_id = $app' <<'JSON' |
+gh api --method PUT \
+  repos/example-org/example-repo/branches/main/protection \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
 {
   "required_status_checks": {
     "strict": false,
     "checks": [
-      {"context": "trivy (repo)"},
-      {"context": "secret scan"},
-      {"context": "checkov (terraform + kubernetes)"},
-      {"context": "platform policy assertions"},
-      {"context": "deployment-values"}
+      {"context": "trivy (repo)", "app_id": 15368},
+      {"context": "secret scan", "app_id": 15368},
+      {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
+      {"context": "platform policy assertions", "app_id": 15368},
+      {"context": "deployment-values", "app_id": 15368}
     ]
   },
   "enforce_admins": false,
@@ -3488,10 +3490,6 @@ jq --argjson app "$actions_app_id" '.required_status_checks.checks[].app_id = $a
   "restrictions": null
 }
 JSON
-gh api --method PUT \
-  repos/example-org/example-repo/branches/main/protection \
-  -H "Accept: application/vnd.github+json" \
-  --input -
 ```
 
 Why each value:
@@ -3510,10 +3508,8 @@ Why each value:
   `auto-merge.yml`'s gate (above) is what still holds the merge on these when
   they DO run: it reads the head commit's check runs directly and refuses to
   queue while any of them is failing or still in progress, required or not.
-* **`app_id`** is GitHub Actions' App, read at run time from
-  `gh api apps/github-actions`; `jq` sets it on every check. Pinning it means a
-  check of the same name posted by any other App or token cannot satisfy the
-  rule.
+* **`app_id: 15368`** is GitHub Actions. Pinning it means a check of the same
+  name posted by any other App or token cannot satisfy the rule.
 * **`strict: false`**: auto-merge never updates a branch, so "must be up to
   date with main" would hold every pull request that fell behind main until a
   person clicked *Update branch* — the session dependency this removes.
