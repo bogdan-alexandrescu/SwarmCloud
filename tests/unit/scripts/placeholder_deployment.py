@@ -53,7 +53,8 @@ MARKER_HELP = (
     "(it proves what common.sh does without them)"
 )
 #: The variables this deployment sets; an opted-out test sees none of them.
-NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME")
+NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME",
+         "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL")
 #: The environments the repository's tfvars examples name; a child's own gets its list too.
 ENVIRONMENTS = ("dev", "prod")
 
@@ -73,6 +74,10 @@ ZONE: str = _P.ZONE
 #: The placeholder list's entries by kind (cluster, network, subnet, bucket, service_account):
 #: what a test that proves a never-touch refusal names, never a real resource.
 PEER: dict[str, str] = dict(_P.PEER)
+#: The deployment's private acceptance sandbox: configuration with no default in
+#: scripts/acceptance/config.sh (Terraform renders it on the swarm-verify job), so
+#: a child gets the placeholder repository's clone URL, never a real sandbox.
+SANDBOX_REPOSITORY_URL: str = f"https://github.com/{_P.GITHUB_REPOSITORY}.git"
 
 
 def write_deny_list(config_dir: Path, project: str, envs: tuple[str, ...] | list[str] = ENVIRONMENTS) -> None:
@@ -131,18 +136,20 @@ class PlaceholderDeployment:
         return self.root / "projects" / project / "config"
 
     def env(self) -> dict[str, str]:
-        """The variables a child needs: the placeholder project, region, zone and list."""
+        """The variables a child needs: the placeholder project, region, zone, sandbox and list."""
         return {
             "PROJECT_ID": PROJECT,
             "REGION": REGION,
             "ZONE": ZONE,
             "SWARM_DEPLOY_CONFIG_DIR": str(self.config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
+            "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,
         }
 
     def child_env(self, project: str = PROJECT, environment: str = "dev") -> dict[str, str]:
         """For a test that builds its child's environment from scratch: the placeholder
-        region and zone, and the placeholder list served for PROJECT in ENVIRONMENT."""
+        region and zone, the placeholder sandbox, and the placeholder list served for
+        PROJECT in ENVIRONMENT."""
         config_dir = self.config_dir_for(project)
         write_deny_list(config_dir, project, sorted({*ENVIRONMENTS, environment}))
         return {
@@ -150,6 +157,7 @@ class PlaceholderDeployment:
             "ZONE": ZONE,
             "SWARM_DEPLOY_CONFIG_DIR": str(config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
+            "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,
         }
 
     def serve(self, env: Mapping[str, str]) -> dict[str, str] | None:

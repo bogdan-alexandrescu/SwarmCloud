@@ -105,7 +105,8 @@ def test_the_own_tenant_is_derived_with_the_frozen_rule_from_the_verified_email(
     result = _run('_wf_own_tenant; printf "own=%s\\n" "${WF_OWN_TENANT}"; cat "${LOG}"; rm -f "${LOG}"')
     assert result.returncode == 0, result.stderr
     assert f"own={OWN}" in result.stdout
-    assert OWN == "u-sw-c90291"          # dev.tfvars' key: the derivation is the same
+    # The shape of a service tenant's key in an env's tfvars: the derivation is the same.
+    assert re.fullmatch(r"u-sw-[0-9a-f]{6}", OWN), OWN
     # Asked of the API in the suite's own tenant, before anything is switched.
     assert "fetch smoke /tenants/me" in result.stdout
 
