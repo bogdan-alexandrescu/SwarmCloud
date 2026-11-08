@@ -1,0 +1,1386 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index 5dca046..c89fd9e 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -44,6 +44,7 @@ import { GitHubCallbackScreen } from './GitHubConnect'
+ import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
+ import { McpServersScreen } from './McpServers'
+ import { ConfigPluginsScreen } from './ConfigPlugins'
++import { MpCardsScreen, mpCardsFor } from './MpCards' // MOCK-HOOK
+ import { SecretsScreen } from './Secrets'
+ import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
+ import { SetupStrip } from './ConfigSetup'
+@@ -599,6 +600,7 @@ export const SECTIONS: SectionDef[] = [
+       // S7): each platform secret's status from Secret Manager metadata. No
+       // value and no form: the operator's script writes every one of them.
+       { id: 'platform-secrets', label: 'Platform secrets', admin: true },
++      { id: 'plugins', label: 'Plugins', admin: true }, // MOCK-HOOK
+       // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1,
+       // §5.2): Admin › Setup, the people part of an install that swarm
+       // install hands over to the console, and its Health page, the
+@@ -2513,6 +2515,8 @@ function SectionBody({
+   // One workspace's page under Admin › Workspaces (`/admin/workspaces/<tenant>`).
+   const wsPage = workspacePageOf({ sectionId, tab, view })
+   if (wsPage !== null) return <WorkspacePageRoute tenant={wsPage.tenant} tab={wsPage.tab} onView={onView} go={go} />
++  const mpCards = mpCardsFor(`${sectionId}/${tab}`) // MOCK-HOOK
++  if (mpCards !== null) return mpCards // MOCK-HOOK
+   switch (`${sectionId}/${tab}`) {
+     case 'overview/now':
+       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
+@@ -2587,6 +2591,8 @@ function SectionBody({
+       return <PlatformCountsScreen />
+     case 'admin/people':
+       return <PeopleScreen />
++    /* // MOCK-HOOK */ case 'admin/plugins':
++      return <MpCardsScreen where="admin" /> // MOCK-HOOK
+     case 'admin/platform-secrets':
+       return <AdminPlatformSecretsScreen />
+     case 'admin/workspaces':
+diff --git a/apps/swarm-ui/src/MpCards.tsx b/apps/swarm-ui/src/MpCards.tsx
+new file mode 100644
+index 0000000..65d868d
+--- /dev/null
++++ b/apps/swarm-ui/src/MpCards.tsx
+@@ -0,0 +1,1028 @@
++// MOCK-HOOK FILE
++/**
++ * MANAGED PLUGINS, DIRECTION "CARDS" (mock-up only, ?mp=cards). The catalogue
++ * is a grid of cards, Add plugin is a full page (source left, live manifest
++ * preview right, then settings), and each plugin has its own page with tabs
++ * Overview, Settings, Versions and Usage. Every fixture here is invented
++ * (MOCK-HOOK): no route serves any of it.
++ *
++ * Addresses: /admin/plugins?mp=cards&s=<state> (the platform catalogue) and
++ * /config/plugins?mp=cards&s=<state> (Engineering's), /submit/workflow?mp=cards
++ * for the builder's step sheet. `s` is catalogue | switches | add | plugin |
++ * update; `p` names a plugin, `tab` a tab, `src` a source, `st` a state.
++ */
++import { Fragment, useEffect, useState, type ReactNode } from 'react'
++import { Banner, Button, Chip, Tabs, TypedConfirm } from './components'
++import { InfoTip } from './People'
++import { PageHead } from './Shell'
++import './styles/pluginsheet.css'
++import './styles/mpc.css'
++
++/* ---------------------------------------------------------------- fixtures */
++
++type Scope = 'builtin' | 'platform' | 'workspace'
++type FieldType = 'string' | 'number' | 'boolean'
++interface UcField { key: string; type: FieldType; title: string; description: string; sensitive?: boolean; default?: string | number | boolean }
++interface Hook { event: string; matcher?: string; command: string }
++interface Plugin {
++  name: string
++  mono: string
++  /** plugin.json's description, as the manifest says it. */
++  description: string
++  version: string
++  scope: Scope
++  source: string
++  license?: string
++  commit?: string
++  digest: string
++  installedBy: string
++  installedAt: string
++  skills: { name: string; offered: boolean }[]
++  hooks: Hook[]
++  commands: string[]
++  agents: string[]
++  mcp: string[]
++  profiles: string[]
++  needs: { node?: string; hosts: string[] }
++  userConfig: UcField[]
++  allowed: boolean
++  everyStep: boolean
++  /** Platform: the workspaces that allow it. */
++  allowedIn?: string[]
++}
++
++const CC = ['claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser', 'claude-code-lightpanda']
++
++const GSTACK_SKILLS = ['review', 'investigate', 'health', 'qa-only', 'qa', 'design-review', 'document-generate', 'document-release', 'ship',
++  'plan-eng-review', 'plan-design-review', 'autoplan', 'office-hours', 'plan-ceo-review', 'plan-devex-review', 'spec',
++  'design-consultation', 'design-html', 'cso']
++
++const BELAY_UC: UcField[] = [
++  { key: 'typesafe_api_key', type: 'string', title: 'TypeSafe API key', description: 'The key belay sends each Stop check to TypeSafe with.', sensitive: true },
++  { key: 'threshold', type: 'number', title: 'Threshold', description: 'The score below which a turn is held back (0 to 1).', default: 0.7 },
++  { key: 'check', type: 'boolean', title: 'Check', description: 'Run the check on every Stop.', default: true },
++  { key: 'log', type: 'boolean', title: 'Log', description: 'Write each verdict to the step log.', default: true },
++  { key: 'shadow', type: 'boolean', title: 'Shadow', description: 'Report only: never hold a turn back.', default: false },
++]
++
++// MOCK-HOOK: the platform's three workspaces, and who allowed a platform plugin in each.
++const WORKSPACES = [
++  { name: 'Engineering', set: 'owner@example.com · 6 Nov 2026' },
++  { name: 'Research', set: 'mira@example.com · 4 Nov 2026' },
++  { name: 'Design', set: 'theo@example.com · 4 Nov 2026' },
++]
++
++const PLUGINS: Plugin[] = [
++  {
++    name: 'gstack', mono: 'gs', description: 'Review, QA, planning and design skills', version: '1.92.55.0', scope: 'builtin', source: 'Agent image', digest: 'sha256:5d1e…a04c',
++    installedBy: 'the image build', installedAt: '2026-11-03T09:12:00Z',
++    skills: GSTACK_SKILLS.map((s) => ({ name: s, offered: s !== 'cso' })), hooks: [], commands: [], agents: [], mcp: [],
++    profiles: CC, needs: { hosts: [] }, userConfig: [], allowed: true, everyStep: false, allowedIn: ['Engineering', 'Research', 'Design'],
++  },
++  {
++    name: 'security-audit', mono: 'sa', description: 'Cloudflare’s security audit skill', version: 'c1c8a8c', scope: 'builtin', source: 'Agent image', digest: 'sha256:c1c8…a6a8',
++    installedBy: 'the image build', installedAt: '2026-09-14T08:00:00Z',
++    skills: [{ name: 'security-audit', offered: true }], hooks: [], commands: [], agents: [], mcp: [],
++    profiles: CC, needs: { node: '20', hosts: [] }, userConfig: [], allowed: false, everyStep: false, allowedIn: ['Research'],
++  },
++  {
++    name: 'jev-belay', mono: 'jb', description: 'Holds a turn back when Jev scores it below a threshold', version: '0.2.0', scope: 'platform', source: 'github.com/valentynkit/jev-belay', license: 'MIT',
++    commit: '9f3c2e1d7b40a8c65e21f0b9d3a7c4e18b2f6d05', digest: 'sha256:7a4c9e02b1f3d85a6e0c47b2193fd8e5c60a1b7e94d23f8c5ab01e6d7f92c3a4',
++    installedBy: 'owner@example.com', installedAt: '2026-11-06T01:42:00Z',
++    skills: [], hooks: [{ event: 'Stop', command: 'node belay.mjs' }], commands: [], agents: [], mcp: [],
++    profiles: ['claude-code', 'claude-code-large', 'claude-code-review'], needs: { node: '20', hosts: ['api.typesafe.ai'] },
++    userConfig: BELAY_UC, allowed: true, everyStep: false, allowedIn: ['Engineering'],
++  },
++  {
++    name: 'jev-enforce', mono: 'je', description: 'Checks each edit against the workspace’s rules', version: '1.1.1-bgd.3', scope: 'workspace', source: 'jev-enforce-1.1.1-bgd.3.tar.gz',
++    license: 'MIT', digest: 'sha256:e3b7c4a91d0f26b85c13e7a49f02d6b8c5e1a37f90d4b26c8e5a1f73b09d4c62',
++    installedBy: 'owner@example.com', installedAt: '2026-11-06T01:55:00Z',
++    skills: [], hooks: [{ event: 'Stop', command: 'node dist/src/cli.js' }, { event: 'PostToolUse', matcher: 'Edit|Write|MultiEdit', command: 'node dist/src/cli.js' }],
++    commands: [], agents: [], mcp: [], profiles: ['claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser'],
++    needs: { node: '20', hosts: ['api.typesafe.ai'] }, userConfig: [], allowed: true, everyStep: true,
++  },
++]
++
++const SCOPE_WORDS: Readonly<Record<Scope, string>> = { builtin: 'Built in', platform: 'Platform', workspace: 'Engineering only' }
++const SCOPE_TIP: Readonly<Record<Scope, string>> = {
++  builtin: 'Baked into the agent image. It can be allowed or not; never removed.',
++  platform: 'In the platform catalogue. Each workspace allows it from its own Plugins page.',
++  workspace: 'Installed by an Engineering admin. No other workspace sees it.',
++}
++
++function day(iso: string): string {
++  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
++}
++function short(sha: string): string {
++  return sha.replace(/^sha256:/, '').slice(0, 12)
++}
++
++/* ---------------------------------------------------------------- address */
++
++/** The address as the page was opened: the router drops a query it does not know once it has read it. */
++const BOOT = typeof location === 'undefined' ? '' : location.search
++
++interface At { s: string; p: string; tab: string; src: string; st: string; secret: string; who: string }
++function readAt(): At {
++  const q = new URLSearchParams(BOOT)
++  return { s: q.get('s') ?? 'catalogue', p: q.get('p') ?? 'jev-belay', tab: q.get('tab') ?? 'overview', src: q.get('src') ?? 'github', st: q.get('st') ?? '', secret: q.get('secret') ?? '', who: q.get('who') ?? 'admin' }
++}
++function href(where: 'admin' | 'workspace', q: Record<string, string>): string {
++  const base = where === 'admin' ? '/admin/plugins' : '/config/plugins'
++  return `${base}?${new URLSearchParams({ mp: 'cards', ...q }).toString()}`
++}
++
++/** True on a ?mp=cards address. */
++export function mpCardsOn(): boolean {
++  return new URLSearchParams(BOOT).get('mp') === 'cards'
++}
++
++/** The page for a console address under ?mp=cards, or null to leave it to the app. */
++export function mpCardsFor(screen: string): ReactNode {
++  if (!mpCardsOn()) return null
++  if (screen === 'admin/plugins') return <MpCardsScreen where="admin" />
++  if (screen === 'config/plugins') return <MpCardsScreen where="workspace" />
++  if (screen === 'work/new-workflow') return <MpBuilder />
++  return null
++}
++
++export function MpCardsScreen({ where }: { where: 'admin' | 'workspace' }) {
++  const at = readAt()
++  if (at.s === 'add') return <AddPage where={where} at={at} />
++  if (at.s === 'plugin' || at.s === 'update') return <PluginPage where={where} at={at} />
++  const member = at.who === 'member'
++  return (
++    <div className="mpc-page">
++      <PageHead title="Plugins" info={<InfoTip about="plugins" tip={where === 'admin'
++        ? 'The platform catalogue. Each workspace allows plugins from it; a workspace admin may also install plugins of its own.'
++        : 'Plugins Engineering allows. Allowed, a step can add it; Every step, it loads on each agent step unless the step turns it off.'} />}>
++        {!member && <a className="c-btn is-primary" href={href(where, { s: 'add', src: 'github' })}>Add plugin</a>}
++      </PageHead>
++      <Catalogue where={where} at={at} />
++    </div>
++  )
++}
++
++/* ---------------------------------------------------------------- bits */
++
++function Switch({ on, label, word, onChange, inert = false, changed = false }: {
++  on: boolean; label: string; word?: [string, string]; onChange?: (v: boolean) => void; inert?: boolean; changed?: boolean
++}) {
++  const [w1, w0] = word ?? ['On', 'Off']
++  return (
++    <label className={`mpc-switch${inert ? ' is-inert' : ''}${changed ? ' is-changed' : ''}`}>
++      <input type="checkbox" checked={on} disabled={inert} aria-label={label} onChange={(e) => onChange?.(e.target.checked)} />
++      <span className="mpc-track" aria-hidden><span /></span>
++      <span className="mpc-switch-w">{on ? w1 : w0}</span>
++    </label>
++  )
++}
++
++function Mono({ p, sm = false }: { p: Pick<Plugin, 'mono' | 'scope'>; sm?: boolean }) {
++  return <span className={`mpc-mono is-${p.scope}${sm ? ' is-sm' : ''}`} aria-hidden>{p.mono}</span>
++}
++
++function ScopeChip({ scope }: { scope: Scope }) {
++  return <span className={`mpc-scope is-${scope}`} title={SCOPE_TIP[scope]}>{SCOPE_WORDS[scope]}</span>
++}
++
++function Badges({ p }: { p: Plugin }) {
++  const offered = p.skills.filter((s) => s.offered).length
++  return (
++    <span className="mpc-badges">
++      {p.skills.length > 0 && <span className="mpc-badge"><b>{offered}</b> {offered === 1 ? 'skill' : 'skills'}</span>}
++      {p.hooks.length > 0 && <span className="mpc-badge is-hook" title="Hooks run code on every turn"><b>{p.hooks.length}</b> {p.hooks.length === 1 ? 'hook' : 'hooks'}</span>}
++      {p.mcp.length > 0 && <span className="mpc-badge"><b>{p.mcp.length}</b> MCP</span>}
++      {p.commands.length > 0 && <span className="mpc-badge"><b>{p.commands.length}</b> commands</span>}
++    </span>
++  )
++}
++
++function Tick({ children, tip }: { children: ReactNode; tip: string }) {
++  return (
++    <span className="mpc-tick">
++      <svg viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" /></svg>
++      {children}
++      <InfoTip about={typeof children === 'string' ? children : 'this'} tip={tip} />
++    </span>
++  )
++}
++
++/* ---------------------------------------------------------------- catalogue */
++
++function Catalogue({ where, at }: { where: 'admin' | 'workspace'; at: At }) {
++  const member = at.who === 'member'
++  const [filter, setFilter] = useState<'all' | Scope>('all')
++  const [state, setState] = useState(() => Object.fromEntries(PLUGINS.map((p) => [p.name, { allowed: p.allowed, every: p.everyStep }])))
++  const list = PLUGINS.filter((p) => filter === 'all' || p.scope === filter)
++  const changed = PLUGINS.filter((p) => state[p.name]!.allowed !== p.allowed || state[p.name]!.every !== p.everyStep)
++  const counts = { all: PLUGINS.length, builtin: 2, platform: 1, workspace: 1 }
++  return (
++    <>
++      {where === 'admin' && <PlatformSwitches open={at.s === 'switches'} />}
++      <div className="mpc-bar">
++        <div className="mpc-filters" role="group" aria-label="Show">
++          {(['all', 'builtin', 'platform', 'workspace'] as const).map((k) => (
++            <button key={k} type="button" className={`mpc-filter${filter === k ? ' is-on' : ''}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
++              {k === 'all' ? 'All' : SCOPE_WORDS[k]} <em>{counts[k]}</em>
++            </button>
++          ))}
++        </div>
++        {where === 'workspace' && member && <Tick tip="Only an Engineering admin changes what is allowed. Ask one on People and roles.">View only</Tick>}
++        {where === 'workspace' && !member && <span className="mpc-dim mpc-small">Set by owner@example.com · 6 Nov 2026</span>}
++      </div>
++      <ul className="mpc-grid" role="list">
++        {list.map((p) => {
++          const s = state[p.name]!
++          return (
++            <li key={p.name} className={`mpc-card${s.allowed || where === 'admin' ? '' : ' is-off'}`}>
++              <a className="mpc-card-top" href={href(where, { s: 'plugin', p: p.name, tab: 'overview', ...(member ? { who: 'member' } : {}) })}>
++                <Mono p={p} />
++                <span className="mpc-card-id">
++                  <b>{p.name}</b>
++                  <code>{p.version}</code>
++                </span>
++                <ScopeChip scope={p.scope} />
++              </a>
++              <div className="mpc-card-mid">
++                <span className="mpc-card-desc">{p.description}</span>
++                <Badges p={p} />
++                <span className="mpc-card-src" title={p.source}>{p.scope === 'builtin' ? 'Agent image' : p.source.replace(/^github\.com\//, '')}</span>
++              </div>
++              {where === 'admin' ? (
++                <div className="mpc-card-foot">
++                  <span className="mpc-small">{p.scope === 'workspace' ? <>Private to <b>Engineering</b></> : <>Allowed in <b>{p.allowedIn?.length ?? 0}</b> of 3 workspaces</>}</span>
++                  <span className="mpc-small mpc-dim">{p.scope === 'builtin' ? `Image ${day(p.installedAt)}` : `Pinned ${day(p.installedAt)}`}</span>
++                </div>
++              ) : (
++                <div className="mpc-card-foot">
++                  <span className="mpc-toggle"><span className="mpc-small">Allowed</span>
++                    <Switch on={s.allowed} label={`${p.name}: allowed in Engineering`} inert={member} changed={s.allowed !== p.allowed}
++                      onChange={(v) => setState({ ...state, [p.name]: { allowed: v, every: v ? s.every : false } })} />
++                  </span>
++                  <span className="mpc-toggle"><span className="mpc-small">Every step</span>
++                    <Switch on={s.every} label={`${p.name}: on for every step`} inert={member || !s.allowed} changed={s.every !== p.everyStep}
++                      onChange={(v) => setState({ ...state, [p.name]: { ...s, every: v } })} />
++                  </span>
++                </div>
++              )}
++            </li>
++          )
++        })}
++      </ul>
++      {changed.length > 0 && (
++        <div className="mpc-savebar" role="region" aria-label="Changes not saved">
++          <span className="mpc-small">{changed.map((p) => p.name).join(', ')}: changed · refused or loaded from the next submission</span>
++          <span className="mpc-acts">
++            <Button kind="ghost" onClick={() => setState(Object.fromEntries(PLUGINS.map((p) => [p.name, { allowed: p.allowed, every: p.everyStep }])))}>Discard</Button>
++            <Button kind="primary">Save and sign</Button>
++          </span>
++        </div>
++      )}
++    </>
++  )
++}
++
++/* ---------------------------------------------------------------- platform switches */
++
++function PlatformSwitches({ open }: { open: boolean }) {
++  const [contracts, setContracts] = useState(true)
++  const [review, setReview] = useState<'off' | 'report' | 'enforce'>(open ? 'enforce' : 'report')
++  const pending = review !== 'report' || !contracts
++  return (
++    <section className="mpc-switches" aria-label="Platform settings">
++      <div className="mpc-sw">
++        <div className="mpc-sw-l">
++          <span className="mpc-sw-t">Work contracts
++            <InfoTip about="work contracts" tip="Each step runs under a signed work contract. Off: steps from the next submission carry none; running steps keep theirs." />
++          </span>
++          <span className="mpc-small mpc-dim">ops@example.com · 2 Nov 2026, 14:08</span>
++        </div>
++        <Switch on={contracts} label="Work contracts" onChange={setContracts} />
++      </div>
++      <div className="mpc-sw">
++        <div className="mpc-sw-l">
++          <span className="mpc-sw-t">Jev’s contract review
++            <InfoTip end about="contract review" tip="Report: Jev’s findings go on the run; nothing is held. Enforce: a step whose contract fails review is refused at submission, in every workspace." />
++          </span>
++          <span className="mpc-small mpc-dim">owner@example.com · 5 Nov 2026, 22:41</span>
++        </div>
++        <div className="mpc-seg" role="radiogroup" aria-label="Jev’s contract review">
++          {(['off', 'report', 'enforce'] as const).map((k) => (
++            <label key={k} className={`mpc-seg-o${review === k ? ' is-on' : ''}`}>
++              <input type="radio" name="mpc-review" checked={review === k} onChange={() => setReview(k)} />
++              {k === 'off' ? 'Off' : k === 'report' ? 'Report' : 'Enforce'}
++            </label>
++          ))}
++        </div>
++      </div>
++      {pending && (
++        <div className="mpc-sw-pending" role="region" aria-label="Change not applied">
++          <span className="mpc-small">
++            {review !== 'report' && <>Contract review: Report → <b>{review === 'off' ? 'Off' : 'Enforce'}</b> · every workspace, from the next submission</>}
++            {!contracts && <>Work contracts: On → <b>Off</b></>}
++          </span>
++          <span className="mpc-acts">
++            <Button size="sm" kind="ghost" onClick={() => { setReview('report'); setContracts(true) }}>Cancel</Button>
++            <Button size="sm" kind="primary">Apply</Button>
++          </span>
++        </div>
++      )}
++    </section>
++  )
++}
++
++/* ---------------------------------------------------------------- add plugin */
++
++function AddPage({ where, at }: { where: 'admin' | 'workspace'; at: At }) {
++  const src = at.src
++  const [target, setTarget] = useState<'platform' | 'workspace'>(where === 'admin' && src !== 'upload' ? 'platform' : 'workspace')
++  const st = at.st // '' resolving | 'read' | 'failed'
++  const upload = src === 'upload'
++  const read = st === 'read' || upload
++  const failed = st === 'failed'
++  const p = upload ? PLUGINS[3]! : PLUGINS[2]!
++  const back = href(where, { s: 'catalogue' })
++  return (
++    <div className="mpc-page">
++      <nav className="mpc-crumb" aria-label="Breadcrumb"><a href={back}>Plugins</a><span aria-hidden>/</span><span>Add plugin</span></nav>
++      <PageHead title="Add plugin" />
++      <div className="mpc-add">
++        <section className="mpc-panel mpc-src" aria-label="Source">
++          <div className="mpc-field">
++            <span className="mpc-lbl">Install into</span>
++            <div className="mpc-seg is-wide" role="radiogroup" aria-label="Install into">
++              {where === 'admin' && (
++                <label className={`mpc-seg-o${target === 'platform' ? ' is-on' : ''}`}>
++                  <input type="radio" name="mpc-target" checked={target === 'platform'} onChange={() => setTarget('platform')} />Platform catalogue
++                </label>
++              )}
++              <label className={`mpc-seg-o${target === 'workspace' ? ' is-on' : ''}`}>
++                <input type="radio" name="mpc-target" checked={target === 'workspace'} onChange={() => setTarget('workspace')} />Engineering only
++              </label>
++            </div>
++          </div>
++          <div className="mpc-field">
++            <span className="mpc-lbl">Source</span>
++            <div className="mpc-srctabs" role="tablist" aria-label="Source">
++              {([['github', 'GitHub'], ['marketplace', 'Marketplace'], ['upload', 'Upload']] as const).map(([k, l]) => (
++                <a key={k} role="tab" aria-selected={src === k} className={`mpc-srctab${src === k ? ' is-on' : ''}`} href={href(where, { s: 'add', src: k })}>{l}</a>
++              ))}
++            </div>
++          </div>
++          {src === 'github' && (
++            <>
++              <div className="mpc-field">
++                <label className="mpc-lbl" htmlFor="mpc-repo">Repository
++                  <InfoTip about="the repository" tip={target === 'platform'
++                    ? 'Fetched with the platform’s GitHub App. A private repository needs the App installed on its owner.'
++                    : 'Fetched through Engineering’s GitHub connection, so a private repository it reaches works.'} />
++                </label>
++                <input id="mpc-repo" className="c-inp is-mono" defaultValue="valentynkit/jev-belay" />
++              </div>
++              <div className="mpc-row2">
++                <div className="mpc-field">
++                  <label className="mpc-lbl" htmlFor="mpc-ref">Tag or commit</label>
++                  <input id="mpc-ref" className="c-inp is-mono" defaultValue="v0.2.0" />
++                </div>
++                <div className="mpc-field">
++                  <label className="mpc-lbl" htmlFor="mpc-dig">Expected sha256 <span className="mpc-dim">optional</span></label>
++                  <input id="mpc-dig" className={`c-inp is-mono${failed ? ' is-bad' : ''}`} aria-invalid={failed || undefined}
++                    defaultValue={failed ? '7a4c9e02b1f3d85a6e0c47b2193fd8e5c60a1b7e94d23f8c5ab01e6d7f92c3a5' : ''} />
++                  {failed && <span className="mpc-err" role="alert">Did not match: the fetched archive is 7a4c9e02b1f3…c3a4</span>}
++                </div>
++              </div>
++            </>
++          )}
++          {src === 'marketplace' && <MarketplaceSource />}
++          {upload && (
++            <div className="mpc-field">
++              <span className="mpc-lbl">Archive <span className="mpc-dim">.zip or .tar.gz</span></span>
++              <div className="mpc-file">
++                <svg viewBox="0 0 24 24" aria-hidden><path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>
++                <span><b>jev-enforce-1.1.1-bgd.3.tar.gz</b><br /><span className="mpc-small mpc-dim">412 KB · uploaded</span></span>
++                <Button size="sm" kind="ghost">Replace</Button>
++              </div>
++              <span className="mpc-small mpc-dim mpc-digest">sha256 <code>e3b7c4a91d0f26b85c13e7a49f02d6b8c5e1a37f90d4b26c8e5a1f73b09d4c62</code></span>
++            </div>
++          )}
++          <div className="mpc-src-acts">
++            {failed ? <Button kind="primary">Fetch again</Button> : !read ? <Button kind="primary" busy="Reading…">Read</Button> : <Button kind="ghost">Read again</Button>}
++          </div>
++        </section>
++        <section className="mpc-panel mpc-preview" aria-label="What the plugin contains" aria-busy={!read && !failed}>
++          {failed ? (
++            <>
++            <Banner tone="bad" title="Not installed: the digest did not match">
++              Nothing was pinned or installed.
++            </Banner>
++            <Facts rows={[
++              ['Fetched', <span className="mpc-pin"><span>valentynkit/jev-belay at <code>v0.2.0</code></span><span>commit <code>9f3c2e1d7b40</code></span></span>],
++              ['Expected', <code className="mpc-wrap">7a4c9e02b1f3d85a6e0c47b2193fd8e5c60a1b7e94d23f8c5ab01e6d7f92c3a<mark className="mpc-mark">5</mark></code>],
++              ['Got', <code className="mpc-wrap">7a4c9e02b1f3d85a6e0c47b2193fd8e5c60a1b7e94d23f8c5ab01e6d7f92c3a<mark className="mpc-mark">4</mark></code>],
++            ]} />
++            </>
++          ) : !read ? (
++            <div className="mpc-resolving">
++              <span className="mpc-small"><span className="c-spin" aria-hidden /> Resolving <code>v0.2.0</code> in valentynkit/jev-belay</span>
++              <ol className="mpc-steps">
++                <li className="is-done">Tag v0.2.0 → commit 9f3c2e1</li>
++                <li className="is-now">Fetching the archive</li>
++                <li>Reading .claude-plugin/plugin.json</li>
++                <li>Recording the sha256</li>
++              </ol>
++              <div className="mpc-skel" aria-hidden><span /><span /><span /></div>
++            </div>
++          ) : (
++            <ManifestPreview p={p} />
++          )}
++        </section>
++      </div>
++      {read && !failed && (
++        <section className="mpc-panel" aria-labelledby="mpc-set-h">
++          <header className="mpc-panel-h">
++            <h2 id="mpc-set-h">{target === 'platform' ? 'Defaults' : 'Settings'}</h2>
++            {target === 'platform' && <InfoTip about="defaults" tip="Each workspace starts from these and sets its own on the plugin’s Settings tab." />}
++          </header>
++          {p.userConfig.length > 0 ? <UserConfigForm p={p} target={target} stored={false} /> : <DeclaredSettings />}
++        </section>
++      )}
++      {read && !failed && (
++        <div className="mpc-installbar">
++          <span className="mpc-small">{p.name} {p.version} · pinned at {p.commit ? p.commit.slice(0, 7) : short(p.digest)} · {target === 'platform' ? 'platform catalogue' : 'Engineering only'}</span>
++          <span className="mpc-acts">
++            <a className="c-btn is-ghost" href={back}>Cancel</a>
++            <Button kind="primary">Install {p.name}</Button>
++          </span>
++        </div>
++      )}
++    </div>
++  )
++}
++
++function MarketplaceSource() {
++  const [pick, setPick] = useState('jev-belay')
++  const rows = [
++    { name: 'jev-belay', v: '0.2.0', d: '1 hook' },
++    { name: 'jev-enforce', v: '1.1.0', d: '2 hooks' },
++    { name: 'typesafe-review', v: '0.4.2', d: '3 skills · 1 MCP' },
++  ]
++  return (
++    <>
++      <div className="mpc-field">
++        <label className="mpc-lbl" htmlFor="mpc-mkt">Marketplace</label>
++        <input id="mpc-mkt" className="c-inp is-mono" defaultValue="valentynkit/claude-plugins" />
++      </div>
++      <div className="mpc-field">
++        <span className="mpc-lbl">Plugin <span className="mpc-dim">3 in marketplace.json</span></span>
++        <ul className="mpc-radios" role="radiogroup" aria-label="Plugin">
++          {rows.map((r) => (
++            <li key={r.name}>
++              <label className={`mpc-radio${pick === r.name ? ' is-on' : ''}`}>
++                <input type="radio" name="mpc-mkt-p" checked={pick === r.name} onChange={() => setPick(r.name)} />
++                <b>{r.name}</b><code>{r.v}</code><span className="mpc-dim mpc-small">{r.d}</span>
++              </label>
++            </li>
++          ))}
++        </ul>
++      </div>
++      <div className="mpc-field">
++        <label className="mpc-lbl" htmlFor="mpc-mtag">Tag or commit</label>
++        <input id="mpc-mtag" className="c-inp is-mono" defaultValue="v0.2.0" />
++      </div>
++    </>
++  )
++}
++
++function Facts({ rows }: { rows: [string, ReactNode][] }) {
++  return (
++    <dl className="mpc-facts">
++      {rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}
++    </dl>
++  )
++}
++
++function HookRow({ h }: { h: Hook }) {
++  return (
++    <li className="mpc-hook">
++      <span className="mpc-hook-ev"><b>{h.event}</b>{h.matcher && <code>{h.matcher}</code>}</span>
++      <code className="mpc-hook-cmd">{h.command}</code>
++      <span className="mpc-runs" title="A hook is code, run by the agent on every matching turn">Runs every turn</span>
++    </li>
++  )
++}
++
++function ManifestPreview({ p }: { p: Plugin }) {
++  return (
++    <div className="mpc-man">
++      <header className="mpc-man-h">
++        <Mono p={p} />
++        <span className="mpc-card-id"><b>{p.name}</b><code>{p.version}</code></span>
++        {p.license && <Chip>{p.license}</Chip>}
++        <span className="mpc-tick is-ok">
++          <svg viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" /></svg>
++          plugin.json read
++        </span>
++      </header>
++      <div className="mpc-man-sec">
++        <h3>Hooks <em>{p.hooks.length}</em></h3>
++        <ul className="mpc-hooks" role="list">{p.hooks.map((h) => <HookRow key={h.event + (h.matcher ?? '')} h={h} />)}</ul>
++      </div>
++      <Facts rows={[
++        ['Settings', p.userConfig.length > 0
++          ? <><b>{p.userConfig.length}</b>&nbsp;from userConfig, below</>
++          : <><span className="mpc-warnword">No userConfig</span><InfoTip about="declared settings" tip="Declare the environment variables and files it reads below." /></>],
++        ['Needs', <>{p.needs.node && <Chip>node {p.needs.node}</Chip>}{p.needs.hosts.map((h) => <Chip key={h}>net: {h}</Chip>)}</>],
++        ['Runs on', <>{p.profiles.map((r) => <Chip key={r}>{r}</Chip>)}</>],
++        ['Pinned', <span className="mpc-pin">
++          {p.commit && <span>commit <code>{p.commit.slice(0, 12)}</code></span>}
++          <span>sha256 <code title={p.digest}>{short(p.digest)}…{p.digest.slice(-4)}</code></span>
++        </span>],
++      ]} />
++    </div>
++  )
++}
++
++/* ---------------------------------------------------------------- settings */
++
++function SecretField({ f, target, stored }: { f: UcField; target: 'platform' | 'workspace'; stored: boolean }) {
++  const [how, setHow] = useState<'key' | 'paste'>(stored ? 'paste' : 'key')
++  if (target === 'platform') return <span className="mpc-dim mpc-small">Set in each workspace</span>
++  return (
++    <div className="mpc-secret">
++      <div className="mpc-seg" role="radiogroup" aria-label={`${f.title}: how it is set`}>
++        <label className={`mpc-seg-o${how === 'key' ? ' is-on' : ''}`}><input type="radio" name={`mpc-how-${f.key}`} checked={how === 'key'} onChange={() => setHow('key')} />Workspace key</label>
++        <label className={`mpc-seg-o${how === 'paste' ? ' is-on' : ''}`}><input type="radio" name={`mpc-how-${f.key}`} checked={how === 'paste'} onChange={() => setHow('paste')} />Paste once</label>
++      </div>
++      {how === 'key' ? (
++        <select className="c-inp" aria-label={`${f.title}: workspace key`} defaultValue="typesafe">
++          <option value="typesafe">TypeSafe key · TYPESAFE_API_KEY</option>
++          <option value="anthropic">Anthropic key · ANTHROPIC_API_KEY</option>
++        </select>
++      ) : stored ? (
++        <span className="mpc-stored">
++          <span className="mpc-tick is-ok">
++            <svg viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" /></svg>
++            Set by owner@example.com, 4 Nov 2026
++          </span>
++          <Button size="sm" kind="ghost">Replace</Button>
++        </span>
++      ) : (
++        <input className="c-inp is-mono" type="password" aria-label={`${f.title}: paste`} placeholder="Paste the key: stored as a secret, never shown again" />
++      )}
++    </div>
++  )
++}
++
++function UserConfigForm({ p, target, stored }: { p: Plugin; target: 'platform' | 'workspace'; stored: boolean }) {
++  const [over, setOver] = useState<Record<string, boolean>>({ threshold: true, shadow: true })
++  return (
++    <ul className="mpc-form" role="list">
++      {p.userConfig.map((f) => (
++        <li key={f.key} className="mpc-frow">
++          <div className="mpc-frow-l">
++            <span className="mpc-ftitle">{f.title}
++              <InfoTip about={f.title} tip={f.description} />
++            </span>
++            <code className="mpc-small mpc-dim">{f.key}</code>
++          </div>
++          <div className="mpc-frow-v">
++            {f.sensitive ? <SecretField f={f} target={target} stored={stored} />
++              : f.type === 'number' ? <input className={`c-inp is-mono mpc-num${target === 'workspace' ? ' is-changed' : ''}`} type="number" step="0.05" min={0} max={1} defaultValue={target === 'workspace' ? '0.75' : String(f.default)} aria-label={f.title} />
++                : f.type === 'boolean' ? <Switch on={f.default === true} label={f.title} />
++                  : <input className="c-inp" defaultValue={String(f.default ?? '')} aria-label={f.title} />}
++          </div>
++          <div className="mpc-frow-r">
++            {f.sensitive ? <span className="mpc-lock" title="A secret: steps cannot override it">Secret</span>
++              : target === 'workspace' && (
++                <button type="button" className={`mpc-ovr${over[f.key] ? ' is-on' : ''}`} aria-pressed={over[f.key] === true}
++                  title="Whether a step may set its own value" onClick={() => setOver({ ...over, [f.key]: !over[f.key] })}>
++                  {over[f.key] ? 'Steps may override' : 'Fixed for steps'}
++                </button>
++              )}
++          </div>
++        </li>
++      ))}
++    </ul>
++  )
++}
++
++const RULES = `# Engineering rules for jev-enforce
++- Never commit to main directly; open a pull request.
++- Every new script starts with set -euo pipefail.
++- No TODO, stub or NotImplementedError ships.
++- apps/common/swarm_common/ is frozen: import, never edit.
++- A fake token is built at runtime, never written as a literal.`
++
++function DeclaredSettings({ inPlace = false }: { inPlace?: boolean }) {
++  const vars = [
++    { name: 'JEV_ENFORCE_RULES_ONLY', type: 'boolean', value: 'true', sensitive: false },
++    { name: 'JEV_ENFORCE_MODE', type: 'string', value: 'block', sensitive: false },
++    { name: 'JEV_ENFORCE_MAX_FINDINGS', type: 'number', value: '20', sensitive: false },
++    { name: 'TYPESAFE_API_KEY', type: 'string', value: '', sensitive: true },
++  ]
++  return (
++    <div className="mpc-declared">
++      <div className="mpc-sub">
++        <h3>Environment <em>{vars.length}</em></h3>
++        <div className="mpc-envtable" role="table" aria-label="Environment variables">
++          <div className="mpc-env is-head" role="row">
++            <span role="columnheader">Name</span><span role="columnheader">Type</span><span role="columnheader">Value</span><span role="columnheader">Sensitive</span><span role="columnheader"><span className="mpc-sr">Remove</span></span>
++          </div>
++          {vars.map((v) => (
++            <div key={v.name} className="mpc-env" role="row">
++              <span role="cell"><input className="c-inp is-mono" defaultValue={v.name} aria-label="Name" /></span>
++              <span role="cell">
++                <select className="c-inp" defaultValue={v.type} aria-label={`${v.name}: type`}>
++                  <option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option>
++                </select>
++              </span>
++              <span role="cell">
++                {v.sensitive ? (
++                  <select className="c-inp" defaultValue="typesafe" aria-label={`${v.name}: workspace key`}>
++                    <option value="typesafe">TypeSafe key · TYPESAFE_API_KEY</option><option value="paste">Paste once…</option>
++                  </select>
++                ) : v.type === 'boolean' ? <Switch on={v.value === 'true'} label={`${v.name}: value`} word={['true', 'false']} />
++                  : <input className="c-inp is-mono" defaultValue={v.value} aria-label={`${v.name}: value`} />}
++              </span>
++              <span role="cell"><Switch on={v.sensitive} label={`${v.name}: sensitive`} word={['Secret', 'No']} /></span>
++              <span role="cell"><Button size="sm" kind="ghost" iconOnly aria-label={`Remove ${v.name}`}>×</Button></span>
++            </div>
++          ))}
++        </div>
++        <Button size="sm" kind="ghost">+ Variable</Button>
++      </div>
++      <div className="mpc-sub">
++        <h3>Files <em>1</em>
++          <InfoTip about="files" tip="Written into the plugin’s folder before each step starts; the plugin reads them as its own." />
++        </h3>
++        <div className="mpc-fileed">
++          <div className="mpc-fileed-h">
++            <code>.jev/rules.md</code>
++            <span className="mpc-small mpc-dim">{inPlace ? 'Edited by owner@example.com · 6 Nov 2026, 02:04' : '6 lines'}</span>
++          </div>
++          <textarea className="mpc-code" aria-label=".jev/rules.md" defaultValue={RULES} rows={7} spellCheck={false} />
++        </div>
++        <Button size="sm" kind="ghost">+ File</Button>
++      </div>
++    </div>
++  )
++}
++
++/* ---------------------------------------------------------------- plugin page */
++
++const TABS = ['overview', 'settings', 'versions', 'usage'] as const
++
++function PluginPage({ where, at }: { where: 'admin' | 'workspace'; at: At }) {
++  const p = PLUGINS.find((x) => x.name === at.p) ?? PLUGINS[2]!
++  const member = at.who === 'member'
++  const [removing, setRemoving] = useState(at.st === 'remove')
++  const tab = at.s === 'update' ? 'versions' : (TABS as readonly string[]).includes(at.tab) ? at.tab : 'overview'
++  const q = (t: string) => href(where, { s: 'plugin', p: p.name, tab: t, ...(member ? { who: 'member' } : {}) })
++  const canRemove = p.scope !== 'builtin' && !member && (where === 'admin' || p.scope === 'workspace')
++  return (
++    <div className="mpc-page">
++      <nav className="mpc-crumb" aria-label="Breadcrumb"><a href={href(where, { s: 'catalogue', ...(member ? { who: 'member' } : {}) })}>Plugins</a><span aria-hidden>/</span><span>{p.name}</span></nav>
++      <header className="mpc-phead">
++        <Mono p={p} />
++        <div className="mpc-phead-t">
++          <h1>{p.name} <code>{p.version}</code></h1>
++          <span className="mpc-phead-m"><ScopeChip scope={p.scope} /><Badges p={p} /></span>
++        </div>
++        <div className="mpc-acts">
++          {where === 'workspace' && (
++            <>
++              <span className="mpc-toggle"><span className="mpc-small">Allowed</span><Switch on={p.allowed} label="Allowed in Engineering" inert={member} /></span>
++              <span className="mpc-toggle"><span className="mpc-small">Every step</span><Switch on={p.everyStep} label="On for every step" inert={member || !p.allowed} /></span>
++            </>
++          )}
++          {canRemove && <Button kind="danger" onClick={() => setRemoving(true)}>Remove</Button>}
++        </div>
++      </header>
++      <Tabs className="mpc-tabs" label={p.name} current={tab}
++        tabs={TABS.filter((t) => t !== 'settings' || p.scope !== 'builtin').map((t) => ({
++          key: t, label: t[0]!.toUpperCase() + t.slice(1), href: q(t), ...(t === 'usage' && p.name === 'jev-belay' ? { count: 7 } : {}),
++        }))} />
++      {at.s === 'update' ? <UpdateView p={p} back={q('versions')} />
++        : tab === 'overview' ? <Overview p={p} member={member} where={where} />
++          : tab === 'settings' ? <SettingsTab p={p} member={member} stored={at.secret === 'stored'} />
++            : tab === 'versions' ? <Versions p={p} where={where} />
++              : <Usage p={p} where={where} />}
++      {removing && (
++        <div className="mpc-rmwrap">
++          <TypedConfirm title={`Remove ${p.name}`} name={p.name} verb="Remove" keep="Keep it" onConfirm={() => setRemoving(false)} onClose={() => setRemoving(false)}>
++            <div className="mpc-rm">
++              <p className="mpc-rm-n"><b>3 workflows · 7 steps</b> name it{where === 'admin' && p.scope === 'platform' && <> · in <b>Engineering</b></>}
++                <InfoTip about="removing" tip="Steps that name it are refused at their next submission. Steps already running keep the pinned copy. Its settings and its secret are deleted." />
++              </p>
++              <ul className="mpc-rm-list" role="list">
++                <li><b>nightly-review</b><span className="mpc-dim">review, fix, verify</span></li>
++                <li><b>release-train</b><span className="mpc-dim">build-notes, ship</span></li>
++                <li><b>ssc-ui-lane</b><span className="mpc-dim">build-cards, fix</span></li>
++              </ul>
++            </div>
++          </TypedConfirm>
++        </div>
++      )}
++    </div>
++  )
++}
++
++function Overview({ p, member, where }: { p: Plugin; member: boolean; where: 'admin' | 'workspace' }) {
++  const [skills, setSkills] = useState(p.skills)
++  const offered = skills.filter((s) => s.offered).length
++  return (
++    <div className="mpc-ov">
++      <div className="mpc-ov-main">
++        {skills.length > 0 && (
++          <section className="mpc-panel" aria-labelledby="mpc-sk-h">
++            <header className="mpc-panel-h">
++              <h2 id="mpc-sk-h">Skills <em>{offered} of {skills.length} offered</em></h2>
++              <InfoTip about="skills" tip="An offered skill is one a step may pick in the workflow builder. A hidden one is never offered." />
++            </header>
++            <ul className="mpc-skills" role="list">
++              {skills.map((s) => (
++                <li key={s.name} className={s.offered ? '' : 'is-hidden'}>
++                  <code>{s.name}</code>
++                  <Switch on={s.offered} label={`${s.name}: offered`} word={['Offered', 'Hidden']} inert={member}
++                    onChange={(v) => setSkills(skills.map((x) => (x.name === s.name ? { ...x, offered: v } : x)))} />
++                </li>
++              ))}
++            </ul>
++          </section>
++        )}
++        {p.hooks.length > 0 && (
++          <section className="mpc-panel" aria-labelledby="mpc-hk-h">
++            <header className="mpc-panel-h"><h2 id="mpc-hk-h">Hooks <em>{p.hooks.length}</em></h2>
++              <InfoTip about="hooks" tip="Hooks are code the agent runs itself on the event they name, on every turn, under the step’s identity." />
++            </header>
++            <ul className="mpc-hooks" role="list">{p.hooks.map((h) => <HookRow key={h.event + (h.matcher ?? '')} h={h} />)}</ul>
++          </section>
++        )}
++        {where === 'admin' && p.scope !== 'workspace' && (
++          <section className="mpc-panel" aria-labelledby="mpc-ws-h">
++            <header className="mpc-panel-h">
++              <h2 id="mpc-ws-h">Workspaces <em>allowed in {p.allowedIn?.length ?? 0} of 3</em></h2>
++              <InfoTip about="workspaces" tip="Each workspace opts in on its own Config › Plugins. Only its admins change it." />
++            </header>
++            <ul className="mpc-wslist" role="list">
++              {WORKSPACES.map((w) => {
++                const on = p.allowedIn?.includes(w.name) ?? false
++                return (
++                  <li key={w.name} className={on ? '' : 'is-off'}>
++                    <b>{w.name}</b>
++                    <span className={on ? 'mpc-tick is-ok' : 'mpc-dim'}>{on ? 'Allowed' : 'Not allowed'}</span>
++                    <span className="mpc-dim mpc-small">{on ? w.set : ''}</span>
++                  </li>
++                )
++              })}
++            </ul>
++          </section>
++        )}
++      </div>
++      <aside className="mpc-panel mpc-ov-side" aria-label="About this copy">
++        <Facts rows={[
++          ['Source', p.scope === 'builtin' ? 'Agent image' : <code className="mpc-wrap">{p.source}</code>],
++          ...(p.license ? [['License', p.license] as [string, ReactNode]] : []),
++          ['Pinned', <span className="mpc-pin">
++            {p.commit && <span>commit <code>{p.commit.slice(0, 12)}</code></span>}
++            <span>sha256 <code title={p.digest}>{short(p.digest)}</code></span>
++          </span>],
++          ['Installed', <>{p.installedBy} · {day(p.installedAt)}</>],
++          ['Runs on', <>{p.profiles.map((r) => <Chip key={r}>{r}</Chip>)}</>],
++          ...((p.needs.node || p.needs.hosts.length > 0) ? [['Needs', <>{p.needs.node && <Chip>node {p.needs.node}</Chip>}{p.needs.hosts.map((h) => <Chip key={h}>net: {h}</Chip>)}</>] as [string, ReactNode]] : []),
++        ]} />
++      </aside>
++    </div>
++  )
++}
++
++function SettingsTab({ p, member, stored }: { p: Plugin; member: boolean; stored: boolean }) {
++  if (member) {
++    return (
++      <section className="mpc-panel">
++        <Tick tip="Settings are set by an Engineering admin. Secrets are never shown.">View only</Tick>
++      </section>
++    )
++  }
++  return (
++    <>
++      <section className="mpc-panel" aria-labelledby="mpc-st-h">
++        <header className="mpc-panel-h">
++          <h2 id="mpc-st-h">{p.userConfig.length > 0 ? 'From userConfig' : 'Declared'} <em>{p.userConfig.length > 0 ? p.userConfig.length : 5}</em></h2>
++          <InfoTip about="settings" tip={p.userConfig.length > 0
++            ? 'Built from the plugin’s plugin.json userConfig. Set once for Engineering; a step may override a non-secret one.'
++            : 'This plugin declares no userConfig: these are the environment variables and files Engineering gives it.'} />
++          <span className="mpc-dim mpc-small mpc-push">Saved by owner@example.com · 6 Nov 2026, 02:04</span>
++        </header>
++        {p.userConfig.length > 0 ? <UserConfigForm p={p} target="workspace" stored={stored} /> : <DeclaredSettings inPlace />}
++      </section>
++      <div className="mpc-installbar">
++        <span className="mpc-small">{p.userConfig.length > 0 ? 'Threshold 0.7 → 0.75' : '.jev/rules.md: 1 line changed'} · from the next submission</span>
++        <span className="mpc-acts"><Button kind="ghost">Discard</Button><Button kind="primary">Save</Button></span>
++      </div>
++    </>
++  )
++}
++
++function Versions({ p, where }: { p: Plugin; where: 'admin' | 'workspace' }) {
++  const rows = p.name === 'jev-belay'
++    ? [
++      { v: '0.3.0', commit: '2b81f04', at: '2026-11-06T03:10:00Z', state: 'new' as const },
++      { v: '0.2.0', commit: '9f3c2e1', at: '2026-11-06T01:42:00Z', state: 'pinned' as const, who: 'owner@example.com' },
++      { v: '0.1.4', commit: '51ad0e7', at: '2026-10-29T16:20:00Z', state: 'old' as const, who: 'owner@example.com' },
++    ]
++    : [{ v: p.version, commit: p.commit?.slice(0, 7) ?? short(p.digest).slice(0, 7), at: p.installedAt, state: 'pinned' as const, who: p.installedBy }]
++  return (
++    <section className="mpc-panel" aria-labelledby="mpc-vr-h">
++      <header className="mpc-panel-h"><h2 id="mpc-vr-h">Versions</h2>
++        {p.scope !== 'builtin' && <Button size="sm" kind="ghost">Check for a new version</Button>}
++      </header>
++      <ul className="mpc-vers" role="list">
++        {rows.map((r) => (
++          <li key={r.v} className={`mpc-ver is-${r.state}`}>
++            <code className="mpc-ver-v">{r.v}</code>
++            <span className="mpc-small mpc-dim">commit <code>{r.commit}</code></span>
++            <span className="mpc-small mpc-dim">{r.state === 'new' ? `Tagged ${day(r.at)}` : `${r.who} · ${day(r.at)}`}</span>
++            <span className="mpc-ver-s">
++              {r.state === 'pinned' && <span className="mpc-scope is-pinned">Pinned</span>}
++              {r.state === 'new' && <><span className="mpc-scope is-new">New</span><a className="c-btn is-primary is-sm" href={href(where, { s: 'update', p: p.name })}>Review the update</a></>}
++              {r.state === 'old' && <Button size="sm" kind="ghost">Go back to 0.1.4</Button>}
++            </span>
++          </li>
++        ))}
++      </ul>
++    </section>
++  )
++}
++
++function Usage({ p, where }: { p: Plugin; where: 'admin' | 'workspace' }) {
++  const rows = p.name === 'jev-belay'
++    ? [
++      { ws: 'Engineering', wf: 'nightly-review', steps: ['review', 'fix', 'verify'], how: 'Added', last: '6 Nov 2026, 03:58' },
++      { ws: 'Engineering', wf: 'release-train', steps: ['build-notes', 'ship'], how: 'Added', last: '5 Nov 2026, 19:12' },
++      { ws: 'Engineering', wf: 'ssc-ui-lane', steps: ['build-cards', 'fix'], how: 'Added', last: '6 Nov 2026, 04:02' },
++    ]
++    : p.everyStep ? [{ ws: 'Engineering', wf: 'Every agent step', steps: ['default'], how: 'Every step', last: '6 Nov 2026, 04:10' }] : []
++  const ws = where === 'admin'
++  if (rows.length === 0) return <section className="mpc-panel"><span className="mpc-dim">No workflow names it</span></section>
++  return (
++    <section className="mpc-panel" aria-labelledby="mpc-us-h">
++      <header className="mpc-panel-h"><h2 id="mpc-us-h">Usage <em>3 workflows · 7 steps</em></h2></header>
++      <div className={`mpc-usage${ws ? ' has-ws' : ''}`} role="table" aria-label="Workflows that name it">
++        <div className="mpc-urow is-head" role="row">{ws && <span role="columnheader">Workspace</span>}<span role="columnheader">Workflow</span><span role="columnheader">Steps</span><span role="columnheader">How</span><span role="columnheader">Last run</span></div>
++        {rows.map((r) => (
++          <div key={r.wf} className="mpc-urow" role="row">
++            {ws && <span role="cell">{r.ws}</span>}
++            <span role="cell"><a href="/workflows">{r.wf}</a></span>
++            <span role="cell" className="mpc-chips">{r.steps.map((s) => <Chip key={s}>{s}</Chip>)}</span>
++            <span role="cell">{r.how}</span>
++            <span role="cell" className="mpc-dim">{r.last}</span>
++          </div>
++        ))}
++      </div>
++    </section>
++  )
++}
++
++/* ---------------------------------------------------------------- update */
++
++function UpdateView({ p, back }: { p: Plugin; back: string }) {
++  const before = `{
++  "name": "jev-belay",
++  "version": "0.2.0",
++  "userConfig": {
++    "threshold": {
++      "type": "number",
++      "default": 0.7
++    },`
++  return (
++    <div className="mpc-upd">
++      <section className="mpc-panel" aria-labelledby="mpc-u-h">
++        <header className="mpc-panel-h">
++          <h2 id="mpc-u-h">Update {p.name} <code>0.2.0</code> → <code>0.3.0</code></h2>
++          <span className="mpc-dim mpc-small mpc-push">commit 9f3c2e1 → 2b81f04 · sha256 7a4c9e02 → 0c5d81fe</span>
++        </header>
++        <div className="mpc-upd-grid">
++          <div className="mpc-sub">
++            <h3>Hooks <em>1 new</em></h3>
++            <ul className="mpc-hooks" role="list">
++              <li className="mpc-hook"><span className="mpc-hook-ev"><b>Stop</b></span><code className="mpc-hook-cmd">node belay.mjs</code><span className="mpc-dim mpc-small">unchanged</span></li>
++              <li className="mpc-hook is-new"><span className="mpc-hook-ev"><span className="mpc-scope is-new">New</span><b>PreToolUse</b><code>Bash</code></span><code className="mpc-hook-cmd">node guard.mjs</code><span className="mpc-runs">Runs every turn</span></li>
++            </ul>
++            <h3>Settings <em>1 changed · 1 new</em></h3>
++            <ul className="mpc-chg" role="list">
++              <li><code>threshold</code><span>default 0.7 → <b>0.8</b></span><span className="mpc-dim mpc-small">Engineering: 0.8</span></li>
++              <li className="is-new"><code>max_retries</code><span>new · number · default <b>2</b></span><span className="mpc-dim mpc-small">Engineering: default</span></li>
++            </ul>
++            <h3>Needs</h3>
++            <ul className="mpc-chg" role="list"><li><span>net</span><span>api.typesafe.ai</span><span className="mpc-dim mpc-small">unchanged</span></li></ul>
++          </div>
++          <div className="mpc-sub">
++            <h3>plugin.json</h3>
++            <pre className="mpc-diff" aria-label="plugin.json, changed lines">
++              {before.split('\n').map((l, i) => {
++                const del = l.includes('"version"') || l.includes('0.7')
++                return (
++                  <Fragment key={i}>
++                    <span className={del ? 'is-del' : ''}>{l}{'\n'}</span>
++                    {l.includes('"version"') && <span className="is-add">{'  "version": "0.3.0",\n'}</span>}
++                    {l.includes('0.7') && <span className="is-add">{'      "default": 0.8\n'}</span>}
++                  </Fragment>
++                )
++              })}
++              <span className="is-add">{'    "max_retries": {\n      "type": "number",\n      "title": "Max retries",\n      "default": 2\n    },\n'}</span>
++              <span>{'    …\n  },\n  "hooks": {\n'}</span>
++              <span className="is-add">{'    "PreToolUse": [{ "matcher": "Bash",\n      "command": "node guard.mjs" }],\n'}</span>
++              <span>{'    "Stop": [ … ]\n  }\n}'}</span>
++            </pre>
++          </div>
++        </div>
++      </section>
++      <div className="mpc-installbar">
++        <span className="mpc-small">Running steps keep 0.2.0 · steps from the next submission run 0.3.0</span>
++        <span className="mpc-acts"><a className="c-btn is-ghost" href={back}>Cancel</a><Button kind="primary">Update to 0.3.0</Button></span>
++      </div>
++    </div>
++  )
++}
++
++/* ---------------------------------------------------------------- builder sheet */
++
++function MpBuilder() {
++  const [profile, setProfile] = useState('codex')
++  const [open, setOpen] = useState(false)
++  const [enforceOn, setEnforceOn] = useState(true)
++  const [gstack, setGstack] = useState<string[]>(['review'])
++  useEffect(() => { if (profile === 'claude-code') setOpen(true) }, [profile])
++  return (
++    <div className="mpc-page">
++      <PageHead title="New workflow" />
++      <section className="mpc-panel mpc-step" aria-label="Step review">
++        <header className="mpc-panel-h"><span className="mpc-stepn">2</span><h2>review</h2><span className="mpc-dim mpc-small">after build</span></header>
++        <div className="mpc-row2">
++          <div className="mpc-field">
++            <label className="mpc-lbl" htmlFor="mpc-prof">Runner profile</label>
++            <select id="mpc-prof" className="c-inp" value={profile} onChange={(e) => setProfile(e.target.value)}>
++              <option value="codex">codex</option><option value="claude-code">claude-code</option><option value="claude-code-large">claude-code-large</option>
++            </select>
++          </div>
++          <div className="mpc-field">
++            <span className="mpc-lbl">Plugins</span>
++            <span className="mpc-chips">
++              {enforceOn && <Chip>jev-enforce · every step</Chip>}
++              {gstack.length > 0 && <Chip>gstack · Unattended · {gstack.join(', ')}</Chip>}
++              <Button size="sm" kind="ghost" onClick={() => setOpen(true)}>Plugins…</Button>
++            </span>
++          </div>
++        </div>
++        <div className="mpc-field"><label className="mpc-lbl" htmlFor="mpc-prompt">Prompt</label>
++          <textarea id="mpc-prompt" className="c-inp" rows={3} defaultValue="Review the build step's pull request against CONTRACT.md and leave findings as review comments." /></div>
++      </section>
++      {open && (
++        <aside className="psh-sheet mpc-sheet" role="dialog" aria-modal="false" aria-labelledby="mpc-sh-h">
++          <header className="psh-head">
++            <div><span className="psh-dim psh-small">Plugins for step</span><h2 id="mpc-sh-h">review</h2></div>
++            <Button size="sm" kind="ghost" onClick={() => setOpen(false)}>Close</Button>
++          </header>
++          <section className="psh-part">
++            <h3>On for every step <InfoTip about="defaults" tip="Engineering turns these on for every agent step. This step can turn one off." /></h3>
++            <div className={`mpc-shrow${enforceOn ? '' : ' is-off'}`}>
++              <Mono p={PLUGINS[3]!} sm />
++              <span className="mpc-shrow-t"><b>jev-enforce</b> <code>1.1.1-bgd.3</code><br /><span className="mpc-small mpc-dim">2 hooks · Engineering default</span></span>
++              <Switch on={enforceOn} label="jev-enforce on this step" onChange={setEnforceOn} />
++            </div>
++          </section>
++          <section className="psh-part">
++            <h3>Added on this step</h3>
++            <div className="mpc-shrow is-open">
++              <Mono p={PLUGINS[0]!} sm />
++              <span className="mpc-shrow-t"><b>gstack</b> <code>1.92.55.0</code><br /><span className="mpc-small mpc-dim">Unattended · {gstack.length} of 12 skills</span></span>
++              <Button size="sm" kind="ghost" onClick={() => setGstack([])}>Remove</Button>
++            </div>
++            <ul className="mpc-shskills" role="list">
++              {['review', 'investigate', 'qa-only', 'design-review', 'plan-eng-review'].map((s) => (
++                <li key={s}><label className={`psh-tick${gstack.includes(s) ? ' is-on' : ''}`}>
++                  <input type="checkbox" checked={gstack.includes(s)} onChange={() => setGstack(gstack.includes(s) ? gstack.filter((x) => x !== s) : [...gstack, s])} />
++                  <code>{s}</code></label></li>
++              ))}
++              <li className="mpc-dim mpc-small">+7 more</li>
++            </ul>
++          </section>
++          <section className="psh-part">
++            <h3>Add</h3>
++            <div className="mpc-shrow">
++              <Mono p={PLUGINS[2]!} sm />
++              <span className="mpc-shrow-t"><b>jev-belay</b> <code>0.2.0</code><br /><span className="mpc-small mpc-dim">1 hook · Platform</span></span>
++              <Button size="sm" kind="ghost">+ Add</Button>
++            </div>
++          </section>
++          <footer className="psh-foot">
++            <span className="mpc-chips">{enforceOn && <Chip>jev-enforce</Chip>}{gstack.length > 0 && <Chip>gstack · {gstack.join(', ')}</Chip>}</span>
++            <div className="psh-acts"><Button kind="primary" onClick={() => setOpen(false)}>Use on this step</Button></div>
++          </footer>
++        </aside>
++      )}
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/Spine.tsx b/apps/swarm-ui/src/Spine.tsx
+index ce2f791..b192998 100644
+--- a/apps/swarm-ui/src/Spine.tsx
++++ b/apps/swarm-ui/src/Spine.tsx
+@@ -194,6 +194,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
+     // status only, a platform admin's alone, so under Platform and never in
+     // a workspace admin's `adminPagesFor`.
+     { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
++    { key: 'plugins', label: 'Plugins', icon: 'runtimes', to: 'admin/plugins' }, // MOCK-HOOK
+     // DAYONE-SETUP-UI-3 (part of #2688; day-one-plan §5.2): Setup and its
+     // Health page, a platform admin's alone, so never in a workspace admin's
+     // `adminPagesFor` and under Platform in the panel.
+diff --git a/apps/swarm-ui/src/paths.ts b/apps/swarm-ui/src/paths.ts
+index 5b1c78f..ed4c14b 100644
+--- a/apps/swarm-ui/src/paths.ts
++++ b/apps/swarm-ui/src/paths.ts
+@@ -290,6 +290,7 @@ export const FIXED: Readonly<Record<string, string>> = {
+   // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5): Admin › Platform
+   // secrets, a platform admin's alone, status only.
+   'admin/platform-secrets': '/admin/platform-secrets',
++  'admin/plugins': '/admin/plugins', // MOCK-HOOK
+   // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1):
+   // Admin › Setup, where swarm install hands the people part of an install
+   // over to the console, and Health, the scheduled doctor's findings, under
+diff --git a/apps/swarm-ui/src/styles/mpc.css b/apps/swarm-ui/src/styles/mpc.css
+new file mode 100644
+index 0000000..4fdd7bc
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/mpc.css
+@@ -0,0 +1,284 @@
++/* MOCK-HOOK FILE */
++/* Managed plugins, direction "cards" (MpCards.tsx, ?mp=cards). Console tokens
++   only, so light and dark follow the theme; no type below --t-micro (12px). */
++
++.mpc-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 1240px; padding-bottom: 72px; }
++.mpc-dim { color: var(--text-dim); }
++.mpc-small { font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
++.mpc-acts { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.mpc-push { margin-left: auto; }
++.mpc-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
++.mpc-wrap { overflow-wrap: anywhere; }
++.mpc-crumb { display: flex; gap: 8px; align-items: center; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
++.mpc-crumb a { color: var(--info-ink); text-decoration: none; }
++.mpc-crumb a:hover { text-decoration: underline; }
++
++/* The switch: a checkbox drawn as one, its state said beside it. */
++.mpc-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: var(--t-meta); line-height: var(--lh-meta); flex: none; position: relative; }
++.mpc-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
++.mpc-track { width: 30px; height: 18px; border-radius: 999px; background: var(--ctl-q-fill); border: 1px solid var(--ctl-bd); position: relative; transition: background .12s; flex: none; }
++.mpc-track > span { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-dim); transition: left .12s; }
++.mpc-switch input:checked + .mpc-track { background: var(--info); border-color: var(--info); }
++.mpc-switch input:checked + .mpc-track > span { left: 14px; background: var(--ctl-onac); }
++.mpc-switch input:focus-visible + .mpc-track { outline: 2px solid var(--info); outline-offset: 2px; }
++.mpc-switch.is-inert { cursor: default; opacity: .55; }
++.mpc-switch.is-changed .mpc-track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); }
++.mpc-switch-w { min-width: 4ch; }
++.mpc-toggle { display: inline-flex; align-items: center; gap: 8px; }
++
++/* The monogram, tinted by scope. */
++.mpc-mono { flex: none; width: 36px; height: 36px; border-radius: var(--r-tile); display: grid; place-items: center; font: 600 var(--t-meta)/var(--lh-flush) var(--mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--line); }
++.mpc-mono.is-sm { width: 28px; height: 28px; font-size: var(--t-micro); }
++.mpc-mono.is-platform { background: color-mix(in srgb, var(--info) 14%, var(--surface)); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); color: var(--info-ink); }
++.mpc-mono.is-workspace { background: color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); color: var(--ok-ink); }
++
++.mpc-scope { flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; border: 1px solid var(--line); color: var(--text-dim); background: var(--surface-2); white-space: nowrap; }
++.mpc-scope.is-platform { color: var(--info-ink); border-color: color-mix(in srgb, var(--info) 40%, var(--line)); background: color-mix(in srgb, var(--info) 8%, var(--surface)); }
++.mpc-scope.is-workspace { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
++.mpc-scope.is-pinned { color: var(--text); }
++.mpc-scope.is-new { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
++
++.mpc-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
++.mpc-badge { display: inline-flex; gap: 4px; align-items: baseline; padding: 1px 7px; border-radius: var(--r-xs); background: var(--surface-2); border: 1px solid var(--line-soft); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
++.mpc-badge b { color: var(--text); font-variant-numeric: tabular-nums; }
++.mpc-badge.is-hook { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 8%, var(--surface)); }
++
++.mpc-tick { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
++.mpc-tick svg { width: 14px; height: 14px; }
++.mpc-tick.is-ok { color: var(--ok-ink); font-weight: 600; }
++
++/* Filters over the grid. */
++.mpc-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
++.mpc-filters { display: inline-flex; gap: 4px; flex-wrap: wrap; }
++.mpc-filter { height: 30px; padding: 0 12px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 500 var(--t-meta)/var(--lh-meta) var(--font); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
++.mpc-filter em { font-style: normal; color: var(--text-dim); font-variant-numeric: tabular-nums; }
++.mpc-filter.is-on { border-color: var(--text); background: var(--surface-2); }
++
++/* The grid of cards. */
++.mpc-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--ctl-s3); }
++.mpc-card { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
++.mpc-card:hover { border-color: var(--ctl-bd); box-shadow: var(--ctl-shadow); }
++.mpc-card.is-off .mpc-card-top, .mpc-card.is-off .mpc-card-mid { opacity: .62; }
++.mpc-card-top { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px; color: inherit; text-decoration: none; min-width: 0; }
++.mpc-card-top:hover b { text-decoration: underline; }
++.mpc-card-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }
++.mpc-card-id b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; overflow-wrap: anywhere; }
++.mpc-card-id code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.mpc-card-mid { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; flex: 1; }
++.mpc-card-src { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.mpc-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-top: 1px solid var(--line-soft); background: var(--bg); border-radius: 0 0 var(--r-card) var(--r-card); }
++
++/* The platform switches: one card at the top of the platform catalogue. */
++.mpc-switches { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--ctl-s3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 4px 14px; }
++.mpc-sw { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; min-width: 0; }
++.mpc-sw + .mpc-sw { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s3); }
++.mpc-sw-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.mpc-sw-t { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: var(--t-body); line-height: var(--lh-body); }
++.mpc-sw-t .c-tip { bottom: calc(100% + 6px); top: auto; width: 440px; max-width: 70vw; white-space: normal; }
++.mpc-sw-pending { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0 10px; border-top: 1px solid var(--line-soft); }
++.mpc-sw-pending b { color: var(--warn-ink); }
++
++/* A segmented radio group. */
++.mpc-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; flex: none; }
++.mpc-seg.is-wide { display: flex; }
++.mpc-seg.is-wide .mpc-seg-o { flex: 1; justify-content: center; }
++.mpc-seg-o { position: relative; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; font-size: var(--t-meta); line-height: var(--lh-meta); cursor: pointer; background: var(--surface); color: var(--text); white-space: nowrap; }
++.mpc-seg-o + .mpc-seg-o { border-left: 1px solid var(--ctl-bd); }
++.mpc-seg-o input { position: absolute; opacity: 0; width: 1px; height: 1px; }
++.mpc-seg-o.is-on { background: var(--text); color: var(--bg); font-weight: 600; }
++.mpc-seg-o:has(input:focus-visible) { outline: 2px solid var(--info); outline-offset: -2px; }
++
++/* Panels, fields. */
++.mpc-panel { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 14px 16px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
++.mpc-panel-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++.mpc-panel-h h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; display: inline-flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
++.mpc-panel-h h2 em, .mpc-sub h3 em, .mpc-man-sec h3 em { font-style: normal; font-weight: 400; color: var(--text-dim); font-size: var(--t-meta); }
++.mpc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
++.mpc-lbl { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
++.mpc-lbl .mpc-dim { font-weight: 400; }
++.mpc-row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; }
++.mpc-err { color: var(--bad-ink); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.c-inp.is-bad { border-color: var(--bad-ink); box-shadow: 0 0 0 1px var(--bad-ink); }
++
++/* Add plugin: source left, preview right. */
++.mpc-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--ctl-s3); align-items: start; }
++.mpc-srctabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
++.mpc-srctab { padding: 6px 14px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
++.mpc-srctab.is-on { color: var(--text); border-bottom-color: var(--text); font-weight: 600; }
++.mpc-src-acts { display: flex; justify-content: flex-end; }
++.mpc-file { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed var(--ctl-bd); border-radius: var(--r-tile); background: var(--bg); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-file svg { width: 22px; height: 22px; color: var(--text-dim); flex: none; }
++.mpc-file > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
++.mpc-digest code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; color: var(--text); }
++.mpc-radios { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-tile); }
++.mpc-radios li + li { border-top: 1px solid var(--line-soft); }
++.mpc-radio { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); cursor: pointer; }
++.mpc-radio code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
++.mpc-radio .mpc-dim { margin-left: auto; }
++.mpc-radio.is-on { background: color-mix(in srgb, var(--info) 6%, var(--surface)); }
++
++.mpc-preview { min-height: 280px; }
++.mpc-resolving { display: flex; flex-direction: column; gap: 12px; }
++.mpc-resolving .c-spin { display: inline-block; vertical-align: -2px; margin-right: 4px; }
++.mpc-steps { margin: 0; padding: 0 0 0 4px; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-faint); }
++.mpc-steps li::before { content: '○'; margin-right: 8px; }
++.mpc-steps li.is-done { color: var(--text-dim); }
++.mpc-steps li.is-done::before { content: '✓'; color: var(--ok-ink); }
++.mpc-steps li.is-now { color: var(--text); font-weight: 600; }
++.mpc-steps li.is-now::before { content: '●'; color: var(--info); }
++.mpc-skel { display: flex; flex-direction: column; gap: 8px; }
++.mpc-skel span { height: 14px; border-radius: var(--r-xs); background: var(--surface-2); }
++.mpc-skel span:nth-child(2) { width: 70%; }
++.mpc-skel span:nth-child(3) { width: 45%; }
++
++.mpc-man { display: flex; flex-direction: column; gap: 14px; }
++.mpc-man-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
++.mpc-man-h .mpc-card-id { flex: 0 1 auto; }
++.mpc-man-h .mpc-tick { margin-left: auto; }
++.mpc-man-sec h3, .mpc-sub h3 { margin: 0 0 6px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; display: flex; gap: 6px; align-items: center; }
++.mpc-hooks { list-style: none; margin: 0; padding: 0; display: block; }
++.mpc-hook { display: grid; grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-left-width: 3px; border-radius: var(--r-xs); background: color-mix(in srgb, var(--warn) 5%, var(--surface)); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-hook + .mpc-hook { margin-top: 6px; }
++.mpc-hook-ev { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
++.mpc-hook-ev code, .mpc-hook-cmd { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); }
++.mpc-hook-cmd { color: var(--text); overflow-wrap: anywhere; }
++.mpc-runs { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--warn-ink); white-space: nowrap; }
++.mpc-hook.is-new { border-color: var(--warn-ink); }
++.mpc-warnword { color: var(--warn-ink); }
++
++.mpc-facts { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-facts > div { display: contents; }
++.mpc-facts dt { color: var(--text-dim); }
++.mpc-facts dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
++.mpc-pin { display: flex; flex-direction: column; gap: 2px; }
++.mpc-pin code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
++
++.mpc-installbar { position: sticky; bottom: 12px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); box-shadow: var(--ctl-shadow-pop); }
++.mpc-savebar { position: sticky; bottom: 12px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--warn-ink); border-radius: var(--r-card); background: var(--surface); box-shadow: var(--ctl-shadow-pop); }
++
++/* The settings form. */
++.mpc-form { list-style: none; margin: 0; padding: 0; display: block; }
++.mpc-frow { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) 160px; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line-soft); }
++.mpc-frow:first-child { border-top: 0; padding-top: 0; }
++.mpc-frow-l { display: flex; flex-direction: column; gap: 0; min-width: 0; }
++.mpc-frow-l code { font-family: var(--mono); }
++.mpc-ftitle { font-weight: 600; font-size: var(--t-body); line-height: var(--lh-body); display: inline-flex; align-items: center; gap: 4px; }
++.mpc-frow-v { min-width: 0; }
++.mpc-frow-r { justify-self: end; }
++.mpc-num { max-width: 120px; }
++.mpc-num.is-changed { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); }
++.mpc-secret { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
++.mpc-secret .c-inp { flex: 1; min-width: 200px; }
++.mpc-stored { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; }
++.mpc-ovr { height: 26px; padding: 0 10px; border-radius: var(--r-pill); border: 1px dashed var(--ctl-bd); background: transparent; color: var(--text-dim); font: 500 var(--t-micro)/var(--lh-micro) var(--font); cursor: pointer; white-space: nowrap; }
++.mpc-ovr.is-on { border-style: solid; color: var(--text); background: var(--surface-2); }
++.mpc-lock { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-pill); }
++
++.mpc-declared { display: flex; flex-direction: column; gap: 18px; }
++.mpc-sub { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; min-width: 0; }
++.mpc-sub > * { max-width: 100%; }
++.mpc-envtable { width: 100%; border: 1px solid var(--line); border-radius: var(--r-tile); }
++.mpc-env { display: grid; grid-template-columns: minmax(0, 1.5fr) 110px minmax(0, 1.4fr) 110px 36px; gap: 8px; align-items: center; padding: 6px 10px; }
++.mpc-env + .mpc-env { border-top: 1px solid var(--line-soft); }
++.mpc-env.is-head { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface-2); border-radius: var(--r-tile) var(--r-tile) 0 0; }
++.mpc-env .c-inp { width: 100%; }
++.mpc-fileed { width: 100%; border: 1px solid var(--line); border-radius: var(--r-tile); overflow: hidden; }
++.mpc-fileed-h { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-fileed-h code { font-family: var(--mono); }
++.mpc-code { display: block; width: 100%; box-sizing: border-box; border: 0; resize: vertical; padding: 10px 12px; background: var(--bg); color: var(--text); font: 400 var(--t-meta)/var(--lh-meta) var(--mono); }
++.mpc-code:focus { outline: 2px solid var(--info); outline-offset: -2px; }
++
++/* The plugin's page. */
++.mpc-phead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
++.mpc-phead .mpc-mono { width: 44px; height: 44px; font-size: var(--t-body); }
++.mpc-phead-t { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
++.mpc-phead-t h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
++.mpc-phead-t h1 code { font: 400 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
++.mpc-phead-m { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.mpc-phead > .mpc-acts { gap: 16px; }
++.mpc-ov { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--ctl-s3); align-items: start; }
++.mpc-ov-main { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
++.mpc-skills { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 18px; }
++.mpc-skills li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
++.mpc-skills code { font: 400 var(--t-meta)/var(--lh-meta) var(--mono); }
++.mpc-skills li.is-hidden code { color: var(--text-faint); text-decoration: line-through; }
++
++.mpc-vers { list-style: none; margin: 0; padding: 0; display: block; }
++.mpc-ver { display: grid; grid-template-columns: 110px 160px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line-soft); }
++.mpc-ver:first-child { border-top: 0; }
++.mpc-ver-v { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
++.mpc-ver-s { display: inline-flex; gap: 10px; align-items: center; justify-self: end; }
++.mpc-ver.is-old .mpc-ver-v { color: var(--text-dim); }
++
++.mpc-usage { border: 1px solid var(--line); border-radius: var(--r-tile); }
++.mpc-urow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 120px 160px; gap: 12px; align-items: center; padding: 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-usage.has-ws .mpc-urow { grid-template-columns: 120px minmax(0, 1fr) minmax(0, 1.4fr) 110px 150px; }
++.mpc-wslist { list-style: none; margin: 0; padding: 0; }
++.mpc-wslist li { display: grid; grid-template-columns: 160px 120px minmax(0, 1fr); gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line-soft); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-wslist li.is-off b { color: var(--text-dim); font-weight: 500; }
++.mpc-urow + .mpc-urow { border-top: 1px solid var(--line-soft); }
++.mpc-urow.is-head { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface-2); }
++.mpc-urow a { color: var(--info-ink); font-weight: 600; text-decoration: none; }
++
++/* The update. */
++.mpc-upd { display: flex; flex-direction: column; gap: var(--ctl-s3); }
++.mpc-upd-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
++.mpc-upd-grid h3 + * { margin-bottom: 10px; }
++.mpc-chg { list-style: none; margin: 0; padding: 0; width: 100%; border: 1px solid var(--line); border-radius: var(--r-tile); }
++.mpc-chg li { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 10px; padding: 7px 10px; font-size: var(--t-meta); line-height: var(--lh-meta); align-items: center; }
++.mpc-chg li + li { border-top: 1px solid var(--line-soft); }
++.mpc-chg li.is-new { background: var(--diff-add-bg); }
++.mpc-chg code { font-family: var(--mono); }
++.mpc-diff { margin: 0; width: 100%; box-sizing: border-box; padding: 10px 0; border: 1px solid var(--line); border-radius: var(--r-tile); background: var(--bg); font: 400 var(--t-micro)/var(--lh-micro) var(--mono); overflow-x: auto; }
++.mpc-diff > span { display: block; padding: 0 12px; white-space: pre; }
++.mpc-diff > span.is-add { background: var(--diff-add-bg); }
++.mpc-diff > span.is-add::before { content: '+ '; color: var(--ok-ink); margin-left: -12px; padding-left: 2px; }
++.mpc-diff > span.is-del { background: var(--diff-del-bg); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--bad-ink) 60%, transparent); }
++
++/* Remove: the counts over the list; the shared hint is hidden here only. */
++.mpc-rm { display: flex; flex-direction: column; gap: 8px; }
++.mpc-rm-n { margin: 0; display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-body); line-height: var(--lh-body); }
++.mpc-rm-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-tile); }
++.mpc-rm-list li { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-rm-list li + li { border-top: 1px solid var(--line-soft); }
++.c-dlg:has(.mpc-rm) .c-field .c-hint { display: none; }
++
++/* The builder's step and its plugin sheet. */
++.mpc-step { max-width: 620px; }
++.mpc-stepn { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-flush); font-weight: 600; }
++.mpc-sheet { overflow-y: auto; }
++.mpc-sheet .psh-part h3 { display: flex; align-items: center; gap: 4px; }
++.mpc-shrow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-tile); background: var(--surface); }
++.mpc-shrow.is-off { background: var(--bg); }
++.mpc-shrow.is-off .mpc-shrow-t { opacity: .6; }
++.mpc-shrow-t { flex: 1; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.mpc-shrow-t code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
++.mpc-shskills { list-style: none; margin: 8px 0 0; padding: 0 0 0 38px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
++
++/* The phone. */
++@media (max-width: 720px) {
++  .mpc-switches { grid-template-columns: 1fr; }
++  .mpc-sw + .mpc-sw { border-left: 0; padding-left: 0; border-top: 1px solid var(--line-soft); }
++  .mpc-grid { grid-template-columns: 1fr; }
++  .mpc-add, .mpc-ov, .mpc-upd-grid, .mpc-row2 { grid-template-columns: 1fr; }
++  .mpc-frow { grid-template-columns: 1fr; gap: 6px; }
++  .mpc-frow-r { justify-self: start; }
++  .mpc-phead > .mpc-acts { width: 100%; justify-content: space-between; }
++  .mpc-ver { grid-template-columns: 1fr auto; }
++  .mpc-urow { grid-template-columns: 1fr 1fr; }
++  .mpc-usage.has-ws .mpc-urow { grid-template-columns: 1fr 1fr; }
++  .mpc-wslist li { grid-template-columns: 1fr auto; }
++  .mpc-env { grid-template-columns: 1fr 1fr; }
++  .mpc-sw-t .c-tip { width: 300px; }
++  .mpc-installbar, .mpc-savebar { flex-wrap: nowrap; padding: 8px 10px; gap: 8px; }
++  /* The pending change wraps to a second line rather than being cut: when it takes effect must stay readable. */
++  .mpc-installbar > .mpc-small, .mpc-savebar > .mpc-small { flex: 1; min-width: 0; }
++  .mpc-installbar .mpc-acts, .mpc-savebar .mpc-acts { flex-wrap: nowrap; }
++}
++.mpc-card-desc { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
++.mpc-mark { background: color-mix(in srgb, var(--bad) 22%, transparent); color: var(--bad-ink); border-radius: var(--r-xs); }
++.mpc-facts code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); }
++/* The typed-confirmation's Remove, while disabled, reads as disabled in both themes (the shared
++   .c-btn.is-danger-filled:disabled keeps a maroon fill and red border in dark). */
++.c-dlg:has(.mpc-rm) .c-btn.is-danger-filled:disabled { background: var(--surface-2); border-color: var(--line); color: var(--text-faint); }
