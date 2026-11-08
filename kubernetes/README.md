@@ -79,14 +79,14 @@ kubernetes/render.py job --tenant eng --profile browser \
   entry it resolves to, and in `--cluster` — must not be on `SHARED_DENY_LIST`.
   That list lives **once**, in `scripts/lib/common.sh`, and `apply.sh` sources it
   rather than restating it, so a resource added there is protected here on the
-  same commit. `agents-staging` in particular is a live GKE Standard cluster owned
+  same commit. `peer-cluster` (the deny-list's cluster entry) in particular is a live GKE Standard cluster owned
   by another team **in this same project**, and it is the current context on a
   freshly configured workstation. The cluster is the last segment of
   `gke_<project>_<location>_<cluster>`; the whole string used to be matched, and
-  because our project id `saga-agents-staging` contains `agents-staging`, gcloud's
-  own name for our cluster (`gke_saga-agents-staging_us-central1_swarm-autopilot`)
+  because our project id can contain the other team's cluster name (the live one
+  does), gcloud's own name for our cluster (`gke_<project>_us-central1_swarm-autopilot`)
   was refused. Both it and the `swarm-dev` label `configure-kubectl.sh` writes are
-  accepted now; `gke_saga-agents-staging_us-central1-a_agents-staging` is still
+  accepted now; `gke_<project>_us-central1-a_peer-cluster` is still
   refused, including behind a label that looks like ours;
 * the context must not look like EKS. The EKS cluster's **name appears nowhere in
   this repository**, so this check matches its shape instead — an ARN, or a host
@@ -104,7 +104,7 @@ kubernetes/render.py job --tenant eng --profile browser \
   only the cluster segment passed `swarm-autopilot` in another project or
   location. An entry that is not in gcloud's shape names no project or location
   and is refused too. This is also what refuses the other team's
-  `gke_saga-agents-prod_us-central1_agents-prod`, which is not in this project and
+  `gke_example-shared-project_us-central1_peer-cluster`, which is not in this project and
   so not on the shared deny-list.
 
 **The dry run shows what `--confirm` will print.** Without `--confirm`, `apply.sh`
@@ -427,7 +427,7 @@ stopped declaring. Nothing uses it (no pod or Job in the namespace names it);
 delete it once:
 
 ```bash
-kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot \
+kubectl --context gke_example-project_us-central1_swarm-autopilot \
   -n swarm-tenant-eng delete serviceaccount swarm-eng
 ```
 

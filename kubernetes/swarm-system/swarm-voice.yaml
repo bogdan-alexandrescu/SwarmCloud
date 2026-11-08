@@ -11,7 +11,7 @@
 #
 #   terraform -chdir=terraform/infra output -raw swarm_voice_manifest
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2).
 #
 # WHY A ONE-REPLICA STATEFULSET (§3.4). Every live session's sideband is a
@@ -39,8 +39,8 @@
 # equals limit. CPU: request 500m, limit 1 -- within CPU_BURST_MAX_RATIO (2)
 # times the request, so the pod is Burstable on CPU alone. NOT MEASURED: the
 # sizes. A session is two sockets and a few JSON events a second; one vCPU
-# and 1 GiB are a starting point for BGD's one session at a time (version one
-# is BGD's only), to be read from the pod's metrics. On-demand capacity in
+# and 1 GiB are a starting point for the owner's one session at a time (version one
+# is the owner's only), to be read from the pod's metrics. On-demand capacity in
 # swarm-system: no Spot selector or toleration (invariant 6).
 apiVersion: v1
 kind: Namespace
