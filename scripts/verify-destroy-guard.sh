@@ -93,11 +93,13 @@ DENY_TOKENS="$(guard_deny_json)"
 # filter now defaults it (`$ARGS.named.prefix`), so it is passed here to judge by
 # common.sh's value rather than that fallback. One helper here for the same
 # reason common.sh holds one `guard_name_prefix`.
+# judge_plan PLAN [PROJECT]: PROJECT is PROJECT_ID's unless named (a recording
+# names the placeholder project).
 judge_plan() {
   jq -f "${GUARD_JQ}" \
     --argjson deny "${DENY_TOKENS}" \
     --argjson allow_types "${UNLABELABLE_TYPES}" \
-    --arg project "${PROJECT_ID}" \
+    --arg project "${2:-${PROJECT_ID}}" \
     --arg prefix "$(guard_name_prefix)" \
     "$1"
 }
@@ -105,7 +107,7 @@ judge_plan() {
 # The summary of a verdict that the recording carries, so a redaction that
 # changed the judgement is visible. Every key the shells actually gate on.
 verdict_summary() {
-  judge_plan "$1" | jq -c '{ deletions, offenders: (.offenders|length),
+  judge_plan "$@" | jq -c '{ deletions, offenders: (.offenders|length),
       denylist_hits: (.denylist_hits|length), wrong_project: (.wrong_project|length),
       unexpected_mutations: (.unexpected_mutations|length),
       foreign_touches: (.foreign_touches|length),
@@ -334,10 +336,16 @@ if [[ "${COVERED}" -ne "${EXPECTED_ENTRIES}" ]]; then
 fi
 # And the list the guard judges by must be the same length, or the two halves of
 # this proof are describing different lists.
+# guard_deny_json drops a bare 'default' and adds '(default)' whether or not the
+# list held one, so it gives one token for every other entry, plus one.
 TOKEN_COUNT="$(jq -r 'length' <<<"${DENY_TOKENS}")"
-if [[ "${TOKEN_COUNT}" -ne "$(( ${#SHARED_DENY_LIST[@]} ))" ]]; then
-  err "guard_deny_json produced ${TOKEN_COUNT} tokens from ${#SHARED_DENY_LIST[@]} deny-list entries"
-  err "it removes the bare 'default' and adds '(default)', so the count must not change"
+EXPECTED_TOKENS=1
+for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
+  [[ "${entry}" == "default" ]] || EXPECTED_TOKENS=$((EXPECTED_TOKENS + 1))
+done
+if [[ "${TOKEN_COUNT}" -ne "${EXPECTED_TOKENS}" ]]; then
+  err "guard_deny_json produced ${TOKEN_COUNT} tokens from ${#SHARED_DENY_LIST[@]} deny-list entries, not ${EXPECTED_TOKENS}"
+  err "it removes the bare 'default' and adds '(default)', so it gives one token per other entry, plus one"
   FAILED=$((FAILED + 1))
 fi
 
@@ -607,9 +615,17 @@ if [[ -n "${RECORD}" ]]; then
 
   VERDICT_SUMMARY="$(verdict_summary "${PLAN}")"
 
+  # A recording is committed as a test fixture, and the repository holds no
+  # deployment values (docs/design/generic-repository.md): the project the plan
+  # was taken in becomes the placeholder project (scripts/guards/placeholders.json)
+  # in every key and value, and the recording is judged for that project.
+  RECORD_PROJECT="$(jq -r '.projects.deployment' "${REPO_ROOT}/scripts/guards/placeholders.json")"
+  [[ -n "${RECORD_PROJECT}" && "${RECORD_PROJECT}" != "null" ]] \
+    || die "scripts/guards/placeholders.json names no placeholder project to record under"
+
   jq --argjson keep "${VALUE_FIELDS}" \
      --argjson verdict "${VERDICT_SUMMARY}" \
-     --arg env "${ENVIRONMENT}" --arg project "${PROJECT_ID}" \
+     --arg env "${ENVIRONMENT}" --arg project "${RECORD_PROJECT}" \
      --arg recorded "$(date -u +%Y-%m-%d)" '
     {
       _recording: {
@@ -636,12 +652,16 @@ if [[ -n "${RECORD}" ]]; then
               after_unknown: .change.after_unknown,
               before: ( (.change.before // {}) | with_entries(select(.key as $k | $keep | index($k) != null)) )
             } } ]
-    }' "${PLAN}" >"${WORK}/recording.json"
+    }' "${PLAN}" \
+    | jq --arg live "${PROJECT_ID}" --arg placeholder "${RECORD_PROJECT}" '
+        def swap: if $live == "" then . else split($live) | join($placeholder) end;
+        walk(if type == "object" then with_entries(.key |= swap)
+             elif type == "string" then swap else . end)' >"${WORK}/recording.json"
 
   # The recording must reach the SAME verdict as the plan it came from, or the
   # redaction changed the judgement and the offline suite is testing a different
   # thing from the one that runs at teardown.
-  RECORDED_VERDICT="$(verdict_summary "${WORK}/recording.json")"
+  RECORDED_VERDICT="$(verdict_summary "${WORK}/recording.json" "${RECORD_PROJECT}")"
 
   CHECKS=$((CHECKS + 1))
   if [[ "${RECORDED_VERDICT}" == "${VERDICT_SUMMARY}" ]]; then

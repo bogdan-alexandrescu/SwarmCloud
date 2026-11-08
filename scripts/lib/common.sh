@@ -189,7 +189,7 @@ load_env() {
   # fresh install, a new operator, a CI job that forgot the variable -- aimed
   # every script here at the shared project, the one that holds another team's
   # live cluster. An unset project is an error instead
-  # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
+  # (Day One plan, the project-defaults lane, R4). The live deployment's .env and
   # every workflow name it; .env.example says where to.
   #
   # A script that touches no project at all (a local check, a self-test)
@@ -1423,7 +1423,7 @@ auth_config() { printf 'header = "Authorization: Bearer %s"\n' "$1"; }
 #
 # THE *.run.app URL IS NOT THE ADDRESS OF THIS API. Measured 2026-09-22:
 #
-#   curl https://swarm-api-tonstldhta-uc.a.run.app/readyz              -> 404
+#   curl https://swarm-api-<hash>-uc.a.run.app/readyz                  -> 404
 #   curl -H 'Authorization: Bearer <id token>' .../readyz              -> 404
 #   curl .../v1/workflows  and  .../definitely-not-a-route             -> 404
 #
