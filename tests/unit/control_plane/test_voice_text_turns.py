@@ -123,16 +123,27 @@ def test_own_speech_with_no_speech_machine_is_text_and_has_no_sdp(db, tokens, gr
     assert voice.starts[-1].offer == ""
 
 
-def test_gpt_live_with_no_api_key_in_the_pool_is_refused_not_text(db, tokens, group_map, objects, voice):
+def test_gpt_live_with_no_api_key_in_the_pool_falls_back_to_text(db, tokens, group_map, objects, voice):
     pool = FakePool("no_voice_account_registered")
     client = _app(db, tokens, group_map, objects, voice, pool)
 
     response = _start(client, offer_sdp=OFFER)
 
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "conflict"
-    assert response.json()["detail"]["reason"] == vs.NO_OPENAI_KEY
-    assert voice.starts == [] and _sessions(db) == {}
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["mode"] == "text" and body["state"] == vs.LIVE
+    assert body["fallback"] == {"from": cat.ENGINE_GPT_LIVE, "reason": vs.FALLBACK_NO_OPENAI_KEY}
+    assert "answer_sdp" not in body
+    (call,) = voice.starts
+    assert call.mode == vs.MODE_TEXT and call.offer == ""  # the offer is dropped unread
+    (session,) = _sessions(db).values()
+    assert session["mode"] == "text"
+    assert session["fallback"]["from"] == cat.ENGINE_GPT_LIVE
+    assert session["fallback"]["reason"] == vs.FALLBACK_NO_OPENAI_KEY
+    # A text session needs no offer at all.
+    _end(client, "alice", body["session_id"])
+    again = _start(client)
+    assert again.status_code == 200 and again.json()["mode"] == "text"
 
 
 def test_with_an_api_key_the_session_is_live_as_today(db, tokens, group_map, objects, voice):

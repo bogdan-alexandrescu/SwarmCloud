@@ -104,10 +104,10 @@ it › Settings once: own speech (the default) is a `speech` session, the fast
 Claude front at swarm-voice and the speech machine brought to RUNNING, with
 no SDP and no OpenAI pool asked; GPT-Live is `live`, today's path
 (`offer_sdp` is required and `answer_sdp` comes back), and with no OpenAI API
-key in the Voice it pool it is refused, 409 `conflict` with `detail.reason`
-`gpt_live_no_openai_key`, before anything is written. An own-speech session
-that cannot start becomes `text`, with `fallback: {from: "own", reason}`
-(`speech_not_deployed`, `front_refused`, `no_l4`, `not_ready`). Any offer a
+key in the Voice it pool it is `text`, with `fallback: {from: "gpt-live",
+reason: "no_openai_key"}`. An own-speech session that cannot start becomes
+`text`, with `fallback: {from: "own", reason}` (`speech_not_deployed`,
+`front_refused`, `no_l4`, `not_ready`). Any offer a
 text or speech start is sent is dropped unread. The browser posts each turn
 of a text or speech session to `/turns` as `{"text": 1..4000 characters}`,
 answered `{turn_id, reply, cards}` (and `delegation_id` when the front

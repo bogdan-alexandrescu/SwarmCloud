@@ -144,12 +144,12 @@ def test_own_speech_with_no_machine_deployed_is_text_with_its_reason():
     assert (pick.mode, pick.fallback) == (vs.MODE_TEXT, vs.FALLBACK_NOT_DEPLOYED)
 
 
-def test_gpt_live_with_no_key_is_refused_with_a_fixed_code_and_never_text():
-    with pytest.raises(vs.VoiceNoOpenAIKey) as refused:
-        vs.pick_engine({**CHOSEN, "engine": cat.ENGINE_GPT_LIVE}, FakePool(vs.NO_LIVE_ACCOUNT), ALICE,
-                       speech_deployed=True)
-    assert refused.value.status_code == 409 and refused.value.code == "conflict"
-    assert refused.value.detail["reason"] == vs.NO_OPENAI_KEY == "gpt_live_no_openai_key"
+def test_gpt_live_with_no_key_falls_back_to_text_with_its_reason():
+    pick = vs.pick_engine({**CHOSEN, "engine": cat.ENGINE_GPT_LIVE}, FakePool(vs.NO_LIVE_ACCOUNT), ALICE,
+                          speech_deployed=True)
+    assert (pick.engine, pick.mode, pick.fallback) == (
+        cat.ENGINE_GPT_LIVE, vs.MODE_TEXT, vs.FALLBACK_NO_OPENAI_KEY)
+    assert vs.FALLBACK_FROM[pick.fallback] == cat.ENGINE_GPT_LIVE
 
 
 def test_own_speech_never_asks_the_openai_pool():
@@ -399,15 +399,16 @@ def test_the_route_starts_gpt_live_when_settings_say_so():
     assert rig.compute.calls == []
 
 
-def test_the_route_refuses_gpt_live_with_no_key_and_starts_nothing():
+def test_the_route_falls_back_to_text_for_gpt_live_with_no_key():
     rig = Rig()
     _settings(rig.db, engine=cat.ENGINE_GPT_LIVE)
     client = _route_app(rig, FakePool(vs.NO_LIVE_ACCOUNT), speech=CONFIG)
-    refused = client.post("/v1/voice/sessions", json={"offer_sdp": OFFER})
-    assert refused.status_code == 409
-    assert refused.json()["detail"]["reason"] == vs.NO_OPENAI_KEY
-    assert rig.voice.starts == []
-    assert [p for p in rig.db.docs if p.startswith(vs.PROJECTS + "/")] == []
+    started = client.post("/v1/voice/sessions", json={})
+    assert started.status_code == 200, started.text
+    assert started.json()["mode"] == vs.MODE_TEXT and "answer_sdp" not in started.json()
+    assert started.json()["fallback"] == {"from": cat.ENGINE_GPT_LIVE, "reason": vs.FALLBACK_NO_OPENAI_KEY}
+    assert [c.mode for c in rig.voice.starts] == [vs.MODE_TEXT]
+    assert rig.compute.calls == []  # the speech machine is never started
 
 
 def test_the_route_falls_back_to_text_when_no_speech_machine_is_deployed():

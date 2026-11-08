@@ -90,16 +90,17 @@ no mode. `pick_engine` reads Voice it › Settings' `engine`:
              wait). The OpenAI pool is never asked.
   gpt-live   `live`, today's GPT-Live path, when the broker's Voice it pool
              holds an OpenAI API key. With none (`GET /v1/voice/pool` answers
-             `no_voice_account_registered`) the start is refused, 409
-             `conflict` with `detail.reason` `gpt_live_no_openai_key`, before
-             anything is written: no other account, plan or person's key is
-             tried. A broker that cannot be asked keeps the live path, and
-             swarm-voice's own lease then says why.
+             `no_voice_account_registered`) the session is `text`, with
+             `fallback: {from: "gpt-live", reason: "no_openai_key"}` (owner's
+             pick, PR #3647: "text fallback"): no other account or person's
+             key is tried for Live. A broker that cannot be asked keeps the
+             live path, and swarm-voice's own lease then says why.
 
-TEXT MODE IS THE FALLBACK, never an engine Settings choose (§10.1). An own
-speech session becomes text when its engine cannot start, with the reason as
-a fixed code in `fallback: {from: "own", reason}` on the session document and
-in the start's answer:
+TEXT MODE IS THE FALLBACK, never an engine Settings choose (§10.1). A session
+becomes text when its engine cannot start, with the engine and the reason as
+a fixed code in `fallback: {from, reason}` on the session document and in the
+start's answer. GPT-Live's one reason, `no_openai_key`, is known before
+anything is written; own speech's are:
 
   speech_not_deployed   the deployment runs no speech machine (SWARM_SPEECH_*
                         empty), so no session is opened as speech at all
@@ -216,13 +217,16 @@ FALLBACK_NOT_DEPLOYED = "speech_not_deployed"
 FALLBACK_FRONT_REFUSED = "front_refused"
 FALLBACK_NO_L4 = "no_l4"
 FALLBACK_NOT_READY = "not_ready"
+#: GPT-Live's: the Voice it pool holds no OpenAI API key, so the session is text.
+FALLBACK_NO_OPENAI_KEY = "no_openai_key"
 FALLBACK_REASONS = frozenset({FALLBACK_NOT_DEPLOYED, FALLBACK_FRONT_REFUSED, FALLBACK_NO_L4,
-                              FALLBACK_NOT_READY})
+                              FALLBACK_NOT_READY, FALLBACK_NO_OPENAI_KEY})
+#: The engine each fallback reason falls back from (`fallback.from`).
+FALLBACK_FROM = {reason: cat.ENGINE_OWN for reason in FALLBACK_REASONS} | {
+    FALLBACK_NO_OPENAI_KEY: cat.ENGINE_GPT_LIVE}
 #: swarm-voice's 409 code for a speech start whose fast front could not lease
 #: a Claude account (swarm_voice.main.FRONT_REFUSED).
 FRONT_REFUSED_CODE = "voice_front_refused"
-#: `detail.reason` of the 409 for a GPT-Live start with no OpenAI API key.
-NO_OPENAI_KEY = "gpt_live_no_openai_key"
 #: The broker's reason for a Voice it pool with no account that can open a Live
 #: session, i.e. no OpenAI API key: the one answer that makes a session text.
 NO_LIVE_ACCOUNT = "no_voice_account_registered"
@@ -304,12 +308,6 @@ VoicePoolUnavailable = (VoicePoolRefused, VoicePoolBusy)
 
 class VoiceSessionLive(Conflict):
     pass
-
-
-class VoiceNoOpenAIKey(Conflict):
-    """Settings name GPT-Live and the Voice it pool holds no OpenAI API key.
-    Keeps the established `conflict` code; `detail.reason` is
-    `gpt_live_no_openai_key`. Nothing was written or started."""
 
 
 class SpeechFrontRefused(Exception):
@@ -512,12 +510,6 @@ class EnginePick:
     fallback: str | None = None
 
 
-def no_openai_key() -> VoiceNoOpenAIKey:
-    return VoiceNoOpenAIKey(
-        "Voice it's Settings name GPT-Live, and its pool holds no OpenAI API key: add one in "
-        "Voice it \u203a Settings. Nothing was started.", detail={"reason": NO_OPENAI_KEY})
-
-
 def pick_engine(chosen: Mapping[str, Any], pool: Any, person: str, *,
                 speech_deployed: bool) -> EnginePick:
     """The engine Voice it › Settings name (`chosen`, settings.effective's
@@ -525,9 +517,9 @@ def pick_engine(chosen: Mapping[str, Any], pool: Any, person: str, *,
 
     own speech is `speech`, or `text` with `speech_not_deployed` when the
     deployment runs no speech machine; the OpenAI pool is never asked.
-    GPT-Live is `live`, or `VoiceNoOpenAIKey` when the broker says the pool
-    holds no OpenAI API key; a broker that cannot be asked keeps `live`, and
-    swarm-voice's own lease refuses properly."""
+    GPT-Live is `live`, or `text` with `no_openai_key` when the broker says
+    the pool holds no OpenAI API key; a broker that cannot be asked keeps
+    `live`, and swarm-voice's own lease refuses properly."""
     engine = chosen.get("engine")
     engine = engine if engine in ENGINE_MODES else cat.DEFAULTS["engine"]
     if engine == cat.ENGINE_OWN:
@@ -541,7 +533,7 @@ def pick_engine(chosen: Mapping[str, Any], pool: Any, person: str, *,
         return EnginePick(engine, MODE_LIVE)
     reason = answer.get("reason") if isinstance(answer, dict) else None
     if reason == NO_LIVE_ACCOUNT:
-        raise no_openai_key()
+        return EnginePick(engine, MODE_TEXT, FALLBACK_NO_OPENAI_KEY)
     return EnginePick(engine, MODE_LIVE)
 
 
@@ -880,7 +872,7 @@ class VoiceSessions:
                 "state": STARTING, "created_at": now, "grant_hash": grant_hash(grant),
                 "mode": mode}
             if fallback is not None:
-                fields["fallback"] = {"from": cat.ENGINE_OWN, "reason": fallback, "at": now}
+                fields["fallback"] = {"from": FALLBACK_FROM[fallback], "reason": fallback, "at": now}
             txn.set(session_ref, fields)
             txn.set(marker_ref, {
                 "tenant_id": tenant_id, "project_id": project_id,
@@ -936,7 +928,7 @@ class VoiceSessions:
         if mode == MODE_LIVE:
             answer["answer_sdp"] = started.answer
         if fallback is not None:
-            answer["fallback"] = {"from": cat.ENGINE_OWN, "reason": fallback}
+            answer["fallback"] = {"from": FALLBACK_FROM[fallback], "reason": fallback}
         return answer
 
     def _start_speech(self, call: StartCall, *, chosen: Mapping[str, Any], tenant_id: str,
