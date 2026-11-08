@@ -53,6 +53,15 @@ APP = {"app.kubernetes.io/name": NAME}
 PORT = 8080
 STATS_PORT = 8081
 STATS_PY = REPO / "apps" / "swarm-graph" / "swarm_graph" / "stats.py"
+def _annotation_domain() -> str:
+    """The domain the manifests' swarm annotation keys carry, read from
+    kubernetes/network_parity.py's SOURCE_ANNOTATION rather than restated: the
+    lane that owns kubernetes/ owns that value."""
+    text = (REPO / "kubernetes" / "network_parity.py").read_text()
+    match = re.search(r'^SOURCE_ANNOTATION = "([^"/]+)/network-source"$', text, re.M)
+    assert match, "kubernetes/network_parity.py no longer names SOURCE_ANNOTATION"
+    return match.group(1)
+
 #: A swarm-api range and a load balancer address that appear nowhere else, so
 #: a rendered value that matches them can only have come from the render.
 FAKE_API_CIDR = "10.123.16.0/20"
@@ -348,7 +357,7 @@ def test_the_kill_switch_is_a_mounted_directory_with_exactly_its_keys():
     assert volume["name"] == mount["name"]
     assert volume["configMap"]["name"] == "swarm-graph-config"
     annotations = _deployment()["spec"]["template"]["metadata"]["annotations"]
-    assert "swarm.example.com/config-sha256" in annotations
+    assert f"{_annotation_domain()}/config-sha256" in annotations
 
 
 def test_the_rendered_setting_has_exactly_the_keys_the_service_accepts():

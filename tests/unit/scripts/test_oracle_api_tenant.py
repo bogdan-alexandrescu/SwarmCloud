@@ -36,11 +36,14 @@ from .test_verify_identity_grants import (
     BOOTSTRAP_TFVARS,
     LOCALS_TF,
     _string_list,
+    _allowed_domain,
+    _string_value,
     _strip_comments,
     _verify_identity,
 )
 
-ORACLE_API = "oracle-api@example-project.iam.gserviceaccount.com"
+#: The account in dev's project, read from dev.tfvars rather than restated.
+ORACLE_API = f"oracle-api@{_string_value(DEV_TFVARS, 'project_id')}.iam.gserviceaccount.com"
 #: What tenant_id_for_user gave the account on main, 2026-10-18. Asserted
 #: against the frozen module below, never used in place of it.
 ORACLE_TENANT = "u-or-9a0792"
@@ -129,7 +132,7 @@ def test_the_account_is_in_no_group_tenant_and_holds_no_admin_reach() -> None:
         f"exactly its own, {ORACLE_TENANT}"
     )
     eng = _tenants()["eng"]
-    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]) == "eng@example.com"
+    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]) == f"eng@{_allowed_domain()}"
     for listing in ("admin_users", "admin_pool_users", "secret_admin_members"):
         members = {m.lower().split(":", 1)[-1] for m in _string_list(DEV_TFVARS, listing)}
         assert ORACLE_API not in members, f"{listing} names {ORACLE_API}"
@@ -142,7 +145,7 @@ def test_the_bootstrap_admits_the_account_at_the_front_door() -> None:
         f"For user {ORACLE_API}' before swarm-api ever sees the request"
     )
     # Adding the client must not have replaced anybody already admitted.
-    assert "domain:example.com" in members
+    assert f"domain:{_allowed_domain()}" in members
     assert f"serviceAccount:{_verify_identity()}" in members
 
 

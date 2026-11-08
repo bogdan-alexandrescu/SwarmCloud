@@ -221,7 +221,7 @@ def _recheck(tmp_path: Path, answers: dict[int, list[str]], prs: Path = FIXTURES
     proc = _run("select", "--prs", str(prs), "--required", str(_required_file(tmp_path)),
                 "--recheck-unknown", env={
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    "GH_REPO": "example-org/example-repo",
+                    "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
                     "FAKE_GH_LOG": str(log),
                     "FAKE_MERGEABLE_DIR": str(mergeable_dir),
                     "MERGE_TRAIN_MERGEABLE_WAIT_SECONDS": "0",
@@ -236,7 +236,7 @@ def test_select_boards_an_unknown_pull_request_that_reads_mergeable_on_a_second_
     # MUTATION: board only the list's MERGEABLE -> 106 is left out, and a tick
     # right after a landing boards nothing.
     assert numbers == ["101", "106", "114", "120"], proc.stderr
-    assert reads == ["pr view 106 --repo example-org/example-repo --json mergeable --jq .mergeable"]
+    assert reads == ["pr view 106 --repo bogdan-alexandrescu/SwarmCloud --json mergeable --jq .mergeable"]
 
 
 def test_select_carries_the_head_and_title_of_a_rechecked_pull_request(tmp_path):
@@ -391,7 +391,7 @@ def test_judge_pending_while_a_required_check_runs_or_has_not_reported(tmp_path)
 
 
 def test_judge_red_names_the_failing_job_with_its_link(tmp_path):
-    url = "https://github.com/example-org/example-repo/actions/runs/77/job/88"
+    url = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/77/job/88"
     verdict, failed = _judge(tmp_path, [
         _cr("ci-gate", status="in_progress", conclusion=None),
         _cr("secret scan"),
@@ -802,7 +802,7 @@ def test_the_train_never_starts_on_a_pull_request_event(train_workflow):
 #: The context paths the tick's `if:` may read. Anything else is refused by
 #: _tick_runs() rather than guessed at.
 _IF_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*|\[\d+\])+")
-THIS_REPO = "example-org/example-repo"
+THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
 
 
 def _tick_runs(
@@ -1193,7 +1193,7 @@ def gate(tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "example-org/example-repo",
+            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
             "EVENT_NAME": event_name,
             "PR_NUMBER": "4242",
             "PR_TITLE": "A fact-style headline",
@@ -1835,7 +1835,7 @@ def _list_prs(tmp_path: Path, prs: list[dict], fails: dict[str, list[str]] | Non
     out = tmp_path / "prs.json"
     proc = _run("list-prs", "--out", str(out), env={
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "GH_REPO": "example-org/example-repo",
+        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
         "FAKE_GH_LOG": str(log),
         "FAKE_GH_DIR": str(answers),
         "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0",

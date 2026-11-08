@@ -23,7 +23,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "verify-destroy-guard.sh"
@@ -31,12 +30,6 @@ FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.j
 _SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
 _P = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_P)
-
-pytestmark = pytest.mark.skipif(
-    shutil.which("jq") is None or not FIXTURE.exists(),
-    reason="jq and the recorded plan are required",
-)
-
 
 def test_record_writes_the_placeholder_project_not_the_one_it_ran_in(tmp_path: Path) -> None:
     live = f"rec-{secrets.token_hex(4)}"

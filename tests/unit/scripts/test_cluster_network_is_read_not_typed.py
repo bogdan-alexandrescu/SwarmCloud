@@ -81,6 +81,16 @@ CONTEXT = "swarm-dev"
 CLUSTER_REF = f"gke_{PROJECT}_us-central1_swarm-autopilot"
 SOURCE = f"gke/{PROJECT}/us-central1/swarm-autopilot"
 
+
+def _source_annotation() -> str:
+    """kubernetes/network_parity.py's SOURCE_ANNOTATION, the key the render
+    writes the network's source under, read from the module (stdlib only)."""
+    spec = importlib.util.spec_from_file_location("swarm_tests_network_parity", CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SOURCE_ANNOTATION
+
+
 #: The other team's clusters, as gcloud names their contexts in a kubeconfig:
 #: the never-touch cluster in our project (on the placeholder list), and their
 #: production in their own project (on no list of ours).
@@ -543,7 +553,8 @@ def test_apply_renders_the_network_the_cluster_reports(tmp_path):
         f"the rendered internet rule does not except the cluster's ranges: {sorted(excepts)}"
     )
     annotations = policy["metadata"].get("annotations") or {}
-    assert annotations.get("swarm.example.com/network-source") == SOURCE
+    # The key is network_parity.py's (outside this lane), read, not restated.
+    assert annotations.get(_source_annotation()) == SOURCE
 
     # Read from the cluster the context points at, through the context.
     gcloud = cluster.log("gcloud")

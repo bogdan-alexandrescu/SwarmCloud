@@ -46,7 +46,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "close-merged-issues.sh"
-THIS_REPO = "example-org/example-repo"
+THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("jq") is None, reason="bash and jq are required"
@@ -251,7 +251,7 @@ def test_the_graphql_query_asks_for_this_pull_requests_closing_references(run_cl
     # The query spans lines, so the one call is the whole log here.
     assert calls.count("api graphql") == 1 and calls.startswith("api graphql"), calls
     assert "closingIssuesReferences" in calls
-    assert "-f owner=example-org" in calls and "-f name=SwarmCloud" in calls, calls
+    assert "-f owner=bogdan-alexandrescu" in calls and "-f name=SwarmCloud" in calls, calls
     assert "-F number=4242" in calls, calls
 
 
