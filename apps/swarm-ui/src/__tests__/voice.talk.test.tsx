@@ -44,7 +44,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
-const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: null as string | null }))
+// The deployment's engine as Settings reads it: GPT-Live unless a test names another; 'pending' is a read not answered yet.
+const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: 'gpt-live' as string | null }))
 const vadMock = vi.hoisted(() => ({
   start: vi.fn(),
   setMic: vi.fn(),
@@ -82,9 +83,11 @@ vi.mock('../fetch', async (importOriginal) => {
     write: fetchMock.write,
     // Settings' engine, when a test names one; every other read is the real one.
     read: ((target, ...rest) =>
-      target.url === '/v1/voice/settings' && fetchMock.engine !== null
-        ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine } }, fetchedAt: Date.now() })
-        : actual.read(target, ...rest)) as typeof actual.read,
+      target.url === '/v1/voice/settings' && fetchMock.engine === 'pending'
+        ? new Promise(() => undefined)
+        : target.url === '/v1/voice/settings' && fetchMock.engine !== null
+          ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine } }, fetchedAt: Date.now() })
+          : actual.read(target, ...rest)) as typeof actual.read,
   }
 })
 
@@ -113,6 +116,8 @@ function answerStarts(): void {
 }
 
 async function start(): Promise<FakePeer> {
+  // The page reads Settings' engine when it opens: GPT-Live sends the offer.
+  await settle(act)
   fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
   await settle(act)
   return FakePeer.last
@@ -574,7 +579,8 @@ describe('the cards are seated by talk-pane.css', () => {
 // MUTATIONS: send the offer on our own engine; draw the boot as a sentence;
 // open the socket for a text session; drop setMic on mute; stop the mic in
 // text mode; keep the notice after Dismiss; send "go" as a turn; act on a
-// control word inside a longer sentence.
+// control word inside a longer sentence; send the offer while the engine is
+// not read yet.
 
 class FakeSocket {
   static all: FakeSocket[] = []
@@ -667,7 +673,7 @@ describe('the Talk pane on our own speech', () => {
   })
   afterEach(() => {
     fetchMock.write.mockReset()
-    fetchMock.engine = null
+    fetchMock.engine = 'gpt-live'
     vi.unstubAllGlobals()
     window.sessionStorage.clear()
   })
@@ -836,6 +842,18 @@ describe('the Talk pane on our own speech', () => {
     await settle(act)
     expect(posted(`/v1/voice/sessions/${SESSION}/readbacks/answer`).map(([, , b]) => b)).toEqual([{ text: 'Go' }])
     expect(posted(`/v1/voice/sessions/${SESSION}/turns`)).toHaveLength(0)
+  })
+
+  it('a Start before the Settings read answers sends no offer, so an own deployment boots its machine on the socket', async () => {
+    fetchMock.engine = 'pending'
+    serveOwn({ mode: 'speech' })
+    render(<TalkPane />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
+    await settle(act)
+    expect(posted('/v1/voice/sessions').map(([, , b]) => b)).toEqual([{}])
+    expect(FakePeer.all).toHaveLength(0)
+    expect(FakeSocket.all).toHaveLength(1)
+    expect(posted(`/v1/voice/sessions/${SESSION}/end`)).toHaveLength(0)
   })
 
   it('a 422 for the offer is GPT-Live: the page makes the WebRTC call instead', async () => {

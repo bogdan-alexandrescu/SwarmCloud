@@ -54,7 +54,9 @@
  * mic and starts with no offer (speechSocket.ts `connectOwnSpeech`): a
  * `speech` session opens the audio socket and voice detection (vad.ts), so
  * only speech leaves the browser; a 422 for the offer is GPT-Live, which
- * makes today's call; an engine not read yet makes today's call too. While
+ * makes today's call. An engine not read yet (still in flight, or the read
+ * failed) starts the same way, so an `own` deployment never gets an offer it
+ * would answer with a machine; only Settings' `gpt-live` sends one. While
  * the machine starts, the status line is its boot phases, each done one a
  * tick and the current one in words, nothing more. Then both sides are
  * captioned (the person's partials and finals, the agent's `say.start`), the
@@ -618,7 +620,8 @@ export function TalkPane() {
     if (resumed.current === undefined) resumed.current = takeResumedProject()
     setProjectId(resumed.current)
     try {
-      const own = engine.current === 'own' ? await connectOwnSpeech(resumed.current) : GPT_LIVE
+      // Only an engine read as GPT-Live sends the offer; `own` or not read yet starts with none.
+      const own = !USE_FIXTURES && engine.current !== GPT_LIVE ? await connectOwnSpeech(resumed.current) : GPT_LIVE
       const c: AnyCall =
         own !== GPT_LIVE
           ? own
