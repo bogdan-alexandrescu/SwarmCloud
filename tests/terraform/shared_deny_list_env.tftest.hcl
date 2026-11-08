@@ -2,10 +2,11 @@
 #
 # The shared project's other-team resources live in the deployment's private
 # tfvars, never in this repository. Terraform renders them on swarm-api as
-# SWARM_SHARED_DENY_LIST (a JSON array) and SWARM_SHARED_DENY_LIST_SET = "1",
-# always, `[]` when the list is empty: swarm-api refuses an infrastructure
-# issue run when the _SET variable is absent, so the pair is rendered whatever
-# the list holds, and the refusal stays for a service that was never rendered.
+# SWARM_SHARED_DENY_LIST (a JSON array) and SWARM_SHARED_DENY_LIST_SET = "1"
+# only when the deployment wrote a list, `[]` included. With no list written
+# (the variable left null) the marker is "0" and swarm-api refuses an
+# infrastructure issue run: a tfvars file that forgot the entry must fail
+# closed, never tell swarm-api the project shares nothing.
 
 mock_provider "google" {
   source = "./mocks/google"
@@ -29,7 +30,7 @@ variables {
   }
 }
 
-run "an_empty_list_is_rendered_as_an_empty_array_and_set" {
+run "no_list_written_renders_no_marker" {
   command = plan
 
   module {
@@ -37,13 +38,35 @@ run "an_empty_list_is_rendered_as_an_empty_array_and_set" {
   }
 
   assert {
+    condition     = local.service_env["swarm-api"].SWARM_SHARED_DENY_LIST_SET == "0"
+    error_message = "with no list written, SWARM_SHARED_DENY_LIST_SET is \"0\", so swarm-api fails closed instead of reading an empty list"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_SHARED_DENY_LIST == ""
+    error_message = "with no list written, SWARM_SHARED_DENY_LIST is empty, never \"[]\""
+  }
+}
+
+run "an_empty_list_is_rendered_as_an_empty_array_and_set" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    shared_deny_list = []
+  }
+
+  assert {
     condition     = local.service_env["swarm-api"].SWARM_SHARED_DENY_LIST == "[]"
-    error_message = "with no list, swarm-api gets SWARM_SHARED_DENY_LIST = \"[]\", never an absent variable or [\"\"]"
+    error_message = "a written empty list reaches swarm-api as SWARM_SHARED_DENY_LIST = \"[]\", never [\"\"]"
   }
 
   assert {
     condition     = local.service_env["swarm-api"].SWARM_SHARED_DENY_LIST_SET == "1"
-    error_message = "SWARM_SHARED_DENY_LIST_SET = \"1\" is rendered always, so swarm-api knows the list was written"
+    error_message = "a written list, empty or not, carries SWARM_SHARED_DENY_LIST_SET = \"1\""
   }
 }
 
