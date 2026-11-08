@@ -77,7 +77,7 @@
 #
 # DNS IS NOT MANAGED HERE
 # -----------------------
-# saga.xyz is at an external registrar. Terraform reserves a global static IP
+# example.com is at an external registrar. Terraform reserves a global static IP
 # and outputs it; the A record is added by hand. Until it resolves, the managed
 # certificate sits in PROVISIONING and the host serves a TLS error. That is
 # normal, takes up to an hour, and looks exactly like a broken deploy -- which

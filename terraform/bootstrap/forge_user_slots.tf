@@ -104,7 +104,7 @@
 # (deployer_conditions.tf, deployer_grantable_project_roles), and hasOnly()
 # limits WHICH roles CI may grant, never to WHOM. Putting
 # roles/secretmanager.secretAccessor on that list would let CI grant itself,
-# unconditioned, read of every secret in saga-agents-staging -- the other
+# unconditioned, read of every secret in example-project -- the other
 # team's 63 among them. That is why the broker's swarmSecretLister grant moved
 # here (#69), and these move here for the same reason. The cost is the same as
 # theirs: a new tenant's user-slot grants are an owner bootstrap apply, the
@@ -129,7 +129,7 @@
 #
 # THE OTHER TEAM'S RESOURCES. Every prefix below starts
 # `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
-# promptlab-*, so no condition here can match one. The unconditioned create
+# peer-app-*, so no condition here can match one. The unconditioned create
 # grant can create a secret with any name, and can do nothing else to it.
 
 variable "enable_forge_user_slots" {

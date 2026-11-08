@@ -11,7 +11,7 @@
 # WHAT IS PUBLIC, AND WHY THAT IS SAFE. One bucket holding one object,
 # scripts/acceptance/fixture.html, readable by anyone. The runner opens it from
 # the Cloud Run worker's egress and from the GKE Autopilot browser pod's, with
-# no credential, so it cannot sit behind IAP or on swarm.saga.xyz's cookie
+# no credential, so it cannot sit behind IAP or on swarm.example.com's cookie
 # origin; storage.googleapis.com is neither. The page's markup is FIXED: its
 # only input is `?run=<id>`, accepted when it matches ^[a-z0-9-]{1,80}$ and set
 # as textContent, so the most anyone can make it show is

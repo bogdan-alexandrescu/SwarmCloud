@@ -2,7 +2,7 @@
 # plan against it rather than grant the deployer on the platform accounts alone
 # and let the next tenant's release fail on a 403.
 
-project_id = "saga-agents-staging"
+project_id = "example-project"
 
 service_max_instances = {
   swarm-api = 5

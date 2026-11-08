@@ -23,13 +23,13 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by this root; see bootstrap.tftest.hcl.
   frontend_iap_members = ["domain:example.com"]
 
   enable_github_wif = true
-  github_repository = "saga/agent-swarm-infra"
+  github_repository = "example-org/example-repo"
 }
 
 run "the_step_spec_key_is_a_p256_signing_key_per_environment" {
@@ -64,7 +64,7 @@ run "the_step_spec_key_is_a_p256_signing_key_per_environment" {
   assert {
     condition = alltrue([
       for env, k in google_kms_crypto_key.step_spec :
-      k.name == "step-spec" && k.key_ring == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-${env}-specs"
+      k.name == "step-spec" && k.key_ring == "projects/example-project/locations/us-central1/keyRings/swarm-${env}-specs"
     ])
     error_message = "each environment's key is `step-spec` in that environment's own ring, swarm-<env>-specs, in us-central1"
   }
@@ -72,7 +72,7 @@ run "the_step_spec_key_is_a_p256_signing_key_per_environment" {
   assert {
     condition = alltrue([
       for env, r in google_kms_key_ring.step_spec :
-      r.name == "swarm-${env}-specs" && r.location == "us-central1" && r.project == "saga-agents-staging"
+      r.name == "swarm-${env}-specs" && r.location == "us-central1" && r.project == "example-project"
     ])
     error_message = "one key ring per environment, named swarm-<env>-specs, in the platform's region"
   }
@@ -109,7 +109,7 @@ run "only_swarm_api_can_sign_and_only_on_the_key" {
   assert {
     condition = alltrue([
       for env, m in google_kms_crypto_key_iam_member.swarm_api_signer :
-      m.crypto_key_id == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-${env}-specs/cryptoKeys/step-spec"
+      m.crypto_key_id == "projects/example-project/locations/us-central1/keyRings/swarm-${env}-specs/cryptoKeys/step-spec"
     ])
     error_message = "the signer grant must be on the step-spec key itself"
   }
@@ -125,7 +125,7 @@ run "only_swarm_api_can_sign_and_only_on_the_key" {
   assert {
     condition = alltrue([
       for m in google_kms_crypto_key_iam_member.swarm_api_signer :
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     ])
     error_message = "the only identity that may sign a step spec is swarm-api"
   }

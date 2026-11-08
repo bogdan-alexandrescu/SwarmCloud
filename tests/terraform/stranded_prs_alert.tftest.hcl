@@ -9,7 +9,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 

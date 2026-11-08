@@ -27,12 +27,12 @@ run "the_schedule_tick_is_one_job_every_minute_as_its_own_account" {
   }
 
   variables {
-    project_id              = "saga-agents-staging"
+    project_id              = "example-project"
     wake_topic_name         = "swarm-scheduler-wake"
     scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
     reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
     quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-    tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
     labels                  = { "managed-by" = "swarm-terraform" }
     rollup_tenant_ids       = ["eng", "research"]
     api_endpoint            = "https://swarm-api-abcdef-uc.a.run.app/"
@@ -76,7 +76,7 @@ run "the_schedule_tick_is_one_job_every_minute_as_its_own_account" {
   # tick route; the sweeper's and the platform tick's tokens are refused there.
   assert {
     condition = (
-      google_cloud_scheduler_job.schedule_tick.http_target[0].oidc_token[0].service_account_email == "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      google_cloud_scheduler_job.schedule_tick.http_target[0].oidc_token[0].service_account_email == "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
       && google_cloud_scheduler_job.schedule_tick.http_target[0].oidc_token[0].service_account_email == output.schedule_tick_email
       && google_cloud_scheduler_job.schedule_tick.http_target[0].oidc_token[0].service_account_email != output.rollup_sweeper_email
       && google_cloud_scheduler_job.schedule_tick.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
@@ -111,12 +111,12 @@ run "the_schedule_tick_obeys_the_pause_switch" {
   }
 
   variables {
-    project_id              = "saga-agents-staging"
+    project_id              = "example-project"
     wake_topic_name         = "swarm-scheduler-wake"
     scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
     reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
     quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-    tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
     labels                  = { "managed-by" = "swarm-terraform" }
     api_endpoint            = "https://swarm-api-abcdef-uc.a.run.app"
     paused                  = true
@@ -140,7 +140,7 @@ run "the_tick_query_the_firings_and_the_inbox_have_their_indexes" {
   }
 
   variables {
-    project_id = "saga-agents-staging"
+    project_id = "example-project"
   }
 
   # §2.1 and §0 Check 4: `schedules where state == enabled and next_run_at <=
@@ -212,7 +212,7 @@ run "the_schedule_ttls_survive_the_audit_ttl_switch" {
   }
 
   variables {
-    project_id      = "saga-agents-staging"
+    project_id      = "example-project"
     event_ttl_field = ""
   }
 
@@ -234,7 +234,7 @@ run "auto_pause_and_needs_owner_are_counted_and_alerted" {
   }
 
   variables {
-    project_id               = "saga-agents-staging"
+    project_id               = "example-project"
     environment              = "dev"
     labels                   = { "managed-by" = "swarm-terraform" }
     service_names            = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
@@ -340,7 +340,7 @@ run "the_schedule_alert_follows_create_alerts" {
   }
 
   variables {
-    project_id               = "saga-agents-staging"
+    project_id               = "example-project"
     environment              = "dev"
     labels                   = { "managed-by" = "swarm-terraform" }
     service_names            = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]

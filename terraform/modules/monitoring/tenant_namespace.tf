@@ -3,9 +3,9 @@
 # (owner decision 2026-10-11; part of #847)
 # ---------------------------------------------------------------------------
 #
-# WHY THIS EXISTS. `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the
+# WHY THIS EXISTS. `tenants/u-pat` carried `namespace: swarm-u-pat`, the
 # spelling used before 2026-09-23, while its real namespace is
-# `swarm-tenant-u-bogdan`. The dispatcher preferred the stored value
+# `swarm-tenant-u-pat`. The dispatcher preferred the stored value
 # unchecked, so every GKE task for that tenant was created in a namespace that
 # does not exist, and Kubernetes reported it as `jobs.batch is forbidden`
 # (docs/gke-dispatch-403.md). Nothing said the document was wrong.
@@ -50,7 +50,7 @@ locals {
     A tenant document's `namespace` is outside `swarm-tenant-`. The scheduler
     and the reconciler IGNORED it and used the derived name
     (`swarm-tenant-<tenant_id>`), so GKE dispatch is not affected -- but the
-    document is wrong, and this is the value that sent u-bogdan's tasks to a
+    document is wrong, and this is the value that sent a personal tenant's tasks to a
     namespace that did not exist on 2026-10-11 (docs/gke-dispatch-403.md).
 
     The log entry (`jsonPayload.event="tenant_namespace_mismatch"`) names

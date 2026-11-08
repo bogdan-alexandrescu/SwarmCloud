@@ -1,7 +1,7 @@
 # One Terraform tenant's worker loses swarmTenantWorkerFirestore on its own
 # (lane ISO-TENANT-OFF, part of #1457; docs/runbooks/isolation-cutover.md b2).
 #
-# The cutover order is owner decision Q7, confirmed 2026-10-20: u-bogdan, then
+# The cutover order is owner decision Q7, confirmed 2026-10-20: u-pat, then
 # eng, then every tenant. worker_firestore_access is one switch for every
 # Terraform tenant, so before this lane eng could not lose its role alone, and
 # a hand removal was re-created by the next release. worker_firestore_off_tenants_iam
@@ -29,34 +29,34 @@ mock_provider "google" {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
-  # dev.tfvars' two Terraform tenants. u-bogdan is not one (removed.tf, lane
+  # dev.tfvars' two Terraform tenants. u-pat is not one (removed.tf, lane
   # W9): its worker is a job-made workspace's, switched by swarm-api's list.
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
     }
     smoke = {
       kind            = "group"
-      principal       = "smoke@saga.xyz"
+      principal       = "smoke@example.com"
       directory_group = false
     }
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -100,11 +100,11 @@ run "the_default_keeps_every_tenants_binding" {
   }
 
   variables {
-    artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-    workload_identity_pool = "saga-agents-staging.svc.id.goog"
+    artifact_bucket        = "swarm-artifacts-example-project"
+    workload_identity_pool = "example-project.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
     dispatcher_members = {
-      scheduler = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      scheduler = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -116,8 +116,8 @@ run "the_default_keeps_every_tenants_binding" {
     condition = {
       for k, b in google_project_iam_member.worker_firestore : k => [b.role, length(b.condition)]
       } == {
-      eng   = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", 0]
-      smoke = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", 0]
+      eng   = ["projects/example-project/roles/swarmTenantWorkerFirestore", 0]
+      smoke = ["projects/example-project/roles/swarmTenantWorkerFirestore", 0]
     }
     error_message = "worker_firestore_off_tenants_iam = [] must render today's grant exactly: one unconditioned swarmTenantWorkerFirestore binding per tenant, keyed by tenant id"
   }
@@ -133,11 +133,11 @@ run "eng_listed_loses_its_binding_and_nobody_else_does" {
   }
 
   variables {
-    artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-    workload_identity_pool = "saga-agents-staging.svc.id.goog"
+    artifact_bucket        = "swarm-artifacts-example-project"
+    workload_identity_pool = "example-project.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
     dispatcher_members = {
-      scheduler = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      scheduler = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
     }
     worker_firestore_access          = true
     worker_firestore_off_tenants_iam = ["eng"]
@@ -160,7 +160,7 @@ run "eng_listed_loses_its_binding_and_nobody_else_does" {
     condition = {
       for k, b in google_project_iam_member.worker_firestore : k => [b.role, length(b.condition)]
       } == {
-      smoke = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", 0]
+      smoke = ["projects/example-project/roles/swarmTenantWorkerFirestore", 0]
     }
     error_message = "every tenant not in worker_firestore_off_tenants_iam keeps its binding under its own tenant-id key, with the same role and no condition"
   }
@@ -202,11 +202,11 @@ run "the_module_refuses_an_entry_that_is_not_one_of_its_tenants" {
   }
 
   variables {
-    artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-    workload_identity_pool = "saga-agents-staging.svc.id.goog"
+    artifact_bucket        = "swarm-artifacts-example-project"
+    workload_identity_pool = "example-project.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
     dispatcher_members = {
-      scheduler = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      scheduler = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
     }
     worker_firestore_off_tenants_iam = ["egn"]
   }
@@ -226,7 +226,7 @@ run "eng_listed_after_its_state_switch_plans" {
 
   variables {
     enable_child_tasks               = true
-    state_via_api_tenants            = ["u-bogdan", "eng"]
+    state_via_api_tenants            = ["u-pat", "eng"]
     worker_firestore_off_tenants_iam = ["eng"]
   }
 
@@ -248,7 +248,7 @@ run "eng_listed_before_its_state_switch_is_refused" {
 
   variables {
     enable_child_tasks               = true
-    state_via_api_tenants            = ["u-bogdan"]
+    state_via_api_tenants            = ["u-pat"]
     worker_firestore_off_tenants_iam = ["eng"]
   }
 

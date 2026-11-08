@@ -31,7 +31,7 @@ variable "worker_firestore_access" {
 
 # DEFAULTS EMPTY: every tenant keeps its worker_firestore binding, so adding
 # this changes no plan. The per-tenant twin of worker_firestore_access above,
-# because the cutover goes one tenant at a time (owner decision Q7: u-bogdan,
+# because the cutover goes one tenant at a time (owner decision Q7: u-pat,
 # then eng, then all) and the global switch cannot take eng's role alone. A
 # listed tenant's binding is filtered out of the for_each; every other tenant
 # keeps its tenant-id key, so the plan destroys the listed binding and touches
@@ -64,14 +64,14 @@ variable "tenants" {
   description = <<-EOT
     Tenants known at provisioning time.
 
-    A tenant is a Google group (`eng@saga.xyz` -> `eng`) or a personal fallback
+    A tenant is a Google group (`eng@example.com` -> `eng`) or a personal fallback
     (`u-<user>`), exactly as swarm_common.identity derives them. `providers` is
     the set this tenant will register keys for; a runner whose provider is
     absent parks as CREDENTIAL_MISSING rather than failing mid-run.
   EOT
   type = map(object({
     kind         = string # "group" | "user"
-    principal    = string # eng@saga.xyz
+    principal    = string # eng@example.com
     display_name = optional(string, "")
     providers    = optional(list(string), [])
     # Nullable, matching terraform/infra: a default here would shadow the

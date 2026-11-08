@@ -11,7 +11,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 
@@ -68,7 +68,7 @@ run "the_metric_counts_only_delivered_ticks_of_the_tick_job" {
   assert {
     condition = alltrue([
       for f in [
-        "logName=\"projects/saga-agents-staging/logs/cloudscheduler.googleapis.com%2Fexecutions\"",
+        "logName=\"projects/example-project/logs/cloudscheduler.googleapis.com%2Fexecutions\"",
         "resource.type=\"cloud_scheduler_job\"",
         "resource.labels.job_id=\"swarm-scheduler-tick\"",
         "resource.labels.location=\"us-central1\"",

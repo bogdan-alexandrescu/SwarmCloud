@@ -11,15 +11,15 @@
 mock_provider "google" {}
 
 variables {
-  project_id             = "saga-agents-staging"
-  artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-  workload_identity_pool = "saga-agents-staging.svc.id.goog"
+  project_id             = "example-project"
+  artifact_bucket        = "swarm-artifacts-example-project"
+  workload_identity_pool = "example-project.svc.id.goog"
   labels                 = { "managed-by" = "swarm-terraform" }
 
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
       providers = ["anthropic"]
     }
     "u-alice" = {
@@ -29,7 +29,7 @@ variables {
   }
 
   dispatcher_members = {
-    scheduler = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+    scheduler = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -46,7 +46,7 @@ run "by_default_every_tenant_keeps_todays_firestore_binding" {
   }
 
   assert {
-    condition     = google_project_iam_member.worker_firestore["eng"].role == "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
+    condition     = google_project_iam_member.worker_firestore["eng"].role == "projects/example-project/roles/swarmTenantWorkerFirestore"
     error_message = "the default binding must grant the same custom role it always has"
   }
 }

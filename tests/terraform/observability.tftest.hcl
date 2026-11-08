@@ -8,7 +8,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 }
@@ -173,7 +173,7 @@ run "the_alerts_page_on_what_a_human_would_act_on" {
   }
 
   assert {
-    condition     = google_monitoring_dashboard.control_plane.project == "saga-agents-staging"
+    condition     = google_monitoring_dashboard.control_plane.project == "example-project"
     error_message = "the dashboard belongs to the swarm project"
   }
 
@@ -249,7 +249,7 @@ run "alerts_can_be_deferred_until_the_apps_emit_anything" {
 # ---------------------------------------------------------------------------
 # Alert routing by severity (#1817, owner's option (b) of 2026-10-21).
 #
-# All 21 policies in saga-agents-staging had an empty channel list and nobody
+# All 21 policies in example-project had an empty channel list and nobody
 # was told about the 10-20 GKE dispatch outage. CRITICAL and ERROR now go to
 # the urgent channels (Slack) as well as the ordinary ones (email); WARNING
 # goes to the ordinary ones only, so seven noisy WARNINGs cannot bury an ERROR
@@ -270,8 +270,8 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
     dead_letter_subscription       = "swarm-scheduler-wake-dlq-sub"
     safety_tick_job                = "swarm-scheduler-tick"
     tenant_ids                     = ["eng"]
-    extra_notification_channels    = ["projects/saga-agents-staging/notificationChannels/1111111111"]
-    urgent_notification_channels   = ["projects/saga-agents-staging/notificationChannels/2222222222"]
+    extra_notification_channels    = ["projects/example-project/notificationChannels/1111111111"]
+    urgent_notification_channels   = ["projects/example-project/notificationChannels/2222222222"]
     require_alert_channels         = true
   }
 
@@ -348,8 +348,8 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
         values(google_monitoring_alert_policy.workspace),
       ) :
       toset(p.notification_channels) == toset([
-        "projects/saga-agents-staging/notificationChannels/1111111111",
-        "projects/saga-agents-staging/notificationChannels/2222222222",
+        "projects/example-project/notificationChannels/1111111111",
+        "projects/example-project/notificationChannels/2222222222",
       ]) if contains(["CRITICAL", "ERROR"], p.severity)
     ])
     error_message = "every CRITICAL and ERROR policy must notify the ordinary channels AND the urgent ones"
@@ -379,7 +379,7 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
         ],
         values(google_monitoring_alert_policy.workspace),
       ) :
-      toset(p.notification_channels) == toset(["projects/saga-agents-staging/notificationChannels/1111111111"])
+      toset(p.notification_channels) == toset(["projects/example-project/notificationChannels/1111111111"])
       if p.severity == "WARNING"
     ])
     error_message = "a WARNING policy notifies the ordinary channels only, never the urgent ones"
@@ -482,7 +482,7 @@ run "urgent_channels_alone_satisfy_the_guard" {
     wake_subscription            = "swarm-scheduler-wake-sub"
     dead_letter_subscription     = "swarm-scheduler-wake-dlq-sub"
     safety_tick_job              = "swarm-scheduler-tick"
-    urgent_notification_channels = ["projects/saga-agents-staging/notificationChannels/2222222222"]
+    urgent_notification_channels = ["projects/example-project/notificationChannels/2222222222"]
     require_alert_channels       = true
   }
 
@@ -527,13 +527,13 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
 
   variables {
     readers = {
-      "swarm-api"        = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      "swarm-reconciler" = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+      "swarm-api"        = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
+      "swarm-reconciler" = "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
     }
 
     pullers = {
-      "tenant-eng"      = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-      "tenant-research" = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
+      "tenant-eng"      = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
+      "tenant-research" = "serviceAccount:swarm-agent-worker-research@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -548,7 +548,7 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
   }
 
   assert {
-    condition     = output.image_base == "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images"
+    condition     = output.image_base == "us-central1-docker.pkg.dev/example-project/swarm-images"
     error_message = "the image base is what the dispatcher builds every runner image reference from"
   }
 
@@ -581,7 +581,7 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
   assert {
     condition = alltrue([
       for k, m in google_artifact_registry_repository_iam_member.pullers :
-      m.role == "projects/saga-agents-staging/roles/swarmImagePuller"
+      m.role == "projects/example-project/roles/swarmImagePuller"
     ])
     error_message = "tenant workers must hold the pull-only custom role, not roles/artifactregistry.reader"
   }

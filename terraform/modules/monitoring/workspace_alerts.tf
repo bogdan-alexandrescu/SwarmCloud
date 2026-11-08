@@ -110,7 +110,7 @@ locals {
   # A person's QA target credential secret, swarm-tenant-u-<id>-qa (the id as
   # scripts/lib/workspace-guard.sh GUARD_TENANT_RE spells it), by the tail of
   # its resourceName; and the one member and two roles the workspace job binds
-  # on it (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; BGD 2026-10-22:
+  # on it (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; the owner 2026-10-22:
   # the deployer job creates it, guard rule C6). outside_personal_workers
   # exempts exactly that binding and nothing wider: a group's QA secret, a
   # forge slot, another member or another role on it all still page.

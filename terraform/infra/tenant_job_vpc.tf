@@ -44,8 +44,8 @@ variable "tenant_job_vpc_egress" {
 }
 
 # WHY AT THE SUBNETWORK, never the project. A project-level networkUser would
-# let swarm-scheduler place a Job on ANY subnet in saga-agents-staging, a
-# shared project holding the other team's agents-staging-vpc (CLAUDE.md rule 2,
+# let swarm-scheduler place a Job on ANY subnet in example-project, a
+# shared project holding the other team's peer-vpc (CLAUDE.md rule 2,
 # SHARED_DENY_LIST in scripts/lib/common.sh). Here it can attach only
 # module.network's subnetwork.
 #

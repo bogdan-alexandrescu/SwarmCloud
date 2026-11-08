@@ -32,13 +32,13 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
 
   # modules/iam's.
-  artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+  artifact_bucket  = "swarm-artifacts-example-project"
   labels           = { "managed-by" = "swarm-terraform" }
   gke_cluster_name = "swarm-autopilot"
   gke_location     = "us-central1"
@@ -78,32 +78,32 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
     target          = data.google_service_account.platform["swarm-api"]
     override_during = plan
     values = {
-      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-api@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-api@example-project.iam.gserviceaccount.com"
     }
   }
   override_data {
     target          = data.google_service_account.platform["swarm-scheduler"]
     override_during = plan
     values = {
-      email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-scheduler@example-project.iam.gserviceaccount.com"
     }
   }
   override_data {
     target          = data.google_service_account.platform["swarm-reconciler"]
     override_during = plan
     values = {
-      email = "swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-reconciler@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-reconciler@example-project.iam.gserviceaccount.com"
     }
   }
   override_data {
     target          = data.google_service_account.platform["swarm-quota-broker"]
     override_during = plan
     values = {
-      email = "swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-quota-broker@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-quota-broker@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -113,19 +113,19 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
 
   assert {
     condition = alltrue([
-      google_storage_bucket_iam_member.api_history_purge_deleter.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+      google_storage_bucket_iam_member.api_history_purge_deleter.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
       data.google_service_account.platform["swarm-api"].account_id == "swarm-api",
     ])
     error_message = "the purge runs in swarm-api; no other account may hold its delete"
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.bucket == "swarm-artifacts-saga-agents-staging"
+    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.bucket == "swarm-artifacts-example-project"
     error_message = "the grant is a member of the artifact bucket's policy, never the project's"
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.role == "projects/saga-agents-staging/roles/swarmHistoryPurgeDeleter"
+    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.role == "projects/example-project/roles/swarmHistoryPurgeDeleter"
     error_message = "the grant names swarmHistoryPurgeDeleter by the id terraform/modules/custom_role_ids spells"
   }
 
@@ -146,7 +146,7 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
 
   # The exact string, so any edit is a deliberate one this file has to follow.
   assert {
-    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\") && resource.name.extract(\"/objects/tenants/{t}/\") != \"\" && (resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/tasks/\") || resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/checkpoints/\"))"
+    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/\") && resource.name.extract(\"/objects/tenants/{t}/\") != \"\" && (resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/tasks/\") || resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/checkpoints/\"))"
     error_message = "the purge's delete condition changed; it must admit tenants/<t>/tasks/ and tenants/<t>/checkpoints/ of the artifact bucket and nothing else, and use no matches() (Cloud Storage IAM conditions refuse it)"
   }
 
@@ -172,7 +172,7 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
             "tenants/acme/tasks/task_1/attempts/att_1/logs/stdout.log",
             "tenants/u-someone/tasks/task_2/result.json",
             "tenants/acme/checkpoints/ckpt-00001/manifest.json",
-          ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"
+          ] : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"
         ]
         refused = concat(
           [
@@ -200,12 +200,12 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
               "markers/done",
               "repo-index/v1/graph.json",
               "releases/main/manifest.json",
-            ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"
+            ] : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"
           ],
           [
             "projects/_/buckets/other-bucket/objects/tenants/acme/tasks/task_1/result.json",
-            "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/acme/tasks/task_1/result.json",
-            "projects/_/buckets/swarm-artifacts-saga-agents-staging",
+            "projects/_/buckets/swarm-artifacts-example-project-x/objects/tenants/acme/tasks/task_1/result.json",
+            "projects/_/buckets/swarm-artifacts-example-project",
           ],
         )
         }] : [
@@ -234,7 +234,7 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
           "tenants/acme/tasks/task_1/attempts/att_1/logs/stdout.log",
           "tenants/u-someone/tasks/task_2/result.json",
           "tenants/acme/checkpoints/ckpt-00001/manifest.json",
-        ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
+        ] : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"],
         [for path in [
           "tenants/acme/verdicts/wf_1/task_9/verdict.json",
           "tenants/acme/repos/repo_1/index/0123abc/repo_graph_shards.json",
@@ -259,13 +259,13 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
           "markers/done",
           "repo-index/v1/graph.json",
           "releases/main/manifest.json",
-        ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
+        ] : "projects/_/buckets/swarm-artifacts-example-project/objects/${path}"],
         [
           "projects/_/buckets/other-bucket/objects/tenants/acme/tasks/task_1/result.json",
-          "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/acme/tasks/task_1/result.json",
-          "projects/_/buckets/swarm-artifacts-saga-agents-staging",
+          "projects/_/buckets/swarm-artifacts-example-project-x/objects/tenants/acme/tasks/task_1/result.json",
+          "projects/_/buckets/swarm-artifacts-example-project",
         ],
-    ) : name => startswith(name, "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/") && can(regex("^projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/[^/]+/(tasks|checkpoints)/", name)) }
+    ) : name => startswith(name, "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/") && can(regex("^projects/_/buckets/swarm-artifacts-example-project/objects/tenants/[^/]+/(tasks|checkpoints)/", name)) }
     error_message = "the purge's delete condition, evaluated with extract() as documented, must admit exactly tenants/<t>/tasks/ and tenants/<t>/checkpoints/ (one tenant segment) of the artifact bucket and refuse verdicts, repository paths (even ones holding /tasks/), nested tasks/, markers, bucket-root and other-bucket objects"
   }
 }

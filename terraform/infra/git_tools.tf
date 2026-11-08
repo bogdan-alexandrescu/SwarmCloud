@@ -102,7 +102,7 @@ resource "google_storage_bucket_iam_member" "api_fetch_bundle_writer" {
 # --- no -git-wf slot (#2029, WF-APP-TOKEN) -----------------------------------
 #
 # The workflow-scoped `swarm-tenant-<tenant>-git-wf` slot and swarm-api's
-# accessor on it (IAM row L-2) were removed by BGD's decision of 2026-10-22.
+# accessor on it (IAM row L-2) were removed by the owner's decision of 2026-10-22.
 # swarm-api now pushes a change under .github/workflows/ or .github/actions/
 # with a token the SwarmCloud GitHub App mints at push time, for ONE
 # repository, from the workspace's own installation, and only for a

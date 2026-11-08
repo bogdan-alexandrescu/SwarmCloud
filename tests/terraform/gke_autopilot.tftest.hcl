@@ -1,13 +1,13 @@
 # GKE Autopilot is the SECONDARY backend -- browser, GPU and anything over the
-# Cloud Run ceiling. The cluster this module must never touch is agents-staging,
+# Cloud Run ceiling. The cluster this module must never touch is peer-cluster,
 # which is live and owned by another team.
 
 mock_provider "google" {}
 
 variables {
-  project_id          = "saga-agents-staging"
-  network             = "projects/saga-agents-staging/global/networks/swarm-vpc"
-  subnetwork          = "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1"
+  project_id          = "example-project"
+  network             = "projects/example-project/global/networks/swarm-vpc"
+  subnetwork          = "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1"
   pods_range_name     = "swarm-pods"
   services_range_name = "swarm-services"
   labels              = { "managed-by" = "swarm-terraform" }
@@ -36,7 +36,7 @@ run "regional_private_autopilot_with_workload_identity" {
   }
 
   assert {
-    condition     = google_container_cluster.this.workload_identity_config[0].workload_pool == "saga-agents-staging.svc.id.goog"
+    condition     = google_container_cluster.this.workload_identity_config[0].workload_pool == "example-project.svc.id.goog"
     error_message = "Workload Identity is how a tenant Pod assumes only its own tenant's GSA"
   }
 
@@ -90,7 +90,7 @@ run "the_cluster_uses_the_swarm_network_and_its_own_secondary_ranges" {
 
   assert {
     condition     = google_container_cluster.this.network == var.network
-    error_message = "the cluster must sit in swarm-vpc, never in agents-staging-vpc"
+    error_message = "the cluster must sit in swarm-vpc, never in peer-vpc"
   }
 }
 
@@ -102,10 +102,45 @@ run "refuses_to_manage_another_teams_cluster" {
   }
 
   variables {
-    cluster_name = "agents-staging"
+    cluster_name = "peer-cluster"
   }
 
   expect_failures = [var.cluster_name]
+}
+
+# The never-touch list a deployment's tfvars sets (var.shared_deny_list in
+# terraform/infra, passed in as refused_cluster_names) refuses a listed cluster
+# even when its name would pass the prefix rule.
+run "refuses_a_cluster_on_the_never_touch_list" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/gke_autopilot"
+  }
+
+  variables {
+    cluster_name          = "swarm-peer"
+    refused_cluster_names = ["peer-vpc", "swarm-peer"]
+  }
+
+  expect_failures = [google_container_cluster.this]
+}
+
+run "an_unlisted_cluster_is_planned" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/gke_autopilot"
+  }
+
+  variables {
+    refused_cluster_names = ["peer-cluster", "peer-vpc"]
+  }
+
+  assert {
+    condition     = google_container_cluster.this.name == "swarm-autopilot"
+    error_message = "a never-touch list that does not name the cluster must not stop its plan"
+  }
 }
 
 run "an_open_master_authorized_network_is_refused" {

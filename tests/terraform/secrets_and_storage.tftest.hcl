@@ -4,7 +4,7 @@
 mock_provider "google" {}
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
   labels     = { "managed-by" = "swarm-terraform" }
 }
 
@@ -19,12 +19,12 @@ run "a_provider_key_is_readable_by_exactly_one_identity" {
     tenant_secrets = {
       eng = {
         providers     = ["anthropic", "openai"]
-        accessor      = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor      = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
         admin_members = ["group:eng@example.com"]
       }
       research = {
         providers = ["anthropic"]
-        accessor  = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-research@example-project.iam.gserviceaccount.com"
       }
     }
   }
@@ -45,7 +45,7 @@ run "a_provider_key_is_readable_by_exactly_one_identity" {
   # the complete set of identities that can read the key, so a grant made out of
   # band is removed on the next apply.
   assert {
-    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members == toset(["serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members == toset(["serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"])
     error_message = "exactly one identity may read a tenant's provider key"
   }
 
@@ -83,7 +83,7 @@ run "no_secret_version_is_ever_written_by_terraform" {
     tenant_secrets = {
       eng = {
         providers = ["anthropic"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
       }
     }
   }
@@ -108,7 +108,7 @@ run "a_public_accessor_is_refused" {
     tenant_secrets = {
       eng = {
         providers     = ["anthropic"]
-        accessor      = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor      = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
         admin_members = ["allAuthenticatedUsers"]
       }
     }
@@ -125,12 +125,12 @@ run "the_artifact_bucket_is_private_versioned_and_expires_what_nobody_reads" {
   }
 
   variables {
-    bucket_suffix = "saga-agents-staging"
+    bucket_suffix = "example-project"
     tenants       = ["eng", "research"]
   }
 
   assert {
-    condition     = google_storage_bucket.artifacts.name == "swarm-artifacts-saga-agents-staging"
+    condition     = google_storage_bucket.artifacts.name == "swarm-artifacts-example-project"
     error_message = "the bucket name carries the swarm prefix the destroy guard looks for"
   }
 
@@ -201,7 +201,7 @@ run "a_live_object_is_deleted_by_custom_time_never_by_age" {
   }
 
   variables {
-    bucket_suffix           = "saga-agents-staging"
+    bucket_suffix           = "example-project"
     artifact_retention_days = 14
     live_recording_suffixes = [".live.webm", ".live.jsonl"]
     checkpoint_key          = "tenants/eng/tasks/task_1/attempts/att_1/checkpoints/ck_1/archive.tar.gz"
@@ -266,7 +266,7 @@ run "artifacts_must_outlive_the_investigation_that_needs_them" {
   }
 
   variables {
-    bucket_suffix           = "saga-agents-staging"
+    bucket_suffix           = "example-project"
     artifact_retention_days = 3
   }
 
@@ -289,19 +289,19 @@ run "a_worker_cannot_read_the_refresh_token_it_runs_on" {
 
   variables {
     enable_subscription_refresh = true
-    refresher_member            = "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+    refresher_member            = "serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com"
     tenant_secrets = {
-      "u-bogdan" = {
+      "u-pat" = {
         providers     = ["anthropic"]
-        accessor      = "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com"
+        accessor      = "serviceAccount:swarm-agent-worker-u-pat@example-project.iam.gserviceaccount.com"
         admin_members = ["group:platform@example.com"]
       }
     }
   }
 
   assert {
-    condition = google_secret_manager_secret_iam_binding.refresh_accessor["swarm-tenant-u-bogdan-anthropic-refresh"].members == toset([
-      "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+    condition = google_secret_manager_secret_iam_binding.refresh_accessor["swarm-tenant-u-pat-anthropic-refresh"].members == toset([
+      "serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com"
     ])
     error_message = "only the broker may read a refresh token; a worker that could read one could mint itself credentials after its job ended"
   }
@@ -310,27 +310,27 @@ run "a_worker_cannot_read_the_refresh_token_it_runs_on" {
   # sibling, and the access token it exchanged for into the base secret.
   assert {
     condition = alltrue([
-      for id in ["swarm-tenant-u-bogdan-anthropic", "swarm-tenant-u-bogdan-anthropic-refresh"] :
+      for id in ["swarm-tenant-u-pat-anthropic", "swarm-tenant-u-pat-anthropic-refresh"] :
       contains(google_secret_manager_secret_iam_binding.version_adder[id].members,
-      "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com")
+      "serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com")
     ])
     error_message = "the broker must be able to add a version to both halves, or a refreshed credential has nowhere to go"
   }
 
-  # Discovery reads labels rather than splitting the name, because `u-bogdan`
+  # Discovery reads labels rather than splitting the name, because `u-pat`
   # contains a dash and the name does not split unambiguously.
   assert {
     condition = (
-      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["tenant"] == "u-bogdan" &&
-      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["provider"] == "anthropic" &&
-      google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].labels["component"] == "tenant-credential"
+      google_secret_manager_secret.refresh["swarm-tenant-u-pat-anthropic-refresh"].labels["tenant"] == "u-pat" &&
+      google_secret_manager_secret.refresh["swarm-tenant-u-pat-anthropic-refresh"].labels["provider"] == "anthropic" &&
+      google_secret_manager_secret.refresh["swarm-tenant-u-pat-anthropic-refresh"].labels["component"] == "tenant-credential"
     )
     error_message = "the broker discovers tenants by label; without these it cannot find this secret"
   }
 
   # Same protection as the base secret. It is the more sensitive of the two.
   assert {
-    condition     = google_secret_manager_secret.refresh["swarm-tenant-u-bogdan-anthropic-refresh"].version_destroy_ttl == "86400s"
+    condition     = google_secret_manager_secret.refresh["swarm-tenant-u-pat-anthropic-refresh"].version_destroy_ttl == "86400s"
     error_message = "a refresh token destroyed by mistake must be recoverable for as long as a provider key is"
   }
 }
@@ -346,7 +346,7 @@ run "an_api_key_only_deployment_grows_no_refresh_secrets" {
     tenant_secrets = {
       eng = {
         providers = ["anthropic"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
       }
     }
   }
@@ -372,39 +372,39 @@ run "swarm_api_reads_each_tenants_git_secret_and_no_other" {
     tenant_secrets = {
       eng = {
         providers = ["anthropic", "git", "git-merge"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
         accessor_overrides = {
-          git-merge = ["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"]
+          git-merge = ["serviceAccount:swarm-eng-merge@example-project.iam.gserviceaccount.com"]
         }
       }
       research = {
         providers = ["git"]
-        accessor  = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-research@example-project.iam.gserviceaccount.com"
       }
     }
-    forge_readers = ["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"]
+    forge_readers = ["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"]
   }
 
   assert {
     condition = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git"].members == toset([
-      "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com",
-      "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com",
+      "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
     ])
     error_message = "a tenant's -git secret is read by its worker and by swarm-api, and by nobody else"
   }
 
   assert {
-    condition     = contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-research-git"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    condition     = contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-research-git"].members, "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com")
     error_message = "the preview reads every tenant's -git secret, each by its own binding"
   }
 
   assert {
-    condition     = !contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    condition     = !contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com")
     error_message = "swarm-api must never read a tenant's provider key"
   }
 
   assert {
-    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@example-project.iam.gserviceaccount.com"])
     error_message = "the merge App key keeps its sole reader; swarm-api is not added to it"
   }
 }
@@ -420,7 +420,7 @@ run "a_forge_reader_must_be_a_service_account" {
     tenant_secrets = {
       eng = {
         providers = ["git"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
       }
     }
     forge_readers = ["user:someone@example.com"]

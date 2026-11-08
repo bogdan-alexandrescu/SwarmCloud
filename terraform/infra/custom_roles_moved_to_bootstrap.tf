@@ -40,7 +40,7 @@
 # name and the suffix neither sets (terraform/modules/custom_role_ids). A
 # deployment of this root under another project or suffix does not match it,
 # and there the grant would be DESTROYED rather than forgotten -- only
-# saga-agents-staging's infra/dev state exists (read-only `gcloud storage ls` of
+# example-project's infra/dev state exists (read-only `gcloud storage ls` of
 # the state bucket, 2026-09-25), so that deployment does not exist today.
 #
 # Terraform >= 1.7 for `removed`; CI and the owner run 1.16.2.

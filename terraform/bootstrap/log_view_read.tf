@@ -11,7 +11,7 @@
 # swarm-worker-logs bucket a sink fills with SwarmCloud's worker logs and
 # nothing else (log_bucket.tf).
 #
-# WHY HERE AND NOT IN terraform/infra (BGD's decision, 2026-10-23, #1960,
+# WHY HERE AND NOT IN terraform/infra (the owner's decision, 2026-10-23, #1960,
 # lane LOG-VIEW-BOOT). THE OWNER APPLIES THIS (`make bootstrap`); CI never
 # does. The binding was first in terraform/infra/log_view.tf, and release run
 # 39888771458 (2026-10-23, head 2aa01cbe) failed it at
@@ -41,7 +41,7 @@
 # roles/logging.viewer, privateLogViewer, or viewAccessor on the project, any
 # of which would read the other team's logs on _Default. It names no other
 # team's resource: the bucket and view are ours (the platform prefix), in our
-# project, and nothing here names agents-staging or any entry on the shared
+# project, and nothing here names peer-cluster or any entry on the shared
 # deny-list (scripts/lib/common.sh).
 #
 # The view must exist before this is applied: dev's terraform/infra creates it

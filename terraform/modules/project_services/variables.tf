@@ -12,7 +12,7 @@ variable "disable_on_destroy" {
   description = <<-EOT
     Must stay false in a shared project. `terraform destroy` disabling
     container.googleapis.com would take down the other team's live
-    `agents-staging` cluster, which is the exact blast radius this platform is
+    `peer-cluster` cluster, which is the exact blast radius this platform is
     required never to have.
   EOT
   type        = bool
@@ -20,7 +20,7 @@ variable "disable_on_destroy" {
 
   validation {
     condition     = var.disable_on_destroy == false
-    error_message = "disable_on_destroy must be false: saga-agents-staging is shared and disabling an API would break other teams' workloads."
+    error_message = "disable_on_destroy must be false: example-project is shared and disabling an API would break other teams' workloads."
   }
 }
 

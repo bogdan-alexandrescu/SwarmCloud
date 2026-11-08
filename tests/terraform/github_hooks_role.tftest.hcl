@@ -33,7 +33,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -43,7 +43,7 @@ variables {
   # The grantable list is read through the deployer's conditions, which exist
   # only with the GitHub WIF on (deployer_iam.tftest.hcl does the same).
   enable_github_wif     = true
-  github_repository     = "saga/agent-swarm-infra"
+  github_repository     = "example-org/example-repo"
   deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 }
 
@@ -51,7 +51,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -115,7 +115,7 @@ run "on_the_role_carries_entities_create_alone" {
   assert {
     condition = alltrue([
       google_project_iam_custom_role.github_hooks_dedup[0].role_id == "swarmGithubHooksDedup",
-      google_project_iam_custom_role.github_hooks_dedup[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.github_hooks_dedup[0].project == "example-project",
       google_project_iam_custom_role.github_hooks_dedup[0].stage == "GA",
       startswith(google_project_iam_custom_role.github_hooks_dedup[0].description, "managed-by=swarm-terraform"),
     ])
@@ -124,7 +124,7 @@ run "on_the_role_carries_entities_create_alone" {
 
   assert {
     condition = (
-      output.github_hooks_dedup_role.role == "projects/saga-agents-staging/roles/swarmGithubHooksDedup"
+      output.github_hooks_dedup_role.role == "projects/example-project/roles/swarmGithubHooksDedup"
       && output.github_hooks_dedup_role.permissions == tolist(["datastore.entities.create"])
     )
     error_message = "the output gives the owner the role's full name and its one permission, the rows to read the plan against"
@@ -143,7 +143,7 @@ run "on_the_deployer_may_grant_it_in_one_chunk" {
   }
 
   assert {
-    condition     = contains(local.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/swarmGithubHooksDedup")
+    condition     = contains(local.deployer_grantable_project_roles, "projects/example-project/roles/swarmGithubHooksDedup")
     error_message = "terraform/infra grants swarmGithubHooksDedup, so the scoped projectIamAdmin must allow it; add it to deployer_grantable_project_roles"
   }
 
@@ -152,7 +152,7 @@ run "on_the_deployer_may_grant_it_in_one_chunk" {
     condition = (
       toset(output.deployer_grantable_project_roles) == setunion(
         toset(run.off_by_default_no_role_and_the_grantable_list_is_unchanged.deployer_grantable_project_roles),
-        toset(["projects/saga-agents-staging/roles/swarmGithubHooksDedup"]),
+        toset(["projects/example-project/roles/swarmGithubHooksDedup"]),
       )
       && length(output.deployer_grantable_project_roles) == length(run.off_by_default_no_role_and_the_grantable_list_is_unchanged.deployer_grantable_project_roles) + 1
     )
@@ -170,7 +170,7 @@ run "on_the_deployer_may_grant_it_in_one_chunk" {
   assert {
     condition = length([
       for k, c in local.deployer_project_iam_admin_conditions : k
-      if strcontains(c, "\"projects/saga-agents-staging/roles/swarmGithubHooksDedup\"")
+      if strcontains(c, "\"projects/example-project/roles/swarmGithubHooksDedup\"")
     ]) == 1
     error_message = "swarmGithubHooksDedup is in exactly one projectIamAdmin chunk's hasOnly() list"
   }

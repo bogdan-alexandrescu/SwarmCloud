@@ -3,7 +3,7 @@
 #
 # OWNER DECISION 2026-09-29 (#334, from the security review of contract request
 # 30, #314). Project-wide, the role let CI set the IAM policy of every service
-# account in saga-agents-staging -- the other team's promptlab-runner, the
+# account in example-project -- the other team's peer-app-runner, the
 # swarm-ci-fix account, and swarm-tf-deployer itself -- and so make itself any
 # of them. A resource.name condition cannot narrow it: "IAM resources don't
 # provide the resource name" (docs.cloud.google.com/iam/docs/conditions-
@@ -27,10 +27,10 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
   enable_github_wif    = true
-  github_repository    = "saga/agent-swarm-infra"
+  github_repository    = "example-org/example-repo"
 }
 
 run "service_account_admin_is_granted_per_account_and_never_project_wide" {
@@ -62,9 +62,9 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
 
   # Every account terraform/infra manages today, by name. A control that the
   # modules and dev.tfvars were read at all; the exact set is the fixture run's.
-  # swarm-agent-worker-u-bogdan left this list with lane W9 (#847,
-  # 2026-10-09): u-bogdan is a workspace now, and its grant is forgotten by
-  # terraform/bootstrap/removed.tf (u_bogdan_removed.tftest.hcl).
+  # swarm-agent-worker-u-pat left this list with lane W9 (#847,
+  # 2026-10-09): u-pat is a workspace now, and its grant is forgotten by
+  # terraform/bootstrap/removed.tf (u_pat_removed.tftest.hcl).
   assert {
     condition = alltrue([
       for id in [
@@ -90,7 +90,7 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
     condition = alltrue([
       for id, m in google_service_account_iam_member.deployer_admin :
       m.role == "roles/iam.serviceAccountAdmin" &&
-      m.service_account_id == "projects/saga-agents-staging/serviceAccounts/${id}@saga-agents-staging.iam.gserviceaccount.com"
+      m.service_account_id == "projects/example-project/serviceAccounts/${id}@example-project.iam.gserviceaccount.com"
     ])
     error_message = "a per-account grant names another role, or another account than its key"
   }
