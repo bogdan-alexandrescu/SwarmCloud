@@ -30,6 +30,7 @@ import { LiveWall, deviceFrame, type RowDevice } from '../Agents'
 import { ENCODING_THUMB_WIDTH_0, LiveThumb, THUMB_FRAME_H, frameCssWidth, frameRatio, type LiveSocket } from '../LiveThumb'
 import type { Task } from '../types'
 import { task as runTask } from './runfixture'
+import { resolveSheet } from './spaceprobe'
 
 const PRESETS = [
   { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
@@ -122,7 +123,7 @@ describe('the stylesheet draws the same frames', () => {
 
   it('every frame on the wall is at most THUMB_FRAME_H tall, as the stream asked for assumes', () => {
     expect(css).toMatch(new RegExp(`\\.ag-wall-grid \\{[^}]*--wall-frame-max: ${THUMB_FRAME_H}px;`))
-    expect(css).toMatch(/\.ag-wall-grid \{[^}]*--wall-frame-h: clamp\([^;]*var\(--wall-frame-max\)\);/)
+    expect(css).toMatch(/\.ag-wall-grid \{[^}]*--wall-frame-h: clamp\([^;]*var\(--wall-frame-max, 180px\)\);/)
   })
 
   it('a narrow wall shrinks the shared height so a desktop card fits beside a tablet or phone card', () => {
@@ -147,8 +148,13 @@ describe('the stylesheet draws the same frames', () => {
     expect(css).toMatch(rule)
   })
 
+  it.each(['dark', 'light'] as const)('the %s sheet still resolves against the root tokens alone, as the contrast and spacing sweeps read it', (theme) => {
+    // A wall-scoped name used with no fallback threw here and failed every other screen's sweep.
+    expect(() => resolveSheet(css, theme)).not.toThrow()
+  })
+
   it('the picture letterboxes into its frame rather than stretching', () => {
-    expect(css).toMatch(/\.ag-wall-card \.wf-live-thumb \{[^}]*aspect-ratio: var\(--frame-ratio\);[^}]*object-fit: contain;/)
+    expect(css).toMatch(/\.ag-wall-card \.wf-live-thumb \{[^}]*aspect-ratio: var\(--frame-ratio, 16 \/ 10\);[^}]*object-fit: contain;/)
   })
 })
 
