@@ -25,7 +25,7 @@
  * Every refusal is drawn with the API's own sentence. Explanations sit
  * behind an (i) (the owner's no-prose rule, 5 November 2026).
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   installWorkspacePlugin,
   loadPluginDefaults,
@@ -241,7 +241,14 @@ function Catalogue({ data, onSaved, onOpen }: { data: PageData; onSaved: () => v
   const canEdit = plugins.can_edit && defaults.can_edit
   const [allowed, setAllowed] = useState<string[]>(plugins.allowed)
   const [every, setEvery] = useState<string[]>(defaults.defaults)
-  useEffect(() => { setAllowed(plugins.allowed); setEvery(defaults.defaults) }, [plugins, defaults])
+  // A new read (after a save or Refresh) replaces the drafts; the first render already holds them.
+  const read = useRef({ plugins, defaults })
+  useEffect(() => {
+    if (read.current.plugins === plugins && read.current.defaults === defaults) return
+    read.current = { plugins, defaults }
+    setAllowed(plugins.allowed)
+    setEvery(defaults.defaults)
+  }, [plugins, defaults])
   const [filter, setFilter] = useState<Filter>('all')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<ApiError | null>(null)

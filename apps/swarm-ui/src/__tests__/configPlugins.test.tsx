@@ -191,10 +191,14 @@ describe('Config › Plugins: the catalogue', () => {
 
   it('saves the Allowed list with each plugin’s pinned copy: a built-in by name, an install by its id', async () => {
     const seen: Array<{ m: string; url: string; body: unknown }> = []
+    const stored = selected()
     api({
+      plugins: stored,
       write: (m, url, body) => {
         seen.push({ m, url, body })
-        return { status: 200, body: selected({ plugins: { allowed: ['gstack', PLATFORM_ID] } }) }
+        // What the API signed is what the page reads back.
+        stored.plugins = { allowed: ['gstack', PLATFORM_ID] }
+        return { status: 200, body: stored }
       },
     })
     const { ConfigPluginsScreen } = await load()
@@ -206,6 +210,10 @@ describe('Config › Plugins: the catalogue', () => {
     await waitFor(() => expect(seen).toHaveLength(1))
     expect(seen[0]).toEqual({ m: 'PUT', url: `${BASE}/plugins`, body: { allowed: ['gstack', PLATFORM_ID].sort() } })
     await screen.findByText('Saved and signed')
+    // The id names one install, so the list allows its pinned copy: the card says which.
+    const card = screen.getByRole('button', { name: 'Open lint-kit' }).closest('li')!
+    expect(visible(card)).toMatch(/lint-kit\s*2\.4\.0/)
+    expect((within(card).getByRole('switch', { name: 'lint-kit: allowed in this workspace' }) as HTMLInputElement).checked).toBe(true)
   })
 
   it('saves Every step as its own list, and a plugin no longer allowed leaves it', async () => {
