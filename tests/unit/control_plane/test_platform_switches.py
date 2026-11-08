@@ -162,7 +162,8 @@ def test_without_a_settings_key_nothing_is_stored(api_context, db):
     client = TestClient(create_app(api_context))
     response = _put(client, {"version": 0, "work_contracts": "on"})
     assert response.status_code == 409
-    assert response.json()["code"] == ps.UNSIGNED_CODE
+    assert response.json()["code"] == "conflict"
+    assert response.json()["detail"] == {"reason": ps.UNSIGNED_CODE}
     assert _stored(db) == {} and _audit(db) == []
 
 
@@ -174,8 +175,8 @@ def test_a_stale_version_is_refused_and_changes_nothing(app_client, db, terrafor
     before = dict(_stored(db))
     stale = _put(app_client, {"version": 0, "work_contracts": "on"})
     assert stale.status_code == 409, stale.text
-    assert stale.json()["code"] == ps.CONFLICT_CODE
-    assert stale.json()["detail"] == {"version": 1}
+    assert stale.json()["code"] == "conflict"
+    assert stale.json()["detail"] == {"reason": ps.CONFLICT_CODE, "version": 1}
     assert _stored(db) == before
     assert len(_audit(db)) == 1
 

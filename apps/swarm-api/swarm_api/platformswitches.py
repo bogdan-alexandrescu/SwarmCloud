@@ -19,10 +19,10 @@ platform admin now sets either from Admin › Plugins › Platform
   purpose), stored as `{v, key, sig}` the way a workspace block's is. A
   document whose MAC fails reads as the Terraform default, never as the
   stored value, and logs `platform_switch_unsigned` once per instance. With
-  no key a write is refused (`UNSIGNED_CODE`): a value nobody can verify
+  no key a write is refused (409, reason `UNSIGNED_CODE`): a value nobody can verify
   would never be read.
 * **Versioned.** Every write names the version it read and bumps it in one
-  transaction; a stale version is `CONFLICT_CODE`, so two admins never
+  transaction; a stale version is 409, reason `CONFLICT_CODE`, so two admins never
   overwrite each other unseen. `version` is not covered by the MAC: it
   guards writes and no reader acts on it.
 * **Audited.** Each switch whose stored value changes writes one
@@ -91,21 +91,12 @@ UNSIGNED_LOG = "platform_switch_unsigned"
 #: half a minute, the longest a change waits to reach every instance.
 CACHE_SECONDS = 30.0
 
+#: `detail.reason` of the 409s a write is refused with. Both are the
+#: established `conflict` code (tests/unit/control_plane/
+#: test_new_refusals_ship_off.py): a route that is new refuses nothing a
+#: caller relied on, so neither needs a refusal switch of its own.
 CONFLICT_CODE = "platform_switches_version_conflict"
 UNSIGNED_CODE = "platform_switches_unsigned"
-
-
-class VersionConflict(Conflict):
-    """The write named a version that is no longer the stored one."""
-
-    code = CONFLICT_CODE
-
-
-class Unsigned(Conflict):
-    """This deployment has no settings key, so a switch it stored would
-    never verify and never be read."""
-
-    code = UNSIGNED_CODE
 
 
 def _sig(key: str, doc: Mapping[str, Any]) -> bytes:
@@ -257,7 +248,8 @@ class PlatformSwitches:
                 raise ValueError(f"{name} is not a platform switch value")
         keys = self._mac.keys
         if not keys:
-            raise Unsigned("this deployment has no settings key, so no platform switch can be stored")
+            raise Conflict("this deployment has no settings key, so no platform switch can be stored",
+                           detail={"reason": UNSIGNED_CODE})
         ref = self._ref()
         now = self._now()
         transaction = self._db.transaction()
@@ -268,8 +260,8 @@ class PlatformSwitches:
             whole = (snap.to_dict() or {}) if snap.exists else None
             current = _version(whole)
             if version != current:
-                raise VersionConflict("the platform switches changed since they were read",
-                                      detail={"version": current})
+                raise Conflict("the platform switches changed since they were read",
+                               detail={"reason": CONFLICT_CODE, "version": current})
             before = self.trusted(whole)
             after = {**before, **changes}
             signed = whole is not None and verifies(whole, keys[:1])
