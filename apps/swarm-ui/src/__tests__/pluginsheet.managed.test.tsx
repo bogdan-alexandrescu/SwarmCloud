@@ -273,4 +273,24 @@ describe('the workflow builder', () => {
     expect(dialog.textContent).toContain("notes_dir: a path setting is a relative path inside the checkout, with no '..'.")
     expect((within(dialog).getByRole('button', { name: 'Use on this step' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('still shows a refused box after its settings are collapsed and reopened', async () => {
+    await agentStep()
+    fireEvent.click(await screen.findByRole('button', { name: /^Managed plugins on / }, WAIT))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add lint-notes to this step' }))
+    const settings = within(dialog).getByRole('button', { name: 'lint-notes settings for this step' })
+    fireEvent.click(settings)
+    fireEvent.change(await within(dialog).findByLabelText('notes_dir', {}, WAIT), { target: { value: '/etc' } })
+    fireEvent.click(settings)
+    expect(within(dialog).queryByLabelText('notes_dir')).toBeNull()
+    fireEvent.click(settings)
+    const box = await within(dialog).findByLabelText('notes_dir', {}, WAIT) as HTMLInputElement
+    expect(box.value).toBe('/etc')
+    expect(dialog.textContent).toContain("notes_dir: a path setting is a relative path inside the checkout, with no '..'.")
+    const use = within(dialog).getByRole('button', { name: 'Use on this step' }) as HTMLButtonElement
+    expect(use.disabled).toBe(true)
+    fireEvent.change(box, { target: { value: 'notes' } })
+    expect(use.disabled).toBe(false)
+  })
 })

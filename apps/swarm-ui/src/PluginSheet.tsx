@@ -573,17 +573,21 @@ function parseOverride(field: PluginFormField, text: string): PluginOverrideValu
   return text === '' ? undefined : one(text)
 }
 
-/** One plugin's overridable settings: an empty box keeps the workspace's value. */
-function OverrideFields({ installId, name, ctx, overrides, onChange }: {
+/**
+ * One plugin's overridable settings: an empty box keeps the workspace's value.
+ * The sheet keeps the typed texts, so a refused box still shows its refusal
+ * when Settings is collapsed and reopened.
+ */
+function OverrideFields({ installId, name, ctx, overrides, texts, onChange }: {
   installId: string
   name: string
   ctx: StepPluginsContext
   overrides: Record<string, PluginOverrideValue>
-  onChange: (next: Record<string, PluginOverrideValue>, bad: string[]) => void
+  texts: Record<string, string>
+  onChange: (next: Record<string, PluginOverrideValue>, bad: string[], texts: Record<string, string>) => void
 }) {
   const form = ctx.forms?.[installId]
   const config = dataOf(form)
-  const [texts, setTexts] = useState<Record<string, string>>({})
   if (form === undefined || form.status === 'loading') return <p className="psh-dim psh-small" role="status">…</p>
   if (config === null) {
     return <p className="psh-refusal" role="alert">{form.status === 'error' ? form.error.message : name}</p>
@@ -592,17 +596,20 @@ function OverrideFields({ installId, name, ctx, overrides, onChange }: {
   if (fields.length === 0) return <p className="psh-dim psh-small">—</p>
   const set = (field: PluginFormField, text: string) => {
     const nextTexts = { ...texts, [field.key]: text }
-    setTexts(nextTexts)
     const next: Record<string, PluginOverrideValue> = {}
     const bad: string[] = []
     for (const f of fields) {
       const t = f.key in nextTexts ? nextTexts[f.key]! : overrideText(overrides[f.key])
       const v = parseOverride(f, t)
       if (v === undefined) continue
-      if (overrideProblem(f, v) !== null) bad.push(f.key)
-      else next[f.key] = v
+      if (overrideProblem(f, v) === null) next[f.key] = v
+      else {
+        // A refused box keeps the step's last good value for that key.
+        bad.push(f.key)
+        if (overrides[f.key] !== undefined) next[f.key] = overrides[f.key]!
+      }
     }
-    onChange(next, bad)
+    onChange(next, bad, nextTexts)
   }
   return (
     <ul className="psh-choices" role="list" aria-label={`${name} settings for this step`}>
@@ -686,6 +693,12 @@ export function StepPluginsSheet({ stepId, managed, builtIn, read, ctx, onUse, o
   const [draft, setDraft] = useState<StepManagedPlugins>(managed ?? NO_MANAGED)
   const [openSettings, setOpenSettings] = useState<string | null>(null)
   const [bad, setBad] = useState<Record<string, string[]>>({})
+  const [texts, setTexts] = useState<Record<string, Record<string, string>>>({})
+  const forget = (id: string) => {
+    setBad({ ...bad, [id]: [] })
+    setTexts({ ...texts, [id]: {} })
+    if (openSettings === id) setOpenSettings(null)
+  }
   const installs = managedInstalls(read)
   const find = (id: string) => installs.find((i) => i.install_id === id)
   const defaults = stepDefaults(read, draft, builtIn)
@@ -702,9 +715,10 @@ export function StepPluginsSheet({ stepId, managed, builtIn, read, ctx, onUse, o
     setOpenSettings(id)
   }
   const settingsOf = (id: string, name: string) => openSettings !== id ? null : (
-    <OverrideFields installId={id} name={name} ctx={ctx} overrides={draft.added[id] ?? {}}
-      onChange={(next, wrong) => {
+    <OverrideFields installId={id} name={name} ctx={ctx} overrides={draft.added[id] ?? {}} texts={texts[id] ?? {}}
+      onChange={(next, wrong, typed) => {
         setBad({ ...bad, [id]: wrong })
+        setTexts({ ...texts, [id]: typed })
         setDraft((d) => ({ ...d, added: { ...d.added, [id]: next } }))
       }} />
   )
@@ -742,8 +756,7 @@ export function StepPluginsSheet({ stepId, managed, builtIn, read, ctx, onUse, o
                           onChange={() => {
                             setDraft(withDefault(draft, d.name, !d.on))
                             // Turned off, its overrides go, and with them any refused box.
-                            if (d.on) setBad({ ...bad, [d.name]: [] })
-                            if (d.on && openSettings === d.name) setOpenSettings(null)
+                            if (d.on) forget(d.name)
                           }} /> off for this step
                       </label>
                     </span>
@@ -771,8 +784,7 @@ export function StepPluginsSheet({ stepId, managed, builtIn, read, ctx, onUse, o
                         const next = { ...draft.added }
                         delete next[id]
                         setDraft({ ...draft, added: next })
-                        setBad({ ...bad, [id]: [] })
-                        if (openSettings === id) setOpenSettings(null)
+                        forget(id)
                       }}>Remove</Button>
                     </span>
                   }
