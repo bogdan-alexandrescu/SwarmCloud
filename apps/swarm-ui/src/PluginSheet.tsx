@@ -741,6 +741,8 @@ export function StepPluginsSheet({ stepId, managed, builtIn, read, ctx, onUse, o
                         <input type="checkbox" checked={!d.on} aria-label={`${label} off for this step`}
                           onChange={() => {
                             setDraft(withDefault(draft, d.name, !d.on))
+                            // Turned off, its overrides go, and with them any refused box.
+                            if (d.on) setBad({ ...bad, [d.name]: [] })
                             if (d.on && openSettings === d.name) setOpenSettings(null)
                           }} /> off for this step
                       </label>
