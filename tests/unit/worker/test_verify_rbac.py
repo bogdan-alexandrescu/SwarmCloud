@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -60,13 +61,13 @@ render = _load_renderer()
 
 
 def _deny_list_from_common_sh() -> list[str]:
-    """SHARED_DENY_LIST as scripts/lib/common.sh declares it, read at run time
-    so no other team's resource name is written here (CLAUDE.md rule 2)."""
-    text = (REPO / "scripts/lib/common.sh").read_text()
-    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
-    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
-    names = re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
-    assert names, "SHARED_DENY_LIST is empty"
+    """The never-touch list's entries as the repository holds them: the
+    placeholder object scripts/lib/deny-list.example.json, the shape
+    deny_list_load in scripts/lib/common.sh reads a deployment's own list in
+    (docs/design/generic-repository.md, section 2.4), so no other team's
+    resource name is written here (CLAUDE.md rule 2)."""
+    names = json.loads((REPO / "scripts/lib/deny-list.example.json").read_text())["entries"]
+    assert names, "scripts/lib/deny-list.example.json holds no entries"
     return names
 
 
