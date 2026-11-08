@@ -4,7 +4,7 @@ docs/design/day-one-plan.md lane DAYONE-ADDON-1, part of #2688;
 `swarm_install.addons` holds the add-ons and says why each phase exists).
 
     swarm addon enable <name> --project P [--owner alice@example.com] [--in-terminal]
-        [--tailscale-target host.tailnet.ts.net] [--github-repository owner/repo]
+        [--tailscale-target host.example-tailnet.ts.net] [--github-repository owner/repo]
         [--sandbox-repository owner/repo] [--runner-label swarm-ci]
         [--tenants id[,id...]] [--json-events]
     swarm addon disable <name> --project P [--delete-secrets] [--json-events]
