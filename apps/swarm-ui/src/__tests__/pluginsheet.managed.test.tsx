@@ -259,7 +259,9 @@ describe('the workflow builder', () => {
     for (const entry of Object.values(sent.plugins as Record<string, Record<string, unknown>>)) {
       for (const key of Object.keys(entry)) expect(entryFields, `plugin entry field ${key}`).toContain(key)
     }
-  })
+  // The longest walk here (~12s alone): headroom for a loaded runner, as
+  // vitest.config.ts's testTimeout explains.
+  }, 60_000)
 
   it('refuses an override the server would refuse before anything is sent', async () => {
     await agentStep()
