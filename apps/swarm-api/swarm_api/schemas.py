@@ -157,23 +157,52 @@ class StepBudget(StrictModel):
         return self
 
 
-class StepPluginCreate(StrictModel):
-    """One plugin a step loads, under its catalogue name in `plugins`
-    (docs/design/agent-plugins.md, "Per-step selection"): a mode and skills,
-    by name only (invariant 10). Checked against the catalogue, the step's
-    runner profile and the workspace's signed setting by
-    `plugins.check_step`, which names what it accepts in its refusal."""
+#: A per-step override's value: a scalar, or a list of them for a field
+#: declared `multiple` (docs/design/managed-plugins.md section 6.4). Checked
+#: against the field's type by `pluginconfig.step_entry`.
+_OverrideScalar = StrictStr | StrictBool | StrictInt | StrictFloat
+PluginOverride = _OverrideScalar | Annotated[list[_OverrideScalar], Field(max_length=64)]
 
-    mode: str = Field(min_length=1, max_length=32)
-    skills: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(max_length=64)
+
+class StepPluginCreate(StrictModel):
+    """One plugin a step loads, by name in `plugins` (invariant 10: a name,
+    never a path, a command, a URL or a version).
+
+    A built-in (docs/design/agent-plugins.md, "Per-step selection") names a
+    mode and skills, checked against the catalogue, the step's runner
+    profile and the workspace's signed setting by `plugins.check_step`. A
+    managed install (docs/design/managed-plugins.md section 7), named by its
+    install id, names neither: it may carry `overrides`, values for the
+    non-secret fields its pinned version declares (section 6.4), and
+    `plugins.merge_step_plugins` refuses a mode or skills on it and
+    overrides on a built-in."""
+
+    mode: str | None = Field(default=None, min_length=1, max_length=32)
+    skills: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
+        default=None, max_length=64)
+    overrides: dict[Annotated[str, Field(min_length=1, max_length=64)], PluginOverride] | None = Field(
+        default=None, max_length=64)
 
 
 def _plugins_field() -> Any:
-    # A step's plugins, `{name: {mode, skills}}`, owner's pick of 5 November
-    # 2026 (PR #3264): a field of the step, not a contract the caller
-    # writes. swarm-api carries them in the step's work contract
-    # (`plugins.with_step_plugins`), whose digest the signed dispatch block
-    # holds, so the worker trusts only what was signed with the step.
+    # A step's plugins, `{name: {mode, skills}}` for a built-in and
+    # `{install_id: {overrides}}` for a managed install, owner's pick of 5
+    # November 2026 (PR #3264): a field of the step, not a contract the
+    # caller writes. swarm-api carries the built-ins in the step's work
+    # contract (`plugins.with_step_plugins`), whose digest the signed
+    # dispatch block holds, and the managed installs, merged with the
+    # workspace's every-step defaults, in the signed dispatch block itself
+    # (`metadata.dispatch.plugins`), so the worker trusts only what was
+    # signed with the step. At most 8: managed-plugins.md section 13.
+    return Field(default=None, max_length=8)
+
+
+def _plugins_off_field() -> Any:
+    # The workspace's every-step defaults this step turns off, by name
+    # (install id or built-in name; docs/design/managed-plugins.md section
+    # 7): the step's JSON says what it turned off, and an exported workflow
+    # carries no copy of the defaults. A name that is not a default turns
+    # nothing off. At most 8, as many as a workspace may make defaults.
     return Field(default=None, max_length=8)
 
 
@@ -209,6 +238,8 @@ class TaskCreate(StrictModel):
     model_class: str | None = Field(default=None, max_length=32)
     #: The plugins this task loads, by name (`StepPluginCreate`). None: none.
     plugins: dict[str, StepPluginCreate] | None = _plugins_field()
+    #: The workspace defaults this task turns off, by name. None: none.
+    plugins_off: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = _plugins_off_field()
     #: How this dispatch's work gets merged, and what carries it between steps.
     #: Validated in `validation.resolve_dispatch_options`, which names the
     #: accepted values in its refusal, rather than declared as a `Literal` here:
@@ -295,6 +326,8 @@ class WorkflowStepCreate(StrictModel):
     model_class: str | None = Field(default=None, max_length=32)
     #: The plugins this step loads, by name, as `TaskCreate.plugins`.
     plugins: dict[str, StepPluginCreate] | None = _plugins_field()
+    #: The workspace defaults this step turns off, as `TaskCreate.plugins_off`.
+    plugins_off: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = _plugins_off_field()
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)

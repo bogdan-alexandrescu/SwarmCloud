@@ -56,7 +56,9 @@ from . import budget as budget_mod
 from . import (
     contractreview,
     gitidentity,
+    pluginconfig,
     plugins as plugins_mod,
+    pluginstore,
     publishtopr,
     runnersizes,
     workcontract,
@@ -112,7 +114,15 @@ from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
-from .schemas import NAME_MAX_CHARS, NAME_METADATA_KEYS, StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import (
+    NAME_MAX_CHARS,
+    NAME_METADATA_KEYS,
+    StepBudget,
+    StepPluginCreate,
+    TaskCreate,
+    WorkflowCreate,
+    WorkflowStepCreate,
+)
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
@@ -784,6 +794,34 @@ class SubmissionService:
         snap = db.collection(plugins_mod.COLLECTION).document(tenant_id).get()
         return (snap.to_dict() or {}) if snap.exists else {}
 
+    def _merge_plugins(self, spec: TaskCreate, *, tenant: Tenant,
+                       step_id: str | None) -> tuple[TaskCreate, plugins_mod.StepPlugins]:
+        """The step with the workspace's every-step defaults merged into its
+        plugins (docs/design/managed-plugins.md section 7): its `plugins`
+        field left holding the built-ins, and the managed set to sign in its
+        dispatch block. Reads nothing more when the step names no plugin,
+        turns none off and the workspace's signed block has no defaults."""
+        settings_doc = self._workspace_settings(tenant.tenant_id)
+        mac = settings_mac(self._settings)
+        chosen = {n: p.model_dump() for n, p in (spec.plugins or {}).items()}
+        if not chosen and not spec.plugins_off and not plugins_mod.signed_defaults(
+                tenant.tenant_id, settings_doc, mac):
+            return spec, plugins_mod.StepPlugins()
+        db = self._store.db
+        document = spec.metadata.get(workcontract.METADATA_KEY)
+        capabilities = document.get("capabilities") if isinstance(document, Mapping) else None
+        merged = plugins_mod.merge_step_plugins(
+            chosen, spec.plugins_off or (), tenant_id=tenant.tenant_id,
+            runner_profile=validate_runner_profile(spec.runner_profile).name, step_id=step_id,
+            settings_doc=settings_doc, mac=mac,
+            store=pluginstore.PluginStore(db, now=self._now, mac=mac),
+            configs=pluginconfig.PluginConfigs(db, now=self._now, mac=mac),
+            environ=os.environ,
+            caller_contract_plugins=bool(isinstance(capabilities, Mapping)
+                                         and capabilities.get("plugins")))
+        built_ins = {n: StepPluginCreate(**c) for n, c in merged.built_ins.items()}
+        return spec.model_copy(update={"plugins": built_ins or None}), merged
+
     def _build_task(
         self,
         *,
@@ -812,6 +850,14 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # Managed plugins and the workspace's every-step defaults (docs/
+        # design/managed-plugins.md section 7), first: a removed install the
+        # step names is refused (`plugin_removed`), the defaults are merged
+        # with the step's own choices minus its `plugins_off`, each managed
+        # install pinned to its current version. The built-ins stay in the
+        # `plugins` field for the work contract below; the managed set is
+        # signed in the dispatch block.
+        spec, step_plugins = self._merge_plugins(spec, tenant=tenant, step_id=step_id)
         # The step's `plugins` field (the owner's pick on PR #3264): checked
         # against the catalogue, its runner profile and the workspace's signed
         # setting, then carried in its work contract, so the contract below
@@ -975,6 +1021,10 @@ class SubmissionService:
             # Beside the contract's reference, inside the signed block no
             # caller can write, and never inside the contract's own bytes.
             metadata[DISPATCH_METADATA_KEY][contractreview.DISPATCH_FIELD] = contract_review
+        # The managed plugin set and the defaults skipped for this step
+        # (managed-plugins.md section 8): inside the signed block no caller
+        # can write, so the worker trusts only what was signed with the step.
+        step_plugins.record_on(metadata[DISPATCH_METADATA_KEY])
         if resolved_budget is not None:
             metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
                 step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)
@@ -1829,6 +1879,7 @@ class SubmissionService:
                     budget=source.budget,
                     model_class=source.model_class,
                     plugins=source.plugins,
+                    plugins_off=source.plugins_off,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).

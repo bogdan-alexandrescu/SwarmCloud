@@ -501,7 +501,10 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     # Contract request 136: PUT /v1/workspaces/{tenant_id}/plugins
     # (`plugins.PluginsStore.put`) writes and signs it, so a key rotation's
     # re-sign pass signs the stored list again rather than holding it.
-    "plugins": ("allowed",),
+    # Contract request 140: `pluginconfig.PluginConfigs` writes and signs
+    # `defaults` and `configs_digest`, and `PluginsStore.put` carries both
+    # over when the stored block verifies (managed-plugins.md section 7).
+    "plugins": ("allowed", "defaults", "configs_digest"),
     # Contract request 138: PUT /v1/workspaces/{tenant_id}/contract-review
     # (`contractreview.ContractReviewStore.put`) writes and signs it.
     "contract_review": ("enabled",),
