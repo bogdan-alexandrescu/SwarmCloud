@@ -15175,6 +15175,488 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
 }
 
 // --------------------------------------------------------------------------
+// Config › Plugins, managed (docs/design/managed-plugins.md §6, §7, lane 10c):
+// the workspace's catalogue (`routes/plugin_catalogue.py`), each plugin's
+// settings, secrets and bindings, and the plugins on for every step
+// (`routes/plugin_config.py`). A secret's value is sent once, on its own
+// route, with a one-time link's token, and no answer here ever carries one.
+// --------------------------------------------------------------------------
+
+const PLUGIN_CATALOGUE_OF = '/v1/workspaces/{tenant_id}/plugin-catalogue'
+const PLUGIN_CONFIG_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}'
+const PLUGIN_SECRET_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}/secrets/{field}'
+const PLUGIN_DEFAULTS_OF = '/v1/workspaces/{tenant_id}/plugin-defaults'
+
+/** Where a catalogue entry comes from: baked in the image, the platform's catalogue, or this workspace's own. */
+export type PluginScope = 'built_in' | 'platform' | 'workspace'
+
+export interface PluginComponentCounts {
+  skills: number
+  commands: number
+  agents: number
+  hooks: number
+  mcp_servers: number
+}
+
+/** One card of the workspace's catalogue (`pluginstore.install_view`, `plugincatalogue.builtin_entries`). */
+export interface PluginEntry {
+  install_id: string
+  name: string
+  scope: PluginScope
+  version: string | null
+  description: string | null
+  /** The install's source as the API serves it (`kind`, `repository`, `ref`, `commit`, `filename`); null for a built-in. */
+  source: Record<string, unknown> | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts of what the pinned copy ships; null for a built-in, whose skills ride per mode. */
+  components: PluginComponentCounts | null
+  /** A built-in's skills per mode; null for an install. */
+  skills_by_mode: Record<string, string[]> | null
+  runner_profiles: string[]
+  updated_at: string | null
+  updated_by: string | null
+}
+
+export interface WorkspaceCatalogue {
+  tenant_id: string
+  entries: PluginEntry[]
+  /** The caller is the workspace's owner or admin: it may install a private plugin. */
+  can_install: boolean
+}
+
+function pText(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0
+}
+
+function normPluginEntry(raw: unknown, scope: PluginScope): PluginEntry | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.install_id)
+  const name = pText(r.name) ?? pText(r.display_name)
+  if (id === null || name === null) return null
+  const c = r.components === undefined || r.components === null ? null : pluginRecord(r.components)
+  const modes = r.skills === undefined || r.skills === null ? null : pluginRecord(r.skills)
+  return {
+    install_id: id,
+    name,
+    scope,
+    version: pText(r.version),
+    description: pText(r.description),
+    source: scope === 'built_in' ? null : pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: c === null ? null : { skills: pCount(c.skills), commands: pCount(c.commands), agents: pCount(c.agents), hooks: pCount(c.hooks), mcp_servers: pCount(c.mcp_servers) },
+    skills_by_mode: modes === null ? null : Object.fromEntries(Object.entries(modes).map(([m, s]) => [m, pluginStrings(s)])),
+    runner_profiles: pluginStrings(r.runner_profiles),
+    updated_at: pText(r.updated_at),
+    updated_by: pText(r.updated_by),
+  }
+}
+
+/** What `GET /v1/workspaces/{tenant_id}/plugin-catalogue` answers, as one list of cards. */
+export function normWorkspaceCatalogue(raw: unknown): WorkspaceCatalogue {
+  const r = pluginRecord(raw)
+  const list = (v: unknown, scope: PluginScope) =>
+    (Array.isArray(v) ? v : []).map((e) => normPluginEntry(e, scope)).filter((e): e is PluginEntry => e !== null)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    entries: [...list(r.built_in, 'built_in'), ...list(r.platform_installs, 'platform'), ...list(r.installs, 'workspace')],
+    can_install: r.can_install === true,
+  }
+}
+
+/** The value of a plugin's field kinds (`pluginconfig.form_fields`): a value, a path in the checkout, a secret, a file. */
+export type PluginFieldKind = 'value' | 'path' | 'secret' | 'file'
+
+export interface PluginField {
+  key: string
+  source: 'user_config' | 'overlay'
+  /** `string`, `number`, `boolean`, `directory` or `file`, as the manifest or the overlay declares it. */
+  type: string
+  kind: PluginFieldKind
+  title: string | null
+  description: string | null
+  required: boolean
+  multiple: boolean
+  default: unknown
+  /** `env` or `file`: where the worker puts it. */
+  target: string
+  variable: string | null
+  /** The workspace keys this field may use instead of a value (`typesafe`). */
+  bindable: string[]
+}
+
+/** What the console is shown of one field's value: a non-secret value, or only whether a secret or file is set. */
+export interface PluginFieldState {
+  set: boolean
+  value?: unknown
+  binding?: { kind: string; provider: string }
+  set_at?: string | null
+  set_by?: string | null
+  sha256?: string | null
+  bytes?: number | null
+}
+
+export interface PluginConfig {
+  tenant_id: string
+  install_id: string
+  version_id: string
+  fields: PluginField[]
+  revision: number
+  values: Record<string, PluginFieldState>
+  missing: string[]
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+}
+
+const FIELD_KINDS: readonly PluginFieldKind[] = ['value', 'path', 'secret', 'file']
+
+function normPluginField(raw: unknown): PluginField | null {
+  const r = pluginRecord(raw)
+  const key = pText(r.key)
+  const kind = FIELD_KINDS.find((k) => k === r.kind)
+  if (key === null || kind === undefined) return null
+  return {
+    key,
+    source: r.source === 'overlay' ? 'overlay' : 'user_config',
+    type: pText(r.type) ?? 'string',
+    kind,
+    title: pText(r.title),
+    description: pText(r.description),
+    required: r.required === true,
+    multiple: r.multiple === true,
+    default: r.default ?? null,
+    target: pText(r.target) ?? 'env',
+    variable: pText(r.variable),
+    bindable: pluginStrings(r.bindable),
+  }
+}
+
+function normFieldState(raw: unknown): PluginFieldState {
+  const r = pluginRecord(raw)
+  const b = r.binding === undefined || r.binding === null ? null : pluginRecord(r.binding)
+  // Only the shape a console may show: a value for a non-secret field, the
+  // binding, who set it and when. Anything else the answer carried is dropped.
+  return {
+    set: r.set === true,
+    ...('value' in r ? { value: r.value } : {}),
+    ...(b !== null ? { binding: { kind: pText(b.kind) ?? '', provider: pText(b.provider) ?? '' } } : {}),
+    ...('set_at' in r ? { set_at: pText(r.set_at) } : {}),
+    ...('set_by' in r ? { set_by: pText(r.set_by) } : {}),
+    ...('sha256' in r ? { sha256: pText(r.sha256) } : {}),
+    ...('bytes' in r ? { bytes: typeof r.bytes === 'number' ? r.bytes : null } : {}),
+  }
+}
+
+/** What `GET` and `PUT .../plugin-config/{install_id}` answer. */
+export function normPluginConfig(raw: unknown): PluginConfig {
+  const r = pluginRecord(raw)
+  const form = pluginRecord(r.form)
+  const values = pluginRecord(r.values)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    install_id: typeof form.install_id === 'string' ? form.install_id : '',
+    version_id: typeof form.version_id === 'string' ? form.version_id : '',
+    fields: (Array.isArray(form.fields) ? form.fields : []).map(normPluginField).filter((f): f is PluginField => f !== null),
+    revision: typeof r.revision === 'number' ? r.revision : 0,
+    values: Object.fromEntries(Object.entries(values).map(([k, v]) => [k, normFieldState(v)])),
+    missing: pluginStrings(r.missing),
+    set_at: pText(r.set_at),
+    set_by: pText(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+export interface PluginDefaults {
+  tenant_id: string
+  /** Built-in names and install ids on for every step. */
+  defaults: string[]
+  can_edit: boolean
+}
+
+function normPluginDefaults(raw: unknown): PluginDefaults {
+  const r = pluginRecord(raw)
+  return { tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '', defaults: pluginStrings(r.defaults), can_edit: r.can_edit === true }
+}
+
+/** A one-time link to one secret or file setting's form: ten minutes, one use, this caller's. */
+export interface PluginSecretLink {
+  field: string
+  /** The console address the API minted (absolute when it knows the console's origin). */
+  url: string | null
+  path: string
+  expires_at: string | null
+  /** The link's `t`, held in memory to send back with the value; never drawn. */
+  token: string | null
+}
+
+function normSecretLink(raw: unknown): PluginSecretLink {
+  const r = pluginRecord(raw)
+  const path = typeof r.path === 'string' ? r.path : ''
+  const at = path.indexOf('?')
+  const t = at === -1 ? null : new URLSearchParams(path.slice(at + 1)).get('t')
+  return { field: typeof r.field === 'string' ? r.field : '', url: pText(r.url), path, expires_at: pText(r.expires_at), token: t === null || t === '' ? null : t }
+}
+
+/** One intake: a fetch or an upload being pinned (`plugin_catalogue.intake_view`). */
+export interface PluginIntake {
+  intake_id: string
+  state: 'awaiting_upload' | 'running' | 'pinned' | 'refused' | string
+  install_id: string | null
+  version_id: string | null
+  refusal: { code: string; sentence: string | null } | null
+}
+
+function normIntake(raw: unknown): PluginIntake {
+  const r = pluginRecord(raw)
+  const refusal = r.refusal === null || r.refusal === undefined ? null : pluginRecord(r.refusal)
+  return {
+    intake_id: typeof r.intake_id === 'string' ? r.intake_id : '',
+    state: typeof r.state === 'string' ? r.state : '',
+    install_id: pText(r.install_id),
+    version_id: pText(r.version_id),
+    refusal: refusal === null ? null : { code: pText(refusal.code) ?? '', sentence: pText(refusal.sentence) },
+  }
+}
+
+/** A pinned version as the preview draws it (`pluginstore.version_view`). */
+export interface PluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  license: string | null
+  description: string | null
+  source: Record<string, unknown>
+  runnable_sha256: string | null
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hooks: { event: string; matcher: string | null; command: string }[]
+  mcp_servers: { name: string; url_host: string | null }[]
+  runtimes: string[]
+  hosts: string[]
+  profiles: string[]
+  user_config: number
+  created_at: string | null
+  created_by: string | null
+}
+
+function pluginNames(v: unknown): string[] {
+  return (Array.isArray(v) ? v : []).map((e) => pText(pluginRecord(e).name)).filter((n): n is string => n !== null)
+}
+
+function normVersion(raw: unknown): PluginVersion {
+  const r = pluginRecord(raw)
+  const m = pluginRecord(r.manifest)
+  const c = pluginRecord(r.components)
+  const req = pluginRecord(r.requires)
+  return {
+    version_id: typeof r.version_id === 'string' ? r.version_id : '',
+    current: r.current === true,
+    version: pText(r.version) ?? pText(m.version),
+    license: pText(m.license),
+    description: pText(m.description),
+    source: pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    skills: pluginNames(c.skills),
+    commands: pluginNames(c.commands),
+    agents: pluginNames(c.agents),
+    hooks: (Array.isArray(c.hooks) ? c.hooks : []).map((h) => {
+      const x = pluginRecord(h)
+      return { event: pText(x.event) ?? '', matcher: pText(x.matcher), command: pText(x.command) ?? '' }
+    }),
+    mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).map((s) => {
+      const x = pluginRecord(s)
+      return { name: pText(x.name) ?? '', url_host: pText(x.url_host) }
+    }),
+    runtimes: (Array.isArray(req.runtimes) ? req.runtimes : []).map((x) => {
+      const t = pluginRecord(x)
+      const n = pText(t.name)
+      const v = pText(t.min_version)
+      return n === null ? '' : v === null ? n : `${n} ${v}`
+    }).filter((n) => n !== ''),
+    hosts: pluginStrings(r.hosts),
+    profiles: pluginStrings(req.profiles),
+    user_config: Array.isArray(m.user_config) ? m.user_config.length : 0,
+    created_at: pText(r.created_at),
+    created_by: pText(r.created_by),
+  }
+}
+
+const PLUGIN_FIXTURE_TENANT = 'u-owner'
+
+/** The fixture build's catalogue: the two built-ins the fixture Allowed list serves, nothing installed. */
+function fixtureCatalogue(): Record<string, unknown> {
+  const served = normWorkspacePlugins(fixturePlugins())
+  return {
+    scope: 'workspace',
+    tenant_id: PLUGIN_FIXTURE_TENANT,
+    built_in: served.catalogue.map((p) => ({
+      install_id: `builtin:${p.name}`, name: p.name, display_name: p.name, scope: 'platform', built_in: true, state: 'active',
+      source: { kind: 'image' }, current_version: null, version: p.version, runner_profiles: p.runner_profiles,
+      skills: Object.fromEntries(Object.entries(p.modes).map(([m, o]) => [m, o?.skills ?? []])), hosts: [],
+    })),
+    platform_installs: [],
+    installs: [],
+    can_install: true,
+  }
+}
+
+let fixturePluginDefaults: string[] = []
+
+async function fixtureAnswer<T>(target: ApiRoute, value: T): Promise<Result<T>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe(target, 40, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: value }
+}
+
+function mapPlugin<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`: the built-ins, the platform's installs and this workspace's own. */
+export async function loadWorkspaceCatalogue(tenantId: string): Promise<Result<WorkspaceCatalogue>> {
+  const target = route(PLUGIN_CATALOGUE_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return fixtureAnswer(target, normWorkspaceCatalogue(fixtureCatalogue()))
+  return mapPlugin(await read<unknown>(target, () => false), normWorkspaceCatalogue)
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: the plugins on for every step. */
+export async function loadPluginDefaults(tenantId: string): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return fixtureAnswer(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  return mapPlugin(await read<unknown>(target, () => false), normPluginDefaults)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/plugin-defaults` with `{defaults}`: signed and audited by the API. */
+export async function savePluginDefaults(tenantId: string, defaults: readonly string[]): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    fixturePluginDefaults = [...new Set(defaults)].sort()
+    return fixtureAnswer(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  }
+  return mapPlugin(await write(target, 'PUT', { defaults: [...defaults] }), normPluginDefaults)
+}
+
+/** `GET .../plugin-config/{install_id}`: the form the pinned version declares and the workspace's values (never a secret's). */
+export async function loadPluginConfig(tenantId: string, installId: string): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normPluginConfig)
+}
+
+/**
+ * `PUT .../plugin-config/{install_id}`: non-secret values only, against the
+ * version and the revision the form was read at (a stale form is refused
+ * `form_changed` or `config_conflict`). `null` clears a value.
+ */
+export async function savePluginValues(
+  tenantId: string,
+  installId: string,
+  body: { version_id: string; revision: number; values: Record<string, unknown> },
+): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', body), normPluginConfig)
+}
+
+/** `POST .../secrets/{field}/links`: a one-time link to set one secret or file setting. */
+export async function mintPluginSecretLink(tenantId: string, installId: string, field: string): Promise<Result<PluginSecretLink>> {
+  const target = route(`${PLUGIN_SECRET_OF}/links`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST'), normSecretLink)
+}
+
+/** `PUT .../secrets/{field}`: the value, once, with its link's token. The answer says only that it is set. */
+export async function storePluginSecret(tenantId: string, installId: string, field: string, value: string, linkToken: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { value, link_token: linkToken }), normFieldState)
+}
+
+/** `DELETE .../secrets/{field}`: destroy a secret or a file setting's content. */
+export async function removePluginSecret(tenantId: string, installId: string, field: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'DELETE')
+  return mapPlugin(await write(target, 'DELETE'), normFieldState)
+}
+
+/** `PUT .../secrets/{field}/binding`: use a workspace key (a closed list: `typesafe`) instead of a value. */
+export async function bindPluginSecret(tenantId: string, installId: string, field: string, provider: string): Promise<Result<PluginFieldState>> {
+  const target = route(`${PLUGIN_SECRET_OF}/binding`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { provider }), normFieldState)
+}
+
+/** A workspace install's source: a GitHub repository at a ref, or a marketplace's entry. */
+export type PluginSourceBody =
+  | { kind: 'github'; repository: string; ref: string; subdir: string }
+  | { kind: 'marketplace'; repository: string; ref: string; plugin: string }
+
+/** `POST .../plugin-catalogue/installs`: fetch, quarantine and start the network-less intake. Its owner's or admin's. */
+export async function installWorkspacePlugin(tenantId: string, source: PluginSourceBody, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST', overlay === null ? { source } : { source, overlay }), normIntake)
+}
+
+/**
+ * An upload's three steps: `POST .../uploads` opens the intake and a signed
+ * URL bound to the archive's type and size; the bytes go straight to it, never
+ * through swarm-api; `POST .../intakes/{id}/start` runs the intake.
+ */
+export async function uploadWorkspacePlugin(tenantId: string, file: File, subdir: string, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const opened = route(`${PLUGIN_CATALOGUE_OF}/uploads`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(opened, 'POST')
+  const body: Record<string, unknown> = { filename: file.name, size: file.size, subdir }
+  if (overlay !== null) body.overlay = overlay
+  const r = await write(opened, 'POST', body)
+  if (r.status !== 'ok' && r.status !== 'stale') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was not opened.' } }
+  const answer = pluginRecord(r.data)
+  const intake = normIntake(answer.intake)
+  const upload = pluginRecord(answer.upload)
+  const url = pText(upload.url)
+  if (url === null || intake.intake_id === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was opened without a destination.' } }
+  }
+  const headers = Object.fromEntries(Object.entries(pluginRecord(upload.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  let sent: Response
+  try {
+    sent = await fetch(url, { method: 'PUT', headers, body: file })
+  } catch {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The archive could not be sent.' } }
+  }
+  if (!sent.ok) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: sent.status, code: null, message: `The archive was refused by its destination (HTTP ${sent.status}).` } }
+  }
+  const start = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}/start`, { tenant_id: tenantId, intake_id: intake.intake_id })
+  return mapPlugin(await write(start, 'POST'), normIntake)
+}
+
+/** `GET .../plugin-catalogue/intakes/{intake_id}`: its state; reading it finishes one whose report is there. */
+export async function readWorkspaceIntake(tenantId: string, intakeId: string): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}`, { tenant_id: tenantId, intake_id: intakeId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normIntake)
+}
+
+/** `GET .../plugin-catalogue/installs/{install_id}/versions`: the pinned versions, current first as the API orders them. */
+export async function loadWorkspacePluginVersions(tenantId: string, installId: string): Promise<Result<PluginVersion[]>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs/{install_id}/versions`, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), (raw) => {
+    const v = pluginRecord(raw).versions
+    return (Array.isArray(v) ? v : []).map(normVersion)
+  })
+}
+
+// --------------------------------------------------------------------------
 // Voice it › Settings (swarm-api routes/voice_settings.py)
 // --------------------------------------------------------------------------
 
