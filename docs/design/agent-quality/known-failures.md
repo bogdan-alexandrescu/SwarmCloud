@@ -358,6 +358,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_memory_guard.py` | `test_a_real_sleep_grandchild_is_killed_and_only_it` | `skip_call` | no procfs |
 | `tests/unit/worker/test_merge_action.py` | `test_the_step_closes_what_close_merged_issues_sh_closes` | `skip_call` | bash and jq are required to run the script |
 | `tests/unit/worker/test_merge_verdict_runs_no_fix_agent.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_pluginload_runner.py` | `node` | `skip_call` | node is not installed here; CI runs these |
 | `tests/unit/worker/test_pr_body_console_links.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_pr_open_reread.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_base_after_main_merge.py` | `<module>` | `skipif` | git is not installed |
