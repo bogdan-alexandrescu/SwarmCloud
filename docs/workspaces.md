@@ -1426,7 +1426,7 @@ against the project.** The pull request must not merge before the owner's go.
   as `terraform/infra/custom_roles_moved_to_bootstrap.tf` does for the
   broker's grant. A plan with example-tenant back in `dev.tfvars` fails ("Moved
   object still exists"), which is a guard against re-adding it.
-* `tests/terraform/example-tenant_removed.tftest.hcl` holds it: dev.tfvars names no
+* `tests/terraform/personal_tenant_removed.tftest.hcl` holds it: dev.tfvars names no
   example-tenant and the bootstrap plans no grant for it while it still plans eng's;
   terraform/infra plans no example-tenant resource while it still plans eng's;
   every instance a tenant shaped like example-tenant gets is a `moved` source; every

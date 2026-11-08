@@ -36,7 +36,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 
   image_digest = "sha256:${join("", [for i in range(8) : "4567cdef"])}"
@@ -71,16 +71,16 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
   variables {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
-    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_apply_image     = "us-central1-docker.pkg.dev/example-project/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_resource {
     target          = google_service_account.workspace_dispatch
     override_during = plan
     values = {
-      id    = "projects/saga-agents-staging/serviceAccounts/swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com"
-      email = "swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com"
+      id    = "projects/example-project/serviceAccounts/swarm-workspace-dispatch@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-workspace-dispatch@example-project.iam.gserviceaccount.com"
+      email = "swarm-workspace-dispatch@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -88,7 +88,7 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
     target          = google_pubsub_topic.workspace_apply
     override_during = plan
     values = {
-      id = "projects/saga-agents-staging/topics/swarm-workspace-apply"
+      id = "projects/example-project/topics/swarm-workspace-apply"
     }
   }
 
@@ -96,7 +96,7 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
     target          = google_workflows_workflow.workspace_apply
     override_during = plan
     values = {
-      id = "projects/saga-agents-staging/locations/us-central1/workflows/swarm-workspace-apply"
+      id = "projects/example-project/locations/us-central1/workflows/swarm-workspace-apply"
     }
   }
 
@@ -119,14 +119,14 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
   override_data {
     target = data.google_project.workspace_deployer
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   override_data {
     target = data.google_project.forge_user_slots
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -157,8 +157,8 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
   assert {
     condition = alltrue([
       google_project_iam_member.workspace_dispatch_invoker[0].role == "roles/workflows.invoker",
-      google_project_iam_member.workspace_dispatch_invoker[0].member == "serviceAccount:swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.workspace_dispatch_invoker[0].project == "saga-agents-staging",
+      google_project_iam_member.workspace_dispatch_invoker[0].member == "serviceAccount:swarm-workspace-dispatch@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.workspace_dispatch_invoker[0].project == "example-project",
       length(google_project_iam_member.workspace_dispatch_invoker[0].condition) == 0,
     ])
     error_message = "roles/workflows.invoker goes to swarm-workspace-dispatch, the Eventarc trigger's identity, and nobody else; at the project, because Workflows accepts nothing narrower (W0b (7))"
@@ -214,9 +214,9 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
     condition = alltrue([
       google_eventarc_trigger.workspace_apply[0].name == "swarm-workspace-apply",
       google_eventarc_trigger.workspace_apply[0].location == "us-central1",
-      google_eventarc_trigger.workspace_apply[0].service_account == "swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com",
-      google_eventarc_trigger.workspace_apply[0].transport[0].pubsub[0].topic == "projects/saga-agents-staging/topics/swarm-workspace-apply",
-      google_eventarc_trigger.workspace_apply[0].destination[0].workflow == "projects/saga-agents-staging/locations/us-central1/workflows/swarm-workspace-apply",
+      google_eventarc_trigger.workspace_apply[0].service_account == "swarm-workspace-dispatch@example-project.iam.gserviceaccount.com",
+      google_eventarc_trigger.workspace_apply[0].transport[0].pubsub[0].topic == "projects/example-project/topics/swarm-workspace-apply",
+      google_eventarc_trigger.workspace_apply[0].destination[0].workflow == "projects/example-project/locations/us-central1/workflows/swarm-workspace-apply",
       length(google_eventarc_trigger.workspace_apply[0].destination[0].cloud_run_service) == 0,
       length(google_eventarc_trigger.workspace_apply[0].destination[0].http_endpoint) == 0,
       google_eventarc_trigger.workspace_apply[0].labels["managed-by"] == "swarm-terraform",
@@ -235,7 +235,7 @@ run "the_dispatch_path_forwards_a_checked_id_and_mode_and_nothing_else" {
   # swarm-api stays the topic's only publisher: option (ii) changes no
   # swarm-api grant.
   assert {
-    condition     = google_pubsub_topic_iam_binding.workspace_apply_publisher[0].members == toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_pubsub_topic_iam_binding.workspace_apply_publisher[0].members == toset(["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"])
     error_message = "swarm-api keeps only pubsub.publisher on the topic, and is its only publisher"
   }
 }

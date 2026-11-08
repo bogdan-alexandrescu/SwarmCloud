@@ -12,7 +12,7 @@
 # made per backend service -- `gcloud iap settings set --resource-type=compute
 # --service=BACKEND_SERVICE_NAME` in cloud.google.com/iap/docs/deprecations/
 # migrate-oauth-client -- which is the only scope acceptable in
-# saga-agents-staging, where nine of the ten IAP backends are another team's
+# example-project, where nine of the ten IAP backends are another team's
 # (their Keycloak and ArgoCD among them).
 #
 # What these runs hold terraform/bootstrap/iap_programmatic_clients.tf to:
@@ -42,7 +42,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 }
 
@@ -70,13 +70,13 @@ run "a_desktop_client_is_allowlisted_on_our_backends_and_nowhere_else" {
     target          = data.google_project.iap_programmatic
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   variables {
     frontend_iap_backends             = ["swarm-ui-backend", "swarm-ui-ui-backend"]
-    frontend_iap_programmatic_clients = ["209012342332-abcdef0123.apps.googleusercontent.com"]
+    frontend_iap_programmatic_clients = ["123456789012-abcdef0123.apps.googleusercontent.com"]
   }
 
   assert {
@@ -87,7 +87,7 @@ run "a_desktop_client_is_allowlisted_on_our_backends_and_nowhere_else" {
   assert {
     condition = alltrue([
       for backend, settings in google_iap_settings.frontend_programmatic_clients :
-      settings.name == "projects/209012342332/iap_web/compute/services/${backend}"
+      settings.name == "projects/123456789012/iap_web/compute/services/${backend}"
     ])
     error_message = "each setting must be named at the backend-SERVICE level; a project, iap_web or compute level name would reach the other team's backends"
   }
@@ -107,7 +107,7 @@ run "a_desktop_client_is_allowlisted_on_our_backends_and_nowhere_else" {
   assert {
     condition = alltrue([
       for settings in google_iap_settings.frontend_programmatic_clients :
-      toset(settings.access_settings[0].oauth_settings[0].programmatic_clients) == toset(["209012342332-abcdef0123.apps.googleusercontent.com"])
+      toset(settings.access_settings[0].oauth_settings[0].programmatic_clients) == toset(["123456789012-abcdef0123.apps.googleusercontent.com"])
     ])
     error_message = "the allowlist must be exactly the configured Desktop client ids"
   }
@@ -135,7 +135,7 @@ run "a_url_is_refused_where_a_client_id_belongs" {
   }
 
   variables {
-    frontend_iap_programmatic_clients = ["https://swarm.saga.xyz"]
+    frontend_iap_programmatic_clients = ["https://swarm.example.com"]
   }
 
   expect_failures = [var.frontend_iap_programmatic_clients]

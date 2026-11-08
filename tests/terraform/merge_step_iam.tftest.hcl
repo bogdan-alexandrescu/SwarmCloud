@@ -39,12 +39,12 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
 
-  artifact_bucket = "swarm-artifacts-saga-agents-staging"
+  artifact_bucket = "swarm-artifacts-example-project"
   labels          = { "managed-by" = "swarm-terraform" }
 
   # eng holds an agent key and the forge token; research an agent key alone;
@@ -67,9 +67,9 @@ variables {
   }
 
   dispatcher_members = {
-    scheduler  = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-    reconciler = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
-    deployer   = "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    scheduler  = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
+    reconciler = "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
+    deployer   = "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com"
   }
 }
 
@@ -115,8 +115,8 @@ run "every_tenant_secret_input_names_the_worker_alone" {
     target          = google_service_account.worker
     override_during = plan
     values = {
-      email = "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -125,7 +125,7 @@ run "every_tenant_secret_input_names_the_worker_alone" {
       toset(keys(output.secret_inputs)) == toset(["eng", "research"])
       && alltrue([
         for t, cfg in output.secret_inputs :
-        cfg.accessor == "serviceAccount:swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+        cfg.accessor == "serviceAccount:swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
         && toset(keys(cfg)) == toset(["providers", "accessor"])
       ])
     )
@@ -150,16 +150,16 @@ run "a_tenant_registering_git_review_is_refused" {
       eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "git-review"] }
     }
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -179,16 +179,16 @@ run "a_tenant_registering_git_merge_is_refused" {
       eng = { kind = "group", principal = "eng@example.com", providers = ["git", "git-merge"] }
     }
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -215,16 +215,16 @@ run "no_job_for_a_retired_profile_and_merge_runs_as_the_worker" {
     }
 
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -232,8 +232,8 @@ run "no_job_for_a_retired_profile_and_merge_runs_as_the_worker" {
     target          = module.tenancy.google_service_account.worker
     override_during = plan
     values = {
-      email = "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -266,7 +266,7 @@ run "no_job_for_a_retired_profile_and_merge_runs_as_the_worker" {
   assert {
     condition = alltrue([
       for name, job in local.jobs :
-      job.service_account_email == "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+      job.service_account_email == "swarm-agent-worker-mock@example-project.iam.gserviceaccount.com"
     ])
     error_message = "every Job runs as the tenant's worker account"
   }
@@ -304,7 +304,7 @@ run "no_worker_can_write_a_verdict" {
   assert {
     condition = (
       google_storage_bucket_iam_member.worker_objects_read["eng"].role == "roles/storage.objectViewer"
-      && google_storage_bucket_iam_member.worker_objects_read["eng"].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"tenants/eng/\")"
+      && google_storage_bucket_iam_member.worker_objects_read["eng"].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"tenants/eng/\")"
     )
     error_message = "the worker's read grant is objectViewer on its own prefix, with the objectListPrefix clause that keeps listing tenant-scoped"
   }
@@ -313,7 +313,7 @@ run "no_worker_can_write_a_verdict" {
   assert {
     condition = (
       google_storage_bucket_iam_member.worker_objects_write["eng"].role == "roles/storage.objectUser"
-      && google_storage_bucket_iam_member.worker_objects_write["eng"].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/\") && !resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/verdicts/\")"
+      && google_storage_bucket_iam_member.worker_objects_write["eng"].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/\") && !resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/verdicts/\")"
     )
     error_message = "the worker's write grant is unchanged: its own prefix, less tenants/<tenant>/verdicts/"
   }
@@ -353,33 +353,33 @@ run "a_provider_override_is_the_complete_reader_list" {
 
   variables {
     enable_subscription_refresh = true
-    refresher_member            = "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
+    refresher_member            = "serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com"
 
     tenant_secrets = {
       eng = {
         providers = ["anthropic", "git-review", "git-merge"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
         accessor_overrides = {
-          "git-merge"  = ["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"]
-          "git-review" = ["serviceAccount:swarm-eng-post-verdict@saga-agents-staging.iam.gserviceaccount.com"]
+          "git-merge"  = ["serviceAccount:swarm-eng-merge@example-project.iam.gserviceaccount.com"]
+          "git-review" = ["serviceAccount:swarm-eng-post-verdict@example-project.iam.gserviceaccount.com"]
         }
       }
     }
   }
 
   assert {
-    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@example-project.iam.gserviceaccount.com"])
     error_message = "the authoritative accessor binding on -git-merge must name the merge account alone"
   }
 
   assert {
-    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-review"].members == toset(["serviceAccount:swarm-eng-post-verdict@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-review"].members == toset(["serviceAccount:swarm-eng-post-verdict@example-project.iam.gserviceaccount.com"])
     error_message = "the authoritative accessor binding on -git-review must name the post-verdict account alone"
   }
 
   # The control: a provider with no override still falls back to the worker.
   assert {
-    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members == toset(["serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"])
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members == toset(["serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"])
     error_message = "a provider with no override is read by the tenant's worker account"
   }
 
@@ -398,7 +398,7 @@ run "a_provider_override_is_the_complete_reader_list" {
     condition = (
       !contains(keys(google_secret_manager_secret_iam_binding.version_adder), "swarm-tenant-eng-git-merge")
       && !contains(keys(google_secret_manager_secret_iam_binding.version_adder), "swarm-tenant-eng-git-review")
-      && contains(google_secret_manager_secret_iam_binding.version_adder["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com")
+      && contains(google_secret_manager_secret_iam_binding.version_adder["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com")
     )
     error_message = "the refresher may write anthropic's secret, never an App key's"
   }
@@ -415,7 +415,7 @@ run "an_app_key_with_no_override_is_refused" {
     tenant_secrets = {
       eng = {
         providers = ["git-merge"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
       }
     }
   }
@@ -434,11 +434,11 @@ run "an_app_key_read_by_the_worker_is_refused" {
     tenant_secrets = {
       eng = {
         providers = ["git-review"]
-        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor  = "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"
         accessor_overrides = {
           "git-review" = [
-            "serviceAccount:swarm-eng-post-verdict@saga-agents-staging.iam.gserviceaccount.com",
-            "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com",
+            "serviceAccount:swarm-eng-post-verdict@example-project.iam.gserviceaccount.com",
+            "serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com",
           ]
         }
       }
@@ -484,14 +484,14 @@ run "only_the_scheduler_holds_a_role_that_runs_or_updates_a_job" {
     gke_enabled      = true
     gke_cluster_name = "swarm-dev-autopilot"
     gke_location     = "us-central1"
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    artifact_bucket  = "swarm-artifacts-example-project"
   }
 
   assert {
     condition = alltrue([
       for account, roles in output.granted_roles :
       account == "swarm-scheduler" || alltrue([
-        for r in roles : r != "projects/saga-agents-staging/roles/swarmJobDispatcher" && !startswith(r, "roles/run.")
+        for r in roles : r != "projects/example-project/roles/swarmJobDispatcher" && !startswith(r, "roles/run.")
       ])
     ])
     error_message = "a platform identity other than swarm-scheduler holds swarmJobDispatcher or a predefined run.* role"
@@ -500,7 +500,7 @@ run "only_the_scheduler_holds_a_role_that_runs_or_updates_a_job" {
   # The control: the scheduler does hold it, so the check above is reading the
   # grants and not an empty map.
   assert {
-    condition     = contains(output.granted_roles["swarm-scheduler"], "projects/saga-agents-staging/roles/swarmJobDispatcher")
+    condition     = contains(output.granted_roles["swarm-scheduler"], "projects/example-project/roles/swarmJobDispatcher")
     error_message = "swarm-scheduler must hold swarmJobDispatcher; without it nothing dispatches"
   }
 }
@@ -522,7 +522,7 @@ run "no_tenant_identity_can_run_update_or_act_as_a_job" {
         [for k, b in google_project_iam_member.worker_telemetry : b.role],
       ) :
       contains([
-        "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore",
+        "projects/example-project/roles/swarmTenantWorkerFirestore",
         "roles/logging.logWriter",
         "roles/monitoring.metricWriter",
         "roles/cloudtrace.agent",

@@ -50,7 +50,7 @@ module "custom_role_ids" {
 #       reachable only through `versions.add` in the project-wide
 #       swarmSecretLister role -- and so was every one of the 63 secrets in this
 #       project that belong to another team (live listing, 2026-09-24: 57
-#       agents-*, 6 promptlab-*).
+#       agents-*, 6 peer-app-*).
 #
 # A literal per-secret binding cannot cover the second kind without the broker
 # granting itself adder on every secret it creates, which it could only do

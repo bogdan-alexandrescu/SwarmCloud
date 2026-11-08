@@ -78,7 +78,7 @@
 #      relay; LB-Lon);
 #   5. `kubernetes/apply.sh --swarm-system --confirm`, which applies
 #      `terraform output -raw swarm_live_manifest` to swarm-autopilot and then
-#      swarm-system's policies, and refuses the shared cluster agents-staging.
+#      swarm-system's policies, and refuses the shared cluster peer-cluster.
 #
 # GKE ONLY (§8.1). The relay is a StatefulSet on the Autopilot cluster, and
 # its principal lives in that cluster's workload pool, so the switch does
@@ -270,7 +270,7 @@ output "live_relay" {
 # value it needs is this root's: the bucket, the key's name, the reserved
 # address, the image digest and swarm-api's subnet range.
 output "swarm_live_manifest" {
-  description = "The relay's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging). Null while enable_live_browser is off."
+  description = "The relay's Kubernetes objects, rendered. Apply to swarm-autopilot only (never peer-cluster). Null while enable_live_browser is off."
   value = local.live_relay_enabled && local.live_relay_image != "" ? replace(replace(replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/swarm-live.yaml"),
     "__SWARM_LIVE_IMAGE__", local.live_relay_image),

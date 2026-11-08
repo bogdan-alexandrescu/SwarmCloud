@@ -29,9 +29,9 @@ override_data {
   values = {
     versions = [
       {
-        id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        name             = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-        crypto_key       = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
+        id               = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        name             = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+        crypto_key       = "projects/example-project/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
         version          = 1
         state            = "ENABLED"
         protection_level = "SOFTWARE"
@@ -55,7 +55,7 @@ override_data {
   target          = data.google_project.this
   override_during = plan
   values = {
-    number = "209012342332"
+    number = "123456789012"
   }
 }
 
@@ -70,7 +70,7 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   spec_signature_mode      = "legacy"
@@ -86,17 +86,17 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
   # Read as text by the assertion that lists live.tf's resources.
@@ -131,7 +131,7 @@ run "recordings_are_deleted_seven_days_after_they_are_written" {
 
   variables {
     labels        = { "managed-by" = "swarm-terraform" }
-    bucket_suffix = "saga-agents-staging"
+    bucket_suffix = "example-project"
     tenants       = ["eng"]
   }
 
@@ -256,7 +256,7 @@ run "on_the_relay_may_only_create_recordings" {
     condition = (
       length(google_storage_bucket_iam_member.live_relay_records) == 1
       && google_storage_bucket_iam_member.live_relay_records[0].role == "roles/storage.objectCreator"
-      && google_storage_bucket_iam_member.live_relay_records[0].bucket == "swarm-artifacts-saga-agents-staging"
+      && google_storage_bucket_iam_member.live_relay_records[0].bucket == "swarm-artifacts-example-project"
     )
     error_message = "the relay's GCS grant is one roles/storage.objectCreator binding on the artifact bucket"
   }
@@ -266,7 +266,7 @@ run "on_the_relay_may_only_create_recordings" {
   # or grant on. The namespace and the KSA are part of the principal, so a
   # tenant pod (another namespace) cannot present it.
   assert {
-    condition     = google_storage_bucket_iam_member.live_relay_records[0].member == "principal://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/saga-agents-staging.svc.id.goog/subject/ns/swarm-system/sa/swarm-live"
+    condition     = google_storage_bucket_iam_member.live_relay_records[0].member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/swarm-system/sa/swarm-live"
     error_message = "the grant is held by ns/swarm-system/sa/swarm-live in GKE's workload identity pool, and by nothing else"
   }
 
@@ -275,7 +275,7 @@ run "on_the_relay_may_only_create_recordings" {
   assert {
     condition = alltrue([
       for clause in [
-        "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\")",
+        "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-example-project/objects/tenants/\")",
         "resource.name.extract(\"/attempts/{attempt}/live/\") != \"\"",
         "resource.name.endsWith(\".live.webm\")",
         "resource.name.endsWith(\".live.jsonl\")",
@@ -491,9 +491,9 @@ run "the_relay_serves_plain_ws_on_8080_behind_its_own_ingress_policy" {
       alltrue([for c in d.spec.template.spec.containers : {
         for e in c.env : e.name => e.value
         } == {
-        PROJECT_ID            = "saga-agents-staging"
+        PROJECT_ID            = "example-project"
         ARTIFACT_BUCKET       = output.live_relay.artifact_bucket
-        SWARM_LIVE_KEY_SECRET = join("/", ["projects", "saga-agents-staging", "secrets", output.live_relay.key_secret, "versions", "latest"])
+        SWARM_LIVE_KEY_SECRET = join("/", ["projects", "example-project", "secrets", output.live_relay.key_secret, "versions", "latest"])
       }])
       if d.kind == "StatefulSet"
     ])
@@ -534,7 +534,7 @@ run "the_relay_serves_plain_ws_on_8080_behind_its_own_ingress_policy" {
       ]) == 1 && alltrue([
       for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] :
       d.metadata.name == "swarm-live-ingress"
-      && d.metadata.annotations["swarm.saga.xyz/swarm-api-egress-cidr"] == "10.77.16.0/20"
+      && one([for k, v in d.metadata.annotations : v if endswith(k, "/swarm-api-egress-cidr")]) == "10.77.16.0/20"
       && d.spec.podSelector == { matchLabels = { "app.kubernetes.io/name" = "swarm-live" } }
       && d.spec.policyTypes == ["Ingress"]
       && length(d.spec.ingress) == 2
@@ -564,7 +564,7 @@ run "the_relay_serves_plain_ws_on_8080_behind_its_own_ingress_policy" {
   # On, the relay is a deployed image: its digest is in the image_refs output
   # scripts/plan.sh pins a non-deploy plan to.
   assert {
-    condition     = output.image_refs["swarm-live"] == "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    condition     = output.image_refs["swarm-live"] == "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
     error_message = "with the relay on, image_refs carries swarm-live's digest"
   }
 }

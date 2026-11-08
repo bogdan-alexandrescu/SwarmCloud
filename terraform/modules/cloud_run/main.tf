@@ -85,7 +85,7 @@ resource "google_cloud_run_v2_service" "this" {
         #
         #   startup_cpu_boost allocates MORE CPU than the declared limit while an
         #   instance starts. That is bursting by definition, so it is off for
-        #   every service that does not set it. swarm-api sets it, by BGD's
+        #   every service that does not set it. swarm-api sets it, by the owner's
         #   decision of 2026-10-23 (#1816 option (a)): its Python start on
         #   1 vCPU sometimes outlasted the startup probe, and four instances
         #   killed at 96 s on 2026-10-21 left callers with Cloud Run's 429 "no

@@ -118,7 +118,7 @@ resource "google_cloud_scheduler_job" "quota_refresh" {
 # state"). Until this job nothing called the route on a schedule, and such a
 # workflow kept a stale stored state for ever.
 #
-# IT ALSO SEALS THE TENANT'S OUTCOME DAYS (COUNTS-SEAL, #2149). BGD's decision,
+# IT ALSO SEALS THE TENANT'S OUTCOME DAYS (COUNTS-SEAL, #2149). the owner's decision,
 # 2026-10-23: `outcome_days`, which Admin › Platform counts reads over 12
 # months, is "sealed nightly by the existing rollup job". `seal_outcomes=true`
 # makes the route seal the tenant's ended UTC days, yesterday and the two

@@ -39,7 +39,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap; the value only has to pass validation.
   frontend_iap_members = ["domain:example.com"]
@@ -61,7 +61,7 @@ run "the_app_secrets_are_two_empty_slots_only_swarm_api_reads" {
     tenant_secrets = {}
 
     github_app_secrets_enabled = true
-    github_app_secret_readers  = ["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"]
+    github_app_secret_readers  = ["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"]
   }
 
   assert {
@@ -91,7 +91,7 @@ run "the_app_secrets_are_two_empty_slots_only_swarm_api_reads" {
   assert {
     condition = alltrue([
       for k, b in google_secret_manager_secret_iam_binding.github_app_accessor :
-      b.role == "roles/secretmanager.secretAccessor" && b.members == toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"])
+      b.role == "roles/secretmanager.secretAccessor" && b.members == toset(["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"])
     ]) && length(google_secret_manager_secret_iam_binding.github_app_accessor) == 2
     error_message = "swarm-api, and nobody else, reads the App's client secret and private key"
   }
@@ -174,7 +174,7 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     target          = data.google_project.forge_user_slots
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -197,8 +197,8 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
 
   assert {
     condition = alltrue([
-      google_project_iam_member.forge_slot_creator[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
-      google_project_iam_member.forge_slot_creator[0].role == "projects/saga-agents-staging/roles/swarmForgeSlotCreator",
+      google_project_iam_member.forge_slot_creator[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com",
+      google_project_iam_member.forge_slot_creator[0].role == "projects/example-project/roles/swarmForgeSlotCreator",
     ])
     error_message = "swarm-api, alone, holds the slot-creator role"
   }
@@ -208,8 +208,8 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     condition = alltrue([
       for t, m in google_project_iam_member.forge_slot_version_adder :
       m.role == "roles/secretmanager.secretVersionAdder" &&
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com" &&
-      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\")"
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-${t}-git-u-\")"
     ]) && length(google_project_iam_member.forge_slot_version_adder) > 0
     error_message = "swarm-api adds versions to user slots and their -refresh twins, one tenant's prefix per binding, by the project NUMBER"
   }
@@ -231,9 +231,9 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
   assert {
     condition = alltrue([
       for t, m in google_project_iam_member.forge_slot_version_manager :
-      m.role == "projects/saga-agents-staging/roles/swarmForgeSlotVersionManager" &&
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com" &&
-      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\")" &&
+      m.role == "projects/example-project/roles/swarmForgeSlotVersionManager" &&
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-${t}-git-u-\")" &&
       m.condition[0].expression == google_project_iam_member.forge_slot_version_adder[t].condition[0].expression
     ]) && length(google_project_iam_member.forge_slot_version_manager) > 0
     error_message = "swarm-api disables and enables versions of user slots and their -refresh twins, one tenant's prefix per binding, the version adder's own condition"
@@ -264,8 +264,8 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     condition = alltrue([
       for t, m in google_project_iam_member.forge_refresh_reader :
       m.role == "roles/secretmanager.secretAccessor" &&
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com" &&
-      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\")" &&
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-${t}-git-u-\")" &&
       m.condition[0].expression == google_project_iam_member.forge_slot_version_adder[t].condition[0].expression
     ]) && length(google_project_iam_member.forge_refresh_reader) > 0
     error_message = "swarm-api reads each tenant's user slots, base and -refresh twin alike, on that tenant's prefix and nothing wider (owner decision 2026-10-08)"
@@ -297,9 +297,9 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
   # Nothing here names the other team's secrets: every prefix is ours.
   assert {
     condition = alltrue([
-      for t, p in local.forge_user_slot_prefixes : startswith(p, "projects/209012342332/secrets/swarm-tenant-")
+      for t, p in local.forge_user_slot_prefixes : startswith(p, "projects/123456789012/secrets/swarm-tenant-")
     ])
-    error_message = "a user-slot prefix outside swarm-tenant-; the other team's secrets in this project are agents-* and promptlab-*"
+    error_message = "a user-slot prefix outside swarm-tenant-; the other team's secrets in this project are agents-* and peer-app-*"
   }
 }
 
@@ -331,7 +331,7 @@ run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
     target          = data.google_project.forge_user_slots
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
@@ -343,7 +343,7 @@ run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
   assert {
     condition = alltrue([
       for m in concat(values(google_project_iam_member.forge_refresh_reader), values(google_project_iam_member.forge_personal_slots)) :
-      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      m.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
       if m.role == "roles/secretmanager.secretAccessor" && strcontains(m.condition[0].expression, "-git-u-")
     ]) && length(google_project_iam_member.forge_refresh_reader) > 0
     error_message = "a secretAccessor binding on a -git-u- user slot other than forge_slot_reader names someone other than swarm-api (#1041)"
@@ -353,9 +353,9 @@ run "the_tenant_worker_reads_only_its_tenants_base_user_slots" {
     condition = alltrue([
       for t, m in google_project_iam_member.forge_slot_reader :
       m.role == "roles/secretmanager.secretAccessor" &&
-      m.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com" &&
+      m.member == "serviceAccount:swarm-agent-worker-${t}@example-project.iam.gserviceaccount.com" &&
       m.condition[0].title == "swarm forge user slots ${t}" &&
-      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
+      m.condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-${t}-git-u-\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
     ]) && toset(keys(google_project_iam_member.forge_slot_reader)) == toset(local.infra_tenant_ids)
     error_message = "forge_slot_reader is each tenant's own worker reading that tenant's base user slots, never a -refresh twin or a secret version of one, with main's condition unchanged, and stays until the broker has been on in dev (#1041)"
   }
@@ -438,7 +438,7 @@ run "the_refresher_job_ticks_every_fifteen_minutes_with_oidc" {
     scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
     reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
     quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-    tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
     api_endpoint            = "https://swarm-api-abcdef-uc.a.run.app"
     labels                  = { "managed-by" = "swarm-terraform" }
     publisher_members       = {}
@@ -466,7 +466,7 @@ run "the_refresher_job_ticks_every_fifteen_minutes_with_oidc" {
     condition = alltrue([
       google_cloud_scheduler_job.forge_refresh[0].http_target[0].http_method == "POST",
       google_cloud_scheduler_job.forge_refresh[0].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/forge/refresh",
-      google_cloud_scheduler_job.forge_refresh[0].http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com",
+      google_cloud_scheduler_job.forge_refresh[0].http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com",
       google_cloud_scheduler_job.forge_refresh[0].http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app",
     ])
     error_message = "the job POSTs swarm-api's refresh sweep with an OIDC token minted for the rollup-sweeper account, audience the service URL"
@@ -490,7 +490,7 @@ run "the_refresher_job_is_absent_until_switched_on" {
     scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
     reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
     quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-    tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
     api_endpoint            = "https://swarm-api-abcdef-uc.a.run.app"
     labels                  = { "managed-by" = "swarm-terraform" }
     publisher_members       = {}

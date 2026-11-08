@@ -14,7 +14,7 @@
 # WHY HERE AND NOT IN terraform/infra. A role carrying versions.access may not
 # be on the CI deployer's grantable list (variables.tf,
 # deployer_secret_permissions): on it, CI could grant itself read on any secret
-# in saga-agents-staging, the other team's among them. So the owner applies
+# in example-project, the other team's among them. So the owner applies
 # this (his answer of 6 November 2026 to plugins.tf's open question).
 #
 #   google_project_iam_member.plugin_secret_reader
@@ -44,7 +44,7 @@
 #
 # WHAT IT REFUSES: a tenant's forge token (`-git`) and slots, its provider
 # keys, its `-wsec-` secrets, the platform's `swarm-*` secrets, and the other
-# team's `agents-*` and `promptlab-*` secrets, which do not start with the
+# team's `agents-*` and `peer-app-*` secrets, which do not start with the
 # prefix. WHAT IT STILL REACHES (the residual): extract() finds the FIRST
 # `-plg-`, so a non-plugin secret whose name carries `-plg-` after a non-empty
 # tenant (a browser login named `x-plg-y`, a tenant id containing `-plg-`).

@@ -3,7 +3,7 @@
 # member of eng@example.com.
 #
 # The id is what swarm_common.identity.tenant_id_for_user gives
-# oracle-api@saga-agents-staging.iam.gserviceaccount.com. Terraform cannot run
+# oracle-api@example-project.iam.gserviceaccount.com. Terraform cannot run
 # the frozen module, so tests/unit/scripts/test_oracle_api_tenant.py recomputes
 # it and holds dev.tfvars' key to it; these runs hold the PLANS to that key:
 #
@@ -30,22 +30,22 @@ override_resource {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   # terraform/infra refuses to plan an image with no digest; these only have to
   # pass its validations (personal_workspaces_absent.tftest.hcl has the same).
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 
   frontend_iap_members = ["domain:example.com"]
@@ -64,14 +64,14 @@ run "bootstrap_admits_oracle_api_and_grants_on_its_worker" {
     # deployer_admin is made only with the release deployer's WIF on, as the
     # owner's bootstrap apply has it (deployer_sa_admin.tftest.hcl).
     enable_github_wif       = true
-    github_repository       = "bogdan-alexandrescu/SwarmCloud"
+    github_repository       = "example-org/example-repo"
     enable_forge_user_slots = true
     # terraform test cannot load terraform/bootstrap/terraform.tfvars, so the
     # member is passed here and the file's line is held by the text assertion
     # below (and by test_oracle_api_tenant.py).
     frontend_iap_members = [
       "domain:example.com",
-      "serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:oracle-api@example-project.iam.gserviceaccount.com",
     ]
   }
 
@@ -86,33 +86,33 @@ run "bootstrap_admits_oracle_api_and_grants_on_its_worker" {
   }
 
   # Its secrets prefix (invariant 9): the worker reads its own forge slots,
-  # swarm-tenant-u-or-9a0792-git-u-*, and no other tenant's.
+  # under its own git secret's name, and no other tenant's.
   assert {
     condition = (
       contains(keys(google_project_iam_member.forge_slot_reader), "u-or-9a0792") &&
-      endswith(local.forge_user_slot_prefixes["u-or-9a0792"], "/secrets/swarm-tenant-u-or-9a0792-git-u-")
+      endswith(local.forge_user_slot_prefixes["u-or-9a0792"], format("/secrets/swarm-tenant-%s-git-u-", "u-or-9a0792"))
     )
-    error_message = "u-or-9a0792's worker gets no read on its own forge slots, swarm-tenant-u-or-9a0792-git-u-*"
+    error_message = "u-or-9a0792's worker gets no read on its own forge slots, under its own git secret's name"
   }
 
   assert {
     condition = alltrue([
       for b in ["swarm-ui-backend", "swarm-ui-ui-backend"] :
-      google_iap_web_backend_service_iam_member.frontend_accessors["${b} serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com"].role == "roles/iap.httpsResourceAccessor"
+      google_iap_web_backend_service_iam_member.frontend_accessors["${b} serviceAccount:oracle-api@example-project.iam.gserviceaccount.com"].role == "roles/iap.httpsResourceAccessor"
     ])
     error_message = "oracle-api is not admitted with roles/iap.httpsResourceAccessor on both front-door backends"
   }
 
-  # The committed record of the owner's apply: the member is in the file,
-  # for the project this plan grants in.
+  # The committed record of the owner's apply: the member is in the file. The
+  # file is the deployment's own, so its project id is read by shape.
   assert {
-    condition     = var.project_id == "saga-agents-staging" && length(regexall("(?ms)^frontend_iap_members\\s*=\\s*\\[[^\\]]*\"serviceAccount:oracle-api@saga-agents-staging\\.iam\\.gserviceaccount\\.com\"", file("../../terraform/bootstrap/terraform.tfvars"))) == 1
-    error_message = "terraform/bootstrap/terraform.tfvars' frontend_iap_members does not list serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com; a later bootstrap plan would remove the owner's grant"
+    condition     = var.project_id != "" && length(regexall("(?ms)^frontend_iap_members\\s*=\\s*\\[[^\\]]*\"serviceAccount:oracle-api@[a-z][a-z0-9-]*\\.iam\\.gserviceaccount\\.com\"", file("../../terraform/bootstrap/terraform.tfvars"))) == 1
+    error_message = "terraform/bootstrap/terraform.tfvars' frontend_iap_members does not list serviceAccount:oracle-api@<project>.iam.gserviceaccount.com; a later bootstrap plan would remove the owner's grant"
   }
 }
 
 # 2. terraform/infra over dev.tfvars' tenants. The map is written out because
-# terraform cannot decode a tfvars file; u_bogdan_removed.tftest.hcl holds the
+# terraform cannot decode a tfvars file; u_pat_removed.tftest.hcl holds the
 # file's keys to the same four.
 run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
   command = plan
@@ -127,12 +127,12 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
     target          = google_service_account.verify
     override_during = plan
     values = {
-      email = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-verify@example-project.iam.gserviceaccount.com"
     }
   }
 
   variables {
-    allowed_users = ["oracle-api@saga-agents-staging.iam.gserviceaccount.com"]
+    allowed_users = ["oracle-api@example-project.iam.gserviceaccount.com"]
     tenants = {
       eng = {
         kind             = "group"
@@ -142,7 +142,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
         providers        = ["anthropic", "openai"]
         max_active       = 45
         capacity_units   = 45
-        service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+        service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"]
       }
       smoke = {
         kind            = "group"
@@ -155,7 +155,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
       }
       u-sw-c90291 = {
         kind            = "user"
-        principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+        principal       = "swarm-verify@example-project.iam.gserviceaccount.com"
         display_name    = "Verification gate"
         directory_group = false
         providers       = []
@@ -164,7 +164,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
       }
       u-or-9a0792 = {
         kind            = "user"
-        principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+        principal       = "oracle-api@example-project.iam.gserviceaccount.com"
         display_name    = "Oracle API"
         directory_group = false
         providers       = []
@@ -197,7 +197,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
 
   # No providers, as u-sw-c90291: no Terraform-managed key (secret_inputs
   # carries only tenants that declare a provider; its git token is stored by
-  # scripts/create-secrets.sh as swarm-tenant-u-or-9a0792-git) and no provider
+  # scripts/create-secrets.sh under its tenant git secret's name) and no provider
   # pool. A Claude account is lent to it from the pool instead.
   assert {
     condition = (
@@ -210,8 +210,8 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
 
   assert {
     condition = toset(split(",", local.service_env["swarm-api"].ALLOWED_USERS)) == toset([
-      "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
-      "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      "swarm-verify@example-project.iam.gserviceaccount.com",
+      "oracle-api@example-project.iam.gserviceaccount.com",
     ])
     error_message = "swarm-api's ALLOWED_USERS is not exactly swarm-verify and oracle-api: ${local.service_env["swarm-api"].ALLOWED_USERS}"
   }
