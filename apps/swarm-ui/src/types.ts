@@ -7041,3 +7041,107 @@ export interface WorkspacePlugins {
   can_edit: boolean
   catalogue: CataloguePlugin[]
 }
+
+// ---------------------------------------------------------------------------
+// Managed plugins in the workflow builder (docs/design/managed-plugins.md,
+// sections 6.4 and 7): a workspace's catalogue, its every-step defaults and
+// one plugin's settings form, as `GET /v1/workspaces/{tenant_id}/plugin-catalogue`,
+// `.../plugin-defaults` and `.../plugin-config/{install_id}` answer them
+// (swarm_api.pluginstore.install_view, pluginconfig.form and values_view).
+// ---------------------------------------------------------------------------
+
+/** One managed install, as `install_view` serves it. Never a path, a command or a URL. */
+export interface ManagedPluginInstall {
+  /** `p-` and 12 hex for a platform install, `w-` for a workspace's own. */
+  install_id: string
+  name: string
+  display_name: string | null
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  built_in: false
+  state: string
+  current_version: string | null
+  /** The manifest's version of the current version, as the plugin states it. */
+  version: string | null
+  description: string | null
+  hosts: string[]
+  components: Partial<Record<'skills' | 'commands' | 'agents' | 'hooks' | 'mcp_servers', number>>
+  /** On a platform install only: whether this workspace allows it. */
+  allowed?: boolean
+}
+
+/** A built-in, as the managed catalogue lists it (`plugincatalogue.builtin_entries`). */
+export interface BuiltInPluginEntry {
+  /** `builtin:` and the name. */
+  install_id: string
+  name: string
+  version: string
+  built_in: true
+  runner_profiles: string[]
+  skills: Record<string, string[]>
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`. */
+export interface WorkspacePluginCatalogue {
+  scope: 'workspace'
+  tenant_id: string
+  built_in: BuiltInPluginEntry[]
+  platform_installs: ManagedPluginInstall[]
+  installs: ManagedPluginInstall[]
+  can_install: boolean
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: built-ins by name, installs by id. */
+export interface WorkspacePluginDefaults {
+  tenant_id: string
+  defaults: string[]
+  can_edit: boolean
+}
+
+/** A field's kind (`pluginconfig.KIND_*`): only `value` and `path` take a per-step override. */
+export type PluginFieldKind = 'value' | 'path' | 'secret' | 'file'
+
+/** One settings field, as `pluginconfig.form_fields` serves it. */
+export interface PluginFormField {
+  key: string
+  source: 'user_config' | 'overlay'
+  type: 'string' | 'number' | 'boolean' | 'directory' | 'file'
+  kind: PluginFieldKind
+  title: string | null
+  description: string | null
+  required: boolean
+  multiple: boolean
+  sensitive: boolean
+  default: PluginOverrideValue | null
+}
+
+/** One field's stored state: a non-secret value, or only whether a secret or a file is set. */
+export interface PluginFieldValue {
+  set: boolean
+  value?: PluginOverrideValue
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-config/{install_id}`. */
+export interface PluginConfigView {
+  tenant_id: string
+  form: { install_id: string; version_id: string; fields: PluginFormField[] }
+  values: Record<string, PluginFieldValue>
+  missing: string[]
+  can_edit: boolean
+}
+
+/** A per-step override (`swarm_api.schemas.PluginOverride`): a scalar, or a list for a `multiple` field. */
+export type PluginOverrideScalar = string | number | boolean
+export type PluginOverrideValue = PluginOverrideScalar | PluginOverrideScalar[]
+
+/**
+ * A step's managed plugins, as the builder holds them: `added` maps an
+ * install id to the step's overrides (an id that is a workspace default is
+ * that default with overrides, not a second copy), `off` the defaults this
+ * step turns off. Sent as the step's `plugins` and `plugins_off` fields
+ * (`swarm_api.schemas.WorkflowStepCreate`).
+ */
+export interface StepManagedPlugins {
+  added: Record<string, Record<string, PluginOverrideValue>>
+  off: string[]
+}
