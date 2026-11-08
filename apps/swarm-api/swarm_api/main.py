@@ -79,6 +79,7 @@ from .routes import (
     people,
     platform,
     platform_switches,
+    plugin_catalogue,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -465,6 +466,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's allowed agent plugins, from the platform's closed
     # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
     app.include_router(plugin_settings.router)
+    # The managed plugin catalogue (docs/design/managed-plugins.md, lane 5):
+    # installs, versions, updates and removal, platform and per workspace,
+    # and the intake job's callback; admins only, audited.
+    app.include_router(plugin_catalogue.router)
     # The platform switches (work contracts, contract review) set from the
     # console over their Terraform defaults: platform admins, audited.
     app.include_router(platform_switches.router)
