@@ -82,6 +82,7 @@ from typing import Any, Iterable, Mapping
 from swarm_common.specsign import SpecNotCanonical
 from swarm_common.workcontract import contract_digest
 
+from . import pluginload
 from .errors import ConfigError
 
 
@@ -209,6 +210,9 @@ class Started:
     plugins: tuple[Plugin, ...]
     env: Mapping[str, str] = field(hash=False)
     guidance: str
+    #: The managed plugins of the signed set (`pluginload.load`), each
+    #: verified by digest and loaded whole through `--plugin-dir`.
+    managed: tuple[pluginload.Loaded, ...] = ()
 
 
 # --- which plugins ------------------------------------------------------------
@@ -408,14 +412,25 @@ def guidance(plugins: Iterable[Plugin]) -> str:
 
 def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile: str,
           image: str, environ: Mapping[str, str] | None = None,
-          install_paths: Mapping[str, Path] | None = None) -> Started | None:
+          install_paths: Mapping[str, Path] | None = None,
+          private_dir: Path | None = None, store: Any = None,
+          released: pluginload.Released | None = None,
+          provider_key: pluginload.ProviderKey | None = None) -> Started | None:
     """Set up the step's plugins before the agent, or None for a step with
     none. Raises PluginUnavailable, before anything is linked, for a plugin
-    this worker cannot run or an image without its install."""
+    this worker cannot run or an image without its install, and
+    `pluginload.PluginRefused` for a managed plugin set it cannot verify or a
+    pinned copy that is not the signed one.
+
+    The managed plugins (docs/design/managed-plugins.md section 4) come from
+    the signed `metadata.dispatch.plugins` alone, are installed under
+    `private/` (`private_dir`, by default the workspace's, beside `work/`)
+    and handed to the runner as paths (`pluginload.LOAD_ENV`)."""
     selection = selected(task)
-    if not selection:
+    managed_entries = pluginload.entries(task)
+    if not selection and not managed_entries:
         return None
-    plugins = check(selection, profile=profile)
+    plugins = check(selection, profile=profile) if selection else ()
     environ = os.environ if environ is None else environ
     installs = {p.name: _install_of(p, install_paths) for p in plugins}
     for p in plugins:
@@ -454,7 +469,15 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
         if chromium is not None:
             env["GSTACK_CHROMIUM_PATH"] = chromium
             env["GSTACK_CHROMIUM_NO_SANDBOX"] = "1"
-    return Started(plugins=plugins, env=env, guidance=guidance(plugins))
+    managed: tuple[pluginload.Loaded, ...] = ()
+    if managed_entries:
+        loaded = pluginload.load(
+            task, private_dir=Path(private_dir) if private_dir is not None else Path(work).parent / "private",
+            store=store, environ=environ, released=released, provider_key=provider_key)
+        if loaded is not None:
+            managed = loaded.plugins
+            env.update(loaded.env)
+    return Started(plugins=plugins, env=env, guidance=guidance(plugins) if plugins else "", managed=managed)
 
 
 # --- after the agent ----------------------------------------------------------
@@ -488,11 +511,19 @@ def _skill_calls(stream: Path) -> list[str]:
 
 def record(started: Started | None, stream: Path | None) -> dict[str, Any] | None:
     """The attempt summary's `plugins`: per plugin its version, mode, skills
-    and how many times each ran. None for a step with none. Never raises."""
+    and how many times each ran, and per managed plugin, under its install
+    id, `pluginload.record` (version, digest, hook runs counted by the
+    launcher, MCP servers started, skills called). None for a step with
+    none. Never raises."""
     if started is None:
         return None
     calls = _skill_calls(Path(stream)) if stream is not None else []
     out: dict[str, Any] = {}
+    for loaded in started.managed:
+        try:
+            out[loaded.entry.install_id] = pluginload.record(loaded, calls)
+        except Exception as exc:  # noqa: BLE001 -- a record is never worth a failed step
+            out[loaded.entry.install_id] = {"managed": True, "record_error": type(exc).__name__}
     for p in started.plugins:
         runs = {s: 0 for s in p.skills}
         for call in calls:

@@ -1229,6 +1229,7 @@ ARG JEV_ENFORCE_SHA512=9964c65068cb2e6b423d610c66b90b82f6fe391b3c3d85a9e8eac1e75
 RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev-gates-build \
     install -d -m 0755 /opt/swarm/jev-gates /opt/swarm/jev-gates/bin \
  && install -o root -g root -m 0555 /tmp/jev-gates-build/bin/swarm-jev-gate.mjs /opt/swarm/jev-gates/bin/swarm-jev-gate.mjs \
+ && install -o root -g root -m 0444 /tmp/jev-gates-build/bin/jev-adapter.mjs /opt/swarm/jev-gates/bin/jev-adapter.mjs \
  && if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
       JE_TGZ="/tmp/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
       && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${JE_TGZ}" \
@@ -1246,6 +1247,17 @@ RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev
       && rm -rf /tmp/jev-enforce-src "${JE_TGZ}" ; \
     fi \
  && chmod -R a+rX,a-w /opt/swarm/jev-gates
+
+# swarm-plugin-exec, the managed plugins' launcher (docs/design/managed-plugins.md
+# section 4.4): every hook and MCP server command of a managed plugin runs
+# through it, so that plugin, and only that plugin, gets its settings and
+# secrets (from 0600 files the worker writes under private/, never the agent's
+# environment), its output is scrubbed before the CLI reads it, and its runs
+# are counted for the step's record. Python, on the worker's own /opt/venv
+# interpreter (it imports agent_worker.redact); root-owned, read-only. Beside
+# it, in /opt/swarm/jev-gates/bin above, jev-adapter.mjs: the Jev adapter it
+# preloads into the node commands of a plugin bound to the TypeSafe key.
+COPY --chown=root:root --chmod=0555 images/agent-runtime-base/swarm-plugin-exec /opt/swarm/bin/swarm-plugin-exec
 
 # gstack, the first agent plugin (the gstack-build stage above says how it is
 # built and why). Bun goes in /usr/local/bin, not under the plugin, because
