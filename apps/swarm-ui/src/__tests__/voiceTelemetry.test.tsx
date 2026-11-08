@@ -247,7 +247,7 @@ describe('the caps', () => {
     await page()
     await screen.findByRole('heading', { name: 'Cost' })
     expect(screen.getByTestId('vtel-cap-session').textContent).toContain('$12.50 / $100')
-    expect(screen.getByTestId('vtel-cap-day').textContent).toContain('$40.0 / $300')
+    expect(screen.getByTestId('vtel-cap-day').textContent).toContain('$40.00 / $300')
     expect(screen.getByTestId('vtel-cap-day-busiest').textContent).toContain('2026-11-07')
     const fill = screen.getByTestId('vtel-cap-session').querySelector<HTMLElement>('.vtel-cap-bar i')!
     expect(fill.style.width).toBe('12.5%')

@@ -12,6 +12,12 @@
  * and preferences routes: the saved projects to resume, rename or delete, and
  * the standing preferences with Undo beside the ChatGPT sign-in.
  *
+ * SETTINGS AND TELEMETRY are one page with two tabs (own-speech design
+ * §12.5, build plan rows U3 and U4): Settings (Settings.tsx) for everyone it
+ * reads for, read only unless they are a platform admin, and Telemetry
+ * (Telemetry.tsx) beside it for platform admins only, the readers swarm-api's
+ * platform telemetry view has.
+ *
  * ONLY TALK LISTENS, AND ONLY WHEN ASKED. Nothing asks for the microphone
  * until the person presses Start talking; Projects and Preferences open no
  * call and read no secret's value.
@@ -24,7 +30,9 @@ import { Absent } from '../primitives'
 import type { Me } from '../types'
 import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
 import { VoiceProjects } from './Projects'
+import { VoiceSettings } from './Settings'
 import { TalkPane } from './Talk'
+import { VoiceTelemetry } from './Telemetry'
 
 /**
  * WHO VOICE IT IS OPEN TO. Version one is one person's (§1: one budget, one
@@ -115,6 +123,43 @@ export function VoicePreferencesScreen() {
         <VoiceStandingPreferences />
         <VoicePreferences />
       </Gate>
+    </>
+  )
+}
+
+export type VoiceSettingsTab = 'settings' | 'telemetry'
+
+/**
+ * Voice it › Settings and Telemetry: the two tabs. A platform admin edits
+ * Settings and is shown Telemetry; anyone else sees Settings read only (or its
+ * refusal, as swarm-api answers) and no Telemetry tab at all. Unread is not
+ * "no": nothing is drawn until the identity read answers.
+ */
+export function VoiceSettingsSectionScreen({ tab = 'settings' }: { tab?: VoiceSettingsTab }) {
+  const open = useVoiceItOpen()
+  const [picked, setPicked] = useState<VoiceSettingsTab>(tab)
+  if (open === null) return null
+  const shown: VoiceSettingsTab = open ? picked : 'settings'
+  const tabs: readonly { key: VoiceSettingsTab; label: string }[] = open
+    ? [
+        { key: 'settings', label: 'Settings' },
+        { key: 'telemetry', label: 'Telemetry' },
+      ]
+    : [{ key: 'settings', label: 'Settings' }]
+  return (
+    <>
+      {tabs.length > 1 && (
+        <div className="vtel-tabs" role="tablist" aria-label="Voice it settings">
+          {tabs.map((t) => (
+            <button key={t.key} type="button" role="tab" id={`vtab-${t.key}`} aria-selected={t.key === shown} aria-controls={`vpanel-${t.key}`} className="vtel-tab" onClick={() => setPicked(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div role={tabs.length > 1 ? 'tabpanel' : undefined} id={`vpanel-${shown}`} aria-labelledby={tabs.length > 1 ? `vtab-${shown}` : undefined}>
+        {shown === 'telemetry' ? <VoiceTelemetry /> : <VoiceSettings canEdit={open} />}
+      </div>
     </>
   )
 }
