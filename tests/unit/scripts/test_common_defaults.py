@@ -4,8 +4,11 @@
 REGION and ZONE to the live region. A default is what a fresh install inherits
 when the operator forgets a `.env`: every script quietly aims at somebody's
 deployment, possibly the shared project that holds another team's live cluster.
-An unset project, region or zone is now an error that names the variable
-(docs/design/generic-repository.md, section 2.2).
+An unset project or region is now an error that names the variable
+(docs/design/generic-repository.md, section 2.2). The zone has no default
+either, but nothing in scripts/ or the workflows reads it, so sourcing
+common.sh does not require it: ZONE stays empty, and a script that comes to
+need it calls `require_setting ZONE` itself.
 
 The never-touch list is no longer keyed by a project id written here: it is
 read from the deployment's own config object (test_shared_deny_list.py holds
@@ -94,12 +97,33 @@ def test_unset_region_is_an_error_that_names_it(tmp_path: Path) -> None:
     assert "REGION is not set" in proc.stderr, proc.stderr
 
 
-def test_unset_zone_is_an_error_that_names_it(tmp_path: Path) -> None:
+def test_unset_zone_does_not_stop_a_script_and_stays_empty(tmp_path: Path) -> None:
+    # Nothing reads ZONE, and requiring it when common.sh was sourced stopped
+    # every image build on main (no workflow sets it). It is optional, with no
+    # default: an unset zone is empty, never a guessed one.
+    # MUTATION: put back `require_setting ZONE` in load_env and this fails with
+    # "ZONE is not set"; give ZONE a default and the empty check fails.
     _write_list(tmp_path)
-    proc = _source(tmp_path, 'echo "reached ${ZONE}"', PROJECT_ID=PROJECT, REGION="example-region")
+    proc = _source(tmp_path, 'printf "reached [%s]" "${ZONE}"', PROJECT_ID=PROJECT, REGION="example-region")
+    assert "ZONE is not set" not in proc.stderr, proc.stderr
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "reached []", proc.stdout
+
+
+def test_unset_project_stops_a_script_even_with_region_and_zone(tmp_path: Path) -> None:
+    proc = _source(tmp_path, "echo reached", REGION="example-region", ZONE="example-zone")
     assert proc.returncode != 0, proc.stdout
     assert "reached" not in proc.stdout
-    assert "ZONE is not set" in proc.stderr, proc.stderr
+    assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
+
+
+def test_unset_region_stops_a_script_with_zone_unset_too(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    proc = _source(tmp_path, "echo reached", PROJECT_ID=PROJECT)
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout
+    assert "REGION is not set" in proc.stderr, proc.stderr
+    assert "ZONE is not set" not in proc.stderr, proc.stderr
 
 
 def test_no_default_region_or_zone_is_written() -> None:
