@@ -265,7 +265,7 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
 #: until swarm-api's session routes say who (voice/Section.tsx `voiceItOpen`).
 ADMIN_ROUTES = (
     "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "setup", "health", "people", "workspaces",
-    "voice-talk", "voice-projects", "voice-preferences",
+    "voice-talk", "voice-projects", "voice-preferences", "voice-settings", "voice-telemetry",
 )
 
 
