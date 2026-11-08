@@ -21,7 +21,7 @@
 #
 #   terraform -chdir=terraform/infra output -raw swarm_typesafe_fwd_manifest
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2).
 #
 # WHY ONE REPLICA. The per-attempt rate limit is counted in memory; two

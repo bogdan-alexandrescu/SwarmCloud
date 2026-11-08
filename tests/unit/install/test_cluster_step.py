@@ -361,7 +361,7 @@ def test_context_is_the_install_cluster(home: Path) -> None:
     for argv in creds:
         assert argv[4] == cluster.DEFAULT_CLUSTER and f"--project={PROJECT}" in argv
 
-    other = FakeShell(current_context="gke_saga-agents-staging_us-central1_agents-staging")
+    other = FakeShell(current_context="gke_example-shared-project_us-central1_peer-cluster")
     _, policies, *_ = _steps(ClusterFakeGcp(), other)
     with pytest.raises(cluster.WrongCluster, match=CONTEXT):
         policies.check(_ctx())
@@ -369,8 +369,8 @@ def test_context_is_the_install_cluster(home: Path) -> None:
 
     denied = FakeShell()
     ctx = _ctx()
-    ctx.outputs["gke_cluster_name"] = "agents-staging"
-    _, policies, *_ = _steps(ClusterFakeGcp(), denied, deny=("agents-staging",))
+    ctx.outputs["gke_cluster_name"] = "peer-cluster"
+    _, policies, *_ = _steps(ClusterFakeGcp(), denied, deny=("peer-cluster",))
     with pytest.raises(cluster.WrongCluster, match="deny-list"):
         policies.check(ctx)
     assert not [argv for argv, _, _ in denied.calls if not argv[1].endswith("render.py")]
