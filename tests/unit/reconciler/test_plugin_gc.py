@@ -409,3 +409,47 @@ def test_a_reconciler_without_a_plugin_collector_reports_no_sweep(db):
                         hold_releaser=None, finish_announcer=None).run_once()
     assert report.plugin_gc is None
     assert report.as_dict()["plugin_gc"] is None
+
+
+# -- the Cloud Storage adapter ----------------------------------------------------
+
+
+class _Blob:
+    def __init__(self, name: str, generation: int) -> None:
+        self.name, self.generation, self.time_created, self.size = name, generation, OLD, 10
+
+
+class _Client:
+    def __init__(self, answer: Exception | None = None) -> None:
+        self.answer = answer
+        self.calls: list[tuple] = []
+
+    def list_blobs(self, bucket, prefix):
+        self.calls.append(("list", bucket, prefix))
+        return [_Blob(f"{prefix}{'0' * 64}.tar", 5)]
+
+    def bucket(self, name):
+        client = self
+
+        class _Bucket:
+            def delete_blob(self, blob_name, if_generation_match=None):
+                client.calls.append(("delete", name, blob_name, if_generation_match))
+                if client.answer is not None:
+                    raise client.answer
+
+        return _Bucket()
+
+
+def test_the_storage_adapter_deletes_by_generation_and_names_a_race():
+    from google.api_core import exceptions
+
+    client = _Client()
+    store = plugingc.GcsPluginObjects("swarm-plugins-test", client=client)
+    (listed,) = store.list_objects("platform/")
+    assert listed.generation == 5 and listed.created_at == OLD
+    assert store.delete(listed.name, generation=5) == plugingc.DELETE_DONE
+    assert client.calls[-1] == ("delete", "swarm-plugins-test", listed.name, 5)
+    assert plugingc.GcsPluginObjects("b", client=_Client(exceptions.PreconditionFailed("x"))).delete(
+        listed.name, generation=5) == plugingc.DELETE_CHANGED
+    assert plugingc.GcsPluginObjects("b", client=_Client(exceptions.NotFound("x"))).delete(
+        listed.name, generation=5) == plugingc.DELETE_GONE
