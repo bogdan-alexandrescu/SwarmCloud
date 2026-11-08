@@ -291,7 +291,7 @@ def flow(world: FakeWorld, state: InstallState | None = None, *, answers: Mappin
 
 CI_CHOICES = {"github_repository": "acme/swarm", "sandbox_repository": "acme/swarm-sandbox"}
 GIVEN: dict[str, dict[str, str]] = {
-    "tailscale": {"tailscale_egress_target": "decision.acme-tailnet.ts.net"},
+    "tailscale": {"tailscale_egress_target": "decision-api.example-tailnet.ts.net"},
     "ci": CI_CHOICES,
     "bright-data-egress": {"tenants": "acme"},
     "typesafe": {"tenants": "acme"},

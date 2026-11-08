@@ -23,7 +23,7 @@ from swarm_install.exitcodes import MET, UNKNOWN, UNMET, ExitCode
 from swarm_install.state import InstallState
 from swarm_install.verbs import doctor as doctor_verb
 
-PROJECT = "proj-doctor"
+PROJECT = "example-project"
 REGION = "us-central1"
 
 
@@ -225,12 +225,12 @@ def test_authorised_networks_reported():
                                          "absent_display_name": "swarm-install"})
     url = f"https://container.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/clusters"
     office = {"displayName": "office", "cidrBlock": "198.51.100.0/24"}
-    other_team = _cluster("agents-staging", enabled=False, label=False)
+    other_team = _cluster("peer-cluster", enabled=False, label=False)
 
     met = _one(entry, FakeGcp({url: {"clusters": [_cluster(blocks=[office]), other_team]}}))
     assert met.status == MET
     assert "office 198.51.100.0/24" in met.detail
-    assert "agents-staging" not in met.detail  # another team's cluster is never read
+    assert "peer-cluster" not in met.detail  # another team's cluster is never read
 
     left = {"displayName": "swarm-install", "cidrBlock": "192.0.2.7/32"}
     stale = _one(entry, FakeGcp({url: {"clusters": [_cluster(blocks=[office, left])]}}))
@@ -272,7 +272,7 @@ def _rbac(namespace: str, users: list[str], verbs: list[str]) -> dict:
 
 _RBAC_ENTRY = {"type": "kubernetes_can_i", "subject": "swarm-reconciler", "verb": "list",
                "resource": "jobs.batch", "namespace": "swarm-tenant-$T"}
-_RECONCILER = "swarm-reconciler@proj-doctor.iam.gserviceaccount.com"
+_RECONCILER = f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"
 _INSTALLER_BLOCK = {"displayName": "swarm-install", "cidrBlock": "198.51.100.7/32"}
 
 

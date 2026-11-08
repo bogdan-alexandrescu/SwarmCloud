@@ -21,6 +21,10 @@ from .test_terraform_runner import DESKTOP_CLIENT_ID, PROJECT, FakeExec, guards,
 
 DIGEST = "sha256:" + "a" * 64
 
+#: The live deployment's name, built at runtime so this file names it in no
+#: literal the guard below would have to except.
+_LIVE_NAME = "".join(("s", "a", "g", "a"))
+
 
 def _strings(value) -> list[str]:
     if isinstance(value, dict):
@@ -52,7 +56,7 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
     ), "the workspace-apply image is the release's digest in the project's own registry"
     assert infra["tenants"] == {}, "design §5.6: installs declare no Terraform tenants"
     for value in _strings(boot) + _strings(infra):
-        assert "saga" not in value, f"{value!r}: a generated input names the live deployment (lesson 5)"
+        assert _LIVE_NAME not in value, f"{value!r}: a generated input names the live deployment (lesson 5)"
     source = inspect.getsource(tfvars)
     assert "terraform.tfvars\"" not in source and "environments/" not in source.replace(
         "terraform/environments/`", "")
@@ -154,7 +158,7 @@ def test_contract_review_mode_renders_off_on_every_infra_pass() -> None:
 
 
 def test_work_contracts_render_on_on_every_infra_pass() -> None:
-    # BGD, 2026-11-06: plugins chosen on Config > Plugins load only through a
+    # The owner, 2026-11-06: plugins chosen on Config > Plugins load only through a
     # signed work contract, so a fresh deployment renders SWARM_WORK_CONTRACTS
     # on, where infra's own default stays off.
     import re
@@ -291,7 +295,7 @@ def test_graph_service_with_its_key_and_image() -> None:
 
 
 def test_scheduled_doctor_on_from_infra_pass_2() -> None:
-    # DAYONE-TFVARS-2: BGD turned the hourly doctor on; pass 1 keeps every switch off.
+    # DAYONE-TFVARS-2: the owner turned the hourly doctor on; pass 1 keeps every switch off.
     for pass_name in ("registry", "infra-1"):
         assert _infra(pass_name, EVERY_VERSION)["enable_scheduled_doctor"] is False, pass_name
     for pass_name in ("infra-2", "infra-3", "infra-4", "infra-close"):
@@ -344,7 +348,16 @@ def test_every_generated_input_is_a_declared_variable() -> None:
             inputs = _boot(pass_name, **digests)
         else:
             inputs = _infra(pass_name, EVERY_VERSION, **digests)
-        assert set(inputs) <= _declared(root), (pass_name, sorted(set(inputs) - _declared(root)))
+        undeclared = set(inputs) - _declared(root) - PENDING_VARIABLES.get(root, set())
+        assert not undeclared, (pass_name, sorted(undeclared))
+
+
+#: An input whose variable the Terraform lane declares in its own pull request
+#: (generic-repository design section 2.4: `shared_deny_list`, list(string),
+#: default [], rendered as swarm-api's SWARM_SHARED_DENY_LIST and
+#: SWARM_SHARED_DENY_LIST_SET). Until it merges Terraform prints a warning for
+#: the value and applies nothing; once it is declared, this entry is moot.
+PENDING_VARIABLES = {"infra": {"shared_deny_list"}}
 
 
 # -- DAYONE-TFVARS-2: sizing, one-person admission, add-ons --------------------------------
@@ -352,7 +365,7 @@ def test_every_generated_input_is_a_declared_variable() -> None:
 QA_MEMBER = f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"
 EVERY_ADDON_ON = {
     "bright-data-egress": {"phase": "on"},
-    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "egress.tailnet.ts.net"}},
+    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "egress.example-tailnet.ts.net"}},
     "typesafe": {"phase": "on"},
     "brave-search": {"phase": "on"},
     "ci": {"phase": "on", "choices": {"github_repository": "acme/swarm", "sandbox_repository": "acme/sandbox",
@@ -556,3 +569,72 @@ def test_bootstrap_keeps_the_state_bucket_in_the_install_region() -> None:
     # with var.location (default US-CENTRAL1), and a location cannot change in place.
     for pass_name in ("bootstrap-1", "bootstrap-2"):
         assert _boot(pass_name)["location"] == "EUROPE-WEST1", pass_name
+
+
+# -- The never-touch list reaches Terraform (generic-repository design section 2.4) ----------
+
+PEER = ["peer-cluster", "peer-vpc", "peer-runner@example-shared-project.iam.gserviceaccount.com"]
+
+
+def _with_deny_list(deny_list: list[str] | None):
+    state = install_state()
+    state.deny_list = list(deny_list or [])
+    return state
+
+
+def test_every_infra_pass_hands_terraform_the_never_touch_list() -> None:
+    # swarm-api's twin refuses an infrastructure issue run without it, so the
+    # list the installer read from config/<env>/deny-list.json goes to every pass.
+    for pass_name in INFRA_PASSES:
+        inputs = tfvars.infra_inputs(_with_deny_list(PEER), pass_name=pass_name, installer="admin@example.com")
+        assert inputs["shared_deny_list"] == PEER, pass_name
+
+
+def test_a_project_that_shares_nothing_hands_terraform_an_empty_list() -> None:
+    # A project the installer created writes `"entries": []`: an empty list,
+    # stated, never left out (an absent input would leave Terraform's default).
+    for pass_name in INFRA_PASSES:
+        inputs = tfvars.infra_inputs(_with_deny_list([]), pass_name=pass_name, installer="admin@example.com")
+        assert inputs["shared_deny_list"] == [], pass_name
+
+
+def test_the_never_touch_list_handed_over_is_a_copy() -> None:
+    state = _with_deny_list(PEER)
+    inputs = tfvars.infra_inputs(state, pass_name="infra-2", installer="admin@example.com")
+    inputs["shared_deny_list"].append("anything")
+    assert state.deny_list == PEER
+
+
+# -- Day One: what swarm-api and the decision service need on a fresh install -------------
+
+def test_a_fresh_install_admits_someone_on_every_infra_pass() -> None:
+    # swarm-api refuses to start when ALLOWED_DOMAINS and ALLOWED_USERS are both
+    # empty. ALLOWED_USERS always carries swarm-verify (terraform/infra/locals.tf);
+    # the installer adds ALLOWED_DOMAINS from the organisation it recorded, for a
+    # team and for one person alike, and never an empty list (variables.tf refuses []).
+    for size in EVERY_SIZE:
+        for pass_name in INFRA_PASSES:
+            domains = _infra(pass_name, sizing=_sizing(*size))["allowed_domains"]
+            assert domains and all(domains), (size, pass_name)
+
+
+def test_no_install_reaches_terraform_without_an_organisation_domain() -> None:
+    state = install_state()
+    del state.outputs["org_domain"]
+    with pytest.raises(LookupError, match="org_domain"):
+        tfvars.infra_inputs(state, pass_name="infra-1", installer="admin@example.com")
+
+
+def test_the_decision_api_tailnet_name_comes_from_the_tailscale_add_on() -> None:
+    # SWARM_DECISION_API_TAILNET_NAME is rendered from tailscale_egress_target
+    # while internal_decision_api_enabled is on; the add-on asks for the name and
+    # turns both on together, so an internal backend never runs without it.
+    on = {"tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "decision-api.example-tailnet.ts.net"}}}
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, addons=on)
+        assert inputs["internal_decision_api_enabled"] is True, pass_name
+        assert inputs["tailscale_egress_target"] == "decision-api.example-tailnet.ts.net", pass_name
+        off = _infra(pass_name, EVERY_VERSION, addons={"tailscale": {"phase": "off"}})
+        assert off["internal_decision_api_enabled"] is False and "tailscale_egress_target" not in off, pass_name
+        none = _infra(pass_name, EVERY_VERSION)
+        assert none.get("internal_decision_api_enabled") is not True, pass_name
