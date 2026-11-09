@@ -372,6 +372,16 @@ def entries(task: Mapping[str, Any]) -> tuple[Entry, ...]:
     return out
 
 
+def wants_release(task: Mapping[str, Any]) -> bool:
+    """Whether the signed set names a secret or a file setting swarm-api
+    releases to the attempt (`routes/attempts_secrets.plugin_release_plan`):
+    the worker asks the release then even for a profile with no slot. A
+    binding to the workspace key is not released; `provider_key` resolves
+    it. Raises PluginRefused as `entries` does, before anything is asked."""
+    return any(e.files or any(ref.get("secret") == "plugin" for ref in e.secrets.values())
+               for e in entries(task))
+
+
 # --- install: fetch by digest, unpack -----------------------------------------
 
 

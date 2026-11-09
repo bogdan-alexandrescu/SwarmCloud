@@ -163,6 +163,7 @@ from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import pull_request as pull_request_mod
 from . import jevkey as jevkey_mod
+from . import pluginload as pluginload_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
 from . import security_review as security_review_mod
@@ -3872,36 +3873,13 @@ class Worker:
             payload["prompt"] += verdict_mod.rendered_review_guidance(
                 self._ui_review_paths, cfg.runner_profile
             )
-        # The step's agent plugins (docs/design/agent-plugins.md, "The start
-        # of a step"): only those signed with the step, linked from the
-        # image's read-only install, ONLY the step's skills, before the agent.
-        # An image without the install fails here (`PluginUnavailable`,
-        # CANNOT_START), naming the image, before anything is linked.
-        self._plugins = plugins_mod.start(
-            task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
-            profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
-        )
-        if self._plugins is not None and isinstance(payload.get("prompt"), str):
-            payload["prompt"] += self._plugins.guidance
         # The step's signed work contract, for the runner's end-of-step
         # judgment (JC2, jev-contract.md section 5): its body in work/ and the
         # SIGNED digest, both from the task document, never from `input`.
         self._work_contract_env = self._stage_work_contract(task, ws.work)
-        # The optional security review step (docs/design/security-review-step.md):
-        # a step whose signed contract loads security-audit is told the owner's
-        # run settings here, and its output is checked after the agent.
-        if security_review_mod.applies(self._plugins):
-            self._security_review = {}
-            if isinstance(payload.get("prompt"), str):
-                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
-        # The pull request this step works on (a peer application, 2026-11-06):
-        # one line of the brief names `work/pull_request.md`, which STEP 6b'
-        # writes after the credentials, before the agent starts.
-        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
-            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
-                pull_request_mod.pull_request_path(ws.work)
-            )
-        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
+        # The step's plugins, their guidance and the input file follow the
+        # release and the TypeSafe shim (STEP 6a+), whose answers a managed
+        # plugin needs.
 
         # ---- STEP 6: tenant credentials ---------------------------------
         self.phases.enter("credentials")
@@ -3912,10 +3890,14 @@ class Worker:
         # fence: stand down without touching the lease (invariant 5). A
         # required slot with nothing in it -- no grant, or swarm-api not
         # reachable -- parks CREDENTIAL_MISSING at no cost (invariant 1);
-        # optional slots only, the attempt starts without them.
+        # optional slots only, the attempt starts without them. A step whose
+        # signed plugin set names a plugin secret or file asks too, with no
+        # slot (managed-plugins.md §6.2): those stay in this heap for STEP
+        # 6a+ and reach only their plugin's launcher.
         try:
             released = self.secret_release.release(
-                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private
+                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private,
+                plugins=pluginload_mod.wants_release(task),
             )
         except secretrelease_mod.SecretReleaseFenced as exc:
             raise FencedWriteRefused(
@@ -3945,6 +3927,45 @@ class Worker:
             raise FencedWriteRefused(
                 cfg.generation, -1, str(exc), write="typesafe ticket"
             ) from None
+        # STEP 6a+: the step's agent plugins (docs/design/agent-plugins.md,
+        # "The start of a step"): only those signed with the step, linked from
+        # the image's read-only install, ONLY the step's skills, before the
+        # agent. An image without the install fails here (`PluginUnavailable`,
+        # CANNOT_START), naming the image, before anything is linked. After
+        # the release and the shim, because a managed plugin (managed-plugins.md
+        # §4.4, §6.2) is handed what they hold: its own released secrets
+        # (`released.plugins`, dropped from this heap once the loader has
+        # written them 0600 for its launcher alone, never the agent's
+        # environment), the workspace's TypeSafe key for a binding
+        # (`_plugin_provider_key`), and the baked gates' filter inputs, the
+        # ones `qualitygates.prepare` gets.
+        try:
+            self._plugins = plugins_mod.start(
+                task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
+                profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
+                released=released.plugins, provider_key=self._plugin_provider_key,
+                secret_env_names=tuple(cfg.profile.secrets or ()),
+                hard_stop_paths=self._plugin_hard_stop_paths(task),
+            )
+        finally:
+            released.plugins.clear()
+        if self._plugins is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += self._plugins.guidance
+        # The optional security review step (docs/design/security-review-step.md):
+        # a step whose signed contract loads security-audit is told the owner's
+        # run settings here, and its output is checked after the agent.
+        if security_review_mod.applies(self._plugins):
+            self._security_review = {}
+            if isinstance(payload.get("prompt"), str):
+                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
+        # The pull request this step works on (a peer application, 2026-11-06):
+        # one line of the brief names `work/pull_request.md`, which STEP 6b'
+        # writes after the credentials, before the agent starts.
+        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
+                pull_request_mod.pull_request_path(ws.work)
+            )
+        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
         # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
         # §4.7), ONCE, before the runner's environment: every credential is
         # registered for redaction as the answer is parsed, and the runner is
@@ -10954,6 +10975,43 @@ class Worker:
         # are loopback URLs and the local token -- never a credential.
         base.update(self.mcp.env)
         return ws.child_env(base)
+
+    def _plugin_provider_key(self, provider: str) -> str | None:
+        """A managed plugin's binding to the workspace key (managed-plugins.md
+        §6.2, "Use a workspace key › TypeSafe"), asked by `pluginload` only
+        for an entry the signed set binds: the key the quality gates resolve
+        (`jevkey.resolve_workspace`: the workspace's, never a person's,
+        registered for redaction), or with the forwarder on, the shim file's
+        text and never the key; None when there is neither. Never raises:
+        no key is a plugin whose adapter does not run, and the built-in gate
+        it would replace keeps running."""
+        if provider != "typesafe":
+            return None
+        if self.typesafe.on:
+            shim = self.typesafe.shim_file
+            try:
+                return shim.read_text(encoding="ascii") if shim is not None else None
+            except OSError:
+                return None
+        return jevkey_mod.resolve_workspace(
+            db=self.db, client=self.secret_client, tenant_id=self.cfg.tenant_id,
+            logger=self.log, call_options=self.control.call_options("tenant"))
+
+    def _plugin_hard_stop_paths(self, task: dict[str, Any]) -> tuple[str, ...]:
+        """The repository's `hard_stop_paths`, which `qualitygates.prepare`
+        puts in the baked gates' config, for a managed Jev plugin's adapter.
+        Read only for a step with managed plugins; a read that fails is
+        none, as the gates take it (the secret names are still denied)."""
+        if not pluginload_mod.entries(task) or self.db is None:
+            return ()
+        try:
+            return tuple(qualitygates_mod.hard_stop_paths(
+                self.db, self.cfg.tenant_id,
+                self._repo_url or os.environ.get(qualitygates_mod.REPOSITORY_URL_ENV),
+                call_options=self.control.call_options("tenant")))
+        except Exception as exc:  # noqa: BLE001 -- the names are still denied
+            self.log.warning("plugin hard stops unread", error=type(exc).__name__)
+            return ()
 
     def _quality_gates_env(self, ws: Any, profile: Any) -> dict[str, str]:
         """`qualitygates.prepare`, once per attempt: a rebuild on a credential
