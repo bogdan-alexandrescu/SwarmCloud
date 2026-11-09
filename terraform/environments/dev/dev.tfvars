@@ -93,7 +93,7 @@ voice_it = "on"
 voice_speech = {
   enabled = true
   zone    = "us-central1-b"
-  image   ="projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
+  image   = "projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
 }
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
