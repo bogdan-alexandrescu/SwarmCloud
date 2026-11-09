@@ -31,7 +31,7 @@ per-tenant secret `swarm-tenant-<tenant>-anthropic`, which a worker reads only
 when the broker says `no_accounts_registered` or cannot be reached
 (`apps/agent-worker/agent_worker/accountlease.py:19-58`,
 `apps/quota-broker/quota_broker/accounts.py:284-286`). So when every plan is
-at its window the task parks, even when a paid key with credit sits unused one
+at its window the agent parks, even when a paid key with credit sits unused one
 secret away; and a key can be neither listed, paused, drained, capped nor
 deleted from the console. The request turns the key into a first-class kind
 beside the plan, with the same controls, and puts the two in one ordered
@@ -44,7 +44,7 @@ fallback.
 | `Account` carries `provider`, `state` (`AVAILABLE`, `PAUSED`, `DRAINING`, `REAUTH_REQUIRED`), `windows`, `holds`, `max_agents`, `model_classes`, `lend_to`, `pools`, `limited_until` (`accounts.py:306-326`, `545-729`) | A key is an `Account` too: one document shape, one hold mechanism, one set of state transitions. No parallel store. |
 | `may_serve(tenant)` is ownership or an explicit loan, and requires the `workspace` pool (`accounts.py:835-845`) | Lending a key to workspaces is the same `lend_to` field; "share with Voice it" is the `voice-it` pool membership. |
 | A hold is granted in one Firestore transaction that re-checks eligibility and room on the account document (`main.py:1442-1538`); `is_full` counts **live** holds, never the advisory `assigned` (`accounts.py:772-783`) | The key tier reuses `acquire_hold` unchanged: one transaction per grant, counted from the grant. |
-| `POST /v1/accounts/assign` filters by `provider == asked`, `may_serve`, and the step's model class resolved from its runner profile (`accounts.py:1533-1573`, `main.py:1310-1349`) | The fallback is a change inside the assign route: which providers it walks, in what order. The caller still names nothing but its task (invariant 10). |
+| `POST /v1/accounts/assign` filters by `provider == asked`, `may_serve`, and the step's model class resolved from its runner profile (`accounts.py:1533-1573`, `main.py:1310-1349`) | The fallback is a change inside the assign route: which providers it walks, in what order. The caller still names nothing but its agent (invariant 10). |
 | A swap moves a hold in one broker transaction, "never two and never none" (`accountlease.py:35-44`, `main.py:5614`) | Moving an attempt from a plan to a key mid-run is a swap whose candidate list now includes the key tier. |
 | `DELETE /v1/accounts/{id}` closes every hold as `account_removed` in one transaction and answers `"secret": "retained"`; `secretstore.py` has no delete method (`main.py:1629-1703`, `4738-4765`; `accountstore.py:917-929`) | Deleting a key is today's removal plus an explicit, typed act on the secret (§4.4). That act needs a permission the broker does not hold (§8.3). |
 | The `openai-api` kind: provider name of its own so a codex step's `openai` lease can never pick it; no window; no `-refresh`; voice-it pool only, never lent (`openai_api_key.py`) | The provider-name split is kept and extended (`anthropic-api`). The "voice-it only" rule is what changes, and only for keys the owner marks shared. |
@@ -131,7 +131,7 @@ once to the broker's `POST /v1/accounts` and keeps no copy: not in the link's
 record, a log line, an answer or a refusal (`setup.py:1761-1768` holds this
 today). No agent, planner turn or chat surface ever offers to take a key; the
 console's add field is a password input with autocomplete off. Nothing in this
-path is reachable from a task or a Voice it conversation.
+path is reachable from an agent or a Voice it conversation.
 
 **Validated before it is stored.** The broker checks the shape (as
 `openai_api_key.parse_api_key` does, never quoting the value), then makes one
@@ -339,7 +339,7 @@ boundary instead of ending the session.
 
 * **1. Only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create demand.** The
   credential is chosen by a worker of a `LEASED` attempt; a `QUEUED`,
-  `PARKED` or `READY` task holds no account and no key. Walking more tiers
+  `PARKED` or `READY` agent holds no account and no key. Walking more tiers
   adds no pods and uses no pending pod as a backlog: an empty chain still
   parks.
 * **2. All-or-nothing in one transaction.** The scheduler's admission (every
@@ -353,7 +353,7 @@ boundary instead of ending the session.
   happens while the attempt is `LEASED`, never from `RUNNING`.
 * **4 and 8.** A move between tiers is checkpoint, swap or park, at a turn
   boundary; nothing sleeps through a provider's reset.
-* **5. Fencing.** Holds stay stamped with task and attempt; a fenced attempt's
+* **5. Fencing.** Holds stay stamped with agent and attempt; a fenced attempt's
   assign, swap and release are refused as today.
 * **9. Per-tenant isolation.** A key lent to a workspace is readable by that
   workspace's worker service account through the per-secret accessor grant the
