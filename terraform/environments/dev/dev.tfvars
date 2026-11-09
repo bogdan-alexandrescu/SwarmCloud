@@ -86,9 +86,14 @@ voice_it = "on"
 # session and stops it after. The image is pinned by name, the newest common
 # CUDA image on Ubuntu 22.04 with an NVIDIA driver of 580 or later, as the
 # installer picks it (docs/design/voice-it-own-speech.md section 5).
+# Zone b, not the default a: on 2026-11-09 zone a had no free L4 when the
+# release created the machine (STOCKOUT), and the owner moved it to b. A lane is
+# building the automatic fallback (zones a, b, c in order, at create and at
+# start); until it lands, this one zone is where the machine lives.
 voice_speech = {
   enabled = true
-  image   = "projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
+  zone    = "us-central1-b"
+  image   ="projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
 }
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
