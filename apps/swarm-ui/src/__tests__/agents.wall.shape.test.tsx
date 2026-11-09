@@ -9,15 +9,23 @@
 //   * the stream asked for is as wide as the frame, so a phone frame is not
 //     fed a desktop-width picture.
 //
+// THE WALL PACKS ITS CARDS WHATEVER THEIR ORDER (review of 2026-11-08): a
+// flex-wrap row left a phone card alone in its row and fitted one desktop card
+// a row on the inspector's 317px wall. Cards sit on grid tracks of one narrow
+// unit: a portrait phone or tablet spans one, every other card two, and dense
+// flow fills the gaps.
+//
 // MUTATIONS: draw every card desktop (`deviceFrame` ignoring the device);
 // ignore the orientation; guess a phone for an unreported device; ask the gate
-// for the 320 px fallback whatever the frame.
+// for the 320 px fallback whatever the frame; go back to the flex-wrap row;
+// drop `dense`; span a phone two tracks or a desktop one; let the shared
+// height outgrow two tracks.
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { act, render } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({ loadLiveSession: vi.fn(), loadTaskDigests: vi.fn() }))
 
@@ -126,14 +134,6 @@ describe('the stylesheet draws the same frames', () => {
     expect(css).toMatch(/\.ag-wall-grid \{[^}]*--wall-frame-h: clamp\([^;]*var\(--wall-frame-max, 180px\)\);/)
   })
 
-  it('a narrow wall shrinks the shared height so a desktop card fits beside a tablet or phone card', () => {
-    // The grid is the container its cards' `cqi` measures.
-    expect(css).toMatch(/\.ag-wall-grid \{[^}]*container-type: inline-size;/)
-    // Desktop 16:10 beside tablet portrait 3:4, and beside a phone card at its 6.5rem minimum.
-    expect(css).toMatch(/--wall-frame-h: clamp\(90px, min\(\(100cqi - 32px\) \/ 2\.35, \(100cqi - 6\.5rem - 22px\) \/ 1\.6\)/)
-    expect(css).toMatch(/\.ag-wall-card \{[^}]*min-width: min\(6\.5rem, 100%\);/)
-  })
-
   it('a status badge wraps inside a narrow card rather than running past its border', () => {
     expect(css).toMatch(/\.ag-wall-card \.wf-live-head \.ctl-mark \{[^}]*white-space: normal;[^}]*max-width: 100%;/)
   })
@@ -153,8 +153,133 @@ describe('the stylesheet draws the same frames', () => {
     expect(() => resolveSheet(css, theme)).not.toThrow()
   })
 
-  it('the picture letterboxes into its frame rather than stretching', () => {
+  it('the picture letterboxes into its frame rather than stretching, every frame the shared height', () => {
     expect(css).toMatch(/\.ag-wall-card \.wf-live-thumb \{[^}]*aspect-ratio: var\(--frame-ratio, 16 \/ 10\);[^}]*object-fit: contain;/)
+    // One height for every frame, so the frames in a row are level whatever their shapes.
+    expect(css).toMatch(/\.ag-wall-card \.wf-live-thumb \{[^}]*height: var\(--wall-frame-h, 180px\);/)
+  })
+})
+
+/** The wall's own pixel constants: the grid's gap (`--ctl-s2`) and a card's padding and border on both sides. */
+const GAP = 8
+const CHROME = 2 * 4 + 2 * 1
+
+/** A CSS length expression of the wall's sheet, evaluated for a wall `wall` px wide (`100cqi` and `100%` are the wall). */
+function lengthAt(expr: string, wall: number): number {
+  const js = expr
+    .replace(/var\(--wall-frame-max, 180px\)/g, '180px')
+    .replace(/100(cqi|%)/g, String(wall))
+    .replace(/(\d+(?:\.\d+)?)rem/g, (_, n: string) => String(Number(n) * 16))
+    .replace(/(\d+(?:\.\d+)?)px/g, '$1')
+    .replace(/calc\(/g, '(')
+    .replace(/\b(min|max)\(/g, 'Math.$1(')
+    .replace(/\bclamp\(/g, 'clamp(')
+  expect(js, `an expression this test cannot evaluate: ${expr}`).toMatch(/^[\d\s.+\-*/(),]*(?:(?:Math\.(?:min|max)|clamp)\([\d\s.+\-*/(),]*)*[\d\s.+\-*/(),]*$/)
+  return new Function('clamp', `return ${js}`)((lo: number, v: number, hi: number) => Math.max(lo, Math.min(v, hi))) as number
+}
+
+/** Grid auto-placement with `grid-auto-flow: row dense` on `cols` tracks: the tracks each row leaves empty. */
+function denseRows(spans: readonly number[], cols: number): number[] {
+  const rows: number[][] = []
+  for (const span of spans) {
+    let placed = false
+    for (let r = 0; !placed; r++) {
+      rows[r] ??= new Array<number>(cols).fill(0)
+      for (let c = 0; c + span <= cols && !placed; c++) {
+        if (rows[r]!.slice(c, c + span).every((x) => x === 0)) {
+          rows[r]!.fill(1, c, c + span)
+          placed = true
+        }
+      }
+    }
+  }
+  return rows.map((row) => row.filter((x) => x === 0).length)
+}
+
+describe('the wall packs its cards on narrow tracks, whatever their order', () => {
+  const css = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
+  const sheet = document.createElement('style')
+  beforeAll(() => {
+    sheet.textContent = css
+    document.head.appendChild(sheet)
+  })
+  afterAll(() => sheet.remove())
+
+  const tasks = Array.from({ length: 9 }, (_, i) => browser(i + 1))
+  const grid = () => document.querySelector('.ag-wall-grid')!
+  const span = (t: Task) => {
+    const value = getComputedStyle(document.querySelector(`.ag-wall-card[data-task-id="${t.id}"]`)!).gridColumn
+    return /^span (\d+)$/.exec(value) === null ? null : Number(/^span (\d+)$/.exec(value)![1])
+  }
+  const wall = (shapes: readonly (RowDevice | null)[]) => {
+    const devices = new Map<string, RowDevice>()
+    shapes.forEach((d, i) => d !== null && devices.set(tasks[i]!.id, d))
+    render(<LiveWall tasks={tasks.slice(0, shapes.length)} onOpen={() => {}} title={(t) => t.id} devices={devices} />)
+    return tasks.slice(0, shapes.length).map(span)
+  }
+  const unreported: RowDevice = { device: null, presets: PRESETS }
+
+  it.each([
+    ['a portrait phone', 1, on('iphone-15', 'portrait')],
+    ['a portrait tablet', 1, on('ipad-7', 'portrait')],
+    ['a desktop', 2, on('desktop', 'landscape')],
+    ['a turned tablet', 2, on('ipad-7', 'landscape')],
+    ['a turned phone', 2, on('iphone-15', 'landscape')],
+    ['a device not reported', 2, unreported],
+    ['a device not read yet', 2, null],
+  ] as const)('%s spans %i track(s)', (_, tracks, device) => {
+    expect(wall([device])).toEqual([tracks])
+  })
+
+  it('the wall is a grid whose flow is dense, so a narrow card fills the gap a wide one leaves', () => {
+    wall([null])
+    const style = getComputedStyle(grid())
+    expect(style.display).toBe('grid')
+    expect(style.gridAutoFlow.split(/\s+/)).toContain('dense')
+    expect(style.gridTemplateColumns).toMatch(/^repeat\(auto-fill, minmax\(.*, 1fr\)\)$/)
+  })
+
+  /** The wall at `width` px: its track count, a track's width and the shared frame height. */
+  function at(width: number) {
+    const style = getComputedStyle(grid())
+    const min = /^repeat\(auto-fill, minmax\((.*), 1fr\)\)$/.exec(style.gridTemplateColumns)![1]!
+    const cols = Math.max(1, Math.floor((width + GAP) / (lengthAt(min, width) + GAP)))
+    const track = (width - (cols - 1) * GAP) / cols
+    const frameH = lengthAt(style.getPropertyValue('--wall-frame-h').trim(), width)
+    return { cols, track, frameH }
+  }
+
+  it.each([
+    ['the inspector on a 1440 desktop', 317],
+    ['the sheet on a 390 phone', 374],
+    ['a wider wall', 720],
+    ['a full-width wall', 1200],
+  ])('%s (%ipx) shows at least two desktop cards a row, each frame whole in its two tracks', (_, width) => {
+    const spans = wall([null, null, null, null])
+    const { cols, track, frameH } = at(width)
+    expect(cols, 'tracks').toBeGreaterThanOrEqual(4)
+    const rows = denseRows(spans as number[], cols)
+    expect(rows.length, 'four desktop cards in two rows').toBeLessThanOrEqual(2)
+    // The shared height leaves a desktop frame whole in two tracks and a portrait tablet's in one.
+    expect(frameH * (16 / 10), 'desktop frame width').toBeLessThanOrEqual(2 * track + GAP - CHROME + 0.5)
+    expect(frameH * (3 / 4), 'tablet-portrait frame width').toBeLessThanOrEqual(track - CHROME + 0.5)
+    expect(frameH).toBeLessThanOrEqual(THUMB_FRAME_H)
+    // And is the largest height that does, rather than small frames in wide cards, until the 180px maximum.
+    const largest = Math.min((2 * track + GAP - CHROME) / (16 / 10), (track - CHROME) / (3 / 4), THUMB_FRAME_H)
+    expect(frameH, 'shared frame height').toBeGreaterThan(largest - 2)
+  })
+
+  it.each([317, 374])('a mixed wall at %ipx leaves no row but the last more than one narrow track empty, whatever the order', (width) => {
+    const phone = on('iphone-15', 'portrait')
+    const tablet = on('ipad-7', 'portrait')
+    const desk = on('desktop', 'landscape')
+    const turned = on('iphone-15', 'landscape')
+    const spans = wall([phone, desk, desk, tablet, turned, desk, phone, unreported, tablet])
+    expect(spans).toEqual([1, 2, 2, 1, 2, 2, 1, 2, 1])
+    const empty = denseRows(spans as number[], at(width).cols)
+    for (const gap of empty.slice(0, -1)) expect(gap).toBeLessThanOrEqual(1)
+    // The phone that leads the list does not sit alone: its row holds a desktop beside it.
+    expect(empty[0]).toBe(0)
   })
 })
 
