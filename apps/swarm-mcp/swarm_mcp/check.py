@@ -127,6 +127,11 @@ THE RULES, each with the control that is NOT flagged:
     flagged, nor is a deployment GitHub does not know in this repository; a
     read that fails is under `unchecked` as "not read", with its reason.
     Read once per check, whatever the tenants: one deployment serves them all.
+(j) `plugin_files_missing` (STUCK, PLUGIN-VERSION-GUARD, owner 2026-11-09):
+    the sc plugin folder this bridge was started with, or its
+    workflows/run.js, is gone -- Claude Code removed a version folder no
+    live `.in_use/<pid>` marker named. One item for the session, naming no
+    task; `next` is the reload. Present folder: not flagged.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -145,6 +150,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -217,8 +223,11 @@ AWAITING_INPUT = "awaiting_input"
 EXPIRY_TICK_SECONDS = 60
 EXPIRY_TICKS = 2
 
+#: (j)'s rule: this session's sc plugin folder is gone (`plugin_files_flag`).
+PLUGIN_FILES_MISSING = "plugin_files_missing"
+
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"deploy_behind": 0, "merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {PLUGIN_FILES_MISSING: 0, "deploy_behind": 0, "merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -2082,6 +2091,33 @@ def _readers(client: SwarmClient, tenants: Any) -> list[SwarmClient]:
     return readers
 
 
+def plugin_files_flag() -> dict[str, Any] | None:
+    """(j): the STUCK flag for this session's own sc plugin folder, gone
+    (`launch.plugin_files_missing`); None while it is there. It names no
+    task: the item is the session, and only a reload ends it."""
+    from . import launch
+
+    missing = launch.plugin_files_missing()
+    if missing is None:
+        return None
+    return {
+        "kind": STUCK,
+        "rule": PLUGIN_FILES_MISSING,
+        "reason": (
+            f"this session's sc plugin folder {missing['root']} or its workflows/run.js is gone, so "
+            "titled launches fail and the plugin's agent types (sc:workflow, sc:summary) are lost "
+            "until the plugin is reloaded"
+        ),
+        "workspace": None,
+        "workflow_id": None,
+        "step_id": None,
+        "task_id": None,
+        "state": None,
+        "evidence": {"root": missing["root"], "run_js": str(Path(missing["root"]) / launch.RUN_SCRIPT)},
+        "next": missing["action"],
+    }
+
+
 def run(
     client: SwarmClient,
     *,
@@ -2112,6 +2148,9 @@ def run(
         per_tenant.append(result)
 
     flagged = [item for r in per_tenant for item in r["flagged"]]
+    plugin_files = plugin_files_flag()
+    if plugin_files is not None:
+        flagged.append(plugin_files)
     # (i): one deployment serves every tenant, so it is read once.
     deployed = deployment(client, scope["key"], now)
     if deployed["flag"]:
