@@ -93,6 +93,10 @@ IMAGES = [
     # Voice it's own speech server (own speech L3, part of #2688),
     # apps/swarm-speech/Dockerfile.
     "swarm-speech",
+    # The managed plugins' intake job (terraform/infra/plugins.tf),
+    # apps/plugin-intake/Dockerfile: plugins.tf plans the job only once
+    # image_refs carries this digest.
+    "swarm-plugin-intake",
     "workspace-apply",
 ]
 
