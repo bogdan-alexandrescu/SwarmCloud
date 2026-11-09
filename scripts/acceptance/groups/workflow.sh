@@ -79,7 +79,7 @@ WF_START_BUDGET_SECONDS=120
 #
 # WHY NOT ALL MOCK. The design's row says a mock-profile workflow, and the
 # first review is one. The rounds cannot be: swarm-api submits each round with
-# `input: {prompt}` alone (swarm_api/fixloop.py fix_round_spec and
+# an input that holds its prompt alone (swarm_api/fixloop.py fix_round_spec and
 # review_round_spec), and the mock writes verdict.json only when its input
 # names it (`artifact_name`), and commits nothing, so a mock re-review would
 # park the loop `review_unreadable` and a mock fix round `fix_changed_nothing`.
