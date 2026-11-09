@@ -25,6 +25,7 @@ ahead of the real one on PYTHONPATH, so nothing reaches Google or a keychain.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import secrets
@@ -37,6 +38,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 COMMON = REPO / "scripts" / "lib" / "common.sh"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 HOST = "swarm.example.test"
 SA = "swarm-verify@example.iam.gserviceaccount.com"
 
@@ -147,6 +152,9 @@ def _world(tmp_path: Path, *, signin_token: str = "", sa: str = "") -> dict[str,
         "API_HOST": HOST,
         "GCLOUD_TOKEN": _fake(),
         "SIGNIN_TOKEN": signin_token,
+        # Its region, and the never-touch list common.sh reads for it: the
+        # placeholder deployment's.
+        **placeholder_deployment.child_env("swarm-test"),
     }
     if sa:
         env["SWARM_IMPERSONATE_SA"] = sa

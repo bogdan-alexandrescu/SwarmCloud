@@ -51,7 +51,7 @@ answering, and the language says which they are. That is what stops a graph
 being `lsp` in the files the server reached and `ast` in the rest with
 nothing to say which: the extractor marks each file row `lsp: true` or
 `false` from `covered`, and impact trusts a changed file of a `partial`
-language only when its row says it was covered. On ai-studio on 2026-10-20
+language only when its row says it was covered. On a peer application on 2026-10-20
 the old rule threw away 7,106 resolved sites from a healthy pyright that had
 simply run out of its 270-second share (#1693). The run still succeeds; a
 timeout is never a failed index, it is a less certain one, and says so.

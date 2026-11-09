@@ -511,23 +511,23 @@ def test_ours_reads_every_label_field():
 
 
 def test_deny_listed_name_refused(tmp_path):
-    store, _ = stored_store(tmp_path, install_state(deny=["agents-staging"]))
+    store, _ = stored_store(tmp_path, install_state(deny=["peer-cluster"]))
     world = FakeWorld(tmp_path)
     assert flow(tmp_path, store, world).run() == ExitCode.REFUSED
     assert world.log == []
     # In a destroy plan too: a deny-listed name anywhere refuses the destroy, and nothing is applied.
     tf = world.terraform("infra")
     world.tf["infra"].resources["google_container_cluster.c"] = ("google_container_cluster",
-                                                                 {"name": "agents-staging", "labels": OURS})
-    with pytest.raises(un.UninstallRefused, match="agents-staging"):
+                                                                 {"name": "peer-cluster", "labels": OURS})
+    with pytest.raises(un.UninstallRefused, match="peer-cluster"):
         un.destroy_root(tf, project=PROJECT, who=DEPLOYER, inputs={"project_id": PROJECT},
-                        deny_list=["agents-staging"], approved=PROJECT)
+                        deny_list=["peer-cluster"], approved=PROJECT)
     assert "apply" not in [e[2] for e in world.log if e[0] == "terraform"]
-    assert un.denied(["serviceAccount:api-service@x.iam", "projects/p/x/agents-staging-vpc"],
-                     ["agents-staging-vpc"]) == ["agents-staging-vpc"]
+    assert un.denied(["serviceAccount:api-service@x.test", "projects/p/x/peer-vpc"],
+                     ["peer-vpc"]) == ["peer-vpc"]
 
 
-@pytest.mark.parametrize("deny", [[PROJECT], ["agents-staging-vpc"]])
+@pytest.mark.parametrize("deny", [[PROJECT], ["peer-vpc"]])
 def test_shared_project_refused_before_anything(tmp_path, deny):
     # R4: only the shared project's state carries a deny-list.
     store, _ = stored_store(tmp_path, install_state(deny=deny))

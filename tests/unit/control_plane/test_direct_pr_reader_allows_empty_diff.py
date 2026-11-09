@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from swarm_api import refusals
 from swarm_api.validation import StepSpec, reader_step_ids
 
 from .conftest import auth_header
@@ -76,13 +77,24 @@ def test_the_leaf_step_keeps_its_pull_request_obligation(client, db):
     assert "allow_empty_diff" not in blocks["fix"]
 
 
-def test_a_step_another_builds_on_keeps_its_branch_obligation(client, db):
+@pytest.fixture
+def no_change_refusal_off(monkeypatch):
+    # The review below says "change nothing" and, in the two tests that use
+    # this, is not a reader, so `step_declares_no_change` (on by the owner's
+    # decision of 2026-11-07, part of #2688) would refuse it at submission.
+    # These tests hold what #2662 stores, not that refusal: switch it off.
+    monkeypatch.setenv(refusals.env_name("step_declares_no_change"), "off")
+
+
+def test_a_step_another_builds_on_keeps_its_branch_obligation(client, db, no_change_refusal_off):
     blocks = _dispatch_blocks(client, db, _review_then_fix(builds_on=True))
     assert "allow_empty_diff" not in blocks["review"]
     assert "allow_empty_diff" not in blocks["fix"]
 
 
-def test_a_single_direct_pr_step_with_no_dependants_stores_no_key(client, db):
+def test_a_single_direct_pr_step_with_no_dependants_stores_no_key(
+    client, db, no_change_refusal_off,
+):
     spec = _review_then_fix()
     spec["steps"] = spec["steps"][:1]
     blocks = _dispatch_blocks(client, db, spec)

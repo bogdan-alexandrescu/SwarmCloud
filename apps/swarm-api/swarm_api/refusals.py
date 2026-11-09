@@ -615,6 +615,23 @@ SWITCHES: dict[str, Switch] = {
         "target is saved and every flow of the workspace still renders read-only",
         default=True,
     ),
+    # A step whose prompt says it changes nothing, held to a pull request and
+    # submitted without `allow_empty_diff` (nochange.py, part of #2688). SHIPS
+    # ON (default=True) by owner decision 2026-11-07 (answer "enforced" on the
+    # implement and fix tasks): "analyze and fix this so it never happens like
+    # this again", and report-only would let the next undeclared read-only
+    # workflow fail the same way. Off (REFUSAL_STEP_DECLARES_NO_CHANGE=off, or
+    # api_refusals { step_declares_no_change = false }), the workflow is stored
+    # and the step fails `published_nothing:` naming its artifacts and the
+    # flag, as the worker reports it.
+    "step_declares_no_change": Switch(
+        code="step_declares_no_change",
+        why="a direct-pr step (not a reader, gated step or review) or an integrate integrator "
+        "whose prompt says it changes nothing and that left allow_empty_diff out is refused "
+        "422 naming the step. Ships on by owner decision 2026-11-07; off, the workflow is "
+        "stored and the step fails published_nothing naming its artifacts and the flag",
+        default=True,
+    ),
     # A name over `schemas.NAME_MAX_CHARS` (owner, 2026-11-07, part of
     # #2688): a workflow's or a single task's `metadata.title` or
     # `metadata.unit`, refused, never cut, so it fits one row of the

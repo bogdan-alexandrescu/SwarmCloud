@@ -32,6 +32,8 @@ from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.settings import ApiSettings
 from swarm_api.voice import sessions as vs
+from swarm_api.voice import settings as vsettings
+from swarm_api.voice import speech_catalogue as cat
 from swarm_api.waker import NullWaker
 
 from .conftest import (
@@ -99,7 +101,15 @@ def _client(db, tokens, group_map, objects, voice, **settings) -> TestClient:
     app = create_app(ctx)
     app.state.secret_metadata = OfflineSecretMetadata()
     app.state.voice_client = voice
+    gpt_live_settings(db)
     return TestClient(app, raise_server_exceptions=False)
+
+
+def gpt_live_settings(db) -> None:
+    """Voice it › Settings name GPT-Live: these tests pin the Live path, and
+    Start takes its engine from Settings alone (own speech by default)."""
+    db.docs.setdefault(f"{vsettings.COLLECTION}/{vsettings.DOCUMENT}",
+                       {"engine": cat.ENGINE_GPT_LIVE})
 
 
 @pytest.fixture
@@ -717,7 +727,8 @@ CLASS_PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": 
 
 def _voice_settings(db, **fields) -> None:
     from swarm_api.voice import settings as vsettings
-    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set({"version": 1, **fields})
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set(
+        {"version": 1, "engine": cat.ENGINE_GPT_LIVE, **fields})
 
 
 @pytest.fixture
