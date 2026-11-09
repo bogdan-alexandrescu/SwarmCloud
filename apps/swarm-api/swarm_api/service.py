@@ -186,6 +186,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_fix_loop,
+    verdict_fix_loop_step,
     resolve_input_layout,
     is_security_review,
     resolve_integrator_step,
@@ -1612,6 +1613,11 @@ class SubmissionService:
                 order = validate_dag(
                     step_specs, max_steps=self._settings.core.max_workflow_steps
                 )
+                # "on_merge_verdict" may have appended a `fix-loop` step (the
+                # owner Q8 (b)): resolved again, so it is checked and signed
+                # exactly as a declared one is.
+                if fix_loop is None:
+                    fix_loop = resolve_fix_loop(spec.steps, strategy=dispatch.strategy)
             if dispatch.strategy == "integrate":
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
@@ -2100,17 +2106,22 @@ class SubmissionService:
 
           * a spec that states its own merge step keeps it -- unless
             `metadata.merge` is "off", which contradicts it, or
-            "on_merge_verdict", which derives the merge and its re-review
-            itself; both are refused;
+            "on_merge_verdict", which derives the merge and its fix loop (or
+            re-review) itself; both are refused;
           * "on": when the workflow opens ONE pull request
             (`validation.merge_sources`), one merge step is appended,
             depending on the step that opens it and on the review if there is
             one, before anything is built or signed;
           * "on_merge_verdict": only for an `integrate` workflow whose
-            integrator is gated on a review. A re-review of the integrator's
-            pushed head is appended (`rereview_step_for`, one round,
-            `REREVIEW_ROUNDS`), and the merge step depends on the integrator
-            and the re-review and reads the re-review's verdict: the latest;
+            integrator is gated on a review. A `fix-loop` step is appended
+            (`verdict_fix_loop_step`, `FIX_LOOP_VERDICT_MERGE_ROUNDS` rounds,
+            the owner 2026-11-09, docs/design/fix-loop.md §9 Q8 (b)) when the
+            gate is NOT_YET, and the merge step reads the loop; otherwise --
+            the loop profile unavailable, another gate, a security review --
+            a re-review of the integrator's pushed head (`rereview_step_for`,
+            one round, `REREVIEW_ROUNDS`), and the merge step depends on the
+            integrator and the re-review and reads the re-review's verdict:
+            the latest;
           * an explicit "on" or "on_merge_verdict" for a workflow it cannot
             apply to is refused, because the caller asked for a merge that
             would not happen; a repository's policy or the platform default
@@ -2126,11 +2137,11 @@ class SubmissionService:
             for an admin's setting. An explicit choice, or a stated merge
             step, on such a host is still refused at submission.
 
-        With a `fix-loop` step (`fix_loop`, docs/design/fix-loop.md §4.6,
-        the owner Q8 (a)) the merge reads the loop, whose last re-review is the
-        latest verdict, and "on_merge_verdict" appends ONLY the merge: the
-        loop's `re-review:1` is the re-review it would have appended
-        (`rereview_step_for` is skipped).
+        With a declared `fix-loop` step (`fix_loop`, docs/design/fix-loop.md
+        §4.6) the merge reads the loop, whose last re-review is the latest
+        verdict, and "on_merge_verdict" appends ONLY the merge, the loop kept
+        as declared, `max_rounds` included: the loop's `re-review:1` is the
+        re-review it would have appended (`rereview_step_for` is skipped).
 
         `single-pr` ends in its own merge step and is left as submitted.
         """
@@ -2144,7 +2155,7 @@ class SubmissionService:
                     f"metadata.{MERGE_METADATA_KEY} is {choice!r}, but step "
                     f"{stated[0]!r} is a merge step. "
                     + ("Remove one or the other." if choice == "off" else
-                       "'on_merge_verdict' appends the merge step and its re-review "
+                       "'on_merge_verdict' appends the merge step and its fix loop "
                        "itself: remove the step, or set metadata."
                        f"{MERGE_METADATA_KEY} to 'on' to keep your own."),
                     detail={"merge_steps": stated, MERGE_METADATA_KEY: choice},
@@ -2240,7 +2251,14 @@ class SubmissionService:
         *,
         explicit: bool,
     ) -> tuple[WorkflowCreate, str | None]:
-        """`spec` with a re-review and a merge step that reads its verdict.
+        """`spec` with a fix loop, or a re-review, and a merge step that reads it.
+
+        The loop (`verdict_fix_loop_step`, the owner 2026-11-09, Q8 (b)) when
+        the integrator is gated on the review's NOT_YET and the loop profile
+        is available: only the loop and the merge are appended, the merge
+        reading the loop (§4.6), and no separate re-review, because the
+        loop's `re-review:1` is that re-review. The returned re-review id is
+        then None. Otherwise the one re-review, as before.
 
         Refused when asked for explicitly and the workflow has no review a
         merge could wait on: `collect` and `single-pr` are not here, and
@@ -2248,6 +2266,24 @@ class SubmissionService:
         request, and a gate is refused there), so a merge under it would read
         no verdict. A repository's policy that cannot apply appends nothing.
         """
+        loop_step = verdict_fix_loop_step(step_specs, strategy)
+        if loop_step is not None:
+            with_loop = spec.model_copy(
+                update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(loop_step)]}
+            )
+            # The same checks a declared loop gets; `submit_workflow` resolves
+            # it again from the merged spec to sign its block.
+            plan = resolve_fix_loop(with_loop.steps, strategy=strategy)
+            appended = merge_step_for(self._step_specs(with_loop), strategy, loop=plan)
+            if plan is None or appended is None:  # the loop names its own sources
+                raise DispatchOptionError(
+                    f"the fix loop {loop_step['step_id']!r} was appended but no merge "
+                    "step could be derived from it.",
+                    detail={"strategy": strategy, MERGE_METADATA_KEY: MERGE_ON_VERDICT},
+                )
+            return with_loop.model_copy(
+                update={"steps": [*with_loop.steps, WorkflowStepCreate.model_validate(appended)]}
+            ), None
         by_id = {s.step_id: s for s in spec.steps}
         sources = merge_sources(step_specs, strategy)
         rereview = (

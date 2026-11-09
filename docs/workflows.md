@@ -1875,7 +1875,7 @@ everyone sees it.
   on its first-parent line and is gated on them: that errs towards gating.
 * **A vitest file is not a UI path** (owner decision 2026-10-26). On 2026-10-26 a lane whose only own file under `apps/swarm-ui/`
   was `src/__tests__/accounts.timeline.test.tsx` had its review's MERGE
-  forced to NOT_YET. The re-review that `on_merge_verdict` appends runs the
+  forced to NOT_YET. The re-review that `on_merge_verdict` appended runs the
   review's own profile (`rereview_step_for`), so no fix round could ever be
   rendered, and the merge refused `verdict_not_merge`. A browser renders
   pages, not tests, so a path under `apps/swarm-ui/` in a `__tests__/`
@@ -2051,8 +2051,8 @@ changed paths (`own_files` when recorded, else `files`) and
   no pool and no attempt at any point (invariants 1-3). Its
   `result_summary.review_skipped` is the reason, and its `verdict.json` is
   `{"verdict": "MERGE", "findings": [], "skipped": "<reason>"}`, so the
-  integrator's `when` gate, the re-review `on_merge_verdict` appends and the
-  merge step read it exactly as a MERGE. The decision is recorded under
+  integrator's `when` gate, the fix loop or re-review `on_merge_verdict`
+  appends and the merge step read it exactly as a MERGE. The decision is recorded under
   `metadata.review_gate.resolved` and on the step's `succeeded` event.
 * **The verdict is written inline.** No attempt ran, so there is no attempt
   prefix in the bucket to put it under: the manifest entry for
@@ -2360,8 +2360,9 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   review of the fixed branch is another review step and another gated step,
   but under `integrate` only the integrator may be gated, so that chain needs
   a gate on a non-integrator whose verdict the PR also carries, which is not
-  built for a caller's own steps. The one exception is the re-review
-  `"on_merge_verdict"` appends (below), gated on the same review as the
+  built for a caller's own steps. The exceptions are a `fix-loop` step,
+  which `"on_merge_verdict"` appends by default (below), and the re-review it
+  appends where the loop cannot apply, gated on the same review as the
   integrator. An issue run's compiled workflow states that same re-review
   itself after its fix (`issueruns._with_rereview`), under
   `metadata.merge` `"off"` because its CI loop merges, and swarm-api accepts
@@ -2826,7 +2827,7 @@ repository with, else the platform's `merge_by_default`.
 | absent | yes | the stated step is honoured |
 | `"on"` | no | appended; refused (422) if the workflow opens no single pull request |
 | `"on"` | yes | the stated step is honoured; nothing is doubled |
-| `"on_merge_verdict"` | no | a re-review and a merge that reads it are appended (below); refused (422) unless the workflow is `integrate` with its integrator gated on a review |
+| `"on_merge_verdict"` | no | a fix loop (3 rounds) and a merge that reads it are appended (below), or a re-review and a merge that reads it where the loop cannot apply; refused (422) unless the workflow is `integrate` with its integrator gated on a review |
 | `"on_merge_verdict"` | yes | refused (422): it derives the merge step itself; use `"on"` to keep yours |
 | `"off"` | no | none |
 | `"off"` | yes | refused (422): the two disagree |
@@ -2840,9 +2841,27 @@ already appended a merge, but it read the FIRST review's verdict: on
 NOT_YET the fix ran, nothing judged the fix, and the merge refused
 `verdict_not_merge` on a verdict about code that no longer existed.
 
-With `"on_merge_verdict"` on an `integrate` workflow whose integrator is gated
-on a review, swarm-api appends two steps before signing
-(`validation.rereview_step_for`, `merge_step_for`):
+**The fix loop, by default (the owner, 2026-11-09).** With
+`"on_merge_verdict"` (or the repository's `merge_policy`) on an `integrate`
+workflow whose integrator is gated on the review with `verdict_in:
+["NOT_YET"]`, and no `fix-loop` step in the spec, swarm-api appends a
+`fix-loop` step -- `{"review": <the review>, "fix": <the integrator>,
+"max_rounds": 3}`, depending on the fix -- and a merge that reads the loop
+(`validation.verdict_fix_loop_step`; [design/fix-loop.md](design/fix-loop.md)
+§4.1, §4.6, Q8). No separate re-review is appended: the loop's `re-review:1`
+is that re-review, and a NOT_YET after a fix is another round rather than a
+FAILED workflow. Why: a lane whose one re-review said NOT_YET ended FAILED,
+then a `ready` label merged the green pull request on CI alone and the
+regression the review had found reached main. The loop is checked and
+signed exactly as a declared one; a spec that declares its own keeps it,
+`max_rounds` included, and gets only the merge. The steps appear in the
+create response marked `added: true`, as the re-review did.
+
+Where the loop cannot apply -- the gate names other verdicts, a security
+review judges the integrator's head (the merge behind a loop reads the loop
+alone), or the `fix-loop` profile is still unavailable, as it ships until its
+acceptance run passes -- swarm-api appends two steps before signing, as
+before (`validation.rereview_step_for`, `merge_step_for`):
 
 | step | what it is | why |
 |---|---|---|
