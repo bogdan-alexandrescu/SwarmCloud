@@ -329,7 +329,8 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert h.broker.holder["voice_session_id"] == body["voice_session_id"]
         assert h.broker.releases == []
         health = await h.client.get("/healthz")
-        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0}
+        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0,
+                                 "front_sessions": 0, "front_delegations": 0}
 
     run(scenario)
 

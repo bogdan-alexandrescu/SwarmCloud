@@ -1108,6 +1108,27 @@ variable "work_contracts" {
   }
 }
 
+variable "plugins_switch" {
+  description = <<-EOT
+    swarm-api's SWARM_PLUGINS (apps/swarm-api/swarm_api/plugins.py
+    SWITCH_ENV; docs/design/managed-plugins.md section 11): the platform's
+    plugins switch. "on" lets a step name plugins, subject to work contracts
+    and each workspace's signed allowed list as before; "off" refuses every
+    step that names a plugin. ON by default, the state swarm-api reads when
+    the variable is unset, so no environment plans a behaviour change; a
+    platform admin's console setting overrides it. plugins.enabled() reads
+    anything but exactly "off" as on; the validation refuses any other value
+    instead, so a misspelt "Off" never ships as a silent on.
+  EOT
+  type        = string
+  default     = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.plugins_switch)
+    error_message = "plugins_switch is on or off (swarm_api.plugins.enabled reads anything but exactly \"off\" as on)."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
