@@ -64,8 +64,17 @@ swarm-voice's own sentence, under the established codes:
 
   403 (the person is not in the Voice it pool)        -> 403 `forbidden`,
       detail.reason `voice_pool_refused`
-  409 `voice_pool_busy` / `voice_pool_refused`        -> 409 `conflict`,
-      detail.reason the code swarm-voice sent
+  409 `voice_pool_refused` (no OpenAI API key)        -> 409 `conflict`,
+      detail.reason `voice_pool_refused`
+  409 `voice_pool_busy` on a Live start               -> 409 `conflict`,
+      detail.reason `openai_key_in_use`: the key is another session's
+  409 `voice_pool_busy` on a text start               -> 409 `conflict`,
+      detail.reason `no_voice_account_available`: no plan account is free
+
+The cause is read from the mode swarm-api asked for, never from swarm-voice's
+sentence: a text start leases the Voice it pool's ChatGPT plan, never the
+OpenAI key, so its refusal never says the key is in use (live QA, 9 November
+2026: an own-speech fallback was told so).
 
 Either way the session is ended at once (cause `voice_pool_refused`) and the
 person's marker freed, so the next try is not a 409 of ours.
@@ -116,10 +125,16 @@ anything is written; own speech's are:
                         once in order (owner, 2026-11-09)
   not_ready             the machine was not RUNNING inside the four minutes
 
-The session is not re-opened: its document turns `mode: "text"`, the front
-(if it started) is ended at swarm-voice, and swarm-voice's text start runs on
-the same session id. A speech start never builds swarm-voice's text
-conversation; only this fallback's own text start does. A machine another
+The session is not re-opened: its document turns `mode: "text"`. After a
+machine fallback (`no_l4`, `not_ready`) the front that started is KEPT and
+takes the text turns, on the Claude account it already holds: nothing is
+released and leased again, and no OpenAI key or ChatGPT plan is asked for
+(live QA, 9 November 2026: ending the front and leasing the Voice it pool's
+plan for a text start was refused, `no_voice_account_available`). A turn the
+front delegates waits for the planner's line and adds it to the reply, as a
+text page reads one reply per turn. Only `front_refused` and
+`speech_not_deployed`, where no front holds anything, start swarm-voice's text
+conversation on the same session id. A machine another
 session holds is a refusal (409, `speech_machine_in_use`), not a fallback:
 the session is ended and the person freed. While its machine starts, a
 `speech` session holds the person for SPEECH_STARTING_STALE_SECONDS.
@@ -262,6 +277,13 @@ USAGE_LIMIT = "usage_limit_reached"
 POOL_BUSY = "voice_pool_busy"
 POOL_REFUSED = "voice_pool_refused"
 POOL_REASONS = frozenset({POOL_BUSY, POOL_REFUSED})
+#: `detail.reason` of a busy pool, by what the start leased: a Live start's
+#: OpenAI API key held by another session, or no ChatGPT plan account free for
+#: a text start (the broker's own word for it).
+OPENAI_KEY_IN_USE = "openai_key_in_use"
+NO_PLAN_FREE = "no_voice_account_available"
+KEY_IN_USE_SENTENCE = "Voice it's OpenAI API key is in use by another session; try again when it ends."
+NO_PLAN_SENTENCE = "No Voice it plan account is free for a text session; try again in a few minutes."
 #: What a start is told when the Voice it pool holds no OpenAI API key. Every
 #: Voice it session is a GPT-Live session, which only a developer API key can
 #: open (OpenAI refused the ChatGPT plan's token, 403 on /v1/live/sessions, 4
@@ -399,11 +421,12 @@ def _refusal_body(raw: bytes) -> tuple[str, str]:
     return code.strip(), message.strip()[:MAX_REFUSAL_MESSAGE]
 
 
-def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | None:
+def pool_refusal(status: int, raw: bytes, *, mode: str = MODE_LIVE) -> VoicePoolRefused | VoicePoolBusy | None:
     """The browser's refusal for swarm-voice's 403, or its 409 naming a pool
     code, carrying its sentence. None for any other answer (a 409 for the
     voice session already being live is not the pool's, and reads as the
-    generic refusal)."""
+    generic refusal). A busy pool says what was busy by `mode`, the start's:
+    only a Live start leases the OpenAI API key."""
     code, message = _refusal_body(raw)
     if status == 403:
         return VoicePoolRefused(
@@ -414,9 +437,9 @@ def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | 
     reason = code
     if code == POOL_REFUSED:
         return VoicePoolBusy(NO_API_KEY_SENTENCE, detail={"reason": reason})
-    return VoicePoolBusy(
-        message or "The Voice it pool's ChatGPT account is busy; try again shortly. "
-        "Nothing was started.", detail={"reason": reason})
+    if mode != MODE_LIVE:
+        return VoicePoolBusy(NO_PLAN_SENTENCE, detail={"reason": NO_PLAN_FREE})
+    return VoicePoolBusy(message or KEY_IN_USE_SENTENCE, detail={"reason": OPENAI_KEY_IN_USE})
 
 
 def openai_refusal(raw: bytes) -> VoiceUnreachable | None:
@@ -648,7 +671,7 @@ class HttpVoiceClient:
         if call.mode == MODE_SPEECH and status == 409 and _refusal_body(raw)[0] == FRONT_REFUSED_CODE:
             log.info("swarm-voice found no Claude account for the front of session=%s", call.session_id)
             raise SpeechFrontRefused("swarm-voice could not start the fast front")
-        refusal = pool_refusal(status, raw) if status in (403, 409) else None
+        refusal = pool_refusal(status, raw, mode=call.mode) if status in (403, 409) else None
         if refusal is not None:
             log.warning("swarm-voice refused the Voice it pool for session=%s (HTTP %s, %s)",
                         call.session_id, status, refusal.detail.get("reason"))
@@ -1023,6 +1046,7 @@ class VoiceSessions:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                         session_id=session_id, cause=cause)
 
+        on_front = False
         try:
             if mode == MODE_SPEECH:
                 fallback = self._start_speech(
@@ -1033,7 +1057,11 @@ class VoiceSessions:
                         {"mode": MODE_TEXT,
                          "fallback": {"from": cat.ENGINE_OWN, "reason": fallback, "at": self._now()}})
                     log.info("voice session %s falls back to text (%s)", session_id, fallback)
-            if mode != MODE_SPEECH:
+                    # A machine fallback keeps the front, which holds the
+                    # session's Claude account and takes its text turns: no
+                    # second start, so nothing is released and leased again.
+                    on_front = fallback != FALLBACK_FRONT_REFUSED
+            if mode != MODE_SPEECH and not on_front:
                 started = self._client.start(call_for(mode))
                 if not isinstance(started, StartAnswer):
                     raise VoiceUnreachable("swarm-voice did not answer the start; the session was ended.")
@@ -1064,9 +1092,12 @@ class VoiceSessions:
     def _start_speech(self, call: StartCall, *, chosen: Mapping[str, Any], tenant_id: str,
                       close: Callable[[str], None]) -> str | None:
         """The front at swarm-voice, then the speech machine to RUNNING. None
-        when both started; else the fallback's fixed code, with the front
-        ended and the machine's lease released. A machine another session
-        holds, or a failure that is no fallback, ends the session and raises."""
+        when both started; else the fallback's fixed code, with the machine's
+        lease released and the front KEPT: it holds the session's Claude
+        account and carries the text session, so the fallback never releases
+        an account to race for another (live QA, 9 November 2026). A machine
+        another session holds, or a failure that is no fallback, ends the
+        session and raises."""
         from .speech_machine import MachineInUse, SessionRef, SpeechFallback  # it imports this module
 
         try:
@@ -1080,10 +1111,7 @@ class VoiceSessions:
         try:
             self._machine.start(session, chosen=chosen)
         except SpeechFallback as exc:
-            reason = exc.reason if exc.reason in FALLBACK_REASONS else FALLBACK_NOT_READY
-            # The front holds a Claude account: it ends before the text start.
-            self._client.end(call.session_id, cause=reason)
-            return reason
+            return exc.reason if exc.reason in FALLBACK_REASONS else FALLBACK_NOT_READY
         except MachineInUse:
             close(END_MACHINE_IN_USE)
             self._client.end(call.session_id, cause=END_MACHINE_IN_USE)
@@ -1122,7 +1150,13 @@ class VoiceSessions:
                  tenant_id, project_id, session_id, answered.turn_id, len(answered.cards))
         said: dict[str, Any] = {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
         delegation = getattr(answered, "delegation_id", None)
-        if delegation:
+        if delegation and data.get("mode") == MODE_TEXT:
+            # A text fallback on the front: the text page reads one reply per
+            # turn, so the planner's line is waited for and added to it.
+            line = self.delegation(session_id, delegation, timeout=DELEGATION_WAIT_SECONDS)
+            if line is not None:
+                said["reply"] = f"{answered.reply} {line.strip()}".strip()
+        elif delegation:
             said["delegation_id"] = delegation
         return said
 
