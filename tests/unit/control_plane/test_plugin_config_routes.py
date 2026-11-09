@@ -439,16 +439,17 @@ def test_another_workspaces_install_is_not_a_default(cw):
     assert response.status_code == 422 and response.json()["code"] == "default_not_allowed"
 
 
-def test_after_the_allowed_list_is_written_again_settings_save_from_revision_zero(cw):
-    # plugins.PluginsStore.put re-signs the block without `configs_digest`
-    # (and `defaults`): the settings it signed away read as none, and the
-    # workspace is never stuck refusing every save (question 1 of the PR).
+def test_after_the_allowed_list_is_written_again_settings_keep_their_revision(cw):
+    # plugins.PluginsStore.put carries `configs_digest` (and `defaults`)
+    # over under a block that verifies (the submission-merge lane, on this
+    # PR's question 1): the settings still read, and the next save names
+    # the revision they were saved at.
     _allow(cw, "eng", "gstack")
     done = eng_plugin(cw)
     assert save(cw, "eng", done["install_id"], {"level": "error"}).status_code == 200
     _allow(cw, "eng", "gstack", "security-audit")
-    assert read(cw, "eng", done["install_id"]).json()["revision"] == 0
-    again = save(cw, "eng", done["install_id"], {"level": "info"}, revision=0)
+    assert read(cw, "eng", done["install_id"]).json()["revision"] == 1
+    again = save(cw, "eng", done["install_id"], {"level": "info"}, revision=1)
     assert again.status_code == 200, again.text
     assert again.json()["values"]["level"] == {"set": True, "value": "info"}
 
