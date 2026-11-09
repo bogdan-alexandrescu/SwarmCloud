@@ -17,7 +17,10 @@ reaches its implementer through the review
 re-review.
 
 `metadata.merge.on_merge_verdict` appends a re-review step
-(`swarm_api.validation.rereview_step_for`). It runs the **review's** runner
+(`swarm_api.validation.rereview_step_for`) where its fix loop cannot apply;
+since the owner's choice of 2026-11-09 a fix gated on the review's NOT_YET
+gets the fix loop instead, whose first round is this re-review
+([fix-loop.md](fix-loop.md) §4.1, Q8). It runs the **review's** runner
 profile, by name, and is gated on the same review and verdicts as the fix. On
 MERGE no fix agent ran, so the head the merge pins is the one the first review
 already judged. The re-review's gate is shut, and its worker does exactly one

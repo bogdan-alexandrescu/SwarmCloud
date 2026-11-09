@@ -55,6 +55,33 @@ Terraform value, `on` unless it says exactly `off`. Off, `check_step` refuses
 every step that names a plugin, whichever way it came, before anything else
 is checked; on, nothing changes. It ships `on`, so it refuses nothing a
 caller relied on until an admin turns it off.
+
+MANAGED PLUGINS AND THE WORKSPACE'S DEFAULTS (docs/design/managed-plugins.md
+sections 6.4, 7 and 8, lane 7 of section 17). The same field also names
+managed installs, by install id, beside the built-ins: no mode, no skills,
+only `overrides` for non-secret fields. `merge_step_plugins` runs first at
+submission: it refuses a removed install (`pluginstore.refuse_removed`,
+`plugin_removed`, the owner's answer to Q5), then computes the step's set
+(`pluginconfig.step_plugins`): the workspace's signed every-step defaults,
+plus the installs the step adds, minus its `plugins_off`, each pinned to its
+install's current version at this moment, with the workspace's values, the
+step's overrides and secret references by name. A default the step cannot
+run is skipped and recorded, never a refusal (the owner's answer to Q6). The
+managed set goes into `metadata.dispatch.plugins` and the skipped defaults
+into `metadata.dispatch.plugins_skipped`, inside the dispatch block the step
+spec signs whole; managed plugins need no work contract. A built-in default
+joins the step's built-ins in unattended mode with every skill that mode
+offers, carried in the work contract as before, so with work contracts off
+it is skipped and recorded (`work_contracts_off`).
+
+THE ALLOWED LIST, WRITTEN AGAIN. `PluginsStore.put` names catalogue
+built-ins and active platform installs (a platform install serves only the
+workspaces that allow it). Its block also carries the defaults and the
+settings digest (contract request 140), written by `pluginconfig`: when the
+stored block verifies they are carried over and signed again with the new
+list; when it does not, they are dropped, never signed with a list the
+caller chose (the settings lane's recommended answer; the owner has not
+answered yet).
 """
 
 from __future__ import annotations
@@ -62,7 +89,8 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime
-from typing import Any, Callable, Mapping, Sequence
+from dataclasses import dataclass, field as dataclass_field
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from google.cloud import firestore
 from pydantic import Field
@@ -71,6 +99,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
 from . import platformswitches, workcontract
+from . import pluginstore as ps
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import RoleAdminRequired, ValidationFailed
@@ -141,18 +170,35 @@ def _refuse(message: str, *, step_id: str | None, field: str = FIELD_PATH,
     )
 
 
+def _platform_id(name: Any) -> bool:
+    """A platform install's id (`p-<12 hex>`): the only install an Allowed
+    list names, since a workspace's own installs need no opt-in."""
+    return isinstance(name, str) and bool(ps.INSTALL_ID.match(name)) and name.startswith("p-")
+
+
 def allowed_plugins(tenant_id: str, doc: Mapping[str, Any] | None,
                     mac: SettingsMac) -> tuple[str, ...]:
-    """The catalogue plugins the workspace allowed, from its stored block, but
-    only when that block's MAC verifies under `mac.keys`: an unsigned or
-    forged list allows nothing, for every tenant."""
+    """The catalogue plugins and platform installs the workspace allowed,
+    from its stored block, but only when that block's MAC verifies under
+    `mac.keys`: an unsigned or forged list allows nothing, for every tenant."""
     block = (doc or {}).get(FIELD) if isinstance(doc, Mapping) else None
     if not isinstance(block, Mapping) or not block_verifies(tenant_id, MAC_BLOCK, block, mac.keys):
         return ()
     names = block.get(ALLOWED)
     if not isinstance(names, list):
         return ()
-    return tuple(n for n in names if isinstance(n, str) and n in CATALOGUE)
+    return tuple(n for n in names if isinstance(n, str) and (n in CATALOGUE or _platform_id(n)))
+
+
+def signed_defaults(tenant_id: str, doc: Mapping[str, Any] | None, mac: SettingsMac) -> tuple[str, ...]:
+    """The every-step defaults of the workspace's stored block when its MAC
+    verifies; none otherwise. Only a cheap "is there anything to merge"
+    test: `pluginconfig.PluginConfigs.defaults` is what the merge reads."""
+    block = (doc or {}).get(FIELD) if isinstance(doc, Mapping) else None
+    if not isinstance(block, Mapping) or not block_verifies(tenant_id, MAC_BLOCK, block, mac.keys):
+        return ()
+    names = block.get(DEFAULTS)
+    return tuple(n for n in names if isinstance(n, str)) if isinstance(names, list) else ()
 
 
 def check_step(plugins: Mapping[str, Mapping[str, Any]], *, tenant_id: str,
@@ -292,6 +338,140 @@ def with_step_plugins(metadata: Mapping[str, Any], plugins: Mapping[str, Mapping
     return out
 
 
+# --- managed plugins and the workspace's defaults, merged at submission ------
+
+#: Where the step's managed plugin set goes, inside the signed dispatch block
+#: (`metadata.dispatch.plugins`, docs/design/managed-plugins.md section 8),
+#: and the defaults it skipped (section 7, the owner's answer to Q6).
+DISPATCH_PLUGINS = "plugins"
+DISPATCH_SKIPPED = "plugins_skipped"
+#: A built-in default rides in the work contract, in this mode, with every
+#: skill the mode offers: a default names no skills of its own.
+DEFAULT_MODE = "unattended"
+#: A built-in default skipped because work contracts are off (nothing would
+#: sign it), or because the caller's own contract names other plugins.
+SKIP_CONTRACTS_OFF = "work_contracts_off"
+SKIP_CONTRACT_NAMES_PLUGINS = "work_contract_names_plugins"
+#: A default skipped because the platform's plugins switch is off (`enabled`).
+SKIP_PLATFORM_OFF = "plugins_off_on_platform"
+
+
+@dataclass(frozen=True)
+class StepPlugins:
+    """A step's merged plugins: `built_ins` for its `plugins` field (and so
+    its work contract), `managed` for `metadata.dispatch.plugins` (install
+    id -> the signed entry, pinned to a version), `skipped` defaults."""
+
+    built_ins: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
+    managed: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
+    skipped: list[dict[str, Any]] = dataclass_field(default_factory=list)
+
+    def record_on(self, dispatch_block: dict[str, Any]) -> None:
+        """Write the set into the dispatch block, only when there is one: a
+        step with no managed plugin and nothing skipped is byte for byte what
+        it was before managed plugins."""
+        if self.managed:
+            dispatch_block[DISPATCH_PLUGINS] = {k: self.managed[k] for k in sorted(self.managed)}
+        if self.skipped:
+            dispatch_block[DISPATCH_SKIPPED] = list(self.skipped)
+
+
+def _with_step(exc: ValidationFailed, step_id: str | None) -> ValidationFailed:
+    """The refusal, pointing at the step's `plugins` field and naming the step."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        detail.setdefault("field", STEP_FIELD)
+        if step_id:
+            detail.setdefault("step_id", step_id)
+    return exc
+
+
+def merge_step_plugins(chosen: Mapping[str, Mapping[str, Any]], off: Iterable[str], *,
+                       tenant_id: str, runner_profile: str, step_id: str | None,
+                       settings_doc: Mapping[str, Any] | None, mac: SettingsMac,
+                       store: Any, configs: Any, environ: Mapping[str, str],
+                       caller_contract_plugins: bool = False) -> StepPlugins:
+    """The step's plugins after the workspace's defaults are merged in.
+
+    `chosen` is the step's `plugins` field (name -> `{mode, skills,
+    overrides}`), `off` its `plugins_off`. `store` is a
+    `pluginstore.PluginStore`, `configs` a `pluginconfig.PluginConfigs`.
+    Refuses (422) a removed install the step names (`plugin_removed`, first),
+    a managed install named with a mode or skills, a built-in named with
+    overrides or without a mode, a name both loaded and turned off, an
+    install the step adds and cannot run, and more than eight plugins in all.
+    With the platform's plugins switch off (`enabled`) it refuses a step
+    naming any plugin and skips every default.
+    `caller_contract_plugins`: the caller sent a work contract naming
+    plugins, so a built-in default is skipped rather than refused as a
+    contract that names different plugins than the field."""
+    # Imported here: pluginconfig imports this module's constants.
+    from . import pluginconfig as pcfg
+
+    # The platform's plugins switch, before anything else: off, a step naming
+    # a plugin either way is refused, as `check_step` refuses it, and the
+    # workspace's defaults are skipped and recorded, never a refusal.
+    if not enabled():
+        if chosen:
+            raise _refuse(
+                "plugins are off on this platform: a platform admin turns them on in "
+                f"Admin › Plugins › Platform ({SWITCH_ENV})", step_id=step_id,
+                field=STEP_FIELD, plugins=sorted(chosen))
+        return StepPlugins(skipped=[
+            {"install_id": name, "code": SKIP_PLATFORM_OFF}
+            for name in signed_defaults(tenant_id, settings_doc, mac) if name not in set(off)])
+    try:
+        ps.refuse_removed(store, tenant_id, list(chosen), field=STEP_FIELD)
+    except ValidationFailed as exc:
+        raise _with_step(exc, step_id) from None
+    turned_off = sorted({n for n in off if isinstance(n, str)})
+    both = sorted(set(turned_off) & set(chosen))
+    if both:
+        raise _refuse(f"{', '.join(both)} is both loaded and turned off for this step",
+                      step_id=step_id, field=STEP_FIELD, plugins_off=both)
+    built_ins: dict[str, dict[str, Any]] = {}
+    added: dict[str, dict[str, Any]] = {}
+    for name, entry in sorted(chosen.items()):
+        if ps.INSTALL_ID.match(name):
+            if entry.get("mode") is not None or entry.get("skills") is not None:
+                raise _refuse(f"{name} is a managed plugin: it loads every component of its pinned "
+                              "version and takes no mode or skills", step_id=step_id,
+                              field=STEP_FIELD, plugin=name)
+            added[name] = {"overrides": dict(entry.get("overrides") or {})}
+            continue
+        if entry.get("overrides"):
+            raise _refuse(f"{name} is a built-in plugin and has no settings to override",
+                          step_id=step_id, field=STEP_FIELD, plugin=name)
+        if entry.get("mode") is None:
+            raise _refuse(f"{name} names a mode ({', '.join(SUPPORTED_MODES)}) and the skills it uses",
+                          step_id=step_id, field=STEP_FIELD, plugin=name,
+                          modes=list(SUPPORTED_MODES))
+        built_ins[name] = {"mode": entry.get("mode"), "skills": list(entry.get("skills") or ())}
+    if not added and not signed_defaults(tenant_id, settings_doc, mac):
+        return StepPlugins(built_ins=built_ins)
+    try:
+        merged = pcfg.step_plugins(
+            store, configs, tenant_id=tenant_id, runner_profile=runner_profile,
+            allowed=allowed_plugins(tenant_id, settings_doc, mac), added=added,
+            # A built-in the step names itself keeps the step's own mode and
+            # skills: never a second, default copy of it.
+            off=[*turned_off, *built_ins])
+    except ValidationFailed as exc:
+        raise _with_step(exc, step_id) from None
+    skipped = list(merged["skipped"])
+    for name in merged["built_ins"]:
+        if caller_contract_plugins:
+            skipped.append({"install_id": name, "code": SKIP_CONTRACT_NAMES_PLUGINS})
+        elif not workcontract.enabled(environ):
+            skipped.append({"install_id": name, "code": SKIP_CONTRACTS_OFF})
+        else:
+            built_ins[name] = {"mode": DEFAULT_MODE,
+                               "skills": list(CATALOGUE[name].skills.get(DEFAULT_MODE, ()))}
+    if len(built_ins) + len(merged["plugins"]) > pcfg.MAX_PLUGINS:
+        raise _with_step(pcfg.ConfigRefused("too_many_plugins", runner_profile=runner_profile), step_id)
+    return StepPlugins(built_ins=built_ins, managed=dict(merged["plugins"]), skipped=skipped)
+
+
 # --- the workspace's allowed plugins ----------------------------------------
 
 COLLECTION = SETTINGS_COLLECTION
@@ -303,23 +483,51 @@ AUDIT_ACTION = "workspace_plugins_set"
 #: The block's name in `swarm_common.specsign.SETTINGS_MAC_FIELDS`.
 MAC_BLOCK = FIELD
 OWNED_FIELDS = (ALLOWED, SET_AT, SET_BY, MAC_FIELD)
+#: The block's keys `pluginconfig` writes (contract request 140): the
+#: every-step defaults and the settings digest, both covered by the MAC, and
+#: the uncovered map of per-plugin digests the settings digest is made from.
+#: Restated here because pluginconfig imports this module; a unit test holds
+#: them equal to `pluginconfig.DEFAULTS`, `CONFIGS_DIGEST`, `CONFIG_DIGESTS`.
+DEFAULTS = "defaults"
+CONFIGS_DIGEST = "configs_digest"
+CONFIG_DIGESTS = "config_digests"
+#: Carried over when the Allowed list is written again under a block that
+#: verifies; dropped with it when it does not.
+CARRIED_FIELDS = (DEFAULTS, CONFIGS_DIGEST, CONFIG_DIGESTS)
 #: None allowed until the workspace's owner or admin allows one.
 DEFAULT_ALLOWED: tuple[str, ...] = ()
+#: The longest Allowed list: the built-ins and up to 64 platform installs, a
+#: bound on one document's size, far above any catalogue in sight.
+MAX_ALLOWED = len(CATALOGUE) + 64
 
 
 class PluginsPut(StrictModel):
-    #: Catalogue names only; checked against `CATALOGUE` by `normalise`.
-    allowed: list[str] = Field(max_length=len(CATALOGUE) + 8)
+    #: Catalogue names and platform install ids; checked by `normalise`.
+    allowed: list[str] = Field(max_length=MAX_ALLOWED)
 
 
-def normalise(names: Sequence[str]) -> list[str]:
-    """Sorted, deduplicated catalogue names; 422 for any other name."""
-    unknown = sorted({n for n in names if n not in CATALOGUE})
+def normalise(names: Sequence[str], store: Any = None) -> list[str]:
+    """Sorted, deduplicated catalogue names and active platform install ids
+    (`store`, a `pluginstore.PluginStore`, reads each); 422 for any other
+    name. A removed platform install is dropped: removal takes it out of
+    every Allowed list, so a list read before the removal still saves."""
+    kept: set[str] = set()
+    unknown: set[str] = set()
+    for name in names:
+        if name in CATALOGUE:
+            kept.add(name)
+            continue
+        install = store.install(name) if store is not None and _platform_id(name) else None
+        if install is None or install.get("scope") != ps.PLATFORM:
+            unknown.add(name)
+        elif install.get("state") == ps.STATE_ACTIVE:
+            kept.add(name)
     if unknown:
+        listed = sorted(unknown)
         raise ValidationFailed(
-            f"{', '.join(unknown)} is not in the plugin catalogue",
-            detail={"field": ALLOWED, "unknown": unknown, "catalogue": sorted(CATALOGUE)})
-    return sorted(set(names))
+            f"{', '.join(listed)} is not in the plugin catalogue",
+            detail={"field": ALLOWED, "unknown": listed, "catalogue": sorted(CATALOGUE)})
+    return sorted(kept)
 
 
 def authorize_write(auth: AuthContext, tenant: Tenant | None, tenant_id: str,
@@ -363,7 +571,7 @@ class PluginsStore:
         With no settings key a list is stored unsigned, and `allowed_plugins`
         reads it as none allowed: no step can use a plugin on a deployment
         that cannot sign the choice."""
-        wanted = normalise(allowed)
+        wanted = normalise(allowed, ps.PluginStore(self._db, now=self._now, mac=self._mac))
         ref = self._ref(tenant_id)
         audit = self._db.collection(AUDIT_COLLECTION).document()
         now = self._now()
@@ -380,10 +588,19 @@ class PluginsStore:
             signed = bool(keys) and block_verifies(tenant_id, MAC_BLOCK, stored, keys[:1])
             if previous == wanted and (signed or not keys) and stored.get(ALLOWED) == wanted:
                 return
-            # A covered key this writer does not write (contract request 140's
-            # `defaults` and `configs_digest`) was planted by a direct write:
-            # dropped, never signed with the list the caller chose.
+            # The defaults and the settings digest (contract request 140)
+            # are carried over, signed again with the new list, only when
+            # the stored block verifies under a key this deployment holds:
+            # then pluginconfig wrote them. When it does not, they may be a
+            # direct write's, and are dropped, never signed with the list the
+            # caller chose. The per-plugin map goes with the digest made
+            # from it. A covered key no writer writes is dropped either way.
+            verified = bool(keys) and block_verifies(tenant_id, MAC_BLOCK, stored, keys)
             dropped = (*OWNED_FIELDS, *unowned_covered_keys(MAC_BLOCK))
+            if not verified or stored.get(CONFIGS_DIGEST) is None:
+                dropped = (*dropped, CONFIGS_DIGEST, CONFIG_DIGESTS)
+            if not verified:
+                dropped = (*dropped, DEFAULTS)
             block = {k: v for k, v in stored.items() if k not in dropped}
             block.update({ALLOWED: wanted, SET_AT: now, SET_BY: by})
             mac = block_mac(tenant_id, MAC_BLOCK, block, keys)
@@ -443,8 +660,11 @@ __all__ = [
     "ALLOWED",
     "AUDIT_ACTION",
     "BRIDGE_REASON",
+    "CARRIED_FIELDS",
     "CATALOGUE",
     "CLAUDE_CODE_PROFILES",
+    "DISPATCH_PLUGINS",
+    "DISPATCH_SKIPPED",
     "FIELD",
     "GSTACK",
     "MAC_BLOCK",
@@ -454,6 +674,7 @@ __all__ = [
     "PluginsStore",
     "STEP_FIELD",
     "SUPPORTED_MODES",
+    "StepPlugins",
     "allowed_plugins",
     "authorize_read",
     "authorize_write",
@@ -463,8 +684,10 @@ __all__ = [
     "contract_id_of",
     "enabled",
     "environment_enabled",
+    "merge_step_plugins",
     "normalise",
     "offered_skills",
+    "signed_defaults",
     "step_contract",
     "view",
     "with_step_plugins",
