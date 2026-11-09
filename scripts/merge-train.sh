@@ -874,6 +874,8 @@ tell_skip() {
       clears="What clears it: re-run that job from its run page if the failure was not this change's (a network timeout, a flake), or push a fix if it was. The train boards it on its next tick once every check at its head has finished green." ;;
     conflict)
       clears="What clears it: merge main into the branch (or rebase it onto main), resolve the conflict and push. The train boards it once its new head is green." ;;
+    review-not-yet)
+      clears="What clears it: a later review that says MERGE; the merge step that reads it removes \`review-not-yet\`. A CI fix does not, and the train boards nothing that carries the label." ;;
     *)
       clears="What clears it: edit the body so it closes only what this change finishes (write \`part of #N\` for the rest). The train reads it again on its next tick." ;;
   esac
@@ -918,7 +920,9 @@ guards_pass() {
   # anything else could not tell, and does not board either. A closing-keyword
   # refusal (2) does not clear by itself, so the pull request is told, once
   # at its head (tell_skip), unless $3 says this is a dry run; a read that
-  # could not tell, or a dependency not landed yet, may clear by itself.
+  # could not tell, or a dependency not landed yet, may clear by itself. A
+  # `review-not-yet` refusal (the same check's, owner decision 9 November
+  # 2026) is told under its own reason: only a later MERGE review clears it.
   local number="$1" head="$2" dry="$3" here rc refusal
   here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   refusal="${WORK}/closing-${number}.md"
@@ -927,8 +931,13 @@ guards_pass() {
   if [[ "${rc}" -ne 0 ]]; then
     info "#${number} does not board: its closing keywords name an open pull request, or that could not be read (exit ${rc})"
     if [[ "${rc}" -eq 2 && "${dry}" != "true" ]]; then
-      tell_skip "${number}" "${head}" closing-references \
-        "its closing keywords would close an open pull request" "${refusal}"
+      if grep -qxF -- "<!-- review-not-yet -->" "${refusal}"; then
+        tell_skip "${number}" "${head}" review-not-yet \
+          "its review said NOT_YET, and no later review has said MERGE" "${refusal}"
+      else
+        tell_skip "${number}" "${head}" closing-references \
+          "its closing keywords would close an open pull request" "${refusal}"
+      fi
     fi
     return 1
   fi
