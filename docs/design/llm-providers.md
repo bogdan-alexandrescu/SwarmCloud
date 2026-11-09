@@ -1,6 +1,6 @@
 # LLM providers: plan accounts and API keys as two pools, a plan-then-key-then-Voice-it fallback, and Capacity › LLM Providers
 
-The owner's request, 9 November 2026 (kept in his words):
+The owner's request, 9 November 2026 (kept in the owner's words):
 
 > we also need a way to delete and fully manage API keys separately from
 > subscription accounts. We should:
@@ -441,7 +441,8 @@ wait for a pick:
 
 A fresh install gets, from `apps/swarm-install`:
 
-* **The question** "Which will agents run on: plans, API keys, or both?"; a
+* **The question** (whether to ask it at all is Q10) "Which will agents run
+  on: plans, API keys, or both?"; a
   key answer offers the one-step key form as a console link at the end, never
   a prompt in the terminal (the installer must not see a key either).
 * **The team gate** (`team.py:388-413`, `await_pool_account`) accepts a key
@@ -476,24 +477,27 @@ secret, or a park.
 
 | Lane | Territory | Waits on |
 |---|---|---|
-| **LP-B1** broker: the `anthropic-api` kind, `VENDOR_OF`, key validation, `exhausted_at`, `per_workspace_max`, `monthly_spend_cap_usd`, `voice_dedicated`, the `api-key` registration path | `apps/quota-broker/quota_broker/accounts.py`, a new `api_key.py` (generalising `openai_api_key.py`), `main.py` registration and caps routes, their tests | Q6 |
-| **LP-B2** broker: the tiered walk in assign, swap and the Voice it lease; the `tier` field; the soonest reason | `apps/quota-broker/quota_broker/main.py` assign, swap and voice routes, `accounts.py` `accounts_serving`, their tests | LP-B1; Q1 |
-| **LP-B3** broker: delete with secret destruction, rotate, resume, the hourly exhausted probe | `accountstore.py`, `secretstore.py`, `main.py` delete route, their tests | LP-B1; Q3, Q4, Q5; the IAM change of §8.3 |
-| **LP-W1** worker: the key shapes in `credential_env_from_account`, the `credit_exhausted` outcome, the tier on the attempt's timeline, the cross-kind swap restart | `apps/agent-worker/agent_worker/accountlease.py`, `runners/cliagent.py`, their tests | LP-B2 |
-| **LP-A1** swarm-api: the `api-key` setup-link kind, the redeem path, the Voice it settings' dedicated-key status | `apps/swarm-api/swarm_api/setup_links.py`, `routes/setup.py`, `routes/voice_settings.py`, their tests | LP-B1 |
-| **LP-V1** swarm-voice: Live, text and planner leases walk the chain; the developer Responses wire for text on a key; `ANTHROPIC_API_KEY` for a planner turn on a key; reopening Live on the next tier | `apps/swarm-voice/swarm_voice/accountlease.py`, `plannerlease.py`, `textchat.py`, `claudeturn.py`, their tests | LP-B2; Q2 |
+| **LP-B1** broker, one lane in three sequenced stages, each a PR that waits on the one before: **(a)** the `anthropic-api` kind, `VENDOR_OF`, key validation, `exhausted_at`, `per_workspace_max`, `monthly_spend_cap_usd`, `voice_dedicated`, the `api-key` registration path and caps routes; **(b)** the tiered walk in assign, swap and the Voice it lease, the `tier` field, the soonest reason, `accounts_serving`; **(c)** delete with secret destruction, rotate, resume, the hourly exhausted probe | `apps/quota-broker/quota_broker/accounts.py`, `main.py`, `accountstore.py`, `secretstore.py`, a new `api_key.py` (generalising `openai_api_key.py`), their tests | (a) Q6; (b) stage (a), Q1; (c) stage (b), Q3, Q4, Q5, the IAM change of §8.3 |
+| **LP-W1** worker: the key shapes in `credential_env_from_account`, the `credit_exhausted` outcome, the tier on the attempt's timeline, the cross-kind swap restart | `apps/agent-worker/agent_worker/accountlease.py`, `runners/cliagent.py`, their tests | LP-B1 stage (b) |
+| **LP-A1** swarm-api: the `api-key` setup-link kind, the redeem path, the Voice it settings' dedicated-key status | `apps/swarm-api/swarm_api/setup_links.py`, `routes/setup.py`, `routes/voice_settings.py`, their tests | LP-B1 stage (a) |
+| **LP-V1** swarm-voice: Live, text and planner leases walk the chain; the developer Responses wire for text on a key; `ANTHROPIC_API_KEY` for a planner turn on a key; reopening Live on the next tier | `apps/swarm-voice/swarm_voice/accountlease.py`, `plannerlease.py`, `textchat.py`, `claudeturn.py`, their tests | LP-B1 stage (b); Q2 |
 | **LP-M1, M2, M3** mock-ups (§6.6) | `docs/web-ui/mockups/llm-providers-*.html` | nothing |
 | **LP-U1** console: the `llm-providers` tab and routing, the redirect | `apps/swarm-ui/src/App.tsx`, a new `LlmProviders.tsx`, its test | LP-M1 pick |
 | **LP-U2** console: Plans (the board moved out of `Accounts.tsx`) | `apps/swarm-ui/src/Accounts.tsx`, a new `LlmPlans.tsx`, its test | LP-U1; LP-M1 pick |
-| **LP-U3** console: API Keys list, add, controls | a new `LlmApiKeys.tsx`, `apps/swarm-ui/src/api.ts` (the key calls only), its test | LP-U1; LP-M1, LP-M2 picks; LP-B1, LP-B3, LP-A1 |
-| **LP-U4** console: Voice it › Settings' dedicated key, the session tier mark | `apps/swarm-ui/src/voice/Settings.tsx`, `apps/swarm-ui/src/voice/Talk.tsx`, its test | LP-M3 pick; LP-A1 |
-| **LP-I1** installer: §7 | `apps/swarm-install/swarm_install/team.py`, `tfvars.py`, their tests | LP-B1 |
+| **LP-U3** console: API Keys list, add, controls | a new `LlmApiKeys.tsx`, `apps/swarm-ui/src/api.ts` (the key calls, and the dedicated-key and chain fields of `VoiceSettingsView` for LP-U4), its test | LP-U1; LP-M1, LP-M2 picks; LP-B1 stage (c), LP-A1 |
+| **LP-U4** console: Voice it › Settings' dedicated key, the session tier mark | `apps/swarm-ui/src/voice/Settings.tsx`, `apps/swarm-ui/src/voice/Talk.tsx`, its test | LP-M3 pick; LP-A1; LP-U3 (for its `api.ts` calls) |
+| **LP-I1** installer: §7 | `apps/swarm-install/swarm_install/team.py`, `tfvars.py`, their tests | LP-B1 stage (a) |
 | **LP-T1** Terraform: §8.3 | the broker's IAM file under `terraform/infra/` | Q3 |
 
 Each UI lane touches at most three files. LP-U2 and LP-U3 both depend on
 `api.ts` only through LP-U3; LP-U2 reuses the existing plan calls, so the two
-never edit the same file. Two broker lanes edit `main.py` in disjoint routes;
-if the orchestrator prefers, LP-B2 waits on LP-B1's merge (the table says so).
+never edit the same file. LP-U4 edits no `api.ts`: the existing
+`VoiceSettingsView.openai_key` status covers only the read, so the replace and
+delete calls and the chain line it needs are added by LP-U3, and LP-U4 waits on
+it. The broker work is one lane, not three, because its stages share
+`main.py` and `accounts.py` (two issues that edit the same file are one lane);
+its stages merge in order, so no two broker PRs are open on the same file at
+once.
 
 ### 8.2 The frozen contract
 
@@ -512,8 +516,9 @@ an edit under `apps/common/swarm_common/`.
 * **IAM / Terraform**: the broker can add and expire versions but has no
   `secretmanager.secrets.delete` (and destroys versions only through
   `_destroy_stale_versions`). Deleting a key's secret needs
-  `secretmanager.secrets.delete` added to the broker's custom role, scoped by
-  an IAM condition to secrets named `swarm-account-*`. One Terraform change in
+  `secretmanager.secrets.delete` in the broker's custom role, granted through a
+  conditional binding of that role limited to secrets named `swarm-account-*`
+  (a condition scopes a binding, not a role). One Terraform change in
   lane LP-T1, labelled `managed-by=swarm-terraform`, touching nothing on the
   never-touch list. Not needed if Q3 picks "retain".
 * **Per-secret accessor grants** for lent keys are made by the broker at
@@ -549,3 +554,6 @@ Each is in the lane's `questions.json` with options and a recommendation.
 * **Q9. Today's Voice it key.** Keep it as the dedicated Voice it key
   (recommended: it is what it was added for), or move it to API Keys as a
   shared key.
+* **Q10. The installer's question.** Ask "plans, API keys, or both" at install
+  (recommended: the team gate and the summary then check what the operator
+  meant to add), or ask nothing and let the gate accept either kind.
