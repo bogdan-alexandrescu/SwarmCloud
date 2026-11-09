@@ -4,7 +4,7 @@
     swarm-test-browsers npx playwright install chromium
     swarm-test-browsers npx playwright test
 
-WHY (BGD, 2026-10-24, "Test-runner exception on browser"; part of #2253). On
+WHY (the owner, 2026-10-24, "Test-runner exception on browser"; part of #2253). On
 claude-code-browser the agent's `PLAYWRIGHT_BROWSERS_PATH` is the live-browser
 stub (BROWSER-ENFORCE, #1030), so a repository's own `npx playwright test`
 could not launch the headless Chromium it needs, and /opt/playwright is

@@ -1,6 +1,6 @@
 # Lane admission-batched (part of #2688): the scheduler reserves capacity for
 # a batch of READY tasks in one transaction that writes each pool document
-# once (BGD, 2026-11-06). Like CANDIDATE_BATCH_SIZE in the base manifest's
+# once (the owner, 2026-11-06). Like CANDIDATE_BATCH_SIZE in the base manifest's
 # env: table, nothing renders it; the reader's default (10) is the deployed
 # value, and 1 restores one transaction a task.
 version: 1

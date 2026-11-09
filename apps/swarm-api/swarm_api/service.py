@@ -107,6 +107,7 @@ from .mcp_servers import (
     server_id as mcp_server_id,
 )
 from .metrics import ApiMetrics
+from .nochange import refuse_undeclared_no_change
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
 from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
@@ -1634,6 +1635,12 @@ class SubmissionService:
             # nothing succeeds `no_change` instead of failing
             # `published_nothing:` and sweeping the step that reads it.
             readers = reader_step_ids(step_specs, strategy=dispatch.strategy)
+            # A step held to a pull request whose prompt says it changes
+            # nothing, submitted without `allow_empty_diff` (part of #2688).
+            refuse_undeclared_no_change(
+                spec.steps, step_specs, strategy=dispatch.strategy, readers=readers,
+                integrator_step_id=integrator_step_id, rereview=rereview_step_id,
+            )
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,

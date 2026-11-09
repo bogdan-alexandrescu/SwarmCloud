@@ -140,7 +140,7 @@ DISABLED_SERVERS: dict[str, ServerSpec] = {}
 # `ast` edges are in the graph as before -- but no server is asked about
 # them: a migration or an alembic revision calls the models a hundred times
 # and is never where impact finds a test, and docs/ is examples and Sphinx
-# configuration. On ai-studio the pass ran out of its budget every full run
+# configuration. On a peer application the pass ran out of its budget every full run
 # (16 of 16), so every site asked there was one not asked in application
 # code. Gitignore semantics, matched against the repository-relative path:
 # `**/` is zero or more directories, `*` stays inside one.

@@ -765,7 +765,7 @@ def gcloud_account(gcloud: Callable[[], str | None] = find_gcloud) -> str:
 #: The scopes preflight's own application-default sign-in asks for: Cloud
 #: Platform for the engine and terraform, and the two read-only Directory
 #: scopes stage 6 (IDENTITY-STAGE) reads the Workspace customer and its admin
-#: roles with (BGD, 2026-10-30, decision 8).
+#: roles with (the owner, 2026-10-30, decision 8).
 ADC_SCOPES = (
     CLOUD_PLATFORM,
     "https://www.googleapis.com/auth/admin.directory.customer.readonly",
@@ -1022,7 +1022,7 @@ def consumer_account(account: str) -> bool:
 
 class OrganizationStep(_Base):
     """A Google organisation the signed-in account can see, said FIRST in
-    stage 0, before any question (BGD, 2026-10-30: "Require an org, say so up
+    stage 0, before any question (the owner, 2026-10-30: "Require an org, say so up
     front"). With none, the step says that SwarmCloud needs one, opens the
     Cloud Identity Free sign-up and polls (a wait: the person never types
     "done") until an organisation appears. A consumer account (gmail.com)
@@ -1236,7 +1236,7 @@ class InputsStep(_Base):
                 return UNMET
             return MET if found else UNMET
 
-        # Past its bound the WaitGaveUp goes through as it is (BGD, 2026-10-30): the
+        # Past its bound the WaitGaveUp goes through as it is (the owner, 2026-10-30): the
         # engine pauses the run on it (ENGINE-WAIT-PAUSE), and it names what to look at.
         wait_until(self.id + ":billing-account", BILLING_WAIT, listed, clock=ctx.clock, events=ctx.events,
                    on_poll=getattr(ctx.engine, "_heartbeat", None))
@@ -2109,7 +2109,7 @@ class SizingQuotaStep(SizingStep):
             try:
                 known = self.gcp.cpu_quotas(ctx.project, str(ctx.state.region)).usable
             except ApiError as exc:
-                # BGD, 2026-10-30: one plain line, and the proposal stands.
+                # The owner, 2026-10-30: one plain line, and the proposal stands.
                 return Observation(MET, f"the {ctx.state.region} CPU quota could not be read "
                                         f"({_one_line(exc)}), so the proposed sizing is kept")
             if known is None:

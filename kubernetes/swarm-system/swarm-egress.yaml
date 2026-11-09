@@ -14,7 +14,7 @@
 #
 #   terraform -chdir=terraform/infra output -raw swarm_egress_manifest
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2); apply.sh refuses it.
 #
 # WHY A ONE-REPLICA STATEFULSET. The byte ledger that enforces the monthly

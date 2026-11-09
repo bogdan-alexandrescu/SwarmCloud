@@ -44,7 +44,7 @@ _P = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_P)
 placeholder_deployment = _P.deployment()
 
-PROJECT = "example-project"
+PROJECT = _P.PROJECT
 SCHEDULER_UID = "117405034245659033603"
 RECONCILER_UID = "108023754768362642341"
 #: Shaped like a uniqueId; not any real account's.
@@ -477,7 +477,7 @@ def test_every_personal_namespace_the_contract_derives_is_in_scope(policy_docs, 
         "swarm-tenant-u-",
         "swarm-tenant-u--",
         "xswarm-tenant-u-alice",
-        "peer-cluster",
+        _P.PEER["cluster"],
         "",
     ],
 )
@@ -1109,7 +1109,7 @@ def test_a_terraform_tfvars_that_names_no_tenant_is_refused(tmp_path):
         _render("policies", "--terraform-tfvars", str(empty))
 
 
-@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", "peer-cluster", "swarm-tenant-"])
+@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", _P.PEER["cluster"], "swarm-tenant-"])
 def test_no_namespace_outside_the_prefix_is_admitted_even_with_the_label(dev_policy_docs, name):
     namespace = _namespace(name, LABELLED)
     namespace["metadata"]["labels"]["swarm-tenant"] = name.removeprefix(render.NAMESPACE_PREFIX)

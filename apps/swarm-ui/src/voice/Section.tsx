@@ -17,6 +17,9 @@
  * reads for, read only unless they are a platform admin, and Telemetry
  * (Telemetry.tsx) beside it for platform admins only, the readers swarm-api's
  * platform telemetry view has.
+ * Each tab has its own path, `/voice/settings` and `/voice/telemetry`, and
+ * its own menu entry (owner's pick, 2026-11-08): the route says which tab
+ * opens, and the tablist still switches between them in place.
  *
  * ONLY TALK LISTENS, AND ONLY WHEN ASKED. Nothing asks for the microphone
  * until the person presses Start talking; Projects and Preferences open no
@@ -138,6 +141,14 @@ export type VoiceSettingsTab = 'settings' | 'telemetry'
 export function VoiceSettingsSectionScreen({ tab = 'settings' }: { tab?: VoiceSettingsTab }) {
   const open = useVoiceItOpen()
   const [picked, setPicked] = useState<VoiceSettingsTab>(tab)
+  // A NEW ROUTE OPENS ITS OWN TAB: going from /voice/settings to
+  // /voice/telemetry keeps this component mounted, so the tab the route names
+  // replaces the one picked in place, during render rather than after a paint.
+  const [routed, setRouted] = useState<VoiceSettingsTab>(tab)
+  if (routed !== tab) {
+    setRouted(tab)
+    setPicked(tab)
+  }
   if (open === null) return null
   const shown: VoiceSettingsTab = open ? picked : 'settings'
   const tabs: readonly { key: VoiceSettingsTab; label: string }[] = open

@@ -478,7 +478,7 @@ def test_runs_use_installation_tokens() -> None:
     assert not hasattr(verify, "CREDENTIAL_UNRECORDED")
 
 
-#: BGD, 2026-10-30 ("Person's token for plugin runs"): the plugin's runs are
+#: The owner, 2026-10-30 ("Person's token for plugin runs"): the plugin's runs are
 #: the person's own submissions, so their own GitHub App user token
 #: (`app_user`) is accepted there; the console's runs are service
 #: submissions, minted an installation token, and must show one.

@@ -49,8 +49,8 @@ _SPEC.loader.exec_module(_P)
 DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
 
 # The shared project, by name: common.sh reads the never-touch list of the
-# project named, and the placeholder deployment serves the placeholder list
-# (PEER's entries) for it. These neighbours are on that list.
+# project named (DAYONE-GENERIC-2), and the placeholder deployment serves the
+# placeholder list (PEER's entries) for it. These neighbours are on that list.
 PROJECT = _P.SHARED_PROJECT
 PEER_CLUSTER = _P.PEER["cluster"]
 PEER_BUCKET = _P.PEER["bucket"]

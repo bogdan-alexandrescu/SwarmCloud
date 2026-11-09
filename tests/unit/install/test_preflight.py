@@ -873,7 +873,7 @@ def test_org_domain_read_from_the_organization() -> None:
 
     fresh = FakeGcp(exists=False)  # a new project under a folder: the folder's organization
     ctx = ctx_for(outputs={"parent": FOLDER})
-    preflight.OrgDomainStep(lambda: fresh, Answers(), account=lambda: "x@y.com").apply(ctx, step.plan(ctx))
+    preflight.OrgDomainStep(lambda: fresh, Answers(), account=lambda: "admin@example.com").apply(ctx, step.plan(ctx))
     assert ctx.outputs["org_domain"] == "example.com"
 
 
@@ -881,14 +881,15 @@ def test_org_domain_falls_back_to_the_account_confirmed() -> None:
     gcp = FakeGcp()
     gcp.org_failure = ApiError(403, "PERMISSION_DENIED", "no")
     ask = Answers(preflight_org_domain=[""])  # Enter confirms the account's domain
-    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: "admin@Acme.com")
+    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: "admin@Example.org")
     ctx = ctx_for()
     step.apply(ctx, step.plan(ctx))
-    assert ctx.outputs["org_domain"] == "acme.com" and ask.defaults == ["acme.com"]
+    assert ctx.outputs["org_domain"] == "example.org" and ask.defaults == ["example.org"]
 
     # A consumer account's domain is never offered, and never accepted: IAP would admit everyone on it.
-    ask = Answers(preflight_org_domain=["gmail.com"])
-    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: "someone@gmail.com")
+    consumer = min(preflight.CONSUMER_DOMAINS)
+    ask = Answers(preflight_org_domain=[consumer])
+    step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: f"someone@{consumer}")
     with pytest.raises(ValueError):
         step.apply(ctx_for(), step.plan(ctx_for()))
     assert ask.defaults == [None]
@@ -1021,7 +1022,7 @@ def test_stage_0_order_signs_in_before_any_api_read() -> None:
 
 
 def test_adc_sign_in_asks_the_directory_scopes() -> None:
-    """BGD's answer for IDENTITY-STAGE: preflight's own ADC sign-in asks the
+    """The owner's answer for IDENTITY-STAGE: preflight's own ADC sign-in asks the
     admin.directory.customer.readonly and admin.directory.rolemanagement scopes
     beside cloud-platform, and the check is MET only when the ADC carries them."""
     gcloud = Login(account="admin@example.com")
@@ -1479,7 +1480,8 @@ def test_sign_in_records_the_installer() -> None:
     assert signed.ran == [] and ctx.outputs["installer"] == "admin@example.com"
 
 
-NO_ORG_ACCOUNT = "someone@gmail.com"
+#: An account on a consumer domain (preflight.CONSUMER_DOMAINS), so no organisation.
+NO_ORG_ACCOUNT = f"someone@{min(preflight.CONSUMER_DOMAINS)}"
 
 
 def _no_organisation() -> FakeGcp:
@@ -1490,7 +1492,7 @@ def _no_organisation() -> FakeGcp:
 
 def test_no_organisation_is_said_first_and_the_cloud_identity_page_opens(tmp_path: Path,
                                                                         pages: list[Any]) -> None:
-    """Audit #24, BGD 2026-10-30 "require an org, say so up front": an account
+    """Audit #24, the owner 2026-10-30 "require an org, say so up front": an account
     with no Google organisation hears, before any question, that SwarmCloud
     needs one; the Cloud Identity Free sign-up opens; there is no path on."""
     log: list[Any] = []
@@ -1703,7 +1705,7 @@ def test_the_cpu_quota_is_the_exact_metric_in_the_install_region(pages: list[Any
 
 
 def test_an_unreadable_stage_1_quota_keeps_the_proposed_sizing() -> None:
-    """BGD 2026-10-30: preflight.sizing-quota says in one line that the quota
+    """The owner, 2026-10-30: preflight.sizing-quota says in one line that the quota
     could not be read and keeps the proposal, never "run swarm install again"."""
     recorded = sizing.propose("team", 15)
     gcp = FakeGcp()
@@ -1762,7 +1764,7 @@ def test_a_billing_account_that_never_appears_says_what_to_look_at(pages: list[A
     ctx = ctx_for()
     with pytest.raises(WaitGaveUp) as raised:
         step.apply(ctx, step.plan(ctx))
-    # BGD, 2026-10-30: the wait's own WaitGaveUp, so the engine pauses the run (ENGINE-WAIT-PAUSE).
+    # The owner, 2026-10-30: the wait's own WaitGaveUp, so the engine pauses the run (ENGINE-WAIT-PAUSE).
     assert type(raised.value) is WaitGaveUp
     assert "billing" in str(raised.value) and preflight.BILLING_WAIT.look_at in str(raised.value)
     assert [url for url, _ in pages] == [preflight.BILLING_CREATE]

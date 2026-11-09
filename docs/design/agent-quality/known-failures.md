@@ -391,6 +391,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_publish_workflow_files.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_workflow_remote_tip.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_published_nothing.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_published_nothing_names_artifacts.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_pull_request_text.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_push_retry_republish.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_qa_target_signin.py` | `_node` | `skip_call` | node is not installed here; CI runs the start click on its fixture pages |

@@ -56,7 +56,7 @@ from ..terraform import AS_PERSON, Exec, Guards, Terraform, TerraformRefused, ru
 from . import Observation, Plan
 from .preflight import RELEASE_HOME, parse_sums
 
-#: The cosign public key of `swarmcloud-release/cosign`, printed by BGD's run
+#: The cosign public key of `swarmcloud-release/cosign`, printed by the owner's run
 #: of `scripts/release-home.sh` (its last step) and committed beside this file.
 RELEASE_KEY = Path(__file__).resolve().parent.parent / "release_key.pub"
 
@@ -83,7 +83,7 @@ def release_key(path: Path | None = None) -> Path:
     if not key.is_file() or b"BEGIN PUBLIC KEY" not in key.read_bytes():
         raise ReleaseKeyMissing(
             f"{key} is missing: it is the cosign public key of swarmcloud-release/cosign, printed at the end of "
-            "BGD's run of scripts/release-home.sh (RELHOME-1). Without it no release signature can be verified, "
+            "the owner's run of scripts/release-home.sh (RELHOME-1). Without it no release signature can be verified, "
             "so nothing is copied or applied"
         )
     return key

@@ -28,6 +28,8 @@ from .access import AccessService, build_access
 from .auth import qa_origin_refused
 from .compression import GzipWholeResponses
 from .deps import AppContext, build_context
+from .judgment import settings_mac
+from .platformswitches import PlatformSwitches, install as install_platform_switches
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
 from .forgeperms import build_forge_permissions
@@ -76,6 +78,8 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    platform_switches,
+    plugin_catalogue,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -404,6 +408,11 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         project_id=app.state.ctx.settings.project_id)
     # Multipart answers this instance holds at once (§4.3 step 3): a fifth is 429.
     app.state.answer_slots = threading.BoundedSemaphore(MAX_CONCURRENT_MULTIPART)
+    # The platform switches this instance's readers ask before the Terraform
+    # value (docs/design/managed-plugins.md section 11): read at most every
+    # half minute, so a console change needs no redeploy.
+    install_platform_switches(PlatformSwitches(
+        app.state.ctx.db, mac=settings_mac(app.state.ctx.settings), now=app.state.ctx.now))
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -457,6 +466,13 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's allowed agent plugins, from the platform's closed
     # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
     app.include_router(plugin_settings.router)
+    # The managed plugin catalogue (docs/design/managed-plugins.md, lane 5):
+    # installs, versions, updates and removal, platform and per workspace,
+    # and the intake job's callback; admins only, audited.
+    app.include_router(plugin_catalogue.router)
+    # The platform switches (work contracts, contract review) set from the
+    # console over their Terraform defaults: platform admins, audited.
+    app.include_router(platform_switches.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)

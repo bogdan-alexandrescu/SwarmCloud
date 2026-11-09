@@ -259,6 +259,20 @@
         "path": "/voice/preferences",
         "ready": "main h1",
         "persona": "platform-admin"
+      },
+      {
+        "id": "voice-settings",
+        "address": "voice/settings",
+        "path": "/voice/settings",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-telemetry",
+        "address": "voice/telemetry",
+        "path": "/voice/telemetry",
+        "ready": "main h1",
+        "persona": "platform-admin"
       }
     ],
     "task": [

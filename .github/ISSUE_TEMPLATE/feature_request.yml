@@ -82,6 +82,8 @@ body:
         - "Web UI · Voice it › Talk (/voice/talk)"
         - "Web UI · Voice it › Projects (/voice/projects)"
         - "Web UI · Voice it › Preferences (/voice/preferences)"
+        - "Web UI · Voice it › Settings (/voice/settings)"
+        - "Web UI · Voice it › Telemetry (/voice/telemetry)"
         - "Web UI · Agent inspector — one agent beside the Agents list"
         - "Web UI · Checkpoint browser — the agent's Checkpoints tab"
         - "Web UI · Settings › Profile (/settings/profile)"
