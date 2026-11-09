@@ -41,7 +41,7 @@ import {
   type PluginIntake,
   type PluginScope,
   type PluginSourceBody,
-  type PluginVersion,
+  type WorkspacePluginVersion,
   type WorkspaceCatalogue,
 } from './api'
 import { Banner, Button, Chip, Tabs } from './components'
@@ -456,7 +456,7 @@ function PluginPage({ data, entry: e, tab, link, onTab, onBack }: {
 }
 
 function Overview({ data, entry: e }: { data: PageData; entry: PluginEntry }) {
-  const [versions, setVersions] = useState<Result<PluginVersion[]> | null>(null)
+  const [versions, setVersions] = useState<Result<WorkspacePluginVersion[]> | null>(null)
   useEffect(() => {
     if (e.scope !== 'workspace') return
     let live = true
@@ -496,7 +496,7 @@ function Overview({ data, entry: e }: { data: PageData; entry: PluginEntry }) {
   )
 }
 
-function PinnedFacts({ entry: e, v }: { entry: PluginEntry; v: PluginVersion | null }) {
+function PinnedFacts({ entry: e, v }: { entry: PluginEntry; v: WorkspacePluginVersion | null }) {
   const commit = typeof v?.source.commit === 'string' && v.source.commit !== 'upload' ? v.source.commit : typeof e.source?.commit === 'string' ? e.source.commit : null
   const sha = v?.runnable_sha256 ?? e.runnable_sha256
   return (
@@ -507,7 +507,7 @@ function PinnedFacts({ entry: e, v }: { entry: PluginEntry; v: PluginVersion | n
   )
 }
 
-function HookRow({ h }: { h: PluginVersion['hooks'][number] }) {
+function HookRow({ h }: { h: WorkspacePluginVersion['hooks'][number] }) {
   return (
     <li className="plg-hook">
       <span className="plg-hook-ev"><b>{h.event}</b>{h.matcher !== null && <code>{h.matcher}</code>}</span>
@@ -518,7 +518,7 @@ function HookRow({ h }: { h: PluginVersion['hooks'][number] }) {
 }
 
 /** What a pinned version ships: skills, hooks, MCP servers, commands and agents. */
-function Components({ v }: { v: PluginVersion }) {
+function Components({ v }: { v: WorkspacePluginVersion }) {
   return (
     <>
       {v.skills.length > 0 && (
@@ -588,7 +588,7 @@ function AddPage({ data, onBack, onInstalled, onOpen }: {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<ApiError | null>(null)
   const [intake, setIntake] = useState<PluginIntake | null>(null)
-  const [pinned, setPinned] = useState<PluginVersion | null>(null)
+  const [pinned, setPinned] = useState<WorkspacePluginVersion | null>(null)
 
   const parsedOverlay = overlayOf(overlay)
   const repoBad = src !== 'upload' && repository !== '' && !REPOSITORY.test(repository.trim())
@@ -744,7 +744,7 @@ function AddPage({ data, onBack, onInstalled, onOpen }: {
   )
 }
 
-function ManifestPreview({ v, name, onSettings }: { v: PluginVersion; name: string; onSettings: () => void }) {
+function ManifestPreview({ v, name, onSettings }: { v: WorkspacePluginVersion; name: string; onSettings: () => void }) {
   return (
     <div className="plg-man">
       <header className="plg-man-h">

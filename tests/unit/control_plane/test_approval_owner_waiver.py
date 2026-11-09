@@ -51,6 +51,11 @@ from .test_issue_run_keyword import _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, _approve, _create, _finish_planner, _run
 from .test_schedule_tick import seed_schedule
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SCHEDULE = "sch_000000000001"
 DAVE = "dave@example.com"
 #: The hold #2259 measured: NEEDS_OWNER for `contract` and `workflows`.

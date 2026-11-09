@@ -3,8 +3,8 @@
 The design's row: a workflow whose review says NOT_YET twice and then MERGE
 ends SUCCEEDED with `re-review:1`, `review-fix:2` and `re-review:2` appended.
 scripts/acceptance/groups/workflow.sh submits it only where the deployment's
-catalogue offers `fix-loop` (it ships unavailable until the owner applies
-contract request 151) and judges it from the loop's task, the workflow's
+catalogue offers `fix-loop` (it shipped unavailable until contract request
+151, applied 2026-11-09; a deployment built before it is a SKIP) and judges it from the loop's task, the workflow's
 steps and each review's verdict.json.
 
 Run here with lib.sh's and testlib.sh's helpers stubbed, so no deployment and
@@ -134,9 +134,9 @@ def test_the_workflow_is_review_then_the_gated_integrator_then_the_loop(tmp_path
 
 
 def test_the_workflow_passes_swarm_apis_own_fix_loop_rules(tmp_path, monkeypatch):
-    """The body is what swarm-api accepts once the owner makes fix-loop
-    available: the real `resolve_fix_loop`, with the profile turned on in this
-    process only (the frozen catalogue is not edited)."""
+    """The body is what swarm-api accepts with fix-loop available, as it is
+    since contract request 151: the real `resolve_fix_loop`, with the profile
+    held on in this process whatever the catalogue says."""
     from swarm_common.profiles import RUNNER_PROFILES
 
     from swarm_api import validation
