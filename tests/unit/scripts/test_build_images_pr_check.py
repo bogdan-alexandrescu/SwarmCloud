@@ -82,7 +82,8 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # nothing of ours but its own app.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "swarm-voice", "swarm-speech", "workspace-apply"}
+                                  "swarm-voice", "swarm-speech", "swarm-plugin-bundler",
+                                  "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -143,6 +144,19 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # `claudecli` stage COPYs the file), so a version bump rebuilds it.
         (["images/agent-runtime-base/Dockerfile"], WORKER | {"swarm-voice"}),
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
+        # Managed plugins lane 14: the gstack and security-audit stages of the
+        # base and the browser image run the bundler's recipes from a bind
+        # mount, which is an input like a COPY: a recipe change rebuilds every
+        # image that carries a bundled tree, and the bundler that copies it.
+        (["images/plugin-bundler/recipes/gstack/build"], WORKER | {"swarm-plugin-bundler"}),
+        (["images/plugin-bundler/swarm-bundle"], WORKER | {"swarm-plugin-bundler"}),
+        # swarm-verify's context holds scripts/ too.
+        (["scripts/gstack_packaging_measure.py"], WORKER | {"swarm-plugin-bundler", "swarm-verify"}),
+        (["images/agent-runtime-browser/gstack-browser-files.txt"], WORKER | {"swarm-plugin-bundler"}),
+        # The stages mount the whole folder (a recipe finds the writer two
+        # folders up), so the bundler's own Dockerfile over-reads into them:
+        # one build too many, never one too few.
+        (["images/plugin-bundler/Dockerfile"], WORKER | {"swarm-plugin-bundler"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
         # The Lightpanda image's own recipe reaches it alone.

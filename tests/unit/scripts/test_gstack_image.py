@@ -7,10 +7,13 @@ proposal") measured what to build; this file holds the images to it:
 
   * the two build-mirror rows (gstack v1.92.55.0's source archive and Bun
     1.4.2) are in images/agent-runtime-base/tool-mirror.sha256 at the spike's
-    sha256, and every Dockerfile that reads them pins the same ARGs;
-  * the build stage checks both archives, the tag's commit, and runs setup
-    at the final path with the spike's flags, then fails when the closure
-    differs from the checked-in lists (gstack-layers check);
+    sha256, and bundled-plugins.json, the one place a release's default pins
+    are written (docs/design/managed-plugins.md, section 1.4.1), names the
+    same; no Dockerfile restates them;
+  * both build stages run the bundler's gstack recipe at those pins, and the
+    recipe checks both archives, the tag's commit, and runs setup at the final
+    path with the spike's flags, then fails when the closure differs from the
+    checked-in lists (gstack-layers check);
   * the base image ships Bun in /usr/local/bin and the base list, the browser
     image adds the browser list, both staged root-owned without `.git`;
   * gstack-layers itself, on small installs in a temporary folder (no Bun, no
@@ -38,6 +41,8 @@ LAYERS = BASE_DIR / "gstack-layers"
 BASE_LIST = BASE_DIR / "gstack-base-files.txt"
 BROWSER_LIST = REPO / "images" / "agent-runtime-browser" / "gstack-browser-files.txt"
 MEASURE = REPO / "scripts" / "gstack_packaging_measure.py"
+PINS = BASE_DIR / "bundled-plugins.json"
+RECIPE = REPO / "images" / "plugin-bundler" / "recipes" / "gstack" / "build"
 
 GSTACK_ROW = (
     "63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2",
@@ -81,15 +86,6 @@ def _code_lines(text: str) -> list[str]:
     return out
 
 
-def _args(path: Path) -> dict[str, str]:
-    args: dict[str, str] = {}
-    for line in _code_lines(path.read_text()):
-        m = re.match(r"ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line)
-        if m:
-            args[m.group(1)] = m.group(2)
-    return args
-
-
 def _stages(path: Path) -> dict[str, list[str]]:
     """Each stage's name -> its instructions (the FROM line first)."""
     stages: dict[str, list[str]] = {}
@@ -113,10 +109,6 @@ def _manifest_rows() -> set[tuple[str, str]]:
     return rows
 
 
-def _render(value: str, args: dict[str, str]) -> str:
-    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: args.get(m.group(1), m.group(0)), value)
-
-
 # --------------------------------------------------------------------------- #
 # The pins: the mirror rows and every Dockerfile's ARGs agree.
 # --------------------------------------------------------------------------- #
@@ -128,62 +120,129 @@ def test_the_mirror_lists_gstack_and_bun_at_the_spikes_sha256() -> None:
     assert BUN_ROW in rows, f"{MANIFEST.name} has no row {BUN_ROW}"
 
 
-def test_the_base_dockerfile_args_equal_the_mirror_rows() -> None:
-    args = _args(BASE_DOCKERFILE)
+def _pins() -> dict:
+    return json.loads(PINS.read_text())["plugins"]["gstack"]
+
+
+def test_the_bundled_pins_equal_the_mirror_rows() -> None:
+    pins = _pins()
     rows = dict((obj, sha) for sha, obj in _manifest_rows())
-    gstack = f"github.com/garrytan/gstack/archive/refs/tags/v{args['GSTACK_VERSION']}.tar.gz"
-    bun = f"github.com/oven-sh/bun/releases/download/bun-v{args['BUN_VERSION']}/bun-linux-x64.zip"
-    assert rows.get(gstack) == args["GSTACK_SHA256"], (gstack, args["GSTACK_SHA256"])
-    assert rows.get(bun) == args["BUN_SHA256"], (bun, args["BUN_SHA256"])
-    assert args["GSTACK_COMMIT"] == GSTACK_COMMIT
+    source, bun = pins["source"], pins["toolchain"]["bun"]
+    assert source["object"] == f"github.com/garrytan/gstack/archive/refs/tags/v{pins['version']}.tar.gz"
+    assert bun["object"] == f"github.com/oven-sh/bun/releases/download/bun-v{bun['version']}/bun-linux-x64.zip"
+    # MUTATION: bump the pin and forget the mirror row, or the reverse.
+    assert rows.get(source["object"]) == source["sha256"], source
+    assert rows.get(bun["object"]) == bun["sha256"], bun
+    assert source["commit"] == GSTACK_COMMIT
+    assert (pins["install_id"], pins["install_path"]) == ("builtin:gstack", PLUGIN_ROOT)
 
 
-def test_the_browser_dockerfile_builds_the_same_gstack() -> None:
-    base, browser = _args(BASE_DOCKERFILE), _args(BROWSER_DOCKERFILE)
-    for name in ("GSTACK_VERSION", "GSTACK_SHA256", "GSTACK_COMMIT"):
-        assert browser.get(name) == base[name], f"{name}: browser {browser.get(name)}, base {base[name]}"
+@pytest.mark.parametrize("path", [BASE_DOCKERFILE, BROWSER_DOCKERFILE], ids=["base", "browser"])
+def test_no_dockerfile_restates_the_pins(path: Path) -> None:
+    code = "\n".join(_code_lines(path.read_text()))
+    # MUTATION: put an ARG GSTACK_VERSION back; two places then hold a pin.
+    for name in ("GSTACK_VERSION", "GSTACK_SHA256", "GSTACK_COMMIT", "BUN_VERSION", "BUN_SHA256"):
+        assert f"ARG {name}" not in code, f"{path.relative_to(REPO)} restates {name}"
+    assert GSTACK_ROW[0] not in code and GSTACK_COMMIT not in code and BUN_ROW[0] not in code
 
 
-def _gstack_runs(path: Path, stage: str) -> list[str]:
+def _recipe_runs(path: Path, stage: str) -> list[str]:
     stages = _stages(path)
     assert stage in stages, f"{path.relative_to(REPO)} has no stage {stage}: {sorted(stages)}"
-    return [line for line in stages[stage] if line.startswith("RUN ") and "./setup" in line]
+    return [line for line in stages[stage]
+            if line.startswith("RUN ") and "/tmp/plugin-bundler/recipes/gstack/build" in line]
 
 
 @pytest.mark.parametrize(
-    "path,stage,listed",
-    [(BASE_DOCKERFILE, "gstack-build", "base"), (BROWSER_DOCKERFILE, "gstack-browser-build", "browser")],
+    "path,stage,listed,bun",
+    [(BASE_DOCKERFILE, "gstack-build", "base", "install"),
+     (BROWSER_DOCKERFILE, "gstack-browser-build", "browser", "present")],
     ids=["base", "browser"],
 )
-def test_the_build_stage_checks_and_sets_up_gstack_at_its_final_path(path: Path, stage: str, listed: str) -> None:
-    runs = _gstack_runs(path, stage)
-    assert len(runs) == 1, f"{path.relative_to(REPO)}: {len(runs)} RUNs run gstack's setup in {stage}"
-    run = _render(runs[0], _args(path))
-    assert f"file:///tmp/tool-mirror/{GSTACK_ROW[1]}" in run
-    assert re.search(r'echo "\$\{GSTACK_SHA256\}\s+\S+" \| sha256sum -c', runs[0])
-    assert "git get-tar-commit-id" in run and "${GSTACK_COMMIT}" in runs[0]
-    assert f"-C {PLUGIN_ROOT} --strip-components=1" in run
+def test_the_build_stage_runs_the_recipe_at_the_bundled_pins(path: Path, stage: str, listed: str, bun: str) -> None:
+    runs = _recipe_runs(path, stage)
+    assert len(runs) == 1, f"{path.relative_to(REPO)}: {len(runs)} RUNs run the gstack recipe in {stage}"
+    run = runs[0]
+    for mount in ("source=build/tool-mirror,target=/tmp/tool-mirror",
+                  "source=images/plugin-bundler,target=/tmp/plugin-bundler",
+                  "source=images/agent-runtime-base,target=/tmp/gstack-build/base",
+                  "source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py",
+                  "source=images/agent-runtime-browser/gstack-browser-files.txt,"
+                  "target=/tmp/gstack-build/gstack-browser-files.txt"):
+        assert f"--mount=type=bind,{mount}" in run, mount
+    assert "--pins /tmp/gstack-build/base/bundled-plugins.json --mirror /tmp/tool-mirror" in run
+    assert "--layers /tmp/gstack-build/base/gstack-layers" in run
+    assert "--measure /tmp/gstack-build/gstack_packaging_measure.py" in run
+    assert "--base-list /tmp/gstack-build/base/gstack-base-files.txt" in run
+    assert "--browser-list /tmp/gstack-build/gstack-browser-files.txt" in run
+    # MUTATION: stage the base list in the browser image, or reinstall Bun there.
+    assert f"--list {listed} --bun {bun} --out /out/gstack" in run
+    # Nothing else in the stage fetches or sets gstack up.
+    for line in _stages(path)[stage]:
+        assert "https://" not in line and "./setup" not in line, line
+
+
+def _recipe_code() -> str:
+    return "\n".join(_code_lines(RECIPE.read_text()))
+
+
+def test_the_recipe_checks_and_sets_up_gstack_at_its_final_path() -> None:
+    code = _recipe_code()
+    assert code.splitlines()[0] == "set -euo pipefail"
+    # Every pin is read through swarm-bundle, which checks the whole file first.
+    for var, key in (("GSTACK_INSTALL", "install_path"), ("GSTACK_VERSION", "version"),
+                     ("GSTACK_OBJECT", "source.object"), ("GSTACK_SHA256", "source.sha256"),
+                     ("GSTACK_COMMIT", "source.commit"), ("BUN_VERSION", "toolchain.bun.version"),
+                     ("BUN_OBJECT", "toolchain.bun.object"), ("BUN_SHA256", "toolchain.bun.sha256")):
+        assert f'{var}="$(pin {key})"' in code, var
+    assert '"file://${mirror}/${GSTACK_OBJECT}"' in code
+    assert re.search(r'echo "\$\{GSTACK_SHA256\}\s+\S+" \| sha256sum -c', code)
+    assert 'git get-tar-commit-id)" = "${GSTACK_COMMIT}"' in code
+    unpack = code.index('tar -xzf "${scratch}/gstack.tar.gz"')
+    # MUTATION: unpack before either check and a different archive is set up.
+    assert code.index('echo "${GSTACK_SHA256}') < unpack
+    assert code.index("git get-tar-commit-id") < unpack
+    assert '-C "${GSTACK_INSTALL}" --strip-components=1' in code
+    # A fresh tree at the final path: the compiled browse embeds the path it
+    # was built at (finding 7), and the base's copy is only the base list.
+    assert code.index('rm -rf "${GSTACK_INSTALL}"') < unpack
+    assert 'test "$(cat "${GSTACK_INSTALL}/VERSION")" = "${GSTACK_VERSION}"' in code
     for flag in ("GSTACK_SKIP_FONTS=1", "GSTACK_SETUP_SKIP_CSO_BUILD=1", "GSTACK_SECURITY_OFF=1"):
-        assert flag in run, flag
-    assert "./setup --host claude --no-browser" in run
+        assert flag in code, flag
+    assert "./setup --host claude --no-browser" in code
     # The build's HOME and gstack's state root are throwaway: none of what
     # setup writes there (a Stop hook, ~/.claude.json, ~/.gstack) ships.
-    assert re.search(r'HOME="\$\{scratch\}/home"', run) and re.search(r'GSTACK_STATE_ROOT="\$\{scratch\}/', run)
-    check = run.index("gstack-layers check")
-    staged = run.index("gstack-layers stage")
+    assert re.search(r'HOME="\$\{scratch\}/home"', code) and re.search(r'GSTACK_STATE_ROOT="\$\{scratch\}/', code)
+    check = code.index('"${layers}" check')
+    staged = code.index('"${layers}" stage')
     assert check < staged, "the lists are staged before they are checked"
-    assert "--measure /tmp/gstack-build/gstack_packaging_measure.py" in run
-    assert f"--list {listed} --out /out/gstack" in run
+    assert '--list "${list}" --out "${out}"' in code
+    # The manifest is written last, over the tree the image ends with.
+    assert code.index('"${bundle}" write') > staged
+    assert '--out "${out}/.swarm-bundle.json"' in code
 
 
-def test_the_base_build_stage_installs_the_pinned_bun_after_its_sha256() -> None:
-    runs = _gstack_runs(BASE_DOCKERFILE, "gstack-build")
-    run = _render(runs[0], _args(BASE_DOCKERFILE))
-    assert f"file:///tmp/tool-mirror/{BUN_ROW[1]}" in run
-    sha = runs[0].index('echo "${BUN_SHA256}')
-    assert sha < runs[0].index("zipfile"), "Bun is unpacked before its sha256 is checked"
-    assert "install -o root -g root -m 0755" in run and "/usr/local/bin/bun" in run
-    assert 'test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"' in runs[0]
+def test_the_recipe_installs_the_pinned_bun_after_its_sha256() -> None:
+    code = _recipe_code()
+    assert '"file://${mirror}/${BUN_OBJECT}"' in code
+    sha = code.index('echo "${BUN_SHA256}')
+    assert sha < code.index("zipfile"), "Bun is unpacked before its sha256 is checked"
+    assert 'install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun' in code
+    # Installed or already present, the Bun that runs setup is the pinned one.
+    assert 'test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"' in code
+    assert code.index("bun --version") < code.index("./setup")
+
+
+def test_the_recipe_digests_the_browser_tree_over_the_base_list() -> None:
+    code = _recipe_code()
+    # MUTATION: digest only the browser list; the browser image's tree is the
+    # browser list laid over the base list, and the worker digests that.
+    assert '--base-list "${base_list}" --list base --out "${scratch}/base-tree"' in code
+    assert 'trees+=(--tree "${scratch}/base-tree")' in code
+    assert code.index('trees+=(--tree "${scratch}/base-tree")') < code.index('trees+=(--tree "${out}")')
+    for name, var in (("build", "${here}/build"), ("gstack-layers", "${layers}"), ("measure", "${measure}"),
+                      ("base-list", "${base_list}"), ("browser-list", "${browser_list}")):
+        assert f'--input "{name}={var}"' in code, name
 
 
 def test_the_base_image_ships_bun_and_the_base_list_root_owned() -> None:
@@ -202,9 +261,6 @@ def test_the_browser_image_adds_the_browser_list() -> None:
     assert f"COPY --from=gstack-browser-build /out/gstack/ {PLUGIN_ROOT}/" in runtime
     build = stages["gstack-browser-build"]
     assert build[0] == "FROM ${BASE_IMAGE} AS gstack-browser-build"
-    # A fresh tree at the final path: the compiled browse embeds the path it
-    # was built at (finding 7), and the base's copy is only the base list.
-    assert f"rm -rf {PLUGIN_ROOT}" in _gstack_runs(BROWSER_DOCKERFILE, "gstack-browser-build")[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -213,7 +269,7 @@ def test_the_browser_image_adds_the_browser_list() -> None:
 
 
 def test_the_lists_are_of_the_pinned_version_sorted_and_disjoint() -> None:
-    version = _args(BASE_DOCKERFILE)["GSTACK_VERSION"]
+    version = _pins()["version"]
     base, browser = layers.read_list(BASE_LIST), layers.read_list(BROWSER_LIST)
     for path, files in ((BASE_LIST, base), (BROWSER_LIST, browser)):
         assert path.read_text().startswith(f"# gstack {version}: "), path.name

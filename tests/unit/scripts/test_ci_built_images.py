@@ -93,6 +93,9 @@ IMAGES = [
     # Voice it's own speech server (own speech L3, part of #2688),
     # apps/swarm-speech/Dockerfile.
     "swarm-speech",
+    # The bundle builds' image (managed plugins lane 14),
+    # images/plugin-bundler/Dockerfile.
+    "swarm-plugin-bundler",
     "workspace-apply",
 ]
 
