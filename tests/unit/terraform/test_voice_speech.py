@@ -236,14 +236,13 @@ def test_every_reference_to_the_template_handles_its_absence() -> None:
 
 
 @pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
-def test_only_dev_holds_the_template_back_and_says_why(tfvars: Path) -> None:
+def test_a_deployment_holding_the_template_back_says_why(tfvars: Path) -> None:
+    # Dev held it back until its bootstrap granted the template permissions
+    # (applied 2026-11-09); a deployment that holds it back again says why.
     raw = tfvars.read_text()
     body = _block(_code(raw), r"^voice_speech\s*=")
-    held = re.search(r"^\s*template\s*=\s*false\s*$", body, re.M)
-    if tfvars.parent.name != "dev":
-        assert not held, f"{tfvars}: holds the speech template back"
+    if not re.search(r"^\s*template\s*=\s*false\s*$", body, re.M):
         return
-    assert held, f"{tfvars}: dev does not hold the speech template back"
     lines = raw.splitlines()
     i = next(i for i, line in enumerate(lines) if re.match(r"^\s*template\s*=\s*false\b", line))
     why = " ".join(lines[i - 2 : i])
