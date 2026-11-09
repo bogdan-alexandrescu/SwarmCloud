@@ -1656,10 +1656,11 @@ def for_all(
     record = session.project_record()
     if project:
         # Two reads the API can filter, each a page or two: this session's
-        # work, and the project's repository's.
-        listing = _merged_listings(
-            ([sc.running_workflows(client, claude_session=sid)] if sid else [])
-            + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+        # work, and the project's repository's. This session's read alone
+        # (no repository to widen to) keeps what the API counted out.
+        reads = (([sc.running_workflows(client, claude_session=sid)] if sid else [])
+                 + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+        listing = reads[0] if len(reads) == 1 and project_repo is None else _merged_listings(reads)
     else:
         listing = sc.running_workflows(
             client, **server_scope(scope and scope["key"], sid, record))
@@ -1806,7 +1807,7 @@ def for_all(
                       "it (marked this_session: false) -- the plain attach-all and the session start's "
                       "alike; /sc check and the watch stay this session's"),
         }
-        if sid:
+        if sid and project_repo:
             out["session"]["scope"] = (
                 f"this Claude Code session's work (tagged `{session.METADATA_KEY}` {sid}) and every "
                 "workflow and single task still running that clones this project's repository, "
