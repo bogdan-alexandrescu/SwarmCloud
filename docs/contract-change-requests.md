@@ -17523,6 +17523,12 @@ Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
 Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
 section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
 
+**Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
+day: the revert was accepted by the owner (BGD) in advance, as the switch-on's own condition (revert at
+once if the live acceptance check fails). The check could not run, because every claude-code submission
+of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
+unproven. The profile is unavailable again until that check can run and passes.
+
 ### What is true today
 
 `RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
