@@ -9,9 +9,23 @@ OpenAI's Live API, as its reference documents it (read 2026-11-01):
   answer in `transport.sdp` (/api/reference/resources/live/methods/create,
   /api/docs/guides/voice-webrtc?api=live).
 * SIDEBAND: `wss://api.openai.com/v1/live/sessions/{id}/attach` with the same
-  bearer. The server's first event is `session.updated`; attaching "does not
-  create a session or replay earlier events"
+  bearer. The reference says the server's first event is `session.updated`;
+  attaching "does not create a session or replay earlier events"
   (/api/reference/resources/live/sideband-websocket).
+
+WHAT THE WIRE SENT (live QA, 9 November 2026): on a funded developer API key the
+create answered 201 and the sideband's first event was NOT `session.updated`, so
+an attach that read exactly one event refused a good session (the console saw a
+502). The log did not record what the event was. So an attach no longer trusts
+the first event: within ATTACH_SECONDS it waits for the session to be confirmed
+by `session.updated` or `session.created` (the usual first server event on
+OpenAI's realtime sockets), or by `session.closed` (a re-attach to a session
+that has already ended). Any other event -- rate limits, conversation or
+input-buffer events -- is held, not refused, and handed to the session's reader
+once it starts, so a re-attach loses no transcript final. An `error` event is
+still refused at once, with its code and type. Each attach logs the TYPES of
+the events it skipped, once and never their content (which can carry
+transcript text), and a refusal after the bound names the types it saw.
 * END: `{"type": "session.close"}`, answered by `session.closed` with the final
   `usage.seconds` and `reason` (/api/docs/guides/live-conversations, "Usage and
   graceful close"). The Live API documents no HTTP hangup, so the sideband is
@@ -56,7 +70,7 @@ import contextlib
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import httpx
 from websockets.asyncio.client import connect as ws_connect
@@ -78,8 +92,18 @@ _ws_log.setLevel(logging.INFO)
 OPENAI_API = "https://api.openai.com"
 OPENAI_WS = "wss://api.openai.com"
 MODEL = "gpt-live-1"
-#: How long an attach may take to see its `session.updated`.
+#: How long an attach may take to see the session confirmed (CONFIRMED_BY).
 ATTACH_SECONDS = 10.0
+#: Sideband events that confirm an attach: the reference names `session.updated`;
+#: `session.created` opens OpenAI's realtime sockets; `session.closed` answers a
+#: re-attach to a session that has already ended (9 November 2026, see above).
+CONFIRMED_BY = frozenset({"session.updated", "session.created", "session.closed"})
+#: Events held for the reader while an attach waits; later ones are skipped unheld.
+ATTACH_HELD = 64
+#: Event types named in an attach's log line or refusal.
+ATTACH_TYPES_NAMED = 20
+#: What an event type must look like to be logged: OpenAI's are dotted words.
+_EVENT_TYPE = re.compile(r"[a-z0-9_.]{1,64}")
 #: Attempts at the sideband before a start gives up, or an end of a dropped one.
 ATTACH_TRIES = 2
 #: Largest SDP offer accepted (a browser's is a few KiB).
@@ -160,7 +184,7 @@ def openai_error(raw: bytes | bytearray | str | None) -> tuple[str, str]:
 
 class LiveRefused(LiveError):
     """OpenAI answered a Live call with a refusal. Carries the HTTP status (None
-    for a refusal sent as the sideband's first event) and OpenAI's error code and
+    for an `error` event on the sideband before the session is confirmed) and OpenAI's error code and
     type, already held to OPENAI_ERROR_TOKEN; never the error's message."""
 
     def __init__(self, what: str, status: int | None, code: str, kind: str) -> None:
@@ -235,8 +259,13 @@ class LiveApi:
         # Unreached: the second attempt's 401 is refused above, with its code and type.
         raise LiveError("OpenAI refused the Live session (HTTP 401)")
 
-    async def attach(self, credential: Credential, live_id: str) -> Any:
-        """The sideband socket, once its first `session.updated` has arrived."""
+    async def attach(self, credential: Credential, live_id: str,
+                     held: list[dict] | None = None) -> Any:
+        """The sideband socket, once an event in CONFIRMED_BY has arrived.
+
+        Other events before it are skipped (appended to `held`, when given, for
+        the session's reader); an `error` is refused at once; nothing confirming
+        within ATTACH_SECONDS is refused with the event types seen."""
         bearer = await credential.bearer()
         try:
             socket = await ws_connect(
@@ -250,18 +279,53 @@ class LiveApi:
             raise _refused("the Live sideband", exc.response.status_code, exc.response.body) from None
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
             raise LiveError(f"the Live sideband could not attach ({type(exc).__name__})") from None
-        try:
-            first = json.loads(await asyncio.wait_for(socket.recv(), ATTACH_SECONDS))
-        except (WebSocketException, asyncio.TimeoutError, ValueError, TypeError) as exc:
-            await socket.close()
-            raise LiveError(f"the Live sideband sent no session.updated ({type(exc).__name__})") from None
-        if isinstance(first, dict) and first.get("type") == "error":
-            await socket.close()
-            raise _refused("the Live sideband", None, json.dumps(first))
-        if not isinstance(first, dict) or first.get("type") != "session.updated":
-            await socket.close()
-            raise LiveError("the Live sideband's first event was not session.updated")
-        return socket
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + ATTACH_SECONDS
+        skipped: list[str] = []
+        while True:
+            try:
+                raw = await asyncio.wait_for(socket.recv(), max(0.0, deadline - loop.time()))
+            except (WebSocketException, asyncio.TimeoutError) as exc:
+                await socket.close()
+                raise LiveError(f"the Live sideband confirmed no session ({type(exc).__name__}; "
+                                f"saw {_named(skipped)})") from None
+            try:
+                event = json.loads(raw)
+            except (ValueError, TypeError):
+                event = None
+            kind = _event_type(event)
+            if kind == "error":
+                await socket.close()
+                raise _refused("the Live sideband", None, json.dumps(event))
+            if kind in CONFIRMED_BY:
+                if skipped:
+                    log.info("the Live sideband sent %s before %s", _named(skipped), kind)
+                if held is not None:
+                    held.append(event)
+                return socket
+            skipped.append(kind)
+            if held is not None and isinstance(event, dict) and len(held) < ATTACH_HELD:
+                held.append(event)
+
+
+def _event_type(event: Any) -> str:
+    """An event's type, safe to log: a dotted word, else a placeholder."""
+    if not isinstance(event, dict):
+        return "(unreadable)"
+    kind = event.get("type")
+    if isinstance(kind, str) and _EVENT_TYPE.fullmatch(kind):
+        return kind
+    return "(unnamed)"
+
+
+def _named(kinds: list[str]) -> str:
+    """The event types an attach skipped, in order, at most ATTACH_TYPES_NAMED."""
+    if not kinds:
+        return "no event"
+    named = ", ".join(kinds[:ATTACH_TYPES_NAMED])
+    if len(kinds) > ATTACH_TYPES_NAMED:
+        named += f" and {len(kinds) - ATTACH_TYPES_NAMED} more"
+    return named
 
 
 class LiveSession:
@@ -312,48 +376,65 @@ class LiveSession:
     async def attach(self) -> None:
         last: LiveError | None = None
         for _ in range(ATTACH_TRIES):
+            held: list[dict] = []
             try:
-                self._socket = await self._api.attach(self._credential, self.live_id)
+                self._socket = await self._api.attach(self._credential, self.live_id, held)
             except (LiveError, CredentialError) as exc:
                 last = exc if isinstance(exc, LiveError) else LiveError(str(exc))
                 continue
-            self._reader = asyncio.create_task(self._read(self._socket), name=f"sideband-{self.voice_id}")
+            # A re-attach to a session that has already ended is answered with its
+            # `session.closed`: noted now, so an end does not send a close after it.
+            for event in held:
+                if event.get("type") == "session.closed":
+                    self._note_closed(event)
+            self._reader = asyncio.create_task(self._read(self._socket, held),
+                                               name=f"sideband-{self.voice_id}")
             return
         assert last is not None
         raise last
 
-    async def _read(self, socket: Any) -> None:
+    async def _events(self, socket: Any, held: list[dict]) -> AsyncIterator[Any]:
+        """The events the attach held, then the socket's."""
+        for event in held:
+            yield event
+        async for raw in socket:
+            try:
+                yield json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+
+    def _note_closed(self, event: dict) -> None:
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+        seconds = usage.get("seconds")
+        self.usage_seconds = seconds if isinstance(seconds, (int, float)) else None
+        self.reason = str(event.get("reason") or "closed")
+        self._closed.set()
+
+    async def _read(self, socket: Any, held: list[dict] | None = None) -> None:
         try:
-            async for raw in socket:
-                try:
-                    event = json.loads(raw)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                kind = str(event.get("type", ""))
-                if kind == "session.closed":
-                    usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
-                    seconds = usage.get("seconds")
-                    self.usage_seconds = seconds if isinstance(seconds, (int, float)) else None
-                    self.reason = str(event.get("reason") or "closed")
-                    self._closed.set()
-                    break
-                if kind in TRANSCRIPT_FINAL:
-                    self._note_transcript(TRANSCRIPT_FINAL[kind], event)
-                    if TRANSCRIPT_FINAL[kind] == "person":
-                        self._answer(event)
-                elif kind == DELEGATION_CREATED and self._planner is not None:
-                    self._delegated(event)
-                if kind == "error":
-                    # The error's code only: its message may quote what was sent.
-                    error = event.get("error") if isinstance(event.get("error"), dict) else {}
-                    log.warning("voice session %s: sideband error %s", self.voice_id, error.get("code", "unknown"))
-                if self._on_event is not None:
-                    try:
-                        await self._on_event(self.voice_id, event)
-                    except Exception as exc:  # noqa: BLE001 - a sink's failure never drops the sideband
-                        log.warning("voice session %s: event sink failed: %s", self.voice_id, type(exc).__name__)
+            async with contextlib.aclosing(self._events(socket, held or [])) as events:
+                async for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    kind = str(event.get("type", ""))
+                    if kind == "session.closed":
+                        self._note_closed(event)
+                        break
+                    if kind in TRANSCRIPT_FINAL:
+                        self._note_transcript(TRANSCRIPT_FINAL[kind], event)
+                        if TRANSCRIPT_FINAL[kind] == "person":
+                            self._answer(event)
+                    elif kind == DELEGATION_CREATED and self._planner is not None:
+                        self._delegated(event)
+                    if kind == "error":
+                        # The error's code only: its message may quote what was sent.
+                        error = event.get("error") if isinstance(event.get("error"), dict) else {}
+                        log.warning("voice session %s: sideband error %s", self.voice_id, error.get("code", "unknown"))
+                    if self._on_event is not None:
+                        try:
+                            await self._on_event(self.voice_id, event)
+                        except Exception as exc:  # noqa: BLE001 - a sink's failure never drops the sideband
+                            log.warning("voice session %s: event sink failed: %s", self.voice_id, type(exc).__name__)
         except WebSocketException as exc:
             log.info("voice session %s: sideband dropped (%s)", self.voice_id, type(exc).__name__)
         finally:
@@ -426,12 +507,16 @@ class LiveSession:
                 return
             if not self.attached:
                 await self.attach()
-            try:
-                await self._socket.send(json.dumps({"type": "session.close"}))
-            except WebSocketException:
-                # Dropped between the check and the send: attach once more and resend.
-                await self.attach()
-                await self._socket.send(json.dumps({"type": "session.close"}))
+            # A re-attach can find the session already closed (its `session.closed`
+            # arrived while the attach waited): there is nothing left to close.
+            if not self._closed.is_set():
+                try:
+                    await self._socket.send(json.dumps({"type": "session.close"}))
+                except WebSocketException:
+                    # Dropped between the check and the send: attach once more and resend.
+                    await self.attach()
+                    if not self._closed.is_set():
+                        await self._socket.send(json.dumps({"type": "session.close"}))
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._closed.wait(), grace)
             if not self._closed.is_set():
