@@ -547,19 +547,20 @@ variable "acceptance_sandbox_repository_url" {
   description = <<-EOT
     The sandbox repository the release acceptance pushes to and opens pull
     requests on (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL on the swarm-verify
-    job; scripts/acceptance/config.sh). Without it config.sh falls back to the
-    live deployment's sandbox, so another company's deployment sets its own
-    here and its acceptance never touches the live one's.
+    job; scripts/acceptance/config.sh). There is no fallback: without it
+    config.sh refuses to run the acceptance until the variable is set, so a
+    deployment's acceptance only ever touches the sandbox it names here.
 
     Null by default, and null renders no env at all, so a deployment that does
-    not set it plans no change (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
+    not set it plans no change and its acceptance refuses until it is set
+    (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
   EOT
   type        = string
   default     = null
 
   validation {
     condition     = var.acceptance_sandbox_repository_url == null || can(regex("^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+$", var.acceptance_sandbox_repository_url))
-    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null to keep the acceptance's default."
+    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null, with which the acceptance refuses until it is set."
   }
 }
 
@@ -1105,6 +1106,27 @@ variable "work_contracts" {
   validation {
     condition     = contains(["on", "off"], var.work_contracts)
     error_message = "work_contracts is on or off (swarm_api.workcontract.enabled reads exactly \"on\")."
+  }
+}
+
+variable "plugins_switch" {
+  description = <<-EOT
+    swarm-api's SWARM_PLUGINS (apps/swarm-api/swarm_api/plugins.py
+    SWITCH_ENV; docs/design/managed-plugins.md section 11): the platform's
+    plugins switch. "on" lets a step name plugins, subject to work contracts
+    and each workspace's signed allowed list as before; "off" refuses every
+    step that names a plugin. ON by default, the state swarm-api reads when
+    the variable is unset, so no environment plans a behaviour change; a
+    platform admin's console setting overrides it. plugins.enabled() reads
+    anything but exactly "off" as on; the validation refuses any other value
+    instead, so a misspelt "Off" never ships as a silent on.
+  EOT
+  type        = string
+  default     = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.plugins_switch)
+    error_message = "plugins_switch is on or off (swarm_api.plugins.enabled reads anything but exactly \"off\" as on)."
   }
 }
 

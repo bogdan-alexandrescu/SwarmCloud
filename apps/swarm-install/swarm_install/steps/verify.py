@@ -57,7 +57,7 @@ workflow's every step) through `swarm result <task> --json`, and passes
 only when each console run's task says `app_installation` (a service
 submission, minted an installation token) and each plugin run's says
 `app_installation` or `app_user` (the person's own submission on their own
-GitHub connection; BGD, 2026-10-30); any other kind, or none recorded,
+GitHub connection; the owner, 2026-10-30); any other kind, or none recorded,
 fails the step naming the run, the task, the kind and the secret.
 
 **Only the platform's own** (`swarm-*`) Scheduler jobs and Cloud Run services
@@ -184,7 +184,7 @@ PLATFORM_PREFIX = "swarm-"
 #: Lesson 43: the only credential kind a verification run may clone and push
 #: with, as the worker records it (`result_summary.forge_credential.kind`).
 APP_INSTALLATION = "app_installation"
-#: The person's own GitHub App user token (BGD, 2026-10-30, "Person's token
+#: The person's own GitHub App user token (the owner, 2026-10-30, "Person's token
 #: for plugin runs"): the plugin's runs are the person's own submissions, so
 #: they clone and push on the person's connection; only a service
 #: submission (the console's runs) is minted an installation token.

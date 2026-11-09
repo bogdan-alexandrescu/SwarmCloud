@@ -11,8 +11,10 @@ These read the Terraform as text: no provider, no plan, no credentials.
 
 from __future__ import annotations
 
+import os
 import re
-import shlex
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -120,11 +122,33 @@ def test_variable_is_off_by_default() -> None:
     assert "/family/" in body
 
 
+#: The environments that may turn own speech on. Dev does since 2026-11-08, the owner's plan for finishing
+#: Voice it; every other environment keeps it off until the owner turns it on there.
+SPEECH_ON_ENVIRONMENTS = {"dev"}
+
+#: A Deep Learning VM image BY NAME on Ubuntu 22.04 with an NVIDIA driver of 580 or later, the kind the
+#: installer pins: never a /family/ path, which moves under a stopped machine and would replace it.
+PINNED_IMAGE = re.compile(
+    r'^\s*image\s*=\s*"projects/deeplearning-platform-release/global/images/'
+    r'common-cu[0-9]+-ubuntu-2204-nvidia-(?P<driver>[0-9]+)-v[0-9]{8}"\s*$',
+    re.M,
+)
+
+
 @pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
-def test_every_environment_leaves_it_off(tfvars: Path) -> None:
+def test_own_speech_is_off_or_on_with_a_pinned_image(tfvars: Path) -> None:
     text = _code(tfvars.read_text())
     body = _block(text, r"^voice_speech\s*=")
-    assert re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M), f"{tfvars}: voice_speech is not off"
+    if tfvars.parent.name not in SPEECH_ON_ENVIRONMENTS:
+        assert re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M), f"{tfvars}: voice_speech is not off"
+        return
+    if re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M):
+        return
+    assert re.search(r"^\s*enabled\s*=\s*true\s*$", body, re.M), f"{tfvars}: voice_speech is neither on nor off"
+    pinned = PINNED_IMAGE.search(body)
+    assert pinned, f"{tfvars}: own speech is on without an image pinned by name"
+    assert int(pinned.group("driver")) >= 580, f"{tfvars}: the pinned image's NVIDIA driver is older than 580"
+    assert "/family/" not in body, f"{tfvars}: the image is a family path"
 
 
 def test_every_resource_is_behind_the_switch(speech: str) -> None:
@@ -427,11 +451,25 @@ def test_samples_expire_through_a_ttl_policy(speech: str) -> None:
 
 
 def _deny_list() -> list[str]:
-    text = COMMON_SH.read_text()
-    m = re.search(r"^SHARED_DENY_LIST=\((.*?)^\)", text, re.M | re.S)
-    assert m, "SHARED_DENY_LIST not found in scripts/lib/common.sh"
-    names = shlex.split(_code(m.group(1)))
-    assert "agents-staging-vpc" in names
+    """The never-touch list, read the way every script reads it: through
+    deny_list_load in scripts/lib/common.sh, from a config object. The
+    repository holds no deployment's list (docs/design/generic-repository.md,
+    section 2.4), so the object is the placeholder one,
+    scripts/lib/deny-list.example.json, laid out by deny_list_use_example in a
+    directory of this test's own; the plan guard judges every real plan against
+    the deployment's own object."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PROJECT_ID", "ENVIRONMENT", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME")}
+        env.update(SWARM_NO_PROJECT="1", SWARM_ENV_FILE=str(Path(tmp) / "absent.env"), NO_COLOR="1")
+        proc = subprocess.run(
+            ["bash", "-c", 'set -euo pipefail; source "$1"; deny_list_use_example "$2"; '
+             'printf "%s\\n" "${SHARED_DENY_LIST[@]}"', "_", str(COMMON_SH), tmp],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+    assert proc.returncode == 0, proc.stderr
+    names = proc.stdout.splitlines()
+    assert "peer-vpc" in names, names
     return names
 
 

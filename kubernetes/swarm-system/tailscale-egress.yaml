@@ -37,7 +37,7 @@
 # `operator-oauth` Secret below the manifest refers to. Null while
 # enable_tailscale_egress is off, so nothing about the tailnet is applied.
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2); apply.sh refuses it.
 #
 # WHY NOT THE TAILSCALE KUBERNETES OPERATOR. The owner chose the operator and

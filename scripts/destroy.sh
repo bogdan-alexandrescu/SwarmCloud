@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Tear down the swarm's own infrastructure -- and nothing else.
 #
-# saga-agents-staging is a SHARED project. It holds a live GKE cluster
-# (agents-staging), a VPC (agents-staging-vpc), three buckets and twelve service
-# accounts belonging to promptlab, crawler, aipipeline, external-secrets and
-# tournament-digest. A `terraform destroy` that touched any of those would take
-# down other teams' production work.
+# The project may be SHARED: it can hold another team's live GKE cluster, VPC,
+# buckets and service accounts, every one on the deployment's never-touch list
+# (config/<env>/deny-list.json, read by deny_list_load in lib/common.sh). A
+# `terraform destroy` that touched any of those would take down other teams'
+# production work.
 #
 # So this script never runs a bare destroy. It:
 #
@@ -97,40 +97,47 @@ UNLABELABLE_TYPES="$(jq -c '.types' "${TYPES_JSON}")"
 # ---------------------------------------------------------------------------
 if [[ "${SELF_TEST}" -eq 1 ]]; then
   step "Guard self-test"
-  FIXTURE="${BUILD_DIR}/destroy-guard-fixture.json"
+  # The placeholder never-touch list (scripts/lib/deny-list.example.json),
+  # through the same loader and rules as a deployment's, in a directory of this
+  # run's own: this mode names no project, so there is no deployment's list to
+  # read, and the fixture below names only that list's placeholders.
+  SELF_TEST_DIR="$(mktemp -d)"
+  trap 'rm -rf "${SELF_TEST_DIR}"' EXIT INT TERM
+  deny_list_use_example "${SELF_TEST_DIR}"
+  FIXTURE="${SELF_TEST_DIR}/destroy-guard-fixture.json"
   cat >"${FIXTURE}" <<'FIXTURE_JSON'
 {"resource_changes":[
  {"address":"ours.bucket","type":"google_storage_bucket",
-  "change":{"actions":["delete"],"before":{"name":"swarm-artifacts-saga-agents-staging",
-    "project":"saga-agents-staging","labels":{"managed-by":"swarm-terraform"}}}},
+  "change":{"actions":["delete"],"before":{"name":"swarm-artifacts-example-project",
+    "project":"example-project","labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"theirs.cluster","type":"google_container_cluster",
-  "change":{"actions":["delete"],"before":{"name":"agents-staging","project":"saga-agents-staging",
+  "change":{"actions":["delete"],"before":{"name":"peer-cluster","project":"example-project",
     "resource_labels":{}}}},
  {"address":"theirs.sa","type":"google_service_account",
-  "change":{"actions":["delete"],"before":{"email":"crawler@saga-agents-staging.iam.gserviceaccount.com",
-    "project":"saga-agents-staging"}}},
+  "change":{"actions":["delete"],"before":{"email":"peer-runner@example-shared-project.iam.gserviceaccount.com",
+    "project":"example-project"}}},
  {"address":"unlabelled.topic","type":"google_pubsub_topic",
-  "change":{"actions":["delete"],"before":{"name":"swarm-scheduler-wake","project":"saga-agents-staging",
+  "change":{"actions":["delete"],"before":{"name":"swarm-scheduler-wake","project":"example-project",
     "labels":{"component":"scheduler"}}}},
  {"address":"ours.iam","type":"google_project_iam_member",
-  "change":{"actions":["delete"],"before":{"project":"saga-agents-staging",
-    "member":"serviceAccount:swarm-worker@saga-agents-staging.iam.gserviceaccount.com"}}},
+  "change":{"actions":["delete"],"before":{"project":"example-project",
+    "member":"serviceAccount:swarm-worker@example-project.iam.gserviceaccount.com"}}},
  {"address":"theirs.subnet","type":"google_compute_subnetwork",
-  "change":{"actions":["delete"],"before":{"name":"agents-staging-subnet","project":"saga-agents-staging",
-    "network":"projects/saga-agents-staging/global/networks/agents-staging-vpc"}}},
+  "change":{"actions":["delete"],"before":{"name":"peer-subnet","project":"example-project",
+    "network":"projects/example-project/global/networks/peer-vpc"}}},
  {"address":"elsewhere.bucket","type":"google_storage_bucket",
-  "change":{"actions":["delete"],"before":{"name":"x","project":"some-other-project",
+  "change":{"actions":["delete"],"before":{"name":"x","project":"example-shared-project",
     "labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"ours.pool_doc","type":"google_firestore_document",
   "change":{"actions":["delete"],"before":{"collection":"pools","document_id":"global",
-    "database":"swarm","project":"saga-agents-staging"}}},
+    "database":"swarm","project":"example-project"}}},
  {"address":"ours.bucket_iam","type":"google_storage_bucket_iam_member",
-  "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-saga-agents-staging",
-    "project":"saga-agents-staging",
-    "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
+  "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-example-project",
+    "project":"example-project",
+    "member":"serviceAccount:swarm-agent-worker-example-tenant@example-project.iam.gserviceaccount.com"}}},
  {"address":"theirs.default_db","type":"google_firestore_document",
   "change":{"actions":["delete"],"before":{"collection":"anything","document_id":"x",
-    "database":"(default)","project":"saga-agents-staging"}}}
+    "database":"(default)","project":"example-project"}}}
 ]}
 FIXTURE_JSON
 
@@ -249,20 +256,11 @@ verify_shared_resources() {
   VERIFY_MISSING=()
   VERIFY_UNVERIFIED=()
 
-  # `clusters list --filter`, never `clusters describe --location`: a location
-  # guessed wrong answers NOT_FOUND for a cluster that is running, and this
-  # script must not be able to say a live cluster is deleted. The zone was
-  # hard-coded to us-central1-a here while CONTRACT.md only pins the region.
-  _verify list "gke/agents-staging" \
-    gcloud container clusters list --project "${PROJECT_ID}" \
-      --filter="name=agents-staging" --format='value(name)'
-
-  local net
-  for net in agents-staging-vpc default; do
-    _verify describe "network/${net}" \
-      gcloud compute networks describe "${net}" --project "${PROJECT_ID}" \
-        --format='value(name)'
-  done
+  # The project's default network is checked whatever the list says; the
+  # neighbours' own clusters and networks are read out of the list below.
+  _verify describe "network/default" \
+    gcloud compute networks describe default --project "${PROJECT_ID}" \
+      --format='value(name)'
 
   # Named one by one rather than counted. The count came from
   # `SA_COUNT="$(gcloud iam service-accounts list ... 2>/dev/null | wc -l)"`,
@@ -271,21 +269,35 @@ verify_shared_resources() {
   #
   # Read OUT OF the deny-list, not restated beside it. The restatement had
   # already drifted: it listed eleven of the twelve, and the one it dropped was
-  # 209012342332-compute@developer.gserviceaccount.com -- the only address on
+  # <project-number>-compute@developer.gserviceaccount.com -- the only address on
   # the list that is not <name>@<project>.iam, because it is the project's
   # DEFAULT COMPUTE service account. That is the identity Cloud Run falls back
   # to when a Job names none (scheduler.dispatch.assert_tenant_identity refuses
   # to dispatch rather than use it), so it is the shared account whose loss
   # would be felt furthest and the one nobody was looking at.
   #
-  # Buckets and Cloud Run services are read out of it the same way, by the kind
-  # shared_resource_kind gives them. The buckets were a hand-written list of
+  # Clusters, networks, buckets and Cloud Run services are read out of it the
+  # same way, by the kind shared_resource_kind gives them. The buckets were a hand-written list of
   # three until 2026-10-21, and the three buckets added to the deny-list that
   # day were exactly the three it never looked at.
   local entry kind
   for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     kind="$(shared_resource_kind "${entry}")" || kind=""
     case "${kind}" in
+      cluster)
+        # `clusters list --filter`, never `clusters describe --location`: a
+        # location guessed wrong answers NOT_FOUND for a cluster that is
+        # running, and this script must not be able to say a live cluster is
+        # deleted. CONTRACT.md pins the region, never a zone.
+        _verify list "gke/${entry}" \
+          gcloud container clusters list --project "${PROJECT_ID}" \
+            --filter="name=${entry}" --format='value(name)'
+        ;;
+      network)
+        _verify describe "network/${entry}" \
+          gcloud compute networks describe "${entry}" --project "${PROJECT_ID}" \
+            --format='value(name)'
+        ;;
       sa)
         _verify describe "serviceAccount/${entry%%@*}" \
           gcloud iam service-accounts describe "${entry}" \

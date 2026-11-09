@@ -250,7 +250,7 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str = OLD,
     monkeypatch.setattr(verb, "Lease", FakeLease)
     monkeypatch.setattr(verb, "Engine", lambda *a, **kw: object())
     monkeypatch.setattr(verb, "LiveWorld", FakeLiveWorld)
-    monkeypatch.setattr(install, "holder_identity", lambda: "ada@acme.com")
+    monkeypatch.setattr(install, "holder_identity", lambda: "admin@example.com")
     monkeypatch.setattr(install, "_typed", lambda prompt: "")
     monkeypatch.setattr(preflight, "installed_release", lambda: NEW)
     monkeypatch.setattr(verb, "ensure_engine", lambda target, args, **kw: seen["engine"].append((target, kw)))

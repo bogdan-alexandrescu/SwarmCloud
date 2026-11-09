@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# Managed plugins: the bucket, its IAM, the intake job and its network
+# Managed plugins: the bucket, its IAM, the intake job, its network and its
+# callback to swarm-api
 # (the job's account is made by terraform/bootstrap/plugin_intake.tf)
 # (docs/design/managed-plugins.md §2.2, §3, §9.3 and §15; lane 3 of §17).
 # ---------------------------------------------------------------------------
@@ -431,6 +432,116 @@ resource "google_cloud_run_v2_job_iam_member" "plugin_intake_api_runs" {
   name     = google_cloud_run_v2_job.plugin_intake[0].name
   role     = "roles/run.jobsExecutorWithOverrides"
   member   = module.iam.service_account_members["swarm-api"]
+}
+
+# ---------------------------------------------------------------------------
+# The intake's callback (managed-plugins.md section 2.2; swarm-api's
+# routes/plugin_catalogue.py, lane 5 of section 17).
+# ---------------------------------------------------------------------------
+#
+# The job cannot reach swarm-api (no egress above), so the bucket tells it: a
+# finalize notification on staging/ goes to this topic, and a push subscription
+# posts it to POST /v1/internal/plugin-intake/report with an OIDC token for
+# swarm-api's push audience. The route admits exactly the audience and the
+# account it is told in SWARM_PLUGIN_INTAKE_AUDIENCE and
+# SWARM_PLUGIN_INTAKE_CALLERS (locals.tf), takes only a
+# staging/<intake_id>/report.json object of THIS bucket, and acknowledges every
+# other finalize under staging/ (the runnable tar) without acting on it.
+#
+# THE IDENTITY IS THE ROLLUP SWEEPER'S, the account the task_finished push to
+# swarm-api already presents (modules/scheduler main.tf api_task_finished): it
+# holds run.invoker on swarm-api in every environment (main.tf
+# rollup_sweeper_invokes_api), the deployer already acts as it and Pub/Sub
+# already mints its tokens, so the callback adds no account and no grant on any
+# identity. In the application it is admitted to this route only by
+# SWARM_PLUGIN_INTAKE_CALLERS; its other routes are ROLLUP_SWEEPER_ROUTES'.
+#
+# NOTHING WAITS ON IT (invariant 4). A lost push costs only latency: reading
+# an intake finishes it once its report is there, and past its deadline with
+# no report it is refused. So the retry is short and there is no dead-letter
+# topic. The message carries an object name and the bucket; swarm-api re-reads
+# the report and the MAC'd intake document, so a publisher cannot name a
+# version, a digest or another scope.
+
+resource "google_pubsub_topic" "plugin_intake_reports" {
+  # checkov:skip=CKV_GCP_83:A finalize notification carries an object name under staging/ and the bucket's name -- no tenant data, no credential. No CMEK key, as for the execution-cancel topic.
+
+  project = var.project_id
+  name    = "${var.name_prefix}-plugin-intake-reports"
+
+  # An intake older than its deadline is refused whatever arrives, and the
+  # staging/ objects themselves age out after a day (the lifecycle rule above).
+  message_retention_duration = "3600s"
+
+  labels = merge(local.labels, { component = "plugins" })
+
+  depends_on = [module.project_services]
+}
+
+# Cloud Storage publishes a bucket's notifications as its own service agent:
+# publisher on THIS topic, nothing else. Spelled from the project number, as
+# modules/scheduler spells Pub/Sub's agent, rather than read from
+# google_storage_project_service_account, which a mock provider fills with a
+# value no IAM member accepts.
+resource "google_pubsub_topic_iam_member" "plugin_intake_reports_gcs_publishes" {
+  project = var.project_id
+  topic   = google_pubsub_topic.plugin_intake_reports.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:service-${data.google_project.this.number}@gs-project-accounts.iam.gserviceaccount.com"
+}
+
+resource "google_storage_notification" "plugin_intake_reports" {
+  bucket         = google_storage_bucket.plugins.name
+  topic          = google_pubsub_topic.plugin_intake_reports.id
+  payload_format = "JSON_API_V1"
+  event_types    = ["OBJECT_FINALIZE"]
+  # The job creates under staging/ only; quarantine/, platform/ and tenants/
+  # are swarm-api's own writes and never announced.
+  object_name_prefix = "staging/"
+
+  custom_attributes = {
+    managed-by = "swarm-terraform"
+  }
+
+  depends_on = [google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes]
+}
+
+resource "google_pubsub_subscription" "plugin_intake_reports" {
+  project = var.project_id
+  name    = "${var.name_prefix}-plugin-intake-reports-api"
+  topic   = google_pubsub_topic.plugin_intake_reports.id
+
+  # Finishing an intake re-hashes a staged tar of up to 500 MiB and copies it
+  # by digest; well inside this, and a timeout is only a redelivery the route
+  # answers from the version already written.
+  ack_deadline_seconds = 600
+
+  # Never reaped for inactivity: installs are rare, and an expired
+  # subscription would leave every intake to be finished by a read.
+  expiration_policy {
+    ttl = ""
+  }
+
+  message_retention_duration = "3600s"
+  retain_acked_messages      = false
+
+  push_config {
+    push_endpoint = "${trimsuffix(module.cloud_run_api.service_urls["swarm-api"], "/")}/v1/internal/plugin-intake/report"
+
+    oidc_token {
+      service_account_email = module.scheduler.rollup_sweeper_email
+      audience              = local.push_audiences["swarm-api"]
+    }
+  }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "120s"
+  }
+
+  labels = merge(local.labels, { component = "plugins" })
+
+  depends_on = [google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api]
 }
 
 output "plugins_bucket" {

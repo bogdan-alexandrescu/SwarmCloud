@@ -150,8 +150,9 @@ class InstallState(BaseModel):
     outputs: dict[str, Any] = {}
     #: What the console wrote, copied in when the engine reads it (plan §5.4).
     console: dict[str, Any] = {}
-    #: R4: the deny-list the engine honours; empty for every project but the
-    #: shared one, and never read from an environment variable.
+    #: R4: the deny-list the engine honours, read from the config object
+    #: (config/<env>/deny-list.json in the state bucket, foundations.config),
+    #: never from an environment variable.
     deny_list: list[str] = Field(default_factory=list)
     hand_off_at: float | None = None
     ready_at: float | None = None

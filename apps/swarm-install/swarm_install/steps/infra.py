@@ -67,7 +67,7 @@ closes it again; the verbs close it themselves when they finish
 (`ClusterReach.close`), and a verb that died in between leaves the record for
 the next run's close.
 
-**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). `infra.voice-it`
+**Voice it** (terraform/infra/voice.tf; the owner, 2026-11-05). `infra.voice-it`
 asks in stage 0 whether to turn Voice it on, default no, and records
 `outputs["voice_it"]` as `{"enabled": bool}`. A no leaves `voice_it` "off" on
 every pass. A yes walks voice.tf's three steps in the order it needs them
@@ -405,7 +405,7 @@ check_speech_image = tfvars.check_speech_image
 SPEECH_COST = "about $0.71 an hour while used, $15 a month for its disk"
 SPEECH_QUESTION = ("Voice it's own speech engine (one stopped L4 machine in {where}; " + SPEECH_COST
                    + "). Add it? Optional, y or n")
-#: No by default, and never asked while Voice it is off (§15; BGD, 2026-11-05).
+#: No by default, and never asked while Voice it is off (§15; the owner, 2026-11-05).
 SPEECH_DEFAULT = "n"
 YES = ("y", "yes")
 NO = ("", "n", "no")

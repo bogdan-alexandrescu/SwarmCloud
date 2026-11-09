@@ -102,7 +102,7 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
       SECTIONS.filter((s) => s.id !== 'admin' && s.tabs.some((t) => !t.admin)).flatMap((s) => s.tabs.filter((t) => t.admin).map((t) => t.id)),
     )
     const marked = new Set(
-      (['work', 'capacity', 'admin'] as const).flatMap((sec) =>
+      (['work', 'capacity', 'admin', 'voice'] as const).flatMap((sec) =>
         PANEL_PAGES[sec].flatMap((p) => [
           ...(p.admin === true ? [p.key] : []),
           ...(p.kids ?? []).filter((k) => k.admin === true).map((k) => k.key),
@@ -111,6 +111,8 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
     )
     expect([...marked].sort()).toEqual([...flagged].sort())
     expect(marked.has('quota')).toBe(true)
+    // Voice it › Telemetry, a platform admin's alone (owner's pick, 2026-11-08).
+    expect(marked.has('telemetry')).toBe(true)
   })
 })
 

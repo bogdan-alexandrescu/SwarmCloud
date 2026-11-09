@@ -584,8 +584,20 @@ and new value). The step's result (§4.5) is the run-time half.
 
 ## 11. The platform switches as console settings
 
-`SWARM_WORK_CONTRACTS` and `SWARM_CONTRACT_REVIEW` become two controls on Admin › Plugins › Platform: a switch and a
-three-way select, each showing "Terraform default: off" beside it, and "Reset to default".
+`SWARM_WORK_CONTRACTS`, `SWARM_CONTRACT_REVIEW` and `SWARM_PLUGINS` become three controls on Admin › Plugins ›
+Platform: two switches and a three-way select, each showing its Terraform default beside it, and "Reset to default".
+
+* **The plugins switch** (the owner's pick on PR 3648) is new: `on` lets a step name plugins as before (work
+  contracts on, the plugin in the workspace's signed allowed list); `off` refuses every step that names a plugin at
+  submission, before any other plugin check (`swarm_api.plugins.enabled`, `check_step`). Its Terraform value is
+  `var.plugins_switch`, **`on`** by default and read as `on` when unset, so it refuses nothing a caller relied on
+  until a platform admin turns it off.
+* **Two MACs.** The contract's canonical form (request P5, contract request 144) covers only `work_contracts` and
+  `contract_review`, and `swarm_common` is frozen. So the document carries a second MAC, `switches_mac`, under the
+  same key ring over swarm-api's own canonical form (`platformswitches.canonical_switches`, purpose
+  `swarm.platform-switches/v1`, every switch); a document is acted on only when both verify, so a tenant worker that
+  writes `plugins` alone leaves the contract's MAC good and is still refused. Contract request 150 asks to add
+  `plugins` to `PLATFORM_SETTINGS_MAC_FIELDS`.
 
 * **Stored** in `platform_settings/switches` with a MAC under `swarm-settings-key` over a canonical form with its own
   purpose (`swarm.platform-settings/v1`, request P5), so a value copied from a workspace block never verifies.

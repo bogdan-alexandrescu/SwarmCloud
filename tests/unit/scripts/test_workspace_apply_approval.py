@@ -68,6 +68,15 @@ GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 CASES = json.loads((REPO / "scripts" / "lib" / "workspace-guard-cases.json").read_text())
 SPEC_KEY_MODULE = REPO / "terraform" / "modules" / "spec_signing_key" / "main.tf"
 
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The project the workspace call guard runs in: the placeholder deployment's.
+GUARD_PROJECT = placeholder_deployment.PROJECT
+
 WORKSPACE = "w-3f9a2c"
 EXECUTION = "swarm-workspace-apply-x7k2p"
 PROJECT = "fixture-project-1"
@@ -632,9 +641,10 @@ def test_the_image_carries_the_frozen_package_where_entry_looks():
 def _guard_env(tmp: Path, pin: dict | None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_")) and k != "KUBECONFIG"}
-    env.update(SWARM_ENV_FILE=str(tmp / "no.env"), PROJECT_ID="saga-agents-staging", REGION="us-central1",
+    env.update(placeholder_deployment.child_env(GUARD_PROJECT, "dev"))
+    env.update(SWARM_ENV_FILE=str(tmp / "no.env"), PROJECT_ID=GUARD_PROJECT, REGION=placeholder_deployment.REGION,
                ENVIRONMENT="dev", FIRESTORE_DATABASE="swarm", GKE_CLUSTER="swarm-autopilot",
-               GKE_LOCATION="us-central1", SWARM_CALL_GUARD=str(tmp / "expect.json"), NO_COLOR="1")
+               GKE_LOCATION=placeholder_deployment.REGION, SWARM_CALL_GUARD=str(tmp / "expect.json"), NO_COLOR="1")
     env.pop("ARTIFACT_BUCKET", None)
     if pin is not None:
         env["SWARM_APPROVAL_PIN"] = json.dumps(pin)
@@ -652,8 +662,23 @@ def _expect(tmp: Path, record: dict, pin: dict | None) -> subprocess.CompletedPr
                           capture_output=True, text=True, timeout=120, check=False)
 
 
+def _service_record() -> dict[str, Any]:
+    """workspace-guard-cases.json's service record, moved into GUARD_PROJECT: the guard
+    takes a service principal only from the project it runs in, and the cases file's
+    record names a project of its own (read from the record's document name). The
+    tenant id is the moved principal's, derived as the guard derives it."""
+    from swarm_common.identity import tenant_id_for_user
+
+    record = CASES["kind_records"]["service"]
+    recorded_project = record["name"].split("/")[1]
+    recorded_tenant = record["fields"]["tenant_id"]["stringValue"]
+    principal = record["fields"]["principal"]["stringValue"].replace(recorded_project, GUARD_PROJECT)
+    text = json.dumps(record).replace(recorded_project, GUARD_PROJECT)
+    return json.loads(text.replace(recorded_tenant, tenant_id_for_user(principal)))
+
+
 def _service_pin(**change: Any) -> dict[str, Any]:
-    fields = CASES["kind_records"]["service"]["fields"]
+    fields = _service_record()["fields"]
     pin = {"workspace_id": fields["workspace_id"]["stringValue"], "tenant_id": fields["tenant_id"]["stringValue"],
            "kind": "service", "principal": fields["principal"]["stringValue"], "verified": True}
     pin.update(change)
@@ -665,21 +690,21 @@ needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required
 
 @needs_jq
 def test_the_guard_expects_a_service_record_that_is_the_verified_pin(tmp_path):
-    done = _expect(tmp_path, CASES["kind_records"]["service"], _service_pin())
+    done = _expect(tmp_path, _service_record(), _service_pin())
     assert done.returncode == 0, done.stderr
     assert json.loads((tmp_path / "expect.json").read_text())["service_principal"] == _service_pin()["principal"]
 
 
 @needs_jq
 @pytest.mark.parametrize("change", [
-    pytest.param({"principal": "intruder@saga-agents-staging.iam.gserviceaccount.com"}, id="principal"),
+    pytest.param({"principal": f"intruder@{GUARD_PROJECT}.iam.gserviceaccount.com"}, id="principal"),
     pytest.param({"tenant_id": "u-in-0a1b2c"}, id="tenant"),
     pytest.param({"kind": "group"}, id="kind"),
     pytest.param({"workspace_id": "w-000000"}, id="workspace"),
     pytest.param({"verified": False}, id="unverified"),
 ])
 def test_the_guard_refuses_a_record_that_is_not_the_verified_pin(tmp_path, change):
-    done = _expect(tmp_path, CASES["kind_records"]["service"], _service_pin(**change))
+    done = _expect(tmp_path, _service_record(), _service_pin(**change))
     assert done.returncode != 0
     assert "APPROVAL_UNSIGNED" in done.stderr
     assert "service_principal" not in json.loads((tmp_path / "expect.json").read_text())
@@ -693,7 +718,7 @@ def test_the_guard_refuses_an_unreadable_pin(tmp_path):
     subprocess.run([str(GUARD), "init", "--workspace-id", WORKSPACE], env=env, check=True,
                    capture_output=True, timeout=120)
     path = tmp_path / "record.json"
-    path.write_text(json.dumps(CASES["kind_records"]["service"]))
+    path.write_text(json.dumps(_service_record()))
     done = subprocess.run([str(GUARD), "expect", "--record", str(path)], env=env,
                           capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode != 0 and "APPROVAL_UNSIGNED" in done.stderr
