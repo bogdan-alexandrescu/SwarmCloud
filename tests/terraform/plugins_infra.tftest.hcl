@@ -250,6 +250,47 @@ run "the_bucket_keeps_a_week_of_deleted_copies_and_logs_access" {
   }
 }
 
+# The console's upload (Config > Plugins > Add plugin > Upload) is a browser
+# PUT to swarm-api's signed URL on this bucket, cross-origin: one CORS rule
+# admits the console's own origin, PUT only, with exactly the two headers the
+# URL is signed with. A deployment with no console plans no rule at all.
+run "the_console_may_put_to_its_signed_upload_url" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_frontend   = true
+    frontend_hostname = "swarm.example.test"
+  }
+
+  assert {
+    condition = (
+      length(google_storage_bucket.plugins.cors) == 1
+      && google_storage_bucket.plugins.cors[0].origin == tolist(["https://swarm.example.test"])
+      && google_storage_bucket.plugins.cors[0].method == tolist(["PUT"])
+      && toset(google_storage_bucket.plugins.cors[0].response_header) == toset(["Content-Type", "x-goog-content-length-range"])
+      && google_storage_bucket.plugins.cors[0].max_age_seconds <= 900
+    )
+    error_message = "the plugins bucket admits a cross-origin PUT from the console's own origin only, with the signed Content-Type and x-goog-content-length-range headers"
+  }
+}
+
+run "no_console_no_cors_rule" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = length(google_storage_bucket.plugins.cors) == 0
+    error_message = "without a console (enable_frontend off or no frontend_hostname) the plugins bucket carries no CORS rule"
+  }
+}
+
 # The intake's callback: the bucket announces staging/ finalizes on its own
 # topic, Cloud Storage's agent may publish there and nowhere else, and the push
 # reaches swarm-api's callback route with an OIDC token for the push audience
