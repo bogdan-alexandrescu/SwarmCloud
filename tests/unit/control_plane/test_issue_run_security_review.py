@@ -22,6 +22,11 @@ from .test_issue_run_keyword import STAGED_FULL_PLAN
 from .test_issue_runs import FULL_PLAN
 from .test_issue_writeback import _bare_run
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 @pytest.fixture
 def catalogue(monkeypatch):

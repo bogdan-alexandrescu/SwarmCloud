@@ -56,6 +56,11 @@ from .test_issue_run_ci import PR, SHA_A, _read
 from .test_issue_runs import FULL_PLAN, _docs
 from .test_schedule_tick import seed_schedule
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SCHEDULE = "sch_000000000001"
 GH_ID = {"alice@example.com": 1001, "dave@example.com": 1004, "carol@example.com": 1003, OWNER: 1000}
 

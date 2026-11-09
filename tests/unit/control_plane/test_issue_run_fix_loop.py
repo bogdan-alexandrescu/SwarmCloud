@@ -21,7 +21,7 @@ it is on, the one re-review until then. What these tests hold:
      of the loop's, neither merges nor closes. A head a `review-fix` round
      pushed is the run's, and the merge continues that round.
 
-The runner type ships unavailable (contract request 124); every test here
+The runner type is available since contract request 151; every test here
 sets it on or off itself with `monkeypatch`, never depending on the
 catalogue's value. No credentials, no network, no emulator.
 """
@@ -75,19 +75,21 @@ LOOP_STEP = "loop"
 
 
 def _profile(monkeypatch, available: bool) -> None:
+    reason = "" if available else "fix-loop is not available (patched off for this test)"
     monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
-                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=available))
+                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=available,
+                                disabled_reason=reason))
 
 
 @pytest.fixture
 def loop_on(monkeypatch):
-    """`fix-loop` available for this test only, as it will be once its acceptance run passes."""
+    """`fix-loop` available, as it is since contract request 151."""
     _profile(monkeypatch, True)
 
 
 @pytest.fixture
 def loop_off(monkeypatch):
-    """`fix-loop` unavailable for this test, as it ships (contract request 124)."""
+    """`fix-loop` unavailable for this test, as it shipped until contract request 151."""
     _profile(monkeypatch, False)
 
 

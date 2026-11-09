@@ -37,6 +37,11 @@ from .test_repository_merge_policy import (  # noqa: F401  (fixtures)
     make,
 )
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 # --------------------------------------------------------------------------
 # 1: the re-review is gated like the integrator
