@@ -1059,11 +1059,17 @@ MERGE_STRATEGIES = ("direct-pr", "integrate")
 #:         workflow that opens no single pull request, rather than ignored.
 #:   on_merge_verdict
 #:         append a `merge` step that merges ONLY on a review's MERGE verdict:
-#:         an `integrate` workflow whose integrator is gated on a review. A
-#:         re-review step is appended too, on the integrator's pushed head, and
-#:         the merge reads ITS verdict -- the latest one (`REREVIEW_ROUNDS`).
-#:         It is gated like the integrator, so its agent runs only after a
-#:         fix; on MERGE it passes the first review's verdict on unchanged.
+#:         an `integrate` workflow whose integrator is gated on a review. When
+#:         the gate is NOT_YET and the spec declares no `fix-loop` step, a
+#:         `fix-loop` step is appended too (`verdict_fix_loop_step`,
+#:         `FIX_LOOP_VERDICT_MERGE_ROUNDS` rounds, the owner Q8 (b)) and the
+#:         merge reads the loop's last review. Otherwise -- the loop profile
+#:         unavailable, another gate, a security review -- a re-review step is
+#:         appended on the integrator's pushed head, and the merge reads ITS
+#:         verdict -- the latest one (`REREVIEW_ROUNDS`). It is gated like the
+#:         integrator, so its agent runs only after a fix; on MERGE it passes
+#:         the first review's verdict on unchanged. A spec's own loop is kept
+#:         as declared, and only the merge is appended behind it.
 #:         Refused for a workflow with no such review, rather than merging
 #:         unreviewed work, and beside a spec's own merge step.
 #:   off   append none, and refuse a spec that states one: the two disagree.
@@ -5062,6 +5068,14 @@ FIX_LOOP_ROUND_FIELD = "fix_loop_round"
 FIX_LOOP_MIN_ROUNDS = 1
 FIX_LOOP_MAX_ROUNDS = 5
 FIX_LOOP_DEFAULT_ROUNDS = 3
+#: `max_rounds` of the loop swarm-api appends to a workflow that merges on its
+#: review's verdict and declares no loop of its own (`verdict_fix_loop_step`).
+#: The owner chose 3 on 9 November 2026 (§9 Q8 (b)), after a lane whose one
+#: fix round ended NOT_YET was merged on CI alone by a `ready` label. A spec's
+#: own loop keeps the `max_rounds` it declares.
+FIX_LOOP_VERDICT_MERGE_ROUNDS = 3
+#: The step id the appended loop takes, suffixed when a step already has it.
+FIX_LOOP_STEP_ID = "loop"
 #: The block's keys; any other is refused by name.
 FIX_LOOP_KEYS = ("review", "fix", "max_rounds", "fix_round", "re_review")
 #: The two optional overrides, and the only keys each takes: a runner profile
@@ -5389,6 +5403,57 @@ def resolve_fix_loop(steps: Sequence[Any], *, strategy: str) -> FixLoopPlan | No
         step_id=step_id, review=review, fix=fix if strategy == "integrate" else None,
         pull_request=pull_request, max_rounds=max_rounds, overrides=overrides,
     )
+
+
+def verdict_fix_loop_step(steps: Sequence[StepSpec], strategy: str) -> dict[str, Any] | None:
+    """The `fix-loop` step `metadata.merge` "on_merge_verdict" appends, or None.
+
+    The owner, 9 November 2026 (docs/design/fix-loop.md §9 Q8 (b)): a workflow
+    that merges on its review's verdict runs the fix loop, not one re-review,
+    so a NOT_YET after one fix is another round rather than a failed workflow
+    a `ready` label then merges on CI alone. `steps` are the steps as
+    submitted, after `validate_dag`. A step only when ALL of these hold:
+
+    * the strategy is `integrate`;
+    * the integrator is gated on the review with `verdict_in: ["NOT_YET"]`
+      (`FIX_LOOP_GATE_VERDICTS`), the review's verdict file staged;
+    * the spec declares no `fix-loop` step (one it declares is kept, its
+      `max_rounds` included: only the merge is appended behind it);
+    * no security review judges the integrator's head: a merge behind a loop
+      reads the loop alone (§4.6), and would drop that second verdict;
+    * the `fix-loop` profile is available. It ships unavailable (contract
+      request 124) until its acceptance run passes, and a loop appended
+      before then would refuse every such workflow as disabled; until then
+      the re-review (`rereview_step_for`) is appended as before.
+
+    The step is exactly what a caller would declare (§4.1): the review, the
+    integrator as round 1's fix, `FIX_LOOP_VERDICT_MERGE_ROUNDS`, depending on
+    the fix. The service checks it with `resolve_fix_loop`, as a declared
+    one is, and signs its block the same way. No override: every round
+    repeats the review's and the fix's own runner profiles, by name
+    (invariant 10).
+    """
+    if strategy != "integrate":
+        return None
+    profile = RUNNER_PROFILES.get(FIX_LOOP_PROFILE)
+    if profile is None or not profile.available:
+        return None
+    if any(step.runner_profile == FIX_LOOP_PROFILE for step in steps):
+        return None
+    sources = merge_sources(steps, strategy)
+    if (sources is None or sources.review is None or not sources.verdict_file
+            or sources.security_review is not None):
+        return None
+    integrator = next((s for s in steps if s.step_id == sources.pull_request), None)
+    if integrator is None or tuple(integrator.when_verdicts) != FIX_LOOP_GATE_VERDICTS:
+        return None
+    return {
+        "step_id": _free_step_id(FIX_LOOP_STEP_ID, {s.step_id for s in steps}),
+        "runner_profile": FIX_LOOP_PROFILE,
+        "depends_on": [integrator.step_id],
+        FIX_LOOP_FIELD: {"review": sources.review, "fix": integrator.step_id,
+                         "max_rounds": FIX_LOOP_VERDICT_MERGE_ROUNDS},
+    }
 
 
 # --------------------------------------------------------------------------
