@@ -6,6 +6,9 @@
 # stage 14's verify.plugins and swarm doctor's plugins.infrastructure check that
 # the bucket exists, the job is deployed and a tenant account may read platform/.
 version: 1
+env:
+  SWARM_PLUGINS_BUCKET:
+    setter: terraform/infra/locals.tf:1382
 entries:
 - id: bucket.plugins
   kind: bucket

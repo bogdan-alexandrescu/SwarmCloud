@@ -130,7 +130,9 @@ class PluginGcConfig:
     @classmethod
     def from_env(cls, project_id: str, environ: Mapping[str, str] | None = None) -> "PluginGcConfig":
         env = os.environ if environ is None else environ
-        named = (env.get(BUCKET_ENV) or "").strip()
+        # Spelled on the mapping itself, as swarm-api's catalogue reads it, so
+        # scripts/lib/check-env-parity.sh sees the read terraform sets it for.
+        named = ((os.environ if environ is None else environ).get(BUCKET_ENV) or "").strip()
         enabled = (env.get(ENABLE_ENV) or "true").strip().lower() not in ("0", "false", "no", "off")
         return cls(
             bucket=named or (f"{project_id}{BUCKET_SUFFIX}" if project_id else ""),
