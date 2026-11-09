@@ -31,11 +31,6 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
 )
 from .test_issue_runs import BUCKET
 
-# Written against the re-review a workflow merging on its review's verdict
-# got while `fix-loop` shipped unavailable; available since contract
-# request 151, so this module holds that path with the profile off.
-pytestmark = pytest.mark.usefixtures("fix_loop_off")
-
 
 def _with_security_review(db, objects, running: dict, verdict: str | None) -> None:
     """The run asked for the review, and its workflow's security review wrote

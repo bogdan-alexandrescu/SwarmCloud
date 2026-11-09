@@ -55,11 +55,6 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
     forge_tokens,
 )
 
-# Written against the re-review a workflow merging on its review's verdict
-# got while `fix-loop` shipped unavailable; available since contract
-# request 151, so this module holds that path with the profile off.
-pytestmark = pytest.mark.usefixtures("fix_loop_off")
-
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "main"
 

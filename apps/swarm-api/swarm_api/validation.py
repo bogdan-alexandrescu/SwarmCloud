@@ -5228,7 +5228,7 @@ def resolve_fix_loop(steps: Sequence[Any], *, strategy: str) -> FixLoopPlan | No
     written:
 
     * `fix_loop` only on a `fix-loop` step, and every `fix-loop` step has one;
-      the profile is checked first, so while it is unavailable the step is
+      the profile is checked first, so while it ships unavailable the step is
       refused as disabled before anything here is read;
     * at most one `fix-loop` step; none of the fields that mean something only
       to a container (`AWAIT_STEP_REFUSED_FIELDS`); no step stages from it
@@ -5421,9 +5421,10 @@ def verdict_fix_loop_step(steps: Sequence[StepSpec], strategy: str) -> dict[str,
       `max_rounds` included: only the merge is appended behind it);
     * no security review judges the integrator's head: a merge behind a loop
       reads the loop alone (§4.6), and would drop that second verdict;
-    * the `fix-loop` profile is available, as it is since contract request
-      151 (2026-11-09); a loop appended while it is not would refuse every
-      such workflow as disabled, so the re-review (`rereview_step_for`) is.
+    * the `fix-loop` profile is available. It ships unavailable (contract
+      request 124) until its acceptance run passes, and a loop appended
+      before then would refuse every such workflow as disabled; until then
+      the re-review (`rereview_step_for`) is appended as before.
 
     The step is exactly what a caller would declare (§4.1): the review, the
     integrator as round 1's fix, `FIX_LOOP_VERDICT_MERGE_ROUNDS`, depending on
