@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -15520,8 +15520,19 @@ export async function openPluginUpload(
  * the URL is never logged or kept.
  */
 export async function putPluginArchive(upload: PluginUploadTarget, file: Blob): Promise<boolean> {
+  // apiHeaders with no tenant: the store is cross-origin, the signed URL is
+  // the authority, and the chosen tenant (X-Swarm-Tenant) is swarm-api's
+  // header, never sent to Cloud Storage.
+  const tenant: string | null = null
   try {
-    const r = await fetch(upload.url, { method: upload.method, headers: upload.headers, body: file, credentials: 'omit' })
+    const r = await fetch(upload.url, {
+      method: upload.method,
+      headers: apiHeaders(upload.headers, tenant),
+      body: file,
+      credentials: 'omit',
+    })
+    // A refusal names the tenant that was sent, and none was: nothing to forget.
+    dropRefusedTenant(r.status, null, tenant)
     return r.ok
   } catch {
     return false
