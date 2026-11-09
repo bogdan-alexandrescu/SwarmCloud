@@ -818,6 +818,23 @@ describe('the Talk pane on our own speech', () => {
     expect(posted(`/v1/voice/sessions/${SESSION}/turns`).map(([, , b]) => b)).toEqual([{ text: 'Plan it' }])
   })
 
+  it.each([
+    ['no_l4', false],
+    ['not_ready', false],
+    ['front_refused', true],
+    ['speech_not_deployed', true],
+  ])('a %s fallback names the ChatGPT plan in its status line only when it runs on the plan', async (reason, plan) => {
+    serveOwn({ mode: 'text', fallback: { from: 'own', reason, zone: null } })
+    render(<TalkPane />)
+    await startOwn()
+    const status = () => document.querySelector('.vt-status')?.textContent ?? ''
+    expect(status()).toMatch(/^Live/)
+    expect(/ChatGPT plan/.test(status())).toBe(plan)
+    // Dismissing the fallback's line does not change what the session runs on.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(/ChatGPT plan/.test(status())).toBe(plan)
+  })
+
   describe('a refused start says its own cause in one line, the full sentence behind an (i)', () => {
     function refuseStart(reason: string, message: string): void {
       fetchMock.write.mockImplementation(async (target: { url: string }) => {

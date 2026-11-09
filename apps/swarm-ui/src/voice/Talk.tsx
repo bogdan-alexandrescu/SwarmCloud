@@ -205,6 +205,16 @@ export function fallbackTip(f: SpeechFallback): string {
 }
 
 /**
+ * Whether a text session runs on Voice it's ChatGPT plan: one that started as
+ * text, or whose fallback started swarm-voice's text session because no front
+ * held anything (`front_refused`, `speech_not_deployed`). A no-L4, not-ready or
+ * engine-down fallback stays on the Claude front with the account it holds.
+ */
+export function onChatGptPlan(f: SpeechFallback | null): boolean {
+  return f === null || f.reason === 'front_refused' || f.reason === 'speech_not_deployed'
+}
+
+/**
  * A start refusal's one line, by its cause (`detail.reason`); swarm-api's full
  * sentence goes behind the (i). The OpenAI key is named only when a Live
  * start found it held by another session.
@@ -356,6 +366,8 @@ export function TalkPane() {
   const [speechState, setSpeechState] = useState<string | null>(null)
   // Why this session is in text mode instead of on its engine; null once dismissed.
   const [fallback, setFallback] = useState<SpeechFallback | null>(null)
+  // Kept apart from `fallback`, which Dismiss clears: the status line must not change with it.
+  const [onPlan, setOnPlan] = useState(true)
   // A text session's spoken reply, 0..1, or null when nothing is spoken.
   const [level, setLevel] = useState<number | null>(null)
   // Why a text session types instead of listening; null while it listens.
@@ -564,6 +576,7 @@ export function TalkPane() {
       setVoicePlaying(false)
       setLines((l) => l.filter((x) => x.final))
       setFallback(text.fallback)
+      setOnPlan(onChatGptPlan(text.fallback))
       setTalkMode('text')
       beginText()
     },
@@ -683,7 +696,9 @@ export function TalkPane() {
       setProjectId(c.projectId)
       setTalkMode(c.mode)
       if (c.mode === 'text') {
-        if ('fallback' in c) setFallback(c.fallback)
+        const f = 'fallback' in c ? c.fallback : null
+        setFallback(f)
+        setOnPlan(onChatGptPlan(f))
         beginText()
       } else if (c.mode === 'speech') beginSpeech(c)
       setSessionId(c.sessionId)
@@ -760,7 +775,7 @@ export function TalkPane() {
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
           {speechMode && boot.length === 0 && (speechState ?? (mic.muted ? 'muted' : 'listening'))}
-          {textMode && ', on the ChatGPT plan'}
+          {textMode && onPlan && ', on the ChatGPT plan'}
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
