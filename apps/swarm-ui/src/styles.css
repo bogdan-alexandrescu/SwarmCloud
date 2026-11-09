@@ -489,6 +489,13 @@ body {
    on the next step's --sk-acs band (2.89:1 dark, 2.96:1 light) that no browser
    draws. Restated here, after the floor, for that one button only. */
 .ob-step.is-next .c-btn.is-ghost { border-color: transparent; }
+/* The same tie for voice-settings.css's segmented control (`.vset-seg`, Voice
+   it's Settings and Telemetry): its segments are `border: 0` on the group's
+   fill with only the picked one on --surface, but the floor's border and
+   --surface out-rank them in jsdom, so the sweep read every segment as a
+   bordered surface 2px from the next. Restated here, after the floor. */
+.vset-seg button { border: 0; }
+.vset-seg button:not(.is-on) { background: transparent; }
 /* A plain button on that band (Admin › Setup's Invite and "Run the console
    checks", DAYONE-SETUP-UI-4): --ctl-bd on --sk-acs is 2.89:1 dark, 2.96:1
    light, under 3:1 in every browser, not only jsdom. The Config lead's
