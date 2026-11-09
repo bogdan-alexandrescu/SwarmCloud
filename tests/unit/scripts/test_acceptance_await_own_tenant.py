@@ -161,7 +161,8 @@ def test_run_workflow_runs_exactly_the_two_await_checks_in_the_own_tenant():
     # The judges of those two run in it too, and no other judge does.
     judged = re.findall(r"^\s*(_wf_in_own_tenant )?(_wf_check_\w+) ", run, re.M)
     assert {name for wrapped, name in judged if wrapped} == {"_wf_check_await", "_wf_check_expire"}
-    assert len(judged) == 7
+    # Eight: the fix-loop check (FL-ACCEPT) is the eighth, in ACC_TENANT.
+    assert len(judged) == 8
     # The id is derived before the first own-tenant submission.
     assert run.index("_wf_own_tenant") < run.index("_wf_in_own_tenant")
     # Never typed in: no line of code names it (the comments may).

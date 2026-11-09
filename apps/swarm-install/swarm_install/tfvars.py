@@ -68,10 +68,11 @@ keeps Terraform's default, off.
 
 **Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
 `infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
-for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
-region's zones offering the L4) and the Deep Learning VM image it pinned by
-name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
-and `image` from that, checked against infra's own validations; no would-be
+for a yes, stage 1's `infra.voice-speech-zone` adds the zones (every zone of
+the region offering the L4, in letter order: swarm-api starts the machine in
+the first of them with a free L4, then the next; owner, 2026-11-09) and the
+Deep Learning VM image it pinned by name. Every infra pass renders infra's
+`voice_speech` with `enabled`, `zones` and `image` from that, checked against infra's own validations; no would-be
 machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
 to Voice it `voice_speech` renders off whatever was recorded. An install
 state with no answer (older than the question) keeps Terraform's default, off.
@@ -210,8 +211,8 @@ VOICE_IT = "voice_it"
 #: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
 VOICE_IMAGE = "swarm-voice"
 
-#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
-#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: terraform/infra's `voice_speech` validations (variables.tf): each of `zones`
+#: one zone of the region (one letter after it), and a Deep Learning VM image by name, never a /family/ path, which moves under the
 #: stopped machine and would replace it at the next plan.
 SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
@@ -410,19 +411,30 @@ def voice_speech(state: Any) -> dict[str, Any] | None:
         raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
     if found.get("enabled") is not True or voice_it_chosen(state) is False:
         return {"enabled": False}
-    zone, image = found.get("zone"), found.get("image")
-    if not zone or not image:
-        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+    zones, image = found.get("zones"), found.get("image")
+    if zones is None and found.get("zone"):
+        # An install state recorded by an older installer holds one `zone`
+        # string; it renders as a one-zone list so an existing install keeps
+        # working (infra accepts `zone` for one release only).
+        zones = [found["zone"]]
+    if not zones or not image:
+        raise LookupError(f"the install state has no voice_speech zones and image yet; {RECORDED_BY['voice_speech']} "
                           "records them")
+    if isinstance(zones, str) or not isinstance(zones, (list, tuple)):
+        raise ValueError(f"voice_speech zones is {type(zones).__name__}, not a list of zones; "
+                         f"{RECORDED_BY['voice_speech']} records them")
     region = _required(state, "region")
-    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
-        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    for zone in zones:
+        if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+            raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if len({str(zone) for zone in zones}) != len(zones):
+        raise ValueError(f"voice_speech zones {list(zones)!r} name a zone twice; each zone is listed once")
     if not SPEECH_IMAGE.match(str(image)):
         raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
                          "(projects/deeplearning-platform-release/global/images/<name>)")
     # Never render an image below the driver floor; infra.voice-speech pins one that meets it.
     check_speech_image(str(image))
-    return {"enabled": True, "zone": str(zone), "image": str(image)}
+    return {"enabled": True, "zones": [str(zone) for zone in zones], "image": str(image)}
 
 
 def iap_members(state: Any, installer: str) -> list[str]:
