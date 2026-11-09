@@ -2356,12 +2356,15 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
 
 ### What this does not do
 
-* **It does not review the fix.** One review, one conditional fix. A second
-  review of the fixed branch is another review step and another gated step,
-  but under `integrate` only the integrator may be gated, so that chain needs
-  a gate on a non-integrator whose verdict the PR also carries, which is not
-  built for a caller's own steps. The exceptions are a `fix-loop` step,
-  which `"on_merge_verdict"` appends by default (below), and the re-review it
+* **A caller's own steps review the fix at most once; a fix loop reviews it
+  until MERGE.** One review, one conditional fix. A second review of the
+  fixed branch built from a caller's own steps is another review step and
+  another gated step, but under `integrate` only the integrator may be gated,
+  so that chain needs a gate on a non-integrator whose verdict the PR also
+  carries, which is not built for a caller's own steps. What reviews the fix
+  is a `fix-loop` step ([the fix loop](#the-fix-loop-review-fix-rounds-until-a-review-says-merge)),
+  declared in the spec or appended by `"on_merge_verdict"` while the profile
+  is available (below), and the single re-review `"on_merge_verdict"`
   appends where the loop cannot apply, gated on the same review as the
   integrator. An issue run's compiled workflow states that same re-review
   itself after its fix (`issueruns._with_rereview`), under
@@ -3070,6 +3073,146 @@ there: a workflow on another host opens no pull request (the worker harvests
 a patch), so with `metadata.merge` absent it is accepted with no merge step
 appended, and an admin turning `merge_by_default` on breaks no tenant who
 never asked for a merge.
+
+## The fix loop: review-fix rounds until a review says MERGE
+
+A `fix-loop` step runs review-fix rounds on one pull request until a review
+says MERGE, at most `max_rounds` fixes, and then waits for a person while
+holding nothing. Why: a review that disagrees with a fix used to end the
+workflow, and a person started another one by hand for every further round
+([design/fix-loop.md](design/fix-loop.md) §1). The loop is built on main and
+switched off by its catalogue profile, which ships unavailable until the
+owner applies contract request 151
+([contract-change-requests.md](contract-change-requests.md)); until then a spec
+that names `fix-loop` is refused as disabled, and no workflow gets one by
+default.
+
+**In a spec.** A step with `runner_profile: "fix-loop"`, no image, input or
+prompt of its own, and a `fix_loop` block:
+
+```json
+{"step_id": "loop", "runner_profile": "fix-loop", "depends_on": ["fix"],
+ "fix_loop": {"review": "review", "fix": "fix", "max_rounds": 3,
+              "fix_round": {"runner_profile": "claude-code", "model_class": "opus"},
+              "re_review": {"runner_profile": "claude-code"}}}
+```
+
+* `review` names the review whose verdict starts the loop, a step the loop
+  depends on directly or through others. Its profile, input and prompt are
+  what every re-review repeats, by name (invariant 10).
+* `fix` is the integrator under `integrate`, gated on the review with
+  `verdict_in: ["NOT_YET"]`, and the loop depends on it directly: it is round
+  1's fix, already in the DAG. Under `direct-pr` it is absent, the loop
+  depends on the review, and the review `builds_on` one implementer and
+  declares `allow_empty_diff: true`. Why only these two strategies: a loop
+  needs one pull request to push its rounds to, and `collect` opens none.
+* `max_rounds` is 1-5, default 3: the number of fixes the loop may run in
+  all, the declared `fix` counted as round 1. It is not called `fix_rounds`,
+  because that name already means the merge step's CI fix rounds, and one
+  name must not mean two caps.
+* `fix_round` and `re_review` optionally name another `runner_profile`,
+  `model_class` or `prompt` for the rounds, by name; absent, a round repeats
+  the fix's or the review's.
+
+`validation.resolve_fix_loop` refuses anything else with a 422 naming the
+step: a block on another profile, a second loop, a container field (the loop
+runs no container), a step that stages a file from the loop (it writes
+none), a `review` that is not upstream or runs no agent, a `fix` that is not
+the gated integrator. The block is signed into the loop step's dispatch, so
+no agent can raise its `max_rounds`.
+
+**A round.** Round k is a fix, `review-fix:<k>`, then a re-review,
+`re-review:<k>`, of the head that fix pushed. Each is an ordinary agent in a
+one-step workflow of its own, admitted like any other, and appears in the
+loop's workflow as a step that points at it; a fix round continues the pull
+request's branch, so no second pull request opens. Under `integrate` the
+declared fix is round 1's, so the loop starts with `re-review:1`; under
+`direct-pr` it starts with `review-fix:1`. swarm-api drives the loop when a
+round or a parent ends (`fixloop.on_task_finished`) and, for a wake that was
+lost, from the per-tenant merge-wake tick (`fixloop.sweep_tenant`).
+
+| what ended | what the loop does |
+|---|---|
+| the first review says MERGE | ends SUCCEEDED with no round |
+| a re-review says MERGE | ends SUCCEEDED; its `final_review` is that re-review |
+| a re-review says NOT_YET, rounds left | starts the next fix with that verdict's findings, from the head a person pushed if one did |
+| a re-review says NOT_YET, no round left | parks for a person, `fix_loop_exhausted` |
+| a fix pushed nothing, or the same head | parks for a person, `fix_changed_nothing` |
+| a round did not succeed | parks for a person, `round_failed` |
+| a verdict did not read, or a re-review recorded no head | parks for a person, `review_unreadable` |
+| a round could not be submitted (the submitter left the tenant, no pull request) | parks for a person, `round_refused` |
+| the pull request was merged outside the loop | ends SUCCEEDED, `merged_outside` |
+| the pull request was closed | ends CANCELLED, `closed_outside` |
+
+Why the loop stops at a person rather than running on: a review that
+disagrees with a fix `max_rounds` times is a disagreement a person settles,
+and every other row is a fault a further round would only repeat. A
+verdict that does not read is never read as MERGE.
+
+**The loop holds nothing** (invariant 1). The scheduler parks it
+`FIX_ROUNDS_RUNNING` and never leases it; it has no pod, no lease and no pool
+count, and only its rounds are admitted, one at a time, each with its own
+lease and fencing generation. Parked for a person it is `HUMAN_REQUIRED`,
+still holding nothing.
+
+**A loop that waits for a person** has two actions, and any full member of
+its tenant may take either, as any member may cancel the workflow:
+
+* **add a round**: `POST /v1/workflows/{workflow_id}/fix-loop/rounds`,
+  `{"rounds": 1, "note": "..."}` (`fixloop.add_rounds`). The note, at most 4
+  KiB, is guidance for the next fix. The next action is a fix, or a
+  re-review of the same head after `review_unreadable`. A loop never runs
+  more than 10 rounds in all, rounds a person added counted; past that the
+  route refuses 409. Why a ceiling: a person adding rounds one at a time
+  should still meet a bound on cost.
+* **end the loop**: `POST /v1/workflows/{workflow_id}/fix-loop/end`,
+  `{"outcome": "stop"}` (`fixloop.stop`). The loop ends FAILED
+  `fix_loop_exhausted`, naming who stopped it; the workflow fails with it,
+  so its merge step never merges and the pull request stays open for a
+  person.
+
+Either route refuses 409 while a round is running or after the loop ended.
+The same two actions are on the workflow page, whose loop row shows round k
+of N and, while the loop waits, **Add a round** and **Stop** (Stop asks once
+more); in the plugin they are `swarm_fix_loop` with `action` `add_round` or
+`stop`, and `/sc check` flags a waiting loop with its phase and the command.
+A loop nobody answers expires 7 days after its park and ends FAILED
+`fix_loop_exhausted`. Why an expiry at all (the owner's pick on 2026-10-27,
+over none): the park itself costs nothing, but a loop nobody answers would
+otherwise keep its workflow and its pull request open for ever.
+
+**Who gets a loop without declaring one: the owner's rules of 9 November
+2026.**
+
+* **A workflow that merges on its review's verdict gets the loop
+  automatically while the `fix-loop` runner type is available, and keeps the
+  single re-review until then.** `"on_merge_verdict"`, or the repository's
+  `merge_policy`, on an `integrate` workflow whose integrator is gated on
+  `["NOT_YET"]` appends a loop step with `max_rounds` 3 and a merge that reads
+  it (`validation.verdict_fix_loop_step`; [above](#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)).
+  Why: one re-review that said NOT_YET ended the workflow FAILED, and a person
+  had to start each further round.
+* **A workflow with a security review always keeps the single re-review,
+  because a merge behind a loop reads only the loop.** The security review
+  (`validation.is_security_review`) judges the integrator's head, which later
+  rounds would move, and its verdict would not gate the merge.
+* **An issue run carries the loop with `max_rounds` equal to its
+  `fix_rounds`, under the same two conditions**
+  ([issue-runs.md](issue-runs.md#the-fix-loop-in-an-issue-run)). Why: the run
+  already chose how many rounds it will pay for, and one cap should bound both.
+
+**Merging behind a loop.** The merge reads the loop's final review, never round
+0's, and only from a loop that SUCCEEDED
+([merge-step.md](merge-step.md#revised-2026-11-09-the-merge-reads-the-fix-loops-final-review-and-a-not_yet-holds-the-pull-request-with-review-not-yet)).
+A round's own failure under a loop that SUCCEEDED does not fail the
+workflow: the loop's ending decides its rounds' outcome.
+
+**Proved by** the acceptance check "workflow: fix-loop" in
+`scripts/acceptance/groups/workflow.sh`: a review that says NOT_YET twice and
+then MERGE ends the loop SUCCEEDED with `re-review:1`, `review-fix:2` and
+`re-review:2` appended, and the loop held no lease. It SKIPs while the
+profile is unavailable, and must pass on dev for contract request 151 to
+stay applied.
 
 ## A repository's Playwright suite as a sharded gate: `swarm_suite_gate`
 
