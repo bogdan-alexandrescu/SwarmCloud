@@ -155,6 +155,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | PENDING THE OWNER, AFTER FL-ACCEPT PASSES: requested by lane FL-ACCEPT on 2026-11-09, not applied. The acceptance check that proves it (`scripts/acceptance/groups/workflow.sh`, "workflow: fix-loop") SKIPs while the profile ships unavailable, and FL-ISSUE, FL-UI and FL-DOCS are not on main (read 2026-11-09) |
 
 ---
 
@@ -17514,3 +17515,86 @@ today `tests/unit/control_plane/test_platform_switches.py` holds a forged
 ### Who decided
 
 Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
+
+
+## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
+
+**Status:** PENDING THE OWNER, AFTER FL-ACCEPT PASSES. Requested on
+2026-11-09 by lane FL-ACCEPT, in the pull request that adds this section; not
+applied. Nothing under `apps/common/swarm_common/` is edited by it.
+
+### What is true today
+
+`RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
+`disabled_reason` that points at docs/design/fix-loop.md. While it is,
+swarm-api refuses any workflow that names it
+(`validation.validate_runner_profile`, which `resolve_fix_loop` calls before
+it reads the block), for every caller and every tenant. There is no switch
+that turns a profile on for one tenant or one run, and the acceptance check
+does not invent one.
+
+Of the design's §8 lanes, read on main on 2026-11-09: FL-CONTRACT,
+FL-ROLLUP, FL-SUBMIT, FL-SCHED, FL-DRIVE, FL-WORKER and FL-PLUGIN carry their
+behaviour; FL-ISSUE (`issueruns.py`, `issueci.py`), FL-UI (the console's loop
+row) and FL-DOCS do not. FL-ACCEPT is the group check
+"workflow: fix-loop" in `scripts/acceptance/groups/workflow.sh`.
+
+### The change
+
+`apps/common/swarm_common/profiles.py`, in the `"fix-loop"` entry:
+
+```python
+        available=False,
+        disabled_reason=(
+            "fix-loop is not available yet: it ships unavailable until its "
+            "acceptance run passes, as docs/design/fix-loop.md says."
+        ),
+```
+
+becomes
+
+```python
+        available=True,
+```
+
+`available=False` becomes `available=True`, and the four `disabled_reason`
+lines are removed (its default is `""`, and `RunnerProfile` refuses a
+disabled profile without a reason, not an enabled one with none). Nothing
+else changes; Terraform's catalogue carries no availability field.
+
+### The order, and why it is the owner's
+
+The design (§7 request A) keeps the profile off until every build lane has
+merged and FL-ACCEPT passes. FL-ACCEPT cannot pass while the profile is off:
+the deployment refuses the workflow it submits, so the check reports a SKIP
+naming this request. await-input met the same circle and the owner broke it
+by applying its request D (entry 105) on dev BEFORE HW-ACCEPT ran, then
+proving it. The same order is asked for here: the owner applies this change
+on dev, the next acceptance run measures "workflow: fix-loop", and the
+change stays only if that check is green.
+
+### What it would break if accepted
+
+Callers can submit `fix-loop` steps. FL-ISSUE, FL-UI and FL-DOCS not being
+on main means an issue run still compiles one review-fix round, the console
+shows the loop as a plain step with its park reason, and the docs do not
+describe the step yet. Tests that pin `available is False`
+(`tests/unit/common/test_fix_loop_contract.py`) change with it.
+
+### Invariants
+
+**1**: the loop is `control_plane` and is parked, never leased, while its
+rounds run; the acceptance check asserts it held no lease and ran no
+attempt. **10**: a round names its profile by name. 2 to 9 are untouched.
+
+### How it is tested
+
+`tests/unit/scripts/test_acceptance_fix_loop_group.py` pins the workflow the
+check submits (and that swarm-api's own `resolve_fix_loop` accepts it once
+the profile is on), the verdicts its reviews return in order (NOT_YET,
+NOT_YET, MERGE), the rounds it expects (`re-review:1`, `review-fix:2`,
+`re-review:2`) and its judging. The live proof is the check itself, on dev.
+
+### Who decides
+
+The owner: a frozen-contract change, applied after the check is green.
