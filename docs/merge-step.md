@@ -45,7 +45,83 @@ below.**
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
 **Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
-readied on `claude-code`, never the browser -- the section below.**
+readied on `claude-code`, never the browser -- the second section below.**
+**Revised 2026-11-09: a merge behind a fix loop reads the loop's final
+review, and a merge step that refuses a NOT_YET labels the pull request
+`review-not-yet`, which `ready` cannot merge -- the section below.**
+
+## Revised 2026-11-09: the merge reads the fix loop's final review, and a NOT_YET holds the pull request with `review-not-yet`
+
+Two changes to what the merge step reads and what it does on a refusal. Both
+serve one rule: a pull request merges on the verdict about the code it holds,
+never on CI alone.
+
+**Behind a fix loop, the merge reads the loop's final review.** A workflow
+with a `fix-loop` step ([workflows.md](workflows.md#the-fix-loop-review-fix-rounds-until-a-review-says-merge))
+ends in a merge whose signed `merge_target` names the loop as `review_loop`
+in place of a `review` and a staged verdict file; the target parser refuses
+a target naming both. The worker reads the loop's `final_review` from its
+verified `result_summary.fix_loop`, or the loop's declared review when it ran
+no round, and merges only on that review's MERGE, at the head it judged
+(`merge._loop_review`). Why: the loop's rounds are appended after submission,
+so no verdict file of theirs could be staged into a merge signed before they
+existed, and round 0's review judged code the rounds have since changed.
+Each check ends the step MERGE_REFUSED with its own code:
+
+| check | refused |
+|---|---|
+| the step named is on the `fix-loop` profile | `fix_loop_not_a_fix_loop` |
+| the loop SUCCEEDED (a loop that was stopped, expired or is still running did not) | `fix_loop_not_succeeded` |
+| the final review is the loop's declared review, or a re-review whose signed round record names this loop, in this tenant | `fix_loop_review_not_its_own` |
+| that review SUCCEEDED | `fix_loop_review_not_succeeded` |
+| a re-review's signed `repository_ref` is a full sha, and the head its round record names | `fix_loop_review_head_unknown` |
+| its verdict file reads | `verdict_unreadable` |
+
+Why each is a refusal rather than a fallback: the worker trusts only what
+is signed, so a `final_review` that names another loop's review, a failed
+one or one that judged another head is never read as this pull request's
+MERGE. A loop that ends FAILED fails its workflow, so its merge
+step does not start in the first place; `fix_loop_not_succeeded` is the
+worker's own guard for a merge that runs anyway.
+
+**A NOT_YET labels the pull request `review-not-yet` (the owner, 9 November
+2026).** When the merge step refuses `verdict_not_merge` -- the review it
+reads said NOT_YET, the single re-review's included -- it does four things,
+each tried on its own so that one failing (a token that may not turn
+auto-merge off, say) is logged and the rest still run, and none changes the
+refusal (`merge._hold_not_yet`):
+
+1. labels the pull request `review-not-yet`;
+2. turns GitHub's native auto-merge off, when it is on;
+3. removes `ready`, when it is on;
+4. comments the review's findings once per review: at most 20 of them,
+   each cut to 300 characters, inside one fenced block with every run of
+   three backticks broken and passed through the worker's redaction,
+   because they are an agent's text.
+
+What it did is recorded in the step's `result_summary.review_not_yet`. Why:
+a lane whose one re-review said NOT_YET ended FAILED with its pull request
+open and green, then a `ready` label merged it on CI alone and the
+regression the review had found reached main. The label is what makes that refusal
+outlast the workflow.
+
+**The `ready` gate refuses while the label is on.**
+`scripts/check-closing-references.sh`, which auto-merge.yml's gate and the
+repository's merge train both run, refuses a pull request that carries
+`review-not-yet` and comments why. A CI fix does not clear the label, and
+neither does a green CI run: only a later merge step that reads a MERGE does,
+removing it before anything merges or boards the train
+(`merge._clear_not_yet`; a failure to remove it is logged and the merge goes
+on, while the gate still refuses `ready` until it is gone). Why only a
+MERGE: the label records a review's judgement, and only a review's
+judgement may undo it.
+
+**What it does not do.** The label goes on only through a merge step's
+`verdict_not_merge`. A fix loop that waits for a person, or that a person
+stopped or that expired, has no merge step that ran, so nothing labels its
+pull request: it stays open without `review-not-yet`. A person who adds
+`ready` to such a pull request merges it on CI alone, as before this
+revision.
 
 ## Revised 2026-11-05: the re-review that runs no agent runs on claude-code
 
