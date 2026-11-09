@@ -32,7 +32,14 @@
 # mirror folder holding the pinned objects at their object paths (the source
 # archive the intake job checked, and Bun's zip), and writes the tree to --out.
 # Dependencies are fetched only through the deployment's mirror repositories,
-# never straight from a public registry. The recipes install at
+# never straight from a public registry (owner, 9 November 2026, Q19): the
+# pinned objects come from the mirror folder, and gstack's npm dependencies
+# from the registry the bundle build passes as the recipe's --registry, the
+# deployment's mirror repository, which lane 15 (terraform/infra) provides and
+# lane 16 passes; until then this image ships the argument, not the
+# repository. Without --registry, as in the release build's stages, Bun reads
+# its default registry. Either way gstack installs only at the archive's
+# bun.lock, frozen, or the build fails. The recipes install at
 # /opt/swarm/plugins/<name> and Bun at /usr/local/bin/bun, which is why a build
 # step runs this image as root: it is a Cloud Build step, never a pod, and it
 # holds no credential (its service account's token is Cloud Build's own).

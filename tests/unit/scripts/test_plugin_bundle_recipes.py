@@ -347,6 +347,105 @@ def test_the_gstack_recipe_refuses_a_list_or_bun_mode_it_does_not_know(tmp_path:
         assert proc.returncode == 2 and why in proc.stderr, (extra, proc.stderr)
 
 
+@pytest.mark.parametrize("registry", ["http://mirror.invalid/npm", "https://a b", 'https://x"', "ftp://x", "https://"])
+def test_the_gstack_recipe_refuses_a_registry_that_is_not_a_plain_https_url(tmp_path: Path, registry: str) -> None:
+    # The registry lands in a TOML string and Bun's environment.
+    proc = _run([str(RECIPES / "gstack" / "build"), "--pins", str(PINS), "--mirror", str(tmp_path),
+                 "--layers", "x", "--measure", "x", "--base-list", "x", "--browser-list", "x",
+                 "--list", "base", "--bun", "present", "--out", str(tmp_path / "out"),
+                 "--registry", registry], home=tmp_path, tmp=tmp_path)
+    assert proc.returncode == 2 and "--registry is an https URL" in proc.stderr, proc.stderr
+
+
+_LOCK_START = 'if [ ! -f "${GSTACK_INSTALL}/bun.lock" ]; then'
+_LOCK_END = "setup changed bun.lock"
+
+
+def _gstack_setup_steps() -> str:
+    """The recipe's own lines from the bun.lock check through setup to the
+    check that bun.lock is unchanged: the part a unit test can run without Bun
+    at /usr/local/bin (the recipe requires the pinned one there before it
+    fetches gstack)."""
+    text = (RECIPES / "gstack" / "build").read_text()
+    start = text.index(_LOCK_START)
+    end = text.index("\nfi\n", text.index(_LOCK_END)) + len("\nfi\n")
+    return text[start:end]
+
+
+def _fake_gstack(tmp_path: Path, *, lock: bool = True, setup_writes_lock: bool = False) -> Path:
+    install = tmp_path / "gstack"
+    install.mkdir()
+    if lock:
+        (install / "bun.lock").write_text('{"lockfileVersion": 1}\n')
+    rewrite = 'echo changed >> bun.lock\n' if setup_writes_lock else ""
+    setup = install / "setup"
+    setup.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'printf "%s\\n" "${BUN_CONFIG_REGISTRY-unset}" "${NPM_CONFIG_REGISTRY-unset}" "$*" > ../setup-env\n'
+        'cp "${HOME}/.bunfig.toml" ../bunfig-seen\n' + rewrite)
+    setup.chmod(0o755)
+    return install
+
+
+def _run_setup_steps(tmp_path: Path, install: Path, registry: str = "") -> subprocess.CompletedProcess:
+    scratch = tmp_path / "scratch"
+    (scratch / "home").mkdir(parents=True)
+    script = ("set -euo pipefail\n"
+              f'GSTACK_INSTALL="{install}"\nscratch="{scratch}"\nregistry="{registry}"\n'
+              + _gstack_setup_steps())
+    return _run(["bash", "-c", script], home=tmp_path, tmp=tmp_path)
+
+
+def test_the_gstack_recipe_refuses_an_archive_without_bun_lock(tmp_path: Path) -> None:
+    install = _fake_gstack(tmp_path, lock=False)
+    proc = _run_setup_steps(tmp_path, install)
+    # MUTATION: drop the check; setup then resolves gstack's dependencies unpinned.
+    assert proc.returncode == 1 and "holds no bun.lock" in proc.stderr, proc.stderr
+    assert not (tmp_path / "setup-env").exists(), "setup ran without a lockfile"
+
+
+def test_the_gstack_recipe_fails_when_setup_changes_bun_lock(tmp_path: Path) -> None:
+    # gstack's setup falls back to `bun install --lockfile-only` when the
+    # frozen install fails; a rewritten lockfile must fail the build.
+    install = _fake_gstack(tmp_path, setup_writes_lock=True)
+    proc = _run_setup_steps(tmp_path, install)
+    # MUTATION: drop the after-setup comparison.
+    assert proc.returncode == 1 and "setup changed bun.lock" in proc.stderr, proc.stderr
+
+
+def test_the_gstack_recipe_installs_frozen_from_the_default_registry_without_registry(tmp_path: Path) -> None:
+    install = _fake_gstack(tmp_path)
+    proc = _run_setup_steps(tmp_path, install)
+    assert proc.returncode == 0, proc.stderr
+    bunfig = (tmp_path / "bunfig-seen").read_text()
+    # MUTATION: drop frozenLockfile; Bun may then rewrite the lockfile.
+    assert bunfig.splitlines() == ["[install]", "frozenLockfile = true"], bunfig
+    # Unset, as in the release build's stages: Bun's default, today's tree.
+    assert (tmp_path / "setup-env").read_text().splitlines() == ["unset", "unset", "--host claude --no-browser"]
+
+
+def test_the_gstack_recipes_registry_reaches_setup(tmp_path: Path) -> None:
+    registry = "https://mirror.invalid/npm/"
+    install = _fake_gstack(tmp_path)
+    proc = _run_setup_steps(tmp_path, install, registry)
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: parse --registry and never pass it on; Bun then reads the public registry.
+    assert (tmp_path / "setup-env").read_text().splitlines() == [registry, registry, "--host claude --no-browser"]
+    bunfig = (tmp_path / "bunfig-seen").read_text()
+    assert bunfig.splitlines() == ["[install]", "frozenLockfile = true", f'registry = "{registry}"'], bunfig
+
+
+def test_the_gstack_recipe_checks_the_lockfile_around_setup_in_order() -> None:
+    code = (RECIPES / "gstack" / "build").read_text()
+    unpack = code.index('tar -xzf "${scratch}/gstack.tar.gz"')
+    # The run tests above slice exactly these lines; they must sit after the
+    # unpack and around the one ./setup.
+    setup = "./setup --host claude --no-browser)"
+    assert code.count(setup) == 1
+    assert unpack < code.index(_LOCK_START) < code.index(setup) < code.index(_LOCK_END)
+    assert code.index(_LOCK_END) < code.index('"${layers}" check')
+
+
 def _security_audit_archive() -> tuple[str, bytes]:
     """The pinned archive (the default pins' object): build/tool-mirror's copy
     when a build staged one, else the upstream URL the mirror is filled from;
