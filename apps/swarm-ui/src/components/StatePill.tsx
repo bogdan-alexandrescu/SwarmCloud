@@ -18,7 +18,7 @@
  * the amber flag, so they are found without reading every row.
  */
 import { MarkGlyph, MarkIcon, NamedMark, StateMark, STATE_MARK, WarnMark, type MarkHue, type MarkName } from '../marks'
-import { PARK_NEEDS_A_PERSON, reasonCopy, type ParkReason, type TaskState } from '../types'
+import { PARK_NEEDS_A_PERSON, reasonCopy, type FixLoopPersonPhase, type FixLoopRead, type ParkReason, type TaskState } from '../types'
 import type { ReactNode } from 'react'
 import { WarnGlyph } from './glyphs'
 
@@ -98,6 +98,73 @@ export function ParkPill({ reason, until }: { reason: ParkReason | string | null
         </span>
       )}
       {until != null && until !== '' && <span className="c-until">{until}</span>}
+    </span>
+  )
+}
+
+/**
+ * WHY A FIX LOOP WAITS FOR A PERSON (docs/design/fix-loop.md §4.4), for the
+ * loop pill's tooltip: the glass says only "waiting for you", the phase is
+ * one hover away. A phase this client does not know is printed verbatim.
+ */
+export const FIX_LOOP_PHASE_WORD: Readonly<Record<FixLoopPersonPhase, string>> = {
+  fix_loop_exhausted: 'its rounds ran out on a NOT_YET verdict',
+  fix_changed_nothing: 'a fix round pushed nothing, so there was no new head to review',
+  round_failed: 'a round ended without succeeding',
+  review_unreadable: 'a re-review wrote no verdict that reads',
+  round_refused: 'a round could not be submitted',
+}
+
+/** The pill's word for the loop's two live states. */
+export const FIX_LOOP_WORD = {
+  running: 'rounds running',
+  waiting: PARK_WORD.HUMAN_REQUIRED,
+} as const
+
+function phaseWords(phase: string): string {
+  return Object.prototype.hasOwnProperty.call(FIX_LOOP_PHASE_WORD, phase)
+    ? FIX_LOOP_PHASE_WORD[phase as FixLoopPersonPhase]
+    : phase
+}
+
+/**
+ * A FIX LOOP'S COUNTER AND STATE (docs/design/fix-loop.md §6.2): `round k of
+ * N`, then `rounds running` while its rounds run, or `waiting for you` with
+ * the amber flag when it is parked for a person. In the parked hue either
+ * way: the loop holds no capacity (CONTRACT invariant 1), its rounds do. The
+ * half that runs, the phase and the last verdict are the tooltip's. An
+ * unread `N` prints the round alone, never a guessed ceiling.
+ */
+export function FixLoopPill({ loop, state }: { loop: FixLoopRead; state: TaskState }) {
+  const { mark, hue } = loop.waiting || loop.running !== null ? STATE_MARK.PARKED : STATE_MARK[state]
+  const counter = loop.of === null ? `round ${loop.round}` : `round ${loop.round} of ${loop.of}`
+  const word = loop.waiting ? FIX_LOOP_WORD.waiting : state === 'PARKED' ? FIX_LOOP_WORD.running : null
+  const title = [
+    loop.of === null ? 'The loop\u2019s round ceiling was not read.' : null,
+    loop.running === 'fix' ? 'A fix round is running.' : loop.running === 'review' ? 'A re-review is running.' : null,
+    loop.waiting && loop.phase !== null ? `Waiting for a person: ${phaseWords(loop.phase)} (${loop.phase}).` : null,
+    !loop.waiting && loop.phase !== null ? `Ended on ${loop.phase}.` : null,
+    loop.verdict !== null
+      ? `Last verdict ${loop.verdict}${loop.findings !== null ? `, ${loop.findings} finding${loop.findings === 1 ? '' : 's'}` : ''}.`
+      : null,
+  ]
+    .filter((t): t is string => t !== null)
+    .join(' ')
+  return (
+    <span className="c-park c-loop" data-loop={loop.waiting ? 'waiting' : word !== null ? 'running' : 'ended'}>
+      <span className={`c-pill is-${hue} is-sm`} data-mark={mark} data-hue={hue} title={title === '' ? undefined : title}>
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <MarkGlyph mark={mark} />
+        </svg>
+        {counter}
+        {word !== null && <span className="c-pr">{word}</span>}
+      </span>
+      {loop.waiting && (
+        <span className="c-flag" data-flag="needs-a-person" title="needs a person">
+          <WarnGlyph />
+          <span className="sk-vh">needs a person</span>
+        </span>
+      )}
     </span>
   )
 }
