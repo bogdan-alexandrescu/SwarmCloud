@@ -106,7 +106,8 @@ anything is written; own speech's are:
                         empty), so no session is opened as speech at all
   front_refused         swarm-voice's 409 `voice_front_refused`: no Claude
                         account free for the front (a refusal, never a wait)
-  no_l4                 the zone has no L4 free; no other zone is tried (Q1)
+  no_l4                 no zone of SWARM_SPEECH_ZONES had an L4 free, each tried
+                        once in order (owner, 2026-11-09)
   not_ready             the machine was not RUNNING inside the four minutes
 
 The session is not re-opened: its document turns `mode: "text"`, the front
