@@ -82,6 +82,8 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
     ("POST", "/v1/admin/setup/addons/brave-search/probe", None),
+    ("POST", "/v1/admin/setup/plugins/skip", None),
+    ("DELETE", "/v1/admin/setup/plugins/skip", None),
 ]
 
 
