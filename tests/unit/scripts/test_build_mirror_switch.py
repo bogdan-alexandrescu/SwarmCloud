@@ -166,6 +166,21 @@ def _dockerfile_tool_reads() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     for dockerfile in MIRROR_READERS:
         found |= _tool_reads(dockerfile)
+    return found | _bundled_plugin_reads()
+
+
+#: The bundled plugins' pins (managed plugins lane 14, docs/design/managed-plugins.md
+#: §1.4): the base and browser stages hand them to the bundler's recipes, which
+#: read each source archive and toolchain from the same /tmp/tool-mirror at the
+#: sha256 written here, so the manifest lists them as the base reads them.
+BUNDLED_PLUGINS = REPO / "images" / "agent-runtime-base" / "bundled-plugins.json"
+
+
+def _bundled_plugin_reads() -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for pins in json.loads(BUNDLED_PLUGINS.read_text())["plugins"].values():
+        for pinned in (pins["source"], *pins.get("toolchain", {}).values()):
+            found.add((pinned["sha256"], pinned["object"]))
     return found
 
 
