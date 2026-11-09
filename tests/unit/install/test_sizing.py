@@ -113,7 +113,7 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
     headroom"), so a team the live size gets dev.tfvars' pool_limits (global
     180, default_tenant 40, standard 80, browser 100, large 40, the runner and
     backend ceilings) half again over, in the same ratios; service_max_instances
-    is the live 8/2/2/1 (swarm-api 8 since BGD's pick of 2026-11-06). provider_tenant is the one exception: 50 tenants
+    is the live 8/2/2/1 (swarm-api 8 since the owner's pick of 2026-11-06). provider_tenant is the one exception: 50 tenants
     share the provider pool, so it is global // 50 (N5)."""
     assert sizing.HEADROOM == 3
     found = sizing.propose("team", sizing.REFERENCE_MEMBERS)

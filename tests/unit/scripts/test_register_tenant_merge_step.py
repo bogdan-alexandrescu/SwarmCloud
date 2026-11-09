@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import write_placeholder_deny_list
+
 REPO = Path(__file__).resolve().parents[3]
 REGISTER = REPO / "scripts" / "register-tenant.sh"
 TENANCY = REPO / "terraform" / "modules" / "tenancy" / "main.tf"
@@ -199,9 +201,18 @@ class Fakes:
             k: v for k, v in os.environ.items()
             if k not in ("K_SERVICE", "CLOUD_RUN_JOB", "SWARM_IMPERSONATE_SA", "SWARM_ASSUME_YES")
         }
+        # The never-touch list, served for this harness's own project the way
+        # config_fetch reads one offline (the package fixture's is for
+        # example-project, and every guarded call refuses without one).
+        config = tmp / "deploy-config"
+        config.mkdir(mode=0o700)
+        write_placeholder_deny_list(config, PROJECT, ["dev"])
+        (tmp / "config-cache").mkdir(mode=0o700)
         env.update({
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "SWARM_ENV_FILE": str(env_file),
+            "SWARM_DEPLOY_CONFIG_DIR": str(config),
+            "XDG_CACHE_HOME": str(tmp / "config-cache"),
             "NO_COLOR": "1",
             # The example principals below are @example.com; the script's own
             # default domain is the deployment's, so the test names its own.

@@ -904,13 +904,13 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
 #: owner 2026-10-07 -- 100 running pods plus the finished Jobs awaiting
 #: ttlSecondsAfterFinished; at 32 the quota refused new Jobs while pods were
 #: still free. The TTL was 3600 s when this was set and is 600 s (ten minutes)
-#: since BGD's decision of 2026-10-28, after finished Jobs filled eng's quota
+#: since the owner's decision of 2026-10-28, after finished Jobs filled eng's quota
 #: of 240 and refused dispatches (#1820); the value is unchanged, so the same
 #: quota now covers six times the Jobs an hour.
 #:
 #: NOT A DEFAULT (DAYONE-K8S-1, #2039). These numbers were the --quota-*
 #: defaults, and kubernetes/apply.sh run by hand rendered them for every
-#: tenant, which on 2026-10-23 failed u-bogdan's workspace (lesson 32). A
+#: tenant, which on 2026-10-23 failed a personal workspace (lesson 32). A
 #: WORKSPACE tenant's quota is its record's (`workspace_quota`). apply.sh asks
 #: `render.py terraform-quota` for these by name, for a Terraform tenant only,
 #: and passes them as flags; an offline render (no cluster network: lint)
@@ -924,7 +924,7 @@ TERRAFORM_TENANT_QUOTA = {
 }
 
 #: THE PROJECT AN OFFLINE RENDER NAMES (DAYONE-K8S-1, design §7). `--project`
-#: has no default: it was `saga-agents-staging`, so a render for any other
+#: has no default: it was the live project, so a render for any other
 #: project bound that project's scheduler, reconciler and deployer -- and
 #: kubernetes/apply.sh's tenant mode never passed it. A render that can reach a
 #: cluster is refused without it (`require_cluster_inputs`); `render.py
@@ -1153,7 +1153,7 @@ def terraform_namespaces(tfvars: Iterable[str]) -> str:
 # ws_quota_args), and its A9 fails the workspace when the live quota differs.
 # kubernetes/apply.sh run by hand passed none, so it rendered the flat defaults
 # below `add_tenant_arguments` -- pods 100, cpu 400 -- and on 2026-10-23 that
-# failed u-bogdan's workspace, whose 100 agents want pods 200, cpu 800. BGD's
+# failed a personal workspace, whose 100 agents want pods 200, cpu 800. the owner's
 # decision the same day: one formula, and apply.sh renders a workspace tenant's
 # quota from its record. The constants are scripts/lib/workspace-quota.json,
 # read here and by register-tenant.sh (ws_quota_constants); the formula is the

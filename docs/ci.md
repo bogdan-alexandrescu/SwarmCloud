@@ -3528,9 +3528,11 @@ What main does as of 2026-10-10:
 * **A workflow spec may set `merge: "on_merge_verdict"`** in its `metadata`
   (`MERGE_ON_VERDICT` in
   [`validation.py`](../apps/swarm-api/swarm_api/validation.py)). That
-  appends a re-review on the integrator's pushed head and a `merge` step,
-  which merges the integrator's pull request only when that review says
-  MERGE and CI is green.
+  appends a fix loop (3 rounds, the owner 2026-11-09) when the integrator is
+  gated on the review's NOT_YET, or else a re-review on the integrator's
+  pushed head, and a `merge` step, which merges the integrator's pull
+  request only when the latest review says MERGE and CI is green
+  ([workflows.md](workflows.md#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)).
 * **Merge steps on one repository take a single merge slot** and land in
   submission order, so concurrent merges no longer refuse
   `behind_too_often` behind each other

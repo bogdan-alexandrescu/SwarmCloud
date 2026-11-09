@@ -261,6 +261,36 @@ def test_a_run_token_is_never_held(db):
     assert mints.calls[-1][2]["permissions"] == dict(forge_installation.READ_PERMISSIONS)
 
 
+def test_a_contents_token_is_one_repository_with_contents_read_alone(db):
+    _enable(db, "eng", OWNER, INSTALLATION)
+    mints = Mints()
+    token = _installations(db, mints).contents_token("eng", OWNER, REPO)
+    assert token == mints.issued[-1]
+    (method, url, body), = mints.calls
+    assert method == "POST" and url.endswith(f"/app/installations/{INSTALLATION}/access_tokens")
+    assert body["repositories"] == [REPO]
+    # MUTATION: ask pull requests (the run read's set) and this is not equal.
+    assert body["permissions"] == {"contents": "read"}
+    assert body["permissions"] == dict(forge_installation.CONTENTS_READ_PERMISSIONS)
+
+
+def test_a_contents_token_is_never_held_and_refuses_typed(db):
+    with pytest.raises(forge_installation.ContentsMintRefused) as none:
+        _installations(db, Mints()).contents_token("eng", OWNER, REPO)
+    assert none.value.reason == forge_installation.MINT_NO_INSTALLATION
+    _enable(db, "eng", OWNER, INSTALLATION)
+    mints = Mints()
+    tokens = _installations(db, mints)
+    first = tokens.contents_token("eng", OWNER, REPO)
+    second = tokens.contents_token("eng", OWNER, REPO)
+    assert len(mints.calls) == 2 and first != second
+    tokens.token_for_repo("eng", OWNER, REPO)
+    assert mints.calls[-1][2]["permissions"] == dict(forge_installation.READ_PERMISSIONS)
+    with pytest.raises(forge_installation.ContentsMintRefused) as refused:
+        _installations(db, Mints(status=403)).contents_token("eng", OWNER, REPO)
+    assert refused.value.status == 403
+
+
 def test_no_installation_or_a_refused_mint_is_a_typed_refusal(db, caplog):
     with pytest.raises(RunMintRefused) as none:
         _installations(db, Mints()).run_token("eng", OWNER, REPO, write=True)

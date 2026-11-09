@@ -32,6 +32,12 @@
 # 2026-10-19, lane TERRITORY-WARN, part of #1468). It warns; it gates nothing.
 # GitHub creates it on first use; declaring it keeps its colour and wording ours.
 # test_issue_forms.py accepts it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
+# The worker's merge step applies `review-not-yet` to a pull request whose
+# review said NOT_YET, and removes it when a later review says MERGE (owner
+# decision, 9 November 2026). While it is on, `ready` cannot merge the pull
+# request: scripts/check-closing-references.sh, which auto-merge.yml's gate and
+# the merge train run, refuses it. test_issue_forms.py accepts it as
+# `agent_worker.merge.REVIEW_NOT_YET_LABEL`.
 #
 # One is applied by SWARM-API: `needs-owner`, which the `failure-review`
 # schedule puts on an issue whose cause is in a hold category (IAM, the frozen
@@ -75,6 +81,9 @@
 - name: needs-owner
   color: "d93f0b"
   description: "Held for the owner: no fix run starts; issue-sweep's default labels_exclude skips it"
+- name: review-not-yet
+  color: "e11d21"
+  description: "Its review said NOT_YET; a later review must say MERGE"
 - name: ready
   color: "2cbe4e"
   description: "Queue for GitHub's auto-merge once required checks are green (auto-merge.yml)"

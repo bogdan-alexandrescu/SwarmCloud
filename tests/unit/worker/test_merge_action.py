@@ -233,7 +233,11 @@ def test_each_refusal_fails_with_its_reason_and_makes_no_merge_call(
 @pytest.mark.parametrize("case", ["verdict_not_yet", "moved_head_is_after", "worker_unprotected",
                                   "unsupported_forge"])
 def test_a_credential_free_refusal_never_reads_the_token(tmp_path, case):
-    """#219's order: what needs no credential is refused before the token is read."""
+    """#219's order: what needs no credential is refused before the token is read.
+
+    A NOT_YET is decided before the token too, and then reads it once (owner,
+    9 November 2026): the refusal labels the pull request `review-not-yet`
+    with the step's own token (test_merge_review_not_yet.py)."""
     world = MergeWorld(tmp_path)
     if case == "verdict_not_yet":
         world.verdict = {"verdict": "NOT_YET", "findings": ["a blocker"]}
@@ -245,7 +249,7 @@ def test_a_credential_free_refusal_never_reads_the_token(tmp_path, case):
         # The control: a refusal that needs the forge DOES read it, once.
         world.pr["head"]["sha"] = OTHER
     merge.run_merge(world.context())
-    assert world.token_reads == (1 if case == "moved_head_is_after" else 0)
+    assert world.token_reads == (1 if case in ("moved_head_is_after", "verdict_not_yet") else 0)
 
 
 def test_a_409_from_the_merge_call_is_head_moved_and_is_not_resent(tmp_path):

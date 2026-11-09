@@ -39,6 +39,18 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 KUBERNETES = REPO / "kubernetes"
 APPLY = KUBERNETES / "apply.sh"
 TEMPLATE = KUBERNETES / "swarm-system" / "tailscale-egress.yaml"
@@ -419,7 +431,7 @@ case "$*" in
   *"version --client"*) printf 'Client Version: v1.36.3\n' ;;
   *"config current-context"*) printf 'swarm-dev' ;;
   *"config view"*)
-    if [[ -f "${d}/cluster-entry" ]]; then cat "${d}/cluster-entry"; else printf 'gke_saga-agents-staging_us-central1_swarm-autopilot'; fi ;;
+    if [[ -f "${d}/cluster-entry" ]]; then cat "${d}/cluster-entry"; else printf 'gke_@PROJECT@_us-central1_swarm-autopilot'; fi ;;
   *"get namespace swarm-system"*) printf 'namespace/swarm-system\n' ;;
   *"get networkpolicies"*) cat "${d}/applied.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
@@ -450,7 +462,7 @@ case "$*" in
     printf 'secret/operator-oauth configured\n' ;;
   *) printf 'fake kubectl: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
-"""
+""".replace("@PROJECT@", PROJECT)
 
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -504,10 +516,10 @@ FAKE_SUBNET = "swarm-fake-subnet"
 
 def _relay_manifest() -> str:
     values = {
-        "__SWARM_LIVE_IMAGE__": "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:" + "7" * 64,
-        "__PROJECT_ID__": "saga-agents-staging",
-        "__ARTIFACT_BUCKET__": "saga-agents-staging-swarm-artifacts",
-        "__LIVE_KEY_VERSION__": "projects/saga-agents-staging/secrets/swarm-live-key/versions/latest",
+        "__SWARM_LIVE_IMAGE__": f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/swarm-live@sha256:" + "7" * 64,
+        "__PROJECT_ID__": PROJECT,
+        "__ARTIFACT_BUCKET__": f"{PROJECT}-swarm-artifacts",
+        "__LIVE_KEY_VERSION__": f"projects/{PROJECT}/secrets/swarm-live-key/versions/latest",
         "__SWARM_LIVE_ILB_IP__": "10.123.16.42",
         "__SWARM_API_EGRESS_CIDR__": FAKE_API_CIDR,
     }
@@ -530,7 +542,7 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     for name, body in (("kubectl", FAKE_KUBECTL), ("gcloud", FAKE_GCLOUD), ("terraform", FAKE_TERRAFORM)):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
-    interfaces = [{"network": "swarm-vpc", "subnetwork": f"projects/saga-agents-staging/regions/us-central1/subnetworks/{FAKE_SUBNET}"}]
+    interfaces = [{"network": "swarm-vpc", "subnetwork": f"projects/{PROJECT}/regions/us-central1/subnetworks/{FAKE_SUBNET}"}]
     (d / "service.json").write_text(json.dumps({"spec": {"template": {"metadata": {"annotations": {
         "run.googleapis.com/network-interfaces": json.dumps(interfaces)}}}}}))
     (d / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
@@ -545,8 +557,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     (d / "oauth-value").write_text(value + "\n")
     (tmp_path / "tfdata").mkdir()
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+    env.update(placeholder_deployment.child_env(PROJECT))
     # common.sh has no default project any more: name the one the suite models.
-    env["PROJECT_ID"] = "saga-agents-staging"
+    env["PROJECT_ID"] = PROJECT
     env.update(
         PATH=f"{b}:{env.get('PATH', '')}",
         FAKE_CLUSTER_DIR=str(d),
@@ -556,7 +569,7 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
         # apply.sh has no default project (DAYONE-K8S-1): the one this fake
         # cluster's context and identities name is given, as an operator would.
-        PROJECT_ID="saga-agents-staging",
+        PROJECT_ID=PROJECT,
         HOME=str(tmp_path),
         TMPDIR=str(tmp_path),
     )
@@ -600,7 +613,7 @@ def test_confirm_applies_then_syncs_the_secret_without_printing_it(cluster):
     assert ("Deployment", "decision-api-egress") in _names(applied)
     # The Secret never travels in the previewed, diffed manifest.
     assert "kind: Secret" not in applied
-    assert "access latest --secret swarm-tailscale-oauth --project saga-agents-staging" in _gcloud_log(cluster)
+    assert f"access latest --secret swarm-tailscale-oauth --project {PROJECT}" in _gcloud_log(cluster)
     secret = yaml.safe_load((cluster["dir"] / "secret-applied.yaml").read_text())
     assert secret["kind"] == "Secret"
     assert secret["metadata"]["name"] == "operator-oauth"
@@ -648,10 +661,10 @@ def test_a_value_that_is_not_an_oauth_client_secret_is_refused_unprinted(cluster
 
 
 def test_the_shared_cluster_is_refused_before_anything_is_read(cluster):
-    (cluster["dir"] / "cluster-entry").write_text("gke_saga-agents-staging_us-central1-a_agents-staging")
+    (cluster["dir"] / "cluster-entry").write_text(f"gke_{PROJECT}_us-central1-a_{PEER_CLUSTER}")
     result = _apply(cluster, "--confirm")
     assert result.returncode != 0
-    assert "agents-staging" in result.stderr and "deny-list" in result.stderr, result.stderr
+    assert PEER_CLUSTER in result.stderr and "deny-list" in result.stderr, result.stderr
     assert not (cluster["dir"] / "terraform.log").exists()
     assert "secrets versions access" not in _gcloud_log(cluster)
     assert not (cluster["dir"] / "applied.yaml").exists()

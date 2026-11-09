@@ -34,7 +34,7 @@
     },
     "swarm-speech": {
       "resources": [
-        "google_compute_instance.speech"
+        "google_compute_region_instance_template.speech"
       ],
       "outputs": []
     },

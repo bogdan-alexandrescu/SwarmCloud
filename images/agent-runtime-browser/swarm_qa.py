@@ -66,7 +66,7 @@ What `capture` does, and why each:
    `Storage.setCookies` and the live gate refuses with every cookie API, by
    design (#1980: run 5 failed every route there). The cookie is the console
    fixture's: a `--settle generic` capture whose route list names no
-   persona sets it on no route, and records `persona: null` (VQ5-PERSONA; BGD, 2026-10-22:
+   persona sets it on no route, and records `persona: null` (VQ5-PERSONA; the owner, 2026-10-22:
    "Skip it when no route names a persona and --settle generic"). Then it
    navigates and waits for `load` (a main document that answered 4xx or 5xx
    fails the route at `navigate`, with its status: #1981), then up to NETWORK_IDLE_MS for
@@ -93,7 +93,7 @@ What `capture` does, and why each:
    until the scroller's end or the budget: MAX_SEGMENTS at
    phone-390 (TO_THE_END_PRESETS, owner decision c49), and at the desktop
    the route's `segments` when it names them, else MAX_SEGMENTS (part of
-   #2688: AI Studio's /docs is about 49,600 px there). Where the scroller is and how
+   #2688: a peer application's /docs is about 49,600 px there). Where the scroller is and how
    tall it is are read back after every scroll (SCROLL_JS), never assumed
    from the offset asked for: one that did not move on is not shot again and
    its stop is the entry's `duplicate`. A capture that ends short of the end,
@@ -191,7 +191,7 @@ with a cause in GATE_SIGN_IN_REFUSALS, such as `qa_sign_in_no_form`); or the
 pages show one screen (`same_screen`): at least two different routes were
 captured and every one read the same body text, or every page captured reads
 as a sign-in or choice screen (`sign_in_screen`) at a route that is not
-itself a sign-in page. On 2026-11-04 AI Studio's staging run captured only its
+itself a sign-in page. On 2026-11-04 a peer application's staging run captured only its
 sign-in chooser (a Staging or Production choice before the login form) on
 every screen of a leg whose gate sign-in ended `qa_sign_in_no_form`, and the
 manifest still said reviewable (part of #2688). A sign-in that ended
@@ -258,7 +258,7 @@ DISCOVER_GROUP_SIZE routes, and `load_routes` accepts it. It sets no persona
 cookie and no storage reset, and switches no device or theme.
 
 THE WALK READS MORE THAN LINKS, AND CLICKS WHAT ONLY REVEALS (QAENV-CRAWL,
-docs/design/qa-environments.md §4; part of #2136; BGD 2026-10-23, Q4 (a)).
+docs/design/qa-environments.md §4; part of #2136; the owner, 2026-10-23, Q4 (a)).
 `discover` and a crawling capture share one walk (`_Walk`). Besides
 `a[href]` it reads `area[href]`, `[role=link][href]`, `[routerlink]`,
 `[data-href]` and `link rel=next|prefetch|prerender` (LINKS_JS), hidden
@@ -287,7 +287,7 @@ navigation, a click's push and its reload included, at least
 robots.txt's Disallow for `*` for every path it would load or record.
 `discover --no-clicks` reads links only.
 
-`capture --crawl` DISCOVERS WHILE IT CAPTURES (§3.1; BGD 2026-10-23, Q3
+`capture --crawl` DISCOVERS WHILE IT CAPTURES (§3.1; the owner, 2026-10-23, Q3
 (a)). `--routes` is then the WHOLE RUN's stored list (it may be empty: a run
 from nothing but the base), and `--group` this step's share of it. The step
 captures its own stored routes as above, reading each page's links as it
@@ -297,7 +297,7 @@ every stored route of the run, hash routes on, so every step walks the same
 graph. A route it lists that is not stored is NEW, and belongs to step
 `owner(key, G) = 1 + int(sha256(key)[:8], 16) mod G`: every step computes the
 same owner, so no two capture one route. It captures the new routes it owns,
-in breadth-first order, up to `--found-per-step` (FOUND_PER_STEP, 8: BGD's
+in breadth-first order, up to `--found-per-step` (FOUND_PER_STEP, 8: the owner's
 §10 answer, not the design's 4), cut further so the leg's stored plus new
 routes stay within MAX_SCREENS (60) with every step at its cap; their ids
 are `found_ids`' (route_id's slug, and on a collision a suffix from the key's
@@ -309,7 +309,7 @@ controls, {path, text})}, crawl: {pages, depth, seconds, stopped_by: done |
 pages | depth | time}}`. A capture aborted mid-walk still writes it, stopped
 by `time`, so a route it did not reach is never read as gone.
 
-A DISMISSED ROUTE IS NEVER CRAWLED (lane QA-CRAWL-SKIP; BGD 2026-10-25, part
+A DISMISSED ROUTE IS NEVER CRAWLED (lane QA-CRAWL-SKIP; the owner, 2026-10-25, part
 of #2157). The run list's optional `dismissed` holds the routes a workspace
 admin removed (S9b), each as the sha256 hex of its `state_key`, the way
 swarm-api's qaspec writes them: hashes, so no path a crawl found reaches the
@@ -393,7 +393,7 @@ GATE_SIGN_IN_WHY = ("the live gate's own sign-in was refused ({state}, {cause}),
                     "signed in and the screens behind sign-in were not captured")
 #: The gate's sign-in causes (agent_worker.livegate.qatarget) that mean it
 #: never submitted the leg's credential, so nothing it captured is signed in:
-#: no username and password form on the page (AI Studio's staging run of
+#: no username and password form on the page (a peer application's staging run of
 #: 2026-11-04, part of #2688: its sign-in chooser comes before the form), a
 #: start click that named no one control, or an MFA or CAPTCHA challenge.
 #: `qa_sign_in_failed` is not one: the gate submitted the form and did not
@@ -404,7 +404,7 @@ GATE_SIGN_IN_REFUSALS = frozenset({"qa_sign_in_no_form", "qa_sign_in_start_click
                                    "qa_sign_in_challenge"})
 #: A sign-in or choice screen (`same_screen`): a page of at most
 #: SIGN_IN_SCREEN_WORDS words with a line that opens by asking to sign in or
-#: to choose ("Sign in to AI Studio", "Log in", "Choose an environment",
+#: to choose ("Sign in to the application", "Log in", "Choose an environment",
 #: "Select an account"). An app's own page with a "Sign in" link in its
 #: header is longer than that, and a card that only names sign-in in passing
 #: ("the sign-in server could not be reached") opens no line with it.
@@ -425,7 +425,7 @@ ROUTES_FORMAT = 1
 MANIFEST_FORMAT = 1
 DIFF_FORMAT = 1
 #: The most segments one page takes at one preset and theme. 120, because
-#: AI Studio's staging run of 2026-11-04 (part of #2688) cut its /docs page,
+#: a peer application's staging run of 2026-11-04 (part of #2688) cut its /docs page,
 #: about 49,600 px tall at the desktop (56 of its 900 px viewports) and
 #: 65,300 px at 390 px wide (78 of phone-390's 844 px), at the old bound of
 #: 12. 120 viewports are 101,280 px at phone-390 and 108,000 px at the
@@ -443,16 +443,16 @@ MAX_SEGMENTS = 120
 #: ended, and the rows below were in no image. Every other preset (the
 #: desktop) is captured to its end too, up to MAX_SEGMENTS, unless the route
 #: names its own `segments` (QA-CAPTURE-REVIEWABLE-TALL, part of #2688: a
-#: route that named none was cut at four desktop viewports, and AI Studio's
-#: /docs is 56 of them).
-#: phone-380 (PHONE-380, BGD 2026-10-26, part of #2136: AI Studio's phone
+#: route that named none was cut at four desktop viewports, and a peer
+#: application's /docs is 56 of them).
+#: phone-380 (PHONE-380, the owner, 2026-10-26, part of #2136: a peer application's phone
 #: mock-up frame) is narrower and shorter than phone-390, so a page takes at
 #: least as many of its viewports, and c49's reason holds for it.
 TO_THE_END_PRESETS = frozenset({"phone-390", "phone-380"})
 THEMES = ("light", "dark")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 #: Who the fixture build answers as, per route (QAFIX4-FIXTURE-A, run-4
-#: admin-004 and admin-005): `member` is alice@example.com in u-bogdan, not a
+#: admin-004 and admin-005): `member` is alice@example.com in example-tenant, not a
 #: platform admin and administering no group workspace, and is every route
 #: that names none; `platform-admin` is a platform admin who also administers
 #: one group workspace. The console reads PERSONA_COOKIE once when api.ts
@@ -529,7 +529,7 @@ ROBOTS_UNREACHABLE = "User-agent: *\nDisallow: /\n"
 MAX_LINKS = 2000
 
 #: `capture --crawl` (QAENV-CRAWL, qa-environments.md §3.1 and §4; part of
-#: #2136). New routes a step captures by default: BGD, 2026-10-23 (§10),
+#: #2136). New routes a step captures by default: the owner, 2026-10-23 (§10),
 #: answered 8, not the design's 4, and 8 is also the ceiling (§3.1).
 FOUND_PER_STEP = 8
 MAX_FOUND_PER_STEP = 8

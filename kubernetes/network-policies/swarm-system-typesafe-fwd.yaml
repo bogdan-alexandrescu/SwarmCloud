@@ -40,7 +40,7 @@
 # The NodeLocal DNSCache address is GKE's fixed 169.254.20.10 (allow-egress.yaml
 # rule 1b, measured 2026-09-24); the kube-dns Service IP is not named, so a
 # cluster that serves DNS only there reaches it through rule (a)'s pods.
-# Apply it to swarm-autopilot only: `agents-staging` in the same project is
+# Apply it to swarm-autopilot only: `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

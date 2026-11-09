@@ -16,7 +16,7 @@ terraform and gcloud:
     null output as "not found" (it leaves a null output out of state, PR
     1402) or lists it with a null value; that is every release in dev today;
   * a state terraform cannot read is a failure, not "off";
-  * the shared `agents-staging` cluster -- by flag, by context, or by
+  * the shared project's cluster (PEER_CLUSTER on the never-touch list) -- by flag, by context, or by
     terraform's own output -- is refused before anything is written;
   * a manifest is applied through apply.sh, then rolled, then read back;
   * a pod on another digest fails the roll;
@@ -33,6 +33,7 @@ No cluster, no credentials, no network: every binary is a fake on PATH.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -45,16 +46,27 @@ from .test_live_netpol import LEAKY
 from .test_live_relay_rollout import FAKE_GCLOUD
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
 SCRIPT = REPO / "scripts" / "roll-typesafe-fwd.sh"
 APPLY = REPO / "kubernetes" / "apply.sh"
 TEMPLATE = REPO / "kubernetes" / "swarm-system" / "swarm-typesafe-fwd.yaml"
 OUTPUT = "swarm_typesafe_fwd_manifest"
 
-PROJECT = "saga-agents-staging"
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 LOCATION = "us-central1"
 CLUSTER = "swarm-autopilot"
 CLUSTER_REF = f"gke_{PROJECT}_{LOCATION}_{CLUSTER}"
-FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_agents-staging"
+FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_{PEER_CLUSTER}"
 
 #: Built rather than written out as one literal.
 DIGEST = "sha256:" + "5" * 64
@@ -200,6 +212,7 @@ class Cluster:
 
     def run(self, *args: str, script: Path = SCRIPT) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if k not in (*LEAKY, "PYTHON_BIN")}
+        env.update(placeholder_deployment.child_env(PROJECT))
         env.update(
             PATH=os.pathsep.join([str(self.bin), str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
             FAKE_CLUSTER_DIR=str(self.dir),
@@ -289,7 +302,7 @@ def test_a_state_terraform_cannot_read_is_a_failure_not_off(tmp_path):
 
 @pytest.mark.parametrize("how", ["flag", "context", "terraform"])
 def test_the_shared_agents_staging_cluster_is_refused_before_any_apply(tmp_path, how):
-    """agents-staging is another team's live cluster (CLAUDE.md rule 2),
+    """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's live cluster (CLAUDE.md rule 2),
     refused by common.sh's deny-list whichever way it arrives."""
     # CONTROL: the same fixture, pointed at our cluster, applies.
     ours = Cluster(tmp_path / "ours")
@@ -298,16 +311,16 @@ def test_the_shared_agents_staging_cluster_is_refused_before_any_apply(tmp_path,
 
     cluster = Cluster(tmp_path / "theirs")
     if how == "flag":
-        result = cluster.run("--cluster", "agents-staging", "--confirm")
+        result = cluster.run("--cluster", PEER_CLUSTER, "--confirm")
     elif how == "context":
         (cluster.dir / "cluster-entry").write_text(FOREIGN_REF)
         result = cluster.run("--confirm")
     else:
-        (cluster.dir / "gke-cluster").write_text("agents-staging")
+        (cluster.dir / "gke-cluster").write_text(PEER_CLUSTER)
         result = cluster.run("--tf-init", "--get-credentials", "--confirm")
     out = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "agents-staging" in out and "deny-list" in out, out
+    assert PEER_CLUSTER in out and "deny-list" in out, out
     assert not cluster.applied()
     assert "get-credentials" not in cluster.log("gcloud")
     assert "rollout" not in cluster.log("kubectl")
@@ -472,7 +485,7 @@ def test_apply_sh_swarm_typesafe_fwd_refuses_agents_staging(tmp_path):
     result = cluster.apply("--confirm")
     out = result.stdout + result.stderr
     assert result.returncode != 0
-    assert "agents-staging" in out and "deny-list" in out, out
+    assert PEER_CLUSTER in out and "deny-list" in out, out
     assert not cluster.applied()
     assert OUTPUT not in cluster.log("terraform"), "the output was read for a refused cluster"
 

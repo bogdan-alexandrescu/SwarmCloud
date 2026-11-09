@@ -44,7 +44,7 @@
 # Last in the render, so every document before it renders exactly as it did
 # before it existed (test_live_netpol.py and its siblings hold them by digest).
 #
-# These objects exist only inside swarm-autopilot, so agents-staging, the
+# These objects exist only inside swarm-autopilot, so peer-cluster, the
 # other team's cluster in this shared project, cannot be reached by them.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

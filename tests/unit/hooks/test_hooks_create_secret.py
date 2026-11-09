@@ -20,6 +20,7 @@ Every fake value is built at runtime.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -60,6 +61,17 @@ sys.exit(3)
 """
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="create-secrets.sh needs bash")
+
+_spec = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
+placeholder_deployment = _P.deployment()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    # common.sh has no default region or zone and reads the project's never-touch list.
+    yield from placeholder_deployment.activate(tmp_path_factory)
 
 
 def _run(tmp_path: Path, *args: str, stdin: str = "", existing: str = SECRET) -> tuple[int, str, list[dict]]:

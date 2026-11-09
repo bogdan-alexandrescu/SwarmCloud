@@ -14,7 +14,7 @@ PATH serving a job listing:
     listing (not swarm-verify, not a job something else created);
   * every execution passes `--args=--self-test`, the worker's no-op mode, so
     no task is leased and no Firestore task state is touched, and `--wait`;
-  * a deny-listed name (scripts/lib/common.sh SHARED_DENY_LIST) is refused and
+  * a deny-listed name (the project's never-touch list; the placeholder one here) is refused and
     never executed, whether it was named on the command line or listed;
   * a name outside the worker-job prefix is refused the same way;
   * a failed warm execution, or a listing that failed, is a WARNING and the
@@ -35,6 +35,7 @@ PATH serving a job listing:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -47,6 +48,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "warm-jobs.sh"
 PROJECT = "swarm-test-project"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+#: A never-touch entry of the placeholder list: another team's name.
+PEER_NAME = _P.PEER["cluster"]
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
@@ -110,7 +116,7 @@ LISTING = [
     _job("swarm-job-orphan", tenant=None),
     # Another team's name, even dressed as ours.
     _job("default"),
-    _job("agents-staging"),
+    _job(PEER_NAME),
 ]
 
 
@@ -165,12 +171,12 @@ def test_warms_each_per_tenant_worker_job_once_with_the_self_test(world):
 
 
 def test_a_deny_listed_name_on_the_command_line_is_refused_and_never_executed(world):
-    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is whole only in
-    # the shared project, where agents-staging is another team's. Elsewhere
-    # the job-prefix rule below still refuses the name.
-    proc = _run(world, "agents-staging", "swarm-job-acme-mock", PROJECT_ID="saga-agents-staging")
+    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is the list of
+    # the project named, where PEER_NAME is another team's. Elsewhere the
+    # job-prefix rule below still refuses the name.
+    proc = _run(world, PEER_NAME, "swarm-job-acme-mock", PROJECT_ID=_P.SHARED_PROJECT)
     assert proc.returncode != 0
-    assert "agents-staging" in proc.stderr
+    assert PEER_NAME in proc.stderr
     assert "deny-list" in proc.stderr
     assert [c[3] for c in _executed(world)] == ["swarm-job-acme-mock"]
 
