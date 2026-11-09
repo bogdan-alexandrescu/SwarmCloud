@@ -4167,6 +4167,215 @@ export function stepState(
 }
 
 // ---------------------------------------------------------------------------
+// The fix loop  (docs/design/fix-loop.md §4, §6.2)
+// ---------------------------------------------------------------------------
+// A `fix-loop` workflow step is a control-plane task: never leased, PARKED
+// throughout (FIX_ROUNDS_RUNNING while its rounds run, HUMAN_REQUIRED when a
+// person must answer). Each round is an agent of its own, appended to the
+// workflow as a pointer step `review-fix:<k>` / `re-review:<k>`. Everything
+// below is read off the loop's own task, as swarm-api's `fixloop` writes it;
+// nothing is invented where the read has nothing.
+
+/** `validation.FIX_LOOP_PROFILE`. */
+export const FIX_LOOP_PROFILE = 'fix-loop'
+/** `validation.FIX_LOOP_MIN_ROUNDS` / `MAX` / `DEFAULT`: the signed `max_rounds`, re-capped on every read. */
+export const FIX_LOOP_MIN_ROUNDS = 1
+export const FIX_LOOP_MAX_ROUNDS = 5
+export const FIX_LOOP_DEFAULT_ROUNDS = 3
+/** `fixloop.FIX_LOOP_ROUNDS_CEILING`: no loop runs more, with every round a person added (Q4 (a)). */
+export const FIX_LOOP_ROUNDS_CEILING = 10
+
+/** `fixloop.PERSON_PHASES`: why a loop is parked for a person (§4.4, §4.5). */
+export const FIX_LOOP_PERSON_PHASES = [
+  'fix_loop_exhausted',
+  'fix_changed_nothing',
+  'round_failed',
+  'review_unreadable',
+  'round_refused',
+] as const
+export type FixLoopPersonPhase = (typeof FIX_LOOP_PERSON_PHASES)[number]
+
+/** A round's pointer step id: `swarm_rollup.FIX_ROUND_STEP_RE`'s two loop kinds. */
+export const FIX_LOOP_ROUND_STEP = /^(review-fix|re-review):([1-9][0-9]{0,2})$/
+
+/** One entry of `metadata.fix_loop_state.rounds` (`fixloop.claim_round`, `_record`). */
+export interface FixLoopRoundEntry {
+  round?: number
+  kind?: 'fix' | 'review'
+  task_id?: string | null
+  workflow_id?: string | null
+  head?: string | null
+  start_head?: string | null
+  pushed_head?: string | null
+  verdict?: string | null
+  findings_count?: number | null
+  /** The round's task state, recorded once it ended; absent while it runs. */
+  state?: string | null
+  error?: string | null
+}
+
+/** One entry of `metadata.fix_loop_state.added` (`fixloop.add_rounds`). */
+export interface FixLoopAdded {
+  by: string
+  at: string
+  rounds: number
+  note?: string
+}
+
+/** `metadata.fix_loop_state`: the loop's own, tenant-writable record. */
+export interface FixLoopState {
+  rounds?: FixLoopRoundEntry[]
+  added?: FixLoopAdded[]
+}
+
+/** `result_summary.fix_loop` (`fixloop._summary`). */
+export interface FixLoopSummary {
+  rounds: FixLoopRoundEntry[]
+  final_review: string | null
+  final_head: string | null
+  verdict: string | null
+  findings_count: number | null
+  phase: string | null
+  stopped_by?: string
+}
+
+/** `POST /v1/workflows/{id}/fix-loop/rounds` (routes/fix_loop.py `AddRounds`). */
+export interface FixLoopAddRoundsBody {
+  rounds?: number
+  note?: string
+}
+
+/** `POST /v1/workflows/{id}/fix-loop/end` (`EndLoop`): `stop` is its one outcome. */
+export interface FixLoopEndBody {
+  outcome: 'stop'
+}
+
+/** Both routes answer `{fix_loop: ...}`: `fixloop.add_rounds` or `fixloop.stop`. */
+export interface FixLoopAnswer {
+  fix_loop: {
+    task_id: string
+    max_rounds?: number
+    park_phase?: string | null
+    state?: string | null
+    end_cause?: string
+  }
+}
+
+/** What the workflow page draws for a loop step: round k of N, and what it waits on. */
+export interface FixLoopRead {
+  /** The last round claimed; 0 before the first. */
+  readonly round: number
+  /** The rounds it may run: the signed `max_rounds` plus those added. Null when the signed block was not read. */
+  readonly of: number | null
+  /** The half that is running, while the rounds run; null otherwise. */
+  readonly running: 'fix' | 'review' | null
+  /** PARKED HUMAN_REQUIRED on a loop phase: the two actions are offered. */
+  readonly waiting: boolean
+  /** The person's park phase while waiting, else the summary's last phase. */
+  readonly phase: string | null
+  /** The last verdict read, and its finding count. */
+  readonly verdict: string | null
+  readonly findings: number | null
+}
+
+function record(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function wholeNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) ? v : null
+}
+
+/** `fixloop._person_entry`: the park entry a person answers, or null. */
+function personEntry(task: Task): Record<string, unknown> | null {
+  if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
+  for (const entry of task.blocked_by ?? []) {
+    const e = record(entry)
+    if (
+      e !== null &&
+      (FIX_LOOP_PERSON_PHASES as readonly unknown[]).includes(e.park_phase) &&
+      record(e.fix_loop) !== null
+    ) {
+      return e
+    }
+  }
+  return null
+}
+
+/**
+ * `fixloop.max_rounds`: the signed `max_rounds`, re-capped to 1-5 (absent or
+ * not a whole number: the default), plus the rounds people added, never past
+ * the ceiling. Null when the task carries no signed block to read.
+ */
+export function fixLoopRoundsOf(task: Task): number | null {
+  const block = record(record(record(task.metadata)?.dispatch)?.fix_loop)
+  if (block === null) return null
+  const asked = wholeNumber(block.max_rounds) ?? FIX_LOOP_DEFAULT_ROUNDS
+  const signed = Math.min(Math.max(asked, FIX_LOOP_MIN_ROUNDS), FIX_LOOP_MAX_ROUNDS)
+  const added = record(record(task.metadata)?.fix_loop_state)?.added
+  let more = 0
+  for (const a of Array.isArray(added) ? added : []) {
+    const n = wholeNumber(record(a)?.rounds)
+    if (n !== null && n > 0) more += n
+  }
+  return Math.min(signed + more, FIX_LOOP_ROUNDS_CEILING)
+}
+
+/** A loop step's read, or null for a task that is not a `fix-loop` step. */
+export function fixLoopOf(task: Task): FixLoopRead | null {
+  if (task.runner_profile !== FIX_LOOP_PROFILE) return null
+  const summary = record(record(task.result_summary)?.fix_loop)
+  const stateRounds = record(record(task.metadata)?.fix_loop_state)?.rounds
+  // The metadata's record is the live one; an ended loop's summary copies it.
+  const raw = Array.isArray(stateRounds) ? stateRounds : Array.isArray(summary?.rounds) ? summary.rounds : []
+  const rounds = raw.map(record).filter((r): r is Record<string, unknown> => r !== null)
+  let round = 0
+  for (const r of rounds) round = Math.max(round, wholeNumber(r.round) ?? 0)
+  const last = rounds[rounds.length - 1] ?? null
+  const live = task.state === 'PARKED' && task.park_reason === 'FIX_ROUNDS_RUNNING'
+  const running =
+    live && last !== null && typeof last.task_id === 'string' && last.state == null
+      ? last.kind === 'fix'
+        ? 'fix'
+        : last.kind === 'review'
+          ? 'review'
+          : null
+      : null
+  const entry = personEntry(task)
+  let verdict: string | null = null
+  let findings: number | null = null
+  for (const r of rounds) {
+    if (typeof r.verdict === 'string') {
+      verdict = r.verdict
+      findings = wholeNumber(r.findings_count)
+    }
+  }
+  return {
+    round,
+    of: fixLoopRoundsOf(task),
+    running,
+    waiting: entry !== null,
+    // A summary outlives the park that wrote it (a person's added round leaves
+    // it), so its phase is read only once the loop has ended.
+    phase:
+      entry !== null
+        ? String(entry.park_phase)
+        : TERMINAL_STATES.has(task.state) && typeof summary?.phase === 'string'
+          ? summary.phase
+          : null,
+    verdict: verdict ?? (typeof summary?.verdict === 'string' ? summary.verdict : null),
+    findings: verdict !== null ? findings : wholeNumber(summary?.findings_count),
+  }
+}
+
+/** A round's pointer step id as its kind and number; null for any other step. */
+export function fixLoopRoundOf(stepId: string): { kind: 'fix' | 'review'; round: number } | null {
+  const m = FIX_LOOP_ROUND_STEP.exec(stepId)
+  if (m === null) return null
+  return { kind: m[1] === 'review-fix' ? 'fix' : 'review', round: Number(m[2]) }
+}
+
+// ---------------------------------------------------------------------------
 // The account pool  (Settings -> Accounts)
 // ---------------------------------------------------------------------------
 // Shapes returned by `account_to_api` in
