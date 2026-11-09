@@ -45,7 +45,7 @@
 }
 .guide-article {
   font-size: var(--t-body);
-  line-height: 1.6;
+  line-height: var(--lh-body);
   overflow-wrap: anywhere;
 }
 .guide-article h1 {
