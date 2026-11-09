@@ -46,7 +46,8 @@ against, with each kind as a strict `draw_<kind>` tool for the planner. The
 stream takes NO tenant guard: `EventSource` sends no header, so the tenant is
 the one the session document names, answered only when it is one the caller
 belongs to on this request; another tenant's session, another person's, and a
-missing one are the same 404. It ends itself before 600 seconds, under the
+missing one are the same 404. Each connect to a live session writes its
+`heartbeat_at`, so an open tab never reads as abandoned. It ends itself before 600 seconds, under the
 660-second request timeout, and the browser resumes from `Last-Event-ID`; once
 the session has ended and everything is sent, a reconnect is 204.
 
@@ -514,6 +515,11 @@ async def session_events(
         tenants=vstream.tenants_of(auth))
     stream = vstream.CardStream(vstore.VoiceStore(ctx.db, now=ctx.now), ctx.db,
                                 found=found, person=person, after=start_after, **timing)
+    if found.state == vs.LIVE:
+        # Each connect (about every nine minutes) keeps an open tab's session
+        # from reading as abandoned (sessions.LIVE_STALE_SECONDS).
+        await run_in_threadpool(vs.record_heartbeat, ctx.db, project_id=found.project_id,
+                                session_id=found.session_id, now=ctx.now())
     if found.state == vs.ENDED and not await run_in_threadpool(stream.pending):
         # Ended and fully sent: 204 tells EventSource not to reconnect.
         return Response(status_code=204)
