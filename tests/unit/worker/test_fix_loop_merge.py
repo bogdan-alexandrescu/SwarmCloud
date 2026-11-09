@@ -7,7 +7,8 @@ docs/design/fix-loop.md §4.6. The merge cannot stage a verdict file from the
   1. requires the loop SUCCEEDED, its signed spec verified, profile
      `fix-loop`, of this workflow;
   2. reads its `result_summary.fix_loop.final_review`, or for `rounds: 0`
-     the loop's own signed `fix_loop.review`;
+     the loop's own signed `fix_loop.review_task_id` (`fix_loop.review` is
+     the review's STEP id, as `validation.FixLoopSpec.block` signs it);
   3. verifies that review: signed spec (of its own one-step workflow), this
      tenant, SUCCEEDED, and its signed `fix_loop_round.loop_task` is the loop
      -- or it is the loop's declared review -- and reads its `verdict.json`
@@ -65,7 +66,11 @@ def _loop_world(tmp_path, *, final_review: str | None = RR2, rounds: int = 2,
     world.docs[LOOP] = {
         "tenant_id": TENANT, "workflow_id": WORKFLOW, "state": TaskState.SUCCEEDED.value,
         "runner_profile": "fix-loop",
-        "metadata": {"dispatch": {"fix_loop": {"review": REVIEW, "fix": OPENER,
+        # The block as `validation.FixLoopSpec.block` signs it: the step ids
+        # beside their TASK ids. MUTATION: put the task id in `review` and the
+        # round-0 tests below no longer catch a reader of the step id.
+        "metadata": {"dispatch": {"fix_loop": {"review": "review", "review_task_id": REVIEW,
+                                               "fix": "fix", "fix_task_id": OPENER,
                                                "max_rounds": 3}}},
         "result_summary": {"fix_loop": {"rounds": [{"round": k} for k in range(1, rounds + 1)],
                                         "final_review": final_review,
@@ -129,6 +134,86 @@ def test_rounds_zero_merges_on_the_loops_own_review_at_the_pinned_head(tmp_path)
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
     assert world.merge_calls()[0].body["sha"] == PINNED
     assert outcome.summary["review_task"] == REVIEW
+
+
+def _round_zero_world(tmp_path, *, final_review: str | None = REVIEW,
+                      artifact: dict[str, Any] | None = None,
+                      skipped: bool = False) -> MergeWorld:
+    """A loop whose first review said MERGE: `rounds: []`, the head the opener pushed.
+
+    As the live loop records it (`fixloop._finish` after `_round_zero`):
+    `final_review` is the declared review's task id. `artifact` is that
+    review's verdict.json entry; None uploads one, as a review that ran does.
+    """
+    world = _loop_world(tmp_path, final_review=final_review, rounds=0)
+    world.pr["head"]["sha"] = PINNED
+    world.serve_checks(PINNED)
+    if artifact is None:
+        key = f"tenants/{TENANT}/tasks/{REVIEW}/attempts/att_rev/artifacts/verdict.json"
+        size = world.store.upload_bytes(key, json.dumps({"verdict": "MERGE"}).encode())
+        artifact = {"name": "verdict.json", "uri": world.store.uri(key), "bytes": size}
+    summary: dict[str, Any] = {"artifacts": [artifact]}
+    if skipped:
+        summary["review_skipped"] = "small_change"
+    world.docs[REVIEW].update({"state": TaskState.SUCCEEDED.value, "result_summary": summary})
+    return world
+
+
+def test_a_round_zero_merge_recorded_as_the_final_review_merges(tmp_path):
+    # The live finding: `rounds: []`, `final_review` = the declared review's
+    # task id, the block's `review` its step id. Refused as
+    # fix_loop_review_not_its_own before the merge read `review_task_id`.
+    world = _round_zero_world(tmp_path)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert world.merge_calls()[0].body["sha"] == PINNED
+    assert outcome.summary["review_task"] == REVIEW
+    assert outcome.summary["verdict"] == "MERGE"
+    # The declared review is verified as a step of this workflow.
+    assert (REVIEW, None) in world.verified
+
+
+def test_a_round_zero_merge_on_a_gate_skipped_review_merges(tmp_path):
+    # The review gate skipped the review as a small change: swarm-api ended
+    # it and wrote its verdict inline (`inputs.inline_artifact`).
+    world = _round_zero_world(tmp_path, skipped=True, artifact={
+        "name": "verdict.json", "written_by": "control_plane",
+        "inline": json.dumps({"verdict": "MERGE", "findings": []})})
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert world.merge_calls()[0].body["sha"] == PINNED
+    assert outcome.summary["review_task"] == REVIEW
+    assert (REVIEW, None) in world.verified
+
+
+def test_a_round_zero_final_review_naming_another_task_is_refused(tmp_path):
+    # `rounds: []` is no licence: a forged final review that is neither the
+    # signed declared review nor this loop's re-review is still refused.
+    world = _round_zero_world(tmp_path, final_review=OPENER)
+    world.docs[OPENER]["state"] = TaskState.SUCCEEDED.value
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.FAILED
+    assert _refusal(outcome) == merge.REVIEW_NOT_THE_LOOPS
+    assert world.merge_calls() == []
+
+
+def test_the_blocks_review_step_field_is_never_read_as_the_declared_review(tmp_path):
+    # `fix_loop.review` is the step id; only `review_task_id` names the
+    # declared review, so a task id in `review` admits nothing.
+    world = _round_zero_world(tmp_path, final_review=OPENER)
+    world.docs[OPENER]["state"] = TaskState.SUCCEEDED.value
+    world.docs[LOOP]["metadata"]["dispatch"]["fix_loop"]["review"] = OPENER
+
+    outcome = merge.run_merge(world.context())
+
+    assert _refusal(outcome) == merge.REVIEW_NOT_THE_LOOPS
+    assert world.merge_calls() == []
 
 
 def test_a_final_review_of_another_loop_is_refused(tmp_path):
