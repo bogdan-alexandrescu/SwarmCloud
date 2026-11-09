@@ -44,6 +44,16 @@ MANAGER BEFORE STEP 5:
      current version, read from
      Secret Manager under the conditioned grant SEC-IAM wrote. A read swarm-api
      may not make (the grant not yet applied) is 503 with a reason and no name.
+  5b. THE PLUGINS' SECRETS (docs/design/managed-plugins.md §6.2, lane 6). The
+     signed plugin set, `metadata.dispatch.plugins`, names per managed plugin
+     its secret fields (`secrets.<VAR>.secret == "plugin"`) and its file
+     settings (`files.<VAR>.sha256`). Each is read from Secret Manager under
+     the frozen contract's name, `Tenant.plugin_secret_name(install_id,
+     field)` of THIS task's tenant, and nothing else: a plugin the set does
+     not name is released nothing, even in the same workspace, and a file
+     whose content is not the signed digest is withheld. A binding to a
+     workspace key is not released here: the worker delivers it through the
+     Jev adapter (§6.2). The tenant's GSA holds no grant on a `-plg-` secret.
   6. THE ROWS (§4.4): one `workspace_secret_releases` row per secret, with an
      `expire_at` 90 days out for the Firestore TTL (Q6), and the attempt's
      mark, in the transaction that re-checks the fence.
@@ -63,7 +73,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Callable, Protocol
@@ -92,6 +102,8 @@ from ..children import (
 from ..deps import AppContext, get_context
 from ..errors import ApiError, UpstreamUnavailable
 from ..grant_attest import GrantPolicy
+from ..pluginconfig import plugin_consumer, secret_name as plugin_secret_name
+from ..pluginstore import INSTALL_ID, SHA256
 from ..store import LEASES, TASKS
 from ..verdictpublish import spec_refusal
 from ..workspace_secrets import (
@@ -227,6 +239,77 @@ def secret_reader(request: Request, ctx: AppContext = Depends(get_context)) -> S
 
 
 # --------------------------------------------------------------------------
+# the plugins' secrets (managed-plugins.md §6.2 and §8)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PluginDue:
+    """One secret or file setting the signed plugin set names."""
+
+    install_id: str
+    field: str
+    variable: str
+    target: str
+    #: A file setting's signed digest; None for a secret.
+    sha256: str | None
+
+
+@dataclass(frozen=True)
+class PluginItem:
+    due: PluginDue
+    name: str
+    value: str = dc_field(repr=False)
+
+    def answer(self) -> dict[str, Any]:
+        return {"name": self.name, "install_id": self.due.install_id, "field": self.due.field,
+                "variable": self.due.variable, "target": self.due.target,
+                "kind": "plugin_file" if self.due.sha256 is not None else "plugin_secret",
+                "consumer": plugin_consumer(self.due.install_id), "value": self.value}
+
+    def row(self, *, task: dict[str, Any], attempt_id: str, generation: int, at: datetime) -> dict[str, Any]:
+        """The §4.4 row: names and ids, never a value or a digest of one."""
+        return {"at": at, "expire_at": at + RELEASE_RETENTION, "task_id": task.get("id"),
+                "attempt_id": attempt_id, "generation": generation, "tenant_id": task.get("tenant_id"),
+                "secret_tenant_id": task.get("tenant_id"), "secret_id": self.name, "name": self.due.field,
+                "version": "latest", "slot": self.due.variable,
+                "consumers": [plugin_consumer(self.due.install_id)], "submitted_by": task.get("submitted_by")}
+
+
+_VARIABLE = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
+_FIELD = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}")
+
+
+def plugin_release_plan(task: dict[str, Any]) -> list[PluginDue]:
+    """What the task's SIGNED plugin set (`metadata.dispatch.plugins`) says
+    its plugins' secrets and files are. The caller has verified the spec;
+    a malformed entry is skipped, never guessed at."""
+    metadata = task.get("metadata")
+    dispatch = metadata.get("dispatch") if isinstance(metadata, dict) else None
+    plugins = dispatch.get("plugins") if isinstance(dispatch, dict) else None
+    if not isinstance(plugins, dict):
+        return []
+    due: list[PluginDue] = []
+    for install_id in sorted(k for k in plugins if isinstance(k, str)):
+        entry = plugins[install_id]
+        if not INSTALL_ID.match(install_id) or not isinstance(entry, dict):
+            continue
+        secrets_of = entry.get("secrets") if isinstance(entry.get("secrets"), dict) else {}
+        for variable, ref in sorted(secrets_of.items()):
+            if (isinstance(ref, dict) and ref.get("secret") == "plugin" and _VARIABLE.fullmatch(str(variable))
+                    and isinstance(ref.get("field"), str) and _FIELD.fullmatch(ref["field"])):
+                target = ref.get("target") if ref.get("target") in ("env", "file") else "env"
+                due.append(PluginDue(install_id, ref["field"], variable, target, None))
+        files_of = entry.get("files") if isinstance(entry.get("files"), dict) else {}
+        for variable, ref in sorted(files_of.items()):
+            if (isinstance(ref, dict) and _VARIABLE.fullmatch(str(variable))
+                    and isinstance(ref.get("field"), str) and _FIELD.fullmatch(ref["field"])
+                    and isinstance(ref.get("sha256"), str) and SHA256.match(ref["sha256"])):
+                due.append(PluginDue(install_id, ref["field"], variable, "file", ref["sha256"]))
+    return due
+
+
+# --------------------------------------------------------------------------
 # the release
 # --------------------------------------------------------------------------
 
@@ -287,14 +370,52 @@ class SecretRelease:
                 # CF-ACCESS-TOKEN: where the gate may send it, from the signed grant.
                 item["hosts"] = list(due.hosts)
             released.append(item)
-        self._record(attempt, task, plan.due)
+        plugin_items, plugin_withheld = self._plugin_secrets(attempt, task)
+        self._record(attempt, task, plan.due, plugin_items)
         withheld = [{"name": name, "reason": reason} for name, reason in plan.withheld]
+        withheld += [{"name": name, "reason": reason} for name, reason in plugin_withheld]
         log.info("workspace secrets released tenant=%s task=%s attempt=%s generation=%s "
                  "names=%s withheld=%s", attempt.tenant_id, attempt.task_id,
                  attempt.attempt_id, attempt.generation,
-                 [item["name"] for item in released], [w["name"] for w in withheld])
+                 [item["name"] for item in released] + [item.name for item in plugin_items],
+                 [w["name"] for w in withheld])
         return {"attempt_id": attempt.attempt_id, "generation": attempt.generation,
-                "consumers": list(consumers), "secrets": released, "withheld": withheld}
+                "consumers": list(consumers), "secrets": released, "withheld": withheld,
+                "plugin_secrets": [item.answer() for item in plugin_items]}
+
+    # -- step 5b ---------------------------------------------------------------
+
+    def _plugin_secrets(self, attempt: AttemptTuple, task: dict[str, Any]
+                        ) -> tuple[list[PluginItem], list[tuple[str, str]]]:
+        """The secrets and file contents of the plugins the signed set names,
+        read under this task's tenant's names; (released, withheld)."""
+        project_id = self.ctx.settings.project_id
+        released: list[PluginItem] = []
+        withheld: list[tuple[str, str]] = []
+        for due in plugin_release_plan(task):
+            name = plugin_secret_name(attempt.tenant_id, due.install_id, due.field)
+            try:
+                payload = self.reader.access(f"projects/{project_id}/secrets/{name}/versions/latest")
+                value = payload.decode("utf-8")
+            except ReadUnavailable as exc:
+                if str(exc) == "version_unavailable":
+                    # Removed after submission: this plugin goes without it, the rest are released.
+                    withheld.append((name, "plugin_secret_unavailable"))
+                    continue
+                log.error("secrets release could not read a plugin secret tenant=%s attempt=%s (%s)",
+                          attempt.tenant_id, attempt.attempt_id, exc)
+                raise ReleaseUnavailable(
+                    "swarm-api cannot read this workspace's plugin secrets yet (its read grant on "
+                    "the plugin secrets is not applied); nothing was released, and asking on the "
+                    "next attempt is safe") from None
+            except (UnicodeDecodeError, ValueError):
+                raise ReleaseUnavailable(
+                    "a plugin secret could not be read as text; nothing was released") from None
+            if due.sha256 is not None and hashlib.sha256(payload).hexdigest() != due.sha256:
+                withheld.append((name, "plugin_file_changed"))
+                continue
+            released.append(PluginItem(due=due, name=name, value=value))
+        return released, withheld
 
     # -- step 1 ----------------------------------------------------------------
 
@@ -375,7 +496,8 @@ class SecretRelease:
         task.setdefault("id", attempt.task_id)
         return task
 
-    def _record(self, attempt: AttemptTuple, task: dict[str, Any], due: list[Due]) -> None:
+    def _record(self, attempt: AttemptTuple, task: dict[str, Any], due: list[Due],
+                plugin_items: list[PluginItem]) -> None:
         db = self.ctx.db
         at = self.now()
 
@@ -385,8 +507,13 @@ class SecretRelease:
             txn.set(mark_ref, {
                 "attempt_id": attempt.attempt_id, "task_id": attempt.task_id,
                 "tenant_id": attempt.tenant_id, "generation": attempt.generation,
-                "at": at, "expire_at": at + RELEASE_RETENTION, "released": len(due),
+                "at": at, "expire_at": at + RELEASE_RETENTION,
+                "released": len(due) + len(plugin_items),
             })
+            for plugin in plugin_items:
+                txn.set(db.collection(RELEASES_COLLECTION).document(
+                    f"{attempt.attempt_id}~{plugin.name}"), plugin.row(
+                        task=current, attempt_id=attempt.attempt_id, generation=attempt.generation, at=at))
             for item in due:
                 row_id = f"{attempt.attempt_id}~{item.record.get('secret_id')}~{item.slot}"
                 txn.set(db.collection(RELEASES_COLLECTION).document(row_id), release_row(
