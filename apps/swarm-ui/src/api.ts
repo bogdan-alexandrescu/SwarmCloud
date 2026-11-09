@@ -4870,7 +4870,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "claude-code-medium": {"available": true, "disabled_reason": ""},
   "claude-code-lightpanda": {"available": true, "disabled_reason": ""},
   "await-input": {"available": true, "disabled_reason": ""},
-  "fix-loop": {"available": true, "disabled_reason": ""}
+  "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

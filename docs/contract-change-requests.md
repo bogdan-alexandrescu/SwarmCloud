@@ -155,7 +155,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
-| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 (pre-approved for once FL-ISSUE, FL-UI and FL-DOCS had merged; all three merged on 2026-11-09) and APPLIED 2026-11-09 by the pull request that adds this line. The owner's order was PR 3691's question 0, 'Wait for FL-ISSUE, FL-UI and FL-DOCS first'; the acceptance check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) now measures it on dev, and the change stays only while that check is green |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE: requested by lane FL-ACCEPT on 2026-11-09, not applied. The owner picked 'Wait for FL-ISSUE, FL-UI and FL-DOCS first' (PR 3691, question 0; rejected: enabling on dev first, as await-input): the profile stays unavailable everywhere until those lanes are on main (they are not, read 2026-11-09); then the owner applies this on dev and the acceptance check that proves it (`scripts/acceptance/groups/workflow.sh`, "workflow: fix-loop"), which SKIPs until then, must pass for it to stay |
 
 ---
 
@@ -17519,16 +17519,11 @@ Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
 
 ## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
 
-**Status:** APPLIED 2026-11-09, accepted by the owner 2026-11-09: pre-approved
-for once FL-ISSUE, FL-UI and FL-DOCS had merged, and all three merged the same
-day. Applied by the pull request that changes this status line (FL-ENABLE):
-`RUNNER_PROFILES["fix-loop"]` is `available=True` with no `disabled_reason`,
-and nothing else in `apps/common/swarm_common/` changed. The console's fixture
-catalogue (`FIXTURE_AVAILABILITY` in `apps/swarm-ui/src/api.ts`) follows it.
-Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that added this
-section.
+**Status:** PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE.
+Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
+section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
 
-### What was true when it was requested
+### What is true today
 
 `RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
 `disabled_reason` that points at docs/design/fix-loop.md. While it is,
