@@ -15,6 +15,8 @@
 #     `zone` still plans as a one-zone list for one release, with a warning
 #     that points to `zones`; a malformed or repeated zone is refused, and a
 #     zone outside the region is the check block's.
+#   * voice_speech.template = false holds the template back: none is planned,
+#     swarm-api's SWARM_SPEECH_TEMPLATE is "" and the output's template null.
 #
 # The infra root's setup is voice.tftest.hcl's, with the speech account's read.
 
@@ -199,6 +201,39 @@ run "a_release_makes_the_template_and_never_the_machine" {
   assert {
     condition     = output.voice_speech.zones == tolist(["us-central1-a", "us-central1-b", "us-central1-c"]) && output.voice_speech.machine_prefix == "swarm-speech-"
     error_message = "the voice_speech output does not name the zones in order and the machine's prefix"
+  }
+}
+
+# voice_speech.template = false: the release holds the template back, so
+# swarm-api is handed no template and the output names none.
+run "a_deployment_can_hold_the_template_back" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    voice_speech = {
+      enabled  = true
+      template = false
+      image    = "projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_region_instance_template.speech) == 0
+    error_message = "voice_speech.template = false still plans the speech machine's template"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_SPEECH_TEMPLATE == ""
+    error_message = "swarm-api is handed a template the release held back"
+  }
+
+  assert {
+    condition     = output.voice_speech.template == null
+    error_message = "the voice_speech output names a template the release held back"
   }
 }
 
