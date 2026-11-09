@@ -4,8 +4,15 @@
 [agent-plugins.md](agent-plugins.md) (the per-step `plugins` field, as built) from a catalogue written in code and
 baked into the images to a catalogue that admins manage from the console. Every fact below was read on `main` at
 `33861db` on 6 November 2026; files are named, lines are not, because they move. Every question that is the owner's
-to answer is in the lane's `questions.json` (Q1-Q15 below) with options and a recommendation; where this document
+to answer is in the lane's `questions.json` (Q1-Q20 below) with options and a recommendation; where this document
 depends on an answer it says "recommended, pending Qn" and never treats it as decided.
+
+**Revision, 9 November 2026.** On 6 November 2026 the owner decided Q13 and Q15 against this document's
+recommendations: gstack and security-audit **migrate to the managed path** with a build step that publishes a new
+image version bundling them (§1.4), and Admin › Setup offers an **optional** "add a plugin" step (§15). This revision
+rewrites §1.4, §15, the lane plan (§17, lanes 13-23) and the questions (§18, Q16-Q19), read on `main` at `6e150ec`.
+Lanes 1-12 have since merged in part (`pluginstore.py`, `pluginload.py`, `AdminPlugins.tsx` exist); the rest of the
+document is not re-audited here, and where it still says "built-in" it means the two bundled installs of §1.4.
 
 ## The ask
 
@@ -99,7 +106,8 @@ says what is built either way.
 1. **The catalogue is Firestore data.** A plugin is an *install* (who owns it, its source, which version is current)
    and immutable *versions* (each a pinned copy: commit, source digest, runnable digest, parsed manifest). Platform
    installs serve every workspace that allows them; workspace installs serve one workspace. gstack and
-   security-audit stay as **built-in** entries, baked in the image, that nobody can remove.
+   security-audit become **bundled** platform installs (§1.4): pinned and updated like any other, but each update
+   goes through a build step that publishes a new image version with the pinned copy bundled in it.
 2. **Fetch and pin once.** swarm-api downloads a GitHub archive at a resolved commit (or receives an upload) into a
    quarantine object as bytes only; an isolated **plugin intake job** with no network and no secrets unpacks it,
    refuses what escapes or exceeds the caps, parses the manifest, and writes one normalised tarball and a report to a
@@ -155,7 +163,7 @@ name with its scope ("jev-enforce · this workspace" or "· platform").
 
 ### 1.2 Who sees what
 
-* A workspace's catalogue is: the built-ins, the platform installs the workspace **allows**, and its own workspace
+* A workspace's catalogue is: the two bundled installs (§1.4), the platform installs the workspace **allows**, and its own workspace
   installs (allowed by being installed; a workspace admin may still switch one off without removing it).
 * A platform install is invisible to a workspace until a workspace admin allows it, as the Allowed list works today.
 * A workspace install is invisible to every other workspace and to the platform catalogue. A platform admin sees it
@@ -172,13 +180,203 @@ The intake job parses and stores, so neither the console nor submission ever rea
   arguments, environment keys, never values); a server with a `url` transport is listed with its host;
 * `requires` (§5), from the overlay.
 
-### 1.4 Built-in entries
+### 1.4 Bundled entries: gstack and security-audit, managed, built into an image version
 
-gstack and security-audit stay image-baked and keep their code entries in `plugincatalogue.py`: they need a build
-(gstack compiles binaries, renders skills, needs Bun) that an intake job cannot do without running untrusted build
-code, and `security_review.py` validates its own findings with the skill's own validators at a known path. Each
-appears in the catalogue view as `built_in: true`, version as the image pins it, **no Remove, no Update** (an image
-release updates it); a workspace still allows each one and may make it a default. Recommended, pending Q13.
+**Decided by the owner on 6 November 2026 (Q13), against this document's earlier recommendation that they stay code
+entries:** gstack and security-audit migrate to the managed path, and "it has to gain a build step that publishes a
+new image version in which it ships bundled in". So they become catalogue entries like any other plugin: installed
+(by the platform, at the pins the image carries today), pinned, allowed per workspace, made a default, and updated
+by a platform admin after the diff (§9.1). What differs is only **how a version becomes runnable**. Any other plugin's
+version is a tarball the worker downloads and unpacks per attempt (§4.2). A bundled version is **built** into a new
+image version, and a step runs on that image.
+
+**Why a build, and not a tarball like the rest.** The intake job (§2.3) may not run plugin code, and both of these
+need code run before they work. gstack's `./setup` compiles its binaries with Bun, renders its skills and runs
+`bun install --frozen-lockfile`, and the compiled `browse` embeds its install path, `/opt/swarm/plugins/gstack`
+(`images/agent-runtime-base/Dockerfile`, stage `gstack-build`), so it cannot be unpacked under a per-attempt
+`private/plugins/<install_id>/` and work. security-audit needs no compile, but `security_review.py` runs the skill's own
+validators (`validate-findings.cjs`, `validate-coverage-ledger.cjs`) from a fixed path after the agent finishes, and
+those validators are what decide whether a review's findings count. A copy the agent's own container unpacked into a
+writable folder could be edited by the agent before the validators run. A copy in the image's read-only root
+filesystem cannot.
+
+#### 1.4.1 How they leave `plugincatalogue.py`
+
+Today both are `PluginEntry` values in `swarm_api/plugincatalogue.py`, restated in `agent_worker/plugins.py` and held
+equal by `tests/unit/worker/test_plugins_start.py`. They reach a step through the work contract's
+`capabilities.plugins` (so only with `SWARM_WORK_CONTRACTS` on), and `builtin_entries()` shows them in the managed
+catalogue as `builtin:gstack` and `builtin:security-audit`, `removable: false`, `updatable: false`.
+
+After the migration:
+
+* **Two platform installs with reserved ids.** `plugin_installs/builtin:gstack` and
+  `plugin_installs/builtin:security-audit`, `scope: platform`, `built_in: true` and a new field `build: "image"`.
+  The ids are the ones every Allowed list and every default already names (`pluginconfig.py` accepts the bare name
+  and the `builtin:` id today), so **no workspace setting is rewritten**: a list that allows `gstack` allows the
+  managed install. Install ids are otherwise random (§1.1); these two are reserved and never minted.
+* **Their first version is what the image carries now.** gstack `1.92.55.0` at its pinned commit and archive sha256,
+  security-audit at commit `c1c8a8c1...` and its archive sha256: the same values the Dockerfile's ARGs and
+  `images/agent-runtime-base/tool-mirror.sha256` hold. The per-mode skill lists (gstack's `unattended`, `planner`,
+  `designer`; security-audit's one skill) move from the code entry into the version's overlay (§6.3) as `modes`, so the
+  builder still offers a step the same skills per mode and `SUPPORTED_MODES` still refuses `planner` and `designer` until
+  the question bridge lands. The runner profiles a version may load on become its `requires` (§5): the claude-code
+  profiles, as today.
+* **Seeded by swarm-api, not by hand.** On its first catalogue read with the switch of §1.4.5 on, swarm-api writes the
+  two installs and their first versions in one transaction, MAC'd like every catalogue document, from a release file
+  that states the release image's pins (`images/agent-runtime-base/bundled-plugins.json`, new, the one place a
+  release's default pins are written; the Dockerfile's ARGs are read from it). A second instance's identical write
+  finds the documents and does nothing.
+* **The code entries go one release later.** For one release both routes exist: the code entries stay so a step
+  signed through `capabilities.plugins` before the switch still runs, and the worker reads both. After a release in
+  which no unfinished step carries `capabilities.plugins` naming them, the entries, `builtin_entries()` and the
+  equality test are deleted, and a new test holds `bundled-plugins.json` equal to the seeded first versions.
+
+#### 1.4.2 Where the build runs
+
+Images are built today only by `scripts/build-images.sh`, on Cloud Build (a pull request's `--build-only --local`
+excepted), tagged with the git SHA, and promoted by digest by `scripts/push-images.sh` (`:dev`, `:prod`, and a
+non-moving `promoted-<channel>-<tag>`); `scripts/lib/image-refs.sh` turns a promotion manifest into Terraform's
+`image_refs` (digests only, never a tag); `terraform/infra/locals.tf` writes the runner images' digests into
+`WORKER_IMAGE_REFS`, and the scheduler resolves a runner profile's image **name** through it. A Day One deployment
+builds nothing: stage 4 of `swarm install` copies the release's signed images, by digest, after `cosign verify`, into
+the deployment's own registry, and after the install nothing in the deployment reads the release home.
+
+So there are two builds, and neither is an Actions job (CI builds, tests and merges; it is never a reviewer or an
+auditor, and it never builds a deployment's plugin):
+
+1. **The release build, unchanged in where it runs.** `build-images.sh` still builds `agent-runtime-base` (and the
+   images built from it: `-nocodex`, `agent-runtime-browser`, `agent-runtime-lightpanda`) with the release's default
+   pins from `bundled-plugins.json`. The image now also carries, per bundled plugin, a manifest
+   `/opt/swarm/plugins/<name>/.swarm-bundle.json`: the install id, the source commit and sha256, the recipe digest and
+   the sha256 of the built tree. A fresh deployment and the switch-over therefore need **no build**: the release image
+   is the bundle of the first versions.
+2. **The bundle build, new, in the deployment's own project.** When a platform admin applies an update to a bundled
+   install (§1.4.3), swarm-api starts one Cloud Build build in the deployment's project, as a builder service account
+   that can read the pinned source objects under `platform/sources/` in the plugins bucket, read the deployment's own
+   copies of the release images, and push to one repository, `swarm-plugin-bundles`, and nothing else (no Firestore,
+   no Secret Manager, no GitHub, no plugin `tenants/` prefix). The build runs the **bundler image**
+   (`swarm-plugin-bundler`, new, built and signed by the release build like every other image, and copied by stage 4),
+   which holds the recipes factored out of today's Dockerfile stages: `recipes/gstack` (`./setup --host claude
+   --no-browser` and `gstack-layers check`/`stage` with the checked-in file lists, the browser image's list for the
+   browser variant) and `recipes/security-audit` (stage `skills/security-audit/` and `LICENSE`, then run the skill's
+   validator tests on the staged copy, as `tests/unit/scripts/test_security_audit_image.py` does today). Its output
+   is one image per runner image a claude-code profile uses, each `FROM` the deployment's copy of the live release
+   image by digest, with the built tree copied over `/opt/swarm/plugins/<name>/` and a new `.swarm-bundle.json`.
+   Dependencies come only through mirror repositories, never straight from a public registry, as in the release
+   build; which repositories a deployment holds for that is Q19.
+
+**Why in the deployment and not in the release home.** The owner's rule is that every installed copy is pinned and
+updated by an admin after the diff. A release-home build would let a deployment's admin pick only the versions a
+release ships. Building in the deployment lets a bundled install update like any other, while every other part of
+the image stays the release's signed bytes (the bundle adds one layer over a verified digest). That reading, and the
+other one, are Q16.
+
+#### 1.4.3 What "publishes a new image version" means
+
+* **An update** runs §9.1 as for any plugin: swarm-api resolves the ref, the intake job checks the **source** archive
+  (caps, paths, the manifest, the skills' frontmatter) and writes it under `platform/sources/<sha256>.tar`, and the
+  diff is shown. Nothing is built before an admin asks; nothing is current before the build passes.
+* **Apply** on a bundled install writes a **bundle** record and starts the build instead of moving `current_version`.
+  `plugin_bundles/{bundle_id}` (swarm-api only, MAC'd, request P6): the bundle key (every bundled install's
+  `version_id`, source sha256 and recipe digest: a bundle carries **both** bundled plugins, because one step may load
+  both and runs on one image), the base (the release image digests it was built `FROM`), the output digest per runner
+  image name, the built tree's sha256 per plugin read back from the output's `.swarm-bundle.json`, and `state`
+  (`building`, `ready`, `failed`, `retired`). The page shows the build's progress; a failure is a fixed code and
+  sentence (`bundle_build_failed`, `bundle_check_failed`) with the build id, never the build's log text, which is
+  upstream output.
+* **Only a ready bundle moves `current_version`**, in the transaction that marks it ready. A step submitted after
+  that gets the new version.
+* **Tags and digests.** The bundle images are
+  `<region>-docker.pkg.dev/<project>/swarm-plugin-bundles/<runner image name>:<bundle_id>`. The tag is a name for a
+  person reading the registry, written once and never moved; everything that runs a bundle names its **digest**, as
+  every image here is named (`docs/audits/2026-09-20/tag-vs-digest.md`).
+
+#### 1.4.4 Which image a step runs on, and a step that names an older pin
+
+* **What is signed.** A bundled plugin's entry in `metadata.dispatch.plugins` (§8) carries `build: "image"`, the
+  version id, the source sha256 and the built tree's sha256, and the set carries one `bundle` field: the bundle key.
+  Not an image digest: a digest signed at submission would name the base live then, and a step queued across a
+  release upgrade would run the old worker against the new control plane.
+* **The scheduler** resolves a step with no bundled plugin exactly as today (`WORKER_IMAGE_REFS`). For a step with a
+  bundle key it reads the bundle record whose key matches and whose base is the **live** base (the digest
+  `WORKER_IMAGE_REFS` names for that runner image), and runs that record's output digest. It accepts only a digest
+  under `swarm-plugin-bundles`, so a forged record (the tenant GSAs can write Firestore) can point only at another
+  bundle image, built by the builder account; and the release image counts as the bundle of the pins it carries. The
+  caller still names a runner profile and nothing else (invariant 10): the digest comes from the catalogue's own
+  records, never from a submission.
+* **The worker** trusts only the signed set: before the agent starts it reads `.swarm-bundle.json` of each bundled
+  plugin from its own read-only image and refuses the step (`plugin_bundle_mismatch`, a fixed code with the install
+  and version ids) unless the source sha256, the recipe digest and the built tree's sha256 equal the signed ones. A
+  record pointing at the wrong bundle therefore stops a step; it never runs one with other bytes. Nothing is
+  downloaded for a bundled plugin.
+* **An older pin.** A step keeps the version it was signed with (§9.1), through every retry and resume. It is served
+  by the bundle with its key on the live base. Two things keep that bundle present:
+  * **Retention.** A bundle is retired (and its images deleted by §9.3's sweep) only when it is not current, no
+    unfinished step names its key, and it is not the previous current bundle (kept for rollback, §1.4.7).
+  * **An upgrade rebuilds before it switches.** A release upgrade changes the base. `swarm upgrade`
+    (`swarm_install/upgrade.py`) pauses dispatch to drain, copies the new images, then applies infra, which writes the
+    new digests into `WORKER_IMAGE_REFS`. It gains one step between the copy and the infra apply: one bundle build per
+    retained key on the new base, and infra waits until every one is ready (§15). A queued step therefore finds its
+    pins on the new base, built from the same source and recipe. The previous base's bundles stay until the next
+    upgrade succeeds, so the upgrade's own rollback (the previous release's digests applied again) finds them too.
+* **When it is missing anyway** (a build that failed during the upgrade, a record deleted by hand), the dispatch is
+  refused with `plugin_bundle_missing` before any pod exists, and the step takes the platform-refusal path it takes
+  today for a dispatch the platform cannot make. A queued step costs nothing while it waits (invariant 1); nothing
+  sleeps (invariant 4).
+
+#### 1.4.5 The switch-over: no step loses gstack or security-audit
+
+The switch is one swarm-api setting, `SWARM_BUILTINS_MANAGED` (`on`/`off`, Terraform `var.builtins_managed`, `off` by
+default for an existing deployment so nothing changes at merge, `on` in a fresh deployment's tfvars, which has no
+queued step to carry across). In order:
+
+1. **The release that carries the bundle manifests ships first**, with the switch off. Nothing changes for a step.
+2. **Switch on.** swarm-api seeds the two installs (§1.4.1). From then on submission resolves a step's `gstack` or
+   `security-audit` (named in its `plugins` field as `{mode, skills}`, or a workspace default) to the managed install's
+   current version, writes it into `metadata.dispatch.plugins` with the step's mode and skills, and no longer writes
+   it into `capabilities.plugins`. A saved workflow is not edited: the same JSON is resolved the new way.
+3. **Workspace defaults and Allowed lists are untouched**: they already name these ids.
+4. **Steps already submitted** carry `capabilities.plugins`. The worker of that release reads both routes, and the
+   bytes are the same (the release image holds the same pins at the same paths), so a step queued before the switch
+   runs the same skills from the same files.
+5. **Built-ins no longer need `SWARM_WORK_CONTRACTS`.** A managed plugin is outside the work contract (§8), so a
+   deployment with work contracts off, where a step naming gstack is refused today, accepts it after the switch.
+   The plugins switch (§11) still refuses every step that names any plugin when it is off.
+6. **One release later** the code entries go (§1.4.1).
+
+#### 1.4.6 security-audit's validators at a known path
+
+`security_review.py` keeps reading `/opt/swarm/plugins/security-audit/skills/security-audit` (today
+`plugins.CATALOGUE[PLUGIN].install_path`, falling back to `DEFAULT_INSTALL`). The recipe fixes that path, and the
+path is in the image's read-only root filesystem, so a bundle image puts the pinned validators exactly where the
+review expects them and the agent cannot edit them. Two changes only: the path becomes `security_review.py`'s own
+constant (the code entry it reads goes in §1.4.1), and `applies()` sees security-audit through either route (the
+work contract's capabilities, or a signed managed entry named `security-audit` with `build: "image"`). Before it runs
+the validators, the review checks the plugin's `.swarm-bundle.json` against the signed entry, so the verdict is
+always from the pinned copy's own validators.
+
+#### 1.4.7 Rollback
+
+* **A bad update.** "Roll back" on the plugin's page applies the previous version. Its bundle is retained (§1.4.4),
+  so it moves `current_version` at once, with the diff and the typed confirmation of §9.1, and audited
+  (`plugin_updated`). Steps signed with the bad version keep it, as any pinned step does; cancel them to stop them.
+* **A failed build** changes nothing: `current_version` never moved.
+* **The switch-over.** Turn `SWARM_BUILTINS_MANAGED` off: submission writes `capabilities.plugins` again from the code
+  entries, which stay for the release after the switch for this. Steps signed through the managed route still run,
+  because the release image is their bundle and the worker reads both routes. The seeded installs stay, unused, so
+  turning it on again changes nothing in Firestore.
+* **A release rollback.** Rolling the deployment back to a release from before the bundle manifests needs the switch
+  off first; `swarm upgrade` refuses to put a release without `.swarm-bundle.json` live while it is on, and says so
+  in its plan.
+
+#### 1.4.8 What a bundled install can and cannot do
+
+Only platform scope: a bundle image is built once per deployment and serves every workspace that allows it, so a
+workspace-private gstack would be a per-workspace image on a shared registry path (Q18). No Remove: a workspace
+disallows it instead, and `security_review.py` and the step templates that name it keep working (Q17). Declared
+settings and `userConfig` work as for any plugin. gstack's own environment (`GSTACK_HOME`, `GSTACK_EPHEMERAL` and the
+rest, set by `agent_worker/plugins.py` today) stays the worker's, keyed on the reserved install id: its values are the
+attempt's own paths, not settings an admin writes.
 
 ## 2. Sources, fetch and pin
 
@@ -528,7 +726,7 @@ metadata.dispatch.plugins = {
 
 A file setting's content travels as a released value like a secret (it may be long, and a rules file may say more
 than a member should read in a workflow's JSON), and its sha256 is what is signed. The work contract keeps
-`capabilities.plugins` for the built-ins (unchanged), and a managed plugin is outside it, so managed plugins **do not
+`capabilities.plugins` for the built-ins until §1.4.5's switch moves them onto this set, and a managed plugin is outside it, so managed plugins **do not
 need `SWARM_WORK_CONTRACTS`**. The worker refuses a set it cannot verify exactly as it refuses an unsigned contract.
 
 What still needs the frozen contract (§14): the workspace block's new fields (P1), the install, version and intake MAC form
@@ -563,7 +761,7 @@ it now. Confirming (typed name) sets `state: removed`: it leaves the catalogue, 
 saved workflow naming it is refused at submission with the fixed code `plugin_removed` and its `install_id` as a
 field (recommended, pending Q5); queued
 and running steps keep their copy. The plugin's secrets (`-plg-` names for that install) are destroyed when the
-install is removed. A built-in has no Remove.
+install is removed. A bundled install (§1.4) has no Remove (Q17).
 
 ### 9.3 Garbage collection
 
@@ -608,7 +806,7 @@ Platform: two switches and a three-way select, each showing its Terraform defaul
 * **A MAC that fails** reads as the Terraform default, never as the stored value, and logs `platform_switch_unsigned`
   once per instance.
 * **Who:** a platform admin; audited (`platform_switch_set`); a confirmation dialog naming what changes (turning
-  contract review to `enforce` refuses steps; turning work contracts off makes steps that name built-in plugins
+  contract review to `enforce` refuses steps; turning work contracts off, before §1.4.5's switch, makes steps that name built-in plugins
   refused) (recommended, pending Q11).
 * Each workspace's own `contract_review.enabled` block stays; the platform mode composes with it as today.
 
@@ -659,6 +857,17 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
     hosts come only from a pinned copy an admin installed through a privileged, audited catalogue route, the way a
     platform admin registers an MCP server (`registered-mcp-servers.md`); a step's submission can never supply them.
 
+**The bundled installs (§1.4) against the same invariants.** A bundle build is not a step: it runs on Cloud Build,
+holds no tenant slot and no lease, and creates no agent demand (1, 3). A step naming a bundled plugin is sized and
+admitted as before; only the image digest it runs differs, and a step whose bundle is missing is refused at dispatch
+before any pod exists, so nothing waits in a pending pod (1). The pod spec is unchanged apart from the image: requests,
+limits and the CPU ratio are the runner profile's, as today (7); Spot stays off (6). Fencing is untouched: a stale
+attempt exits before it reads a bundle manifest (5). Checkpointing is unchanged: a bundled copy is in the image, never
+in the checkpoint (8). A bundle carries no secret and no tenant's data, and its images are pulled the way the release
+images are (9). The image digest comes from swarm-api's MAC'd bundle record and is checked against
+the bundle repository by the scheduler and against the signed pins by the worker; a caller still names a runner
+profile and nothing else (10). The Setup step (§15.1) touches none of them.
+
 ## 14. Contract change requests (requests, not changes: `swarm_common` is frozen)
 
 * **P1. `specsign.SETTINGS_MAC_FIELDS["plugins"]`** becomes `("allowed", "defaults", "configs_digest")`: the
@@ -675,19 +884,85 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
   "python3", "bash")`.
 * **P5. A canonical form for platform settings** (`specsign.canonical_platform_settings(fields)`, purpose
   `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review`).
+* **P6. A plugin record kind `bundle`** (§1.4.3): `specsign.PLUGIN_RECORD_KINDS` gains `"bundle"`, so a
+  `plugin_bundles/{bundle_id}` record is MAC'd in P2's canonical form, platform scope, no tenant id. Without it a
+  tenant worker could forge a bundle record; the scheduler's repository check and the worker's manifest check would
+  still stop a wrong image from running a step, but a forged `ready` could move `current_version` to an unbuilt pin.
+  Lane 13 writes it into `docs/contract-change-requests.md`; it is in `questions.json` as Q20.
 
 Each goes into `docs/contract-change-requests.md` through the lane that builds on it, and is in `questions.json` as
 Q12 for the owner to accept.
 
-## 15. The Day One installer
+## 15. The Day One installer and the optional Setup step
 
-A fresh deployment needs: the plugins bucket and its IAM (§3), the intake job and its service account (§2.2), the
-reconciler's GC grant (§9.3), and the Secret Manager grants for `-plg-` names to swarm-api. All of it is Terraform in
-`terraform/infra`, which `swarm install`'s infra passes already apply, so the installer gains **no prompt and no step**;
-the built-ins appear without seeding, because they are code. Lane 3 adds one check to `swarm doctor` and the install's
-verify stage (the bucket exists, the intake job is deployed, a tenant GSA can read `platform/`). The platform switches
-keep their Terraform defaults (`contract_review_mode` stays `off` in `tfvars.py`) until a platform admin changes them
-in the console. Whether Admin › Setup offers an optional "add a plugin" step is Q15 (recommended: no).
+### 15.1 The optional "add a plugin" step
+
+**Decided by the owner on 6 November 2026 (Q15), against this document's earlier recommendation of no step:**
+Admin › Setup offers an **optional** "add a plugin" step.
+
+**Where the checklist lives.** The page is `apps/swarm-ui/src/AdminSetup.tsx`, which polls `GET /v1/admin/setup`
+(`useSetupState` in `AdminSetupSteps.tsx`). The compact checklist beside the working panel is `finishLines` in
+`consolefinish/ChecklistFinish.tsx`: eight lines (`LineKey`: `cloud`, `sign-in-client`, `github`, `team`, `accounts`,
+`smoke`, `verify`, `send`), each derived on every read and never marked by hand. The panel's rows are built in
+`AdminSetupSteps.tsx` (`signInRow`, `githubRow`, `teamRow`, `accountsRow`, `verifyRow`, ...), and one of them is
+already optional: `addonsRow`, `by: 'optional'`. The server side is `apps/swarm-api/swarm_api/routes/setup.py`
+(`setup_state`, `steps_view`), with the console's documents under `swarm-install/{env}/console/` in the table
+`install_record.SWARM_API_DOCUMENTS`, which restates the installer's `swarm_install.record.WRITERS`.
+
+**What the step is.**
+
+* **A ninth line, last, after "Send to your team"**: `plugins`, titled "Add a plugin", marked **Optional** the way
+  `addonsRow` is. Last, because the eight lines are the order a deployment becomes usable in, and a line placed
+  between them would read as a gate.
+* **Its state is derived, like every line:** `done` once the deployment holds at least one active install that is
+  not bundled (a platform install, or any workspace's own), counted by swarm-api from `pluginstore`; `skipped` when
+  an admin skipped it and none exists; else `todo`. The two bundled installs (§1.4) never count, because they are
+  there without anyone adding them.
+* **The panel shows** one sentence of what is there already ("gstack and security-audit are installed"), the count
+  of plugins added, and two actions: **Add a plugin**, a link to Admin › Plugins › Add (`ADMIN_PLUGIN_ADD_PATH`,
+  `/admin/plugins/add`, the page `AdminPluginInstall.tsx` already renders, unchanged; the line turns `done` on the
+  next poll once the install is active), and **Skip**. Once done it lists the plugins added, each linking to its page.
+* **Its helper text goes behind a tooltip.** What a plugin is, that the platform catalogue serves only the
+  workspaces that allow it, and that it can be done any time from Admin › Plugins sit behind the line's (i), not in
+  the panel: the console's prose ratchet (`src/__tests__/prose.budget.test.tsx`) holds the page's visible words where
+  they are.
+* **Skip** is a platform admin's choice, remembered in a new console document
+  `swarm-install/{env}/console/plugins_step` (`{skipped_at, skipped_by}`), written by
+  `POST /v1/admin/setup/plugins/skip` and removed by `DELETE` of the same route ("Add one anyway" on a skipped line),
+  audited as `setup_step_skipped`. Remembered, because a line that came back as `todo` on every poll would be a nag on
+  a page whose job is to say what is left.
+* **It never blocks ready.** "Send to your team" unlocks on `verify` passing, as now; nothing in the engine's or the
+  console's readiness reads `plugins`; `nextLineKey` (the line the panel follows by itself) is taught to pass over an
+  optional line, so the page never moves a person there unasked. A one-person install shows the same line.
+
+### 15.2 What the installer gains
+
+The rule is that anything a fresh deployment needs also updates the installer. What this wave needs:
+
+* **Terraform, applied by the passes `swarm install` already runs** (so no prompt): the plugins bucket and its IAM
+  (§3), the intake job and its account (§2.2), the reconciler's GC grant (§9.3), the Secret Manager grants for `-plg-`
+  names, and now the bundle build's resources (§1.4.2): the `swarm-plugin-bundles` repository, the builder account
+  and its grants (read `platform/sources/`, read the deployment's release images, push to that repository only),
+  swarm-api's right to start a build as that account and nothing more, and the mirror repositories of Q19.
+* **The bundler image** in the release's `images.json`, so stage 4 (`steps/images.py`) copies and verifies it like
+  every other image.
+* **`builtins_managed = "on"`** rendered by `tfvars.py` for a fresh deployment, which has no queued step to carry
+  across; an existing deployment keeps `off` until a platform admin turns it on (§1.4.5).
+* **No seeding by the installer.** swarm-api seeds the two bundled installs on its first catalogue read (§1.4.1),
+  from the release image's own `bundled-plugins.json`, so the installer writes no catalogue document.
+* **The console document** `console/plugins_step` added to `swarm_install.record.WRITERS` beside swarm-api's
+  `SWARM_API_DOCUMENTS`, so the record's writer table and swarm-api's agree; the installer reads it as it reads the
+  others and copies nothing from it.
+* **Checks.** `swarm doctor` and the install's verify stage (`steps/verify.py`, `verify.plugins`) gain: the bucket
+  exists, the intake job is deployed, a tenant GSA can read `platform/`, the builder account can push only to
+  `swarm-plugin-bundles`, and, with the switch on, the two bundled installs exist and their current versions equal
+  the live release image's `.swarm-bundle.json`.
+* **`swarm upgrade`** gains the bundle rebuild between copying images and applying infra (§1.4.4), shown in its plan
+  ("bundles to rebuild: N"), and refuses a release without bundle manifests while the switch is on.
+
+The platform switches keep their Terraform defaults (`contract_review_mode` stays `off` in `tfvars.py`) until a
+platform admin changes them in the console. The Setup step needs no installer change beyond the document's row: it
+reads swarm-api's catalogue.
 
 ## 16. The test: jev-belay and jev-enforce, managed
 
@@ -752,6 +1027,40 @@ Two lanes never edit the same file: 7 owns `schemas.py` and `service.py` for thi
 Lanes 1, 2, 3 and 4 start together. 5 needs P2 accepted; until then it can build everything but the MAC, which it
 must not ship without. The console lanes wait for the mock-ups and for the routes they draw.
 
+### 17.1 Lanes for the two decisions of 6 November 2026 (Q13, Q15)
+
+Same rules as above: territories are disjoint for this wave, "needs" names what must merge first, a UI lane holds
+about three files. The last column says what an operator must push by hand after the owner sees the diff (IAM,
+Terraform, a workflow file, which a lane writes as `workflow-lines.patch` and never pushes) and what is a contract
+change **request** (an entry in `docs/contract-change-requests.md`, never an edit under `apps/common/swarm_common/`).
+
+| # | Lane | Territory | Needs | IAM / Terraform / workflow / contract | Gives |
+|---|---|---|---|---|---|
+| 13 | **Contract request P6** | `docs/contract-change-requests.md` (the P6 entry) | the owner's answer to Q12 for P6 | contract: request only; `specsign.PLUGIN_RECORD_KINDS` gains `"bundle"` only by the owner's acceptance | a MAC'd bundle record |
+| 14 | **Bundle recipes and the bundler image** | `images/plugin-bundler/` (new: Dockerfile, `recipes/gstack/`, `recipes/security-audit/`, the `.swarm-bundle.json` writer), `images/agent-runtime-base/Dockerfile` (its two build stages run the recipes and write the manifests), `images/agent-runtime-base/bundled-plugins.json` (new), `images/agent-runtime-browser/Dockerfile` (the browser variant's recipe call), `scripts/build-images.sh` and `scripts/push-images.sh` (the `swarm-plugin-bundler` target), `tests/unit/scripts/test_plugin_bundle_recipes.py` (new), `test_gstack_image.py` and `test_security_audit_image.py` (pins read from `bundled-plugins.json`) | nothing | none expected; if a release workflow lists image names itself, the line goes in `workflow-lines.patch` | release images with bundle manifests, byte-equal plugin trees to today's (the test holds the staged trees' digests equal before and after) |
+| 15 | **Infrastructure and installer** | `terraform/infra/plugin-bundles.tf` (new), `terraform/infra/variables.tf` (`builtins_managed`, default `off` with its why beside it), `terraform/infra/locals.tf` (the two env vars: `SWARM_BUILTINS_MANAGED` to swarm-api, `PLUGIN_BUNDLE_REPOSITORY` to swarm-api and the scheduler), `apps/swarm-install/swarm_install/tfvars.py`, `record.py` (`console/plugins_step`), `steps/verify.py`, `verbs/doctor.py`, `upgrade.py` (the rebuild step and its refusal) | 14 (the bundler image's name) | **IAM and Terraform**: the builder account, its grants, swarm-api's `serviceAccountUser` on it, the repository, the mirror repositories (Q19): pushed by an operator | §1.4.2's slot and §15.2 in every new deployment and upgrade |
+| 16 | **Bundle builds in swarm-api** | `apps/swarm-api/swarm_api/pluginbundle.py` (new: bundle records, start a build, its finish notification, retention list), `routes/plugin_bundles.py` (new: build status, Roll back), `pluginstore.py` (`build: "image"`, Apply that starts a build, `current_version` moved only by a ready bundle) | 13, 14, 15 | none (uses 15's grants) | §1.4.3, §1.4.7 |
+| 17 | **Seed and the switch at submission** | `apps/swarm-api/swarm_api/plugincatalogue.py` (the seed source; the code entries kept one release), `pluginconfig.py` (bundled installs merged as managed entries with the step's mode and skills), `plugins.py` (no `capabilities.plugins` for them with the switch on), `routes/plugin_catalogue.py` (Update allowed on a bundled install, Remove refused) | 16 | none | §1.4.1, §1.4.5 |
+| 18 | **Scheduler: the bundle image** | `apps/scheduler/scheduler/dispatch.py` (the image lookup for a bundle key, the repository check, `plugin_bundle_missing`), `scheduler/settings.py` (`PLUGIN_BUNDLE_REPOSITORY`) | 16 (the record shape), 15 | none; a dispatch change, so it also runs `make smoke concurrency-test race-test` against a deployed environment | §1.4.4's image choice |
+| 19 | **Worker: bundled entries and the review** | `apps/agent-worker/agent_worker/pluginload.py` (a `build: "image"` entry checked in place against `.swarm-bundle.json`, nothing fetched), `agent_worker/plugins.py` (both routes for one release; gstack's environment keyed on the reserved id), `agent_worker/security_review.py` (the path constant, `applies()` on either route, the manifest check before the validators) | 14, 17 | none | §1.4.4's worker check, §1.4.6 |
+| 20a | **Console: a bundled plugin's page** (Update with the diff, then the build's progress and its refusal, Roll back) | `apps/swarm-ui/src/PluginDetail.tsx`, `PluginBundleBuild.tsx` (new), `styles/plugin-detail.css` | 16, 20b | none | |
+| 20b | **Console: catalogue words and the calls** | `apps/swarm-ui/src/AdminPlugins.tsx` (the built-in card's words and (i), which today say an image release updates it), `types.ts` (bundled install and bundle fields only), `api.ts` (bundle calls, and the Setup step's `plugins` state and skip call for lane 21) | 16, 22 | none | |
+| 21 | **Console: Setup's optional plugin step** | `apps/swarm-ui/src/consolefinish/ChecklistFinish.tsx` (the ninth line, optional, `nextLineKey`), `AdminSetupSteps.tsx` (the row: panel, Add a plugin, Skip, "Add one anyway"), `styles/console-finish.css` | 20b, 22, **a mock-up first** | none | §15.1 |
+| 22 | **swarm-api: Setup's plugin step** | `apps/swarm-api/swarm_api/routes/setup.py` (`plugins` in the setup state, the skip routes, the audit), `install_record.py` (`console/plugins_step` in `SWARM_API_DOCUMENTS`) | nothing (reads `pluginstore` only); its writer row lands with 15's `record.py` | none | §15.1's state |
+| 23 | **The test, bundled** | `tests/smoke/managed_plugins/test_bundled.py` (new), `scripts/smoke-managed-plugins.sh` (the bundled pass) | 18, 19, 20a | none | a step naming gstack and security-audit runs from the seeded installs with the work-contracts switch off; an update to a test pin builds, applies, runs, and rolls back; a step queued before the apply keeps the old pin |
+
+**The mock-up rule.** Lane 21 needs the owner's pick from a mock-up **first**: it adds a line and two states
+(optional, skipped) to Admin › Setup, a page built from a picked frame (`docs/web-ui/mockups/PICKS.md`: build the picked
+variant only), and no picked frame draws an optional line or a skip. Lane 20a adds one state (a build in progress or
+refused) to the plugin page lanes 10a-10b built from their mock-ups; it extends those frames and needs no new one
+unless the owner asks. 20b changes words only.
+
+**Order.** 13, 14 and 22 start at once; 15 follows 14; 16 needs 13, 14 and 15 (it must not ship the bundle record
+without P6's MAC); 17 and 18 follow 16; 19 follows 17; the console lanes follow their routes; 23 is last. Lane 15
+crosses into lane 3's `steps/verify.py` and `verbs/doctor.py`, and lane 17 into lane 5's `plugincatalogue.py` and
+`routes/plugin_catalogue.py`; both say so in their commits. `api.ts` is 20b's alone in this wave, so 21 imports its
+calls rather than adding its own.
+
 ## 18. Questions for the owner
 
 In the lane's `questions.json`, each with options and a recommendation:
@@ -768,6 +1077,20 @@ In the lane's `questions.json`, each with options and a recommendation:
 * **Q10** Marketplace entries whose source is a package registry or a bare git URL.
 * **Q11** How a platform switch change is confirmed.
 * **Q12** Accepting contract change requests P1-P5.
-* **Q13** Whether gstack and security-audit stay image-baked built-ins.
+* **Q13** Whether gstack and security-audit stay image-baked built-ins. **Decided by the owner, 6 November 2026:**
+  they migrate to the managed path; "it has to gain a build step that publishes a new image version in which it ships
+  bundled in". The recommendation (stay code entries) was not taken; §1.4 is the design.
 * **Q14** The baked Jev quality gates and the managed jev-belay and jev-enforce in one step.
-* **Q15** Whether Admin › Setup offers an optional plugin step.
+* **Q15** Whether Admin › Setup offers an optional plugin step. **Decided by the owner, 6 November 2026:** yes, an
+  optional "add a plugin" step. The recommendation (no step) was not taken; §15.1 is the design.
+
+New with this revision (9 November 2026), each in the lane's `questions.json` with options and a recommendation,
+none decided here:
+
+* **Q16** Where a bundled install's build step runs: in the deployment's own project, so an admin may update to any
+  pin (built, §1.4.2), or only in the release home, so an admin picks among the pins a release ships.
+* **Q17** Whether a platform admin may remove a bundled install (built: no; a workspace disallows it instead).
+* **Q18** Whether a workspace may install its own bundled plugin (built: platform scope only).
+* **Q19** How a deployment's bundle build reaches its dependencies (built: the deployment's own mirror
+  repositories, checked against the pinned lockfile).
+* **Q20** Accepting contract change request P6 (the `bundle` plugin record kind, §14).
