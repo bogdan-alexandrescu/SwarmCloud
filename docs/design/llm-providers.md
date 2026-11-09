@@ -16,9 +16,14 @@ The owner's request, 9 November 2026 (kept in the owner's words):
 >   it settings have chat GPt api key that is dedicated to voice it that can be
 >   used if the shared plans or keys are not available or have no quota left.
 
-This document is the design. It builds nothing. Every choice that is the
-owner's (cost, security, product) is a question in §9, with options and a
-recommendation, and is not decided here.
+This document is the design. It builds nothing. Every choice that was the
+owner's (cost, security, product) was a question in §9; the owner answered all
+ten on 9 November 2026, and each is now marked **DECIDED** there with the
+answer. Seven took the recommendation. Three changed the design, and the
+sections they touch say so: **Q3** (a deleted key's secret is destroyed at
+once, §4.4, §8.3), **Q7** (lending carries a cap the lender sets, for keys and
+plans alike, §4.6), and **Q8** (an attempt records its credential tier and
+account, through a contract request, §8.2).
 
 ## 1. Why, in one paragraph
 
@@ -42,7 +47,7 @@ fallback.
 | Fact (file) | What it forces |
 |---|---|
 | `Account` carries `provider`, `state` (`AVAILABLE`, `PAUSED`, `DRAINING`, `REAUTH_REQUIRED`), `windows`, `holds`, `max_agents`, `model_classes`, `lend_to`, `pools`, `limited_until` (`accounts.py:306-326`, `545-729`) | A key is an `Account` too: one document shape, one hold mechanism, one set of state transitions. No parallel store. |
-| `may_serve(tenant)` is ownership or an explicit loan, and requires the `workspace` pool (`accounts.py:835-845`) | Lending a key to workspaces is the same `lend_to` field; "share with Voice it" is the `voice-it` pool membership. |
+| `may_serve(tenant)` is ownership or an explicit loan, and requires the `workspace` pool (`accounts.py:835-845`) | Lending a key to workspaces is the same lending as a plan's (`lend_to`, which §4.6 turns into `lends`, each with a cap); "share with Voice it" is the `voice-it` pool membership. |
 | A hold is granted in one Firestore transaction that re-checks eligibility and room on the account document (`main.py:1442-1538`); `is_full` counts **live** holds, never the advisory `assigned` (`accounts.py:772-783`) | The key tier reuses `acquire_hold` unchanged: one transaction per grant, counted from the grant. |
 | `POST /v1/accounts/assign` filters by `provider == asked`, `may_serve`, and the step's model class resolved from its runner profile (`accounts.py:1533-1573`, `main.py:1310-1349`) | The fallback is a change inside the assign route: which providers it walks, in what order. The caller still names nothing but its agent (invariant 10). |
 | A swap moves a hold in one broker transaction, "never two and never none" (`accountlease.py:35-44`, `main.py:5614`) | Moving an attempt from a plan to a key mid-run is a swap whose candidate list now includes the key tier. |
@@ -138,8 +143,16 @@ path is reachable from an agent or a Voice it conversation.
 read-only call the key must be able to make (each vendor's list-models route).
 A 401 refuses the add with "the provider refused this key"; a 429 adds it as
 limited. The value is written to one Secret Manager secret,
-`swarm-account-<tenant>--<label>`, the same naming as a plan
-(`accounts.py:333-370`), with no `-refresh` half.
+`swarm-account-<tenant>--key-<label>`: the plan's naming family
+(`accounts.py:333-370`, so `secretstore.owned_by_this_platform` and the
+broker's existing version-adder condition already cover it), with no
+`-refresh` half and a `key-` mark before the label. The mark is what lets IAM
+tell a key's secret from a plan's (§8.3): the broker may delete the first and
+never the second. A tenant id cannot contain `--` (`accounts.py` refuses
+one), so the broker refuses a plan label that begins `key-` or contains
+`--key-`, and then a name holds `--key-` exactly when it is a key's; stage
+(a) of LP-B1 lists the existing accounts to show no plan's does before the
+grant is made.
 
 ### 4.2 Label
 
@@ -156,32 +169,80 @@ checkpoints and parks (invariants 4 and 8).
 
 ### 4.4 Delete
 
-One typed confirmation (the key's label), then, in order:
+**DECIDED (Q3, 9 November 2026): the secret is destroyed at once, on
+confirmation.** The recommendation was to wait for the last open hold; the
+owner chose at once, because a running attempt does not need the secret: it
+keeps the value it already read. Waiting would only have kept a credential
+the owner asked to delete readable for up to a hold TTL, by anyone who could
+read it.
+
+**The confirmation** is one dialog, typed, in the no-prose form of §6.5:
+
+* Title: `Delete API key <display name>`.
+* One line on the surface, because it is an instruction, not an explanation:
+  `Revoke it at Anthropic too.` (or `at OpenAI`), the vendor's name linking to
+  that vendor's key page.
+* A field: `Type <label> to delete`, the button disabled until it matches.
+* The button: `Delete key`.
+* Behind its (i): "The stored key is destroyed now. Agents running on it keep
+  the value they already read until their next turn, then move to the next
+  tier or park. Deleting here does not revoke the key at the provider: a copy
+  anywhere else keeps working until it is revoked there."
+
+Then, in order, in the one `DELETE /v1/accounts/{id}` request:
 
 1. **Holds close in one transaction**: `remove_account_and_close_holds`
-   (`main.py:1629-1703`), unchanged: every live hold closed as
-   `account_removed`, the document deleted. No hold is left half-closed.
-2. **Leases in flight**: an attempt already running on the key keeps the value
-   it read into its process; the broker cannot take it back. At its next turn
-   boundary its `hold-status` answers `move` (the hold is gone), and it swaps
-   to the next tier or checkpoints and parks. So a deleted key stops being used
+   (`main.py:1629-1703`), with one addition: every live hold closed as
+   `account_removed` and the document deleted, as today, **and** a
+   `key_deletions/<account id>` record (secret name, who, when; never the
+   value) written in the same transaction. No hold is left half-closed, and no
+   key document disappears without a record that its secret is owed a
+   deletion.
+2. **The secret, at once**: after that transaction commits, the broker
+   destroys every version of `swarm-account-<tenant>--key-<label>` and deletes
+   the secret, then marks the record done. It records the deletion in the
+   audit log, never the value. If either call fails (Secret Manager down, a
+   refused permission) the answer is a 502 naming the step that failed, the
+   console says the key is removed but its secret is not yet destroyed, and
+   the broker's quota sweep retries every record not marked done until it is.
+   The order is deliberate: destroying first and then failing the transaction
+   would leave a live account whose secret is gone, which every worker would
+   read as `account_unreadable`; closing first leaves at worst an orphan
+   secret that the record names and the sweep removes.
+3. **Leases in flight**: an attempt already running on the key keeps the value
+   it read into its process; the broker cannot take it back, and does not need
+   to. At its next turn boundary its `hold-status` answers `move` (the hold is
+   gone), and it swaps to the next tier or checkpoints and parks. A worker
+   that tries to read the secret again (a runner restart, a late start) gets
+   NOT_FOUND, which is today's `account_unreadable`: it excludes the account
+   and asks again (`_reject_account`). So a deleted key stops being used
    within one turn, not instantly. A Voice it Live session on the key is ended
    at its next renew (every 240 s, `accountlease.py` in swarm-voice) and
    reopened on the next tier, or ends with the reason.
-3. **The secret**: its versions are **destroyed** once the last hold that was
-   open at deletion has closed or expired (at most the hold TTL), and then the
-   secret is deleted. The broker records the deletion in the account's
-   `account_holds` log and the audit log, never the value.
 4. **The provider**: deleting here does not revoke the key at Anthropic or
-   OpenAI; a stolen copy keeps working. The confirmation says so behind its
-   (i), and the owner revokes it at the provider. Whether the broker should
-   revoke it itself (which needs an organisation admin key) is Q4.
+   OpenAI; a stolen copy keeps working. **DECIDED (Q4, 9 November 2026), as
+   recommended:** the broker does not revoke at the provider (that would need
+   an organisation admin key, a far wider credential than the one deleted);
+   the confirmation tells the admin to, on its surface.
 
 This departs from today's `"secret": "retained"` for plan accounts on purpose:
 a plan's secret holds a refresh token that can be re-used after an accidental
 removal; a key's secret holds a paid credential the owner asked to delete. Plan
-removal is unchanged. Whether delete destroys at once or after a grace period
-is Q3.
+removal is unchanged, and the IAM grant cannot reach a plan's secret (§8.3).
+
+Two keys are stored outside the `--key-` name, and the delete says so:
+
+* **An imported workspace key** (Q7, §5.3) is a copy: deleting it destroys the
+  pool copy at once, and the workspace's own `swarm-tenant-<tenant>-<vendor>`
+  secret, which `scripts/create-secrets.sh` owns, still holds the value for
+  the outage path. The dialog's surface line then reads `Revoke it at
+  Anthropic too. The workspace's own key secret still holds it.`
+* **The dedicated Voice it key registered before this design** (Q9) keeps its
+  `swarm-account-<tenant>--<label>` secret. Its delete in Voice it › Settings
+  destroys every version at once (the broker's existing `versions.destroy`
+  on secrets this platform owns) and leaves an empty secret with no version
+  to read, named in the audit line. A dedicated key added after stage (a) is
+  stored under the `--key-` name and deleted whole.
 
 ### 4.5 Rotate
 
@@ -201,8 +262,9 @@ Voice it key today, `openai_api_key.py`).
 |---|---|---|---|
 | Concurrency | `max_agents` (`PUT .../max-agents`) | the same field and route | live holds (`is_full`) |
 | Who may use it | `lend_to` (`PUT .../lending`) | the same | `may_serve` |
+| Lend caps | none: a lend is a name in `lend_to` | `lends: {tenant: {max_agents, monthly_spend_cap_usd}}`, new on **both** kinds; every lend carries a cap (Q7) | per borrowing workspace: its live holds, and for a key its month's metered spend, inside the `acquire_hold` transaction |
 | Model classes | `model_classes` | the same | `serves_class` |
-| Per-workspace cap | none | `per_workspace_max: {tenant: n}`, new on both kinds (Q6) | live holds whose tenant is that workspace, inside the same `acquire_hold` transaction |
+| Per-workspace cap | none | `per_workspace_max: {tenant: n}`, new on both kinds (Q6, decided) | live holds whose tenant is that workspace, inside the same `acquire_hold` transaction |
 | Usage window | read from the provider (five-hour, seven-day) | none: "not measured", never 0 (`Account.measured`) | provider's usage route |
 | Rate limit | `limited_until` from a 429 | the same, from the 429's `retry-after` | the worker's report |
 | Credit gone | n/a | `exhausted_at` (new): set by a credit-gone refusal, cleared by a successful probe or **Resume** | §5.2 |
@@ -215,7 +277,58 @@ Admin API cost report, OpenAI's organisation costs route). So the cap is
 metered here from the worker's own `cost_usd` estimate (`agent_worker/spendprice.py`,
 the figure the per-agent budget already uses), shown as an estimate with its
 basis in the tooltip, and a key past its cap reads as "no quota left" (§5.1).
-Whether to read the real figure with an admin key is Q5.
+**DECIDED (Q5, 9 November 2026), as recommended:** the cap is metered from
+that estimate, not read with an admin key, and an exhausted key is probed
+hourly with a one-token completion (§5.2).
+
+**DECIDED (Q6, 9 November 2026), as recommended:** per-workspace caps exist on
+plan accounts and API keys alike, one field on both kinds, so the two pages
+have the same controls.
+
+**Lending, with a cap on every lend (Q7, decided 9 November 2026).** The
+owner's note on Q7 asked that a key lent to another workspace be leased
+exactly as a plan is, and that the lend itself be capped, tracked and
+enforced. So lending is one mechanism for both kinds, and a lend is no longer
+just a name:
+
+* **The shape.** `lend_to` becomes `lends`, a map from the borrowing
+  workspace to its cap: `max_agents` (agents at once, required, at least 1)
+  and, on a key, `monthly_spend_cap_usd` (required on a key: a lend of a
+  metered credential with no ceiling is exactly the open-ended cost the note
+  was about; absent on a plan, whose price is flat). `may_serve` reads the
+  map's keys, so who may use the account is unchanged in meaning. The owning
+  workspace is not in `lends`; its own limit is `per_workspace_max` (Q6), and
+  the account's `max_agents` bounds everyone together.
+* **Who sets it.** The lender: the owning workspace's admin, or a platform
+  admin, through `PUT /v1/accounts/{id}/lending`, which now takes the caps and
+  refuses (422) a lend that carries none. Narrowing a cap below current use
+  closes no hold: the borrowers over it run on, and the next grant is refused
+  until they are under it.
+* **Tracked.** Per borrowing workspace, on the account document: live holds
+  (counted from the grant, as `is_full` counts, invariant 3) and, on a key,
+  `lend_spend: {month: {tenant: usd}}`, the metered estimate of that
+  workspace's holds. A closed hold adds its `cost_usd` in the transaction
+  that closes it; a running holder's `hold-status` carries the attempt's
+  running estimate, so a long attempt is counted before it ends.
+* **Enforced inside the grant.** `acquire_hold` already reads the account
+  document and checks room in one transaction; it now also reads the
+  borrower's lend, and refuses the hold when the borrower is at its
+  `max_agents` or its month's spend is at its cap. The check and the write are
+  the same transaction, so two borrowers racing for the last slot of a lend
+  cannot both win, and a refused grant writes nothing: the walk moves to the
+  next candidate (§5.3). The scheduler's admission, every pool of
+  `Lease.pools` in one transaction, is untouched (invariant 2): the lend is a
+  limit on the credential, checked where the credential is granted, never a
+  second reservation beside the capacity one. A borrower past its spend cap
+  mid-attempt is answered `move` at its next turn boundary, like a key past
+  its own cap.
+* **Today's lends** (plans lent with no cap) are carried over by stage (a)
+  of LP-B1 with `max_agents` equal to the account's own `max_agents`, which
+  is exactly the limit they have today, so nothing changes until the lender
+  narrows it; the console marks them `cap not set` until a lender saves one.
+* **Shown on both pages.** Each lend is a line under its account, on Plans
+  and on API Keys alike: the borrowing workspace, agents now over its cap,
+  and on a key the month's estimated spend over its cap (§6.2, §6.3).
 
 **The share-with-Voice-it switch** adds or removes `voice-it` from the key's
 `pools`. It is a platform-admin action, as moving a plan between pools is
@@ -240,10 +353,14 @@ quota left** when its binding window is under the floor or a 429 has set
 
 An **API key is available** when: its state is `AVAILABLE`; `may_serve` the
 tenant; it serves the class; it is not full; the workspace is under its
-`per_workspace_max`; it is not limited (`limited_until` passed); it is not
-exhausted (`exhausted_at` unset); and its month's metered spend is under
-`monthly_spend_cap_usd` if one is set. It has **no quota left** when it is
-limited, exhausted or over its spend cap.
+`per_workspace_max`; a borrowing workspace is under its lend's `max_agents`
+and its lend's spend cap (§4.6); it is not limited (`limited_until` passed);
+it is not exhausted (`exhausted_at` unset); and its month's metered spend is
+under `monthly_spend_cap_usd` if one is set. It has **no quota left** when it
+is limited, exhausted or over its spend cap. A workspace at its lend's cap is
+not "no quota left" for anyone else: the key stays available to its owner and
+its other borrowers. A plan follows the same lend rule for a borrower: under
+its lend's `max_agents`.
 
 ### 5.2 Rate-limited versus credit gone
 
@@ -262,7 +379,8 @@ list):
   `exhausted` kind, and is skipped until a platform admin presses **Resume**
   after topping up, or the broker's hourly probe (one list-models call, which
   a key with no credit still passes, so the probe is a small completion
-  capped at one output token; Q5 covers its cost) succeeds.
+  capped at one output token; its cost was accepted with Q5 on 9 November
+  2026) succeeds.
 
 So the worker's classifier gains a third outcome, `credit_exhausted`, matched
 on those two codes before the rate-limit markers, and reported to the broker's
@@ -279,7 +397,7 @@ names no account (the per-tenant secret) stays the tenant-level AIMD
 | codex | OpenAI plans | OpenAI keys lent to the workspace | none: park |
 | Voice it Live | (no plan can serve it) | OpenAI keys shared with Voice it | the dedicated Voice it key |
 | Voice it conversation | OpenAI plans in the Voice it pool | OpenAI keys shared with Voice it | the dedicated Voice it key |
-| Voice it planner | Anthropic plans in the Voice it pool | Anthropic keys shared with Voice it | none: refused (Q2) |
+| Voice it planner | Anthropic plans in the Voice it pool | Anthropic keys shared with Voice it | none: refused (Q2, decided) |
 
 **At assign.** `POST /v1/accounts/assign` takes the same request it takes today
 (the worker names its provider, the broker resolves the step's class); the
@@ -299,16 +417,34 @@ and the runner restarts its CLI with the key's variable in place of the
 token. A swap is still one transaction: the hold moves, it is never two and
 never none.
 
-**Back up the chain.** Whether an attempt on a key moves back to a plan as
-soon as one is available (cheaper, one more restart) or stays on the key to
-the end of the attempt (simpler, pays per token) is Q1. Either way a **new**
-attempt always starts at tier 1.
+**Back up the chain. DECIDED (Q1, 9 November 2026), as recommended:** an
+attempt on a key moves back to a plan at its next turn boundary once one is
+free. A key costs per token and a restart costs seconds, so the cheaper tier
+wins whenever it can. At each turn boundary a key holder's `hold-status` asks
+whether a tier-1 account would grant this attempt now (the same availability
+test as §5.1, read in the status's transaction); if one would, it answers
+`move` with the reason `plan_available`, the worker checkpoints, and the swap
+asks for tier 1 only. The swap is still one transaction: if the plan filled
+in between, the hold stays on the key and nothing moves, never two and never
+none. A plan the attempt left on a 429 is not offered back until its
+`limited_until` has passed, which availability already requires, so an
+attempt does not bounce between a spent plan and a key. A **new** attempt
+always starts at tier 1.
 
 **The per-tenant secret.** Today's `no_accounts_registered` → tenant secret
 path (`accounts.py:284-286`) and the broker-unreachable degrade
 (`accountlease.py:46-58`) stay as they are: a control-plane outage still runs
-on the tenant secret. Whether existing tenant secrets are imported as keys in
-the pool is Q7.
+on the tenant secret. **DECIDED (Q7, 9 November 2026), as recommended, with
+the owner's note:** each existing `swarm-tenant-<tenant>-<vendor>` provider
+key is imported as a pool key owned by that workspace, so it becomes visible,
+capped and deletable. The import is a copy, made once by stage (a) of LP-B1:
+the broker reads the tenant secret, validates it as §4.1 does, and registers
+it as a `*-api` account of that workspace, lent to nobody, its value written
+to its own `--key-` secret. The tenant secret stays where it is, owned by
+`scripts/create-secrets.sh`, because it is still the outage path above. A key
+the import cannot validate is skipped and listed in the stage's report, never
+registered half-checked. Lending an imported key later follows §4.6: a cap
+on every lend.
 
 **Voice it.** swarm-voice's `POST /v1/voice/lease` (`capability: live` or
 `text`) and the planner's `POST /v1/accounts/assign` (`holder: voice-planner`)
@@ -319,13 +455,22 @@ never offered to an agent step: it is an `openai-api` account in the
 deployment), which is exactly what today's Voice it key is. A Live session
 renews every 240 s; a renew that finds its key limited or exhausted is
 refused, and swarm-voice reopens Live on the next tier at the next turn
-boundary instead of ending the session.
+boundary instead of ending the session. **DECIDED (Q9, 9 November 2026), as
+recommended:** today's Voice it OpenAI key stays the dedicated Voice it key,
+in Voice it › Settings; it is not moved to API Keys as a shared key.
+**DECIDED (Q2, 9 November 2026), as recommended:** there is no dedicated
+Anthropic key for the Voice it planner. The request names only a ChatGPT key
+for Voice it, so the planner's chain has no tier 3: when the plans in the
+Voice it pool and the Anthropic keys shared with Voice it are all spent, the
+planner refuses with the reason, as it does today.
 
 ### 5.4 What the person sees
 
 * **An agent step**: a chip on the attempt, `Plan` or `API key`, with the
-  account's display name in its tooltip; a tier change is one line on the
-  attempt's timeline ("moved to API key", the reason in the tooltip). A park
+  account's display name in its tooltip, read from the attempt's own record
+  (`credential_tier` and `account_id`, Q8, §8.2); a tier change is one line on
+  the attempt's timeline ("moved to API key", the reason in the tooltip),
+  read from the broker's `account_holds` log, which keeps every move. A park
   shows the reason and the soonest reset, as today.
 * **Voice it**: the session's header shows which tier is serving
   (`Plan`, `Shared key`, `Voice it key`) as a small mark with a tooltip; a
@@ -348,9 +493,13 @@ boundary instead of ending the session.
   and a swap is one transaction that moves it. The walk itself holds nothing:
   a candidate that loses its room between the listing and the transaction is
   refused inside the transaction and the walk tries the next.
-* **3. Concurrency counts from `LEASED`.** `max_agents` and the new
-  `per_workspace_max` count live holds from the moment of the grant, which
-  happens while the attempt is `LEASED`, never from `RUNNING`.
+  The lend caps of §4.6 are read and enforced inside that same
+  `acquire_hold` transaction: a borrower at its cap is refused there, and a
+  refusal writes nothing.
+* **3. Concurrency counts from `LEASED`.** `max_agents`, the new
+  `per_workspace_max` and each lend's `max_agents` count live holds from the
+  moment of the grant, which happens while the attempt is `LEASED`, never from
+  `RUNNING`.
 * **4 and 8.** A move between tiers is checkpoint, swap or park, at a turn
   boundary; nothing sleeps through a provider's reset.
 * **5. Fencing.** Holds stay stamped with agent and attempt; a fenced attempt's
@@ -384,13 +533,15 @@ sub-pages as `/capacity/llm-providers/plans` and `/capacity/llm-providers/api-ke
 
 * **List**: one row per plan, grouped by vendor (Anthropic, OpenAI); state,
   windows (five-hour and seven-day bars), live holders over `max_agents`,
-  lent-to count, Voice it mark.
+  lent-to count, Voice it mark; under each row, one line per lend: the
+  borrowing workspace and its agents now over the lend's cap (§4.6).
 * **Add**: a vendor choice, then today's sign-in for that vendor: the Claude
   sign-in, or the Codex sign-in for a ChatGPT plan (`sc account add --provider
   openai` today, `openai_plan.py`); or a one-time `pool-account` link for the
   plan's owner, generalised with a vendor.
 * **Controls**: pause, drain, remove (typed), max agents, per-workspace caps,
-  lend, model classes, share with Voice it, refresh, rename.
+  lend (with its agents cap), model classes, share with Voice it, refresh,
+  rename.
 * **Empty state**: "No plans" with the add control beside it, and a `Mark`
   stating the read succeeded (today's `acct-empty`, `Accounts.tsx:807-848`).
 
@@ -399,12 +550,15 @@ sub-pages as `/capacity/llm-providers/plans` and `/capacity/llm-providers/api-ke
 * **List**: one row per key, grouped by vendor; state (available, limited
   until, exhausted, paused, draining), live holders over `max_agents`, the
   month's metered spend over its cap, lent-to count, Voice it switch, added
-  by and when. The value is never shown, not even masked; there is nothing to
-  reveal.
+  by and when; under each row, one line per lend: the borrowing workspace,
+  its agents now over the lend's agents cap, and its month's estimated spend
+  over the lend's spend cap (§4.6). The value is never shown, not even
+  masked; there is nothing to reveal.
 * **Add**: vendor, label, then the key (one-step form) or "send a link".
 * **Controls**: pause, drain, resume (after credit is topped up), replace key,
-  delete (typed), max agents, per-workspace caps, spend cap, lend, model
-  classes, share with Voice it.
+  delete (typed, the confirmation of §4.4), max agents, per-workspace caps,
+  spend cap, lend (with its agents and spend caps), model classes, share with
+  Voice it.
 * **Empty state**: "No API keys"; the tooltip says agents fall back to keys
   only after plans, so an empty page is valid.
 
@@ -441,20 +595,25 @@ wait for a pick:
 
 A fresh install gets, from `apps/swarm-install`:
 
-* **The question** (whether to ask it at all is Q10) "Which will agents run
-  on: plans, API keys, or both?"; a
-  key answer offers the one-step key form as a console link at the end, never
-  a prompt in the terminal (the installer must not see a key either).
-* **The team gate** (`team.py:388-413`, `await_pool_account`) accepts a key
-  lent to the team as well as a plan, so a deployment with keys only finishes.
-* **Voice it** (`tfvars.py:57-78`): when the answer is yes, the summary links to
-  Voice it › Settings › Dedicated OpenAI key and says Live needs a key.
+* **The question. DECIDED (Q10, 9 November 2026), as recommended:** the
+  installer asks "Which will agents run on: plans, API keys, or both?" and
+  records the answer in its state. A key answer offers the one-step key form
+  as a console link at the end, never a prompt in the terminal (the
+  installer must not see a key either).
+* **The team gate** (`team.py:388-413`, `await_pool_account`) checks that
+  choice: `plans` waits for a plan the team may use, `API keys` for a key lent
+  to or owned by the team, `both` for one of each. So a deployment with keys
+  only finishes, and an operator who meant both is not let through on one.
+* **Voice it** (`tfvars.py:57-78`): when Voice it is enabled, the summary
+  links to Voice it › Settings › Dedicated OpenAI key and says Live needs a
+  key.
 * **The IAM grant** of §8.3, through Terraform, so the delete path works on a
   fresh project without a hand step.
-* **The final summary** prints each chain of §5.3 with what it has now
-  (`claude-code: 0 plans, 1 key`; `Voice it Live: no key`), read from the
-  broker's `GET /v1/accounts` and `GET /v1/voice/pool`, so an operator sees a
-  chain with no tier before the first step parks on it.
+* **The final summary** prints the choice and each chain of §5.3 with what it
+  has now (`claude-code: 0 plans, 1 key`; `Voice it Live: no key`), read from
+  the broker's `GET /v1/accounts` and `GET /v1/voice/pool`, and flags a kind
+  the operator chose that has nothing registered, so an operator sees a chain
+  with no tier before the first step parks on it.
 * **The smoke step**: the team's smoke agent (`mock` needs no credential;
   the first claude-code smoke after the gate) runs on whichever tier the
   chain grants, and the summary names the tier it ran on.
@@ -477,83 +636,168 @@ secret, or a park.
 
 | Lane | Territory | Waits on |
 |---|---|---|
-| **LP-B1** broker, one lane in three sequenced stages, each a PR that waits on the one before: **(a)** the `anthropic-api` kind, `VENDOR_OF`, key validation, `exhausted_at`, `per_workspace_max`, `monthly_spend_cap_usd`, `voice_dedicated`, the `api-key` registration path and caps routes; **(b)** the tiered walk in assign, swap and the Voice it lease, the `tier` field, the soonest reason, `accounts_serving`; **(c)** delete with secret destruction, rotate, resume, the hourly exhausted probe | `apps/quota-broker/quota_broker/accounts.py`, `main.py`, `accountstore.py`, `secretstore.py`, a new `api_key.py` (generalising `openai_api_key.py`), their tests | (a) Q6; (b) stage (a), Q1; (c) stage (b), Q3, Q4, Q5, the IAM change of §8.3 |
-| **LP-W1** worker: the key shapes in `credential_env_from_account`, the `credit_exhausted` outcome, the tier on the attempt's timeline, the cross-kind swap restart | `apps/agent-worker/agent_worker/accountlease.py`, `runners/cliagent.py`, their tests | LP-B1 stage (b) |
+| **LP-C1** contract: request 152 (§8.2), applied to `Attempt`, with its TypeScript restatement and parity check | `apps/common/swarm_common/models.py` (applied by the contract lane under the owner's acceptance, never by a feature lane), `apps/swarm-ui/src/types.ts`, `scripts/lib/check-contract-parity.sh`, its test | nothing: the owner accepted request 152 on 9 November 2026; it runs first |
+| **LP-B1** broker, one lane in three sequenced stages, each a PR that waits on the one before: **(a)** the `anthropic-api` kind, `VENDOR_OF`, key validation, the `--key-` secret name and the plan-label refusal, `exhausted_at`, `per_workspace_max`, `lends` with their caps and the carry-over of today's lends, `monthly_spend_cap_usd`, `voice_dedicated`, the `api-key` registration path and caps routes, the import of the workspace provider keys (Q7); **(b)** the tiered walk in assign, swap and the Voice it lease, the `tier` field, the lend-cap check and `lend_spend` in `acquire_hold` and hold close, the move back to a plan (Q1), the soonest reason, `accounts_serving`; **(c)** delete with immediate secret destruction and the `key_deletions` sweep, rotate, resume, the hourly exhausted probe | `apps/quota-broker/quota_broker/accounts.py`, `main.py`, `accountstore.py`, `secretstore.py`, a new `api_key.py` (generalising `openai_api_key.py`), their tests | (a) nothing; (b) stage (a); (c) stage (b), LP-T1 applied |
+| **LP-W1** worker: the key shapes in `credential_env_from_account`, the `credit_exhausted` outcome, the tier on the attempt's timeline, the cross-kind swap restart and the move back to a plan, the running spend on `hold-status`, and the attempt's `account_id`, `credential_source` and `credential_tier` written where `record_spend` writes spend | `apps/agent-worker/agent_worker/accountlease.py`, `runners/cliagent.py`, `lifecycle.py` (`_lease_account`, `_decline_pool`), `control.py`, their tests | LP-C1; LP-B1 stage (b) |
 | **LP-A1** swarm-api: the `api-key` setup-link kind, the redeem path, the Voice it settings' dedicated-key status | `apps/swarm-api/swarm_api/setup_links.py`, `routes/setup.py`, `routes/voice_settings.py`, their tests | LP-B1 stage (a) |
-| **LP-V1** swarm-voice: Live, text and planner leases walk the chain; the developer Responses wire for text on a key; `ANTHROPIC_API_KEY` for a planner turn on a key; reopening Live on the next tier | `apps/swarm-voice/swarm_voice/accountlease.py`, `plannerlease.py`, `textchat.py`, `claudeturn.py`, their tests | LP-B1 stage (b); Q2 |
+| **LP-V1** swarm-voice: Live, text and planner leases walk the chain; the developer Responses wire for text on a key; `ANTHROPIC_API_KEY` for a planner turn on a key; reopening Live on the next tier | `apps/swarm-voice/swarm_voice/accountlease.py`, `plannerlease.py`, `textchat.py`, `claudeturn.py`, their tests | LP-B1 stage (b) |
 | **LP-M1, M2, M3** mock-ups (§6.6) | `docs/web-ui/mockups/llm-providers-*.html` | nothing |
 | **LP-U1** console: the `llm-providers` tab and routing, the redirect | `apps/swarm-ui/src/App.tsx`, a new `LlmProviders.tsx`, its test | LP-M1 pick |
 | **LP-U2** console: Plans (the board moved out of `Accounts.tsx`) | `apps/swarm-ui/src/Accounts.tsx`, a new `LlmPlans.tsx`, its test | LP-U1; LP-M1 pick |
 | **LP-U3** console: API Keys list, add, controls | a new `LlmApiKeys.tsx`, `apps/swarm-ui/src/api.ts` (the key calls, and the dedicated-key and chain fields of `VoiceSettingsView` for LP-U4), its test | LP-U1; LP-M1, LP-M2 picks; LP-B1 stage (c), LP-A1 |
 | **LP-U4** console: Voice it › Settings' dedicated key, the session tier mark | `apps/swarm-ui/src/voice/Settings.tsx`, `apps/swarm-ui/src/voice/Talk.tsx`, its test | LP-M3 pick; LP-A1; LP-U3 (for its `api.ts` calls) |
-| **LP-I1** installer: §7 | `apps/swarm-install/swarm_install/team.py`, `tfvars.py`, their tests | LP-B1 stage (a) |
-| **LP-T1** Terraform: §8.3 | the broker's IAM file under `terraform/infra/` | Q3 |
+| **LP-U5** console: the attempt's `Plan` / `API key` chip (§5.4), read from the attempt's record | `apps/swarm-ui/src/AgentDetail.tsx`, its test | LP-C1; LP-W1 |
+| **LP-I1** installer: §7, the plans / keys / both question, its gate and its summary | `apps/swarm-install/swarm_install/team.py`, `tfvars.py`, their tests | LP-B1 stage (a) |
+| **LP-T1** Terraform: §8.3, the delete-only role and its conditional binding, and the `(account_id, created_at)` attempts index request 152 needs | the bootstrap role file under `terraform/bootstrap/`, the broker's IAM file under `terraform/modules/iam/`, `terraform/modules/firestore/indexes.tf` | nothing; its bootstrap half is the owner's apply |
 
 Each UI lane touches at most three files. LP-U2 and LP-U3 both depend on
 `api.ts` only through LP-U3; LP-U2 reuses the existing plan calls, so the two
 never edit the same file. LP-U4 edits no `api.ts`: the existing
 `VoiceSettingsView.openai_key` status covers only the read, so the replace and
 delete calls and the chain line it needs are added by LP-U3, and LP-U4 waits on
-it. The broker work is one lane, not three, because its stages share
+it. LP-C1 runs first and alone because a frozen-contract change lands before
+anything writes or reads its fields: the worker (LP-W1) is its one writer and
+the console (LP-U5) its reader, and both wait on it. The broker work is one
+lane, not three, because its stages share
 `main.py` and `accounts.py` (two issues that edit the same file are one lane);
 its stages merge in order, so no two broker PRs are open on the same file at
 once.
 
 ### 8.2 The frozen contract
 
-**No change is required.** The catalogue already declares both credentials for
-every profile the chain serves (`secrets_any_of=True`), the broker's `Account`
-is not in `apps/common/swarm_common/`, and the scheduler's `SlotPool`, `Lease`
-and `QuotaState` are unchanged. One optional request touches this design:
-open request **13** ("`Attempt` does not record which pool account it ran
-on") would let the attempt itself carry the tier and account; the timeline
-works without it from the broker's `account_holds` log. Whether to take it up
-is Q8, and if yes it is an entry in `docs/contract-change-requests.md`, never
-an edit under `apps/common/swarm_common/`.
+**The fallback itself needs no change.** The catalogue already declares both
+credentials for every profile the chain serves (`secrets_any_of=True`), the
+broker's `Account` (with its new `lends`) is not in `apps/common/swarm_common/`,
+and the scheduler's `SlotPool`, `Lease` and `QuotaState` are unchanged.
+
+**The attempt's record does change. DECIDED (Q8, 9 November 2026): yes.** The
+recommendation was "not now, the hold log answers it"; the owner chose to take
+up open request **13** ("`Attempt` does not record which pool account it ran
+on") so that an attempt records the credential tier and the account it ran
+on. The reason it is worth a contract change: with a key tier, "which agents
+ran on a paid key, and on whose" becomes a spend question, and spend is
+already on `Attempt` (request 2). Answering it from the hold log means a join
+through a broker collection the console does not read, for every attempt on
+the page; answering it from the attempt is one field beside `cost_usd`.
+
+It is filed as request **152** in
+[`docs/contract-change-requests.md`](../contract-change-requests.md), accepted
+by the owner on 9 November 2026, and is **not** applied by this design: nothing
+under `apps/common/swarm_common/` is edited here. In short, `Attempt` gains
+`account_id`, `credential_source` (request 13's two fields) and
+`credential_tier` (`plan` | `api_key`), all optional and `None` meaning "not
+recorded". Each names the account the attempt **kept last**; the moves between
+tiers stay in the broker's `account_holds` log and the attempt's timeline,
+because a list of every account an attempt touched is history, not a record.
+`Task.current_account` (request 132) is a dict the worker already writes, so
+it carries the tier without a contract change.
+
+The lane order follows from it (§8.1): **LP-C1** applies the request first,
+then its readers: LP-W1 writes the fields, LP-U5 shows them.
 
 ### 8.3 IAM, Terraform and workflows
 
-* **IAM / Terraform**: the broker can add and expire versions but has no
-  `secretmanager.secrets.delete` (and destroys versions only through
-  `_destroy_stale_versions`). Deleting a key's secret needs
-  `secretmanager.secrets.delete` in the broker's custom role, granted through a
-  conditional binding of that role limited to secrets named `swarm-account-*`
-  (a condition scopes a binding, not a role). One Terraform change in
-  lane LP-T1, labelled `managed-by=swarm-terraform`, touching nothing on the
-  never-touch list. Not needed if Q3 picks "retain".
+* **IAM / Terraform: needed, because Q3 decided "at once".** The broker can
+  add versions and destroy them (`_destroy_stale_versions`, on names
+  `secretstore.owned_by_this_platform` accepts) but holds no
+  `secretmanager.secrets.delete`. Deleting a key's secret needs exactly that
+  one permission, and only on key secrets:
+  * a custom role holding `secretmanager.secrets.delete` and nothing else,
+    defined in `terraform/bootstrap/` (custom roles are the owner's bootstrap
+    apply), on the pattern of `swarmMcpCredentialAccessor` in
+    `terraform/bootstrap/mcp_credentials.tf`, which holds a delete scoped to
+    one name family rather than a wider role;
+  * bound to the broker's service account with a condition limited to the
+    broker's **key** secret names:
+    `resource.name.startsWith("projects/<number>/secrets/swarm-account-")`
+    and `resource.name.extract("/secrets/swarm-account-{t}--key-") != ""`,
+    the same `extract` form the MCP credential binding uses. So the broker
+    may delete `swarm-account-<tenant>--key-<label>` and cannot delete a
+    plan's secret, a `swarm-tenant-*` secret, or anything on the shared
+    project's never-touch list, whose names match neither arm.
+  * One Terraform change in lane LP-T1, labelled `managed-by=swarm-terraform`,
+    touching nothing on the never-touch list, applied before stage (c) of
+    LP-B1 ships. Not verified live until the first key delete logs its
+    secret deletion; until then a refused delete is the 502 and sweep retry
+    of §4.4, never a silent retain.
 * **Per-secret accessor grants** for lent keys are made by the broker at
-  runtime, as for lent plans; no Terraform change.
+  runtime, as for lent plans; no Terraform change. A lend's caps change no
+  grant: a borrower under or over its cap can read the secret either way,
+  and the cap is enforced where the hold is granted (§4.6).
+* **The attempts index** for request 152's "an account's attempts, newest
+  first", `(account_id, created_at)`, in `terraform/modules/firestore/indexes.tf`
+  (lane LP-T1).
 * **Workflows**: none. The lanes' tests are picked up by the existing jobs.
 
-## 9. Questions for the owner
+## 9. Questions for the owner: all ten DECIDED, 9 November 2026
 
-Each is in the lane's `questions.json` with options and a recommendation.
+Each was in the lane's `questions.json` with options and a recommendation. The
+owner answered all ten on 9 November 2026; the answers are recorded with the
+lane, and each is written into the section it governs. The question
+as it was asked stays under each answer, so a reader can see what was weighed.
 
-* **Q1. Back up the chain mid-run?** Move an attempt from a key back to a plan
-  at a turn boundary when one is free (recommended: keys cost per token, a
-  restart costs seconds), or keep it on the key to the end of the attempt.
-* **Q2. A dedicated Anthropic key for the Voice it planner?** The request names
-  only a ChatGPT key for Voice it. Recommended: no; the planner refuses when
-  plans and shared Anthropic keys are spent, as it does today.
-* **Q3. Delete: when is the secret destroyed?** After the last open hold ends
-  (recommended), at once, or never (retain, as for plans).
-* **Q4. Revoke at the provider?** Recommended: no; the broker would need an
-  organisation admin key, a far wider credential than the one deleted. The
-  confirmation says to revoke it at the provider.
-* **Q5. Spend: metered estimate or the provider's figure?** Recommended:
-  metered from the worker's `cost_usd`; the provider's figure needs an admin
-  key per organisation. Also whether the hourly probe of an exhausted key
-  (a one-token completion) is acceptable.
-* **Q6. Per-workspace caps on plans too?** Recommended: yes, one field on both
-  kinds, so the two pages have the same controls.
-* **Q7. The per-tenant secrets.** Import each `swarm-tenant-<tenant>-<vendor>`
-  key as a pool key owned by that tenant (recommended: it becomes visible,
-  capped and deletable), or leave them as the outage-only path they are.
-* **Q8. Contract request 13.** Take it up so the attempt records its tier and
-  account (recommended: not now; the hold log answers it).
-* **Q9. Today's Voice it key.** Keep it as the dedicated Voice it key
-  (recommended: it is what it was added for), or move it to API Keys as a
-  shared key.
-* **Q10. The installer's question.** Ask "plans, API keys, or both" at install
-  (recommended: the team gate and the summary then check what the operator
-  meant to add), or ask nothing and let the gate accept either kind.
+* **Q1. Back up the chain mid-run? DECIDED 9 November 2026, as recommended.**
+  Owner's answer: an agent on an API key moves back to a plan at the next turn
+  boundary when one frees up. (§5.3.)
+  Asked: move an attempt from a key back to a plan at a turn boundary when one
+  is free (recommended: keys cost per token, a restart costs seconds), or keep
+  it on the key to the end of the attempt.
+* **Q2. A dedicated Anthropic key for the Voice it planner? DECIDED 9 November
+  2026, as recommended.** Owner's answer: no dedicated Anthropic key for the
+  Voice it planner. (§5.3.)
+  Asked: the request names only a ChatGPT key for Voice it. Recommended: no;
+  the planner refuses when plans and shared Anthropic keys are spent, as it
+  does today.
+* **Q3. Delete: when is the secret destroyed? DECIDED 9 November 2026,
+  DIFFERS from the recommendation.** Owner's answer: a deleted API key's secret
+  is destroyed at once on confirmation; a running attempt keeps the value it
+  already read. The same permission change: the broker may delete its own key
+  secrets, conditioned to its key secret names. (§4.1, §4.4, §8.3.)
+  Asked: after the last open hold ends (recommended), at once, or never
+  (retain, as for plans).
+* **Q4. Revoke at the provider? DECIDED 9 November 2026, as recommended.**
+  Owner's answer: the broker does not revoke at the provider; the confirmation
+  tells the admin to. (§4.4.)
+  Asked: recommended no; the broker would need an organisation admin key, a
+  far wider credential than the one deleted.
+* **Q5. Spend: metered estimate or the provider's figure? DECIDED 9 November
+  2026, as recommended.** Owner's answer: the spend cap is metered from the
+  estimate, with an hourly one-token probe of an exhausted key. (§4.6, §5.2.)
+  Asked: metered from the worker's `cost_usd` (recommended), or the provider's
+  figure, which needs an admin key per organisation; and whether the hourly
+  probe of an exhausted key is acceptable.
+* **Q6. Per-workspace caps on plans too? DECIDED 9 November 2026, as
+  recommended.** Owner's answer: per-workspace caps on both plan accounts and
+  API keys. (§4.6.)
+  Asked: recommended yes, one field on both kinds, so the two pages have the
+  same controls.
+* **Q7. The per-tenant secrets. DECIDED 9 November 2026, as recommended, with
+  a note that changed the design.** Owner's answer: existing per-workspace
+  provider secrets are imported as pool keys, and the owner added, verbatim:
+  "but apply the same lease for api keys as we do for subscribtion accounts.
+  When an account or an API key is leased to another workspace, a cap for that
+  lease should be set and tracked and enforced as well". So lending is one
+  mechanism for both kinds and every lend carries a cap the lender sets, counted
+  per borrowing workspace and enforced inside the grant's transaction, and both
+  pages show each lend's cap and use. (§4.6, §5.1, §5.3, §5.5, §6.2, §6.3.)
+  Asked: import each `swarm-tenant-<tenant>-<vendor>` key as a pool key owned
+  by that workspace (recommended: it becomes visible, capped and deletable), or
+  leave them as the outage-only path they are.
+* **Q8. Contract request 13. DECIDED 9 November 2026, DIFFERS from the
+  recommendation.** Owner's answer: yes, take up the open contract change
+  request so an attempt records the credential tier and the account it ran on.
+  Filed as request 152, accepted by the owner on 9 November 2026, applied by
+  the contract lane LP-C1 before its readers. (§5.4, §8.1, §8.2.)
+  Asked: take it up (the attempt records its tier and account), or not now,
+  since the hold log answers it (recommended).
+* **Q9. Today's Voice it key. DECIDED 9 November 2026, as recommended.**
+  Owner's answer: today's Voice it OpenAI key stays the dedicated Voice it key,
+  in Voice it settings. (§5.3, §6.4.)
+  Asked: keep it as the dedicated Voice it key (recommended: it is what it was
+  added for), or move it to API Keys as a shared key.
+* **Q10. The installer's question. DECIDED 9 November 2026, as recommended.**
+  Owner's answer: the installer asks "Which will agents run on: plans, API
+  keys, or both?"; its gate and summary check that choice. (§7.)
+  Asked: ask at install (recommended: the team gate and the summary then check
+  what the operator meant to add), or ask nothing and let the gate accept
+  either kind.
