@@ -720,7 +720,10 @@ def test_terraform_gives_swarm_api_every_speech_setting_the_config_reads():
     # Off means empty (the engine is not deployed), never a guessed address.
     for name in set_here - {"SWARM_SPEECH_AUDIENCE"}:
         line = re.search(rf"^\s*{name}\s*=(.*)$", block, re.M).group(1)
-        assert line.strip().startswith("local.voice_speech_on ?") and line.rstrip().endswith(': ""'), name
+        # The template is held back by voice_speech.template as well.
+        guard = ("local.voice_speech_on && var.voice_speech.template ?" if name == "SWARM_SPEECH_TEMPLATE"
+                 else "local.voice_speech_on ?")
+        assert line.strip().startswith(guard) and line.rstrip().endswith(': ""'), name
 
 
 class _Response:

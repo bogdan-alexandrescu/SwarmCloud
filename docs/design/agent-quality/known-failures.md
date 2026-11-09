@@ -269,6 +269,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_register_tenant_workspace.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_related_tests.py` | `test_the_script_selects_one_swarm_api_routes_tests_and_none_of_the_workers` | `skip_call` | the budget route moved; pick another route |
 | `tests/unit/scripts/test_release_acceptance_job.py` | `test_the_acceptance_scripts_are_shellcheck_clean` | `skipif` | shellcheck is not installed here |
+| `tests/unit/scripts/test_release_apply_targeted_services.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_release_assemble.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_assemble.py` | `test_install_sh_is_posix_and_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_home.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |

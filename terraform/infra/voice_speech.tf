@@ -181,10 +181,12 @@ resource "google_compute_firewall" "deny_speech_other" {
 # from it needs, in whichever zone of the region it is created. Templates are
 # immutable, so a change makes a new one under a new name (name_prefix) before
 # the old is deleted; swarm-api reads the current one's name from
-# SWARM_SPEECH_TEMPLATE, which the same apply rewrites.
+# SWARM_SPEECH_TEMPLATE, which the same apply rewrites. voice_speech.template
+# = false holds it back while the deployment's bootstrap does not yet let the
+# release identity make it (variables.tf); SWARM_SPEECH_TEMPLATE is then "".
 resource "google_compute_region_instance_template" "speech" {
   # checkov:skip=CKV_GCP_38:A customer-supplied key is raw key material in the Terraform config and state, and no secret goes into Terraform (CLAUDE.md). The disk holds the OS, the speech server image and public model weights, never audio or tenant data; it is encrypted with Google-managed keys.
-  count = local.voice_speech_on ? 1 : 0
+  count = local.voice_speech_on && var.voice_speech.template ? 1 : 0
 
   project      = var.project_id
   region       = var.region
@@ -376,7 +378,7 @@ output "voice_speech" {
   value = {
     enabled         = local.voice_speech_on
     machine_prefix  = local.voice_speech_on ? local.speech_machine_prefix : null
-    template        = local.voice_speech_on ? google_compute_region_instance_template.speech[0].id : null
+    template        = local.voice_speech_on && var.voice_speech.template ? google_compute_region_instance_template.speech[0].id : null
     zones           = local.voice_speech_on ? local.speech_zones : null
     address         = local.voice_speech_on ? google_compute_address.speech[0].address : null
     port            = 8080
