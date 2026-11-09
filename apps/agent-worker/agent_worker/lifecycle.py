@@ -9693,8 +9693,42 @@ class Worker:
             return (
                 "published_nothing: the step was to open a pull request and its "
                 f"branch has no commits beyond {base}"
-            )
+            ) + self._artifacts_remedy(summary)
         return None
+
+    def _artifacts_remedy(self, summary: dict[str, Any]) -> str:
+        """The clause `_published_nothing` adds when the step's agent left
+        artifacts of its own: how many, up to five names, and the declaration
+        that makes them the deliverable (part of #2688).
+
+        Measured 2026-11-07: seven read-only analysis steps under `direct-pr`
+        each wrote triage.tsv and a summary, committed nothing as told, and
+        FAILED with an error that named neither their artifacts nor
+        `allow_empty_diff`. Names only from `summary["artifacts"]`, which the
+        upload built before the finish; the worker's own files (the pull
+        request's title and body, the hand-off note, the work patch) and the
+        runner's captured streams are not the agent's result and are not
+        counted. A name outside a plain file-name shape is counted, never
+        shown, so the error carries nothing the agent chose to put in it.
+        """
+        own = {PR_TITLE_FILE, PR_BODY_FILE, "handoff.md", PATCH_NAME}
+        streams = agent_stream_files(self.cfg.runner_profile)
+        if streams is not None:
+            own.update(streams.names())
+        names = [
+            str(entry.get("name"))
+            for entry in summary.get("artifacts") or []
+            if isinstance(entry, dict) and entry.get("name")
+            and str(entry.get("name")) not in own
+        ]
+        if not names:
+            return ""
+        shown = [n for n in names if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n)][:5]
+        listed = f" ({', '.join(shown)})" if shown else ""
+        return (
+            f"; it produced {len(names)} artifacts{listed}; a step whose deliverable "
+            "is its artifacts is submitted with allow_empty_diff: true"
+        )
 
     def _publish_failed(self, summary: dict[str, Any]) -> str | None:
         """Why a step whose branch is its deliverable ended without pushing it,

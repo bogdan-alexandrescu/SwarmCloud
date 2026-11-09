@@ -99,7 +99,7 @@ steps:
         base="$$(cat /workspace/base-image-ref)"
         # The frontend through the project's mirror, which build-images.sh
         # passes as a substitution (recipe_mirror_subs; the Dockerfile names
-        # no project, DAYONE-DESAGA-1). The Dockerfile declares no MIRROR_*
+        # no project, the Day One image lane). The Dockerfile declares no MIRROR_*
         # argument: its one FROM is the base digest.
         docker build \
           --platform linux/amd64 \

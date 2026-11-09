@@ -223,11 +223,12 @@ the pick, reports `picks-built.json` and opens its own pull request
 that the round is merged by its own review and merge steps rather than left
 open for a person: it is an `integrate` workflow, pick-fix -> review -> fix
 gated on NOT_YET, with `metadata.merge` `"on_merge_verdict"`, so submission
-appends the re-review and the merge step and it merges only on a MERGE
-verdict, as any lane does. Why: a pick the owner already made is not a
-decision a person must make again at the merge, and the review still gates
-it; a second NOT_YET after the one fix leaves the pull request open for a
-person (`REREVIEW_ROUNDS`). The recommended pick,
+appends the fix loop (3 rounds, the owner 2026-11-09; the one re-review while
+the `fix-loop` profile is unavailable) and the merge step, and it merges only
+on a MERGE verdict, as any lane does. Why: a pick the owner already made is
+not a decision a person must make again at the merge, and the review still
+gates it; a NOT_YET the loop's rounds do not settle leaves the pull request
+open for a person ([workflows.md](workflows.md#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)). The recommended pick,
 or the same pick answered again, starts nothing. Fencing, the merge slot and
 the hold for every other question are unchanged.
 

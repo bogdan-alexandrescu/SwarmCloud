@@ -10,8 +10,10 @@ These read the Terraform as text: no provider, no plan, no credentials.
 
 from __future__ import annotations
 
+import os
 import re
-import shlex
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -190,11 +192,25 @@ def test_manifest_fragment_lists_both_for_infra_pass() -> None:
 
 
 def _deny_list() -> list[str]:
-    text = COMMON_SH.read_text()
-    m = re.search(r"^SHARED_DENY_LIST=\((.*?)^\)", text, re.M | re.S)
-    assert m, "SHARED_DENY_LIST not found in scripts/lib/common.sh"
-    names = shlex.split(_code(m.group(1)))
-    assert "agents-staging-vpc" in names
+    """The never-touch list, read the way every script reads it: through
+    deny_list_load in scripts/lib/common.sh, from a config object. The
+    repository holds no deployment's list (docs/design/generic-repository.md,
+    section 2.4), so the object is the placeholder one,
+    scripts/lib/deny-list.example.json, laid out by deny_list_use_example in a
+    directory of this test's own; the plan guard judges every real plan against
+    the deployment's own object."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PROJECT_ID", "ENVIRONMENT", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME")}
+        env.update(SWARM_NO_PROJECT="1", SWARM_ENV_FILE=str(Path(tmp) / "absent.env"), NO_COLOR="1")
+        proc = subprocess.run(
+            ["bash", "-c", 'set -euo pipefail; source "$1"; deny_list_use_example "$2"; '
+             'printf "%s\\n" "${SHARED_DENY_LIST[@]}"', "_", str(COMMON_SH), tmp],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+    assert proc.returncode == 0, proc.stderr
+    names = proc.stdout.splitlines()
+    assert "peer-vpc" in names, names
     return names
 
 

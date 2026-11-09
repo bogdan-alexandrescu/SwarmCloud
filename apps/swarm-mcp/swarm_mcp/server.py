@@ -1126,7 +1126,8 @@ TOOLS: list[dict[str, Any]] = [
             "whenever the units are not independent.\n"
             "\n"
             "Each step names a runner profile BY NAME and carries its own "
-            "prompt. `depends_on` lists step ids that must SUCCEED first; empty "
+            "prompt; a `fix-loop` step carries instead its `fix_loop` block "
+            "(review, fix, max_rounds), sent as given. `depends_on` lists step ids that must SUCCEED first; empty "
             "means the step is eligible immediately, NOT that it runs first. "
             "`input_from` maps an upstream step id to ONE artifact filename, "
             "copied into this step's working directory before its agent starts "
@@ -4824,7 +4825,7 @@ def _outline(spec: dict[str, Any]) -> dict[str, Any]:
         when_step = when.get("step") if isinstance(when, dict) else None
         input_from = step.get("input_from")
         profile = step.get("runner_profile")
-        steps.append({
+        entry: dict[str, Any] = {
             "step_id": step.get("step_id"),
             "depends_on": list(step.get("depends_on") or []),
             "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
@@ -4834,7 +4835,12 @@ def _outline(spec: dict[str, Any]) -> dict[str, Any]:
                 {str(k): str(v) for k, v in input_from.items()}
                 if isinstance(input_from, dict) else {}
             ),
-        })
+        }
+        if isinstance(step.get("fix_loop"), dict):
+            # A loop step's block, as the spec holds it (docs/design/fix-loop.md
+            # §4.1), so the reader sees its rounds; only on a step that has one.
+            entry["fix_loop"] = step["fix_loop"]
+        steps.append(entry)
     label = spec.get("label")
     title = spec.get("title")
     strategy = spec.get("strategy")

@@ -24,6 +24,7 @@ and executes `scripts/acceptance/mock.sh` instead of dying on the temp path.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import stat
@@ -33,6 +34,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
 
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
@@ -72,11 +80,12 @@ def _run_verify_remote(tmp_path: Path, *targets: str) -> tuple[subprocess.Comple
         "FAKE_DIR": str(tmp_path),
         "TMPDIR": str(tmpdir),
         "NO_COLOR": "1",
-        # A path that does not exist: load_env falls through to its
-        # defaults (REGION, ...) rather than reading the operator's real
-        # .env. PROJECT_ID has no default, so the test names one.
+        # A path that does not exist: load_env reads nothing rather than
+        # the operator's real .env. PROJECT_ID, REGION and ZONE have no
+        # default, so the test names the placeholder deployment's.
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
-        "PROJECT_ID": "saga-agents-staging",
+        "PROJECT_ID": placeholder_deployment.PROJECT,
+        **placeholder_deployment.child_env(placeholder_deployment.PROJECT),
     }
 
     proc = subprocess.run(

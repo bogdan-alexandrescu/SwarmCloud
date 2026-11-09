@@ -9,11 +9,13 @@
 #      both far outside the supported skew for a 1.35 control plane. A 1.22
 #      client against a 1.35 server does not fail loudly -- it silently drops
 #      fields it does not understand from manifests it applies.
-#   2. Every shared resource in saga-agents-staging that belongs to another team
-#      is named here, once, in SHARED_DENY_LIST. destroy.sh, purge-data.sh and
-#      configure-kubectl.sh all read it. One list, one place to keep correct.
-#      It is keyed by project: whole when PROJECT_ID is that project, empty for
-#      any other. PROJECT_ID has no default; an unset project is an error.
+#   2. Every resource in the project that belongs to another team is on the
+#      never-touch list, read once, here, from the deployment's own
+#      config/<env>/deny-list.json (deny_list_load). destroy.sh, purge-data.sh,
+#      configure-kubectl.sh and the guards all judge by it. A list that cannot
+#      be read refuses every guarded action; it is never treated as empty.
+#      PROJECT_ID, REGION and ZONE have no defaults; an unset PROJECT_ID or
+#      REGION is an error. ZONE is optional: nothing here reads it.
 
 set -euo pipefail
 
@@ -96,6 +98,19 @@ die_if_auth_failure() {
 # Configuration
 # ---------------------------------------------------------------------------
 
+# file_perms_owner PATH -> FILE_PERMS (octal mode) and FILE_OWNER (uid), each
+# empty when stat could not tell. The order of the two stat spellings is the
+# one assert_env_file_is_trustworthy explains; config_fetch holds the cached
+# configuration to the same rule.
+FILE_PERMS=""
+FILE_OWNER=""
+file_perms_owner() {
+  FILE_PERMS="$(stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo "")"
+  FILE_OWNER="$(stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null || echo "")"
+  [[ "${FILE_PERMS}" =~ ^[0-7]+$ ]] || FILE_PERMS=""
+  [[ "${FILE_OWNER}" =~ ^[0-9]+$ ]] || FILE_OWNER=""
+}
+
 # `.env` is SOURCED, not parsed. Sourcing it means every line in it is shell
 # executed by every script here -- including destroy.sh and purge-data.sh, which
 # read PROJECT_ID, GKE_CLUSTER and ENVIRONMENT from it before any deny-list
@@ -126,10 +141,9 @@ assert_env_file_is_trustworthy() {
   # answers something else must read as "could not tell", which is the
   # permissive branch, rather than as a mode of `?p` that some future
   # comparison treats as meaningful.
-  perms="$(stat -c '%a' "${env_file}" 2>/dev/null || stat -f '%Lp' "${env_file}" 2>/dev/null || echo "")"
-  owner="$(stat -c '%u' "${env_file}" 2>/dev/null || stat -f '%u' "${env_file}" 2>/dev/null || echo "")"
-  [[ "${perms}" =~ ^[0-7]+$ ]] || perms=""
-  [[ "${owner}" =~ ^[0-9]+$ ]] || owner=""
+  file_perms_owner "${env_file}"
+  perms="${FILE_PERMS}"
+  owner="${FILE_OWNER}"
   if [[ -n "${owner}" && -n "${EUID:-}" && "${owner}" != "${EUID}" ]]; then
     printf 'error: %s is owned by uid %s, not by you (%s). It is sourced as shell; refusing.\n' \
       "${env_file}" "${owner}" "${EUID}" >&2
@@ -156,6 +170,12 @@ require_project() {
     || die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
 }
 
+# require_setting NAME: stop unless NAME is set, naming it and where it goes.
+require_setting() {
+  [[ -n "${!1:-}" ]] \
+    || die "$1 is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it"
+}
+
 load_env() {
   local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
   if [[ -f "${env_file}" ]]; then
@@ -166,23 +186,33 @@ load_env() {
     set +a
   fi
 
-  # NO DEFAULT. This read `${PROJECT_ID:-saga-agents-staging}`, so a machine
-  # with no .env -- a fresh install, a new operator, a CI job that forgot the
-  # variable -- aimed every script here at the shared project, the one that
-  # holds another team's live cluster. An unset project is an error instead
+  # NO DEFAULT. This read a literal project id, so a machine with no .env -- a
+  # fresh install, a new operator, a CI job that forgot the variable -- aimed
+  # every script here at the shared project, the one that holds another team's
+  # live cluster. An unset project is an error instead
   # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
   # every workflow name it; .env.example says where to.
   #
   # A script that touches no project at all (a local check, a self-test)
   # says so by setting SWARM_NO_PROJECT=1 before it sources this file. It then
-  # runs with PROJECT_ID empty, and the deny-list stays WHOLE: a project nobody
-  # named is never assumed to be one whose list may be empty.
+  # runs with PROJECT_ID empty, and no never-touch list can be read for it: a
+  # guard it reaches refuses, because a project nobody named is never assumed
+  # to be one whose list may be empty.
   if [[ -z "${PROJECT_ID:-}" ]]; then
     [[ "${SWARM_NO_PROJECT:-}" == "1" ]] || require_project
     PROJECT_ID=""
   fi
-  REGION="${REGION:-us-central1}"
-  ZONE="${ZONE:-us-central1-a}"
+  # NO DEFAULT for the region or the zone either, for the same reason: both are
+  # this deployment's values (generic-repository design, section 2.2), and a
+  # default is a guess at somebody's deployment. The opt-out above covers the
+  # region. The zone is OPTIONAL: nothing in scripts/ or the workflows reads
+  # it, so it is not required here and stays empty when unset. A script that
+  # comes to need it must call `require_setting ZONE` itself.
+  if [[ "${SWARM_NO_PROJECT:-}" != "1" ]]; then
+    require_setting REGION
+  fi
+  REGION="${REGION:-}"
+  ZONE="${ZONE:-}"
   ENVIRONMENT="${ENVIRONMENT:-dev}"
 
   # Named database. NEVER (default): this project is shared and (default)
@@ -210,9 +240,10 @@ load_env() {
   # Read by browser_fixture_url in lib/testlib.sh (#1628).
   ACCEPTANCE_FIXTURE_BUCKET="${ACCEPTANCE_FIXTURE_BUCKET:-swarm-acceptance-fixture-${PROJECT_ID}}"
   # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
-  # not saga-agents-terraform-state-staging: that bucket belongs to another team
-  # (it is on the deny-list below) and putting our state in it would make our
-  # teardown depend on their retention policy.
+  # not a bucket another team keeps in a shared project (theirs is on the
+  # never-touch list): putting our state in it would make our teardown depend
+  # on their retention policy. config/<env>/ in it holds the deployment's
+  # configuration (config_fetch below).
   TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
   TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
   # terraform/bootstrap's state, in the same bucket (#827). Not overridable and
@@ -221,8 +252,8 @@ load_env() {
   # (tests/unit/scripts/test_bootstrap_remote_state.py holds them together).
   TF_BOOTSTRAP_STATE_PREFIX="bootstrap"
 
-  # The swarm's own Autopilot cluster. agents-staging belongs to another team and
-  # is deny-listed below; nothing here may ever target it.
+  # The swarm's own Autopilot cluster. A cluster another team runs in a shared
+  # project is on the never-touch list; nothing here may ever target it.
   GKE_CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
   GKE_LOCATION="${GKE_LOCATION:-${REGION}}"
 
@@ -250,8 +281,6 @@ load_env() {
   IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
-  key_shared_deny_list
-
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET ACCEPTANCE_FIXTURE_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
@@ -269,80 +298,303 @@ load_env() {
   fi
 }
 
-# The project the list below belongs to. The list is KEYED by it (Day One plan,
-# R4): it applies when PROJECT_ID is this project, and it is empty for any
-# other, whose resources are nobody else's. It stays here, written once, rather
-# than in an environment variable an operator could forget -- a forgotten
-# variable would empty the live guard without a word.
-SHARED_PROJECT_ID="saga-agents-staging"
-
-# Resources owned by other teams in this shared project. Verified against the
-# live project on 2026-09-15, and the service accounts, buckets and Cloud Run
-# services read again on 2026-10-21 at 09:45Z (read-only; epic #1822), which
-# added the twelve that had appeared since: seven service accounts, three
-# buckets and two Cloud Run services. qa-console@ is NOT one of them -- it is
-# this platform's own (terraform/bootstrap/qa_identity.tf). Nothing this repo
-# runs may delete, modify or even point kubectl at anything in this list.
+# ---------------------------------------------------------------------------
+# Deployment configuration: gs://<state bucket>/config/<env>/
+# ---------------------------------------------------------------------------
 #
-# Neither oracle-api entry is on it: BGD decided on 2026-10-27 (#1835, answer
-# "Both entries") to remove the oracle-api@ service account AND the bare
-# "oracle-api" Cloud Run service name. The account is a SwarmCloud principal
-# (the service workspace u-or-9a0792, a front-door IAP member, in
-# ALLOWED_USERS), and on this list the two made register-tenant.sh's S1 and the
-# plan guard refuse this platform's own tenant. Do not re-add either.
-# "oracle-web" and the other oracle-* service accounts stay.
-SHARED_DENY_LIST=(
-  "agents-staging"
-  "agents-staging-vpc"
-  "agents-staging-subnet"
-  "gke-agents-staging-88280d02-pe-subnet"
-  "default"
-  "saga-agents-crawled-media-staging"
-  "saga-agents-files-staging"
-  "saga-agents-terraform-state-staging"
-  "ai-studio-avatars-staging"
-  "promptlab-avatars-staging"
-  "saga-agents-staging_cloudbuild"
-  "api-service@saga-agents-staging.iam.gserviceaccount.com"
-  "publisher@saga-agents-staging.iam.gserviceaccount.com"
-  "209012342332-compute@developer.gserviceaccount.com"
-  "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com"
-  "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com"
-  "aipipeline@saga-agents-staging.iam.gserviceaccount.com"
-  "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com"
-  "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com"
-  "external-secrets@saga-agents-staging.iam.gserviceaccount.com"
-  "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com"
-  "crawler@saga-agents-staging.iam.gserviceaccount.com"
-  "tournament-digest@saga-agents-staging.iam.gserviceaccount.com"
-  "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com"
-  "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com"
-  "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com"
-  "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com"
-  "oracle-web@saga-agents-staging.iam.gserviceaccount.com"
-  "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
-  "oracle-web"
-)
-# The shared project's list as written, kept apart from SHARED_DENY_LIST so
-# re-keying is idempotent: load_env run again after PROJECT_ID moved back to
-# the shared project restores every entry rather than keeping an empty list.
-SHARED_PROJECT_DENY_LIST=("${SHARED_DENY_LIST[@]}")
+# The real <env>.tfvars and the never-touch list are deployment values, and this
+# repository holds none (docs/design/generic-repository.md, sections 2.2-2.4).
+# They live under config/<env>/ in the deployment's own state bucket, which is
+# private, versioned and the one bucket that exists before anything else.
+# config_fetch copies that prefix into a cache OUTSIDE the clone, so nothing
+# fetched can ever be staged, and never falls back to a tracked file.
+#
+# SWARM_DEPLOY_CONFIG_DIR names a local directory read in place of the bucket prefix,
+# as <dir>/<env>/<file>: for a project whose state bucket does not exist yet
+# (bootstrap creates it) and for the offline self-tests. Its files are held to
+# the same owner and mode rule, and the list in it to the same rules.
 
-# key_shared_deny_list: SHARED_DENY_LIST is the shared project's whole list when
-# PROJECT_ID is SHARED_PROJECT_ID or empty (SWARM_NO_PROJECT=1: no project was
-# named, so none is assumed safe), and empty for any other project. load_env
-# calls it once PROJECT_ID is final. An empty array must be expanded as
-# ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"} under bash 3.2's `set -u`.
-key_shared_deny_list() {
-  if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
-    SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
+# config_source ENV -> where config_fetch reads ENV's files from.
+config_source() {
+  if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
+    printf '%s/%s' "${SWARM_DEPLOY_CONFIG_DIR}" "$1"
   else
-    SHARED_DENY_LIST=()
+    printf 'gs://%s/config/%s' "${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID:-}}" "$1"
   fi
+}
+
+# config_cache_dir ENV -> ${XDG_CACHE_HOME:-~/.cache}/swarm/<project>/<env>
+config_cache_dir() {
+  printf '%s/swarm/%s/%s' "${XDG_CACHE_HOME:-${HOME}/.cache}" "${PROJECT_ID}" "$1"
+}
+
+# _config_path_is_private PATH: owned by this user and not group- or
+# world-writable, the rule load_env holds .env to. A cache another user can
+# write is a list another user can empty. Says why on stderr and returns 1.
+_config_path_is_private() {
+  local path="$1"
+  file_perms_owner "${path}"
+  if [[ -n "${FILE_OWNER}" && -n "${EUID:-}" && "${FILE_OWNER}" != "${EUID}" ]]; then
+    err "${path} is owned by uid ${FILE_OWNER}, not by you (${EUID}); refusing to read configuration from it"
+    return 1
+  fi
+  if [[ -n "${FILE_PERMS}" && "${FILE_PERMS}" =~ ^[0-7]?([0-7])([0-7])$ ]]; then
+    if (( (BASH_REMATCH[1] & 2) != 0 || (BASH_REMATCH[2] & 2) != 0 )); then
+      err "${path} is group- or world-writable (mode ${FILE_PERMS}); refusing. Fix with: chmod go-w ${path}"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# _config_gcloud ARGS...: the first gcloud on PATH that is not the workspace
+# call guard's shim (scripts/lib/guard-bin/). The guard loads this list to
+# judge every call, so reaching the bucket through its own shim would judge the
+# read by a list it has not read yet, without end. The read is this library's
+# own, of the deployment's config prefix, never an argument a job chose.
+_config_gcloud() {
+  local guard_dir dir cand
+  local -a dirs=()
+  if ! guard_dir="$(cd -- "${SWARM_LIB_DIR}/guard-bin" 2>/dev/null && pwd -P)"; then
+    guard_dir=""
+  fi
+  IFS=':' read -r -a dirs <<<"${PATH}"
+  for dir in ${dirs[@]+"${dirs[@]}"}; do
+    cand="${dir}/gcloud"
+    [[ -f "${cand}" && -x "${cand}" ]] || continue
+    [[ -n "${guard_dir}" && "$(cd -- "${dir}" && pwd -P)" == "${guard_dir}" ]] && continue
+    "${cand}" "$@"
+    return
+  done
+  printf 'gcloud is not installed\n' >&2
+  return 127
+}
+
+# _config_list ENV -> one line per file: <name> TAB <generation> TAB <source>.
+# A local file has no generation, so it is always copied ("-").
+_config_list() {
+  local env="$1" src out f gen
+  src="$(config_source "${env}")"
+  if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
+    [[ -d "${src}" ]] || { err "${src} does not exist"; return 1; }
+    for f in "${src}"/*; do
+      [[ -f "${f}" ]] || continue
+      _config_path_is_private "${f}" || return 1
+      printf '%s\t-\t%s\n' "${f##*/}" "${f}"
+    done
+    return 0
+  fi
+  out="$(_config_gcloud storage objects list "${src}/*" --format='value(name,generation)' 2>&1)" || {
+    die_if_auth_failure "${out}"
+    err "could not list ${src}/: $(printf '%s' "${out}" | head -n 1 | redact)"
+    return 1
+  }
+  while IFS=$'\t' read -r f gen; do
+    [[ -n "${f}" && -n "${gen}" ]] || continue
+    printf '%s\t%s\tgs://%s/%s#%s\n' "${f##*/}" "${gen}" "${src#gs://}" "${f##*/}" "${gen}"
+  done <<<"${out}"
+}
+
+# config_fetch ENV: copy ENV's configuration into config_cache_dir ENV, keyed by
+# each object's generation, drop what the source no longer holds, and check
+# every cached file's owner and mode. Returns 1, saying why, on any failure:
+# a stale copy is never served in place of a source that could not be read.
+config_fetch() {
+  local env="${1:-}" dir listing name gen src part keep=" " f
+  [[ "${env}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { err "config_fetch: '${env}' is not an environment name"; return 1; }
+  [[ -n "${PROJECT_ID:-}" ]] || { err "PROJECT_ID is not set, so there is no configuration to fetch"; return 1; }
+  dir="$(config_cache_dir "${env}")"
+  [[ "${dir}" == */swarm/*/* ]] || { err "config_fetch: no cache directory for '${env}'"; return 1; }
+  ( umask 077 && mkdir -p "${dir}" ) || { err "could not create ${dir}"; return 1; }
+  _config_path_is_private "${dir}" || return 1
+  listing="$(_config_list "${env}")" || return 1
+  while IFS=$'\t' read -r name gen src; do
+    [[ -n "${name}" ]] || continue
+    [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { err "refusing configuration file name '${name}'"; return 1; }
+    keep+="${name} "
+    if [[ "${gen}" != "-" && -f "${dir}/${name}" \
+          && "$(cat "${dir}/.${name}.generation" 2>/dev/null || true)" == "${gen}" ]]; then
+      continue
+    fi
+    # One part file per fetch (mktemp: $$ is the parent's pid in a background
+    # subshell, and bash 3.2 has no BASHPID), renamed into place: two scripts fetching at
+    # once (a plan guard beside a kubectl call) never write one file together,
+    # and a reader sees the old copy or the new one, never half of either.
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+    if [[ "${gen}" == "-" ]]; then
+      ( umask 077 && cp "${src}" "${part}" ) || { rm -f -- "${part}"; err "could not copy ${src}"; return 1; }
+    else
+      ( umask 077 && _config_gcloud storage cp --quiet "${src}" "${part}" >/dev/null 2>&1 ) \
+        || { rm -f -- "${part}"; err "could not copy ${src}"; return 1; }
+    fi
+    mv -f "${part}" "${dir}/${name}"
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+    printf '%s' "${gen}" >"${part}" && mv -f "${part}" "${dir}/.${name}.generation"
+  done <<<"${listing}"
+  # What the source no longer holds leaves the cache: a deleted object must
+  # read as missing, never as its last copy.
+  for f in "${dir}"/*; do
+    [[ -e "${f}" ]] || continue
+    if [[ "${keep}" != *" ${f##*/} "* ]]; then
+      rm -f -- "${f}" "${dir}/.${f##*/}.generation"
+      continue
+    fi
+    _config_path_is_private "${f}" || return 1
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The never-touch list: config/<env>/deny-list.json, failing closed
+# ---------------------------------------------------------------------------
+#
+# Every resource in this project that belongs to someone else -- another team's
+# cluster, network, buckets, service accounts -- is named in the deployment's
+# deny-list.json, and nowhere in this repository. destroy.sh, the plan guard,
+# bin/kubectl, the workspace call guard and the others read it through the
+# functions below, and through nothing else.
+#
+# It FAILS CLOSED. The literal this replaced was kept because "an environment
+# variable an operator forgets would silently empty the live guard"; the object
+# keeps that property. A missing, unreadable or malformed object, one written
+# for another project, or one with fewer entries of a kind than its own floor,
+# is a refusal of every guarded action -- never an empty list. A project that
+# shares nothing says so in writing: "entries": [] with every floor zero, and
+# who reviewed that and when (scripts/lib/deny-list.example.json).
+#
+# Loaded when this library is sourced (the end of this file says which callers
+# defer it), and by every guard, and kept for the rest of the shell once loaded.
+
+# shellcheck disable=SC2034  # read by the scripts that source this library
+SHARED_DENY_LIST=()
+DENY_LIST_KEY=""        # "<project>/<env>" the list was loaded for; empty: not loaded
+DENY_LIST_ERROR=""      # why the last load refused
+DENY_LIST_CLASSIFY="[]" # the object's own `classify` rules, ahead of the tracked ones
+DENY_LIST_FLOORS="{}"   # the object's floors
+
+# One glob matcher for the list's kinds, shared by the floor check and
+# shared_resource_kind: `*` is the only wildcard, everything else is literal.
+# shellcheck disable=SC2016  # a jq program: its $names are jq's, not the shell's
+DENY_LIST_KIND_JQ='
+def glob_re: "^" + (split("*") | map(gsub("(?<c>[\\\\.+?^$|(){}\\[\\]])"; "\\\(.c)")) | join(".*")) + "$";
+def kind_of($rules): . as $e | ([$rules[] | select(. as $r | $e | test($r.glob | glob_re)) | .kind] | .[0]) // "other";
+'
+
+# The object's rules (docs/design/generic-repository.md, section 2.4). The first
+# line is "ok" or "refuse<TAB>why"; after "ok": the classify rules, the floors,
+# then one entry a line.
+# shellcheck disable=SC2016  # a jq program: its $names are jq's, not the shell's
+DENY_LIST_CHECK_JQ="${DENY_LIST_KIND_JQ}"'
+def name: type == "string" and length > 0 and (test("[\\n\\r\\t]") | not);
+if type != "object" then "refuse\tit is not a JSON object"
+elif (.project | name) | not then "refuse\tit names no project"
+elif .project != $p then "refuse\tit was written for project \(.project), not \($p)"
+elif (.entries | type) != "array" or any(.entries[]; name | not) then "refuse\tentries is not a list of names"
+elif (.floors | type) != "object" or any(.floors[]; type != "number" or . < 0 or . != floor)
+  then "refuse\tfloors is not a map of whole numbers"
+elif (.classify // [] | type) != "array" or any((.classify // [])[]; (.glob | name | not) or (.kind | name | not))
+  then "refuse\tclassify is not a list of {glob, kind}"
+elif ((.reviewed_by | name) and (.reviewed_at | name)) | not
+  then "refuse\tit does not say who reviewed it and when (reviewed_by, reviewed_at)"
+else
+  ((.classify // []) + $tracked[0].classify) as $rules
+  | [.entries[] | kind_of($rules)] as $kinds
+  | [.floors | to_entries[] | .key as $k | .value as $floor
+     | (if $k == "total" then ($kinds | length) else ([$kinds[] | select(. == $k)] | length) end) as $got
+     | select($got < $floor) | "\($k) \($got) < \($floor)"] as $short
+  | if ($short | length) > 0 then "refuse\tit has fewer entries than its floors (\($short | join(", ")))"
+    else "ok", ((.classify // []) | tojson), (.floors | tojson), .entries[] end
+end
+'
+
+# deny_list_load: load and check config/<env>/deny-list.json for PROJECT_ID and
+# ENVIRONMENT into SHARED_DENY_LIST. Returns 1 with DENY_LIST_ERROR set, and
+# SHARED_DENY_LIST empty, when it cannot; deny_list_require turns that into a
+# refusal. Never prints the list.
+deny_list_load() {
+  local key="${PROJECT_ID:-}/${ENVIRONMENT:-}" file out line n=0
+  [[ -n "${DENY_LIST_KEY}" && "${DENY_LIST_KEY}" == "${key}" ]] && return 0
+  SHARED_DENY_LIST=(); DENY_LIST_KEY=""; DENY_LIST_CLASSIFY="[]"; DENY_LIST_FLOORS="{}"
+  if [[ -z "${PROJECT_ID:-}" ]]; then
+    DENY_LIST_ERROR="no project is named, so there is no list to read"
+    return 1
+  fi
+  if ! config_fetch "${ENVIRONMENT:-}"; then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT:-}")/ could not be read"
+    return 1
+  fi
+  file="$(config_cache_dir "${ENVIRONMENT}")/deny-list.json"
+  if [[ ! -r "${file}" ]]; then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT}")/deny-list.json does not exist"
+    return 1
+  fi
+  if ! out="$(jq -r --arg p "${PROJECT_ID}" \
+        --slurpfile tracked "${SWARM_LIB_DIR}/destroy-guard-proof-cases.json" \
+        "${DENY_LIST_CHECK_JQ}" "${file}" 2>/dev/null)"; then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT}")/deny-list.json is not valid JSON"
+    return 1
+  fi
+  if [[ "${out%%$'\n'*}" != "ok" ]]; then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT}")/deny-list.json: ${out#refuse$'\t'}"
+    return 1
+  fi
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "${n}" in
+      1) ;;
+      2) DENY_LIST_CLASSIFY="${line}" ;;
+      3) DENY_LIST_FLOORS="${line}" ;;
+      *) SHARED_DENY_LIST+=("${line}") ;;
+    esac
+  done <<<"${out}"
+  DENY_LIST_KEY="${key}"
+  DENY_LIST_ERROR=""
+  return 0
+}
+
+# deny_list_require: the list, or stop. Every guarded action goes through it.
+# Inside a command substitution the stop is the subshell's exit status, which
+# `set -e` makes the caller's.
+deny_list_require() {
+  deny_list_load && return 0
+  err "the never-touch list for ${PROJECT_ID:-<no project>} is not readable; nothing that mutates runs without it"
+  err "  ${DENY_LIST_ERROR}"
+  die "the owner writes $(config_source "${ENVIRONMENT:-<env>}")/deny-list.json (shape: scripts/lib/deny-list.example.json)"
+}
+
+# deny_list_floors -> one "<kind> TAB <floor>" line per floor the object sets,
+# for scripts/verify-destroy-guard.sh's inventory check.
+deny_list_floors() {
+  deny_list_require
+  jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"${DENY_LIST_FLOORS}"
+}
+
+# deny_list_use_example DIR: FOR A --self-test ONLY. Points this shell at
+# scripts/lib/deny-list.example.json as the list of PROJECT_ID (example-project
+# when none is named), through a SWARM_DEPLOY_CONFIG_DIR and a cache inside DIR (the
+# caller's own temporary directory, which it removes), so a self-test proves
+# its guard against the placeholder list with no bucket and no deployment
+# value. Every rule of deny_list_load still applies to it.
+deny_list_use_example() {
+  local root="$1" env="${ENVIRONMENT:-dev}" project="${PROJECT_ID:-example-project}"
+  [[ -d "${root}" ]] || die "deny_list_use_example: ${root} is not a directory"
+  ( umask 077 && mkdir -p "${root}/config/${env}" "${root}/cache" ) || die "could not create ${root}/config"
+  ( umask 077 && jq --arg p "${project}" '.project = $p' "${SWARM_LIB_DIR}/deny-list.example.json" \
+      >"${root}/config/${env}/deny-list.json" ) || die "could not write the example list"
+  SWARM_DEPLOY_CONFIG_DIR="${root}/config"
+  XDG_CACHE_HOME="${root}/cache"
+  PROJECT_ID="${project}"
+  ENVIRONMENT="${env}"
+  REGION="${REGION:-example-region}"
+  GKE_LOCATION="${GKE_LOCATION:-${REGION}}"
+  export SWARM_DEPLOY_CONFIG_DIR XDG_CACHE_HOME PROJECT_ID ENVIRONMENT REGION GKE_LOCATION
+  DENY_LIST_KEY=""
+  deny_list_require
 }
 
 is_shared_resource() {
   local candidate="$1" protected
+  deny_list_require
   for protected in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     [[ "${candidate}" == "${protected}" ]] && return 0
   done
@@ -350,24 +602,19 @@ is_shared_resource() {
 }
 
 # shared_resource_kind ENTRY -> sa, bucket, run-service, cluster, ... : the first
-# `classify` rule in lib/destroy-guard-proof-cases.json whose glob matches, or
-# exit 1. The one place a SHARED_DENY_LIST entry is told apart by kind:
-# scripts/verify-destroy-guard.sh proves the plan guard per kind and
+# rule whose glob matches, from the object's own `classify` and then the tracked,
+# generic ones in lib/destroy-guard-proof-cases.json; exit 1 when none does.
+# The one place a SHARED_DENY_LIST entry is told apart by kind:
+# scripts/verify-destroy-guard.sh proves the plan guard per kind,
 # `destroy.sh --verify-shared` describes each neighbour per kind, and the
-# post-destroy check named its buckets by hand until 2026-10-21, when the three
-# buckets added to the list that day were the three it never looked at. The RHS
-# of `==` is deliberately unquoted: that is what makes bash treat it as a glob.
+# list's floors count by it.
 shared_resource_kind() {
-  local entry="$1" glob kind
-  while IFS=$'\t' read -r glob kind; do
-    [[ -n "${glob}" ]] || continue
-    # shellcheck disable=SC2053  # glob matching is intended, not accidental
-    if [[ "${entry}" == ${glob} ]]; then
-      printf '%s' "${kind}"
-      return 0
-    fi
-  done < <(jq -r '.classify[] | "\(.glob)\t\(.kind)"' "${SWARM_LIB_DIR}/destroy-guard-proof-cases.json")
-  return 1
+  local kind
+  kind="$(jq -rn --arg e "$1" --argjson own "${DENY_LIST_CLASSIFY}" \
+    --slurpfile tracked "${SWARM_LIB_DIR}/destroy-guard-proof-cases.json" \
+    "${DENY_LIST_KIND_JQ}"' $e | kind_of($own + $tracked[0].classify)')" || return 1
+  [[ -n "${kind}" && "${kind}" != "other" ]] || return 1
+  printf '%s' "${kind}"
 }
 
 # The deny-list in the exact form `destroy-guard.jq` takes as `--argjson deny`.
@@ -396,10 +643,13 @@ shared_resource_kind() {
 #     CONTRACT.md says must stay free for the other teams in this shared
 #     project -- and it is a name no token-splitting would produce.
 #
-# For a project other than the shared one the list is empty and this prints
-# ["(default)"]: `printf '%s\n'` with no arguments still prints one empty line,
-# so nothing is printed at all then, and grep finding no line is not an error.
+# For a list written empty (a project that shares nothing) this prints
+# ["(default)"], never [""]: `printf '%s\n'` with no arguments still prints one
+# empty line, so nothing is printed at all then, and grep finding no line is not
+# an error. A list that cannot be loaded prints nothing and stops: inside
+# `$(guard_deny_json)` that is a failed substitution, never an empty list.
 guard_deny_json() {
+  deny_list_require
   if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
     printf '%s\n' "${SHARED_DENY_LIST[@]}"
   fi | { grep -vx 'default' || [[ $? -eq 1 ]]; } | jq -R . | jq -sc '. + ["(default)"]'
@@ -684,12 +934,17 @@ prefer_local_bin() {
 
 # The swarm's own contexts, and the only ones any script here may act through.
 # This guard is not theoretical: on the reference workstation the ACTIVE context
-# was gke_saga-agents-staging_us-central1-a_agents-staging -- another team's live
-# cluster -- with gke_saga-agents-prod_us-central1_agents-prod sitting in the same
-# kubeconfig. Creating a namespace through whatever context happened to be
+# was another team's live cluster in the shared project, with that team's
+# production cluster sitting in the same kubeconfig. Creating a namespace through whatever context happened to be
 # current would have put swarm objects in someone else's production.
+#
+# The never-touch list is read first and judges the context's trailing cluster
+# segment, so a GKE_CLUSTER pointed at another team's cluster is refused here
+# too, and a list that cannot be read refuses every context.
 kube_context_allowed() {
   local ctx="$1"
+  deny_list_require
+  is_shared_resource "${ctx##*_}" && return 1
   [[ "${ctx}" == "swarm-${ENVIRONMENT}" ]] && return 0
   [[ "${ctx}" == "gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}" ]] && return 0
   return 1
@@ -792,11 +1047,16 @@ tf_init_command() {
     "${TF_STATE_BUCKET}" "${TF_STATE_PREFIX}"
 }
 
-# The variables for this environment. Absent is fatal rather than defaulted:
-# planning prod with dev's inputs is the mistake this refuses to make possible.
+# The variables for this environment: the deployment's own <env>.tfvars from
+# config/<env>/ in its state bucket, through config_fetch's cache. Absent is
+# fatal rather than defaulted -- planning prod with dev's inputs is the mistake
+# this refuses to make possible -- and there is no tracked file to fall back to:
+# the inputs are deployment values, and this repository holds none.
 tf_var_file() {
-  local file="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars"
-  [[ -f "${file}" ]] || die "no tfvars for environment '${ENVIRONMENT}': ${file}"
+  local file
+  config_fetch "${ENVIRONMENT}" || die "could not fetch $(config_source "${ENVIRONMENT}")/"
+  file="$(config_cache_dir "${ENVIRONMENT}")/${ENVIRONMENT}.tfvars"
+  [[ -f "${file}" ]] || die "no tfvars for environment '${ENVIRONMENT}': $(config_source "${ENVIRONMENT}")/${ENVIRONMENT}.tfvars does not exist"
   printf '%s' "${file}"
 }
 
@@ -2883,3 +3143,25 @@ redact() {
 }
 
 load_env
+
+# The never-touch list is read HERE, as the library is sourced, and not first by
+# the guard that needs it. A script that walks SHARED_DENY_LIST itself
+# (destroy.sh, the roll-*.sh pre-checks, verify-destroy-guard.sh) would
+# otherwise walk an empty array, and a guard first reached inside $(...) loads
+# the list only in that subshell. So a named project whose list cannot be read
+# stops every script here, read-only ones included (design section 2.4, rule 7).
+# Two callers defer it to the guards, which still refuse: a script that touches
+# no project (SWARM_NO_PROJECT=1), and scripts/lib/resolve.sh, through which the
+# Makefile resolves its settings when it is parsed -- so `make help` and
+# `make test` stay offline -- and whose `tfvars` and `deny-list` commands fetch
+# for themselves. resolve.sh is told apart by the path of the file sourcing this
+# one, never by a variable, so nothing in the environment can switch this off.
+_deny_list_deferred=0
+if [[ -n "${BASH_SOURCE[1]:-}" \
+      && "$(cd -- "$(dirname -- "${BASH_SOURCE[1]}")" 2>/dev/null && pwd)/${BASH_SOURCE[1]##*/}" == "${SWARM_LIB_DIR}/resolve.sh" ]]; then
+  _deny_list_deferred=1
+fi
+if [[ -n "${PROJECT_ID}" && "${SWARM_NO_PROJECT:-}" != "1" && "${_deny_list_deferred}" == "0" ]]; then
+  deny_list_require
+fi
+unset _deny_list_deferred

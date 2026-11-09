@@ -4,7 +4,7 @@ scripts/migrate-index-interval.sh).
 
 `_index_defaults` wrote `index.min_change_interval_minutes = 30` into every
 registration made before #2524 raised the default to 120, so changing the
-constant moved none of them. BGD, 2026-10-28: a one-time migration, not a
+constant moved none of them. The owner, 2026-10-28: a one-time migration, not a
 read-time rule. Exactly the integer 30 is moved (a float, a string or a
 missing value is not what `_index_defaults` wrote); an owner who chose 30
 looks the same and can set it back with

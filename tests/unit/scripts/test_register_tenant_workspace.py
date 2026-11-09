@@ -38,6 +38,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .conftest import write_placeholder_deny_list
+
 REPO = Path(__file__).resolve().parents[3]
 REGISTER = REPO / "scripts" / "register-tenant.sh"
 GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
@@ -240,6 +242,13 @@ class Job:
         guard_dir = tmp / "guard"
         guard_dir.mkdir()
         self.expect = guard_dir / "expect.json"
+        # The never-touch list, served for this harness's own project the way
+        # config_fetch reads one offline; SWARM_* is scrubbed below, so the
+        # package fixture's list does not reach the job.
+        config = tmp / "deploy-config"
+        config.mkdir(mode=0o700, exist_ok=True)
+        write_placeholder_deny_list(config, PROJECT, ["dev"])
+        (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_", "KUBECONFIG", "BUILD_ID"))}
         env.update(
@@ -247,8 +256,11 @@ class Job:
             HOME=str(tmp / "home"),
             TMPDIR=str(tmp / "tmp"),
             SWARM_ENV_FILE=str(tmp / "no.env"),
+            SWARM_DEPLOY_CONFIG_DIR=str(config),
+            XDG_CACHE_HOME=str(tmp / "config-cache"),
             PROJECT_ID=PROJECT,
             REGION="us-central1",
+            ZONE="us-central1-a",  # common.sh guesses no zone; the placeholder deployment's
             ENVIRONMENT="dev",
             FIRESTORE_DATABASE="swarm",
             GKE_CLUSTER="swarm-autopilot",
@@ -1508,6 +1520,18 @@ def test_the_job_script_refuses_anything_but_an_id_and_a_mode(job: Job, args: li
     assert not job.expect.exists()
 
 
+def _deployment(tmp: Path) -> dict[str, str]:
+    """The placeholder deployment the job script needs to source common.sh: its
+    project, a region and zone (common.sh guesses neither), and the never-touch
+    list served for that project the way config_fetch reads one offline."""
+    config = tmp / "deploy-config"
+    config.mkdir(mode=0o700, exist_ok=True)
+    write_placeholder_deny_list(config, PROJECT, ["dev"])
+    (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
+    return {"PROJECT_ID": PROJECT, "REGION": "us-central1", "ZONE": "us-central1-a", "ENVIRONMENT": "dev",
+            "SWARM_DEPLOY_CONFIG_DIR": str(config), "XDG_CACHE_HOME": str(tmp / "config-cache")}
+
+
 def _stub_tree(tmp: Path) -> Path:
     """workspace-apply.sh beside the real lib/, with the guard and
     register-tenant.sh stubbed: each logs what it was asked and exits as told."""
@@ -1544,7 +1568,7 @@ def test_the_job_script_ends_a_stop_for_the_owner_as_a_success(tmp_path: Path, s
     scripts = _stub_tree(tmp_path)
     expect = tmp_path / "guard" / "expect.json"
     expect.parent.mkdir()
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT, "SWARM_CALL_GUARD": str(expect),
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), **_deployment(tmp_path), "SWARM_CALL_GUARD": str(expect),
            "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_RC": str(script_rc)}
     proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "limits"], env=env,
                           capture_output=True, text=True, timeout=120, check=False)
@@ -1560,7 +1584,7 @@ def test_the_job_script_ends_a_stop_for_the_owner_as_a_success(tmp_path: Path, s
 def test_the_job_script_runs_nothing_when_the_guard_fails_its_own_cases(tmp_path: Path) -> None:
     scripts = _stub_tree(tmp_path)
     expect = tmp_path / "expect.json"
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT, "SWARM_CALL_GUARD": str(expect),
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), **_deployment(tmp_path), "SWARM_CALL_GUARD": str(expect),
            "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_SELFTEST_RC": "1"}
     proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "create"], env=env,
                           capture_output=True, text=True, timeout=120, check=False)
@@ -1572,7 +1596,7 @@ def test_the_job_script_runs_nothing_when_the_guard_fails_its_own_cases(tmp_path
 @pytest.mark.parametrize("enforce", [None, "0", ""])
 def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str | None) -> None:
     scripts = _stub_tree(tmp_path)
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "PROJECT_ID": PROJECT,
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), **_deployment(tmp_path),
            "SWARM_CALL_GUARD": str(tmp_path / "expect.json"), "NO_COLOR": "1"}
     if enforce is not None:
         env["SWARM_CALL_GUARD_ENFORCE"] = enforce
@@ -1588,7 +1612,7 @@ def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str |
 # ---------------------------------------------------------------------------
 
 RULES_FILE = REPO / "scripts" / "lib" / "workspace-calls.json"
-COMMON = REPO / "scripts" / "lib" / "common.sh"
+EXAMPLE_DENY_LIST = REPO / "scripts" / "lib" / "deny-list.example.json"
 #: Who alone approves a service workspace in this project (Q2 (a)): the
 #: image's, never the record's word.
 OWNER = json.loads(RULES_FILE.read_text()).get("platform_owner", {}).get(PROJECT, "")
@@ -1772,11 +1796,13 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
 
 
 def _deny_listed_account() -> str:
-    for line in COMMON.read_text().splitlines():
-        entry = line.strip().strip('"')
-        if entry.endswith(f"@{PROJECT}.iam.gserviceaccount.com"):
+    """A service account on the never-touch list. common.sh no longer holds the
+    list: it comes from config/<env>/deny-list.json, whose placeholder shape
+    (scripts/lib/deny-list.example.json) the script tests are served."""
+    for entry in json.loads(EXAMPLE_DENY_LIST.read_text())["entries"]:
+        if entry.endswith(".iam.gserviceaccount.com"):
             return entry
-    raise AssertionError("SHARED_DENY_LIST names no service account of the project")
+    raise AssertionError("the placeholder never-touch list names no service account")
 
 
 @pytest.mark.parametrize("principal,account", [

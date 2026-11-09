@@ -2,11 +2,13 @@
 docs/design/voice-it-own-speech.md sections 14 and 15).
 
 Stage 0 asks one optional question, only after a yes to Voice it, with the cost line the
-design writes, default no; stage 1, once Compute Engine is on, picks the first
-of the region's zones offering the NVIDIA L4 (`acceleratorTypes`), waits for
-an NVIDIA_L4_GPUS quota of at least 1 on the Quotas page, and pins the newest
-Deep Learning VM image by name. Every infra pass renders `voice_speech` with
-`enabled`, `zone` and `image` from what those two steps recorded.
+design writes, default no; stage 1, once Compute Engine is on, records every
+zone of the region offering the NVIDIA L4 (`acceleratorTypes`) in letter order
+(the machine starts in the first of them with a free L4, then the next; owner,
+2026-11-09), waits for an NVIDIA_L4_GPUS quota of at least 1 on the Quotas
+page, and pins the newest Deep Learning VM image by name. Every infra pass
+renders `voice_speech` with `enabled`, `zones` and `image` from what those two
+steps recorded; an older state's one `zone` renders as a one-zone list.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ def _infra(pass_name: str = "infra-1", **outputs: Any) -> dict:
 class ComputeFake:
     """Compute Engine's accelerator types, regions and images, as `_call` answers them."""
 
-    def __init__(self, *, zones: tuple[str, ...] = ("europe-west1-c", "europe-west1-b"), quota: float | None = 1,
+    def __init__(self, *, zones: tuple[str, ...] = ("europe-west1-d", "europe-west1-b", "europe-west1-c"), quota: float | None = 1,
                  images: list[dict] | None = None, exists: bool = True) -> None:
         self.zones = zones
         self.quota = [quota]
@@ -68,7 +70,7 @@ class ComputeFake:
                 {"name": "nvidia-l4", "zone": "https://x/zones/us-central1-a"}]}}
             for zone in (*self.zones, "europe-west1-ai1a"):
                 items[f"zones/{zone}"] = {"acceleratorTypes": [{"name": "nvidia-l4", "zone": f"https://x/zones/{zone}"}]}
-            items["zones/europe-west1-d"] = {"warning": {"code": "NO_RESULTS_ON_PAGE"}}
+            items["zones/europe-west1-e"] = {"warning": {"code": "NO_RESULTS_ON_PAGE"}}
             return {"items": items}
         if url.endswith(f"/regions/{REGION}"):
             quota = self.quota[0] if len(self.quota) == 1 else self.quota.pop(0)
@@ -105,30 +107,43 @@ def test_no_renders_voice_speech_off_on_every_infra_pass() -> None:
         assert _infra(pass_name, voice_speech={"enabled": False})["voice_speech"] == {"enabled": False}
 
 
-def test_yes_renders_enabled_zone_and_image() -> None:
-    chosen = {"enabled": True, "zone": "europe-west1-b", "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"}
-    assert _infra(voice_speech=chosen)["voice_speech"] == chosen
+def test_yes_renders_enabled_zones_and_image() -> None:
+    chosen = {"enabled": True, "zones": ["europe-west1-b", "europe-west1-c"],
+              "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"}
+    rendered = _infra(voice_speech=chosen)["voice_speech"]
+    assert rendered == chosen and "zone" not in rendered
+
+
+def test_an_older_state_with_one_zone_renders_a_one_zone_list() -> None:
+    image = IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"
+    rendered = _infra(voice_speech={"enabled": True, "zone": "europe-west1-b", "image": image})["voice_speech"]
+    assert rendered == {"enabled": True, "zones": ["europe-west1-b"], "image": image}
 
 
 def test_yes_without_a_zone_names_the_step_that_records_it() -> None:
     with pytest.raises(LookupError, match="infra.voice-speech-zone"):
         _infra(voice_speech={"enabled": True})
+    with pytest.raises(LookupError, match="infra.voice-speech-zone"):
+        _infra(voice_speech={"enabled": True, "zones": [], "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"})
 
 
 @pytest.mark.parametrize("chosen", [
+    {"enabled": True, "zones": ["europe-west1-b", "us-central1-a"], "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
+    {"enabled": True, "zones": ["europe-west1-ai1a"], "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
+    {"enabled": True, "zones": ["europe-west1-b", "europe-west1-b"], "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
+    {"enabled": True, "zones": "europe-west1-b", "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
     {"enabled": True, "zone": "us-central1-a", "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
-    {"enabled": True, "zone": "europe-west1-ai1a", "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v1"},
-    {"enabled": True, "zone": "europe-west1-b",
+    {"enabled": True, "zones": ["europe-west1-b"],
      "image": "projects/deeplearning-platform-release/global/images/family/common-cu128-ubuntu-2204"},
 ])
-def test_a_zone_outside_the_region_or_a_family_image_is_refused(chosen: dict) -> None:
+def test_a_bad_zone_in_the_list_or_a_family_image_is_refused(chosen: dict) -> None:
     with pytest.raises(ValueError):
         _infra(voice_speech=chosen)
 
 
 @pytest.mark.parametrize("name", ["common-cu128-ubuntu-2204-nvidia-570-v1", "common-cu124-ubuntu-2204-v1"])
 def test_an_image_below_the_driver_floor_is_never_rendered(name: str) -> None:
-    chosen = {"enabled": True, "zone": "europe-west1-b", "image": IMAGES + name}
+    chosen = {"enabled": True, "zones": ["europe-west1-b"], "image": IMAGES + name}
     with pytest.raises(ValueError) as raised:
         _infra(voice_speech=chosen)
     assert str(raised.value).startswith(tfvars.DRIVER_FLOOR_REFUSAL) and name in str(raised.value)
@@ -146,14 +161,15 @@ def test_choice_is_a_stage_0_step_after_the_sizing() -> None:
     assert ids.index("foundations.apis") < ids.index("infra.voice-speech-zone") < ids.index("infra.pass-1")
 
 
-def test_choice_says_the_cost_and_the_zone_and_defaults_to_no() -> None:
+def test_choice_says_the_cost_and_the_zones_and_defaults_to_no() -> None:
     ctx = FakeCtx(install_state(voice_it={"enabled": True}))
     asked, ask = _asker("")
     step = VoiceSpeechChoiceStep(_deps(ComputeFake()), ask=ask)
     assert step.check(ctx).status == UNMET
     step.apply(ctx, step.plan(ctx))
     assert "about $0.71 an hour while used, $15 a month for its disk" in asked[0]
-    assert "one stopped L4 machine" in asked[0] and "europe-west1-b" in asked[0] and asked[0].endswith("[n]")
+    assert "one stopped L4 machine" in asked[0] and asked[0].endswith("[n]")
+    assert "the first of europe-west1-b, europe-west1-c, europe-west1-d with a free L4" in asked[0]
     assert ctx.outputs["voice_speech"] == {"enabled": False}
     assert step.check(ctx).status == MET
 
@@ -193,18 +209,24 @@ def test_zone_step_is_met_while_the_choice_is_no() -> None:
     assert VoiceSpeechZoneStep(_deps(ComputeFake())).check(ctx).status == MET
 
 
-def test_zone_step_picks_the_first_l4_zone_of_the_region_and_pins_the_newest_image() -> None:
+def test_zone_step_records_every_l4_zone_of_the_region_in_letter_order_and_pins_the_newest_image() -> None:
+    # The fake lists the region's L4 zones out of order (d, b, c), with another
+    # region's L4 zone and an AI zone beside them: only b, c, d, sorted, are kept.
     ctx = FakeCtx(install_state(voice_speech={"enabled": True}))
     gcp = ComputeFake()
     step = VoiceSpeechZoneStep(_deps(gcp))
     assert step.check(ctx).status == UNMET
     step.apply(ctx, step.plan(ctx))
+    zones = ["europe-west1-b", "europe-west1-c", "europe-west1-d"]
     assert ctx.outputs["voice_speech"] == {
-        "enabled": True, "zone": "europe-west1-b",
+        "enabled": True, "zones": zones,
         "image": IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v20261015"}
-    assert step.check(ctx).status == MET
+    seen = step.check(ctx)
+    assert seen.status == MET and "europe-west1-b, europe-west1-c, europe-west1-d" in seen.detail
+    said = ctx.events._out.getvalue()
+    assert "the speech machine's zones: europe-west1-b, europe-west1-c, europe-west1-d" in said
     rendered = _infra(voice_speech=ctx.outputs["voice_speech"])["voice_speech"]
-    assert rendered["enabled"] is True and rendered["zone"] == "europe-west1-b"
+    assert rendered == {"enabled": True, "zones": zones, "image": ctx.outputs["voice_speech"]["image"]}
 
 
 def test_zone_step_turns_it_off_and_says_so_when_no_zone_offers_the_l4() -> None:
@@ -225,7 +247,7 @@ def test_zone_step_opens_the_quota_page_and_waits_for_one_l4(monkeypatch: pytest
     step = VoiceSpeechZoneStep(_deps(gcp))
     step.apply(ctx, step.plan(ctx))
     assert len(opened) == 1 and "nvidia_l4_gpus" in opened[0][0] and "NVIDIA_L4_GPUS" in opened[0][1]
-    assert ctx.outputs["voice_speech"]["zone"] == "europe-west1-b"
+    assert ctx.outputs["voice_speech"]["zones"] == ["europe-west1-b", "europe-west1-c", "europe-west1-d"]
 
 
 def test_zone_step_never_starts_or_makes_a_machine() -> None:
@@ -265,7 +287,7 @@ def test_no_image_with_a_580_driver_is_refused_naming_the_floor() -> None:
 
 @pytest.mark.parametrize("name", ["common-cu128-ubuntu-2204-nvidia-570-v20261101", "common-cu124-ubuntu-2204-v20260901"])
 def test_an_operator_image_with_an_older_driver_is_refused_and_a_580_image_pinned(name: str) -> None:
-    ctx = FakeCtx(install_state(voice_speech={"enabled": True, "zone": "europe-west1-b", "image": IMAGES + name}))
+    ctx = FakeCtx(install_state(voice_speech={"enabled": True, "zones": ["europe-west1-b"], "image": IMAGES + name}))
     step = VoiceSpeechZoneStep(_deps(ComputeFake()))
     seen = step.check(ctx)
     assert seen.status == UNMET and seen.detail.startswith(infra.DRIVER_FLOOR_REFUSAL) and name in seen.detail
@@ -278,6 +300,6 @@ def test_an_operator_image_with_an_older_driver_is_refused_and_a_580_image_pinne
 
 def test_an_operator_image_with_a_580_driver_is_kept() -> None:
     image = IMAGES + "common-cu129-ubuntu-2204-nvidia-580-v20260901"
-    ctx = FakeCtx(install_state(voice_speech={"enabled": True, "zone": "europe-west1-b", "image": image}))
+    ctx = FakeCtx(install_state(voice_speech={"enabled": True, "zones": ["europe-west1-b"], "image": image}))
     assert VoiceSpeechZoneStep(_deps(ComputeFake())).check(ctx).status == MET
     assert infra.check_speech_image(image) == image

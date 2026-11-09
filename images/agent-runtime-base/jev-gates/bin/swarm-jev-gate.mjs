@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // swarm-jev-gate: run jev-belay or jev-enforce as a Claude Code hook with the
-// workspace's TypeSafe key in THIS process only (JEV-LANES, BGD 2026-10-31).
+// workspace's TypeSafe key in THIS process only (JEV-LANES, the owner, 2026-10-31).
 //
 //     node swarm-jev-gate.mjs <config.json> <belay|enforce-stop|enforce-edit>
 //

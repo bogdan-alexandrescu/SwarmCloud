@@ -54,7 +54,7 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
-**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). Stage 0's
+**Voice it** (terraform/infra/voice.tf; the owner, 2026-11-05). Stage 0's
 `infra.voice-it` records `outputs["voice_it"]` as `{"enabled": bool}`. A no
 renders `voice_it` "off" on every infra pass. A yes renders voice.tf's three
 steps in its order: "off" on the registry pass, "account" on infra-1 (bootstrap
@@ -68,10 +68,11 @@ keeps Terraform's default, off.
 
 **Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
 `infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
-for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
-region's zones offering the L4) and the Deep Learning VM image it pinned by
-name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
-and `image` from that, checked against infra's own validations; no would-be
+for a yes, stage 1's `infra.voice-speech-zone` adds the zones (every zone of
+the region offering the L4, in letter order: swarm-api starts the machine in
+the first of them with a free L4, then the next; owner, 2026-11-09) and the
+Deep Learning VM image it pinned by name. Every infra pass renders infra's
+`voice_speech` with `enabled`, `zones` and `image` from that, checked against infra's own validations; no would-be
 machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
 to Voice it `voice_speech` renders off whatever was recorded. An install
 state with no answer (older than the question) keeps Terraform's default, off.
@@ -100,6 +101,11 @@ ROOT_OF = {p: ("bootstrap" if p.startswith("bootstrap") else "infra") for p in P
 INPUTS_FILE = "swarm-install.auto.tfvars.json"
 #: Where the generated inputs are kept in the state bucket, per root.
 INPUTS_PREFIX = "swarm-install/inputs/"
+#: The deployment's configuration in the same bucket, read by
+#: scripts/lib/common.sh's config_fetch (docs/design/generic-repository.md,
+#: sections 2.1 to 2.4): `<env>.tfvars`, the one `make tf-plan` passes as its
+#: `-var-file`, and `deny-list.json`, the never-touch list (foundations.config).
+CONFIG_PREFIX = "config/"
 
 #: The release-home registry images are copied from (D21, RELHOME-1).
 RELEASE_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
@@ -161,7 +167,7 @@ DISCOVERY_NAME = "SwarmCloud"
 #: discovery (`swarm_mcp/discovery.py`) landed, the first that reads it.
 PLUGIN_MIN_VERSION = "0.5.74"
 #: The hourly doctor runs DAYONE-DOCTOR-1's code in the swarm-verify image.
-#: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
+#: On from infra pass 2: the owner turned it on (DAYONE-TFVARS-2, review finding 12).
 SCHEDULED_DOCTOR_SHIPPED = True
 
 #: swarm-api's SWARM_CONTRACT_REVIEW (infra's `contract_review_mode`): off, as
@@ -172,7 +178,7 @@ CONTRACT_REVIEW_MODE = "off"
 
 #: swarm-api's SWARM_WORK_CONTRACTS (infra's `work_contracts`): on, so a fresh
 #: deployment's plugins (Config > Plugins) load through a step's signed work
-#: contract, as on the live deployment (BGD, 2026-11-06). Contract review above
+#: contract, as on the live deployment (the owner, 2026-11-06). Contract review above
 #: stays off: a fresh deployment may have no TypeSafe key or internal route.
 WORK_CONTRACTS = "on"
 
@@ -205,8 +211,8 @@ VOICE_IT = "voice_it"
 #: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
 VOICE_IMAGE = "swarm-voice"
 
-#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
-#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: terraform/infra's `voice_speech` validations (variables.tf): each of `zones`
+#: one zone of the region (one letter after it), and a Deep Learning VM image by name, never a /family/ path, which moves under the
 #: stopped machine and would replace it at the next plan.
 SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
@@ -405,19 +411,30 @@ def voice_speech(state: Any) -> dict[str, Any] | None:
         raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
     if found.get("enabled") is not True or voice_it_chosen(state) is False:
         return {"enabled": False}
-    zone, image = found.get("zone"), found.get("image")
-    if not zone or not image:
-        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+    zones, image = found.get("zones"), found.get("image")
+    if zones is None and found.get("zone"):
+        # An install state recorded by an older installer holds one `zone`
+        # string; it renders as a one-zone list so an existing install keeps
+        # working (infra accepts `zone` for one release only).
+        zones = [found["zone"]]
+    if not zones or not image:
+        raise LookupError(f"the install state has no voice_speech zones and image yet; {RECORDED_BY['voice_speech']} "
                           "records them")
+    if isinstance(zones, str) or not isinstance(zones, (list, tuple)):
+        raise ValueError(f"voice_speech zones is {type(zones).__name__}, not a list of zones; "
+                         f"{RECORDED_BY['voice_speech']} records them")
     region = _required(state, "region")
-    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
-        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    for zone in zones:
+        if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+            raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if len({str(zone) for zone in zones}) != len(zones):
+        raise ValueError(f"voice_speech zones {list(zones)!r} name a zone twice; each zone is listed once")
     if not SPEECH_IMAGE.match(str(image)):
         raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
                          "(projects/deeplearning-platform-release/global/images/<name>)")
     # Never render an image below the driver floor; infra.voice-speech pins one that meets it.
     check_speech_image(str(image))
-    return {"enabled": True, "zone": str(zone), "image": str(image)}
+    return {"enabled": True, "zones": [str(zone) for zone in zones], "image": str(image)}
 
 
 def iap_members(state: Any, installer: str) -> list[str]:
@@ -553,6 +570,11 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "admin_users": [installer],
         # Decision 1: swarm-api admits the organisation's own domain.
         "allowed_domains": [org_domain(state)],
+        # Design §2.4: the never-touch list read from config/<env>/deny-list.json
+        # (foundations.config), rendered on swarm-api as SWARM_SHARED_DENY_LIST
+        # and SWARM_SHARED_DENY_LIST_SET. A project that shares nothing passes
+        # [], stated, so the list is always set and never Terraform's default.
+        "shared_deny_list": list(state.deny_list or []),
         "setup_github_org": _required(state, "github_org"),
         "discovery": {
             "name": DISCOVERY_NAME,
@@ -685,11 +707,28 @@ def object_name(root: str) -> str:
     return f"{INPUTS_PREFIX}{root}.auto.tfvars.json"
 
 
-def store(bucket: ObjectStore, root: str, inputs: Mapping[str, Any]) -> str:
-    """Keep the inputs in the state bucket (the next apply's source of truth)."""
-    refuse_unsafe(inputs)
-    name = object_name(root)
-    data = (json.dumps(dict(inputs), indent=2, sort_keys=True) + "\n").encode()
+def config_object(environment: str, name: str) -> str:
+    """`config/<env>/<name>` in the state bucket."""
+    return f"{CONFIG_PREFIX}{environment}/{name}"
+
+
+def render_tfvars(inputs: Mapping[str, Any]) -> str:
+    """The inputs as a `.tfvars` file: one `name = value` line each, the value
+    written as JSON, which HCL reads as the same literal (strings, numbers,
+    booleans, null, lists, and objects with `:` between key and value). A
+    `${` or `%{` inside a string would start a template in HCL, so it is
+    escaped as `$${` and `%%{`."""
+    lines = ["# Generated by swarm install from its stored inputs; the next install pass rewrites it."]
+    for name in sorted(inputs):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
+            raise ValueError(f"{name!r} is not a Terraform variable name")
+        value = json.dumps(inputs[name], sort_keys=True).replace("${", "$${").replace("%{", "%%{")
+        lines.append(f"{name} = {value}")
+    return "\n".join(lines) + "\n"
+
+
+def _put(bucket: ObjectStore, name: str, data: bytes) -> str:
+    """Write `name`, replacing only the generation read (create-only when absent)."""
     for _ in range(3):
         found = bucket.read(name)
         try:
@@ -698,6 +737,19 @@ def store(bucket: ObjectStore, root: str, inputs: Mapping[str, Any]) -> str:
         except PreconditionFailed:
             continue
     raise PreconditionFailed(f"gs://.../{name} kept changing under the engine")
+
+
+def store(bucket: ObjectStore, root: str, inputs: Mapping[str, Any]) -> str:
+    """Keep the inputs in the state bucket (the next apply's source of truth).
+    infra's are also written as `config/<env>/<env>.tfvars`, beside the
+    never-touch list, where `make tf-plan` and every script read the
+    deployment's tfvars (`tf_var_file` in scripts/lib/common.sh)."""
+    refuse_unsafe(inputs)
+    name = _put(bucket, object_name(root), (json.dumps(dict(inputs), indent=2, sort_keys=True) + "\n").encode())
+    environment = str(inputs.get("environment") or "")
+    if root == "infra" and environment:
+        _put(bucket, config_object(environment, f"{environment}.tfvars"), render_tfvars(inputs).encode())
+    return name
 
 
 def stored(bucket: ObjectStore, root: str) -> dict[str, Any] | None:

@@ -9,6 +9,7 @@ APIs, the default compute account's Editor grant, and the state bucket
 | `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked); both questions default to the sizing's `budget_usd`; a refusal opens the account's Budgets page and polls for the budget |
 | `foundations.default-compute-editor` | `iam-binding.default-compute-sa-editor-removed` | 6 (#1020); 3: a write-rate limit is retried, never reported as a denial |
 | `foundations.state-bucket` | `bucket.state`, `other.install-state` | 7: created with bootstrap.sh's settings, then the local state is uploaded |
+| `foundations.config` | (none) | generic-repository design §2.3, §2.4: writes `config/<env>/deny-list.json`, the never-touch list, to the state bucket (explicitly empty for a project the installer created; for one that existed, what it holds that the deployment does not own, after a typed approval) and reads it into the state's `deny_list` |
 
 The state bucket's Terraform declaration gains its `import` block in lane
 DAYONE-BOOT-1, so creating it here never collides with bootstrap pass 1.
@@ -16,6 +17,8 @@ DAYONE-BOOT-1, so creating it here never collides with bootstrap pass 1.
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -23,10 +26,12 @@ from typing import Any
 from ..exitcodes import MET, UNMET
 from ..manifest import Manifest
 from ..manifest import load as load_manifest
-from ..state import STATE_OBJECT, state_bucket
+from ..state import STATE_OBJECT, PreconditionFailed, state_bucket
+from ..tfvars import config_object
 from ..waits import Clock, WaitGaveUp, WaitSpec, cloud_page, wait_until
 from . import Observation, Plan, open_page
-from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, confirm, project_number, remember
+from .preflight import (ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, confirm, neighbours,
+                        project_created_by_install, project_number, remember)
 
 def _enablement_look_at(ctx: Any) -> str:
     return (f"the project's enabled APIs, {cloud_page('apis/dashboard', ctx)}: an API stuck enabling usually "
@@ -863,6 +868,171 @@ class StateBucketStep(_Base):
         ctx.attach_bucket(self.gcp.object_store(name))
 
 
+# -- foundations.config: the never-touch list (generic-repository design §2.4) --
+
+#: The never-touch list's object, `config/<env>/deny-list.json` in the state
+#: bucket, where scripts/lib/common.sh's deny_list_load reads it.
+DENY_LIST_OBJECT = "deny-list.json"
+#: The kinds `preflight.neighbours` sorts what it finds into; a list written
+#: for a project that shares nothing sets each of their floors, and the total,
+#: to zero, so the emptiness is written down rather than assumed.
+DENY_LIST_KINDS = ("cluster", "network", "default-network", "subnet", "bucket", "sa")
+
+
+def _name(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and not re.search(r"[\n\r\t]", value)
+
+
+def deny_list_entries(data: bytes, project: str) -> list[str]:
+    """The entries of a deny-list.json, or ValueError saying why it is refused.
+    The same structural rules deny_list_load applies: a JSON object written for
+    `project`, `entries` a list of names, `floors` a map of whole numbers, and
+    who reviewed it and when. The total floor is checked here; the per-kind
+    floors need the tracked classify rules this wheel does not carry, and every
+    script checks them through deny_list_load. Nothing here reads a missing or
+    malformed list as empty."""
+    try:
+        doc = json.loads(data)
+    except ValueError:
+        raise ValueError("it is not valid JSON") from None
+    if not isinstance(doc, dict):
+        raise ValueError("it is not a JSON object")
+    if not _name(doc.get("project")):
+        raise ValueError("it names no project")
+    if doc["project"] != project:
+        raise ValueError(f"it was written for project {doc['project']}, not {project}")
+    entries = doc.get("entries")
+    if not isinstance(entries, list) or not all(_name(e) for e in entries):
+        raise ValueError("entries is not a list of names")
+    floors = doc.get("floors")
+    if not isinstance(floors, dict) or not all(
+            isinstance(f, int) and not isinstance(f, bool) and f >= 0 for f in floors.values()):
+        raise ValueError("floors is not a map of whole numbers")
+    if not (_name(doc.get("reviewed_by")) and _name(doc.get("reviewed_at"))):
+        raise ValueError("it does not say who reviewed it and when (reviewed_by, reviewed_at)")
+    if len(entries) < floors.get("total", 0):
+        raise ValueError(f"it has fewer entries than its floors (total {len(entries)} < {floors['total']})")
+    return list(entries)
+
+
+def deny_list_document(project: str, found: Sequence[Mapping[str, str]], reviewed_by: str,
+                       reviewed_at: str) -> dict[str, Any]:
+    """The deny-list.json the installer writes: every resource in `found`
+    ({name, kind}, from `preflight.neighbours`) as an entry, classified by its
+    own name, with each kind's floor at the count found, so a list later cut
+    short refuses. `found` empty gives the explicitly empty list: no entries,
+    every floor zero."""
+    floors = {"total": len(found), **{kind: 0 for kind in DENY_LIST_KINDS}}
+    for item in found:
+        floors[item["kind"]] = floors.get(item["kind"], 0) + 1
+    return {
+        "description": "Written by swarm install (foundations.config); the never-touch list deny_list_load reads.",
+        "project": project,
+        "entries": [item["name"] for item in found],
+        "classify": [{"glob": item["name"], "kind": item["kind"]} for item in found],
+        "floors": floors,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": reviewed_at,
+    }
+
+
+class ConfigStep(_Base):
+    """Write `config/<env>/deny-list.json` to the state bucket once, and read
+    it into the state's `deny_list`. A list already there (the owner's, or one
+    an earlier run wrote) is never replaced, and one that cannot be read stops
+    the step: a missing or malformed list is never taken as empty."""
+
+    id = "foundations.config"
+    _explain = (
+        "Every script and this engine refuse to touch what the never-touch list names, and refuse "
+        "everything when it cannot be read. For a project the installer created, the list is written "
+        "explicitly empty: nobody else's resources are in it. For a project that already existed, the "
+        "installer lists its clusters, networks, subnets, buckets and service accounts that are not the "
+        "platform's own and asks you to approve that list before it is written."
+    )
+
+    def _bucket(self, ctx: Any) -> Any:
+        engine = getattr(ctx, "engine", None)
+        return getattr(getattr(engine, "store", None), "bucket", None)
+
+    def _object(self, ctx: Any) -> str:
+        return config_object(ctx.environment, DENY_LIST_OBJECT)
+
+    def _read(self, ctx: Any, bucket: Any) -> list[str] | None:
+        """The entries, None when the object is absent; RuntimeError when it is
+        there but refused."""
+        found = bucket.read(self._object(ctx))
+        if found is None:
+            return None
+        try:
+            return deny_list_entries(found[0], ctx.project)
+        except ValueError as why:
+            raise RuntimeError(
+                f"gs://{state_bucket(ctx.project)}/{self._object(ctx)} is not a usable never-touch list: {why}; "
+                "fix it by hand (the installer never replaces a never-touch list)") from None
+
+    def _check(self, ctx: Any) -> Observation:
+        bucket = self._bucket(ctx)
+        where = f"gs://{state_bucket(ctx.project)}/{self._object(ctx)}"
+        if bucket is None:
+            return Observation(UNMET, f"the state bucket is not attached yet, so {where} is not written")
+        try:
+            entries = self._read(ctx, bucket)
+        except RuntimeError as refused:
+            return Observation(UNMET, str(refused))
+        if entries is None:
+            return Observation(UNMET, f"{where} does not exist yet")
+        if list(ctx.state.deny_list) != entries:
+            return Observation(UNMET, f"{where} is not read into the install state yet")
+        return Observation(MET, f"{where} names {len(entries)} resource(s) the deployment never touches")
+
+    def plan(self, ctx: Any) -> Plan:
+        where = f"gs://{state_bucket(ctx.project)}/{self._object(ctx)}"
+        return Plan(f"write the never-touch list to {where} if it is not there, then read it into the state", (
+            "a project the installer created: an explicitly empty list, every floor zero",
+            "a project that existed: what it holds that the deployment does not own, after a typed approval",
+        ))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        bucket = self._bucket(ctx)
+        if bucket is None:
+            raise LookupError("the state bucket is not attached (foundations.state-bucket)")
+        entries = self._read(ctx, bucket)
+        if entries is None:
+            entries = self._write(ctx, bucket)
+        # The deny list comes from the config object, never from an environment variable.
+        remember(ctx, deny_list=entries)
+
+    def _write(self, ctx: Any, bucket: Any) -> list[str]:
+        reviewer = str(ctx.outputs.get("installer") or "")
+        if not reviewer:
+            raise LookupError("no signed-in account is recorded to review the never-touch list (preflight.sign-in)")
+        where = f"gs://{state_bucket(ctx.project)}/{self._object(ctx)}"
+        if project_created_by_install(self.gcp.project(ctx.project)):
+            found: list[dict[str, str]] = []
+        else:
+            found = neighbours(self.gcp, ctx.project)
+            listed = "\n".join(f"  {item['kind']:<16} {item['name']}" for item in found) or "  (nothing)"
+            confirm(self._ask, ctx, self.id,
+                    f"Project {ctx.project} existed before this install. It holds {len(found)} resource(s) the "
+                    f"deployment does not own:\n{listed}\nThe installer will write these to {where} as the "
+                    "never-touch list that every script and this engine honour. Type the project id "
+                    f"({ctx.project}) to approve", ctx.project, nothing="no never-touch list was written")
+        reviewed_at = dt.datetime.fromtimestamp(ctx.clock.now(), dt.timezone.utc).date().isoformat()
+        doc = deny_list_document(ctx.project, found, reviewer, reviewed_at)
+        data = (json.dumps(doc, indent=2) + "\n").encode()
+        try:
+            bucket.write(self._object(ctx), data, if_generation_match=0)
+        except PreconditionFailed:
+            # Written meanwhile by someone else: theirs stands, read as it is.
+            written = self._read(ctx, bucket)
+            if written is None:
+                raise RuntimeError(f"{where} was created and removed while the installer wrote it; "
+                                   "run swarm install again") from None
+            return written
+        return deny_list_entries(data, ctx.project)
+
+
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK, manifest: Manifest | None = None,
                 api: ProjectApi | None = None) -> list[Any]:
     """Stage 1, in order; the engine also orders a stage by the manifest's depends_on."""
@@ -872,6 +1042,7 @@ def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK, manifest: Manifest
         BudgetStep(gcp, ask),
         DefaultComputeEditorStep(gcp, ask),
         StateBucketStep(gcp, ask),
+        ConfigStep(gcp, ask),
     ]
 
 

@@ -352,3 +352,48 @@ entries:
   refs:
     image:
     - swarm-plugin-intake
+- id: pubsub.plugin-intake-reports-topic
+  kind: pubsub-topic
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud pubsub topics describe ${name_prefix}-plugin-intake-reports --project=$P
+  apply: terraform/infra/plugins.tf google_pubsub_topic.plugin_intake_reports, its publisher grant to the Cloud Storage service agent and the bucket's staging/ finalize notification
+  verify: the plugins bucket announces an object finalized under staging/ on this topic
+  explain: an intake job's report is announced to swarm-api as soon as it is written, so an intake finishes without waiting for a read (section 2.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - bucket.plugins
+  - api.pubsub
+  evidence:
+  - terraform/infra/plugins.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_pubsub_topic.plugin_intake_reports
+    - infra/google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes
+    - infra/google_storage_notification.plugin_intake_reports
+- id: pubsub.plugin-intake-reports-subscription
+  kind: pubsub-topic
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud pubsub subscriptions describe ${name_prefix}-plugin-intake-reports-api --project=$P
+  apply: terraform/infra/plugins.tf google_pubsub_subscription.plugin_intake_reports
+  verify: a report written under staging/ is pushed to swarm-api's /v1/internal/plugin-intake/report as the rollup sweeper
+  explain: push delivery of an intake report to swarm-api; nothing waits on it, a lost push costs only latency
+  guards: null
+  secret_entry: null
+  depends_on:
+  - pubsub.plugin-intake-reports-topic
+  - cloud-run-service.swarm-api
+  - sa.swarm-rollup-sweeper
+  evidence:
+  - terraform/infra/plugins.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_pubsub_subscription.plugin_intake_reports

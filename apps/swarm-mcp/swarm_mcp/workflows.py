@@ -57,7 +57,7 @@ from . import profiles as catalogue
 from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
 from .follow import follow_command
 from .patches import masked_counts
-from .progress import browser_unused_line, questions_count
+from .progress import FIX_LOOP_PROFILE, browser_unused_line, questions_count
 
 #: What `codec.workflow_to_api` sets on a read that actually looked at the step
 #: tasks. Any other value -- including the absence of the field -- means the
@@ -101,6 +101,11 @@ _STEP_KEYS = frozenset(
         # sent as given; swarm-api checks the block and its profile, and
         # refuses it while `await-input` is unavailable.
         "await_input",
+        # A step that runs review-fix rounds until a review says MERGE
+        # (docs/design/fix-loop.md §4.1): sent as given; swarm-api checks the
+        # block and its profile (`resolve_fix_loop`), and refuses it while
+        # `fix-loop` is unavailable.
+        "fix_loop",
         # The registered repositories this step reads beside its own (#1434),
         # by name. It REPLACES the spec's top-level list, and `[]` means none.
         "additional_repositories",
@@ -511,7 +516,11 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         where = f"step {step_id!r}"
 
         prompt = raw.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
+        # A `fix-loop` step may leave its prompt out (§4.1's example does): no
+        # agent runs it, its rounds take the review's and the fix's prompts,
+        # and swarm-api takes its empty `input`. One it gives is still sent.
+        loop_without_prompt = raw.get("runner_profile") == FIX_LOOP_PROFILE and prompt is None
+        if not loop_without_prompt and (not isinstance(prompt, str) or not prompt.strip()):
             raise SwarmError(
                 f"{where} has no prompt. A step with an empty input reaches the "
                 "agent and fails there -- `claude-code requires a non-empty "
@@ -551,7 +560,7 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # for -- checked by name and kind, and refused otherwise (#142).
             # `check_inputs` refuses a `prompt` key, so it cannot replace this one.
             "input": {
-                "prompt": prompt,
+                **({} if loop_without_prompt else {"prompt": prompt}),
                 **catalogue.check_inputs(profile, raw.get("inputs"), where=where),
             },
         }
@@ -634,6 +643,16 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                     'e.g. {"form": "verdict", "expires_after_seconds": 86400, "on_expire": "fail"}'
                 )
             step["await_input"] = dict(raw["await_input"])
+        if raw.get("fix_loop") is not None:
+            # THE SHAPE ONLY, as for await_input: the review, the fix, the
+            # rounds and the overrides are `swarm_api.validation`'s rules
+            # (`resolve_fix_loop`) and are not restated here. Sent unchanged.
+            if not isinstance(raw["fix_loop"], dict):
+                raise SwarmError(
+                    f"{where}: fix_loop must be an object -- the loop's review, its fix and "
+                    'its rounds, e.g. {"review": "review", "fix": "fix", "max_rounds": 3}'
+                )
+            step["fix_loop"] = copy.deepcopy(raw["fix_loop"])
         if raw.get("additional_repositories") is not None:
             # Sent even when `[]`: a step's empty list replaces the workflow's
             # with none, which leaving the key out would not (§7 Q6).

@@ -58,7 +58,7 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-# No default, so this file names no project (DAYONE-DESAGA-1,
+# No default, so this file names no project (the Day One image lane,
 # docs/design/day-one-install.md section 7): scripts/build-images.sh passes
 # the mirror of the project it builds for (lib/build-mirror.sh
 # mirror_build_args), and the `# syntax=` frontend through the same mirror as
@@ -420,7 +420,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # in every pull of the image; the service listens on loopback without TLS, so
 # the pair is deleted.
 #
-# CHROMIUM'S SYSTEM LIBRARIES AND FONTS, AND NO CHROMIUM (BGD, 2026-10-26,
+# CHROMIUM'S SYSTEM LIBRARIES AND FONTS, AND NO CHROMIUM (the owner, 2026-10-26,
 # fix (c) on #2253). A step on plain claude-code must be able to run a
 # repository's own headless suite: `npx playwright install chromium`, then
 # `npx playwright test`. Before this, the install worked and the launch did
@@ -1196,7 +1196,7 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
       && npm cache clean --force ; \
     fi
 
-# THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; #642: 25% of lane PRs were
+# THE LANE QUALITY GATES (JEV-LANES, the owner, 2026-10-31; #642: 25% of lane PRs were
 # red on their first CI run). Two Claude Code hooks checked by TypeSafe's Jev,
 # pinned, MIT both:
 #   * jev-belay v0.2.0 (valentynkit/jev-belay at commit

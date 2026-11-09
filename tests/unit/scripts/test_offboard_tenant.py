@@ -56,6 +56,7 @@ prints TAB-separated columns, as the fake does.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pty
@@ -70,6 +71,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT_REL = Path("scripts") / "offboard-tenant.sh"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+#: A never-touch entry of the placeholder list that is also a well-formed tenant id.
+PEER_TENANT = _P.PEER["network"]
 PROJECT = "swarm-test-project"
 DATABASE = "swarm"
 BUCKET = "swarm-artifacts-swarm-test-project"
@@ -1032,16 +1038,16 @@ def test_documents_terraform_owns_are_left_for_terraform(tmp_path):
         ("eng*", {}, "is not a tenant id"),
         ("-eng", {}, "is not a tenant id"),
         ("abcdefghijkl", {}, "at most 11 characters"),
-        ("default", {}, "shared deny-list"),
+        (PEER_TENANT, {}, "shared deny-list"),
     ],
     ids=["unregistered", "enabled", "enabled-missing", "wrong-document", "still-lent", "empty", "upper",
          "slash", "wildcard", "dash", "too-long", "deny-listed"],
 )
 def test_refusals_delete_nothing(tmp_path, tenant, over, says):
     before = world(**over)
-    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is whole only in
-    # the shared project, so the deny-listed case runs there.
-    shared = {"PROJECT_ID": "saga-agents-staging"} if says == "shared deny-list" else {}
+    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is the list of the
+    # project named, so the deny-listed case runs in the (placeholder) shared one.
+    shared = {"PROJECT_ID": _P.SHARED_PROJECT} if says == "shared deny-list" else {}
     run = _run(tmp_path, before, "--tenant", tenant, "--apply", typed=tenant or "x", **shared)
     assert run.rc != 0, run.stderr[-3000:]
     assert says in run.stderr, run.stderr[-3000:]

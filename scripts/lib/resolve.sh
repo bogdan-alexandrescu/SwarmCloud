@@ -18,9 +18,15 @@
 # Usage:
 #   scripts/lib/resolve.sh tool terraform      # absolute path, or empty
 #   scripts/lib/resolve.sh env  ENVIRONMENT    # value after .env is applied
+#   scripts/lib/resolve.sh tfvars dev          # the cached config/dev/dev.tfvars
+#   scripts/lib/resolve.sh deny-list dev       # load and check the never-touch list
 #
 # Prints nothing and exits 0 when a tool is absent: the Makefile treats an empty
 # value as "skip that step", and a missing tflint must not break `make lint`.
+# `tfvars` and `deny-list` are the opposite: each fetches the deployment's own
+# configuration (config_fetch in common.sh) and exits 1, saying why, when it
+# cannot, so `make tf-plan` stops rather than planning with no inputs and the
+# read-only targets find a broken list before an apply needs it.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -29,7 +35,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 KIND="${1:-}"
 NAME="${2:-}"
-[[ -n "${KIND}" && -n "${NAME}" ]] || { printf 'usage: resolve.sh {tool|env} NAME\n' >&2; exit 64; }
+[[ -n "${KIND}" && -n "${NAME}" ]] || { printf 'usage: resolve.sh {tool|env|tfvars|deny-list} NAME\n' >&2; exit 64; }
 
 case "${KIND}" in
   tool)
@@ -62,6 +68,16 @@ case "${KIND}" in
       *) printf 'resolve.sh: %s is not an exported configuration value\n' "${NAME}" >&2; exit 64 ;;
     esac
     ;;
+  tfvars|deny-list)
+    [[ "${NAME}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { printf 'resolve.sh: %s is not an environment name\n' "${NAME}" >&2; exit 64; }
+    ENVIRONMENT="${NAME}"
+    if [[ "${KIND}" == "tfvars" ]]; then
+      tf_var_file
+    else
+      deny_list_require
+      ok "the never-touch list for ${PROJECT_ID} (${ENVIRONMENT}) is readable: ${#SHARED_DENY_LIST[@]} entries"
+    fi
+    ;;
   *)
-    printf 'usage: resolve.sh {tool|env} NAME\n' >&2; exit 64 ;;
+    printf 'usage: resolve.sh {tool|env|tfvars|deny-list} NAME\n' >&2; exit 64 ;;
 esac
