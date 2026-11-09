@@ -385,6 +385,35 @@ def plugin_root() -> Path:
     )
 
 
+#: What a session does when its plugin's files are gone (`plugin_files_missing`).
+PLUGIN_FILES_ACTION = "type /reload-plugins in this session"
+
+
+def plugin_files_missing() -> dict[str, str] | None:
+    """`{root, action}` when the plugin folder this bridge was started with
+    (SWARM_SC_PLUGIN_ROOT), or its workflows/run.js, is gone; else None.
+
+    PLUGIN-VERSION-GUARD (owner, 9 November 2026). Claude Code deletes a
+    plugin version folder that no live `.in_use/<pid>` marker names, and a
+    long-lived session whose pid was in no marker lost its sc folder while it
+    ran: every launch reply said `run.js is not a file`, the session lost the
+    plugin's agent types, and nobody noticed for hours. A sibling version
+    (`_sibling_root`) can still title a run, but it cannot give the session
+    back its agents -- only a reload does -- so the CONFIGURED root is what is
+    checked, never the sibling. Checked when the bridge starts, before every
+    titled copy, and on every tool reply (`server.serve`), which carries the
+    result at its top level; `swarm_check` flags it STUCK. Two stats per call.
+    A bridge with no configured root (repo-local, or started by hand) runs
+    from no plugin cache folder, and has nothing to report."""
+    configured = os.environ.get(PLUGIN_ROOT_ENV, "").strip()
+    if not configured:
+        return None
+    root = Path(configured).expanduser()
+    if root.is_dir() and (root / RUN_SCRIPT).is_file():
+        return None
+    return {"root": str(root), "action": PLUGIN_FILES_ACTION}
+
+
 def template() -> str:
     path = plugin_root() / RUN_SCRIPT
     if not path.is_file():
@@ -427,6 +456,13 @@ def write_script(title: str, description: str) -> Path:
     `description`, as `_js_string` literals. A title reaches the copy only
     here; everything else about a run travels in its `args`, a JSON value the
     session hands the Workflow tool, never spliced into source."""
+    # Checked BEFORE the copy (PLUGIN-VERSION-GUARD): the reply carries it
+    # (`server.serve`), and the bridge's log says it whether or not a sibling
+    # version still titles this run.
+    missing = plugin_files_missing()
+    if missing is not None:
+        print(f"swarm-mcp: the sc plugin's files are missing at {missing['root']}: "
+              f"{missing['action']}", file=sys.stderr)
     lines = template().split("\n")
     if len(lines) < 3 or lines[0] != META_OPEN or lines[1] != NAME_LINE or not lines[2].startswith(DESCRIPTION_OPEN):
         raise SwarmError(
