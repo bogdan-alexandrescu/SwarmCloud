@@ -307,7 +307,11 @@ The old one-zone `zone` is read as a one-zone list for one release, its validati
 to `zones`. Terraform makes the template, the address, the firewall pair, the sweep and the speech
 account's grants, never the machine: the instance a release made before 2026-11-09 left Terraform's
 state through a `removed` block with `destroy = false`, so no plan deletes it, and swarm-api finds
-it by its name. Every default is explained next to it in `variables.tf`.
+it by its name. `voice_speech.template` (default `true`) set to `false` holds the template back
+for a deployment whose bootstrap apply has not yet let the release identity make it, since that
+release's apply would otherwise stop on the 403 and leave every service update in the same plan
+unapplied; `SWARM_SPEECH_TEMPLATE` is then empty and own speech falls back as `speech_not_deployed`.
+Every default is explained next to it in `variables.tf`.
 
 ### 5.2 The speech server container
 

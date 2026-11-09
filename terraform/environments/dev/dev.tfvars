@@ -97,6 +97,9 @@ voice_speech = {
   enabled = true
   zones   = ["us-central1-a", "us-central1-b", "us-central1-c"]
   image   = "projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
+  # The bootstrap apply that adds the template permissions has not run here;
+  # set this back to true, or remove it, once it has.
+  template = false
 }
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at

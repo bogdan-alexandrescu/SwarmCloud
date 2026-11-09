@@ -148,7 +148,8 @@ def test_variable_is_off_by_default() -> None:
     # The template switch: on unless a deployment's bootstrap does not yet let
     # the release identity make the template (the field's description says why).
     assert re.search(r"\btemplate\s*=\s*optional\(bool,\s*true\)", body), body
-    assert re.search(r"^\s*template\s+false: the release does not make the machine's template", body, re.M), (
+    assert re.search(r"^\s*template\s+true:[^\n]*\n(?:[^\n]*\n)*?\s*false: the release does not make\s+the machine's template",
+                     body, re.M), (
         "the voice_speech description does not document `template` beside the other fields"
     )
     # The pinned image is required once it is on, and only a Deep Learning VM
