@@ -1579,11 +1579,11 @@ variable "voice_speech" {
       enabled       false: nothing is made. Off in every environment's tfvars
                     until the owner turns it on; the installer offers it.
       zones         [] = ["<region>-a", "<region>-b", "<region>-c"]: the
-                    zones of var.region that offer the L4, in the order
-                    swarm-api tries them (owner, 2026-11-09). A Start creates
-                    or starts the one machine in the first zone with a free
-                    L4, then the next; after the last, the session falls back
-                    to text mode. Every zone must be in var.region; the
+                    zones of var.region that offer the L4, which the one
+                    regional bulk insert's location policy allows (owner,
+                    2026-11-09: "let Google pick the zone"). Google places
+                    the one machine in a zone with a free L4; when none has
+                    one, the session falls back to text mode. Every zone must be in var.region; the
                     installer writes the region's L4 zones in letter order.
       zone          null: REPLACED by `zones`, read as a one-zone list for
                     this release only (owner, 2026-11-05's one zone, one

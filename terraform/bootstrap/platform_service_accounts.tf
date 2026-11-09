@@ -149,8 +149,8 @@ resource "google_service_account" "speech" {
 # TERMINATED and to find the machine in each listed zone; setMachineType and
 # setMetadata to apply Settings and a new server digest while it is stopped
 # (§4.2 step 1, §11.4); getSerialPortOutput to read a failed boot. Since
-# 2026-11-09 (owner: the machine is created and started in the first zone of
-# voice_speech.zones with a free L4, then the next) also create and delete:
+# 2026-11-09 (owner: the machine is created through one regional bulk insert
+# over voice_speech.zones, Google picking the zone) also create and delete:
 #
 #   instances.create, disks.create        a create from the template, and the
 #   instanceTemplates.get, .useReadOnly   boot disk it makes; the template read

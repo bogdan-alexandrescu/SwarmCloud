@@ -133,18 +133,21 @@ class FakeCompute:
         return sm.Instance(status=m["status"], machine_type=m["machine_type"],
                            metadata=dict(m["metadata"]), fingerprint=m["fingerprint"], zone=zone)
 
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
-               wait: sm.Wait | None = None) -> None:
-        assert zone in CONFIG.zones
-        assert zone not in self.machines, f"a second machine was created in {zone}"
-        self._record("create", zone)
+    def create(self, zones: tuple[str, ...], *, machine_type: str, metadata: Mapping[str, str],
+               wait: sm.Wait | None = None) -> str:
+        """The regional bulk insert: Google's pick is played by the first
+        listed zone with an L4 free; none free is one stockout."""
+        assert set(zones) <= set(CONFIG.zones)
+        self._record("create", tuple(zones))
         self._take_time("create", wait)
-        if self._no_l4(zone):
+        zone = next((z for z in zones if not self._no_l4(z)), None)
+        if zone is None:
             raise sm.ComputeError("no L4", code=STOCKOUT)
         assert not self.machines, "a second machine was created while one exists"
         self.add(zone, "PROVISIONING", machine_type=machine_type)
         self.machines[zone].update(started=True, metadata=dict(metadata))
         self.created.append({"zone": zone, "machine_type": machine_type, "metadata": dict(metadata)})
+        return zone
 
     def delete(self, zone: str, *, wait: sm.Wait | None = None) -> None:
         self._record("delete", zone)
@@ -344,10 +347,10 @@ def test_the_start_refreshes_the_heartbeat_while_it_polls(db):
 # ---- no free L4, not ready (§4.1, §4.7) -------------------------------------
 
 
-def test_a_start_with_no_machine_creates_it_from_the_template_in_the_first_zone(db):
+def test_a_start_with_no_machine_creates_it_through_one_bulk_insert_over_every_zone(db):
     compute, clock = FakeCompute(status=None), Clock()
     started = _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
-    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
+    assert [z for n, z in compute.calls if n == "create"] == [ZONES]
     made = compute.created[0]
     assert made["machine_type"] == CHOSEN["machine"]
     assert made["metadata"] == sm.wanted_metadata(CHOSEN, CONFIG.image)
@@ -357,15 +360,15 @@ def test_a_start_with_no_machine_creates_it_from_the_template_in_the_first_zone(
     assert _audit(db, sm.AUDIT_ZONE_STOCKOUT) == [] and _audit(db, sm.AUDIT_NO_L4) == []
 
 
-def test_a_stockout_in_the_first_zone_creates_it_in_the_second_then_the_third(db):
+def test_the_zone_google_places_the_machine_in_is_the_leases(db):
     compute, clock = FakeCompute(status=None, full=(ZONE, ZONE_B)), Clock()
     _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
-    assert [z for n, z in compute.calls if n == "create"] == [ZONE, ZONE_B, ZONE_C]
+    assert [z for n, z in compute.calls if n == "create"] == [ZONES], "more than one insert"
     assert list(compute.machines) == [ZONE_C]
     lease = _lease(db)
     assert lease["state"] == sm.STARTING and lease["zone"] == ZONE_C
-    assert [s["zone"] for s in lease["stockouts"]] == [ZONE, ZONE_B]
-    assert [r["detail"]["zone"] for r in _audit(db, sm.AUDIT_ZONE_STOCKOUT)] == [ZONE, ZONE_B]
+    # Google placed it: the zones it passed over are not this start's stockouts.
+    assert lease["stockouts"] == [] and _audit(db, sm.AUDIT_ZONE_STOCKOUT) == []
     assert _audit(db, sm.AUDIT_NO_L4) == [], "a start that found an L4 was counted refused"
 
 
@@ -374,7 +377,7 @@ def test_a_stockout_in_every_zone_falls_back_to_text_and_is_counted_once(db):
     with pytest.raises(sm.NoFreeL4) as raised:
         _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
     assert raised.value.reason == sm.FALLBACK_NO_L4 and raised.value.zone == ZONE_C
-    assert [z for n, z in compute.calls if n == "create"] == list(ZONES), "a zone was tried twice"
+    assert [z for n, z in compute.calls if n == "create"] == [ZONES], "the insert was asked twice"
     assert compute.machines == {}
     lease = _lease(db)
     assert lease["state"] == sm.STOPPED and lease["cause"] == sm.FALLBACK_NO_L4
@@ -382,7 +385,7 @@ def test_a_stockout_in_every_zone_falls_back_to_text_and_is_counted_once(db):
     rows = _audit(db, sm.AUDIT_NO_L4)
     assert len(rows) == 1 and rows[0]["detail"]["zones"] == list(ZONES)
     assert len(_audit(db, sm.AUDIT_ZONE_STOCKOUT)) == 3
-    # The next Start tries again from the first zone.
+    # The next Start asks again.
     compute.stockout = False
     assert _machine(db, compute, clock).start(ALICE, chosen=CHOSEN).holder.generation == 2
     assert list(compute.machines) == [ZONE]
@@ -396,27 +399,28 @@ def test_a_stopped_machine_starts_in_its_own_zone_and_no_other_is_made(db):
     assert _lease(db)["zone"] == ZONE_B
 
 
-def test_a_stopped_machine_whose_zone_has_no_l4_is_deleted_then_created_in_the_next(db):
+def test_a_stopped_machine_whose_zone_has_no_l4_is_deleted_then_bulk_inserted(db):
     compute, clock = FakeCompute(zone=ZONE_B, full=(ZONE_B,)), Clock()
     _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
     changes = compute.changes()
     start_at = changes.index(("start", ZONE_B))
-    assert changes[start_at + 1:] == [("delete", ZONE_B), ("create", ZONE_C)]
-    assert list(compute.machines) == [ZONE_C]
+    assert changes[start_at + 1:] == [("delete", ZONE_B), ("create", ZONES)]
+    assert list(compute.machines) == [ZONE]
     # Never two machines: the delete finished before the create.
     assert all(len(zones) <= 1 for zones in compute.at_once)
-    assert _lease(db)["zone"] == ZONE_C
+    assert _lease(db)["zone"] == ZONE
     assert [s["zone"] for s in _lease(db)["stockouts"]] == [ZONE_B]
 
 
-def test_a_moving_machine_wraps_round_once_and_tries_each_zone_at_most_once(db):
+def test_a_moving_machine_is_inserted_once_and_its_refusal_counts_every_zone(db):
     compute, clock = FakeCompute(zone=ZONE_B, stockout=True), Clock()
     with pytest.raises(sm.NoFreeL4):
         _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
     tried = [z for n, z in compute.calls if n in ("start", "create")]
-    assert tried == [ZONE_B, ZONE_C, ZONE]
+    assert tried == [ZONE_B, ZONES]
     assert compute.machines == {}
-    assert _audit(db, sm.AUDIT_NO_L4)[0]["detail"]["zones"] == [ZONE_B, ZONE_C, ZONE]
+    assert _audit(db, sm.AUDIT_NO_L4)[0]["detail"]["zones"] == [ZONE_B, ZONE, ZONE_C]
+    assert [s["zone"] for s in _lease(db)["stockouts"]] == [ZONE_B, *ZONES]
 
 
 def test_two_machines_found_become_one_keeping_the_running_one(db):
@@ -436,7 +440,7 @@ def test_two_stopped_machines_become_one_keeping_the_first_in_zone_order(db):
     assert ("start", ZONE_B) in compute.calls
 
 
-def test_the_lease_is_held_by_the_start_through_every_zone(db):
+def test_the_lease_is_held_by_the_start_through_the_move(db):
     compute, clock = FakeCompute(zone=ZONE, full=(ZONE, ZONE_B)), Clock()
     machine = _machine(db, compute, clock)
     seen: list[tuple[str, Any]] = []
@@ -452,25 +456,42 @@ def test_the_lease_is_held_by_the_start_through_every_zone(db):
 
     compute.create, compute.delete = watch("create", create), watch("delete", delete)
     started = machine.start(ALICE, chosen=CHOSEN)
-    assert [v for v, *_ in seen] == ["delete", "create", "create"]
+    assert [v for v, *_ in seen] == ["delete", "create"]
     assert all(s[1:] == (ALICE.session_id, sm.STARTING, started.holder.generation) for s in seen)
     with pytest.raises(sm.MachineInUse):
         machine.start(BOB, chosen=CHOSEN)
 
 
-def test_a_later_zone_is_not_tried_once_the_four_minutes_are_spent(db):
+def test_the_insert_is_not_asked_once_the_four_minutes_are_spent(db):
+    compute, clock = FakeCompute(zone=ZONE, full=(ZONE,)), Clock()
+    start = compute.start
+
+    def slow(zone: str, **kwargs: Any) -> None:
+        clock.advance(sm.READY_SECONDS)  # its own zone's answer took the whole budget
+        start(zone, **kwargs)
+
+    compute.start = slow
+    with pytest.raises(sm.MachineNotReady) as raised:
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert "create" not in compute.names()
+    assert ZONE in str(raised.value) and ZONE_B in str(raised.value)
+    assert _lease(db)["state"] == sm.STOPPED
+
+
+def test_a_machine_placed_by_an_insert_that_ran_out_is_stopped_wherever_it_is(db):
     compute, clock = FakeCompute(status=None, full=(ZONE,)), Clock()
     create = compute.create
 
-    def slow(zone: str, **kwargs: Any) -> None:
-        clock.advance(sm.READY_SECONDS)  # the first zone's answer took the whole budget
-        create(zone, **kwargs)
+    def slow(zones: tuple[str, ...], **kwargs: Any) -> str:
+        made = create(zones, **kwargs)
+        compute.machines[made]["status"] = sm.INSTANCE_RUNNING
+        raise sm.ComputeError("the compute operation did not finish", code=sm.TIMEOUT)
 
     compute.create = slow
-    with pytest.raises(sm.MachineNotReady) as raised:
+    with pytest.raises(sm.MachineNotReady):
         _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
-    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
-    assert ZONE in str(raised.value) and ZONE_B in str(raised.value)
+    assert ("stop", ZONE_B) in compute.calls, "a machine the lease never learnt was left running"
+    assert compute.machines[ZONE_B]["status"] == sm.TERMINATED
     assert _lease(db)["state"] == sm.STOPPED
 
 
@@ -502,7 +523,7 @@ def _heartbeat_gaps(db: FakeFirestore, clock: Clock) -> list[float]:
 @pytest.mark.parametrize("cost, ends", [(50.0, sm.NoFreeL4), (100.0, sm.MachineNotReady)])
 def test_a_slow_stockout_in_every_zone_ends_inside_the_budget_with_the_lease_fresh(db, cost, ends):
     # A stopped machine in the first zone; every zone stocks out, and each
-    # operation (the start, the delete, each create) takes `cost` seconds.
+    # operation (the start, the delete, the bulk insert) takes `cost` seconds.
     compute, clock = FakeCompute(zone=ZONE, stockout=True), Clock()
     compute.clock, compute.cost = clock, {"start": cost, "delete": cost, "create": cost}
     gaps = _heartbeat_gaps(db, clock)
@@ -513,13 +534,11 @@ def test_a_slow_stockout_in_every_zone_ends_inside_the_budget_with_the_lease_fre
     assert gaps and max(gaps) < sm.HEARTBEAT_STALE_SECONDS, "the lease read as abandoned"
     # No operation was given longer than what was left of the budget.
     assert all(seconds <= sm.READY_SECONDS for _verb, seconds in compute.waits)
+    # One insert: start(a) and delete(a) took 2 × cost, the insert the rest
+    # or its own cost.
+    assert [z for n, z in compute.calls if n == "create"] == [ZONES]
     if ends is sm.MachineNotReady:
-        # start(a) and delete(a) took 200 s; create(b) ran out at 240 s.
-        assert str(raised.value).endswith(f"{ZONE_C} not tried")
-        assert ZONE in str(raised.value) and ZONE_B in str(raised.value)
-        assert [z for n, z in compute.calls if n == "create"] == [ZONE_B]
-    else:
-        assert [z for n, z in compute.calls if n == "create"] == [ZONE_B, ZONE_C]
+        assert "ran out" in str(raised.value)
     assert _lease(db)["state"] == sm.STOPPED
 
 
@@ -537,15 +556,16 @@ def test_a_start_whose_lease_was_taken_falls_back_without_touching_the_machine(d
     compute, clock = FakeCompute(status=None, full=(ZONE,)), Clock()
     create = compute.create
 
-    def taken(zone: str, **kwargs: Any) -> None:
+    def taken(zones: tuple[str, ...], **kwargs: Any) -> str:
         # The sweep (or another take) ends the lease while Compute answers.
         _lease(db)["generation"] += 1
-        create(zone, **kwargs)
+        return create(zones, **kwargs)
 
     compute.create = taken
     with pytest.raises(sm.MachineNotReady):
         _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
-    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
+    assert [z for n, z in compute.calls if n == "create"] == [ZONES]
+    # The machine is the new holder's (or the sweep's) to stop, not this start's.
     assert "stop" not in compute.names() and "delete" not in compute.names()
 
 
@@ -670,9 +690,11 @@ def test_the_config_reads_the_swarm_speech_environment():
     assert config.enabled and config.stream_url == "ws://10.40.0.9:8080/v1/stream"
     assert config.audience == "swarm-speech"
     assert config.zones == ZONES and config.zone == ZONE
-    assert [config.name_in(z) for z in ZONES] == ["swarm-speech-a", "swarm-speech-b", "swarm-speech-c"]
-    # A machine made before the template is the one its zone's name finds.
-    assert sm.SpeechConfig(instance="swarm-speech-a").name_in(ZONE_B) == "swarm-speech-a"
+    # One name in every zone: Google picks the zone, so the name cannot carry it.
+    assert config.name == "swarm-speech-machine" and config.region == REGION
+    # A machine made before the template is the one its whole name finds.
+    assert sm.SpeechConfig(instance="swarm-speech-a").name == "swarm-speech-a"
+    assert sm.SpeechConfig(zones=(ZONE_B,)).region == REGION
     assert config.sweep_callers == ("tick@example-project.iam.gserviceaccount.com",)
     assert not sm.SpeechConfig.from_env({}).enabled
 
@@ -729,28 +751,63 @@ def test_rest_compute_reads_a_stock_out_from_the_start_operation():
         sm.RestCompute(CONFIG, session=session).start(ZONE_B)
     assert raised.value.code in sm.STOCKOUT_CODES
     base = f"https://compute.googleapis.com/compute/v1/projects/proj/zones/{ZONE_B}"
-    assert session.requests[0][:2] == ("POST", f"{base}/instances/swarm-speech-b/start")
+    assert session.requests[0][:2] == ("POST", f"{base}/instances/swarm-speech-machine/start")
     assert session.requests[1][:2] == ("POST", f"{base}/operations/op-1/wait")
     assert all(ZONE_B in url for _m, url, _b in session.requests), "another zone was named"
 
 
-def test_rest_compute_creates_from_the_template_keeping_its_metadata():
+def test_rest_compute_creates_through_one_regional_bulk_insert_keeping_the_templates_metadata():
     template = {"properties": {"metadata": {"items": [
         {"key": "swarm-speech-caller", "value": "api@example-project.iam.gserviceaccount.com"},
         {"key": sm.META_IMAGE, "value": ""}]}}}
-    session = _Session([_Response(200, template), _Response(200, {"name": "op-2", "status": "DONE"})])
-    sm.RestCompute(CONFIG, session=session).create(
-        ZONE_C, machine_type="g2-standard-8", metadata={sm.META_IMAGE: CONFIG.image})
+    region = f"{sm.RestCompute.BASE}/projects/proj/regions/{REGION}"
+    session = _Session([
+        _Response(200, template),
+        _Response(200, {"name": "op-2", "status": "RUNNING"}),
+        _Response(200, {"name": "op-2", "status": "DONE", "instancesBulkInsertOperationMetadata": {
+            "perLocationStatus": {f"zones/{ZONE}": {"createdVmCount": 0},
+                                  f"zones/{ZONE_C}": {"createdVmCount": 1}}}}),
+    ])
+    placed = sm.RestCompute(CONFIG, session=session).create(
+        ZONES, machine_type="g2-standard-8", metadata={sm.META_IMAGE: CONFIG.image})
+    assert placed == ZONE_C, "the zone Google picked was not the one returned"
     assert session.requests[0][:2] == ("GET", f"{sm.RestCompute.BASE}/{CONFIG.template}")
     method, url, body = session.requests[1]
-    assert method == "POST" and url == (
-        f"{sm.RestCompute.BASE}/projects/proj/zones/{ZONE_C}/instances"
-        f"?sourceInstanceTemplate={CONFIG.template}")
-    assert body["name"] == "swarm-speech-c"
-    assert body["machineType"] == f"zones/{ZONE_C}/machineTypes/g2-standard-8"
-    items = {i["key"]: i["value"] for i in body["metadata"]["items"]}
+    assert method == "POST" and url == f"{region}/instances/bulkInsert"
+    assert body["count"] == "1" and body["minCount"] == "1"
+    assert body["sourceInstanceTemplate"] == CONFIG.template
+    assert body["perInstanceProperties"] == {"swarm-speech-machine": {}}
+    assert body["locationPolicy"]["locations"] == {f"zones/{z}": {"preference": "ALLOW"} for z in ZONES}
+    assert body["instanceProperties"]["machineType"] == "g2-standard-8"
+    items = {i["key"]: i["value"] for i in body["instanceProperties"]["metadata"]["items"]}
     assert items == {"swarm-speech-caller": "api@example-project.iam.gserviceaccount.com",
                      sm.META_IMAGE: CONFIG.image}
+    # The regional operation is waited on in the region, never in a zone.
+    assert session.requests[2][:2] == ("POST", f"{region}/operations/op-2/wait")
+
+
+def test_rest_compute_finds_the_placed_zone_when_the_operation_does_not_say():
+    session = _Session([
+        _Response(200, {}),
+        _Response(200, {"name": "op-5", "status": "DONE"}),
+        _Response(404, {"error": {"errors": [{"reason": "notFound"}]}}),
+        _Response(200, {"status": "PROVISIONING"}),
+    ])
+    placed = sm.RestCompute(CONFIG, session=session).create(
+        ZONES, machine_type="g2-standard-4", metadata={})
+    assert placed == ZONE_B
+
+
+def test_rest_compute_reads_a_refused_bulk_insert_as_a_stockout():
+    session = _Session([
+        _Response(200, {}),
+        _Response(200, {"name": "op-6", "status": "DONE", "error": {"errors": [
+            {"code": "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS", "message": "no L4"}]}}),
+    ])
+    with pytest.raises(sm.ComputeError) as raised:
+        sm.RestCompute(CONFIG, session=session).create(ZONES, machine_type="g2-standard-4",
+                                                       metadata={})
+    assert raised.value.code in sm.STOCKOUT_CODES
 
 
 def test_rest_compute_waits_no_longer_than_the_wait_and_ticks_between_pieces():
@@ -784,7 +841,7 @@ def test_rest_compute_reads_a_missing_machine_as_none_and_deletes_by_name():
     compute.delete(ZONE_B)
     compute.delete(ZONE_B)  # already gone: nothing to wait for
     assert session.requests[1][:2] == (
-        "DELETE", f"{sm.RestCompute.BASE}/projects/proj/zones/{ZONE_B}/instances/swarm-speech-b")
+        "DELETE", f"{sm.RestCompute.BASE}/projects/proj/zones/{ZONE_B}/instances/swarm-speech-machine")
 
 
 def test_rest_compute_sets_the_machine_type_and_metadata_by_name():

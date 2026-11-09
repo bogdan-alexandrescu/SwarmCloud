@@ -23,13 +23,13 @@ a second Start while it is held is refused, never waited on. It takes no pool
 slot (invariant 3 counts the front's Claude account, which swarm-voice leases
 for the session; the machine is a platform service, not an agent).
 
-START (§4.2). With the lease taken, the machine is found by its name in
-each of `SWARM_SPEECH_ZONES` (`<prefix><zone letter>`, one name per zone).
+START (§4.2). With the lease taken, the machine is found by its one name
+(`<prefix>machine`, the same in every zone) in each of `SWARM_SPEECH_ZONES`.
 Two found (a crash between a delete and a create) are made one: the running
-one is kept, else the first in zone order, and the other is deleted. Then, in
-the zones' order (owner, 2026-11-09: "deploys in a if capacity available, if
-not checks B and then C", revising the 2026-11-05 answer Q1's one zone, one
-machine):
+one is kept, else the first in zone order, and the other is deleted. Then
+(owner, 2026-11-09: "let Google pick the zone. Create the speech machine
+through ONE regional bulk insert whose location policy lists the configured
+zones", revising the same day's zone-by-zone order):
 
   * a STOPPED machine: a machine type that differs from Settings' is set
     (`setMachineType`) and the metadata the boot reads (`swarm-speech-image`,
@@ -38,21 +38,23 @@ machine):
     §5.3) reaches it at the next session and never starts it on its own; then
     `instances.start` in its own zone. A zone with no L4 free
     (`ZONE_RESOURCE_POOL_EXHAUSTED`, with or without details) deletes that
-    stopped machine, waits for the deletion, and goes on to the zones after
-    its own, wrapping round once, so each zone is tried at most once a Start;
-  * NO machine: `instances.insert` from the release's regional template
-    (SWARM_SPEECH_TEMPLATE) in the first zone, with Settings' machine type
-    and metadata in the create itself; a stockout tries the next zone;
+    stopped machine, waits for the deletion, and creates it as below;
+  * NO machine: ONE `regionInstances.bulkInsert` of one machine from the
+    release's regional template (SWARM_SPEECH_TEMPLATE), its location policy
+    allowing every configured zone, with Settings' machine type and metadata
+    in the create itself: Google places it in a zone with an L4 free, and the
+    operation says which. A stockout there means no listed zone had one;
   * a machine already RUNNING (a stop the sweep has not reached) serves as it
     is: its settings stay pending to the next start.
 
 Every stockout is recorded with its zone (an AUDIT_ZONE_STOCKOUT row, and on
-the lease's `stockouts`), and the lease's `zone` is the zone the start used.
-After the last zone the start is `NoFreeL4`: the lease ends, one AUDIT_NO_L4
+the lease's `stockouts`; a refused bulk insert, one per zone it listed), and
+the lease's `zone` is the zone the start used. A refused bulk insert is
+`NoFreeL4`: the lease ends, one AUDIT_NO_L4
 row counts the refused start, and the caller falls back to text. Then
 `instances.get` every POLL_SECONDS until RUNNING. READY_SECONDS is the budget
-of the whole Start, every zone's create and boot inside it: a zone is not
-tried once it is spent, and a machine not RUNNING inside it is stopped and
+of the whole Start, the create and boot inside it: the bulk insert is not
+asked once it is spent, and a machine not RUNNING inside it is stopped and
 `MachineNotReady`, which says which zones it tried and which it did not.
 Each Compute operation (a start, a delete, a create) is waited on for no
 longer than what is left of READY_SECONDS (a `Wait`), so a chain of them
@@ -172,6 +174,11 @@ NOT_FOUND = "NOT_FOUND"
 #: The code of an operation that outlasted its wait (`Wait`, OPERATION_SECONDS).
 TIMEOUT = "TIMEOUT"
 
+#: The machine's name after SWARM_SPEECH_INSTANCE's prefix: one name in every
+#: zone (`<name_prefix>-speech-machine`), which the IAM conditions' `<name_prefix>-speech-`
+#: prefix admits, and its boot disk takes.
+MACHINE_SUFFIX = "machine"
+
 META_IMAGE = "swarm-speech-image"
 META_MODELS = "swarm-speech-models"
 META_IDLE = "swarm-speech-idle-minutes"
@@ -246,11 +253,12 @@ class SpeechConfig:
     engine is not deployed (voice_speech off): no route touches Compute."""
 
     project: str = ""
-    #: The zones the machine is created or started in, in order (Terraform's
-    #: voice_speech.zones, owner 2026-11-09).
+    #: The zones the bulk insert's location policy allows, and the machine is
+    #: looked for in (Terraform's voice_speech.zones, owner 2026-11-09).
     zones: tuple[str, ...] = ()
-    #: The machine's name up to its zone letter, `<name_prefix>-speech-`; a
-    #: name that does not end in "-" is the one machine's whole name.
+    #: The machine's name prefix, `<name_prefix>-speech-` (the machine is
+    #: `<prefix>machine` in whichever zone Google placed it); a name that
+    #: does not end in "-" is the one machine's whole name.
     instance: str = ""
     #: The regional instance template a create names
     #: (projects/<p>/regions/<r>/instanceTemplates/<name>).
@@ -268,14 +276,25 @@ class SpeechConfig:
 
     @property
     def zone(self) -> str:
-        """The first zone: where a Start with no machine tries first."""
+        """The first zone: the Settings default, and the region's fallback."""
         return self.zones[0] if self.zones else ""
 
-    def name_in(self, zone: str) -> str:
-        """The machine's name in `zone`: `<prefix><zone letter>`."""
+    @property
+    def name(self) -> str:
+        """The machine's one name, the same in every zone: a regional bulk
+        insert lets Google pick the zone, so the name cannot carry it."""
         if not self.instance.endswith("-"):
             return self.instance
-        return self.instance + zone.rsplit("-", 1)[-1]
+        return self.instance + MACHINE_SUFFIX
+
+    @property
+    def region(self) -> str:
+        """The region the bulk insert asks: the template's, else the first
+        zone's."""
+        parts = self.template.split("/")
+        if "regions" in parts[:-1]:
+            return parts[parts.index("regions") + 1]
+        return self.zone.rsplit("-", 1)[0]
 
     @property
     def enabled(self) -> bool:
@@ -332,17 +351,20 @@ class Wait:
 
 
 class Compute(Protocol):
-    """The speech machine in one zone, by its name there (`name_in`). Every
-    call that changes it returns once Compute finished the operation, and
-    raises `ComputeError`: a STOCKOUT_CODES code when the zone has no L4,
-    TIMEOUT when the operation outlasts its `wait` (or OPERATION_SECONDS)."""
+    """The speech machine in one zone, by its one name (`SpeechConfig.name`).
+    Every call that changes it returns once Compute finished the operation,
+    and raises `ComputeError`: a STOCKOUT_CODES code when the zone (for a
+    create, every zone listed) has no L4, TIMEOUT when the operation outlasts
+    its `wait` (or OPERATION_SECONDS)."""
 
     def get(self, zone: str) -> Instance | None:
         """The machine in `zone`, or None when there is none."""
         ...
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
-               wait: Wait | None = None) -> None:
-        """Create it from the template; Compute starts it."""
+    def create(self, zones: tuple[str, ...], *, machine_type: str, metadata: Mapping[str, str],
+               wait: Wait | None = None) -> str:
+        """Create it from the template through ONE regional bulk insert whose
+        location policy lists `zones`, so Google places it in whichever has
+        an L4 free; the zone it placed it in. Compute starts it."""
         ...
     def delete(self, zone: str, *, wait: Wait | None = None) -> None: ...
     def start(self, zone: str, *, wait: Wait | None = None) -> None: ...
@@ -382,7 +404,10 @@ class RestCompute:
         return f"{self.BASE}/projects/{self._config.project}/zones/{zone}"
 
     def _url(self, zone: str) -> str:
-        return f"{self._zone_url(zone)}/instances/{self._config.name_in(zone)}"
+        return f"{self._zone_url(zone)}/instances/{self._config.name}"
+
+    def _region_url(self) -> str:
+        return f"{self.BASE}/projects/{self._config.project}/regions/{self._config.region}"
 
     @staticmethod
     def _error(body: Any, status: int) -> ComputeError:
@@ -409,7 +434,9 @@ class RestCompute:
             raise self._error(data, response.status_code)
         return data if isinstance(data, dict) else {}
 
-    def _finish(self, zone: str, operation: dict[str, Any], wait: Wait | None) -> None:
+    def _finish(self, zone: str, operation: dict[str, Any], wait: Wait | None) -> dict[str, Any]:
+        """Wait for `operation` (a zone's, or with `zone` empty the region's)
+        and return it DONE."""
         import requests
 
         seconds = self.OPERATION_SECONDS if wait is None else min(self.OPERATION_SECONDS, wait.seconds)
@@ -421,13 +448,15 @@ class RestCompute:
             if wait is not None:
                 wait.tick()
             try:
+                where = self._zone_url(zone) if zone else self._region_url()
                 operation = self._call(
-                    "POST", f"{self._zone_url(zone)}/operations/{operation.get('name', '')}/wait",
+                    "POST", f"{where}/operations/{operation.get('name', '')}/wait",
                     timeout=min(self.TIMEOUT_SECONDS, left))
             except requests.exceptions.Timeout:
                 continue  # the piece ended with the operation still running
         if operation.get("error"):
             raise self._error(operation, 409)
+        return operation
 
     def get(self, zone: str) -> Instance | None:
         try:
@@ -443,8 +472,8 @@ class RestCompute:
                         machine_type=str(data.get("machineType") or "").rsplit("/", 1)[-1],
                         metadata=items, fingerprint=str(meta.get("fingerprint") or ""), zone=zone)
 
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
-               wait: Wait | None = None) -> None:
+    def create(self, zones: tuple[str, ...], *, machine_type: str, metadata: Mapping[str, str],
+               wait: Wait | None = None) -> str:
         # An insert's metadata replaces the template's whole, so the
         # template's own items (the caller's email, no SSH keys, no serial
         # port) are read and kept, and the start's written over them.
@@ -453,12 +482,32 @@ class RestCompute:
                  for i in ((template.get("properties") or {}).get("metadata") or {}).get("items") or []
                  if isinstance(i, dict)}
         items.update(metadata)
-        self._finish(zone, self._call(
-            "POST", f"{self._zone_url(zone)}/instances?sourceInstanceTemplate={self._config.template}", {
-                "name": self._config.name_in(zone),
-                "machineType": f"zones/{zone}/machineTypes/{machine_type}",
-                "metadata": {"items": [{"key": k, "value": v} for k, v in sorted(items.items())]}}),
-            wait)
+        # One regional bulk insert of exactly one machine (owner, 2026-11-09:
+        # "let Google pick the zone"): the location policy lists the
+        # configured zones, and Google places it in one with an L4 free, or
+        # the whole insert answers a stockout.
+        operation = self._finish("", self._call("POST", f"{self._region_url()}/instances/bulkInsert", {
+            "count": "1",
+            "minCount": "1",
+            "sourceInstanceTemplate": self._config.template,
+            "perInstanceProperties": {self._config.name: {}},
+            "instanceProperties": {
+                "machineType": machine_type,
+                "metadata": {"items": [{"key": k, "value": v} for k, v in sorted(items.items())]}},
+            "locationPolicy": {
+                "locations": {f"zones/{z}": {"preference": "ALLOW"} for z in zones},
+                "targetShape": "ANY_SINGLE_ZONE"}}), wait)
+        # The zone it was placed in: the operation's per-zone count, else
+        # the zone the machine is found in.
+        status = (operation.get("instancesBulkInsertOperationMetadata") or {}).get("perLocationStatus") or {}
+        for location, counts in status.items():
+            if isinstance(counts, dict) and int(counts.get("createdVmCount") or 0) > 0:
+                return str(location).rsplit("/", 1)[-1]
+        for zone in zones:
+            if self.get(zone) is not None:
+                return zone
+        raise ComputeError("the bulk insert finished with no machine in any zone listed",
+                           code=NOT_FOUND)
 
     def delete(self, zone: str, *, wait: Wait | None = None) -> None:
         try:
@@ -840,9 +889,10 @@ class SpeechMachine:
 
     def _bring_up(self, holder: Holder, session: SessionRef, chosen: Mapping[str, str],
                   deadline: float, beat: list[float], tried: list[str]) -> tuple[str, bool]:
-        """Start the stopped machine, or create it, zone by zone (the module's
-        START); (the zone it is in, whether its image changed). `NoFreeL4`
-        after the last zone; `MachineNotReady` when the budget ends first,
+        """Start the stopped machine, or create it through one regional bulk
+        insert (the module's START); (the zone it is in, whether its image
+        changed). `NoFreeL4` when the insert finds no L4 in any listed zone;
+        `MachineNotReady` when the budget ends first,
         naming the zones tried and not tried. Every operation is waited on
         inside what is left of the budget, the heartbeat beating meanwhile."""
         zones = list(self.config.zones)
@@ -868,7 +918,6 @@ class SpeechMachine:
             # Already RUNNING (or booting): it serves as it is.
             self._use_zone(holder, instance.zone)
             return instance.zone, False
-        order = zones
         if instance is not None:
             own = instance.zone
             self._use_zone(holder, own)
@@ -887,33 +936,37 @@ class SpeechMachine:
                 # tries it there first.
                 raise self._ran_out(tried)
             # Its zone has no L4: the stopped machine leaves it, and the
-            # zones after its own are tried, wrapping round once.
+            # one bulk insert below lets Google place it again.
             self._compute.delete(own, wait=wait())
-            if own in zones:
-                at = zones.index(own)
-                order = zones[at + 1:] + zones[:at]
         machine = chosen.get("machine") or cat.DEFAULTS["machine"]
         if cat.machine(machine) is None:
             machine = cat.DEFAULTS["machine"]
         metadata = wanted_metadata(chosen, self.config.image)
-        for zone in order:
-            self._heartbeat_while_starting(holder, beat)
-            if self._clock() >= deadline:
-                raise self._ran_out(tried)
-            self._use_zone(holder, zone)
-            tried.append(zone)
-            try:
-                self._compute.create(zone, machine_type=machine, metadata=metadata, wait=wait())
-                return zone, bool(self.config.image)
-            except ComputeError as exc:
-                if exc.code not in STOCKOUT_CODES:
-                    raise
-            self._record_stockout(holder, session, zone)
-        raise NoFreeL4(f"No L4 free in {', '.join(tried)}.", zone=tried[-1] if tried else "")
+        self._heartbeat_while_starting(holder, beat)
+        if self._clock() >= deadline:
+            raise self._ran_out(tried)
+        # Where the machine will be is Google's pick: until the insert says,
+        # the lease names no zone, and a stop looks in every listed zone.
+        self._use_zone(holder, "")
+        tried.extend(z for z in zones if z not in tried)
+        try:
+            zone = self._compute.create(tuple(zones), machine_type=machine, metadata=metadata,
+                                        wait=wait())
+        except ComputeError as exc:
+            if exc.code not in STOCKOUT_CODES:
+                raise
+            # A bulk insert that places nothing found no L4 in any zone it
+            # listed: each is recorded as a stockout.
+            for refused in zones:
+                self._record_stockout(holder, session, refused)
+            raise NoFreeL4(f"No L4 free in {', '.join(tried)}.",
+                           zone=tried[-1] if tried else "") from None
+        self._use_zone(holder, zone)
+        return zone, bool(self.config.image)
 
     def start(self, session: SessionRef, *, chosen: Mapping[str, str]) -> Started:
-        """Take the lease and bring the machine to RUNNING in the first zone
-        with a free L4; `NoFreeL4` or `MachineNotReady` (the lease released)
+        """Take the lease and bring the machine to RUNNING in a zone with a
+        free L4; `NoFreeL4` or `MachineNotReady` (the lease released)
         when it cannot."""
         idle = idle_seconds_of(chosen)
         holder = self.take(session, idle_seconds=idle,
@@ -990,7 +1043,12 @@ class SpeechMachine:
         except StaleLease:
             log.info("speech stop refused: generation %s is stale", holder.generation)
             return False
-        self._stop_instance(str(lease.get("zone") or self.config.zone))
+        if lease.get("zone"):
+            self._stop_instance(str(lease["zone"]))
+        else:
+            # A start that failed inside the bulk insert: the machine, if
+            # Google made one, is in a zone the lease never learnt.
+            self._stop_unheld()
         now = self._now()
         started = _aware(lease.get("started_at")) or now
         minutes = round(max(0.0, (now - started).total_seconds()) / 60.0, 3)
@@ -1007,6 +1065,20 @@ class SpeechMachine:
         log.info("speech machine stopped generation=%s cause=%s minutes=%s",
                  holder.generation, cause, minutes)
         return True
+
+    def _stop_unheld(self) -> bool:
+        """Stop every machine in a listed zone that is not at rest."""
+        stopped = False
+        for zone in self.config.zones:
+            try:
+                instance = self._compute.get(zone)
+            except ComputeError as exc:
+                log.warning("speech machine get failed (%s)", exc.code)
+                continue
+            if instance is not None and instance.status not in AT_REST \
+                    and instance.status != INSTANCE_STOPPING:
+                stopped = self._stop_instance(zone) or stopped
+        return stopped
 
     def _stop_instance(self, zone: str) -> bool:
         try:

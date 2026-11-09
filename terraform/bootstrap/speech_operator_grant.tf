@@ -3,11 +3,12 @@
 # (docs/design/voice-it-own-speech.md §5 and §6 row I1; owner, 2026-11-09).
 # ---------------------------------------------------------------------------
 #
-# WHY A PROJECT GRANT. The owner's revision of 2026-11-09: "deploys in a if
-# capacity available, if not checks B and then C". swarm-api creates the
-# speech machine from its regional template in the first zone of
-# voice_speech.zones with a free L4, moves a stopped one out of a zone that
-# has none (delete, then create in the next zone), and keeps one machine.
+# WHY A PROJECT GRANT. The owner's revision of 2026-11-09: "let Google pick
+# the zone". swarm-api creates the speech machine from its regional template
+# through one regional bulk insert (regionInstances.bulkInsert, checked as
+# instances.create) whose location policy lists voice_speech.zones, moves a
+# stopped one out of a zone that has none (delete, then the same insert), and
+# keeps one machine.
 # Until then terraform/infra made the one instance and granted swarm-api
 # swarmSpeechOperator on it; an instance that does not exist yet has no IAM
 # policy to grant on, so the grant is on the project, CONDITIONED to what the
@@ -73,7 +74,7 @@ resource "google_project_iam_member" "api_speech_operator" {
 
   condition {
     title       = "the speech machine only"
-    description = "Voice it's speech machine, <name_prefix>-speech-<zone letter> in a zone of the platform's region, its boot disk, its template, its address and the subnet it is created on. Every other VM and disk is refused."
+    description = "Voice it's speech machine, <name_prefix>-speech-machine in a zone of the platform's region, its boot disk, its template, its address and the subnet it is created on. Every other VM and disk is refused."
     expression  = local.speech_operator_condition
   }
 

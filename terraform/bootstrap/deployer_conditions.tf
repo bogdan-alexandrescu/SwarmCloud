@@ -610,7 +610,7 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 # 2026-11-05; docs/design/voice-it-own-speech.md §5.1 and §6, part of #2688).
 #
 # terraform/infra/voice_speech.tf makes Voice it's speech machine -- ONE
-# instance, `<name_prefix>-speech-<zone letter>`, and the boot disk that takes
+# instance, `<name_prefix>-speech-machine`, and the boot disk that takes
 # its name -- once voice_speech.enabled and voice_it are on. The release
 # deployer applies that root, and none of its roles holds an instance's create,
 # delete, start or stop: networkAdmin and securityAdmin read and secure VMs,
@@ -646,7 +646,8 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #
 # SINCE 2026-11-09 (owner: "deploys in a if capacity available, if not checks
 # B and then C") a release no longer creates the machine: voice_speech.tf makes
-# its template and swarm-api creates the machine from it, zone by zone. The
+# its template and swarm-api creates the machine from it through one regional
+# bulk insert, Google picking the zone (revised the same day). The
 # instance verbs stay, so a release can still drop the instance-level grant
 # the machine carried (setIamPolicy) and, should the owner ever need it,
 # destroy a machine an earlier release made.
@@ -774,7 +775,7 @@ resource "google_project_iam_member" "deployer_speech_machine" {
 
   condition {
     title       = "the speech machine and its disk only"
-    description = "Voice it's speech instance and its boot disk, named <name_prefix>-speech-<zone letter> in a zone of the platform's region, and its regional template. Their GKE nodes and every other VM are refused."
+    description = "Voice it's speech instance and its boot disk, named <name_prefix>-speech-machine in a zone of the platform's region, and its regional template. Their GKE nodes and every other VM are refused."
     expression  = local.deployer_speech_machine_condition
   }
 }

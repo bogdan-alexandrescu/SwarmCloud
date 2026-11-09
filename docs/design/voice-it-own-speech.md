@@ -172,15 +172,16 @@ lease renewals share that CPU (voice-it.md §3.4).
 
 swarm-api's lifecycle (`swarm_api/voice/speech_machine.py`) with the `google-cloud-compute` client:
 
-1. Find the machine: `instances.get` of `<name_prefix>-speech-<zone letter>` in each zone of
-   `voice_speech.zones`. Two found (a crash between a move's delete and its create) are made one:
+1. Find the machine: `instances.get` of its one name, `<name_prefix>-speech-machine`, in each zone
+   of `voice_speech.zones`. Two found (a crash between a move's delete and its create) are made one:
    the running one is kept, else the first in zone order, and the other is deleted.
 2. **A stopped machine:** if settings changed since the last start (§11.4), `setMachineType` and
-   `setMetadata`; then `instances.start` in its own zone. **No machine:** `instances.insert` from
-   the regional template in the first zone, with Settings' machine type and metadata in the create.
-   A stockout moves on in zone order (§4.7). Then poll `instances.get` every 2 s until `RUNNING`.
-   Status `starting machine`. The four minutes are the budget of the whole Start, every zone's
-   create and boot included.
+   `setMetadata`; then `instances.start` in its own zone. **No machine:** ONE
+   `regionInstances.bulkInsert` of one machine from the regional template, its location policy
+   allowing every zone of `voice_speech.zones`, with Settings' machine type and metadata in the
+   create: Google picks the zone (§4.7). Then poll `instances.get` every 2 s until `RUNNING`.
+   Status `starting machine`. The four minutes are the budget of the whole Start, the create and
+   boot included.
 3. Open the socket to the VM's `/v1/stream`, retrying every 2 s; the server answers
    `{"t":"boot","phase":...}` while its systemd unit pulls a changed image (`updating speech
    server`), fetches a model not yet on disk (`fetching model <name>`) and loads models (`loading
@@ -243,8 +244,13 @@ without touching the machine, the same rule as invariant 5's fencing.
 
 ### 4.7 No free L4
 
-`instances.start` or `instances.insert` fails with `ZONE_RESOURCE_POOL_EXHAUSTED` (or
-`..._WITH_DETAILS`) when the zone has no L4 free.
+`instances.start` fails with `ZONE_RESOURCE_POOL_EXHAUSTED` (or `..._WITH_DETAILS`) when the zone
+has no L4 free; the bulk insert fails with it when no zone it lists has one.
+
+**Revised again by the owner, 2026-11-09:** "let Google pick the zone. Create the speech machine
+through ONE regional bulk insert whose location policy lists the configured zones (a, b, c)". It
+replaces the zone-by-zone creates below: swarm-api no longer walks the zones itself, and the
+machine has one name in every zone, since the zone is not known until Google places it.
 
 **Revised by the owner, 2026-11-09:** "deploys in a if capacity available, if not checks B and then
 C", applied both when the machine is created and every time it is started. It replaces the
@@ -252,20 +258,21 @@ C", applied both when the machine is created and every time it is started. It re
 met a stockout in its one zone: the release's instance create failed, and with it the whole held
 apply. Now, under the Start's lease, one machine at a time:
 
-* **No machine:** create it from the template in the first zone of `voice_speech.zones`; on a
-  stockout, the next zone; and so on.
+* **No machine:** one regional bulk insert of one machine from the template, its location policy
+  allowing every zone of `voice_speech.zones`; Google places it in one with an L4 free, and the
+  operation says which.
 * **A stopped machine:** start it in its own zone. On a stockout, delete it (the delete is waited
-  for, so there are never two) and create it in the next zone after its own, wrapping round once,
-  so each zone is tried at most once a Start.
-* **After the last zone**, swarm-api ends the lease, the session falls back to text exactly as
-  before, and the page says one line, "No L4 free in <zones>.", with a [Text] control (already in
-  text mode, the control only dismisses). The next Start tries again from the first zone.
-* **The four minutes** (§4.1) cover the whole Start. A zone is not tried once they are spent: the
-  session falls back as `not_ready`, and the reason names the zones tried and those not tried.
+  for, so there are never two) and create it through the same one bulk insert.
+* **A refused bulk insert** (no listed zone had an L4): swarm-api ends the lease, the session falls
+  back to text exactly as before, and the page says one line, "No L4 free in <zones>.", with a
+  [Text] control (already in text mode, the control only dismisses). The next Start asks again.
+* **The four minutes** (§4.1) cover the whole Start. The insert is not asked once they are spent:
+  the session falls back as `not_ready`, and the reason names the zones tried and those not tried.
+  A machine an insert placed after the budget ran out is stopped in whichever listed zone it is.
 
-Every stockout is recorded with its zone (a `voice_speech_zone_stockout` row in `voice_audit`, and
-on the lease's `stockouts`), the lease's `zone` is the zone the start used, and a Start refused in
-every zone is counted once (`voice_speech_no_l4`), per day in Telemetry, so a region that keeps
+Every stockout is recorded with its zone (a `voice_speech_zone_stockout` row in `voice_audit`, one
+per listed zone for a refused bulk insert, and on the lease's `stockouts`), the lease's `zone` is
+the zone the start used, and a Start refused in every zone is counted once (`voice_speech_no_l4`), per day in Telemetry, so a region that keeps
 running out shows.
 
 ### 4.8 What ends the session
@@ -279,7 +286,7 @@ fall back instead), each in `voice_audit` with the machine minutes.
 
 | Field | Value | Why |
 |---|---|---|
-| Name | `${name_prefix}-speech-<zone letter>`, e.g. `swarm-speech-a` | One name per zone; swarm-api keeps one machine (§4.7) |
+| Name | `${name_prefix}-speech-machine`, e.g. `swarm-speech-machine` | One name in every zone: Google picks the zone at the bulk insert (§4.7); swarm-api keeps one machine |
 | Type | `g2-standard-4` (Settings may pick another single-L4 g2) | Pick 1 |
 | GPU | 1 × `nvidia-l4`, attached by the g2 type | |
 | Scheduling | `provisioning_model = "STANDARD"`, `on_host_maintenance = "TERMINATE"`, `automatic_restart = false` | Invariant 6: Spot is off platform-wide. GPU VMs cannot live-migrate; `automatic_restart = false` so a host event leaves it stopped, never running with no session |
@@ -324,17 +331,17 @@ session.
 
 ### 5.4 Zones
 
-**Zones in order, one machine** (owner, 2026-11-09, revising Q1's one zone, one stopped machine of
-2026-11-05): `voice_speech.zones` lists the region's L4 zones in the order swarm-api tries them
-(§4.7). The installer writes the region's zones that offer the L4, in letter order. There is still
-only one machine, and so one $15-a-month disk: a move deletes the stopped machine before it creates
-the next. Settings **show** the zone (pick 5); the zone the machine is in is the lease's.
+**Google picks among the zones, one machine** (owner, 2026-11-09, revising Q1's one zone, one
+stopped machine of 2026-11-05, then the same day's zones in order): `voice_speech.zones` lists the
+region's L4 zones the bulk insert's location policy allows (§4.7). The installer writes the
+region's zones that offer the L4, in letter order. There is still only one machine, and so one
+$15-a-month disk: a move deletes the stopped machine before the bulk insert creates the next. Settings **show** the zone (pick 5); the zone the machine is in is the lease's.
 
 swarm-api looks for the machine only in the listed zones. Dropping a zone from `voice_speech.zones`
 while the machine sits in it orphans that machine: no Start finds it, and every create then fails on
 the reserved address (an error that is not a stockout, so the session falls back as not ready rather
 than moving). Before taking a zone out of the list, delete the machine in it (it is stopped between
-sessions, and the next Start creates it in the first listed zone with a free L4).
+sessions, and the next Start's bulk insert creates it in a listed zone with a free L4).
 
 Every Compute operation a Start makes (a start, a delete, a create) is waited on for no longer than
 what is left of the four minutes, and the lease's heartbeat is refreshed between operations and
@@ -799,7 +806,9 @@ The owner answered the design's four open questions; each answer wins over any e
 * **Q1. One zone.** One stopped machine; a stock-out falls back to text mode, and no second machine
   or zone is provisioned (§4.7, §5.1, §5.4, §11). **Revised 2026-11-09** by the owner: "deploys in
   a if capacity available, if not checks B and then C", at the machine's create and at every
-  start; still one machine (§4.7, §5.4).
+  start; still one machine (§4.7, §5.4). **Revised again the same day:** "let Google pick the zone":
+the machine is created through one regional bulk insert whose location policy lists the configured
+zones (§4.7).
 * **Q2. Its own logs.** The machine's account may write its own logs, `logging.logWriter`, beside
   `monitoring.metricWriter` for telemetry (§6 I5, I6; §12.1). The console's Telemetry stays on the
   socket path.

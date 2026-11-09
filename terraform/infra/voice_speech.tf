@@ -21,14 +21,16 @@
 #     metrics (row I3 with the owner's answer 2);
 #   * the TTL policy that deletes the telemetry's 5-second samples.
 #
-# ZONES IN ORDER, ONE MACHINE (owner, 2026-11-09: "deploys in a if capacity
-# available, if not checks B and then C", revising 2026-11-05's one zone, one
-# machine). voice_speech.zones lists the region's L4 zones in the order
-# swarm-api tries them. A Start with no machine creates it in the first zone
-# with a free L4; a Start of a stopped machine whose zone has none deletes it
-# and creates it in the next zone; after the last zone the session falls back
-# to text mode. Never two machines: there is one name per zone,
-# `<name_prefix>-speech-<zone letter>`, and swarm-api keeps one.
+# GOOGLE PICKS THE ZONE, ONE MACHINE (owner, 2026-11-09: "let Google pick the
+# zone. Create the speech machine through ONE regional bulk insert whose
+# location policy lists the configured zones", revising the same day's zones
+# in order and 2026-11-05's one zone). voice_speech.zones lists the region's
+# L4 zones the bulk insert allows. A Start with no machine creates it through
+# that one insert, and Google places it in a zone with a free L4; a Start of a
+# stopped machine whose zone has none deletes it and inserts it the same way;
+# an insert no zone could place falls back to text mode. Never two machines:
+# it has one name in every zone, `<name_prefix>-speech-machine`, and
+# swarm-api keeps one.
 #
 # A RELEASE NEVER CREATES THE MACHINE. Until 2026-11-09 this file made the
 # instance, and a zone with no free L4 failed the release's whole apply. The
@@ -76,7 +78,7 @@ locals {
   # The firewall pair's target, and the machine's only network tag.
   speech_tag = "${var.name_prefix}-speech"
 
-  # The zones swarm-api tries, in order (owner, 2026-11-09). `zone`, the
+  # The zones the bulk insert allows (owner, 2026-11-09). `zone`, the
   # one-zone form, is read as a one-zone list for one release; neither set is
   # the region's a, b and c.
   speech_zones = (
@@ -85,8 +87,8 @@ locals {
     ["${var.region}-a", "${var.region}-b", "${var.region}-c"]
   )
 
-  # The machine's name up to its zone letter (swarm-api names it
-  # `<prefix>-speech-<letter>` in the zone it creates it in), and so its boot
+  # The machine's name prefix (swarm-api names it `<prefix>-speech-machine`
+  # in whichever zone Google placed it), and so its boot
   # disk's, which takes the instance's name; the template's name starts with
   # it too. terraform/bootstrap/deployer_conditions.tf grants the release
   # deployer its verbs on names that start with exactly this

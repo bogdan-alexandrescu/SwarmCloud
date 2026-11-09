@@ -1039,6 +1039,10 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
         "projects/example-project/zones/us-central1-a/disks/swarm-speech-a",
         "projects/example-project/zones/us-central1-c/instances/swarm-speech-c",
         "projects/example-project/zones/us-central1-c/disks/swarm-speech-c",
+        # The one name swarm-api's regional bulk insert gives it, in
+        # whichever zone Google placed it (owner, 2026-11-09).
+        "projects/example-project/zones/us-central1-b/instances/swarm-speech-machine",
+        "projects/example-project/zones/us-central1-b/disks/swarm-speech-machine",
         ] : anytrue([
           for p in local.deployer_speech_machine_paths :
           startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""

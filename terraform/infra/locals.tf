@@ -1227,11 +1227,10 @@ locals {
       # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
       # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
       # deployed", and no speech route touches Compute.
-      #   _PROJECT/_ZONES/_INSTANCE/_TEMPLATE: the zones swarm-api creates
-      #     or starts the one machine in, in order (owner, 2026-11-09: the
-      #     first with a free L4, then the next; after the last, text), the
-      #     machine's name up to its zone letter, and the regional template
-      #     it creates it from.
+      #   _PROJECT/_ZONES/_INSTANCE/_TEMPLATE: the zones the one regional
+      #     bulk insert lets Google place the machine in (owner, 2026-11-09:
+      #     "let Google pick the zone"; none free, text), the machine's name
+      #     prefix, and the regional template it creates it from.
       #   _ADDR: the reserved internal address the relay dials on 8080.
       #   _AUDIENCE: the ID token's audience the speech server checks; the
       #     same constant the voice_speech output names.

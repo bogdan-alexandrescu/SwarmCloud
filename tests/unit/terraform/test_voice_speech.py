@@ -467,7 +467,7 @@ def deployer() -> str:
 def test_the_deployer_condition_names_the_prefix_the_machine_is_named_with(speech: str, deployer: str) -> None:
     """The prefix in the deployer's condition IS the one voice_speech.tf names
     the template with, and swarm-api names the machine
-    `<prefix><zone letter>` (SWARM_SPEECH_INSTANCE), whose boot disk takes the
+    `<prefix>machine` (SWARM_SPEECH_INSTANCE), whose boot disk takes the
     instance's name. A rename on either side alone would leave CI unable to
     make the template, or swarm-api the machine, or able to make something
     else."""
