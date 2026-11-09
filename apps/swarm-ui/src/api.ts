@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -15626,13 +15626,25 @@ export async function uploadWorkspacePlugin(tenantId: string, file: File, subdir
     return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was opened without a destination.' } }
   }
   const headers = Object.fromEntries(Object.entries(pluginRecord(upload.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  const tenant = chosenTenant()
   let sent: Response
   try {
-    sent = await fetch(url, { method: 'PUT', headers, body: file })
+    sent = await fetch(url, {
+      method: 'PUT', body: file,
+      headers: apiHeaders(headers, tenant),
+    })
   } catch {
     return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The archive could not be sent.' } }
   }
   if (!sent.ok) {
+    let code: string | null = null
+    try {
+      const parsed: unknown = await sent.json()
+      if (typeof parsed === 'object' && parsed !== null && typeof (parsed as { code?: unknown }).code === 'string') code = (parsed as { code: string }).code
+    } catch {
+      code = null
+    }
+    dropRefusedTenant(sent.status, code, tenant)
     return { status: 'error', error: { kind: 'server_error', httpStatus: sent.status, code: null, message: `The archive was refused by its destination (HTTP ${sent.status}).` } }
   }
   const start = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}/start`, { tenant_id: tenantId, intake_id: intake.intake_id })
