@@ -182,6 +182,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/mcp/test_build_board_wire.py` | `_hook` | `skip_call` | bash is not installed |
 | `tests/unit/mcp/test_plugin_agents_and_workflows.py` | `_node` | `skip_call` | node is not installed; CI runs these |
 | `tests/unit/mcp/test_plugin_bridge_install.py` | `test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it` | `skipif` | network: CI sets SWARM_BRIDGE_INSTALL_REF to a pushed commit to install |
+| `tests/unit/mcp/test_plugin_version_guard.py` | `_hook` | `skip_call` | sh, bash or ps is not installed |
 | `tests/unit/mcp/test_remote_steps_bridge.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/mcp/test_sc_auto_watch.py` | `_hook` | `skip_call` | bash is not installed |
 | `tests/unit/mcp/test_sc_browser_pane.py` | `_claude` | `skip_call` | the claude CLI is not installed here; `claude plugin validate` and `claude plugin test` need it (CI's runner has none) |
