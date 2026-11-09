@@ -122,11 +122,33 @@ def test_variable_is_off_by_default() -> None:
     assert "/family/" in body
 
 
+#: The environments that may turn own speech on. Dev does since 2026-11-08, the owner's plan for finishing
+#: Voice it; every other environment keeps it off until the owner turns it on there.
+SPEECH_ON_ENVIRONMENTS = {"dev"}
+
+#: A Deep Learning VM image BY NAME on Ubuntu 22.04 with an NVIDIA driver of 580 or later, the kind the
+#: installer pins: never a /family/ path, which moves under a stopped machine and would replace it.
+PINNED_IMAGE = re.compile(
+    r'^\s*image\s*=\s*"projects/deeplearning-platform-release/global/images/'
+    r'common-cu[0-9]+-ubuntu-2204-nvidia-(?P<driver>[0-9]+)-v[0-9]{8}"\s*$',
+    re.M,
+)
+
+
 @pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
-def test_every_environment_leaves_it_off(tfvars: Path) -> None:
+def test_own_speech_is_off_or_on_with_a_pinned_image(tfvars: Path) -> None:
     text = _code(tfvars.read_text())
     body = _block(text, r"^voice_speech\s*=")
-    assert re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M), f"{tfvars}: voice_speech is not off"
+    if tfvars.parent.name not in SPEECH_ON_ENVIRONMENTS:
+        assert re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M), f"{tfvars}: voice_speech is not off"
+        return
+    if re.search(r"^\s*enabled\s*=\s*false\s*$", body, re.M):
+        return
+    assert re.search(r"^\s*enabled\s*=\s*true\s*$", body, re.M), f"{tfvars}: voice_speech is neither on nor off"
+    pinned = PINNED_IMAGE.search(body)
+    assert pinned, f"{tfvars}: own speech is on without an image pinned by name"
+    assert int(pinned.group("driver")) >= 580, f"{tfvars}: the pinned image's NVIDIA driver is older than 580"
+    assert "/family/" not in body, f"{tfvars}: the image is a family path"
 
 
 def test_every_resource_is_behind_the_switch(speech: str) -> None:
