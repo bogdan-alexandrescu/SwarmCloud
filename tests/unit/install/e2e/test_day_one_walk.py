@@ -52,7 +52,7 @@ def person(mode: str, members: int = 5) -> Person:
         (r"Press Enter to accept", ""),
         (r"Workspace or Cloud Identity domain", "acme.example"),
         (r"Type the region again", "europe-west1"),
-        (r"Desktop client.s id", "1234567890-e2e.apps.googleusercontent.com"),
+        (r"Desktop client.s id", "123456789012-example.apps.googleusercontent.com"),
         (r"Type ASSIGN to approve", "ASSIGN"),
         (r"Create .* through the Groups API", "y"),
     ], confirms=[], pages=[

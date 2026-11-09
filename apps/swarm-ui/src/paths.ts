@@ -328,11 +328,15 @@ export const FIXED: Readonly<Record<string, string>> = {
   // connections, bell and Claude accounts (docs/design/user-profile.md).
   // Settings keeps it and nothing else since SSC-UI.
   'settings/profile': '/settings/profile',
-  // VOICE IT (docs/design/voice-it.md §10, phase one): its three panes, one
-  // path each. `/voice` opens Talk (SECTION_ROOTS).
+  // VOICE IT (docs/design/voice-it.md §10, phase one): its panes, one path
+  // each. `/voice` opens Talk (SECTION_ROOTS). Settings and Telemetry, the
+  // two tabs of one page (voice/Section.tsx), each have their own path, so
+  // each opens its own tab (owner's pick, 2026-11-08).
   'voice/talk': '/voice/talk',
   'voice/projects': '/voice/projects',
   'voice/preferences': '/voice/preferences',
+  'voice/settings': '/voice/settings',
+  'voice/telemetry': '/voice/telemetry',
   [HELP_ROUTE]: '/help',
 }
 

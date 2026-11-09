@@ -93,6 +93,7 @@ USAGE = "https://serviceusage.googleapis.com"
 STORAGE = "https://storage.googleapis.com/storage/v1"
 IAM = "https://iam.googleapis.com/v1"
 COMPUTE = "https://compute.googleapis.com/compute/v1"
+CONTAINER = "https://container.googleapis.com/v1"
 IAP = "https://iap.googleapis.com/v1"
 SECRET_MANAGER_API = "https://secretmanager.googleapis.com/v1"
 
@@ -318,6 +319,34 @@ class Gcp:
         from ..state import GcsObjectStore
 
         return GcsObjectStore(bucket)
+
+    # What an existing project holds (foundations.config) ---------------------
+
+    def clusters(self, project: str) -> list[dict[str, Any]]:
+        found = self._call("GET", f"{CONTAINER}/projects/{project}/locations/-/clusters") or {}
+        return list(found.get("clusters", []))
+
+    def networks(self, project: str) -> list[dict[str, Any]]:
+        return self._pages(f"{COMPUTE}/projects/{project}/global/networks", "items")
+
+    def subnetworks(self, project: str) -> list[dict[str, Any]]:
+        """Every region's subnetworks, from `subnetworks.aggregatedList`."""
+        found: list[dict[str, Any]] = []
+        params: dict[str, Any] = {}
+        while True:
+            page = self._call("GET", f"{COMPUTE}/projects/{project}/aggregated/subnetworks", params=params) or {}
+            for scoped in (page.get("items") or {}).values():
+                found.extend(scoped.get("subnetworks", []))
+            token = page.get("nextPageToken")
+            if not token:
+                return found
+            params["pageToken"] = token
+
+    def project_buckets(self, project: str) -> list[dict[str, Any]]:
+        return self._pages(f"{STORAGE}/b", "items", {"project": project})
+
+    def project_service_accounts(self, project: str) -> list[dict[str, Any]]:
+        return self._pages(f"{IAM}/projects/{project}/serviceAccounts", "accounts")
 
     # Edge ----------------------------------------------------------------------
 
@@ -736,7 +765,7 @@ def gcloud_account(gcloud: Callable[[], str | None] = find_gcloud) -> str:
 #: The scopes preflight's own application-default sign-in asks for: Cloud
 #: Platform for the engine and terraform, and the two read-only Directory
 #: scopes stage 6 (IDENTITY-STAGE) reads the Workspace customer and its admin
-#: roles with (BGD, 2026-10-30, decision 8).
+#: roles with (the owner, 2026-10-30, decision 8).
 ADC_SCOPES = (
     CLOUD_PLATFORM,
     "https://www.googleapis.com/auth/admin.directory.customer.readonly",
@@ -993,7 +1022,7 @@ def consumer_account(account: str) -> bool:
 
 class OrganizationStep(_Base):
     """A Google organisation the signed-in account can see, said FIRST in
-    stage 0, before any question (BGD, 2026-10-30: "Require an org, say so up
+    stage 0, before any question (the owner, 2026-10-30: "Require an org, say so up
     front"). With none, the step says that SwarmCloud needs one, opens the
     Cloud Identity Free sign-up and polls (a wait: the person never types
     "done") until an organisation appears. A consumer account (gmail.com)
@@ -1207,7 +1236,7 @@ class InputsStep(_Base):
                 return UNMET
             return MET if found else UNMET
 
-        # Past its bound the WaitGaveUp goes through as it is (BGD, 2026-10-30): the
+        # Past its bound the WaitGaveUp goes through as it is (the owner, 2026-10-30): the
         # engine pauses the run on it (ENGINE-WAIT-PAUSE), and it names what to look at.
         wait_until(self.id + ":billing-account", BILLING_WAIT, listed, clock=ctx.clock, events=ctx.events,
                    on_poll=getattr(ctx.engine, "_heartbeat", None))
@@ -2080,7 +2109,7 @@ class SizingQuotaStep(SizingStep):
             try:
                 known = self.gcp.cpu_quotas(ctx.project, str(ctx.state.region)).usable
             except ApiError as exc:
-                # BGD, 2026-10-30: one plain line, and the proposal stands.
+                # The owner, 2026-10-30: one plain line, and the proposal stands.
                 return Observation(MET, f"the {ctx.state.region} CPU quota could not be read "
                                         f"({_one_line(exc)}), so the proposed sizing is kept")
             if known is None:
@@ -2113,6 +2142,84 @@ class SizingQuotaStep(SizingStep):
                         offer_increase=not waited)
         remember(ctx, outputs={"sizing": chosen,
                                "sizing_cpu_quota": {"region": ctx.state.region, "cpus": quota}})
+
+
+# -- what an existing project already holds (generic-repository design §2.3, §2.4)
+
+#: What marks a resource as this deployment's own: the platform's name prefix
+#: (`guard_name_prefix` in scripts/lib/common.sh) or the managed-by label one of
+#: its writers sets (Terraform, this installer, bootstrap).
+OWN_PREFIX = "swarm-"
+OWN_MANAGERS = ("swarm-terraform", "swarm-install", "swarm-bootstrap")
+#: The label foundations.project gives a project it creates.
+CREATED_BY_INSTALL = ("managed-by", "swarm-install")
+
+
+def project_created_by_install(found: Mapping[str, Any] | None) -> bool:
+    """The project carries the label foundations.project gives one it creates."""
+    key, value = CREATED_BY_INSTALL
+    return str(((found or {}).get("labels") or {}).get(key, "")) == value
+
+
+def _owned(name: str, labels: Mapping[str, Any] | None) -> bool:
+    return name.startswith(OWN_PREFIX) or str((labels or {}).get("managed-by", "")) in OWN_MANAGERS
+
+
+def _api_off(exc: ApiError) -> bool:
+    from .foundations import service_disabled  # foundations imports this module
+
+    return service_disabled(exc)
+
+
+def neighbours(gcp: Gcp, project: str) -> list[dict[str, str]]:
+    """What `project` holds that this deployment does not own, as `{name, kind}`
+    sorted by kind and name, the kinds being the never-touch list's
+    (scripts/lib/destroy-guard-proof-cases.json): `cluster`, `network`,
+    `default-network`, `subnet`, `bucket`, `sa`.
+
+    With the Kubernetes Engine or Compute Engine API off, the project holds no
+    cluster, or no network, so that kind is empty. Buckets and service accounts
+    can outlive their API, so with either off, or any listing refused, this
+    raises: a list that missed a kind is never offered as the whole one."""
+    found: dict[str, str] = {}
+
+    def add(name: str, kind: str) -> None:
+        if name and name not in found:
+            found[name] = kind
+
+    def unless_off(call: Callable[[], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        try:
+            return call()
+        except ApiError as exc:
+            if _api_off(exc):
+                return []
+            raise
+
+    for cluster in unless_off(lambda: gcp.clusters(project)):
+        if not _owned(str(cluster.get("name", "")), cluster.get("resourceLabels")):
+            add(str(cluster.get("name", "")), "cluster")
+    for network in unless_off(lambda: gcp.networks(project)):
+        name = str(network.get("name", ""))
+        if not _owned(name, None):
+            add(name, "default-network" if name == "default" else "network")
+    for subnet in unless_off(lambda: gcp.subnetworks(project)):
+        # The default network's subnets are all called `default`; the guard
+        # matches them through the network field (`default_network_hit`).
+        if str(subnet.get("network", "")).rstrip("/").endswith("/default"):
+            continue
+        if not _owned(str(subnet.get("name", "")), None):
+            add(str(subnet.get("name", "")), "subnet")
+    for bucket in gcp.project_buckets(project):
+        if not _owned(str(bucket.get("name", "")), bucket.get("labels")):
+            add(str(bucket.get("name", "")), "bucket")
+    own_domain = f"@{project}.iam.gserviceaccount.com"
+    for account in gcp.project_service_accounts(project):
+        email = str(account.get("email", ""))
+        # Only accounts made in the project: Google's own service agents and
+        # default accounts live under other domains and are no one's to list.
+        if email.endswith(own_domain) and not _owned(email, None):
+            add(email, "sa")
+    return [{"name": name, "kind": kind} for name, kind in sorted(found.items(), key=lambda i: (i[1], i[0]))]
 
 
 # -- preflight.release (lesson 27) -------------------------------------------------

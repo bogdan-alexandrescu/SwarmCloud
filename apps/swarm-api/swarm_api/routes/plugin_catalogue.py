@@ -30,8 +30,9 @@ same commit or a `github` source; or an uploaded `.zip`, `.tar.gz` or
 `.tgz`. Dependencies ship bundled: a marketplace entry that installs from
 npm or pip, or names a bare git URL, is refused, and there is no other kind.
 A workspace's private repository is read with a token minted from that
-workspace's own GitHub App installation for the one repository, read-only,
-used once and never stored; the platform catalogue reads public repositories.
+workspace's own GitHub App installation for the one repository, contents
+read and nothing else, used once and never stored; the platform catalogue
+reads public repositories.
 
 QUARANTINE, THEN THE NETWORK-LESS INTAKE (section 2.2, the owner's Q7).
 swarm-api streams the archive of exactly the resolved commit into
@@ -133,12 +134,14 @@ class IntakeSettings:
 
 
 def intake_settings(environ: Mapping[str, str] | None = None) -> IntakeSettings:
-    env = os.environ if environ is None else environ
-    callers = env.get(CALLERS_ENV, "")
+    # Each read spelled `(os.environ if environ is None else environ).get(...)`,
+    # the shape scripts/lib/check-env-parity.sh matches against what
+    # terraform/infra/locals.tf sets.
+    callers = (os.environ if environ is None else environ).get(CALLERS_ENV, "")
     return IntakeSettings(
-        bucket=env.get(BUCKET_ENV, "").strip(),
-        job=env.get(JOB_ENV, "").strip() or DEFAULT_JOB,
-        audience=env.get(AUDIENCE_ENV, "").strip(),
+        bucket=(os.environ if environ is None else environ).get(BUCKET_ENV, "").strip(),
+        job=(os.environ if environ is None else environ).get(JOB_ENV, "").strip() or DEFAULT_JOB,
+        audience=(os.environ if environ is None else environ).get(AUDIENCE_ENV, "").strip(),
         callers=frozenset(c.strip().lower() for c in callers.split(",") if c.strip()),
     )
 
@@ -526,14 +529,15 @@ def _check_github(repository: str, ref: str) -> None:
 
 
 def _token(ctx: AppContext, scope: Scope, repository: str) -> str | None:
-    """A workspace's private repository: a read token from ITS installation,
-    for this one repository, used once. None reads it as public."""
+    """A workspace's private repository: a contents-only read token from ITS
+    installation, for this one repository, used once
+    (`InstallationTokens.contents_token`). None reads it as public."""
     source = ctx.forge_installations
-    if scope.kind != ps.WORKSPACE or source is None or not hasattr(source, "run_token"):
+    if scope.kind != ps.WORKSPACE or source is None or not hasattr(source, "contents_token"):
         return None
     owner, repo = repository.split("/", 1)
     try:
-        return source.run_token(scope.tenant_id, owner, repo, write=False)
+        return source.contents_token(scope.tenant_id, owner, repo)
     except Exception:  # noqa: BLE001 -- no installation: the repository is read as public
         return None
 

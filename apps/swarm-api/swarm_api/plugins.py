@@ -48,6 +48,14 @@ what the existing digest in the signed dispatch block binds, so no second
 signed field exists. Work contracts are behind SWARM_WORK_CONTRACTS: with it
 off a step naming plugins is refused, never stored to run without them.
 
+THE PLATFORM SWITCH. `enabled` is the platform's plugins switch (the owner's
+pick on PR 3648, docs/design/managed-plugins.md section 11): a platform
+admin's signed console setting when one is stored, else SWARM_PLUGINS, the
+Terraform value, `on` unless it says exactly `off`. Off, `check_step` refuses
+every step that names a plugin, whichever way it came, before anything else
+is checked; on, nothing changes. It ships `on`, so it refuses nothing a
+caller relied on until an admin turns it off.
+
 MANAGED PLUGINS AND THE WORKSPACE'S DEFAULTS (docs/design/managed-plugins.md
 sections 6.4, 7 and 8, lane 7 of section 17). The same field also names
 managed installs, by install id, beside the built-ins: no mode, no skills,
@@ -78,6 +86,7 @@ answered yet).
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from dataclasses import dataclass, field as dataclass_field
@@ -89,8 +98,8 @@ from pydantic import Field
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
+from . import platformswitches, workcontract
 from . import pluginstore as ps
-from . import workcontract
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import RoleAdminRequired, ValidationFailed
@@ -115,6 +124,31 @@ from .plugincatalogue import (
 from .qasettings import authorize_read, can_edit
 from .roles import ADMIN, RoleStore
 from .schemas import StrictModel
+
+
+# --- the platform switch ----------------------------------------------------
+
+#: The Terraform value of the platform's plugins switch (var.plugins_switch).
+SWITCH_ENV = "SWARM_PLUGINS"
+
+
+def enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The switch: the platform admin's console setting when one is stored
+    and verifies (`platformswitches`), else the Terraform value in `environ`
+    (`environment_enabled`)."""
+    stored = platformswitches.stored(platformswitches.PLUGINS)
+    if stored is not None:
+        return stored == "on"
+    return environment_enabled(environ)
+
+
+def environment_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The Terraform value: on unless SWARM_PLUGINS is exactly `off`, so a
+    deployment that sets nothing accepts the plugins it accepted before. The
+    read is written `(os.environ if environ is None else environ).get(...)`
+    so that scripts/lib/check-env-parity.sh sees swarm-api read the key
+    terraform sets."""
+    return (os.environ if environ is None else environ).get(SWITCH_ENV, "").strip() != "off"
 
 
 # --- a step's plugins, at submission ---------------------------------------
@@ -175,7 +209,13 @@ def check_step(plugins: Mapping[str, Mapping[str, Any]], *, tenant_id: str,
     platform cannot run for it: a name outside the catalogue, a profile that
     cannot load it, a mode that needs the question bridge, a skill its mode
     does not offer, no skill at all, or a plugin the workspace has not allowed under a signed
-    block. Nothing to check for a step that names none."""
+    block; and any plugin at all while the platform's plugins switch is off
+    (`enabled`). Nothing to check for a step that names none."""
+    if plugins and not enabled():
+        raise _refuse(
+            "plugins are off on this platform: a platform admin turns them on in "
+            f"Admin › Plugins › Platform ({SWITCH_ENV})", step_id=step_id, field=field,
+            plugins=sorted(plugins))
     allowed = allowed_plugins(tenant_id, settings_doc, mac) if plugins else ()
     for name, chosen in sorted(plugins.items()):
         entry = CATALOGUE.get(name)
@@ -312,6 +352,8 @@ DEFAULT_MODE = "unattended"
 #: sign it), or because the caller's own contract names other plugins.
 SKIP_CONTRACTS_OFF = "work_contracts_off"
 SKIP_CONTRACT_NAMES_PLUGINS = "work_contract_names_plugins"
+#: A default skipped because the platform's plugins switch is off (`enabled`).
+SKIP_PLATFORM_OFF = "plugins_off_on_platform"
 
 
 @dataclass(frozen=True)
@@ -358,12 +400,26 @@ def merge_step_plugins(chosen: Mapping[str, Mapping[str, Any]], off: Iterable[st
     a managed install named with a mode or skills, a built-in named with
     overrides or without a mode, a name both loaded and turned off, an
     install the step adds and cannot run, and more than eight plugins in all.
+    With the platform's plugins switch off (`enabled`) it refuses a step
+    naming any plugin and skips every default.
     `caller_contract_plugins`: the caller sent a work contract naming
     plugins, so a built-in default is skipped rather than refused as a
     contract that names different plugins than the field."""
     # Imported here: pluginconfig imports this module's constants.
     from . import pluginconfig as pcfg
 
+    # The platform's plugins switch, before anything else: off, a step naming
+    # a plugin either way is refused, as `check_step` refuses it, and the
+    # workspace's defaults are skipped and recorded, never a refusal.
+    if not enabled():
+        if chosen:
+            raise _refuse(
+                "plugins are off on this platform: a platform admin turns them on in "
+                f"Admin › Plugins › Platform ({SWITCH_ENV})", step_id=step_id,
+                field=STEP_FIELD, plugins=sorted(chosen))
+        return StepPlugins(skipped=[
+            {"install_id": name, "code": SKIP_PLATFORM_OFF}
+            for name in signed_defaults(tenant_id, settings_doc, mac) if name not in set(off)])
     try:
         ps.refuse_removed(store, tenant_id, list(chosen), field=STEP_FIELD)
     except ValidationFailed as exc:
@@ -626,6 +682,8 @@ __all__ = [
     "catalogue_view",
     "check_step",
     "contract_id_of",
+    "enabled",
+    "environment_enabled",
     "merge_step_plugins",
     "normalise",
     "offered_skills",

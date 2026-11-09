@@ -121,7 +121,7 @@ def test_verified_with_pinned_release_key(tmp_path: Path, monkeypatch: pytest.Mo
     verify = next(argv for argv in exec_.calls if argv[1] == "verify")
     assert verify[verify.index("--key") + 1] == str(pinned)
 
-    # Absent (BGD has not run scripts/release-home.sh yet): refused, nothing verified or copied.
+    # Absent (the owner has not run scripts/release-home.sh yet): refused, nothing verified or copied.
     monkeypatch.setattr(bootstrap, "RELEASE_KEY", tmp_path / "absent.pub")
     step, exec_, ctx = rig(tmp_path, {"swarm-api": digest()}, key=bootstrap.release_key)
     with pytest.raises(ReleaseKeyMissing, match="release-home.sh"):

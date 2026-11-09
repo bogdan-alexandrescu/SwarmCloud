@@ -37,7 +37,7 @@ from swarm_api.voice import sessions as vs
 from swarm_api.waker import NullWaker
 
 from .conftest import NoForgeTokens, OfflineSecretMetadata, api_settings, auth_header, seed_task
-from .test_voice_sessions import OFFER, FakeVoice
+from .test_voice_sessions import OFFER, FakeVoice, gpt_live_settings
 
 VOICE_TOKEN = "token-swarm-voice-" + secrets.token_hex(4)
 OTHER_SA_TOKEN = "token-other-sa-" + secrets.token_hex(4)
@@ -71,6 +71,7 @@ def _build(db, tokens, group_map, objects, voice, *, aud: str | None = AUDIENCE,
     app = create_app(ctx)
     app.state.secret_metadata = OfflineSecretMetadata()
     app.state.voice_client = voice
+    gpt_live_settings(db)
     return TestClient(app, raise_server_exceptions=False)
 
 

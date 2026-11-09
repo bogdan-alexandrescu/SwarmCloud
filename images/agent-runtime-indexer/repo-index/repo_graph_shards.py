@@ -167,7 +167,7 @@ objects go per sweep, in batched `gcloud storage rm` calls; whatever is past
 the bound waits for the next run. Without `--keep-commit` it retires nothing.
 
 OUT OF THE WRITE (lane INDEX-RETENTION, part of #1693). Measured 2026-10-20
-on ai-studio: the write's own sweep timed out in 19 of 19 runs, reading 163
+on a peer application: the write's own sweep timed out in 19 of 19 runs, reading 163
 manifests one at a time after a write of 86-97 s. The worker now runs `write
 --no-sweep` and then `sweep` as a phase of its own, with the commits swarm-api
 named in the signed prompt. The kept manifests are read `SWEEP_READ_PROCESSES`
@@ -321,7 +321,7 @@ BATCH_FILES = 500
 GET_PROCESSES = 4
 #: Manifests the sweep reads side by side, one `gcloud storage cat` each: the
 #: download's bound, for the download's reasons. Measured 2026-10-20 on
-#: ai-studio (#1693): 163 manifests read one at a time ran the graph write's
+#: a peer application (#1693): 163 manifests read one at a time ran the graph write's
 #: sweep out of its budget in 19 of 19 runs.
 SWEEP_READ_PROCESSES = GET_PROCESSES
 #: Upload rounds: a round whose batch stopped on a blob that appeared

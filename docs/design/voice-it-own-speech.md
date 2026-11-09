@@ -172,9 +172,16 @@ lease renewals share that CPU (voice-it.md §3.4).
 
 swarm-api's lifecycle (`swarm_api/voice/speech_machine.py`) with the `google-cloud-compute` client:
 
-1. If settings changed since the last start (§11.4): `setMachineType` and `setMetadata` on the
-   stopped instance.
-2. `instances.start`; poll `instances.get` every 2 s until `RUNNING`. Status `starting machine`.
+1. Find the machine: `instances.get` of its one name, `<name_prefix>-speech-machine`, in each zone
+   of `voice_speech.zones`. Two found (a crash between a move's delete and its create) are made one:
+   the running one is kept, else the first in zone order, and the other is deleted.
+2. **A stopped machine:** if settings changed since the last start (§11.4), `setMachineType` and
+   `setMetadata`; then `instances.start` in its own zone. **No machine:** ONE
+   `regionInstances.bulkInsert` of one machine from the regional template, its location policy
+   allowing every zone of `voice_speech.zones`, with Settings' machine type and metadata in the
+   create: Google picks the zone (§4.7). Then poll `instances.get` every 2 s until `RUNNING`.
+   Status `starting machine`. The four minutes are the budget of the whole Start, the create and
+   boot included.
 3. Open the socket to the VM's `/v1/stream`, retrying every 2 s; the server answers
    `{"t":"boot","phase":...}` while its systemd unit pulls a changed image (`updating speech
    server`), fetches a model not yet on disk (`fetching model <name>`) and loads models (`loading
@@ -238,11 +245,35 @@ without touching the machine, the same rule as invariant 5's fencing.
 ### 4.7 No free L4
 
 `instances.start` fails with `ZONE_RESOURCE_POOL_EXHAUSTED` (or `..._WITH_DETAILS`) when the zone
-has no L4 free. swarm-api ends the lease, the session falls back to text, and the page says one
-line: "No L4 free in us-central1-a." with a [Text] control (already in text mode, the control only
-dismisses). **No other zone is tried**: there is one stopped machine in one zone (Q1, §5.4), and a
-stock-out falls back to text mode for that session; the next Start tries the same machine again.
-Stock-outs are counted per day in Telemetry, so a zone that keeps running out shows.
+has no L4 free; the bulk insert fails with it when no zone it lists has one.
+
+**Revised again by the owner, 2026-11-09:** "let Google pick the zone. Create the speech machine
+through ONE regional bulk insert whose location policy lists the configured zones (a, b, c)". It
+replaces the zone-by-zone creates below: swarm-api no longer walks the zones itself, and the
+machine has one name in every zone, since the zone is not known until Google places it.
+
+**Revised by the owner, 2026-11-09:** "deploys in a if capacity available, if not checks B and then
+C", applied both when the machine is created and every time it is started. It replaces the
+2026-11-05 answer (Q1: one zone, one machine, a stockout falls back to text), after dev's release
+met a stockout in its one zone: the release's instance create failed, and with it the whole held
+apply. Now, under the Start's lease, one machine at a time:
+
+* **No machine:** one regional bulk insert of one machine from the template, its location policy
+  allowing every zone of `voice_speech.zones`; Google places it in one with an L4 free, and the
+  operation says which.
+* **A stopped machine:** start it in its own zone. On a stockout, delete it (the delete is waited
+  for, so there are never two) and create it through the same one bulk insert.
+* **A refused bulk insert** (no listed zone had an L4): swarm-api ends the lease, the session falls
+  back to text exactly as before, and the page says one line, "No L4 free in <zones>.", with a
+  [Text] control (already in text mode, the control only dismisses). The next Start asks again.
+* **The four minutes** (§4.1) cover the whole Start. The insert is not asked once they are spent:
+  the session falls back as `not_ready`, and the reason names the zones tried and those not tried.
+  A machine an insert placed after the budget ran out is stopped in whichever listed zone it is.
+
+Every stockout is recorded with its zone (a `voice_speech_zone_stockout` row in `voice_audit`, one
+per listed zone for a refused bulk insert, and on the lease's `stockouts`), the lease's `zone` is
+the zone the start used, and a Start refused in every zone is counted once (`voice_speech_no_l4`), per day in Telemetry, so a region that keeps
+running out shows.
 
 ### 4.8 What ends the session
 
@@ -255,7 +286,7 @@ fall back instead), each in `voice_audit` with the machine minutes.
 
 | Field | Value | Why |
 |---|---|---|
-| Name | `${name_prefix}-speech`, e.g. `swarm-speech` | Exactly one machine (Q1) |
+| Name | `${name_prefix}-speech-machine`, e.g. `swarm-speech-machine` | One name in every zone: Google picks the zone at the bulk insert (§4.7); swarm-api keeps one machine |
 | Type | `g2-standard-4` (Settings may pick another single-L4 g2) | Pick 1 |
 | GPU | 1 × `nvidia-l4`, attached by the g2 type | |
 | Scheduling | `provisioning_model = "STANDARD"`, `on_host_maintenance = "TERMINATE"`, `automatic_restart = false` | Invariant 6: Spot is off platform-wide. GPU VMs cannot live-migrate; `automatic_restart = false` so a host event leaves it stopped, never running with no session |
@@ -265,14 +296,18 @@ fall back instead), each in `voice_audit` with the machine minutes.
 | Network | swarm-vpc subnet, reserved internal address, **no external IP**, tag `swarm-speech` | §3.2 |
 | Shielded VM | secure boot off (the NVIDIA module is unsigned on that image), vTPM and integrity monitoring on | Measured by the machine lane (M1) |
 | Labels | `local.labels` + `component = "voice-speech"` | `managed-by=swarm-terraform` so `make destroy` handles it |
-| Metadata | `swarm-speech-image` (digest), `swarm-speech-models` (JSON of model names and revisions), `swarm-speech-caller` (swarm-api's service account email), `swarm-speech-idle-minutes` | Set by Terraform at create, by swarm-api at each start (§11.4) |
-| Desired state | `desired_status = "TERMINATED"`, `lifecycle { ignore_changes = [desired_status, machine_type, metadata["swarm-speech-image"], metadata["swarm-speech-models"]] }` | Terraform creates it stopped; swarm-api owns start, stop and those fields afterwards |
+| Metadata | `swarm-speech-image` (digest), `swarm-speech-models` (JSON of model names and revisions), `swarm-speech-caller` (swarm-api's service account email), `swarm-speech-idle-minutes` | The template's carries the caller and the idle minutes; swarm-api writes the image and models into the create, and rewrites them at each start of a stopped machine (§11.4) |
+| Who makes it | A regional instance template (`google_compute_region_instance_template`) in Terraform; the machine itself is created by swarm-api from it, in a zone of `voice_speech.zones` (§4.7) | Since 2026-11-09 a release never creates a GPU machine, so a stockout can never fail a release |
 
-Terraform: `terraform/infra/voice_speech.tf`, gated by a new variable `voice_speech` (object:
-`enabled` default `false`, `zone` default `"us-central1-a"` (one string, not a list: one machine,
-Q1), `image` the pinned Deep Learning VM image, `disk_gb` default 150), and enabled only when
-`voice_it` is `"on"`. Every default is
-explained next to it in `variables.tf`.
+Terraform: `terraform/infra/voice_speech.tf`, gated by a variable `voice_speech` (object:
+`enabled` default `false`, `zones` default `[]`, read as the region's `-a`, `-b` and `-c` (an
+ordered list of the region's L4 zones, every one in `var.region`; owner, 2026-11-09), `image` the
+pinned Deep Learning VM image, `disk_gb` default 150), and enabled only when `voice_it` is `"on"`.
+The old one-zone `zone` is read as a one-zone list for one release, its validation message pointing
+to `zones`. Terraform makes the template, the address, the firewall pair, the sweep and the speech
+account's grants, never the machine: the instance a release made before 2026-11-09 left Terraform's
+state through a `removed` block with `destroy = false`, so no plan deletes it, and swarm-api finds
+it by its name. Every default is explained next to it in `variables.tf`.
 
 ### 5.2 The speech server container
 
@@ -296,16 +331,29 @@ session.
 
 ### 5.4 Zones
 
-**One zone, one stopped machine** (Q1): a stock-out falls back to text mode (§4.7) rather than to a
-second machine idling on a $15-a-month disk. The zone is `voice_speech.zone`, set at install;
-Settings **show** it (pick 5) but cannot change it: a new zone is a new machine, a Terraform change.
+**Google picks among the zones, one machine** (owner, 2026-11-09, revising Q1's one zone, one
+stopped machine of 2026-11-05, then the same day's zones in order): `voice_speech.zones` lists the
+region's L4 zones the bulk insert's location policy allows (§4.7). The installer writes the
+region's zones that offer the L4, in letter order. There is still only one machine, and so one
+$15-a-month disk: a move deletes the stopped machine before the bulk insert creates the next. Settings **show** the zone (pick 5); the zone the machine is in is the lease's.
+
+swarm-api looks for the machine only in the listed zones. Dropping a zone from `voice_speech.zones`
+while the machine sits in it orphans that machine: no Start finds it, and every create then fails on
+the reserved address (an error that is not a stockout, so the session falls back as not ready rather
+than moving). Before taking a zone out of the list, delete the machine in it (it is stopped between
+sessions, and the next Start's bulk insert creates it in a listed zone with a free L4).
+
+Every Compute operation a Start makes (a start, a delete, a create) is waited on for no longer than
+what is left of the four minutes, and the lease's heartbeat is refreshed between operations and
+between each operation's wait pieces, so a chain of slow stockouts ends in the text fallback inside
+the budget, naming the zones tried and not tried, and never reads to the sweep as an abandoned lease.
 
 ## 6. IAM, as rows for the owner to approve
 
 | # | Principal | Role | On | Why |
 |---|---|---|---|---|
-| I1 | swarm-api's service account (`google_service_account.platform["swarm-api"]`) | custom role `swarmSpeechOperator`: `compute.instances.get`, `.start`, `.stop`, `.setMachineType`, `.setMetadata`, `.getSerialPortOutput` | **each speech instance only** (`google_compute_instance_iam_member`) | Start, stop, read and apply settings to that machine and nothing else |
-| I2 | swarm-api's service account | `iam.serviceAccountUser` | the machine's service account only | Only if `start` or `setMetadata` requires acting as the attached account; M3 checks, and the row is dropped if not |
+| I1 | swarm-api's service account (`google_service_account.platform["swarm-api"]`) | custom role `swarmSpeechOperator`: `compute.instances.get`, `.start`, `.stop`, `.setMachineType`, `.setMetadata`, `.getSerialPortOutput`, and since 2026-11-09 `compute.instances.create`, `.delete`, `.setLabels`, `.setTags`, `.setServiceAccount`, `compute.disks.create`, `.delete`, `.setLabels`, `compute.instanceTemplates.get`, `.useReadOnly`, `compute.subnetworks.use`, `compute.addresses.useInternal` | **the project, conditioned** (`terraform/bootstrap/speech_operator_grant.tf`, revised 2026-11-09 from an instance-level grant): an instance or disk named `<name_prefix>-speech-*` in a zone of `var.region` (the deployer's linted `extract()` form), the template, the reserved address and the subnet | Create from the template, start, stop, read, delete and apply settings to the speech machine in any listed zone, and to no other VM. Granted by bootstrap, which the owner applies, so it never sits on CI's grantable list |
+| I2 | swarm-api's service account | `iam.serviceAccountUser` | the machine's service account only | A create from the template attaches that account, and `setMetadata` on a machine that runs as it, both need actAs: the row stays |
 | I3 | `swarm-speech` (new, created in `terraform/bootstrap/platform_service_accounts.tf` as the others are) | `roles/artifactregistry.reader` | the platform's Artifact Registry repository only | Pull its own image |
 | I4 | the Cloud Scheduler job's service account (the existing scheduler invoker) | `run.invoker` on swarm-api (already held for `doctor.tf`'s job) | swarm-api | The sweep; no new grant if the doctor's account is reused |
 | I5 | `swarm-speech` | `roles/logging.logWriter` | the project (the role has no narrower resource) | **Its own logs** (the owner, Q2): the Ops Agent ships the speech server container's stdout and stderr, and the systemd units' journal (image pull, model fetch, watchdog power-off) to Cloud Logging, under `logName` `swarm-speech`. So a machine that fails before swarm-api's socket opens, or powers itself off, leaves its reason in Logging, where it outlives the boot, not only in serial output. The server logs counts, phases and errors, never audio, words or the ID token |
@@ -535,7 +583,7 @@ tts_models: [{name: "kokoro-82m", hf: "hexgrad/Kokoro-82M", revision: <pinned>,
               voices: ["af_heart", "am_michael", "bf_emma", "bm_george"]}]   # default af_heart
 idle:       [{name: "2m", seconds: 120}, {name: "5m", seconds: 300},        # default 5m
              {name: "10m", seconds: 600}, {name: "15m", seconds: 900}]
-zone:       voice_speech.zone, read only: shown, never written (Q1)
+zone:       voice_speech.zones, read only: shown, never written (Q1, revised 2026-11-09)
 ```
 
 The settings lane reads every other machine's on-demand us-central1 price (machine plus L4) from the
@@ -718,11 +766,11 @@ offers own speech"** (the owner, Q4); no other lane edits the installer for it:
 
 * An **optional choice** in stage 0 beside Voice it: "Voice it's own speech engine (one stopped L4
   machine; about $0.71 an hour while used, $15 a month for its disk)". Yes sets
-  `voice_speech.enabled = true` and `voice_speech.zone` in the tfvars; default no while `voice_it`
-  is off. One machine in one zone (Q1): the zone is the first of `region`'s zones offering
-  `nvidia-l4` (`acceleratorTypes.list`), shown in the choice.
-* The `swarm-speech` service account comes from `terraform/bootstrap` with the others; the machine,
-  firewall, IAM (I1-I6, including logging.logWriter and monitoring.metricWriter for its own logs and
+  `voice_speech.enabled = true` and `voice_speech.zones` in the tfvars; default no while `voice_it`
+  is off. The zones are every one of `region`'s zones offering `nvidia-l4`
+  (`acceleratorTypes.list`), in letter order, shown in the choice (owner, 2026-11-09; §4.7).
+* The `swarm-speech` service account comes from `terraform/bootstrap` with the others; the machine's
+  template, firewall, IAM (I1-I6, including logging.logWriter and monitoring.metricWriter for its own logs and
   metrics, Q2), the Ops Agent's startup script, sweep and TTL from `infra.pass-1`. No secret slot:
   the engine reads no OpenAI key (Q3), and the front's and planner's Claude accounts are the pool's.
 * `compute`, `logging` and `monitoring.googleapis.com` are already enabled
@@ -756,7 +804,11 @@ offers own speech"** (the owner, Q4); no other lane edits the installer for it:
 The owner answered the design's four open questions; each answer wins over any earlier default.
 
 * **Q1. One zone.** One stopped machine; a stock-out falls back to text mode, and no second machine
-  or zone is provisioned (§4.7, §5.1, §5.4, §11).
+  or zone is provisioned (§4.7, §5.1, §5.4, §11). **Revised 2026-11-09** by the owner: "deploys in
+  a if capacity available, if not checks B and then C", at the machine's create and at every
+  start; still one machine (§4.7, §5.4). **Revised again the same day:** "let Google pick the zone":
+the machine is created through one regional bulk insert whose location policy lists the configured
+zones (§4.7).
 * **Q2. Its own logs.** The machine's account may write its own logs, `logging.logWriter`, beside
   `monitoring.metricWriter` for telemetry (§6 I5, I6; §12.1). The console's Telemetry stays on the
   socket path.

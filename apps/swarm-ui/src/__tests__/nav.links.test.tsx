@@ -27,7 +27,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash, spineOf } from '../App'
 import { HELP_ROUTE } from '../help'
 import { addressToPath, pathToAddress } from '../paths'
-import { PANEL_PAGES, SkyShell, hrefOf } from '../Spine'
+import { PANEL_PAGES, SkyShell, hrefOf, voicePagesFor } from '../Spine'
 
 /**
  * The props App hands the agent list, captured. The list itself is not what
@@ -359,9 +359,11 @@ describe('the Voice it section', () => {
     ['talk', 'Talk', '/voice/talk'],
     ['projects', 'Projects', '/voice/projects'],
     ['preferences', 'Preferences', '/voice/preferences'],
+    ['settings', 'Settings', '/voice/settings'],
+    ['telemetry', 'Telemetry', '/voice/telemetry'],
   ]
 
-  it('is a section with Talk, Projects and Preferences, in that order', () => {
+  it('is a section with Talk, Projects, Preferences, Settings and Telemetry, in that order', () => {
     const voice = SECTIONS.find((s) => s.id === 'voice')
     expect(voice, 'SECTIONS has no Voice it section').toBeDefined()
     expect(voice!.label).toBe('Voice it')
@@ -381,13 +383,73 @@ describe('the Voice it section', () => {
     expect(pathToAddress('/voice')?.address).toBe('voice/talk')
   })
 
-  it.each(PANES)('heads the %s page with its tab label', (tab, label) => {
+  // Settings and Telemetry head their page once the identity read answers
+  // (voice/Section.tsx `VoiceSettingsSectionScreen`); their own cases are below.
+  it.each(PANES.slice(0, 3))('heads the %s page with its tab label', (tab, label) => {
     window.location.hash = `#voice/${tab}`
     render(<App />)
     expect(screen.getByRole('heading', { level: 1, name: label })).toBeTruthy()
   })
 
-  it('draws Voice it on the spine, after Admin, with its three pages, for the person it is open to', async () => {
+  /** The live console at `/voice/<tab>`, its `/v1/tenants/me` saying `isAdmin`; every other read fails. */
+  async function liveApp(isAdmin: boolean, tab: string) {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/v1/tenants/me') && !url.includes('/v1/tenants/mine')) return json(me(isAdmin))
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    window.history.pushState(null, '', `/voice/${tab}`)
+    const { App: Live } = await import('../App')
+    render(<Live />)
+  }
+
+  /** The panel's Voice it entries, by label, once the identity read has answered. */
+  function voiceEntries(): string[] {
+    return [...document.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent?.trim() ?? '')
+  }
+
+  // MUTATION: drop either case from App.tsx's routes, or open the
+  // component's default tab whatever the route says, and this fails.
+  it.each([
+    ['settings', 'Settings'],
+    ['telemetry', 'Telemetry'],
+  ])('opens /voice/%s on its own tab, with its own lit entry, for a platform admin', async (tab, label) => {
+    await liveApp(true, tab)
+    expect(await screen.findByRole('heading', { level: 1, name: label })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true')
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings', 'Telemetry']))
+    const lit = document.querySelector('.sk-pk[aria-current="page"]')
+    expect(lit?.getAttribute('href')).toBe(`/voice/${tab}`)
+  })
+
+  // MUTATION: drop `voicePagesFor`'s filter, or Telemetry's `admin` mark,
+  // and the Telemetry entry is offered to someone it would refuse.
+  it('opens /voice/settings for anyone else, read only, with no Telemetry entry', async () => {
+    await liveApp(false, 'settings')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Telemetry' })).toBeNull()
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings']))
+  })
+
+  it('shows anyone else Settings, never Telemetry, on /voice/telemetry', async () => {
+    await liveApp(false, 'telemetry')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Telemetry' })).toBeNull()
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings']))
+  })
+
+  it('marks Telemetry admin in SECTIONS and in the panel, and keeps it from anyone else', () => {
+    const tabs = SECTIONS.find((s) => s.id === 'voice')!.tabs
+    expect(tabs.filter((t) => t.admin === true).map((t) => t.id)).toEqual(['telemetry'])
+    expect(PANEL_PAGES.voice.filter((p) => p.admin === true).map((p) => p.key)).toEqual(['telemetry'])
+    expect(voicePagesFor(false).map((p) => p.key)).toEqual(['talk', 'projects', 'preferences', 'settings'])
+    expect(voicePagesFor(null).map((p) => p.key)).toEqual(['talk', 'projects', 'preferences', 'settings'])
+    expect(voicePagesFor(true).map((p) => p.key)).toEqual(PANES.map(([tab]) => tab))
+  })
+
+  it('draws Voice it on the spine, after Admin, with its pages, for the person it is open to', async () => {
     await liveShell(true)
     const item = await waitFor(() => {
       const a = document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="voice"]')

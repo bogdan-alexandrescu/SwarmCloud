@@ -13,6 +13,7 @@ answered through a pseudo-terminal, because the script refuses anything else.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import pickle
 import pty
@@ -26,6 +27,14 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "resign-workspace-settings.sh"
 FAKES_DIR = REPO / "tests" / "unit" / "control_plane"
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+PROJECT = placeholder_deployment.PROJECT
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
@@ -99,8 +108,9 @@ class World:
             SWARM_TEST_KEY_FILE=str(key_file),
             SWARM_TEST_KEY_ASKED=str(self.asked),
             PYTHONPATH=os.pathsep.join(filter(None, [str(site), env.get("PYTHONPATH", "")])),
-            PROJECT_ID="saga-agents-staging",
+            PROJECT_ID=PROJECT,
             ENVIRONMENT="dev",
+            **placeholder_deployment.child_env(PROJECT, "dev"),
             NO_COLOR="1",
             TMPDIR=str(tmp),
         )
@@ -161,7 +171,7 @@ def test_a_dry_run_prints_the_plan_and_writes_nothing(world) -> None:
     assert judgment.key_id(world.key) in proc.stderr
     assert world.key not in proc.stderr + proc.stdout
     assert world.asked.read_text().strip() == (
-        "projects/saga-agents-staging/secrets/swarm-settings-key/versions/latest")
+        f"projects/{PROJECT}/secrets/swarm-settings-key/versions/latest")
 
 
 def test_apply_signs_after_the_typed_word_and_a_second_run_writes_nothing(world) -> None:

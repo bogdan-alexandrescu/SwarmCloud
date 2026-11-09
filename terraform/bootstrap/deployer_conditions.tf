@@ -610,7 +610,7 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 # 2026-11-05; docs/design/voice-it-own-speech.md §5.1 and §6, part of #2688).
 #
 # terraform/infra/voice_speech.tf makes Voice it's speech machine -- ONE
-# instance, `<name_prefix>-speech-<zone letter>`, and the boot disk that takes
+# instance, `<name_prefix>-speech-machine`, and the boot disk that takes
 # its name -- once voice_speech.enabled and voice_it are on. The release
 # deployer applies that root, and none of its roles holds an instance's create,
 # delete, start or stop: networkAdmin and securityAdmin read and secure VMs,
@@ -639,6 +639,18 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #                                       on this one instance
 #   disks.create, .get, .setLabels,     its boot disk, made with it and deleted
 #   .delete                             with it (auto_delete)
+#   instanceTemplates.create, .delete,  the machine's regional template
+#   .get, .useReadOnly                  (since 2026-11-09): voice_speech.tf makes
+#                                       it, replaces it when it changes and
+#                                       reads it
+#
+# SINCE 2026-11-09 (owner: "deploys in a if capacity available, if not checks
+# B and then C") a release no longer creates the machine: voice_speech.tf makes
+# its template and swarm-api creates the machine from it through one regional
+# bulk insert, Google picking the zone (revised the same day). The
+# instance verbs stay, so a release can still drop the instance-level grant
+# the machine carried (setIamPolicy) and, should the owner ever need it,
+# destroy a machine an earlier release made.
 #
 # What the create also checks and this role does NOT carry, because the
 # deployer already holds it: compute.subnetworks.use and the internal
@@ -661,13 +673,18 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #   resource.name.extract("projects/<p>/zones/<region>-{zone}/instances/<prefix>") != ""
 #
 # so the name must sit in a zone of var.region (voice_speech.tf checks the
-# machine's zone is in it) and start with `<name_prefix>-speech-`, dash
-# included: `swarm-speechx` is refused. NO TYPE GUARD (rule 2's remedy is the
-# opposite of what this needs): every permission in the role is checked on an
-# instance or a disk, so a request on any other type is meant to be refused.
-# Their three GKE nodes, the regional address `swarm-speech`, an instance of
-# ours of any other name and the same name in another region are all refused;
-# tests/terraform/deployer_iam.tftest.hcl replays each. 1 operator.
+# machine's zones are in it) and start with `<name_prefix>-speech-`, dash
+# included: `swarm-speechx` is refused. The template is regional, so the
+# third test is a plain
+#
+#   resource.name.startsWith("projects/<p>/regions/<region>/instanceTemplates/<prefix>")
+#
+# NO TYPE GUARD (rule 2's remedy is the opposite of what this needs): every
+# permission in the role is checked on an instance, a disk or a template, so a
+# request on any other type is meant to be refused. Their three GKE nodes, the
+# regional address `swarm-speech`, an instance or template of ours of any
+# other name and the same name in another region are all refused;
+# tests/terraform/deployer_iam.tftest.hcl replays each. 2 operators.
 #
 # WHAT IS NOT MEASURED: that Compute evaluates resource.name on
 # instances.create against the instance being created. The documentation says
@@ -697,10 +714,18 @@ locals {
     }
   ]
 
-  deployer_speech_machine_condition = join(" || ", [
-    for p in local.deployer_speech_machine_paths :
-    "resource.name.extract(\"${p.zone_prefix}{zone}${p.name_prefix}\") != \"\""
-  ])
+  # The machine's regional instance template (voice_speech.tf, since
+  # 2026-11-09), named from the same prefix. Regional, so no zone sits in its
+  # path and a startsWith() reaches the name.
+  deployer_speech_template_prefix = "projects/${var.project_id}/regions/${var.region}/instanceTemplates/${local.deployer_speech_machine_prefix}"
+
+  deployer_speech_machine_condition = join(" || ", concat(
+    [
+      for p in local.deployer_speech_machine_paths :
+      "resource.name.extract(\"${p.zone_prefix}{zone}${p.name_prefix}\") != \"\""
+    ],
+    ["resource.name.startsWith(\"${local.deployer_speech_template_prefix}\")"],
+  ))
 }
 
 resource "google_project_iam_custom_role" "deployer_speech_machine" {
@@ -710,7 +735,7 @@ resource "google_project_iam_custom_role" "deployer_speech_machine" {
   role_id = "swarmSpeechDeployer"
   title   = "Swarm Speech Machine Deployer"
 
-  description = "managed-by=swarm-terraform; the release deployer makes, stops and deletes Voice it's speech machine and its boot disk. Granted with a condition on that machine's names only."
+  description = "managed-by=swarm-terraform; the release deployer makes Voice it's speech machine's template, and stops and deletes the machine and its boot disk. Granted with a condition on those names only."
   stage       = "GA"
 
   permissions = [
@@ -718,6 +743,10 @@ resource "google_project_iam_custom_role" "deployer_speech_machine" {
     "compute.disks.delete",
     "compute.disks.get",
     "compute.disks.setLabels",
+    "compute.instanceTemplates.create",
+    "compute.instanceTemplates.delete",
+    "compute.instanceTemplates.get",
+    "compute.instanceTemplates.useReadOnly",
     "compute.instances.create",
     "compute.instances.delete",
     "compute.instances.get",
@@ -746,7 +775,7 @@ resource "google_project_iam_member" "deployer_speech_machine" {
 
   condition {
     title       = "the speech machine and its disk only"
-    description = "Voice it's one speech instance and its boot disk, named <name_prefix>-speech-<zone letter> in a zone of the platform's region. Their GKE nodes and every other VM are refused."
+    description = "Voice it's speech instance and its boot disk, named <name_prefix>-speech-machine in a zone of the platform's region, and its regional template. Their GKE nodes and every other VM are refused."
     expression  = local.deployer_speech_machine_condition
   }
 }

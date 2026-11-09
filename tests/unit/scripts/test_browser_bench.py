@@ -33,6 +33,10 @@ ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "scripts" / "browser_bench.py"
 SCRIPT = ROOT / "scripts" / "browser-bench.sh"
 DOC = ROOT / "docs" / "browser-bench.md"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 
 def _load():
@@ -194,7 +198,9 @@ def test_unknown_prompt_or_tool_is_refused():
 def _bench_env(tmp_path: Path) -> dict[str, str]:
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "TERM": "dumb",
            "SWARM_BROWSER_BENCH_DIR": str(tmp_path / "bench"), "NO_COLOR": "1",
-           "PROJECT_ID": "saga-agents-staging"}
+           # The placeholder deployment: its project, region and never-touch list.
+           "PROJECT_ID": placeholder_deployment.PROJECT,
+           **placeholder_deployment.child_env(placeholder_deployment.PROJECT)}
     return env
 
 

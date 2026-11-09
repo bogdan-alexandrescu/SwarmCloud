@@ -1,0 +1,100 @@
+/* VOICE IT, TELEMETRY: Settings' cards (voice-settings.css's .vset-card, tick,
+   button and segmented control) with a timeline. Every colour is a console
+   token, so both themes hold; the series tokens are stroke and fill only.
+
+   THE PHONE. Every chart is an SVG scaled to its box and every row wraps, so
+   nothing here holds a width a 390 screen cannot. */
+
+.vtel-sub { color: var(--text-dim); font-size: var(--t-meta); }
+.vtel-num { font-variant-numeric: tabular-nums; }
+.vtel-empty { margin: 0; color: var(--text-dim); font-size: var(--t-body); }
+
+.vtel-live { display: flex; flex-direction: column; gap: 12px; min-width: 0; box-sizing: border-box; padding: 14px 18px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.vtel-live.is-idle { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.vtel-live-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
+.vtel-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--info); }
+
+.vtel-figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; margin-top: 8px; }
+.vtel-fig { margin: 0; min-width: 0; }
+.vtel-fig figcaption { color: var(--text-dim); font-size: var(--t-meta); margin-bottom: 4px; }
+
+.vtel-bars { position: relative; min-width: 0; }
+.vtel-bars svg { display: block; width: 100%; height: 80px; }
+.vtel-bars .g { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.vtel-bars .b { fill: var(--series-1); }
+.vtel-bars.s-3 .b { fill: var(--series-3); }
+.vtel-bars .r { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.vtel-rule { position: absolute; right: 0; transform: translateY(-110%); padding: 0 4px; border-radius: 4px; background: var(--surface);
+  color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+.vtel-spark { display: block; width: 100%; height: 32px; }
+.vtel-spark .l { fill: none; stroke: var(--series-1); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.vtel-spark .a { fill: color-mix(in srgb, var(--series-1) 16%, transparent); }
+.vtel-spark .p { fill: var(--series-1); }
+.vtel-spark.s-2 .l { stroke: var(--series-2); }
+.vtel-spark.s-2 .a { fill: color-mix(in srgb, var(--series-2) 16%, transparent); }
+.vtel-spark.s-2 .p { fill: var(--series-2); }
+.vtel-spark.s-5 .l { stroke: var(--series-5); }
+.vtel-spark.s-5 .a { fill: color-mix(in srgb, var(--series-5) 16%, transparent); }
+.vtel-spark.s-5 .p { fill: var(--series-5); }
+
+.vtel-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 1fr)); gap: 10px; min-width: 0; margin-top: 10px; }
+.vtel-tile { min-width: 0; padding: 10px 12px; border-radius: var(--r-tile); background: color-mix(in srgb, var(--surface-2) 70%, var(--surface)); }
+.vtel-tile-k { color: var(--text-dim); font-size: var(--t-micro); }
+.vtel-tile-v { font-variant-numeric: tabular-nums; font-size: var(--t-meta); font-weight: 500; overflow-wrap: anywhere; }
+
+.vtel-tot { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0 10px; color: var(--text-dim); font-size: var(--t-meta); font-variant-numeric: tabular-nums; }
+
+.vtel-cap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; min-width: 0; margin-top: 10px; font-size: var(--t-meta); }
+.vtel-cap-k { color: var(--text-dim); overflow-wrap: anywhere; }
+.vtel-cap-bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.vtel-cap-bar i { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+.vtel-cap.is-warn .vtel-cap-bar i { background: var(--warn-ink); }
+.vtel-cap.is-bad .vtel-cap-bar i { background: var(--bad); }
+.vtel-cap-v { font-variant-numeric: tabular-nums; text-align: right; }
+
+.vtel-sessions { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.vtel-slist { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.vtel-srow { border-bottom: 1px solid var(--line-soft); }
+.vtel-srow:last-child { border-bottom: 0; }
+.vtel-sline { appearance: none; box-sizing: border-box; width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 10px 18px;
+  border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--t-meta); text-align: left; cursor: pointer; }
+.vtel-sline:hover { background: var(--surface-2); }
+.vtel-srow.is-on .vtel-sline { background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); box-shadow: inset 3px 0 0 var(--series-1); }
+.vtel-when { min-width: 0; font-weight: 500; }
+
+.vtel-pct { width: 100%; border-collapse: collapse; font-size: var(--t-meta); font-variant-numeric: tabular-nums; }
+.vtel-pct th, .vtel-pct td { padding: 6px 4px; border-bottom: 1px solid var(--line-soft); text-align: right; }
+.vtel-pct th:first-child { text-align: left; font-weight: 400; color: var(--text-dim); }
+.vtel-pct thead th { color: var(--text-dim); font-size: var(--t-micro); font-weight: 500; }
+
+.vtel-dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 0; font-size: var(--t-meta); }
+.vtel-dl dt { color: var(--text-dim); }
+.vtel-dl dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.vtel-phases { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vtel-ptrack { display: flex; gap: 2px; height: 12px; min-width: 0; }
+.vtel-pseg { min-width: 2px; border-radius: 3px; }
+.vtel-plist { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; font-size: var(--t-meta); }
+.vtel-plist li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.vtel-plist i { width: 10px; height: 10px; border-radius: 2px; }
+.vtel-pseg.p-1, .vtel-plist i.p-1 { background: var(--series-1); }
+.vtel-pseg.p-2, .vtel-plist i.p-2 { background: var(--series-2); }
+.vtel-pseg.p-3, .vtel-plist i.p-3 { background: var(--series-3); }
+.vtel-pseg.p-4, .vtel-plist i.p-4 { background: var(--series-4); }
+.vtel-pseg.p-5, .vtel-plist i.p-5 { background: var(--series-5); }
+
+.vtel-tabs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+.vtel-tab { appearance: none; border: 0; background: transparent; padding: 8px 12px; margin-bottom: -1px; color: var(--text-dim);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font); cursor: pointer; border-bottom: 2px solid transparent; }
+.vtel-tab:hover { color: var(--text); }
+.vtel-tab[aria-selected='true'] { color: var(--text); border-bottom-color: var(--text); }
+
+@media (max-width: 720px) {
+  .vtel-figs { grid-template-columns: minmax(0, 1fr); }
+  .vtel-live { padding-left: 14px; padding-right: 14px; }
+  .vtel-sline { padding-left: 14px; padding-right: 14px; }
+  .vtel-cap { grid-template-columns: minmax(0, 1fr) auto; }
+  .vtel-cap-bar { grid-column: 1 / -1; grid-row: 2; }
+}

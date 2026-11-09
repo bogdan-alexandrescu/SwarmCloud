@@ -11,4 +11,4 @@ env:
   SWARM_VOICE_URL:
     setter: terraform/infra/locals.tf:1137
   VOICE_IT_PEOPLE:
-    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1127; unset on purpose, so Voice it is open to PLATFORM_OWNER alone (voice-it.md section 1: BGD only in version one)'
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1127; unset on purpose, so Voice it is open to PLATFORM_OWNER alone (voice-it.md section 1: the owner only in version one)'

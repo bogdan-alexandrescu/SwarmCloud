@@ -9,7 +9,7 @@
 #
 # WHERE. These objects live in swarm-autopilot and are applied there by
 # `kubernetes/apply.sh --policies --confirm`, which refuses any other cluster.
-# A ClusterRole in our cluster cannot reach `agents-staging`, the other team's
+# A ClusterRole in our cluster cannot reach `peer-cluster`, the other team's
 # cluster in the shared project: RBAC is scoped by where the object lives.
 #
 # WHY THIS IS NOT ENOUGH ON ITS OWN. RBAC cannot restrict `create` by name, so a

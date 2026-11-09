@@ -294,6 +294,52 @@ def test_a_step_with_no_set_loads_nothing_and_reads_no_bucket(tmp_path):
                          image="img") is None
 
 
+def _main_signed_task(managed: dict[str, Any], skipped_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A signed task whose dispatch block swarm-api's merge wrote."""
+    from swarm_api import plugins as api_plugins
+
+    task = _task(None)
+    api_plugins.StepPlugins(managed=managed, skipped=skipped_rows).record_on(task["metadata"]["dispatch"])
+    return task
+
+
+def test_with_the_platform_switch_off_a_step_with_only_skipped_defaults_loads_nothing(tmp_path):
+    from swarm_api import plugins as api_plugins
+
+    task = _main_signed_task({}, [{"install_id": BELAY, "code": api_plugins.SKIP_PLATFORM_OFF}])
+    assert api_plugins.DISPATCH_PLUGINS not in task["metadata"]["dispatch"]
+    assert pluginload.SKIPPED_KEY == api_plugins.DISPATCH_SKIPPED
+    assert pluginload.skipped(task) == {BELAY: api_plugins.SKIP_PLATFORM_OFF}
+    # MUTATION: read the skipped list as the set and a switched-off platform
+    # loads (or refuses) the very default it skipped.
+    assert pluginload.entries(task) == ()
+    assert pluginload.load(task, private_dir=tmp_path, store=None, environ={}) is None
+    work = tmp_path / "work"
+    work.mkdir()
+    assert plugins.start(task, work=work, checkout=None, profile="claude-code", image="img") is None
+
+
+def test_a_skipped_default_beside_the_set_is_never_loaded(tmp_path, store):
+    data = _tar(_plugin_files("jev-belay"))
+    belay = _entry(BELAY, "jev-belay", data)
+    _put(store, belay, data)
+    task = _main_signed_task({BELAY: belay}, [{"install_id": ENFORCE, "code": "plugin_profile_unsupported"}])
+    loaded = _load(task, tmp_path, store)
+    assert [p.entry.install_id for p in loaded.plugins] == [BELAY]
+    assert not (tmp_path / "private" / "plugins" / ENFORCE).exists()
+
+
+def test_a_set_that_also_names_a_skipped_default_is_refused(tmp_path, store):
+    data = _tar(_plugin_files("jev-belay"))
+    belay = _entry(BELAY, "jev-belay", data)
+    _put(store, belay, data)
+    task = _main_signed_task({BELAY: belay}, [{"install_id": BELAY, "code": "plugin_profile_unsupported"}])
+    with pytest.raises(pluginload.PluginRefused) as excinfo:
+        _load(task, tmp_path, store)
+    _refused(excinfo, "plugin_set_invalid")
+    assert not (tmp_path / "private" / "plugins").exists()
+
+
 def test_the_bucket_is_the_named_one_or_terraforms_default():
     spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
     placeholders = importlib.util.module_from_spec(spec)

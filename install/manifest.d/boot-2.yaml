@@ -176,7 +176,7 @@ entries:
   verify: the verify Cloud Run job runs as this identity and can call swarm-api, read Firestore, read
     Cloud Run, read the artifacts bucket
   explain: Runs the in-VPC verification gate (acceptance/smoke) as a non-domain identity; ALLOWED_USERS
-    exists in swarm-api's auth specifically so this non-saga.xyz identity is admitted (locals.tf:1012-1015).
+    exists in swarm-api's auth specifically so this non-example.com identity is admitted (locals.tf:1012-1015).
   depends_on:
   - api.iam
   evidence:
@@ -332,14 +332,14 @@ entries:
     AND bindings.role=roles/container.clusterViewer'
   apply: terraform/bootstrap/verify_cluster_read.tf resource "google_project_iam_member" "verify_views_swarm_cluster"
   verify: condition pins resource.name to exactly projects/$P/locations/$R/clusters/swarm-autopilot (and
-    sub-paths); agents-staging (the other team's cluster) cannot match a bare startsWith either, since
+    sub-paths); peer-cluster (the other team's cluster) cannot match a bare startsWith either, since
     its name does not start with ours
   explain: Lets scripts/e2e-test.sh's check [10] ('no task holding capacity against a GKE execution that
     is gone') read the swarm cluster's endpoint/CA. clusterViewer, not container.viewer, so it carries
     no Kubernetes object read at all -- only what verify-rbac.yaml's Role binds inside the cluster.
   guards: '#1754, owner decision 2026-10-20; VERIFY-GKE-READ-2 (owner decision 2026-10-21): must live
     here, never in terraform/infra, because CI''s scoped projectIamAdmin would otherwise need clusterViewer
-    on its grantable list and could then grant it to anyone, reaching agents-staging'
+    on its grantable list and could then grant it to anyone, reaching peer-cluster'
   evidence:
   - terraform/bootstrap/verify_cluster_read.tf:46-65
   notes: Target account swarm-verify is created by terraform/bootstrap (platform_service_accounts.tf,
@@ -412,7 +412,7 @@ entries:
   verify: gcloud logging views describe swarm-workers --bucket=swarm-worker-logs --location=$R --project=$P
     exists before this is true
   explain: Gates log_view_read.tf's IAM row L-1 (swarm-api's read of the swarm-workers log view).
-  guards: 'BGD, 2026-10-23, #1960, lane LOG-VIEW-BOOT; moved here from terraform/infra after a release
+  guards: 'the owner, 2026-10-23, #1960, lane LOG-VIEW-BOOT; moved here from terraform/infra after a release
     failed with a 403 setting IAM on a view CI could not touch'
   evidence:
   - terraform/bootstrap/variables.tf:898-912
