@@ -430,8 +430,11 @@ def canonical_settings_block(
 PLUGIN_RECORD_PURPOSE = "swarm.plugin-record/v1"
 
 #: `plugin_installs/{install_id}`, `plugin_installs/{install_id}/versions/
-#: {version_id}` and `plugin_intake/{intake_id}`.
-PLUGIN_RECORD_KINDS: tuple[str, ...] = ("install", "version", "intake")
+#: {version_id}`, `plugin_intake/{intake_id}` and `plugin_bundles/{bundle_id}`
+#: (contract request 152, managed plugins P6, design sections 1.4.3 and 14,
+#: accepted by the owner 2026-11-09): a bundle is platform scope only, because
+#: its image is built once per deployment and serves every workspace.
+PLUGIN_RECORD_KINDS: tuple[str, ...] = ("install", "version", "intake", "bundle")
 
 #: A record's scope: a platform install, or one workspace's own.
 PLUGIN_SCOPES: tuple[str, ...] = ("platform", "workspace")
@@ -446,6 +449,7 @@ PLUGIN_RECORD_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "install": ("install_id",),
         "version": ("install_id", "version_id"),
         "intake": ("intake_id",),
+        "bundle": ("bundle_id",),
     }
 )
 
@@ -467,8 +471,8 @@ def canonical_plugin_record(kind: str, fields: Mapping[str, Any]) -> bytes:
     a workspace record names its tenant and a platform record names none
     (absent or null), so the scope and the tenant are inside the bytes: a
     record copied onto another workspace, or lifted to platform scope, does
-    not verify. `fields` projects every other key except
-    PLUGIN_RECORD_UNCOVERED.
+    not verify. A bundle record is platform scope only. `fields` projects
+    every other key except PLUGIN_RECORD_UNCOVERED.
 
     The MAC is HMAC-SHA256 over these bytes under the `swarm-settings-key`
     secret. It is not computed here, because its key is not the contract's.
@@ -485,6 +489,8 @@ def canonical_plugin_record(kind: str, fields: Mapping[str, Any]) -> bytes:
         raise SpecNotCanonical(f"workspace plugin {kind} record names no tenant")
     if scope == "platform" and tenant_id is not None:
         raise SpecNotCanonical(f"platform plugin {kind} record names a tenant")
+    if kind == "bundle" and scope != "platform":
+        raise SpecNotCanonical("a plugin bundle record is platform scope only")
     for name in PLUGIN_RECORD_IDS[kind]:
         value = fields.get(name)
         if not (isinstance(value, str) and value):

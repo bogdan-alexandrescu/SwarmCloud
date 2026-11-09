@@ -156,6 +156,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
 | 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE: requested by lane FL-ACCEPT on 2026-11-09, not applied. The owner picked 'Wait for FL-ISSUE, FL-UI and FL-DOCS first' (PR 3691, question 0; rejected: enabling on dev first, as await-input): the profile stays unavailable everywhere until those lanes are on main (they are not, read 2026-11-09); then the owner applies this on dev and the acceptance check that proves it (`scripts/acceptance/groups/workflow.sh`, "workflow: fix-loop"), which SKIPs until then, must pass for it to stay |
+| 152 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 
 ---
 
@@ -17614,3 +17615,87 @@ NOT_YET, MERGE), the rounds it expects (`re-review:1`, `review-fix:2`,
 ### Who decides
 
 The owner: a frozen-contract change, applied after the check is green.
+
+
+## 152. `specsign.py`: the plugin record kind `bundle` (managed plugins P6)
+
+**Status:** ACCEPTED by the owner 2026-11-09 (accepted by the owner
+2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and
+APPLIED 2026-11-09 by the pull request that adds this section (lane
+plugins-bundle-contract, lane 13 of the design's table 17.1). Requested by
+docs/design/managed-plugins.md section 14, request P6.
+
+### Why
+
+The owner decided on 6 November 2026 that gstack and security-audit leave the
+image-baked code entries for the managed path, through a build step that
+publishes a new image version with them bundled (design section 1.4). On 9
+November the owner settled where that build runs (in the deployment, Cloud Build
+from its copy of the signed release image) and that a bundled plugin is
+platform scope only. Apply on a bundled install then writes a
+`plugin_bundles/{bundle_id}` record (section 1.4.3): the bundle key (every
+bundled install's `version_id`, source sha256 and recipe digest), the base
+image digests it was built `FROM`, the output digest per runner image name,
+the built tree's sha256 per plugin and `state` (`building`, `ready`,
+`failed`, `retired`). Only a ready bundle moves an install's
+`current_version`.
+
+swarm-api is that record's only writer, but the tenant GSAs hold
+project-wide Firestore access, so any tenant's worker can write one. The
+scheduler's repository check and the worker's manifest check would still
+stop a wrong image from running a step, but a forged `ready` could move
+`current_version` to a pin that was never built. swarm-api acts on a bundle
+record only when its MAC, under `swarm-settings-key`, verifies, and request
+140's `canonical_plugin_record` refuses any kind it does not list.
+
+### The change
+
+```python
+PLUGIN_RECORD_KINDS = ("install", "version", "intake", "bundle")
+PLUGIN_RECORD_IDS = {..., "bundle": ("bundle_id",)}
+
+# canonical_plugin_record, after the scope and tenant checks:
+if kind == "bundle" and scope != "platform":
+    raise SpecNotCanonical("a plugin bundle record is platform scope only")
+```
+
+* The bytes are request 140's form: purpose `swarm.plugin-record/v1`, the
+  kind, `scope: "platform"`, `tenant_id: null`, and every stored key but the
+  MAC and the writer record. No new purpose and no new public name.
+* The document's id is put into `fields` by its writer and reader, as for
+  the other kinds, so a record copied onto another bundle id does not
+  verify.
+* A bundle image is built once per deployment and serves every workspace
+  that allows it (section 1.4.2, the owner's answer to Q18), so a
+  workspace-scope bundle record has no canonical form at all.
+
+### What it would break if accepted
+
+Nothing: no bundle record exists yet (lane 16 writes the first), and the
+other kinds' bytes are unchanged (their tests pin them literally).
+
+### If it is declined
+
+Lane 16 could not ship a bundle record: a record outside the MAC is one a
+tenant worker can forge, and a second canonical form in swarm-api would be a
+second opinion about what is signed.
+
+### Invariants
+
+None changes. Invariant 9: a bundle names no tenant and is never one
+workspace's. Invariant 10: the record names images by digest and is written
+by swarm-api from a build it started, never from a caller.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins a bundle record's
+bytes; signs one with swarm-api's `pluginstore.record_mac` and checks that it
+verifies, that a tampered `state`, output digest, bundle key, base, tree,
+bundle id or a planted key does not, and that neither another key nor the
+record read as an intake verifies it; refuses a workspace-scope bundle, a
+platform bundle naming a tenant and one without its id; and checks that the
+four kinds' bytes differ.
+
+### Who decided
+
+The owner, 9 November 2026, answering the managed plugins design's Q20.
