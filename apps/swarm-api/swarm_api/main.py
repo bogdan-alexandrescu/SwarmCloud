@@ -80,6 +80,7 @@ from .routes import (
     platform,
     platform_switches,
     plugin_catalogue,
+    plugin_config,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -189,6 +190,9 @@ UNCAPTURED_ROUTES = frozenset({
     # GitHub redeems for the App's key and secrets; the one-time link a
     # platform admin mints, in its answer; and the redemption, whose body is
     # the link's token and the value its form carries.
+    # A managed plugin's secret or file setting, with its one-time link
+    # (docs/design/managed-plugins.md section 6.2, lane 6).
+    plugin_config.SECRET_ROUTE,
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
@@ -470,6 +474,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # installs, versions, updates and removal, platform and per workspace,
     # and the intake job's callback; admins only, audited.
     app.include_router(plugin_catalogue.router)
+    # A managed plugin's settings, secrets and bindings, and the workspace's
+    # every-step defaults (managed-plugins.md lane 6): read by members,
+    # written by the workspace's owner or admin, audited.
+    app.include_router(plugin_config.router)
     # The platform switches (work contracts, contract review) set from the
     # console over their Terraform defaults: platform admins, audited.
     app.include_router(platform_switches.router)
