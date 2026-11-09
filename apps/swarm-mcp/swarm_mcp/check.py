@@ -113,6 +113,20 @@ THE RULES, each with the control that is NOT flagged:
     their agent's blocking questions (`park_phase` `question_wait`), read
     from `GET /v1/tasks/{id}/questions` on every check, an answered question
     left out; the finished ones carry `blocking: false`.
+(i) `deploy_behind` (STUCK): the deployment the check reads is behind the
+    scoped repository's default branch, which has held a commit it lacks
+    for more than 60 minutes (`deployment`). On 2026-11-09 the console and
+    the API ran the previous night's build for about ten hours while every
+    release failed, and nothing said so. The deployed commit is
+    `GET /v1/version`'s `git_sha`, lifted to the newest successful release
+    run's head when that lies after it (a reused image); the commits behind
+    and the release runs come from GitHub's public API, unauthenticated, as
+    (d) reads. The evidence names the deployed commit and its age, how many
+    commits behind it is, and the newest release run's conclusion with its
+    failed jobs; `next` is that run. Behind for an hour or less is not
+    flagged, nor is a deployment GitHub does not know in this repository; a
+    read that fails is under `unchecked` as "not read", with its reason.
+    Read once per check, whatever the tenants: one deployment serves them all.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -124,6 +138,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -203,7 +218,7 @@ EXPIRY_TICK_SECONDS = 60
 EXPIRY_TICKS = 2
 
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {"deploy_behind": 0, "merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -360,9 +375,15 @@ def _github_get(url: str) -> Any:
         with urllib.request.urlopen(request, timeout=PULL_STATE_TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise GitHubNotFound(f"GitHub answered HTTP 404 for {url}") from None
         raise SwarmError(f"GitHub answered HTTP {exc.code} for {url}") from None
     except (OSError, ValueError) as exc:
         raise SwarmError(f"GitHub could not be read for {url}: {type(exc).__name__}") from None
+
+
+class GitHubNotFound(SwarmError):
+    """GitHub answered 404: the repository, branch or commit is not there."""
 
 
 def github_failed_checks(key: str, number: int, head: str | None) -> list[dict[str, Any]]:
@@ -408,6 +429,252 @@ class _PullChecks:
                 except SwarmError as exc:
                     self.seen[(key, number, head)] = (None, str(exc))
             return self.seen[(key, number, head)]
+
+
+# --------------------------------------------------------------------------
+# (i) The deployment behind main
+# --------------------------------------------------------------------------
+
+#: (i): the deployment is flagged once its repository's default branch has
+#: held a commit it lacks for more than this many minutes. 60 BECAUSE a
+#: healthy release deploys a merge within tens of minutes; a deployment an
+#: hour behind is one whose releases keep failing, which only a person ends
+#: (on 2026-11-09 one ran the previous night's build for about ten hours).
+DEPLOY_BEHIND_MINUTES = 60
+#: The workflow that builds and deploys the default branch, and how many of
+#: its newest runs one read asks GitHub for.
+RELEASE_WORKFLOW = "release.yml"
+RELEASE_RUNS_READ = 10
+#: Jobs one read of a release run asks GitHub for (its maximum page).
+RELEASE_JOBS_PAGE = 100
+#: The route that serves the commit swarm-api's image was built from.
+VERSION_ROUTE = "/v1/version"
+DEPLOY_RULE = "deploy_behind"
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+class DeployGitHub:
+    """The reads (i) makes of GitHub's public REST API, each through
+    `_github_get`: unauthenticated, as (d) and (h) read pull requests. Every
+    method raises SwarmError, and GitHubNotFound for a 404."""
+
+    def __init__(self, key: str) -> None:
+        host, _, path = str(key).partition("/")
+        owner, _, repo = path.partition("/")
+        if host != "github.com" or not owner or not repo:
+            raise SwarmError(f"{key} is not a GitHub repository, and GitHub is the only forge read")
+        self.base = f"{GITHUB_API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+        self.actions = f"https://github.com/{owner}/{repo}/actions/workflows/{RELEASE_WORKFLOW}"
+
+    def default_branch(self) -> str:
+        data = _github_get(self.base)
+        branch = data.get("default_branch") if isinstance(data, dict) else None
+        if not isinstance(branch, str) or not branch:
+            raise SwarmError(f"GitHub served no default branch for {self.base}")
+        return branch
+
+    def compare(self, base: str, branch: str) -> dict[str, Any]:
+        """`base...branch`: `ahead_by`, `base_commit` and the commits the
+        branch has that `base` lacks, oldest first (GitHub serves 250 at most)."""
+        url = f"{self.base}/compare/{urllib.parse.quote(base)}...{urllib.parse.quote(branch)}"
+        data = _github_get(url)
+        if not isinstance(data, dict) or not isinstance(data.get("commits"), list) \
+                or not isinstance(data.get("ahead_by"), int):
+            raise SwarmError(f"GitHub served no comparison at {url}")
+        return data
+
+    def release_runs(self, branch: str) -> list[dict[str, Any]]:
+        """The release workflow's newest runs on `branch`, newest first."""
+        query = urllib.parse.urlencode({"branch": branch, "per_page": RELEASE_RUNS_READ})
+        url = f"{self.base}/actions/workflows/{RELEASE_WORKFLOW}/runs?{query}"
+        data = _github_get(url)
+        runs = data.get("workflow_runs") if isinstance(data, dict) else None
+        if not isinstance(runs, list):
+            raise SwarmError(f"GitHub served no workflow runs at {url}")
+        return [run for run in runs if isinstance(run, dict)]
+
+    def failed_jobs(self, run_id: int) -> list[str]:
+        """The names of run `run_id`'s failed or cancelled jobs (latest attempt)."""
+        query = urllib.parse.urlencode({"filter": "latest", "per_page": RELEASE_JOBS_PAGE})
+        url = f"{self.base}/actions/runs/{int(run_id)}/jobs?{query}"
+        data = _github_get(url)
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list):
+            raise SwarmError(f"GitHub served no jobs at {url}")
+        return [str(job.get("name")) for job in jobs
+                if isinstance(job, dict) and job.get("conclusion") in FAILED_CONCLUSIONS]
+
+
+def _committed_at(commit: Any) -> datetime | None:
+    """A GitHub commit object's committer date: on a squash-merged default
+    branch, when the commit landed there."""
+    inner = commit.get("commit") if isinstance(commit, dict) else None
+    who = inner.get("committer") if isinstance(inner, dict) else None
+    return render.parse_time(who.get("date")) if isinstance(who, dict) else None
+
+
+def _run_evidence(github: DeployGitHub, run: dict[str, Any]) -> dict[str, Any]:
+    """One release run as evidence; a failed run names its failed jobs, or
+    says why they were not read."""
+    status = run.get("status")
+    conclusion = run.get("conclusion") if status == "completed" else None
+    out: dict[str, Any] = {"run": run.get("html_url"), "head_sha": run.get("head_sha"),
+                           "status": status, "conclusion": conclusion,
+                           "created_at": run.get("created_at")}
+    if conclusion in FAILED_CONCLUSIONS:
+        try:
+            out["failed_jobs"] = github.failed_jobs(int(run["id"]))
+        except (SwarmError, KeyError, TypeError, ValueError) as exc:
+            out["failed_jobs"] = f"not read: {exc}"
+    return out
+
+
+def _release(github: DeployGitHub, branch: str) -> tuple[list[dict[str, Any]], dict[str, Any] | str]:
+    """`(runs, evidence)`: the release runs on `branch`, newest first, and
+    the newest one as evidence -- with the newest COMPLETED one beside it
+    while the newest is still running. `([], "not read: why")` when GitHub
+    could not be read: never an empty answer that reads as fine."""
+    try:
+        runs = github.release_runs(branch)
+    except SwarmError as exc:
+        return [], f"not read: {exc}"
+    if not runs:
+        return [], f"not read: GitHub lists no {RELEASE_WORKFLOW} run on {branch}"
+    evidence = _run_evidence(github, runs[0])
+    if evidence["status"] != "completed":
+        done = next((run for run in runs if run.get("status") == "completed"), None)
+        evidence["previous_completed"] = _run_evidence(github, done) if done else None
+    return runs, evidence
+
+
+def _release_words(release: dict[str, Any] | str) -> str:
+    if isinstance(release, str):
+        return f"the newest release run was {release}"
+    if release["status"] != "completed":
+        words = f"the newest release run is {release['status']}"
+        release = release.get("previous_completed") or {}
+        if not release:
+            return words
+        words += "; the one before it "
+    else:
+        words = "the newest release run "
+    jobs = release.get("failed_jobs")
+    if isinstance(jobs, list) and jobs:
+        return f"{words}ended {release['conclusion']} at {', '.join(jobs)}"
+    if isinstance(jobs, str):
+        return f"{words}ended {release['conclusion']}, its failed job {jobs}"
+    return f"{words}ended {release['conclusion']}"
+
+
+def deployment(client: SwarmClient, key: str | None, now: datetime,
+               github: Callable[[str], DeployGitHub] | None = None) -> dict[str, Any]:
+    """(i) `deploy_behind`: `{"deployment", "flag", "unchecked"}`, the last
+    two None unless the deployment is flagged or could not be read.
+
+    THE DEPLOYED COMMIT is `git_sha` on `GET /v1/version`: the commit whose
+    build made swarm-api's serving image (`GIT_SHA`, from
+    scripts/build-images.sh). Main's incremental build REUSES an unchanged
+    image, so `git_sha` can be several merges behind a release that
+    succeeded; the newest successful release run whose head lies after it on
+    the default branch therefore lifts it to that run's head, and the
+    evidence names both.
+
+    BEHIND is measured from the OLDEST default-branch commit the deployment
+    lacks: flagged once that commit landed more than DEPLOY_BEHIND_MINUTES
+    ago. Not the head's own age against the deployed commit's -- a merge
+    after a quiet afternoon would then be flagged while its release runs.
+
+    A read that fails is "not read" with its reason, under `unchecked`;
+    never "current". A deployed commit GitHub does not know in the scoped
+    repository is a deployment built from another repository: not compared,
+    and said so."""
+    state: dict[str, Any] = {"rule": DEPLOY_RULE, "window_minutes": DEPLOY_BEHIND_MINUTES}
+
+    def not_read(why: str) -> dict[str, Any]:
+        state.update(state="not read", why=f"not read: {why}")
+        return {"deployment": state, "flag": None,
+                "unchecked": {"rule": DEPLOY_RULE, "why": state["why"]}}
+
+    try:
+        served = client.request("GET", VERSION_ROUTE)
+    except SwarmError as exc:
+        return not_read(f"the deployed commit: GET {VERSION_ROUTE} failed: {exc}")
+    sha = served.get("git_sha") if isinstance(served, dict) else None
+    sha = sha.strip().lower() if isinstance(sha, str) else sha
+    if not isinstance(sha, str) or not _COMMIT.match(sha):
+        return not_read(f"the deployed commit: GET {VERSION_ROUTE} served git_sha {sha!r}, "
+                        "not a 40-hex commit (an image built with no GIT_SHA)")
+    state["deployed"] = {"commit": sha, "source": f"GET {VERSION_ROUTE} git_sha, the commit "
+                                                  "that built swarm-api's image"}
+    if key is None:
+        return not_read("main: the check is scoped to no repository, so there is no default "
+                        "branch to compare the deployed commit with")
+    try:
+        gh = (github or DeployGitHub)(key)
+        branch = gh.default_branch()
+        diff = gh.compare(sha, branch)
+    except GitHubNotFound as exc:
+        state.update(state="other_repository",
+                     why=f"GitHub knows no commit {sha[:12]} in {key} ({exc}): this deployment "
+                         "is not built from this repository, so it is not compared with it")
+        return {"deployment": state, "flag": None, "unchecked": None}
+    except SwarmError as exc:
+        return not_read(f"how far the deployed commit is behind main: {exc}")
+    runs, release = _release(gh, branch)
+    state["release"] = release
+
+    commits = [c for c in diff["commits"] if isinstance(c, dict)]
+    shas = [str(c.get("sha") or "").lower() for c in commits]
+    deployed_at = _committed_at(diff.get("base_commit"))
+    state["deployed"].update(committed_at=_iso(deployed_at),
+                             age_minutes=_minutes((now - deployed_at).total_seconds()) if deployed_at else None)
+    start = 0
+    success = next((run for run in runs if run.get("status") == "completed"
+                    and run.get("conclusion") == "success"), None)
+    lifted = str(success.get("head_sha") or "").lower() if success else ""
+    if lifted in shas:
+        start = shas.index(lifted) + 1
+        lifted_at = _committed_at(commits[start - 1])
+        state["release_reaches"] = {
+            "commit": lifted, "committed_at": _iso(lifted_at),
+            "age_minutes": _minutes((now - lifted_at).total_seconds()) if lifted_at else None,
+            "run": success.get("html_url"),
+            "why": "swarm-api's image was reused: this release succeeded after the commit that built it",
+        }
+    behind = diff["ahead_by"] - start
+    complete = len(commits) == diff["ahead_by"]
+    head = commits[-1] if commits and complete else None
+    missing = commits[start] if start < len(commits) else None
+    since = _committed_at(missing)
+    state["behind_main"] = {
+        "default_branch": branch, "commits": behind,
+        "head": (str(head.get("sha")) if head else None),
+        "head_committed_at": _iso(_committed_at(head)) if head else None,
+        "oldest_missing": str(missing.get("sha")) if missing else None,
+        "oldest_missing_committed_at": _iso(since),
+        "behind_minutes": _minutes((now - since).total_seconds()) if since else None,
+    }
+    if behind <= 0:
+        state["state"] = "current"
+        return {"deployment": state, "flag": None, "unchecked": None}
+    if since is None:
+        return not_read(f"how long main has been ahead: GitHub served no date for the oldest of "
+                        f"the {behind} commits the deployment lacks")
+    if now - since <= timedelta(minutes=DEPLOY_BEHIND_MINUTES):
+        state["state"] = "behind_within_window"
+        return {"deployment": state, "flag": None, "unchecked": None}
+    state["state"] = "behind"
+    runs_on = state.get("release_reaches", {}).get("commit") or sha
+    text = (f"the deployment runs {runs_on[:12]}, {behind} commit{'s' if behind != 1 else ''} behind "
+            f"{branch}, which has held a commit it lacks for {_span((now - since).total_seconds())} "
+            f"(over {DEPLOY_BEHIND_MINUTES} min); {_release_words(release)}")
+    link = release.get("run") if isinstance(release, dict) else None
+    evidence = {key_: state[key_] for key_ in ("deployed", "release_reaches", "behind_main", "release")
+                if key_ in state}
+    flag = {"kind": STUCK, "rule": DEPLOY_RULE, "reason": text, "repository": key,
+            "workspace": None, "workflow_id": None, "step_id": None, "task_id": None, "state": None,
+            "evidence": evidence, "next": link or gh.actions}
+    return {"deployment": state, "flag": flag, "unchecked": None}
 
 
 # --------------------------------------------------------------------------
@@ -1838,6 +2105,10 @@ def run(
         per_tenant.append(result)
 
     flagged = [item for r in per_tenant for item in r["flagged"]]
+    # (i): one deployment serves every tenant, so it is read once.
+    deployed = deployment(client, scope["key"], now)
+    if deployed["flag"]:
+        flagged.append(deployed["flag"])
     flagged.sort(key=lambda item: _RULE_ORDER.get(item["rule"], 9))
     out: dict[str, Any] = {
         "checked_at": _iso(now),
@@ -1875,7 +2146,11 @@ def run(
                 for group in ("workflows", "single_tasks")
             },
         },
-        "unchecked": [u for r in per_tenant for u in r["unchecked"]],
+        "unchecked": [u for r in per_tenant for u in r["unchecked"]]
+        + ([deployed["unchecked"]] if deployed["unchecked"] else []),
+        # (i): what the deployment runs against the default branch, flagged
+        # or not -- "not read" with its reason when it could not be read.
+        "deployment": deployed["deployment"],
         "attach_with": (
             "swarm_workflow_launch {attach: \"all\", repository: <this answer's repository, or "
             "\"all\" when it is null>, new_only: true} -- rows only for what has none in this session"
