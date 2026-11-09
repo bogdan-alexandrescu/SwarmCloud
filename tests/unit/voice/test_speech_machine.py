@@ -2,9 +2,9 @@
 §4.2, §4.4-§4.8, §5.3, §11.4; swarm_api/voice/speech_machine.py).
 
 Start, readiness's record, the lease and its generation, idle, a closed tab,
-a stock-out with no second zone tried, the sweep, and the Compute REST calls.
-Firestore is the in-memory fake, Compute a fake of the one instance; no
-network, no cloud credential, no emulator.
+the zones in order on a stockout (owner, 2026-11-09), the sweep, and the
+Compute REST calls. Firestore is the in-memory fake, Compute a fake of the
+speech machine in each zone; no network, no cloud credential, no emulator.
 """
 
 from __future__ import annotations
@@ -28,63 +28,134 @@ from swarm_api.voice import speech_catalogue as cat  # noqa: E402
 from swarm_api.voice import speech_machine as sm  # noqa: E402
 
 T0 = datetime(2026, 11, 5, 21, 0, tzinfo=timezone.utc)
-ZONE = "us-central1-a"
-CONFIG = sm.SpeechConfig(project="proj", zone=ZONE, instance="swarm-speech-a",
+REGION = "us-central1"
+ZONES = (f"{REGION}-a", f"{REGION}-b", f"{REGION}-c")
+ZONE, ZONE_B, ZONE_C = ZONES
+CONFIG = sm.SpeechConfig(project="proj", zones=ZONES, instance="swarm-speech-",
+                         template=f"projects/proj/regions/{REGION}/instanceTemplates/swarm-speech-1",
                          address="10.40.0.9", image="reg/swarm-speech@sha256:" + "a" * 64)
 ALICE = sm.SessionRef(tenant_id="eng", person="alice@example.com",
                       project_id="vp_" + "1" * 32, session_id="vs_" + "1" * 32)
 BOB = sm.SessionRef(tenant_id="eng", person="bob@example.com",
                     project_id="vp_" + "2" * 32, session_id="vs_" + "2" * 32)
 CHOSEN = dict(cat.defaults((ZONE,)))
+STOCKOUT = "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS"
 
 
 class FakeCompute:
-    def __init__(self, status: str = sm.TERMINATED, *, machine_type: str = "g2-standard-4",
-                 running_after: int = 1, stockout: bool = False) -> None:
-        self.status = status
-        self.machine_type = machine_type
-        self.metadata: dict[str, str] = {sm.META_IMAGE: "", sm.META_MODELS: "{}"}
-        self.fingerprint = "fp1"
+    """Compute Engine's speech machines, one at most per zone. `status`,
+    `metadata` and `machine_type` read and write the one machine there is
+    (made in `zone` unless `status` is None); `stockout` makes every zone
+    answer a stockout, `full` only those zones. Each call is recorded as
+    (verb, zone), and the set calls as (verb, value)."""
+
+    def __init__(self, status: str | None = sm.TERMINATED, *, machine_type: str = "g2-standard-4",
+                 running_after: int = 1, stockout: bool = False, zone: str = ZONE,
+                 full: tuple[str, ...] = ()) -> None:
+        self.machines: dict[str, dict[str, Any]] = {}
+        if status is not None:
+            self.add(zone, status, machine_type=machine_type)
         self.running_after = running_after
         self.stockout = stockout
+        self.full = set(full)
         self.calls: list[tuple[str, Any]] = []
-        self._gets_after_start = 0
-        self.started = False
+        self.created: list[dict[str, Any]] = []
+        #: Every machine that existed at once, by zone, after each call.
+        self.at_once: list[list[str]] = []
 
-    def get(self) -> sm.Instance:
-        self.calls.append(("get", None))
-        if self.started and self.status != sm.INSTANCE_RUNNING:
-            self._gets_after_start += 1
-            if self.running_after and self._gets_after_start >= self.running_after:
-                self.status = sm.INSTANCE_RUNNING
-        return sm.Instance(status=self.status, machine_type=self.machine_type,
-                           metadata=dict(self.metadata), fingerprint=self.fingerprint)
+    def add(self, zone: str, status: str, *, machine_type: str = "g2-standard-4") -> None:
+        self.machines[zone] = {"status": status, "machine_type": machine_type, "fingerprint": "fp1",
+                               "metadata": {sm.META_IMAGE: "", sm.META_MODELS: "{}"},
+                               "started": False, "gets": 0}
 
-    def start(self) -> None:
-        self.calls.append(("start", None))
-        if self.stockout:
-            raise sm.ComputeError("no L4", code="ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS")
-        self.started = True
-        self.status = "PROVISIONING"
+    def _one(self) -> dict[str, Any]:
+        return next(iter(self.machines.values()))
 
-    def stop(self) -> None:
-        self.calls.append(("stop", None))
-        self.status = sm.TERMINATED
-        self.started = False
+    @property
+    def status(self) -> str:
+        return self._one()["status"] if self.machines else ""
 
-    def set_machine_type(self, machine_type: str) -> None:
-        assert self.status == sm.TERMINATED, "a machine type is only set on a stopped machine"
-        self.calls.append(("set_machine_type", machine_type))
-        self.machine_type = machine_type
+    @status.setter
+    def status(self, value: str) -> None:
+        self._one()["status"] = value
 
-    def set_metadata(self, items: Mapping[str, str], fingerprint: str) -> None:
-        assert self.status == sm.TERMINATED
-        assert fingerprint == self.fingerprint
-        self.calls.append(("set_metadata", dict(items)))
-        self.metadata = dict(items)
+    @property
+    def metadata(self) -> dict[str, str]:
+        return self._one()["metadata"]
+
+    @metadata.setter
+    def metadata(self, value: dict[str, str]) -> None:
+        self._one()["metadata"] = dict(value)
+
+    @property
+    def machine_type(self) -> str:
+        return self._one()["machine_type"]
+
+    def _record(self, verb: str, value: Any) -> None:
+        self.calls.append((verb, value))
+        self.at_once.append(sorted(self.machines))
+
+    def _no_l4(self, zone: str) -> bool:
+        return self.stockout or zone in self.full
+
+    def get(self, zone: str) -> sm.Instance | None:
+        self._record("get", zone)
+        m = self.machines.get(zone)
+        if m is None:
+            return None
+        if m["started"] and m["status"] != sm.INSTANCE_RUNNING:
+            m["gets"] += 1
+            if self.running_after and m["gets"] >= self.running_after:
+                m["status"] = sm.INSTANCE_RUNNING
+        return sm.Instance(status=m["status"], machine_type=m["machine_type"],
+                           metadata=dict(m["metadata"]), fingerprint=m["fingerprint"], zone=zone)
+
+    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str]) -> None:
+        assert zone in CONFIG.zones
+        assert zone not in self.machines, f"a second machine was created in {zone}"
+        self._record("create", zone)
+        if self._no_l4(zone):
+            raise sm.ComputeError("no L4", code=STOCKOUT)
+        assert not self.machines, "a second machine was created while one exists"
+        self.add(zone, "PROVISIONING", machine_type=machine_type)
+        self.machines[zone].update(started=True, metadata=dict(metadata))
+        self.created.append({"zone": zone, "machine_type": machine_type, "metadata": dict(metadata)})
+
+    def delete(self, zone: str) -> None:
+        self._record("delete", zone)
+        self.machines.pop(zone, None)
+
+    def start(self, zone: str) -> None:
+        self._record("start", zone)
+        if self._no_l4(zone):
+            raise sm.ComputeError("no L4", code=STOCKOUT)
+        self.machines[zone].update(started=True, status="PROVISIONING", gets=0)
+
+    def stop(self, zone: str) -> None:
+        self._record("stop", zone)
+        m = self.machines.get(zone)
+        if m is None:
+            raise sm.ComputeError("not found", code=sm.NOT_FOUND)
+        m.update(status=sm.TERMINATED, started=False)
+
+    def set_machine_type(self, zone: str, machine_type: str) -> None:
+        assert self.machines[zone]["status"] == sm.TERMINATED, \
+            "a machine type is only set on a stopped machine"
+        self._record("set_machine_type", machine_type)
+        self.machines[zone]["machine_type"] = machine_type
+
+    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str) -> None:
+        assert self.machines[zone]["status"] == sm.TERMINATED
+        assert fingerprint == self.machines[zone]["fingerprint"]
+        self._record("set_metadata", dict(items))
+        self.machines[zone]["metadata"] = dict(items)
 
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
+
+    def changes(self) -> list[tuple[str, Any]]:
+        """The calls that are not a `get`."""
+        return [(n, v) for n, v in self.calls if n != "get"]
 
 
 class Clock:
@@ -146,7 +217,8 @@ def test_a_start_applies_settings_to_the_stopped_machine_then_polls_it_to_runnin
     compute, clock = FakeCompute(machine_type="g2-standard-8", running_after=3), Clock()
     started = _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
 
-    assert compute.names()[:4] == ["get", "set_machine_type", "set_metadata", "start"]
+    assert [n for n, _ in compute.changes()][:3] == ["set_machine_type", "set_metadata", "start"]
+    assert compute.changes()[2] == ("start", ZONE)
     assert ("set_machine_type", "g2-standard-4") in compute.calls
     meta = next(v for n, v in compute.calls if n == "set_metadata")
     assert meta[sm.META_IMAGE] == CONFIG.image
@@ -244,20 +316,134 @@ def test_the_start_refreshes_the_heartbeat_while_it_polls(db):
 # ---- no free L4, not ready (§4.1, §4.7) -------------------------------------
 
 
-def test_a_stock_out_falls_back_with_no_second_zone_tried(db):
-    compute, clock = FakeCompute(stockout=True), Clock()
+def test_a_start_with_no_machine_creates_it_from_the_template_in_the_first_zone(db):
+    compute, clock = FakeCompute(status=None), Clock()
+    started = _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
+    made = compute.created[0]
+    assert made["machine_type"] == CHOSEN["machine"]
+    assert made["metadata"] == sm.wanted_metadata(CHOSEN, CONFIG.image)
+    assert started.image_changed is True and compute.machines[ZONE]["status"] == sm.INSTANCE_RUNNING
+    lease = _lease(db)
+    assert lease["zone"] == ZONE and lease["stockouts"] == []
+    assert _audit(db, sm.AUDIT_ZONE_STOCKOUT) == [] and _audit(db, sm.AUDIT_NO_L4) == []
+
+
+def test_a_stockout_in_the_first_zone_creates_it_in_the_second_then_the_third(db):
+    compute, clock = FakeCompute(status=None, full=(ZONE, ZONE_B)), Clock()
+    _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert [z for n, z in compute.calls if n == "create"] == [ZONE, ZONE_B, ZONE_C]
+    assert list(compute.machines) == [ZONE_C]
+    lease = _lease(db)
+    assert lease["state"] == sm.STARTING and lease["zone"] == ZONE_C
+    assert [s["zone"] for s in lease["stockouts"]] == [ZONE, ZONE_B]
+    assert [r["detail"]["zone"] for r in _audit(db, sm.AUDIT_ZONE_STOCKOUT)] == [ZONE, ZONE_B]
+    assert _audit(db, sm.AUDIT_NO_L4) == [], "a start that found an L4 was counted refused"
+
+
+def test_a_stockout_in_every_zone_falls_back_to_text_and_is_counted_once(db):
+    compute, clock = FakeCompute(status=None, stockout=True), Clock()
     with pytest.raises(sm.NoFreeL4) as raised:
         _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
-    assert raised.value.reason == sm.FALLBACK_NO_L4 and raised.value.zone == ZONE
-    assert compute.names().count("start") == 1, "the start was retried"
+    assert raised.value.reason == sm.FALLBACK_NO_L4 and raised.value.zone == ZONE_C
+    assert [z for n, z in compute.calls if n == "create"] == list(ZONES), "a zone was tried twice"
+    assert compute.machines == {}
     lease = _lease(db)
     assert lease["state"] == sm.STOPPED and lease["cause"] == sm.FALLBACK_NO_L4
-    assert lease["zone"] == ZONE
+    assert [s["zone"] for s in lease["stockouts"]] == list(ZONES)
     rows = _audit(db, sm.AUDIT_NO_L4)
-    assert len(rows) == 1 and rows[0]["detail"]["zone"] == ZONE
-    # The next Start tries the same machine again.
+    assert len(rows) == 1 and rows[0]["detail"]["zones"] == list(ZONES)
+    assert len(_audit(db, sm.AUDIT_ZONE_STOCKOUT)) == 3
+    # The next Start tries again from the first zone.
     compute.stockout = False
     assert _machine(db, compute, clock).start(ALICE, chosen=CHOSEN).holder.generation == 2
+    assert list(compute.machines) == [ZONE]
+
+
+def test_a_stopped_machine_starts_in_its_own_zone_and_no_other_is_made(db):
+    compute, clock = FakeCompute(zone=ZONE_B), Clock()
+    _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert ("start", ZONE_B) in compute.calls
+    assert "create" not in compute.names() and "delete" not in compute.names()
+    assert _lease(db)["zone"] == ZONE_B
+
+
+def test_a_stopped_machine_whose_zone_has_no_l4_is_deleted_then_created_in_the_next(db):
+    compute, clock = FakeCompute(zone=ZONE_B, full=(ZONE_B,)), Clock()
+    _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    changes = compute.changes()
+    start_at = changes.index(("start", ZONE_B))
+    assert changes[start_at + 1:] == [("delete", ZONE_B), ("create", ZONE_C)]
+    assert list(compute.machines) == [ZONE_C]
+    # Never two machines: the delete finished before the create.
+    assert all(len(zones) <= 1 for zones in compute.at_once)
+    assert _lease(db)["zone"] == ZONE_C
+    assert [s["zone"] for s in _lease(db)["stockouts"]] == [ZONE_B]
+
+
+def test_a_moving_machine_wraps_round_once_and_tries_each_zone_at_most_once(db):
+    compute, clock = FakeCompute(zone=ZONE_B, stockout=True), Clock()
+    with pytest.raises(sm.NoFreeL4):
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    tried = [z for n, z in compute.calls if n in ("start", "create")]
+    assert tried == [ZONE_B, ZONE_C, ZONE]
+    assert compute.machines == {}
+    assert _audit(db, sm.AUDIT_NO_L4)[0]["detail"]["zones"] == [ZONE_B, ZONE_C, ZONE]
+
+
+def test_two_machines_found_become_one_keeping_the_running_one(db):
+    compute, clock = FakeCompute(zone=ZONE), Clock()
+    compute.add(ZONE_C, sm.INSTANCE_RUNNING)
+    _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert ("delete", ZONE) in compute.calls and list(compute.machines) == [ZONE_C]
+    assert "start" not in compute.names() and "create" not in compute.names()
+    assert _lease(db)["zone"] == ZONE_C
+
+
+def test_two_stopped_machines_become_one_keeping_the_first_in_zone_order(db):
+    compute, clock = FakeCompute(zone=ZONE_C), Clock()
+    compute.add(ZONE_B, sm.TERMINATED)
+    _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert ("delete", ZONE_C) in compute.calls and list(compute.machines) == [ZONE_B]
+    assert ("start", ZONE_B) in compute.calls
+
+
+def test_the_lease_is_held_by_the_start_through_every_zone(db):
+    compute, clock = FakeCompute(zone=ZONE, full=(ZONE, ZONE_B)), Clock()
+    machine = _machine(db, compute, clock)
+    seen: list[tuple[str, Any]] = []
+    create, delete = compute.create, compute.delete
+
+    def watch(verb: str, call: Any) -> Any:
+        def wrapped(zone: str, **kwargs: Any) -> Any:
+            lease = _lease(db)
+            seen.append((verb, lease["session_id"], lease["state"], lease["generation"]))
+            assert sm.holds(lease, clock.now())
+            return call(zone, **kwargs)
+        return wrapped
+
+    compute.create, compute.delete = watch("create", create), watch("delete", delete)
+    started = machine.start(ALICE, chosen=CHOSEN)
+    assert [v for v, *_ in seen] == ["delete", "create", "create"]
+    assert all(s[1:] == (ALICE.session_id, sm.STARTING, started.holder.generation) for s in seen)
+    with pytest.raises(sm.MachineInUse):
+        machine.start(BOB, chosen=CHOSEN)
+
+
+def test_a_later_zone_is_not_tried_once_the_four_minutes_are_spent(db):
+    compute, clock = FakeCompute(status=None, full=(ZONE,)), Clock()
+    create = compute.create
+
+    def slow(zone: str, **kwargs: Any) -> None:
+        clock.advance(sm.READY_SECONDS)  # the first zone's answer took the whole budget
+        create(zone, **kwargs)
+
+    compute.create = slow
+    with pytest.raises(sm.MachineNotReady) as raised:
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
+    assert ZONE in str(raised.value) and ZONE_B in str(raised.value)
+    assert _lease(db)["state"] == sm.STOPPED
 
 
 def test_a_machine_not_running_in_four_minutes_is_stopped_and_not_ready(db):
@@ -343,13 +529,28 @@ def test_the_sweep_ends_a_lease_that_lost_its_heartbeat_and_stops_the_machine(db
 def test_the_sweep_stops_a_running_instance_no_lease_holds(db):
     compute, clock = FakeCompute(status=sm.INSTANCE_RUNNING), Clock()
     report = _machine(db, compute, clock).sweep(Ender())
-    assert report["stopped"] is True and compute.names() == ["get", "stop"]
+    assert report["stopped"] is True and compute.names() == ["get", "get", "get", "stop"]
 
 
 def test_the_sweep_leaves_a_stopped_instance_alone(db):
     compute = FakeCompute()
     report = _machine(db, compute, Clock()).sweep(Ender())
-    assert report["stopped"] is False and compute.names() == ["get"]
+    assert report["stopped"] is False and compute.changes() == []
+
+
+def test_the_sweep_stops_an_unheld_machine_in_whichever_zone_it_is(db):
+    compute = FakeCompute(status=sm.INSTANCE_RUNNING, zone=ZONE_C)
+    report = _machine(db, compute, Clock()).sweep(Ender())
+    assert report["stopped"] is True and compute.changes() == [("stop", ZONE_C)]
+
+
+def test_a_stop_stops_the_machine_in_the_zone_the_start_used(db):
+    compute, clock = FakeCompute(status=None, full=(ZONE,)), Clock()
+    machine = _machine(db, compute, clock)
+    holder = machine.start(ALICE, chosen=CHOSEN).holder
+    assert machine.stop(holder, cause=sm.END_BY_PERSON) is True
+    assert compute.changes()[-1] == ("stop", ZONE_B)
+    assert _audit(db, sm.AUDIT_STOPPED)[-1]["detail"]["zone"] == ZONE_B
 
 
 def test_fall_back_makes_the_session_a_text_session(db):
@@ -367,12 +568,17 @@ def test_fall_back_makes_the_session_a_text_session(db):
 
 def test_the_config_reads_the_swarm_speech_environment():
     config = sm.SpeechConfig.from_env({
-        "SWARM_SPEECH_PROJECT": "proj", "SWARM_SPEECH_ZONES": ZONE,
-        "SWARM_SPEECH_INSTANCE": "swarm-speech-a", "SWARM_SPEECH_ADDR": "10.40.0.9",
+        "SWARM_SPEECH_PROJECT": "proj", "SWARM_SPEECH_ZONES": ",".join(ZONES),
+        "SWARM_SPEECH_INSTANCE": "swarm-speech-", "SWARM_SPEECH_ADDR": "10.40.0.9",
+        "SWARM_SPEECH_TEMPLATE": CONFIG.template,
         "SWARM_SPEECH_SWEEP_AUDIENCE": "https://swarm-api.dev.swarm.internal",
         "SWARM_SPEECH_SWEEP_CALLERS": "Tick@example-project.iam.gserviceaccount.com"})
     assert config.enabled and config.stream_url == "ws://10.40.0.9:8080/v1/stream"
     assert config.audience == "swarm-speech"
+    assert config.zones == ZONES and config.zone == ZONE
+    assert [config.name_in(z) for z in ZONES] == ["swarm-speech-a", "swarm-speech-b", "swarm-speech-c"]
+    # A machine made before the template is the one its zone's name finds.
+    assert sm.SpeechConfig(instance="swarm-speech-a").name_in(ZONE_B) == "swarm-speech-a"
     assert config.sweep_callers == ("tick@example-project.iam.gserviceaccount.com",)
     assert not sm.SpeechConfig.from_env({}).enabled
 
@@ -426,12 +632,43 @@ def test_rest_compute_reads_a_stock_out_from_the_start_operation():
             {"code": "ZONE_RESOURCE_POOL_EXHAUSTED", "message": "no L4"}]}}),
     ])
     with pytest.raises(sm.ComputeError) as raised:
-        sm.RestCompute(CONFIG, session=session).start()
+        sm.RestCompute(CONFIG, session=session).start(ZONE_B)
     assert raised.value.code in sm.STOCKOUT_CODES
-    base = "https://compute.googleapis.com/compute/v1/projects/proj/zones/us-central1-a"
-    assert session.requests[0][:2] == ("POST", f"{base}/instances/swarm-speech-a/start")
+    base = f"https://compute.googleapis.com/compute/v1/projects/proj/zones/{ZONE_B}"
+    assert session.requests[0][:2] == ("POST", f"{base}/instances/swarm-speech-b/start")
     assert session.requests[1][:2] == ("POST", f"{base}/operations/op-1/wait")
-    assert all(ZONE in url for _m, url, _b in session.requests), "another zone was named"
+    assert all(ZONE_B in url for _m, url, _b in session.requests), "another zone was named"
+
+
+def test_rest_compute_creates_from_the_template_keeping_its_metadata():
+    template = {"properties": {"metadata": {"items": [
+        {"key": "swarm-speech-caller", "value": "api@example.iam.gserviceaccount.com"},
+        {"key": sm.META_IMAGE, "value": ""}]}}}
+    session = _Session([_Response(200, template), _Response(200, {"name": "op-2", "status": "DONE"})])
+    sm.RestCompute(CONFIG, session=session).create(
+        ZONE_C, machine_type="g2-standard-8", metadata={sm.META_IMAGE: CONFIG.image})
+    assert session.requests[0][:2] == ("GET", f"{sm.RestCompute.BASE}/{CONFIG.template}")
+    method, url, body = session.requests[1]
+    assert method == "POST" and url == (
+        f"{sm.RestCompute.BASE}/projects/proj/zones/{ZONE_C}/instances"
+        f"?sourceInstanceTemplate={CONFIG.template}")
+    assert body["name"] == "swarm-speech-c"
+    assert body["machineType"] == f"zones/{ZONE_C}/machineTypes/g2-standard-8"
+    items = {i["key"]: i["value"] for i in body["metadata"]["items"]}
+    assert items == {"swarm-speech-caller": "api@example.iam.gserviceaccount.com",
+                     sm.META_IMAGE: CONFIG.image}
+
+
+def test_rest_compute_reads_a_missing_machine_as_none_and_deletes_by_name():
+    session = _Session([_Response(404, {"error": {"errors": [{"reason": "notFound"}]}}),
+                        _Response(200, {"name": "op-3", "status": "DONE"}),
+                        _Response(404, {"error": {"errors": [{"reason": "notFound"}]}})])
+    compute = sm.RestCompute(CONFIG, session=session)
+    assert compute.get(ZONE) is None
+    compute.delete(ZONE_B)
+    compute.delete(ZONE_B)  # already gone: nothing to wait for
+    assert session.requests[1][:2] == (
+        "DELETE", f"{sm.RestCompute.BASE}/projects/proj/zones/{ZONE_B}/instances/swarm-speech-b")
 
 
 def test_rest_compute_sets_the_machine_type_and_metadata_by_name():
@@ -441,9 +678,10 @@ def test_rest_compute_sets_the_machine_type_and_metadata_by_name():
                                         "metadata": {"fingerprint": "f",
                                                      "items": [{"key": "k", "value": "v"}]}})])
     compute = sm.RestCompute(CONFIG, session=session)
-    compute.set_machine_type("g2-standard-8")
-    compute.set_metadata({"k": "v"}, "f")
-    assert session.requests[0][2] == {"machineType": "zones/us-central1-a/machineTypes/g2-standard-8"}
+    compute.set_machine_type(ZONE, "g2-standard-8")
+    compute.set_metadata(ZONE, {"k": "v"}, "f")
+    assert session.requests[0][2] == {"machineType": f"zones/{ZONE}/machineTypes/g2-standard-8"}
     assert session.requests[1][2] == {"fingerprint": "f", "items": [{"key": "k", "value": "v"}]}
-    instance = compute.get()
+    instance = compute.get(ZONE)
     assert instance.machine_type == "g2-standard-8" and instance.metadata == {"k": "v"}
+    assert instance.zone == ZONE
