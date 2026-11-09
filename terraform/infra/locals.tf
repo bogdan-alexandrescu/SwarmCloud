@@ -1246,7 +1246,7 @@ locals {
       SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
       SWARM_SPEECH_ZONES          = local.voice_speech_on ? join(",", local.speech_zones) : ""
       SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? local.speech_machine_prefix : ""
-      SWARM_SPEECH_TEMPLATE       = local.voice_speech_on ? google_compute_region_instance_template.speech[0].id : ""
+      SWARM_SPEECH_TEMPLATE       = local.voice_speech_on && var.voice_speech.template ? google_compute_region_instance_template.speech[0].id : ""
       SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
       SWARM_SPEECH_AUDIENCE       = "swarm-speech"
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""

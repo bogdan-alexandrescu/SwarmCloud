@@ -145,6 +145,13 @@ def test_variable_is_off_by_default() -> None:
     assert re.search(r'machine_type\s*=\s*optional\(string,\s*"g2-standard-4"\)', body), body
     assert re.search(r"disk_gb\s*=\s*optional\(number,\s*150\)", body), body
     assert re.search(r"idle_minutes\s*=\s*optional\(number,\s*5\)", body), body
+    # The template switch: on unless a deployment's bootstrap does not yet let
+    # the release identity make the template (the field's description says why).
+    assert re.search(r"\btemplate\s*=\s*optional\(bool,\s*true\)", body), body
+    assert re.search(r"^\s*template\s+true:[^\n]*\n(?:[^\n]*\n)*?\s*false: the release does not make\s+the machine's template",
+                     body, re.M), (
+        "the voice_speech description does not document `template` beside the other fields"
+    )
     # The pinned image is required once it is on, and only a Deep Learning VM
     # image by name (never a family, which moves under a stopped machine).
     assert "deeplearning-platform-release" in body
@@ -186,6 +193,8 @@ def test_every_resource_is_behind_the_switch(speech: str) -> None:
     ), "voice_speech_on is not voice_speech.enabled && voice_it == \"on\""
     for rtype, name in _resource_types(speech):
         body = _resource(speech, rtype, name)
+        if (rtype, name) == ("google_compute_region_instance_template", "speech"):
+            continue  # behind the switch and `template` too: the next test
         assert re.search(r"^\s*count\s*=\s*local\.voice_speech_on\s*\?\s*1\s*:\s*0\s*$", body, re.M), (
             f"{rtype}.{name} is not behind local.voice_speech_on"
         )
@@ -195,6 +204,51 @@ def test_every_resource_is_behind_the_switch(speech: str) -> None:
 
 
 # --- the machine's template (§5.1) ------------------------------------------
+
+
+TEMPLATE_GUARD = r"local\.voice_speech_on\s*&&\s*var\.voice_speech\.template\s*\?"
+
+
+def test_the_template_is_made_only_while_its_field_is_true(template: str) -> None:
+    # A deployment whose bootstrap does not yet grant the release identity
+    # compute.instanceTemplates.create sets template = false, and its apply
+    # never asks for the template.
+    assert re.search(r"^\s*count\s*=\s*" + TEMPLATE_GUARD + r"\s*1\s*:\s*0\s*$", template, re.M), (
+        "the template's count is not local.voice_speech_on && var.voice_speech.template ? 1 : 0"
+    )
+
+
+def test_every_reference_to_the_template_handles_its_absence() -> None:
+    refs = []
+    for path in sorted((TF / "infra").glob("*.tf")):
+        for n, line in enumerate(_code(path.read_text()).splitlines(), 1):
+            if "google_compute_region_instance_template.speech[0]" in line:
+                refs.append((path.name, n, line))
+    assert {name for name, _, _ in refs} >= {"locals.tf", "voice_speech.tf"}, refs
+    for name, n, line in refs:
+        assert re.search(TEMPLATE_GUARD + r"\s*google_compute_region_instance_template\.speech\[0\]\.id\s*:", line), (
+            f"{name}:{n} reads the template without `local.voice_speech_on && var.voice_speech.template ?`: {line.strip()}"
+        )
+    locals_tf = _code((TF / "infra" / "locals.tf").read_text())
+    assert re.search(r'SWARM_SPEECH_TEMPLATE\s*=\s*' + TEMPLATE_GUARD + r'.*:\s*""\s*$', locals_tf, re.M)
+    output = _block(_code(SPEECH_TF.read_text()), r'^output\s+"voice_speech"')
+    assert re.search(r"^\s*template\s*=\s*" + TEMPLATE_GUARD + r".*:\s*null\s*$", output, re.M), output
+
+
+@pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
+def test_only_dev_holds_the_template_back_and_says_why(tfvars: Path) -> None:
+    raw = tfvars.read_text()
+    body = _block(_code(raw), r"^voice_speech\s*=")
+    held = re.search(r"^\s*template\s*=\s*false\s*$", body, re.M)
+    if tfvars.parent.name != "dev":
+        assert not held, f"{tfvars}: holds the speech template back"
+        return
+    assert held, f"{tfvars}: dev does not hold the speech template back"
+    lines = raw.splitlines()
+    i = next(i for i, line in enumerate(lines) if re.match(r"^\s*template\s*=\s*false\b", line))
+    why = " ".join(lines[i - 2 : i])
+    assert lines[i - 2].lstrip().startswith("#") and lines[i - 1].lstrip().startswith("#"), why
+    assert "bootstrap" in why and "true" in why, why
 
 
 def test_machine_is_on_demand(template: str) -> None:

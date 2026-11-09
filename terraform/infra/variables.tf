@@ -1609,6 +1609,17 @@ variable "voice_speech" {
                     tool activity, and the machine stops (§4.4, pick 1).
                     Written to the template's metadata; Settings change it
                     at each start.
+      template      true: the release makes the machine's regional instance
+                    template.
+                    false: the release does not make the machine's template,
+                    for a deployment whose bootstrap does not yet let the
+                    release identity make it (swarmSpeechDeployer's
+                    compute.instanceTemplates.* verbs, terraform/bootstrap,
+                    applied by the owner). SWARM_SPEECH_TEMPLATE is then
+                    empty, so own speech reports itself unavailable and
+                    Voice it uses its other engine or text mode. The
+                    installer writes no such field: true is a fresh
+                    install's.
   EOT
   type = object({
     enabled      = optional(bool, false)
@@ -1618,6 +1629,7 @@ variable "voice_speech" {
     image        = optional(string, "")
     disk_gb      = optional(number, 150)
     idle_minutes = optional(number, 5)
+    template     = optional(bool, true)
   })
   default = {}
 
