@@ -1375,6 +1375,12 @@ locals {
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
 
+      # The managed plugins bucket (plugins.tf), passed THROUGH to every
+      # worker by `scheduler.dispatch.worker_env`: agent_worker.pluginload
+      # fetches each pinned copy from it. Empty omits it; the worker then
+      # reads the default <project>-swarm-plugins.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
+
       # A live-browser pod's JEV_API_URL for a workspace that judges with an
       # internal backend (scheduler.judgment, JUDGE-SELECT). See
       # local.internal_decision_api_url.
@@ -1537,6 +1543,11 @@ locals {
       # of the wake topic's publisher_members in main.tf). Unset, the
       # reconciler logs a warning at start and the tick does the release.
       DISPATCH_TOPIC = local.wake_topic
+
+      # The managed plugins bucket (plugins.tf): reconciler.plugingc deletes
+      # unreferenced pinned copies under platform/ and tenants/ in it (§9.3).
+      # Empty: the default <project>-swarm-plugins name.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
     })
   }
 }

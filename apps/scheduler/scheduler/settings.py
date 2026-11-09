@@ -433,6 +433,12 @@ class SchedulerSettings:
     #: Default False: off until the owner has seen it on a real PR (owner
     #: decision, 2026-10-01).
     pr_console_links: bool = False
+    #: The managed plugins bucket (SWARM_PLUGINS_BUCKET, terraform
+    #: `google_storage_bucket.plugins.name`; managed-plugins.md §3). Passed
+    #: THROUGH to every worker by `worker_env`, which fetches each pinned
+    #: plugin copy from it (`agent_worker.pluginload`). Empty omits the name,
+    #: and the worker falls back to the bucket Terraform names by default.
+    plugins_bucket: str = ""
     #: The internal decision API through the cluster's Tailscale egress Service
     #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
     #: `internal_decision_api_enabled`). Set, a live-browser pod whose
@@ -642,6 +648,7 @@ class SchedulerSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
+            plugins_bucket=os.environ.get("SWARM_PLUGINS_BUCKET", "").strip(),
             internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
