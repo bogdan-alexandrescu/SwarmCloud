@@ -25,7 +25,13 @@ it names, so two starts racing each other cannot both pass: the second is 409
 `conflict`. The marker's id is an HMAC of the email under the
 deployment's settings key when one is configured, so no worker can compute
 it; a session left `starting` by a crash longer than STARTING_STALE_SECONDS
-ago no longer holds it.
+ago no longer holds it. Nor does a `live` one with no activity (the newest of
+`activity_at`, written on each turn, `heartbeat_at`, written when the Talk
+tab's event stream connects, `live_at`, `created_at` and `fallback.at`) for
+LIVE_STALE_SECONDS: its tab went away without the end call. The start ends
+it in its own transaction (cause `abandoned`), and the speech sweep ends any
+others (`sweep_abandoned`); swarm-voice is told the way an end tells it. A
+session still live in another workspace is refused in words alone.
 
 THE GRANT (§3.6). Each session gets a random 256-bit grant. Only its SHA-256
 is stored, on the session document; the grant itself goes to swarm-voice in
@@ -192,8 +198,21 @@ STARTING_STALE_SECONDS = 120
 #: brings the speech machine to RUNNING: speech_machine.READY_SECONDS (240),
 #: plus swarm-voice's start call (START_TIMEOUT_SECONDS) and a margin.
 SPEECH_STARTING_STALE_SECONDS = 330
+#: A `live` session with no activity this long was abandoned (its tab went
+#: away without the end call) and no longer holds its person: the longest
+#: idle stop Settings offer (swarm-voice has stopped its side by then), plus
+#: a margin, so no idle stop a person can pick ever cuts a real conversation.
+#: An open Talk tab beats on each event-stream connect, at most
+#: stream.MAX_SECONDS (540) apart, well inside it.
+LIVE_STALE_MARGIN_SECONDS = 900
+LIVE_STALE_SECONDS = max(idle.seconds for idle in cat.IDLE) + LIVE_STALE_MARGIN_SECONDS
+#: The session-document times that show a session is still in use; the
+#: newest of them (and of `fallback.at`) is its last activity.
+ACTIVITY_FIELDS = ("activity_at", "heartbeat_at", "live_at", "created_at")
 
 END_BY_PERSON = "ended_by_person"
+#: Live with no activity for LIVE_STALE_SECONDS: ended by the next start or the sweep.
+END_ABANDONED = "abandoned"
 END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
 #: Another session holds the speech machine (speech_machine.MachineInUse).
@@ -747,6 +766,37 @@ def client_for(settings: Any) -> VoiceClient | None:
 # --------------------------------------------------------------------------
 
 
+LIVE_HERE = "You already have a live Voice it session; end it before starting another."
+
+
+def live_elsewhere() -> str:
+    """The 409's words for a session live in another workspace: no id, no
+    workspace name (invariant 9)."""
+    return ("You already have a live Voice it session in another workspace; switch to it "
+            f"to end it, or it ends by itself after {LIVE_STALE_SECONDS // 60} minutes "
+            "without activity.")
+
+
+def last_activity(session: Mapping[str, Any]) -> datetime | None:
+    """The newest time the session document records it in use."""
+    times = [_aware(session.get(field)) for field in ACTIVITY_FIELDS]
+    fallback = session.get("fallback")
+    if isinstance(fallback, Mapping):
+        times.append(_aware(fallback.get("at")))
+    seen = [t for t in times if t is not None]
+    return max(seen) if seen else None
+
+
+def record_heartbeat(db: Any, *, project_id: str, session_id: str, now: datetime) -> None:
+    """The Talk tab is still open: `heartbeat_at`, written when its event
+    stream connects (last_activity). Best effort: never fails the stream."""
+    try:
+        (db.collection(PROJECTS).document(project_id).collection(SESSIONS).document(session_id)
+         .update({"heartbeat_at": now}))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("voice session=%s: heartbeat not recorded (%s)", session_id, type(exc).__name__)
+
+
 def _live_detail(marker: dict[str, Any] | None, tenant_id: str) -> dict[str, Any]:
     """Which session holds the person, so the console can end it; named only
     when it is in the tenant asking (invariant 9)."""
@@ -806,23 +856,92 @@ class VoiceSessions:
     def _mine(data: dict[str, Any] | None, tenant_id: str, person: str) -> bool:
         return bool(data) and data.get("tenant_id") == tenant_id and data.get("person") == person
 
-    def _holds(self, txn: Any, marker: dict[str, Any] | None) -> bool:
-        """Whether the marker still names a live (or freshly starting) session."""
-        if not marker or not marker.get("project_id") or not marker.get("session_id"):
+    def _abandoned(self, session: Mapping[str, Any]) -> bool:
+        """A `live` session with no activity for LIVE_STALE_SECONDS. One that
+        records no time at all is never judged: every start writes some."""
+        if session.get("state") != LIVE:
             return False
+        last = last_activity(session)
+        return last is not None and self._now() - last >= timedelta(seconds=LIVE_STALE_SECONDS)
+
+    def _holder(self, txn: Any, marker: dict[str, Any] | None) -> tuple[bool, dict[str, Any] | None]:
+        """Whether the marker still names a live (or freshly starting)
+        session; with the session's data when it names an abandoned `live`
+        one, which the caller ends in its transaction (`_end_abandoned`)."""
+        if not marker or not marker.get("project_id") or not marker.get("session_id"):
+            return False, None
         snap = _snapshot(txn.get(self._session_ref(marker["project_id"], marker["session_id"])))
         if not snap.exists:
-            return False
+            return False, None
         session = snap.to_dict() or {}
         state = session.get("state")
         if state == LIVE:
-            return True
+            return (False, session) if self._abandoned(session) else (True, None)
         if state == STARTING:
             created = _aware(session.get("created_at"))
             stale = SPEECH_STARTING_STALE_SECONDS if session.get("mode") == MODE_SPEECH \
                 else STARTING_STALE_SECONDS
-            return created is None or self._now() - created < timedelta(seconds=stale)
-        return False
+            return created is None or self._now() - created < timedelta(seconds=stale), None
+        return False, None
+
+    def _end_abandoned(self, txn: Any, marker: Mapping[str, Any], session: Mapping[str, Any]) -> None:
+        """End the abandoned session the marker names, in the caller's
+        transaction (its reads done): the fields a person's end writes, with
+        its own cause."""
+        project_id, session_id = str(marker["project_id"]), str(marker["session_id"])
+        txn.update(self._session_ref(project_id, session_id), {"state": ENDED, "ended_at": self._now(), "end_cause": END_ABANDONED,
+                         "grant_hash": None})
+        self._audit(txn, action=AUDIT_ENDED, tenant_id=str(session.get("tenant_id") or ""),
+                    person=str(session.get("person") or ""), project_id=project_id,
+                    session_id=session_id, detail={"cause": END_ABANDONED})
+
+    def _tell_abandoned(self, session_id: str, session: Mapping[str, Any]) -> None:
+        """swarm-voice ends its side, and a speech session's machine stops,
+        the way the end route asks: logged, never blocking."""
+        if self._client is None:
+            log.warning("abandoned voice session=%s: no swarm-voice to tell", session_id)
+            return
+        try:
+            told = self._client.end(session_id, cause=END_ABANDONED)
+            if session.get("mode") == MODE_SPEECH and self._machine is not None:
+                holder = self._machine.holder_of(session_id)
+                if holder is not None:
+                    self._machine.stop(holder, cause=END_ABANDONED)
+        except Exception as exc:  # noqa: BLE001 -- best effort: the session is ended here
+            log.warning("abandoned voice session=%s: swarm-voice's end failed (%s)",
+                        session_id, type(exc).__name__)
+            return
+        log.info("abandoned voice session ended session=%s voice_told=%s", session_id, told)
+
+    def sweep_abandoned(self) -> list[str]:
+        """End every abandoned `live` session a person's marker names, of
+        every mode, and free the marker; the ids ended. The sweep route's.
+        Every live session is behind its person's marker: a start replaces a
+        marker only once its session no longer holds."""
+        ended: list[str] = []
+        for marker_snap in self._db.collection(LIVE_MARKERS).stream():
+            marker_ref = self._db.collection(LIVE_MARKERS).document(marker_snap.id)
+
+            @firestore.transactional
+            def _apply(txn: Any) -> tuple[str, dict[str, Any]] | None:
+                snap = _snapshot(txn.get(marker_ref))
+                marker = snap.to_dict() if snap.exists else None
+                _, session = self._holder(txn, marker)
+                if marker is None or session is None:
+                    return None
+                self._end_abandoned(txn, marker, session)
+                txn.delete(marker_ref)
+                return str(marker["session_id"]), session
+
+            try:
+                done = _apply(self._db.transaction())
+            except Exception:  # noqa: BLE001 -- one marker's failure never stops the sweep
+                log.exception("voice sweep: marker %s failed", marker_snap.id)
+                continue
+            if done is not None:
+                ended.append(done[0])
+                self._tell_abandoned(*done)
+        return ended
 
     def start(self, *, tenant_id: str, person: str, offer: str,
               project_id: str | None, mode: str = MODE_LIVE, fallback: str | None = None,
@@ -857,10 +976,17 @@ class VoiceSessions:
                     project_snap.exists and self._mine(project_snap.to_dict(), tenant_id, person)):
                 raise NotFound(f"voice project {project_id!r} not found")
             marker = marker_snap.to_dict() if marker_snap.exists else None
-            if self._holds(txn, marker):
-                raise VoiceSessionLive(
-                    "You already have a live Voice it session; end it before starting another.",
-                    detail=_live_detail(marker, tenant_id))
+            abandoned.clear()
+            holds, stale = self._holder(txn, marker)
+            if holds:
+                here = bool(marker) and marker.get("tenant_id") == tenant_id
+                raise VoiceSessionLive(LIVE_HERE if here else live_elsewhere(),
+                                       detail=_live_detail(marker, tenant_id))
+            if marker is not None and stale is not None:
+                # Ended here, in the start's transaction; the marker is
+                # replaced below. swarm-voice is told once this commits.
+                self._end_abandoned(txn, marker, stale)
+                abandoned.append((str(marker["session_id"]), stale))
             now = self._now()
             if new_project:
                 txn.set(project_ref, {
@@ -882,7 +1008,10 @@ class VoiceSessions:
                         project_id=project_id, session_id=session_id,
                         detail={"new_project": new_project})
 
+        abandoned: list[tuple[str, dict[str, Any]]] = []
         _open(self._db.transaction())
+        for stale_id, stale in abandoned:
+            self._tell_abandoned(stale_id, stale)
 
         def call_for(this_mode: str) -> StartCall:
             return StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
@@ -984,6 +1113,11 @@ class VoiceSessions:
                 "This Voice it session takes no text turns: it is not a live text or speech conversation.",
                 detail={"reason": NOT_LIVE, "state": data.get("state"), "mode": data.get("mode") or MODE_LIVE})
         answered = self._client.turn(session_id, text)
+        try:
+            # The session's last activity (LIVE_STALE_SECONDS): never fails the turn.
+            self._session_ref(project_id, session_id).update({"activity_at": self._now()})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("voice turn: session=%s activity not recorded (%s)", session_id, type(exc).__name__)
         log.info("voice turn answered tenant=%s project=%s session=%s turn=%s cards=%d",
                  tenant_id, project_id, session_id, answered.turn_id, len(answered.cards))
         said: dict[str, Any] = {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
