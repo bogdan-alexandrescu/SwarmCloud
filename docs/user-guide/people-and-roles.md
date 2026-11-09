@@ -26,7 +26,8 @@ Roles: **viewer** (reads), **member** (starts and answers work), **admin** (also
 
 ## From Claude Code
 
-`/sc roles` shows the roles of your workspace and your own role.
+* `/sc roles` shows the roles of your workspace and your own role.
+* `/sc:team add team@example.com` adds a whole team as a workspace, from a Google group. It needs the SwarmCloud installer on your machine and an admin of the deployment; it runs a test agent at the end.
 
 ## Next
 

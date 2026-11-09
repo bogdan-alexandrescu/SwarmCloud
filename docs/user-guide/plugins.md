@@ -14,4 +14,5 @@ Two different things are called plugins here.
 * Install it: see the [Quick start](quick-start.md).
 * Change its settings: `/plugin configure sc@swarmcloud`.
 * Check this machine can reach the deployment: `/sc:doctor`.
+* Install SwarmCloud itself into a cloud project: `/sc:install`. That is for the people who run the platform; you do not need it to use SwarmCloud.
 * Choose how live rows look: `/sc layout rows`, `/sc layout pane` or `/sc layout band`.
