@@ -32,8 +32,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import {
   loadPluginCatalogue,
-  loadPluginIntake,
-  loadPluginVersions,
+  loadCatalogueIntake,
+  loadCatalogueVersions,
   openPluginUpload,
   PLATFORM_PLUGIN_CATALOGUE,
   putPluginArchive,
@@ -41,7 +41,7 @@ import {
   startPluginIntake,
   type PluginCatalogue,
   type PluginCatalogueScope,
-  type PluginIntake,
+  type CatalogueIntake,
   type PluginVersion,
 } from './api'
 import { ADMIN_PLUGINS_PATH, adminPluginPath, Badges, Mono } from './AdminPlugins'
@@ -326,7 +326,7 @@ function AddPlugin({ scope, catalogue, backHref, pollMs }: { scope: PluginCatalo
   const [file, setFile] = useState<File | null>(null)
   const [overlay, setOverlay] = useState<OverlayForm>(EMPTY_OVERLAY)
   const [sending, setSending] = useState(false)
-  const [intake, setIntake] = useState<PluginIntake | null>(null)
+  const [intake, setIntake] = useState<CatalogueIntake | null>(null)
   const [refusal, setRefusal] = useState<Refusal | null>(null)
   const [pinned, setPinned] = useState<PluginVersion | null>(null)
 
@@ -342,7 +342,7 @@ function AddPlugin({ scope, catalogue, backHref, pollMs }: { scope: PluginCatalo
     if (intake === null || intake.state !== 'running') return
     let live = true
     const t = setTimeout(() => {
-      void loadPluginIntake(scope, intake.intake_id).then((r) => {
+      void loadCatalogueIntake(scope, intake.intake_id).then((r) => {
         if (!live) return
         if (r.status === 'ok' || r.status === 'stale') {
           if (r.data !== null) setIntake(r.data)
@@ -365,7 +365,7 @@ function AddPlugin({ scope, catalogue, backHref, pollMs }: { scope: PluginCatalo
     if (intake?.state !== 'pinned' || intake.install_id === null) return
     let live = true
     const versionId = intake.version_id
-    void loadPluginVersions(scope, intake.install_id).then((r) => {
+    void loadCatalogueVersions(scope, intake.install_id).then((r) => {
       if (!live || (r.status !== 'ok' && r.status !== 'stale') || r.data === null) return
       setPinned(r.data.versions.find((v) => v.version_id === versionId) ?? r.data.versions.find((v) => v.current) ?? null)
     })
@@ -757,7 +757,7 @@ function PinnedPreview({ v }: { v: PluginVersion }) {
 type StepState = 'done' | 'now' | 'bad' | 'todo'
 
 /** The intake's steps and where it is: fetch or upload, the job's checks, the pin. */
-export function intakeSteps(kind: SourceKind, sending: boolean, intake: PluginIntake | null, refused: boolean): [string, StepState][] {
+export function intakeSteps(kind: SourceKind, sending: boolean, intake: CatalogueIntake | null, refused: boolean): [string, StepState][] {
   const first = kind === 'upload' ? 'Upload' : 'Resolve and fetch'
   const state = intake?.state ?? null
   // Where it stands: 0 sending or awaiting the upload, 1 the job checking, 2 pinned.
@@ -770,7 +770,7 @@ export function intakeSteps(kind: SourceKind, sending: boolean, intake: PluginIn
   ]
 }
 
-function IntakeProgress({ kind, sending, intake, refusal }: { kind: SourceKind; sending: boolean; intake: PluginIntake | null; refusal: Refusal | null }) {
+function IntakeProgress({ kind, sending, intake, refusal }: { kind: SourceKind; sending: boolean; intake: CatalogueIntake | null; refusal: Refusal | null }) {
   const steps = intakeSteps(kind, sending, intake, refusal !== null)
   return (
     <ol className="ap-steps" aria-label="Intake">
