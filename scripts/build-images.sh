@@ -209,7 +209,15 @@ source "${REPO_ROOT}/scripts/lib/image-switches.sh"
 # swarm-speech-image metadata at the next start, and the machine pulls it on
 # boot (docs/design/voice-it-own-speech.md §5.3, §14 L3). It copies only
 # apps/swarm-speech in.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech workspace-apply)
+# swarm-plugin-intake (managed plugins, docs/design/managed-plugins.md §2.2)
+# is the isolated Cloud Run job that checks one quarantined plugin archive,
+# apps/plugin-intake/Dockerfile. terraform/infra/plugins.tf plans the job only
+# once image_refs has its digest (local.plugin_intake_on): before this list
+# named it, no deployment had the job, and every Add plugin answered 503 "The
+# intake job could not be started" (live, 2026-11-09). Its app directory has
+# no swarm- prefix, so recipe_target names it. It copies only its own package
+# in, and it upgrades OS packages, so every release rebuilds it.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech swarm-plugin-intake workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
@@ -222,9 +230,12 @@ ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser
 # duplicate-layer gates (scripts/image-sizes.sh) and terraform's image_refs --
 # all keyed by image name -- cover it as the image it is. Its recipe directory
 # is the base's, so it reads the base's inputs and is rebuilt with it.
+# swarm-plugin-intake is its own recipe, in a directory named without the
+# swarm- prefix (apps/plugin-intake), which terraform's image name carries.
 recipe_target() {
   case "$1" in
     agent-runtime-base-nocodex) printf '%s' "agent-runtime-base" ;;
+    swarm-plugin-intake) printf '%s' "plugin-intake" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -1505,7 +1516,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
     # terraform/infra deployed those exact tags -- so the first sign of trouble
     # was Cloud Run reporting "Image not found" long after the build "passed".
     err "no Dockerfile or cloudbuild.yaml found for ${target}"
-    dim "looked in images/${target}/, apps/${target}/, docker/${target}/"
+    dim "looked in images/$(recipe_target "${target}")/, apps/$(recipe_target "${target}")/, docker/$(recipe_target "${target}")/"
     die "every target in ALL_TARGETS must be buildable; add a recipe or remove it from the list"
   fi
   kind="${recipe%%$'\t'*}"
