@@ -489,6 +489,13 @@ body {
    on the next step's --sk-acs band (2.89:1 dark, 2.96:1 light) that no browser
    draws. Restated here, after the floor, for that one button only. */
 .ob-step.is-next .c-btn.is-ghost { border-color: transparent; }
+/* The same tie for voice-settings.css's segmented control (`.vset-seg`, Voice
+   it's Settings and Telemetry): its segments are `border: 0` on the group's
+   fill with only the picked one on --surface, but the floor's border and
+   --surface out-rank them in jsdom, so the sweep read every segment as a
+   bordered surface 2px from the next. Restated here, after the floor. */
+.vset-seg button { border: 0; }
+.vset-seg button:not(.is-on) { background: transparent; }
 /* A plain button on that band (Admin › Setup's Invite and "Run the console
    checks", DAYONE-SETUP-UI-4): --ctl-bd on --sk-acs is 2.89:1 dark, 2.96:1
    light, under 3:1 in every browser, not only jsdom. The Config lead's
@@ -2559,16 +2566,68 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* The wall: every live browser's still, two a row at the inspector's resting width. */
 .ag-wall { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
 .ag-wall-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
-.ag-wall-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--ctl-s2); min-width: 0; }
-.ag-wall-card { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+/* EACH CARD IN ITS DEVICE'S SHAPE (the owner's request, 2026-11-08; Agents.tsx
+   `deviceFrame`): every frame is the same height (`--wall-frame-h`, which
+   LiveThumb.tsx's THUMB_FRAME_H mirrors to size the stream it asks for) and as
+   wide as its device's proportions make it -- iPhone 9:19.5, iPad 3:4, web
+   16:10, phone and tablet turned in landscape -- never wider than its cell;
+   the picture letterboxes into its frame, never stretched.
+   PACKED ON NARROW TRACKS, NOT IN LIST ORDER (review of 2026-11-08): a
+   flex-wrap row left a phone card alone in its row (104px of a 317px wall)
+   and fitted one desktop card a row, so a wall of desktops was one narrow
+   column. The wall is now a grid of one narrow track: a portrait phone or
+   tablet card spans one, every other card (desktop, a turned phone or
+   tablet, a device not reported) two, and `dense` flow lets a narrow card
+   fill the gap a wide one left, so no row but the last has more than one
+   track empty. Four tracks until each is 146px wide (the 8px gaps between
+   them: 24px), more tracks of at least 146px on a wider wall; so a
+   desktop-only wall is two cards a row on the inspector (317px on a desktop,
+   374px on a 390px phone) and wider.
+   The shared height is the largest at which a desktop frame fills two tracks
+   (two tracks and a gap less one card's padding and border, 16:10: (100cqi -
+   32px) / 3.2, 4px of it rounding) and a tablet-portrait frame one ((100cqi
+   - 68px) / 3); never under 48px, never over `--wall-frame-max`, the 180px
+   LiveThumb.tsx's THUMB_FRAME_H mirrors, which a 146px track reaches. Cards
+   in a row stretch to the row and every frame is `--wall-frame-h` tall, so
+   a row's frames are one height.
+   EVERY var() OF THESE WALL-SCOPED NAMES CARRIES A FALLBACK (the desktop
+   frame at its 180px maximum). The browser never uses it -- the grid and the
+   card always declare the name -- but the contrast and spacing sweeps resolve
+   the whole sheet against `:root`'s tokens only (spaceprobe.ts `resolveVars`),
+   and a name declared on an element with no fallback stops that resolver
+   for every screen, not just this one. */
+.ag-wall-grid { container-type: inline-size; --wall-frame-max: 180px; --wall-frame-h: clamp(48px, min((100cqi - 32px) / 3.2, (100cqi - 68px) / 3), var(--wall-frame-max, 180px)); list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(calc((100% - 24px) / 4), 146px), 1fr)); grid-auto-flow: row dense; align-items: stretch; gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-card { --frame-ratio: 16 / 10; --frame-w: calc(var(--wall-frame-h, 180px) * 16 / 10); display: flex; flex-direction: column; gap: var(--ctl-s1); grid-column: span 2; min-width: 0; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+.ag-wall-card.is-portrait { grid-column: span 1; }
+.ag-wall-card.is-phone.is-portrait { --frame-ratio: 9 / 19.5; --frame-w: calc(var(--wall-frame-h, 180px) * 9 / 19.5); }
+.ag-wall-card.is-phone.is-landscape { --frame-ratio: 19.5 / 9; --frame-w: calc(var(--wall-frame-h, 180px) * 19.5 / 9); }
+.ag-wall-card.is-tablet.is-portrait { --frame-ratio: 3 / 4; --frame-w: calc(var(--wall-frame-h, 180px) * 3 / 4); }
+.ag-wall-card.is-tablet.is-landscape { --frame-ratio: 4 / 3; --frame-w: calc(var(--wall-frame-h, 180px) * 4 / 3); }
 .ag-wall-card.is-your-turn { border-color: var(--warn); }
 .ag-wall-open { display: flex; align-items: center; gap: var(--ctl-s1); min-width: 0; border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
 .ag-wall-open:hover .ag-wall-name { text-decoration: underline; }
 .ag-wall-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ag-wall-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--t-meta); }
-.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.ag-wall-card .wf-live-links { margin-top: auto; }
+/* A NARROW CARD KEEPS ITS ROWS SHORT, so a phone's frame starts and its links
+   end level with a desktop's beside it: the wall's own title already says
+   "Live browsers", so a card's "live browser" eyebrow is not drawn (the badge
+   and the section's name still say it), and a link wraps whole, never mid-name. */
+.ag-wall-card .wf-live-head .ctl-eyebrow { display: none; }
+.ag-wall-card .wf-live-links .ctl-link { white-space: nowrap; }
+/* A ONE-TRACK CARD'S LINKS WRAP BETWEEN WORDS: a track is 73px on a 317px
+   wall, narrower than "Open Browser tab" on one line, and a link that does not
+   wrap runs past the card's border. A word is never broken. */
+.ag-wall-card.is-portrait .wf-live-links .ctl-link { white-space: normal; }
+/* A STATUS BADGE WRAPS INSIDE A NARROW CARD (review of 2026-11-08): "live view
+   unavailable" is wider than a phone card, and on one line it ran past the
+   card's border. */
+.ag-wall-card .wf-live-head .ctl-mark { white-space: normal; max-width: 100%; }
 .ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s1); }
-.ag-wall-card .wf-live-thumb { display: block; width: 100%; aspect-ratio: 16 / 10; height: auto; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-card .wf-live-thumb { display: block; width: min(100%, var(--frame-w, 288px)); aspect-ratio: var(--frame-ratio, 16 / 10); height: var(--wall-frame-h, 180px); margin-inline: auto; object-fit: contain; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-card .wf-live-thumb.is-phone { border-radius: 10px; }
+.ag-wall-card .wf-live-thumb.is-tablet { border-radius: 8px; }
 .ag-wall-count { white-space: nowrap; }
 /* On a phone the wall is a sheet, opened from this one button over the list. */
 .ag-wall-phone { display: block; margin: 0 0 var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); padding: var(--ctl-s1) var(--ctl-s2); cursor: pointer; max-width: 100%; }

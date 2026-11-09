@@ -15,7 +15,10 @@ nothing else (invariant 10). What is held here:
      `dispatch`;
   4. `metadata.merge` "on_merge_verdict" with a loop appends ONLY the merge,
      whose signed `merge_target` names the loop (`review_loop`) in place of a
-     review, and no re-review (Q8); without a loop it is unchanged;
+     review, and no re-review (Q8); without a declared loop it appends one
+     (Q8 (b), the owner 2026-11-09, tests/unit/control_plane/
+     test_fix_loop_by_default.py), and while the profile is unavailable the
+     re-review as before;
   5. the loop is never the integrator: under `integrate` the fix still is,
      and integrates the implementer only.
 
@@ -310,7 +313,7 @@ def test_the_block_changes_the_spec_digest(signed_client, db, signer, loop_enabl
 
 
 # --------------------------------------------------------------------------
-# metadata.merge with a loop: only the merge, reading the loop (Q8, §4.6)
+# metadata.merge with a declared loop: only the merge, reading the loop (Q8, §4.6)
 # --------------------------------------------------------------------------
 
 def test_on_merge_verdict_with_a_loop_appends_only_a_merge_reading_the_loop(
@@ -369,7 +372,13 @@ def test_a_stated_merge_behind_a_loop_must_read_the_loop(client, db, loop_enable
     assert response.status_code == 422, response.text
 
 
-def test_on_merge_verdict_without_a_loop_is_unchanged(client, db):
+def test_on_merge_verdict_without_a_loop_appends_the_rereview_while_the_profile_is_unavailable(
+    client, db,
+):
+    # Q8 (b): with the profile available the loop is appended instead
+    # (test_fix_loop_by_default.py); unavailable, an appended loop would be
+    # refused as disabled, so the re-review is.
+    assert not RUNNER_PROFILES[FIX_LOOP_PROFILE].available
     spec = _integrate(metadata={"merge": "on_merge_verdict"})
     spec["steps"].pop()
     response = _post(client, spec)

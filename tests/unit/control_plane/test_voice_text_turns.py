@@ -1,12 +1,13 @@
-"""Voice it's two modes and the text turns route (owner, 4 November 2026: "both
-paths"; docs/design/voice-it.md §3.2).
+"""Voice it's modes and the text turns route (owner, 4 November 2026: "both
+paths"; docs/design/voice-it.md §3.2; docs/design/voice-it-own-speech.md §10).
 
-OpenAI refuses the ChatGPT plan's token for GPT-Live, but the plan serves text.
-`POST /v1/voice/sessions` asks the broker what the Voice it pool holds: with an
-OpenAI API key the session is `live` (today's path, its SDP answer as today);
-with none it is `text`, with no SDP, and the browser posts each spoken turn to
-`POST /v1/voice/sessions/{id}/turns`. swarm-voice and the broker are fakes on
-`app.state`; no network.
+`POST /v1/voice/sessions` takes its engine from Voice it › Settings alone.
+GPT-Live is `live` when the broker's Voice it pool holds an OpenAI API key
+(today's path, its SDP answer as today) and refused with a fixed code when it
+holds none. Text mode is the fallback of own speech that cannot start (here: no
+speech machine deployed), with no SDP, and the browser posts each spoken turn
+to `POST /v1/voice/sessions/{id}/turns`. swarm-voice and the broker are fakes
+on `app.state`; no network.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api.voice import sessions as vs
+from swarm_api.voice import settings as vsettings
+from swarm_api.voice import speech_catalogue as cat
 
 from .conftest import auth_header
 from .test_voice_sessions import ANSWER, OFFER, FakeVoice, _client, _end, _sessions
@@ -72,6 +75,18 @@ def _app(db, tokens, group_map, objects, voice, pool) -> TestClient:
     return client
 
 
+def _engine(db, engine: str) -> None:
+    db.docs[f"{vsettings.COLLECTION}/{vsettings.DOCUMENT}"] = {"engine": engine}
+
+
+def _text_app(db, tokens, group_map, objects, voice, pool) -> TestClient:
+    """Settings' own speech on a deployment with no speech machine: every
+    start falls back to text mode."""
+    client = _app(db, tokens, group_map, objects, voice, pool)
+    _engine(db, cat.ENGINE_OWN)
+    return client
+
+
 @pytest.fixture
 def voice() -> TextVoice:
     return TextVoice()
@@ -85,17 +100,18 @@ def _turn(client: TestClient, session_id: str, text: str, user: str = "alice"):
     return client.post(f"/v1/voice/sessions/{session_id}/turns", json={"text": text}, headers=auth_header(user))
 
 
-def test_with_no_api_key_in_the_pool_the_session_is_text_and_has_no_sdp(db, tokens, group_map, objects, voice):
+def test_own_speech_with_no_speech_machine_is_text_and_has_no_sdp(db, tokens, group_map, objects, voice):
     pool = FakePool("no_voice_account_registered")
-    client = _app(db, tokens, group_map, objects, voice, pool)
+    client = _text_app(db, tokens, group_map, objects, voice, pool)
 
     response = _start(client)
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["mode"] == "text" and body["state"] == vs.LIVE
+    assert body["fallback"] == {"from": cat.ENGINE_OWN, "reason": vs.FALLBACK_NOT_DEPLOYED}
     assert "answer_sdp" not in body
-    assert pool.asked == ["alice@example.com"]
+    assert pool.asked == []  # own speech never asks the OpenAI pool
     (call,) = voice.starts
     assert call.mode == vs.MODE_TEXT and call.offer == ""
     (session,) = _sessions(db).values()
@@ -105,6 +121,29 @@ def test_with_no_api_key_in_the_pool_the_session_is_text_and_has_no_sdp(db, toke
     again = _start(client, offer_sdp=OFFER)
     assert again.status_code == 200 and again.json()["mode"] == "text"
     assert voice.starts[-1].offer == ""
+
+
+def test_gpt_live_with_no_api_key_in_the_pool_falls_back_to_text(db, tokens, group_map, objects, voice):
+    pool = FakePool("no_voice_account_registered")
+    client = _app(db, tokens, group_map, objects, voice, pool)
+
+    response = _start(client, offer_sdp=OFFER)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["mode"] == "text" and body["state"] == vs.LIVE
+    assert body["fallback"] == {"from": cat.ENGINE_GPT_LIVE, "reason": vs.FALLBACK_NO_OPENAI_KEY}
+    assert "answer_sdp" not in body
+    (call,) = voice.starts
+    assert call.mode == vs.MODE_TEXT and call.offer == ""  # the offer is dropped unread
+    (session,) = _sessions(db).values()
+    assert session["mode"] == "text"
+    assert session["fallback"]["from"] == cat.ENGINE_GPT_LIVE
+    assert session["fallback"]["reason"] == vs.FALLBACK_NO_OPENAI_KEY
+    # A text session needs no offer at all.
+    _end(client, "alice", body["session_id"])
+    again = _start(client)
+    assert again.status_code == 200 and again.json()["mode"] == "text"
 
 
 def test_with_an_api_key_the_session_is_live_as_today(db, tokens, group_map, objects, voice):
@@ -132,7 +171,7 @@ def test_any_other_pool_answer_keeps_the_live_path(db, tokens, group_map, object
 def test_a_turn_returns_the_reply_and_cards_and_never_logs_the_text(
         db, tokens, group_map, objects, voice, caplog):
     caplog.set_level(logging.DEBUG)
-    client = _app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
+    client = _text_app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
     session_id = _start(client).json()["session_id"]
     said = "plan the rollout for the payments team " + secrets.token_hex(4)
 
@@ -159,7 +198,7 @@ def test_a_turn_is_409_on_a_live_session_and_after_the_end(db, tokens, group_map
     assert refused.json()["detail"]["reason"] == vs.NOT_LIVE
     _end(client, "alice", live_id)
 
-    client.app.state.account_pool = FakePool("no_voice_account_registered")
+    _engine(db, cat.ENGINE_OWN)
     text_id = _start(client).json()["session_id"]
     assert _turn(client, text_id, "hello").status_code == 200
     _end(client, "alice", text_id)
@@ -169,7 +208,7 @@ def test_a_turn_is_409_on_a_live_session_and_after_the_end(db, tokens, group_map
 
 
 def test_a_turn_passes_every_voice_it_guard(db, tokens, group_map, objects, voice):
-    client = _app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
+    client = _text_app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
     session_id = _start(client).json()["session_id"]
 
     assert _turn(client, session_id, "hi", user="carol").status_code == 403  # not on the Voice it list
@@ -182,7 +221,7 @@ def test_a_turn_passes_every_voice_it_guard(db, tokens, group_map, objects, voic
 
 
 def test_the_plans_usage_limit_is_429_with_when_it_resets(db, tokens, group_map, objects, voice):
-    client = _app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
+    client = _text_app(db, tokens, group_map, objects, voice, FakePool("no_voice_account_registered"))
     session_id = _start(client).json()["session_id"]
     voice.turn_error = vs.VoiceUsageLimited("2100-01-01T00:00:00+00:00", now=datetime.now(timezone.utc))
 

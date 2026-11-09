@@ -79,18 +79,57 @@ longer lists or a class with no pin of its own, so swarm-voice keeps its pin
 (VOICE_PLANNER_MODEL, VOICE_FRONT_MODEL). swarm-voice keeps both for the
 session, so a change reaches the next session's start, never a running one.
 
-THE MODE (owner, 4 November 2026: "both paths"). OpenAI refuses the ChatGPT
-plan's token for GPT-Live, but the plan serves text. `pick_mode` asks the
-broker which account the person's next Live session would lease (`GET
-/v1/voice/pool`): `no_voice_account_registered`, the answer for a pool with
-no OpenAI API key, makes the session `text`; anything else, and a broker that
-cannot be asked, keeps it `live` (today's path, unchanged). A text start
-sends `{voice_session_id, project_id, person, grant, mode: "text"}` with no
-offer, and swarm-voice answers `201 {voice_session_id, mode: "text"}`; the
-browser then posts each spoken turn as text:
+THE ENGINE (docs/design/voice-it-own-speech.md §4.1, §10; pick 7: "Start
+uses exactly the engine in Settings"). The browser's Start names no engine and
+no mode. `pick_engine` reads Voice it › Settings' `engine`:
+
+  own        `speech`: the session opens, swarm-voice starts the fast Claude
+             front (no offer, `mode: "speech"`), then the speech machine's
+             lease is taken and the instance brought to RUNNING
+             (speech_machine.SpeechMachine.start, swarm-api's four-minute
+             wait). The OpenAI pool is never asked.
+  gpt-live   `live`, today's GPT-Live path, when the broker's Voice it pool
+             holds an OpenAI API key. With none (`GET /v1/voice/pool` answers
+             `no_voice_account_registered`) the session is `text`, with
+             `fallback: {from: "gpt-live", reason: "no_openai_key"}` (owner's
+             pick, PR #3647: "text fallback"): no other account or person's
+             key is tried for Live. A broker that cannot be asked keeps the
+             live path, and swarm-voice's own lease then says why.
+
+TEXT MODE IS THE FALLBACK, never an engine Settings choose (§10.1). A session
+becomes text when its engine cannot start, with the engine and the reason as
+a fixed code in `fallback: {from, reason}` on the session document and in the
+start's answer. GPT-Live's one reason, `no_openai_key`, is known before
+anything is written; own speech's are:
+
+  speech_not_deployed   the deployment runs no speech machine (SWARM_SPEECH_*
+                        empty), so no session is opened as speech at all
+  front_refused         swarm-voice's 409 `voice_front_refused`: no Claude
+                        account free for the front (a refusal, never a wait)
+  no_l4                 no zone of SWARM_SPEECH_ZONES had an L4 free, each tried
+                        once in order (owner, 2026-11-09)
+  not_ready             the machine was not RUNNING inside the four minutes
+
+The session is not re-opened: its document turns `mode: "text"`, the front
+(if it started) is ended at swarm-voice, and swarm-voice's text start runs on
+the same session id. A speech start never builds swarm-voice's text
+conversation; only this fallback's own text start does. A machine another
+session holds is a refusal (409, `speech_machine_in_use`), not a fallback:
+the session is ended and the person freed. While its machine starts, a
+`speech` session holds the person for SPEECH_STARTING_STALE_SECONDS.
+
+A text or speech start sends `{voice_session_id, project_id, person, grant,
+mode}` with no offer; swarm-voice answers `201 {voice_session_id, mode}`. The
+browser then posts each turn as text (a speech session's come from the audio
+relay too):
 
   {SWARM_VOICE_URL}/internal/sessions/{session_id}/turns
-      {"text"} -> 200 {"turn_id", "reply", "cards"}
+      {"text"} -> 200 {"turn_id", "reply", "cards", "delegation_id"?}
+
+`delegation_id` is set when the fast front handed the turn to the planner;
+`VoiceSessions.delegation` reads the planner's spoken line from
+`{SWARM_VOICE_URL}/delegations/{id}?wait=<seconds>`, only for that session.
+Ending a speech session also stops its machine, under the lease's generation.
 
 swarm-voice's 404 (it holds no text conversation for the session: ended
 there, or lost to a restart) reads as 409 `conflict`, reason
@@ -149,15 +188,46 @@ HOLDING = frozenset({STARTING, LIVE})
 #: longer blocks the person's next start. swarm-voice's start call times out
 #: well inside it.
 STARTING_STALE_SECONDS = 120
+#: The same for a `speech` session, which stays `starting` while swarm-api
+#: brings the speech machine to RUNNING: speech_machine.READY_SECONDS (240),
+#: plus swarm-voice's start call (START_TIMEOUT_SECONDS) and a margin.
+SPEECH_STARTING_STALE_SECONDS = 330
 
 END_BY_PERSON = "ended_by_person"
 END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
+#: Another session holds the speech machine (speech_machine.MachineInUse).
+END_MACHINE_IN_USE = "speech_machine_in_use"
 
 #: A session's modes: GPT-Live over WebRTC on an OpenAI API key, or the ChatGPT
 #: plan's text conversation (owner, 4 November 2026: "both paths").
 MODE_LIVE = "live"
 MODE_TEXT = "text"
+#: Our own speech: the speech machine's ears and mouth, the fast Claude front's
+#: conversation (docs/design/voice-it-own-speech.md §10.1).
+MODE_SPEECH = "speech"
+MODES = (MODE_LIVE, MODE_TEXT, MODE_SPEECH)
+#: The modes whose turns are posted as text to swarm-voice's `/turns`.
+TURN_MODES = frozenset({MODE_TEXT, MODE_SPEECH})
+#: Voice it › Settings' engines (speech_catalogue.ENGINE_OWN / ENGINE_GPT_LIVE).
+ENGINE_MODES = {cat.ENGINE_OWN: MODE_SPEECH, cat.ENGINE_GPT_LIVE: MODE_LIVE}
+#: Why an own-speech session became text: fixed codes, written to the session's
+#: `fallback.reason` and the start's answer (§4.1). `no_l4` and `not_ready` are
+#: speech_machine's FALLBACK_NO_L4 and FALLBACK_NOT_READY.
+FALLBACK_NOT_DEPLOYED = "speech_not_deployed"
+FALLBACK_FRONT_REFUSED = "front_refused"
+FALLBACK_NO_L4 = "no_l4"
+FALLBACK_NOT_READY = "not_ready"
+#: GPT-Live's: the Voice it pool holds no OpenAI API key, so the session is text.
+FALLBACK_NO_OPENAI_KEY = "no_openai_key"
+FALLBACK_REASONS = frozenset({FALLBACK_NOT_DEPLOYED, FALLBACK_FRONT_REFUSED, FALLBACK_NO_L4,
+                              FALLBACK_NOT_READY, FALLBACK_NO_OPENAI_KEY})
+#: The engine each fallback reason falls back from (`fallback.from`).
+FALLBACK_FROM = {reason: cat.ENGINE_OWN for reason in FALLBACK_REASONS} | {
+    FALLBACK_NO_OPENAI_KEY: cat.ENGINE_GPT_LIVE}
+#: swarm-voice's 409 code for a speech start whose fast front could not lease
+#: a Claude account (swarm_voice.main.FRONT_REFUSED).
+FRONT_REFUSED_CODE = "voice_front_refused"
 #: The broker's reason for a Voice it pool with no account that can open a Live
 #: session, i.e. no OpenAI API key: the one answer that makes a session text.
 NO_LIVE_ACCOUNT = "no_voice_account_registered"
@@ -198,6 +268,9 @@ AUDIT_ENDED = "voice_session_ended"
 MAX_SDP_BYTES = 64 * 1024
 
 START_TIMEOUT_SECONDS = 20.0
+#: The longest a delegation is waited on: swarm-voice's
+#: claudefront.MAX_WAIT_SECONDS, the planner's turn.
+DELEGATION_WAIT_SECONDS = 240.0
 END_TIMEOUT_SECONDS = 5.0
 
 METADATA_IDENTITY_URL = (
@@ -236,6 +309,11 @@ VoicePoolUnavailable = (VoicePoolRefused, VoicePoolBusy)
 
 class VoiceSessionLive(Conflict):
     pass
+
+
+class SpeechFrontRefused(Exception):
+    """swarm-voice's 409 `voice_front_refused`: no Claude account for the fast
+    front. Never reaches the browser: the session falls back to text."""
 
 
 class VoiceUnreachable(ApiError):
@@ -419,19 +497,45 @@ class TurnAnswer:
     turn_id: str
     reply: str
     cards: list[dict[str, Any]]
+    #: The fast front's delegation to the planner, on a speech session.
+    delegation_id: str | None = None
 
 
-def pick_mode(pool: Any, person: str) -> str:
-    """`text` when the broker says the Voice it pool holds no account that can
-    open a Live session (no OpenAI API key), else `live`. A broker that cannot
-    be asked keeps today's path: swarm-voice's own lease then says why."""
+@dataclass(frozen=True)
+class EnginePick:
+    """What a Start runs: Settings' engine, the session's mode, and the
+    fallback's fixed code when the mode is text."""
+
+    engine: str
+    mode: str
+    fallback: str | None = None
+
+
+def pick_engine(chosen: Mapping[str, Any], pool: Any, person: str, *,
+                speech_deployed: bool) -> EnginePick:
+    """The engine Voice it › Settings name (`chosen`, settings.effective's
+    view, whose default is own speech), with no choice at Start.
+
+    own speech is `speech`, or `text` with `speech_not_deployed` when the
+    deployment runs no speech machine; the OpenAI pool is never asked.
+    GPT-Live is `live`, or `text` with `no_openai_key` when the broker says
+    the pool holds no OpenAI API key; a broker that cannot be asked keeps
+    `live`, and swarm-voice's own lease refuses properly."""
+    engine = chosen.get("engine")
+    engine = engine if engine in ENGINE_MODES else cat.DEFAULTS["engine"]
+    if engine == cat.ENGINE_OWN:
+        if not speech_deployed:
+            return EnginePick(engine, MODE_TEXT, FALLBACK_NOT_DEPLOYED)
+        return EnginePick(engine, MODE_SPEECH)
     try:
         answer = pool.voice_pool(person)
     except Exception as exc:  # noqa: BLE001 -- the class name only; the Live path refuses properly
-        log.warning("the Voice it pool could not be read for the mode (%s); live", type(exc).__name__)
-        return MODE_LIVE
+        log.warning("the Voice it pool could not be read for GPT-Live (%s); live", type(exc).__name__)
+        return EnginePick(engine, MODE_LIVE)
     reason = answer.get("reason") if isinstance(answer, dict) else None
-    return MODE_TEXT if reason == NO_LIVE_ACCOUNT else MODE_LIVE
+    if reason == NO_LIVE_ACCOUNT:
+        return EnginePick(engine, MODE_TEXT, FALLBACK_NO_OPENAI_KEY)
+    return EnginePick(engine, MODE_LIVE)
 
 
 class VoiceClient(Protocol):
@@ -447,6 +551,11 @@ class VoiceClient(Protocol):
     def turn(self, session_id: str, text: str) -> TurnAnswer:
         """swarm-voice's answer to a text turn, or `VoiceSessionNotLive`,
         `VoiceUsageLimited` or `VoiceUnreachable`."""
+        ...
+
+    def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
+        """The planner's spoken line once the front's delegation is done, or
+        None (not done in `timeout`, unknown, another session's). Never raises."""
         ...
 
 
@@ -488,14 +597,25 @@ class HttpVoiceClient:
                 raw = b""
             return exc.code, raw or b""
 
+    def _get(self, path: str, timeout: float) -> tuple[int, bytes]:
+        bearer = self._token(self._audience, timeout)
+        request = urllib.request.Request(self._base + path, method="GET",
+                                         headers={"Authorization": f"Bearer {bearer}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - our own internal URL
+                return response.status, response.read(256 * 1024)
+        except urllib.error.HTTPError as exc:
+            return exc.code, b""
+
     def start(self, call: StartCall) -> StartAnswer:
         body = {"voice_session_id": call.session_id, "project_id": call.project_id,
                 "person": call.person, "offer": call.offer, "grant": call.grant}
-        if call.mode == MODE_TEXT:
-            # No offer: a text conversation has no WebRTC. A Live body is
-            # today's, field for field (swarm-voice's `mode` defaults to live).
+        if call.mode in TURN_MODES:
+            # No offer: a text conversation and the fast front have no WebRTC.
+            # A Live body is today's, field for field (swarm-voice's `mode`
+            # defaults to live).
             body = {"voice_session_id": call.session_id, "project_id": call.project_id,
-                    "person": call.person, "grant": call.grant, "mode": MODE_TEXT}
+                    "person": call.person, "grant": call.grant, "mode": call.mode}
         if call.planner_model is not None:
             body["planner_model"] = call.planner_model
         if call.conversation_model is not None:
@@ -506,6 +626,9 @@ class HttpVoiceClient:
             log.warning("voice start for session=%s did not reach swarm-voice (%s)",
                         call.session_id, type(exc).__name__)
             raise VoiceUnreachable("swarm-voice could not be reached; the session was ended.") from None
+        if call.mode == MODE_SPEECH and status == 409 and _refusal_body(raw)[0] == FRONT_REFUSED_CODE:
+            log.info("swarm-voice found no Claude account for the front of session=%s", call.session_id)
+            raise SpeechFrontRefused("swarm-voice could not start the fast front")
         refusal = pool_refusal(status, raw) if status in (403, 409) else None
         if refusal is not None:
             log.warning("swarm-voice refused the Voice it pool for session=%s (HTTP %s, %s)",
@@ -527,10 +650,11 @@ class HttpVoiceClient:
         if not isinstance(started, dict) or started.get("voice_session_id") != call.session_id:
             log.warning("swarm-voice answered the start for session=%s for another session", call.session_id)
             raise VoiceUnreachable("swarm-voice answered for another session; the session was ended.")
-        if call.mode == MODE_TEXT:
-            if started.get("mode") != MODE_TEXT:
-                raise VoiceUnreachable("swarm-voice did not start a text conversation; the session was ended.")
-            return StartAnswer(answer="", live_session_id="", mode=MODE_TEXT)
+        if call.mode in TURN_MODES:
+            if started.get("mode") != call.mode:
+                raise VoiceUnreachable(f"swarm-voice did not start a {call.mode} conversation; "
+                                       "the session was ended.")
+            return StartAnswer(answer="", live_session_id="", mode=call.mode)
         answer, live_id = started.get("answer"), started.get("live_session_id")
         if not isinstance(answer, str) or not isinstance(live_id, str) or not live_id:
             raise VoiceUnreachable("swarm-voice answered without an SDP answer; the session was ended.")
@@ -570,8 +694,31 @@ class HttpVoiceClient:
         turn_id, reply, cards = body.get("turn_id"), body.get("reply"), body.get("cards")
         if not isinstance(turn_id, str) or not isinstance(reply, str):
             raise VoiceUnreachable("swarm-voice answered the turn without a reply.")
+        delegation = body.get("delegation_id")
         return TurnAnswer(turn_id=turn_id, reply=reply,
-                          cards=[c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else [])
+                          cards=[c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else [],
+                          delegation_id=delegation if isinstance(delegation, str) and delegation else None)
+
+    def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
+        wait = max(0.0, min(float(timeout), DELEGATION_WAIT_SECONDS))
+        path = ("/delegations/" + urllib.parse.quote(delegation_id, safe="") + "?"
+                + urllib.parse.urlencode({"wait": wait}))
+        try:
+            status, raw = self._get(path, wait + 10.0)
+        except (OSError, ValueError) as exc:
+            log.warning("voice delegation %s for session=%s did not reach swarm-voice (%s)",
+                        delegation_id, session_id, type(exc).__name__)
+            return None
+        try:
+            body = json.loads(raw.decode("utf-8")) if status == 200 and raw else None
+        except ValueError:
+            body = None
+        # Another session's delegation is never spoken here, whatever its id.
+        if not isinstance(body, dict) or body.get("voice_session_id") != session_id \
+                or body.get("state") != "done":
+            return None
+        spoken = body.get("spoken")
+        return spoken if isinstance(spoken, str) and spoken.strip() else None
 
     def end(self, session_id: str, *, cause: str) -> bool:
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/end"
@@ -617,7 +764,8 @@ class VoiceSessions:
 
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
                  now: Callable[[], datetime],
-                 class_models: Mapping[str, str] | None = None) -> None:
+                 class_models: Mapping[str, str] | None = None,
+                 machine: Any = None) -> None:
         self._db = db
         self._client = client
         self._marker_key = marker_key
@@ -625,6 +773,9 @@ class VoiceSessions:
         #: swarm-api's `worker_class_models`; None reads WORKER_CLASS_MODELS,
         #: the variable `Settings.worker_class_models` is parsed from.
         self._class_models = class_models
+        #: The speech machine's lifecycle (speech_machine.SpeechMachine), or
+        #: None where the deployment runs none: a speech start then falls back.
+        self._machine = machine
 
     def _session_models(self) -> tuple[str | None, str | None]:
         """(planner model, conversation model) for a session starting now,
@@ -668,16 +819,25 @@ class VoiceSessions:
             return True
         if state == STARTING:
             created = _aware(session.get("created_at"))
-            return created is None or \
-                self._now() - created < timedelta(seconds=STARTING_STALE_SECONDS)
+            stale = SPEECH_STARTING_STALE_SECONDS if session.get("mode") == MODE_SPEECH \
+                else STARTING_STALE_SECONDS
+            return created is None or self._now() - created < timedelta(seconds=stale)
         return False
 
     def start(self, *, tenant_id: str, person: str, offer: str,
-              project_id: str | None, mode: str = MODE_LIVE) -> dict[str, Any]:
-        """No credential: swarm-voice leases the Voice it pool account itself.
-        `mode` is `pick_mode`'s; a text session sends no offer."""
-        if mode not in (MODE_LIVE, MODE_TEXT):
+              project_id: str | None, mode: str = MODE_LIVE, fallback: str | None = None,
+              chosen: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """No credential: swarm-voice leases the pool accounts itself. `mode`
+        and `fallback` are `pick_engine`'s; `chosen` is Settings' view, which
+        the speech machine's start applies. A text or speech session sends no
+        offer. A speech session that cannot start becomes text, with its
+        reason (`fallback` in the answer)."""
+        if mode not in MODES:
             raise ValueError(f"no Voice it session mode {mode!r}")
+        if fallback is not None and (mode != MODE_TEXT or fallback not in FALLBACK_REASONS):
+            raise ValueError(f"no Voice it fallback {fallback!r} for mode {mode!r}")
+        if mode == MODE_SPEECH and self._machine is None:
+            mode, fallback = MODE_TEXT, FALLBACK_NOT_DEPLOYED
         # Read before anything is written, so a failed read leaves nothing held.
         planner_model, conversation_model = self._session_models()
         person = person.strip().lower()
@@ -708,10 +868,13 @@ class VoiceSessions:
                     "status": "active", "created_at": now, "updated_at": now})
             else:
                 txn.update(project_ref, {"updated_at": now})
-            txn.set(session_ref, {
+            fields = {
                 "tenant_id": tenant_id, "person": person, "project_id": project_id,
                 "state": STARTING, "created_at": now, "grant_hash": grant_hash(grant),
-                "mode": mode})
+                "mode": mode}
+            if fallback is not None:
+                fields["fallback"] = {"from": FALLBACK_FROM[fallback], "reason": fallback, "at": now}
+            txn.set(session_ref, fields)
             txn.set(marker_ref, {
                 "tenant_id": tenant_id, "project_id": project_id,
                 "session_id": session_id, "at": now})
@@ -721,24 +884,39 @@ class VoiceSessions:
 
         _open(self._db.transaction())
 
-        call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
-                         person=person, offer=offer if mode == MODE_LIVE else "", grant=grant, mode=mode,
-                         planner_model=planner_model, conversation_model=conversation_model)
-        try:
-            started = self._client.start(call)
-            if not isinstance(started, StartAnswer):
-                raise VoiceUnreachable("swarm-voice did not answer the start; the session was ended.")
-            if mode == MODE_TEXT and started.mode != MODE_TEXT:
-                raise VoiceUnreachable("swarm-voice did not start a text conversation; the session was ended.")
-            if mode == MODE_LIVE and not _valid_answer(started.answer):
-                raise VoiceUnreachable("swarm-voice's answer is not an SDP answer; the session was ended.")
-        except VoiceUnreachable:
+        def call_for(this_mode: str) -> StartCall:
+            return StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
+                             person=person, offer=offer if this_mode == MODE_LIVE else "", grant=grant,
+                             mode=this_mode, planner_model=planner_model,
+                             conversation_model=conversation_model)
+
+        def close(cause: str) -> None:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
-                        session_id=session_id, cause=END_VOICE_UNREACHABLE)
+                        session_id=session_id, cause=cause)
+
+        try:
+            if mode == MODE_SPEECH:
+                fallback = self._start_speech(
+                    call_for(MODE_SPEECH), chosen=chosen or {}, tenant_id=tenant_id, close=close)
+                if fallback is not None:
+                    mode = MODE_TEXT
+                    self._session_ref(project_id, session_id).update(
+                        {"mode": MODE_TEXT,
+                         "fallback": {"from": cat.ENGINE_OWN, "reason": fallback, "at": self._now()}})
+                    log.info("voice session %s falls back to text (%s)", session_id, fallback)
+            if mode != MODE_SPEECH:
+                started = self._client.start(call_for(mode))
+                if not isinstance(started, StartAnswer):
+                    raise VoiceUnreachable("swarm-voice did not answer the start; the session was ended.")
+                if mode == MODE_TEXT and started.mode != MODE_TEXT:
+                    raise VoiceUnreachable("swarm-voice did not start a text conversation; the session was ended.")
+                if mode == MODE_LIVE and not _valid_answer(started.answer):
+                    raise VoiceUnreachable("swarm-voice's answer is not an SDP answer; the session was ended.")
+        except VoiceUnreachable:
+            close(END_VOICE_UNREACHABLE)
             raise
         except VoicePoolUnavailable:
-            self._close(tenant_id=tenant_id, person=person, project_id=project_id,
-                        session_id=session_id, cause=END_VOICE_POOL_REFUSED)
+            close(END_VOICE_POOL_REFUSED)
             raise
         live_fields: dict[str, Any] = {"state": LIVE, "live_at": self._now()}
         if mode == MODE_LIVE:
@@ -750,28 +928,79 @@ class VoiceSessions:
                   "new_project": new_project, "mode": mode}
         if mode == MODE_LIVE:
             answer["answer_sdp"] = started.answer
+        if fallback is not None:
+            answer["fallback"] = {"from": FALLBACK_FROM[fallback], "reason": fallback}
         return answer
+
+    def _start_speech(self, call: StartCall, *, chosen: Mapping[str, Any], tenant_id: str,
+                      close: Callable[[str], None]) -> str | None:
+        """The front at swarm-voice, then the speech machine to RUNNING. None
+        when both started; else the fallback's fixed code, with the front
+        ended and the machine's lease released. A machine another session
+        holds, or a failure that is no fallback, ends the session and raises."""
+        from .speech_machine import MachineInUse, SessionRef, SpeechFallback  # it imports this module
+
+        try:
+            started = self._client.start(call)
+        except SpeechFrontRefused:
+            return FALLBACK_FRONT_REFUSED
+        if not isinstance(started, StartAnswer) or started.mode != MODE_SPEECH:
+            raise VoiceUnreachable("swarm-voice did not start the speech conversation; the session was ended.")
+        session = SessionRef(tenant_id=tenant_id, person=call.person, project_id=call.project_id,
+                             session_id=call.session_id)
+        try:
+            self._machine.start(session, chosen=chosen)
+        except SpeechFallback as exc:
+            reason = exc.reason if exc.reason in FALLBACK_REASONS else FALLBACK_NOT_READY
+            # The front holds a Claude account: it ends before the text start.
+            self._client.end(call.session_id, cause=reason)
+            return reason
+        except MachineInUse:
+            close(END_MACHINE_IN_USE)
+            self._client.end(call.session_id, cause=END_MACHINE_IN_USE)
+            raise
+        except Exception:
+            close(END_VOICE_UNREACHABLE)
+            self._client.end(call.session_id, cause=END_VOICE_UNREACHABLE)
+            raise
+        return None
 
     def turn(self, *, tenant_id: str, person: str, session_id: str, text: str) -> dict[str, Any]:
         """One spoken turn of a text session, as text: swarm-voice's reply and
         the cards the planner drew. 404 for a session that is not this
         person's in this tenant; 409 (`voice_session_not_live`) for one that is
-        ended, still starting, or a Live (WebRTC) one. The text and the reply
-        are neither logged nor stored here."""
+        ended, still starting, or a Live (WebRTC) one. A speech session's turn
+        is the fast front's at swarm-voice, never the text conversation's, and
+        carries `delegation_id` when the front delegated. The text and the
+        reply are neither logged nor stored here."""
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         snap = _snapshot(self._session_ref(project_id, session_id).get())
         data = (snap.to_dict() or {}) if snap.exists else {}
         if not self._mine(data, tenant_id, person):
             raise NotFound(f"voice session {session_id!r} not found")
-        if data.get("state") != LIVE or data.get("mode") != MODE_TEXT:
+        if data.get("state") != LIVE or data.get("mode") not in TURN_MODES:
             raise VoiceSessionNotLive(
-                "This Voice it session takes no text turns: it is not a live text conversation.",
+                "This Voice it session takes no text turns: it is not a live text or speech conversation.",
                 detail={"reason": NOT_LIVE, "state": data.get("state"), "mode": data.get("mode") or MODE_LIVE})
         answered = self._client.turn(session_id, text)
         log.info("voice turn answered tenant=%s project=%s session=%s turn=%s cards=%d",
                  tenant_id, project_id, session_id, answered.turn_id, len(answered.cards))
-        return {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
+        said: dict[str, Any] = {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
+        delegation = getattr(answered, "delegation_id", None)
+        if delegation:
+            said["delegation_id"] = delegation
+        return said
+
+    def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
+        """The planner's spoken line for the fast front's delegation, read
+        from swarm-voice's `GET /delegations/{id}` for this session only
+        (speech_relay.Turns' `delegation`); None when there is none yet."""
+        ask = getattr(self._client, "delegation", None)
+        if not callable(ask):
+            return None
+        line = ask(session_id, delegation_id, timeout=timeout)
+        return line if isinstance(line, str) and line.strip() else None
 
     def _close(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
                cause: str) -> dict[str, Any] | None:
@@ -828,6 +1057,12 @@ class VoiceSessions:
         told = None
         if before is not None:
             told = self._client.end(session_id, cause=END_BY_PERSON)
+            if before.get("mode") == MODE_SPEECH and self._machine is not None:
+                # Stop (§4.5): the machine stops with the session, fenced by
+                # the lease's generation; none held is nothing to stop.
+                holder = self._machine.holder_of(session_id)
+                if holder is not None:
+                    self._machine.stop(holder, cause=END_BY_PERSON)
             log.info("voice session ended tenant=%s project=%s session=%s voice_told=%s",
                      tenant_id, project_id, session_id, told)
         return {"project_id": project_id, "session_id": session_id, "state": ENDED,

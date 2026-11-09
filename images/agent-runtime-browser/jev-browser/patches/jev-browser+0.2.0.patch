@@ -38,7 +38,7 @@ index 0000000..90c4efb
 --- /dev/null
 +++ b/node_modules/jev-browser/src/internal-compat.mjs
 @@ -0,0 +1,114 @@
-+// swarm (JUDGE-ADAPT, owner decision 2026-10-14, part of #1030): the request adapter for Saga's
++// swarm (JUDGE-ADAPT, owner decision 2026-10-14, part of #1030): the request adapter for the operator's
 +// internal decision API (Internal Jev, Internal Laya). jev() calls adaptForBackend() on every
 +// request; with JEV_API_COMPAT unset it returns the request untouched, so TypeSafe sees exactly
 +// what upstream sends. With JEV_API_COMPAT=internal (set by whatever points JEV_API_URL at an
@@ -66,12 +66,12 @@ index 0000000..90c4efb
 +const ELEMENTS = /`page\.elements`/;
 +const GROUPS = /`page\.groups`/;
 +
-+// "" or unset -> TypeSafe's API, as upstream; "internal" -> Saga's internal decision API.
++// "" or unset -> TypeSafe's API, as upstream; "internal" -> the operator's internal decision API.
 +export function compatMode(env = process.env) {
 +  const v = env.JEV_API_COMPAT ?? "";
 +  if (v === "") return "typesafe";
 +  if (v === "internal") return "internal";
-+  throw new Error(`JEV_API_COMPAT=${JSON.stringify(String(v).slice(0, 40))} is not understood: leave it unset for TypeSafe's API, or set "internal" for Saga's internal decision API`);
++  throw new Error(`JEV_API_COMPAT=${JSON.stringify(String(v).slice(0, 40))} is not understood: leave it unset for TypeSafe's API, or set "internal" for the operator's internal decision API`);
 +}
 +
 +// An internal request at TypeSafe would carry the placeholder key and a reshaped body: refuse it.
@@ -177,7 +177,7 @@ index 3fd6d9b..fb09ca5 100644
  
  // questions: { name: { type: "noul" | "choice" | "score", instructions, criteria? } }
  export async function jev(state, questions, { retries = 2, timeout = 60_000 } = {}) {
-+  // swarm: JEV_API_COMPAT=internal reshapes the request for Saga's internal decision API (src/internal-compat.mjs).
++  // swarm: JEV_API_COMPAT=internal reshapes the request for the operator's internal decision API (src/internal-compat.mjs).
 +  ({ state, questions } = adaptForBackend(state, questions, API_URL));
    const key = apiKey();
    for (let attempt = 0; ; attempt++) {

@@ -196,6 +196,31 @@ def test_an_incompatible_default_is_skipped_and_recorded_not_refused(mw):
                                             "code": "plugin_profile_unsupported"}]
 
 
+
+def test_with_the_platform_switch_off_a_step_naming_a_managed_plugin_is_refused(mw, monkeypatch):
+    done = eng_plugin(mw, "eng-kit")
+    monkeypatch.setenv(plugins.SWITCH_ENV, "off")
+    # MUTATION: drop the switch from the merge and a managed install, which
+    # never reaches check_step, runs with plugins off on the platform.
+    response = submit(mw, plugins={done["install_id"]: {}})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["plugins"] == [done["install_id"]]
+    assert tasks(mw) == []
+
+
+def test_with_the_platform_switch_off_the_defaults_are_skipped_and_recorded(mw, monkeypatch):
+    kept = eng_plugin(mw, "eng-kit")
+    turned_off = eng_plugin(mw, "off-kit")
+    set_defaults(mw, kept["install_id"], turned_off["install_id"])
+    monkeypatch.setenv(plugins.SWITCH_ENV, "off")
+    response = submit(mw, plugins_off=[turned_off["install_id"]])
+    assert response.status_code == 201, response.text
+    _, task = only_task(mw)
+    dispatch = task["metadata"]["dispatch"]
+    assert plugins.DISPATCH_PLUGINS not in dispatch
+    assert dispatch[plugins.DISPATCH_SKIPPED] == [{"install_id": kept["install_id"],
+                                                   "code": plugins.SKIP_PLATFORM_OFF}]
+
 def test_the_same_plugin_named_by_the_step_on_a_profile_that_cannot_run_it_is_refused(mw):
     large = eng_plugin(mw, "big-kit", requires=LARGE_ONLY)
     response = submit(mw, plugins={large["install_id"]: {}})

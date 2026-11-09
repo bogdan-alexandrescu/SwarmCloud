@@ -10,7 +10,7 @@
 # It starts the emulator, waits for it to answer, seeds the slot pools the
 # scheduler needs, and then runs whichever service you asked for with
 # FIRESTORE_EMULATOR_HOST set. No cloud credentials are used and nothing touches
-# saga-agents-staging.
+# a cloud project.
 #
 # Usage: scripts/lib/dev.sh [api|scheduler|quota-broker|emulator] [--port 8080]
 
@@ -21,6 +21,10 @@ set -euo pipefail
 DEV_PROJECT="${DEV_PROJECT_ID:-swarm-local}"
 PROJECT_ID="${DEV_PROJECT_ID:-swarm-local}"
 export PROJECT_ID
+# The emulator is no cloud project: there is no never-touch list to read for it,
+# and common.sh would otherwise fetch one from a state bucket that does not
+# exist. A guard reached from here still refuses (common.sh, deny_list_require).
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"

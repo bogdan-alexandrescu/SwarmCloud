@@ -4,9 +4,9 @@ WHY THIS FILE EXISTS, AND WHY IT IS NOT test_destroy_guard.py.
 
 `make destroy` aborts on anything that belongs to another team and on anything
 without `managed-by=swarm-terraform`. It is the only control between this
-repository and deleting another team's production in the shared project:
-their live GKE cluster `peer-cluster`, their VPC, two subnets, three buckets,
-twelve service accounts, and Firestore's shared `(default)` database.
+repository and deleting another team's production in a shared project: their
+cluster, VPC, subnets, buckets, service accounts, and Firestore's shared
+`(default)` database.
 
 Until 2026-09-24 that guard had never been run against a real
 `terraform show -json`. Every test of it -- this suite's sibling, and
@@ -21,8 +21,10 @@ database could never reach that branch.
 So this file judges a RECORDING of a real destroy plan:
 `tests/integration/fixtures/destroy-plan-dev-real.json`, 264 real deletions
 across 42 real resource types, produced by `scripts/destroy.sh --dry-run`
-against the shared project and redacted by
-`scripts/verify-destroy-guard.sh --record`. Values survive only for the fields
+and redacted by `scripts/verify-destroy-guard.sh --record`. It names its project
+by the placeholder and is judged here for the placeholder deployment: every
+occurrence is rendered as `PROJECT` when it is loaded (destroy_plan_recording.py),
+so no test names a real deployment. Values survive only for the fields
 the guard reads; every other key survives by NAME, so the recording still states
 what the real provider emits without carrying a service's environment, a
 Firestore document's contents or a 7 KB dashboard.
@@ -62,10 +64,18 @@ from pathlib import Path
 
 import pytest
 
-# The deny-list, parsed out of scripts/lib/common.sh EXACTLY ONCE for this
-# directory. Importing the sibling rather than re-parsing is the whole lesson of
-# the defect above: a second reader of the same list is a second list.
-from test_destroy_guard import GUARD_ARGS, PREFIX, PROJECT, SHARED, UNLABELABLE  # noqa: E402
+# The never-touch list, read EXACTLY ONCE for this directory. Importing the
+# sibling rather than re-parsing is the whole lesson of the defect above: a
+# second reader of the same list is a second list.
+from test_destroy_guard import (  # noqa: E402
+    DENY_LIST_EXAMPLE,
+    GUARD_ARGS,
+    PREFIX,
+    PROJECT,
+    SHARED,
+    UNLABELABLE,
+    _P,
+)
 
 import destroy_plan_recording  # noqa: E402
 
@@ -76,6 +86,10 @@ GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 PLAN_GUARD = REPO / "scripts" / "lib" / "plan-guard.sh"
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 DESTROY = REPO / "scripts" / "destroy.sh"
+#: The placeholder never-touch object: its `classify` rules go ahead of the
+#: tracked ones and its `floors` are the inventory the list may not fall below,
+#: exactly as deny_list_load reads a deployment's own.
+DENY_LIST_OBJECT = json.loads(DENY_LIST_EXAMPLE.read_text())
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not DESTROY.exists(),
@@ -101,7 +115,7 @@ RECORDING = PLAN["_recording"]
 CENSUS = RECORDING["before_keys_by_type"]
 CASES = json.loads(CASES_FILE.read_text())
 
-#: SHARED_DENY_LIST plus Firestore's `(default)`, which `guard_deny_json` adds --
+#: The never-touch entries plus Firestore's `(default)`, which `guard_deny_json` adds --
 #: the same set `scripts/verify-destroy-guard.sh` walks against a live plan.
 ENTRIES = list(SHARED) + ["(default)"]
 
@@ -120,13 +134,13 @@ def _classify(entry: str) -> str:
     wildcard the table uses -- stated in the table's own description, because
     the two disagree about `[...]` and `!`.
     """
-    for rule in CASES["classify"]:
+    for rule in DENY_LIST_OBJECT.get("classify", []) + CASES["classify"]:
         if fnmatch.fnmatchcase(entry, rule["glob"]):
             return rule["kind"]
     raise AssertionError(
         f"deny-list entry {entry!r} matches no rule in {CASES_FILE}. Classify it "
         f"there -- an unclassifiable neighbour must stop the proof, not be skipped: "
-        f"a proof that quietly covered 14 of 20 entries is the defect this file answers."
+        f"a proof that quietly covered part of the list is the defect this file answers."
     )
 
 
@@ -387,21 +401,21 @@ def test_no_deletion_is_exempted_by_a_type_nobody_reviewed():
 def test_the_deny_list_still_covers_the_whole_shared_inventory():
     """The floor that a self-referential proof cannot provide for itself.
 
-    Every deny case in this file iterates SHARED_DENY_LIST, so all of them shrink
-    silently when the list does. MEASURED on 2026-09-24: deleting one service
-    account from SHARED_DENY_LIST left scripts/verify-destroy-guard.sh reporting
-    28 green assertions and exit 0. The inventory floors in
-    scripts/lib/destroy-guard-proof-cases.json come from what CLAUDE.md and
-    CONTRACT.md say is in the shared project, and are the independent statement.
+    Every deny case in this file iterates the never-touch list, so all of them
+    shrink silently when the list does. MEASURED on 2026-09-24: deleting one
+    service account from the list left scripts/verify-destroy-guard.sh reporting
+    28 green assertions and exit 0. The floors live beside the entries in the
+    never-touch object (`floors`, read by deny_list_load on every load) and are
+    the independent statement.
     """
-    floors = CASES["inventory_floor"]
+    floors = DENY_LIST_OBJECT["floors"]
     counts: dict[str, int] = {}
     for entry in ENTRIES:
         kind = _classify(entry)
         counts[kind] = counts.get(kind, 0) + 1
 
     assert len(SHARED) >= floors["total"], (
-        f"SHARED_DENY_LIST holds {len(SHARED)} entries, below the floor of "
+        f"the never-touch list holds {len(SHARED)} entries, below the floor of "
         f"{floors['total']}: one of the other team's resources has lost its protection"
     )
     for kind, floor in floors.items():
@@ -471,10 +485,12 @@ def replay(tmp_path_factory):
     root = tmp_path_factory.mktemp("replay-repo")
     shutil.copytree(REPO / "scripts", root / "scripts")
     (root / "terraform" / "infra" / ".terraform").mkdir(parents=True)
-    (root / "terraform" / "environments" / "dev").mkdir(parents=True)
-    (root / "terraform" / "environments" / "dev" / "dev.tfvars").write_text(
-        "# replayed: the stub terraform never reads this\n"
-    )
+    # tf_var_file reads the deployment's own <env>.tfvars from its configuration
+    # (config/<env>/ beside the never-touch list), never a tracked file; the
+    # placeholder deployment serving this module is that configuration.
+    tfvars = _P.deployment().current().config_dir / "dev" / "dev.tfvars"
+    tfvars.write_text("# replayed: the stub terraform never reads this\n")
+    tfvars.chmod(0o600)
 
     bin_dir = root / "bin"
     bin_dir.mkdir()
@@ -489,7 +505,7 @@ def replay(tmp_path_factory):
     # right to: it sources it as shell.
     env_file = root / "env"
     env_file.write_text(
-        f"PROJECT_ID={PROJECT}\nREGION=us-central1\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n"
+        f"PROJECT_ID={PROJECT}\nREGION={_P.REGION}\nENVIRONMENT=dev\nFIRESTORE_DATABASE=swarm\n"
     )
     env_file.chmod(0o600)
     return {"root": root, "terraform": terraform, "gcloud_dir": bin_dir, "env_file": env_file}
@@ -920,7 +936,6 @@ def test_the_ownership_predicate_is_still_warn_only_while_a_real_plan_flags_our_
             **os.environ,
             "NO_COLOR": "1",
             "PROJECT_ID": PROJECT,
-            "REGION": "us-central1",
             "ENVIRONMENT": "dev",
         },
     )

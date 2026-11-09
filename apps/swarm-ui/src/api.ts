@@ -16023,3 +16023,200 @@ export async function answerReadback(sessionId: string, readbackId: string, go: 
   if (r.status !== 'ok' && r.status !== 'stale') return r
   return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
 }
+
+// --------------------------------------------------------------------------
+// Voice it › Telemetry (swarm-api routes/voice_telemetry.py, voice/speech_telemetry.py)
+// --------------------------------------------------------------------------
+
+export const VOICE_TELEMETRY_SESSIONS = '/v1/voice/telemetry/sessions'
+export const VOICE_TELEMETRY_SESSION = '/v1/voice/telemetry/sessions/{id}'
+export const VOICE_TELEMETRY_DAYS = '/v1/voice/telemetry/days'
+export const VOICE_TELEMETRY_LIVE = '/v1/voice/telemetry/live'
+
+/** The per-utterance and per-synthesis values a session keeps (speech_telemetry.VALUES). */
+export type VoiceTimingName = 'stt_final_ms' | 'stt_first_partial_ms' | 'stt_rtf' | 'tts_first_audio_ms' | 'tts_rtf'
+export const VOICE_TIMING_NAMES: readonly VoiceTimingName[] = ['stt_final_ms', 'stt_first_partial_ms', 'stt_rtf', 'tts_first_audio_ms', 'tts_rtf']
+/** The peaks of the 5 s readings a session keeps (speech_telemetry.PEAKS). */
+export type VoicePeakName = 'gpu_util_pct' | 'gpu_mem_used_mib' | 'cpu_pct' | 'memory_used_mib' | 'disk_used_gb' | 'vllm_queue' | 'kv_cache_pct'
+export const VOICE_PEAK_NAMES: readonly VoicePeakName[] = ['gpu_util_pct', 'gpu_mem_used_mib', 'cpu_pct', 'memory_used_mib', 'disk_used_gb', 'vllm_queue', 'kv_cache_pct']
+
+export interface VoicePercentiles {
+  p50: number | null
+  p90: number | null
+  max: number | null
+}
+
+/** One session's summary as `summary()` serves it, with its machine cost and stock-outs. */
+export interface VoiceTelemetrySession {
+  session_id: string
+  person: string | null
+  first_at: string | null
+  last_at: string | null
+  day: string | null
+  minutes: number
+  utterances: number
+  syntheses: number
+  stt_errors: number
+  tts_errors: number
+  percentiles: Record<VoiceTimingName, VoicePercentiles>
+  peaks: Record<VoicePeakName, number | null>
+  /** `start.boot`, `start.server`, `start.fetch`, `start.load`, `start.warmup`, … in seconds. */
+  start_phases: Record<string, number>
+  machine_usd: number | null
+  machine_usd_reason: string | null
+  stockouts: number | null
+  stockouts_reason: string | null
+}
+
+/** One day as `_day()` serves it: computed on read in the viewer's zone. */
+export interface VoiceTelemetryDay {
+  day: string
+  sessions: number
+  minutes: number
+  utterances: number
+  syntheses: number
+  stt_errors: number
+  tts_errors: number
+  stt_final_ms_p90: number | null
+  tts_first_audio_ms_p90: number | null
+  machine_usd: number | null
+  machine_usd_reason: string | null
+  stockouts: number | null
+  stockouts_reason: string | null
+}
+
+/** One stored sample: a 5 s `metrics` reading, or one utterance (`stt`) or synthesis (`tts`). */
+export interface VoiceTelemetrySample {
+  seq: string
+  kind: string
+  at: string | null
+  data: Record<string, unknown>
+}
+
+export interface VoiceTelemetrySessionDetail {
+  session: VoiceTelemetrySession
+  samples: VoiceTelemetrySample[]
+}
+
+const telNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const telStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+const telObj = (v: unknown): Record<string, unknown> => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+
+export function normVoiceTelemetrySession(raw: unknown): VoiceTelemetrySession {
+  const o = telObj(raw)
+  const pct = telObj(o.percentiles)
+  const peaks = telObj(o.peaks)
+  const phases: Record<string, number> = {}
+  for (const [k, v] of Object.entries(telObj(o.start_phases))) {
+    const n = telNum(v)
+    if (n !== null) phases[k] = n
+  }
+  return {
+    session_id: telStr(o.session_id) ?? '',
+    person: telStr(o.person),
+    first_at: telStr(o.first_at),
+    last_at: telStr(o.last_at),
+    day: telStr(o.day),
+    minutes: telNum(o.minutes) ?? 0,
+    utterances: telNum(o.utterances) ?? 0,
+    syntheses: telNum(o.syntheses) ?? 0,
+    stt_errors: telNum(o.stt_errors) ?? 0,
+    tts_errors: telNum(o.tts_errors) ?? 0,
+    percentiles: Object.fromEntries(
+      VOICE_TIMING_NAMES.map((n) => {
+        const p = telObj(pct[n])
+        return [n, { p50: telNum(p.p50), p90: telNum(p.p90), max: telNum(p.max) }]
+      }),
+    ) as Record<VoiceTimingName, VoicePercentiles>,
+    peaks: Object.fromEntries(VOICE_PEAK_NAMES.map((n) => [n, telNum(peaks[n])])) as Record<VoicePeakName, number | null>,
+    start_phases: phases,
+    machine_usd: telNum(o.machine_usd),
+    machine_usd_reason: telStr(o.machine_usd_reason),
+    stockouts: telNum(o.stockouts),
+    stockouts_reason: telStr(o.stockouts_reason),
+  }
+}
+
+export function normVoiceTelemetryDay(raw: unknown): VoiceTelemetryDay {
+  const o = telObj(raw)
+  return {
+    day: telStr(o.day) ?? '',
+    sessions: telNum(o.sessions) ?? 0,
+    minutes: telNum(o.minutes) ?? 0,
+    utterances: telNum(o.utterances) ?? 0,
+    syntheses: telNum(o.syntheses) ?? 0,
+    stt_errors: telNum(o.stt_errors) ?? 0,
+    tts_errors: telNum(o.tts_errors) ?? 0,
+    stt_final_ms_p90: telNum(o.stt_final_ms_p90),
+    tts_first_audio_ms_p90: telNum(o.tts_first_audio_ms_p90),
+    machine_usd: telNum(o.machine_usd),
+    machine_usd_reason: telStr(o.machine_usd_reason),
+    stockouts: telNum(o.stockouts),
+    stockouts_reason: telStr(o.stockouts_reason),
+  }
+}
+
+export function normVoiceTelemetrySample(raw: unknown): VoiceTelemetrySample {
+  const o = telObj(raw)
+  return { seq: telStr(o.seq) ?? '', kind: telStr(o.kind) ?? '', at: telStr(o.at), data: telObj(o.data) }
+}
+
+/** The span and zone every telemetry read sends; `platform` is every workspace's (admins only). */
+export interface VoiceTelemetrySpan {
+  from: string
+  to: string
+  tz: string
+}
+
+function telemetryQuery(q: Record<string, string>): URLSearchParams {
+  return new URLSearchParams({ ...q, scope: 'platform' })
+}
+
+/**
+ * The fixture build serves no telemetry: an empty read, so the page draws its
+ * empty state rather than invented numbers.
+ */
+async function telemetryRead<T>(target: ApiRoute, norm: (raw: unknown) => T, none: T): Promise<Result<T>> {
+  if (USE_FIXTURES) return voiceFixtureOk(target, none)
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r as Result<T>
+}
+
+/** `GET /v1/voice/telemetry/sessions?from=&to=&tz=&scope=platform`: newest first. */
+export function loadVoiceTelemetrySessions(span: VoiceTelemetrySpan): Promise<Result<VoiceTelemetrySession[]>> {
+  const target = route(VOICE_TELEMETRY_SESSIONS, {}, telemetryQuery({ ...span }))
+  const norm = (raw: unknown) => {
+    const rows = telObj(raw).sessions
+    return Array.isArray(rows) ? rows.map(normVoiceTelemetrySession) : []
+  }
+  return telemetryRead(target, norm, [])
+}
+
+/** `GET /v1/voice/telemetry/days?from=&to=&tz=&scope=platform`: every day of the span. */
+export function loadVoiceTelemetryDays(span: VoiceTelemetrySpan): Promise<Result<VoiceTelemetryDay[]>> {
+  const target = route(VOICE_TELEMETRY_DAYS, {}, telemetryQuery({ ...span }))
+  const norm = (raw: unknown) => {
+    const rows = telObj(raw).days
+    return Array.isArray(rows) ? rows.map(normVoiceTelemetryDay) : []
+  }
+  return telemetryRead(target, norm, [])
+}
+
+/** `GET /v1/voice/telemetry/sessions/{id}?tz=&scope=platform`: the summary and its samples (kept 30 days). */
+export function loadVoiceTelemetrySession(id: string, tz: string): Promise<Result<VoiceTelemetrySessionDetail | null>> {
+  const target = route(VOICE_TELEMETRY_SESSION, { id }, telemetryQuery({ tz }))
+  const norm = (raw: unknown): VoiceTelemetrySessionDetail => {
+    const o = telObj(raw)
+    return {
+      session: normVoiceTelemetrySession(o.session),
+      samples: Array.isArray(o.samples) ? o.samples.map(normVoiceTelemetrySample) : [],
+    }
+  }
+  return telemetryRead<VoiceTelemetrySessionDetail | null>(target, norm, null)
+}
+
+/** The live stream's address: an `EventSource` resumes from the last sample's seq by itself. */
+export function voiceTelemetryLiveUrl(): string {
+  return route(VOICE_TELEMETRY_LIVE, {}, telemetryQuery({})).url
+}

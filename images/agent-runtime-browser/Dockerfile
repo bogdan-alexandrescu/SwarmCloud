@@ -164,7 +164,7 @@ COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromiu
 # writable by none: the agent runs it and cannot change what it does.
 COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
 
-# The agent's `swarm-test-browsers` (PW-TESTRUNNER, BGD 2026-10-24, part of
+# The agent's `swarm-test-browsers` (PW-TESTRUNNER, the owner, 2026-10-24, part of
 # #2253): runs ONE command -- a repository's `npx playwright test` -- with
 # PLAYWRIGHT_BROWSERS_PATH at the writable directory the claude-code runner
 # seeds in the attempt's cache, so a test process may launch its own headless

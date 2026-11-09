@@ -42,7 +42,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release-home.sh"
-COMMON = REPO / "scripts" / "lib" / "common.sh"
+EXAMPLE_DENY_LIST = REPO / "scripts" / "lib" / "deny-list.example.json"
 
 PROJECT = "swarmcloud-prod"
 BUCKET = "gs://swarmcloud"
@@ -318,7 +318,7 @@ def test_public_grant_runs_after_typed_project_id(tmp_path: Path) -> None:
 def test_refuses_shared_project(tmp_path: Path) -> None:
     """The shared project, or any name on the deny-list, is refused before
     gcloud is called at all."""
-    for project in ("saga-agents-staging", "agents-staging", "saga-agents-files-staging"):
+    for project in ("example-shared-project", "peer-cluster", "peer-bucket"):
         proc = _run(tmp_path, _all_exist(), "--project", project, "--dry-run")
         assert proc.returncode != 0, project
         assert "refus" in proc.stderr.lower(), proc.stderr
@@ -472,7 +472,7 @@ def test_ci_publisher_that_can_sign_also_gets_the_key_reader(tmp_path: Path) -> 
     "user:someone@example.com",
     "serviceAccount:swarm-deployer@a-ci-project.iam.gserviceaccount.com",
     "allUsers",
-    "ci-runner@saga-agents-staging.iam.gserviceaccount.com",
+    "ci-runner@example-shared-project.iam.gserviceaccount.com",
 ])
 def test_ci_publisher_refuses_anything_but_a_service_account(tmp_path: Path, email: str) -> None:
     """A person, a group, allUsers, or an account of the shared project that is
@@ -487,7 +487,7 @@ def test_ci_publisher_accepts_swarmclouds_own_account_in_the_shared_project(tmp_
     """The deployer publish-release.yml authenticates as lives in the shared
     project, like every SwarmCloud account (BGD, 2026-10-30): a swarm-* account
     there is accepted, and gets exactly the four grants."""
-    deployer = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer = "swarm-tf-deployer@example-shared-project.iam.gserviceaccount.com"
     proc = _run(tmp_path, _all_exist(), "--ci-publisher", deployer, "--dry-run")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.count(f"--member=serviceAccount:{deployer}") == 4, proc.stdout
@@ -495,12 +495,25 @@ def test_ci_publisher_accepts_swarmclouds_own_account_in_the_shared_project(tmp_
 
 
 def test_ci_publisher_refuses_a_deny_listed_service_account(tmp_path: Path) -> None:
-    text = COMMON.read_text()
-    listed = sorted({w.strip('"\'') for w in text.split() if w.strip('"\'').endswith(".iam.gserviceaccount.com")})
-    assert listed, "SHARED_DENY_LIST names no service account"
+    # The list the package's conftest serves: the placeholder object.
+    entries = json.loads(EXAMPLE_DENY_LIST.read_text())["entries"]
+    listed = sorted(e for e in entries if e.endswith(".iam.gserviceaccount.com"))
+    assert listed, "the example never-touch list names no service account"
     proc = _run(tmp_path, _all_exist(), "--ci-publisher", listed[0], "--dry-run")
     assert proc.returncode != 0, proc.stdout
     assert _calls(tmp_path) == []
+
+
+@pytest.mark.parametrize("args", [(), ("--dry-run",), ("--ci-publisher", PUBLISHER, "--dry-run")])
+def test_no_readable_never_touch_list_refuses_before_gcloud(tmp_path: Path, args: tuple[str, ...]) -> None:
+    """The release home is checked against the never-touch list of the
+    deployment PROJECT_ID names. With no project named, or a list that cannot
+    be read, nothing runs: a missing list is never an empty one."""
+    for extra in ({"PROJECT_ID": ""}, {"SWARM_DEPLOY_CONFIG_DIR": str(tmp_path / "no-such-config")}):
+        proc = _run(tmp_path, _all_exist(), *args, extra_env=extra)
+        assert proc.returncode != 0, (extra, proc.stdout)
+        assert "never-touch list" in proc.stderr, proc.stderr
+        assert _calls(tmp_path) == [], f"gcloud was called with {extra}"
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")

@@ -1,5 +1,5 @@
 """The installer offers Voice it (lane installer-offers-voice-it; part of #2688;
-BGD, 2026-11-05): the installer never turned Voice it on, so a yes to its own
+the owner, 2026-11-05): the installer never turned Voice it on, so a yes to its own
 speech engine made nothing.
 
 Stage 0 asks whether to turn Voice it on, default no. A no keeps infra's
@@ -79,7 +79,7 @@ def test_a_malformed_answer_is_refused() -> None:
 
 
 def test_own_speech_recorded_under_a_no_to_voice_it_renders_off() -> None:
-    chosen = {"enabled": True, "zone": "europe-west1-b", "image": IMAGES + "common-cu128-ubuntu-2204-v1"}
+    chosen = {"enabled": True, "zones": ["europe-west1-b"], "image": IMAGES + "common-cu128-ubuntu-2204-v1"}
     assert _infra("infra-2", voice_it={"enabled": False}, voice_speech=chosen)["voice_speech"] == {"enabled": False}
 
 

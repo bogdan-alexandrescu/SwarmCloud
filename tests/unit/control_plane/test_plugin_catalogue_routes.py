@@ -156,13 +156,19 @@ class FakeVerifier:
 
 
 class FakeInstallations:
-    """A workspace's GitHub App installation: one read token per call."""
+    """A workspace's GitHub App installation: one contents-only token per
+    call. `run_token` is recorded too, so a read through it shows up."""
 
     def __init__(self) -> None:
-        self.minted: list[tuple[str, str, str, bool]] = []
+        self.minted: list[tuple[str, str, str]] = []
+        self.run_minted: list[tuple[str, str, str, bool]] = []
+
+    def contents_token(self, tenant_id: str, owner: str, repo: str) -> str:
+        self.minted.append((tenant_id, owner, repo))
+        return "contents-" + secrets.token_hex(8)
 
     def run_token(self, tenant_id: str, owner: str, repo: str, *, write: bool) -> str:
-        self.minted.append((tenant_id, owner, repo, write))
+        self.run_minted.append((tenant_id, owner, repo, write))
         return "run-" + secrets.token_hex(8)
 
 
@@ -394,8 +400,10 @@ def test_the_owner_installs_a_private_plugin_with_a_token_from_its_own_installat
     base = _workspace(CAROL_TENANT)
     assert w["client"].get(base, headers=auth_header("carol")).json()["can_install"] is True
     done = installed(w, base=base, user="carol")
-    # Read-only, for the one repository, from carol's workspace installation.
-    assert installations.minted == [(CAROL_TENANT, "example-org", "lint-kit", False)]
+    # Contents-only, for the one repository, from carol's workspace
+    # installation; never a run token (which also asks pull requests).
+    assert installations.minted == [(CAROL_TENANT, "example-org", "lint-kit")]
+    assert installations.run_minted == []
     assert w["github"].tokens[-1] is not None
     [(intake_id, env, _)] = w["jobs"].started
     assert env["SWARM_INTAKE_SCOPE"] == "workspace" and env["SWARM_INTAKE_TENANT"] == CAROL_TENANT
@@ -414,7 +422,7 @@ def test_the_platform_catalogue_reads_public_repositories_without_a_token(world)
     installations = FakeInstallations()
     w["ctx"].forge_installations = installations
     installed(w)
-    assert installations.minted == [] and w["github"].tokens == [None]
+    assert installations.minted == [] and installations.run_minted == [] and w["github"].tokens == [None]
 
 
 def test_a_platform_admin_may_remove_a_workspaces_plugin_but_a_member_may_not(world):

@@ -30,6 +30,7 @@ the archive. The image's build runs in CI; the publish is scripts/release/.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -42,6 +43,10 @@ REPO = Path(__file__).resolve().parents[3]
 IMAGE = "agent-runtime-lightpanda"
 DOCKERFILE = REPO / "images" / IMAGE / "Dockerfile"
 MANIFEST = REPO / "images" / "agent-runtime-base" / "tool-mirror.sha256"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 
 
 def _targets(script: str) -> list[str]:
@@ -53,7 +58,10 @@ def _targets(script: str) -> list[str]:
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(tmp_path),
             "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
-            "REGION": "us-central1", "ENVIRONMENT": "dev", "NO_COLOR": "1", "TMPDIR": str(tmp_path),
+            "ENVIRONMENT": "dev", "NO_COLOR": "1", "TMPDIR": str(tmp_path),
+            # The placeholder deployment's region, zone and never-touch list:
+            # common.sh has no default for any of them.
+            **placeholder_deployment.child_env("swarm-test-project"),
             **extra}
 
 

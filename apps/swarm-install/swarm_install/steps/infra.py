@@ -11,7 +11,7 @@
 | `infra.pass-close` | 14 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks, after stage 14's verify steps |
 | `infra.voice-it` | 0 | none | `other.voice-it-choice`: the optional question whether to turn Voice it on |
 | `infra.voice-speech` | 0 | none | `other.voice-speech-choice`, `other.voice-speech-offered`: for a yes to Voice it only, the optional question whether to add its own speech engine |
-| `infra.voice-speech-zone` | 1 | none | `other.voice-speech-zone`: for a yes, the L4 zone, one NVIDIA_L4_GPUS of quota and the pinned image |
+| `infra.voice-speech-zone` | 1 | none | `other.voice-speech-zone`: for a yes, the region's L4 zones in letter order, one NVIDIA_L4_GPUS of quota and the pinned image |
 
 The passes declare no manifest entries as `satisfies`: the manifest's
 `depends_on` among the resources one apply makes runs both ways (a container
@@ -67,7 +67,7 @@ closes it again; the verbs close it themselves when they finish
 (`ClusterReach.close`), and a verb that died in between leaves the record for
 the next run's close.
 
-**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). `infra.voice-it`
+**Voice it** (terraform/infra/voice.tf; the owner, 2026-11-05). `infra.voice-it`
 asks in stage 0 whether to turn Voice it on, default no, and records
 `outputs["voice_it"]` as `{"enabled": bool}`. A no leaves `voice_it` "off" on
 every pass. A yes walks voice.tf's three steps in the order it needs them
@@ -85,11 +85,13 @@ yes to Voice it (`other.voice-speech-offered` orders it after the Voice it
 question); after a no it asks nothing and is met, and so is
 `infra.voice-speech-zone`. Under a yes it asks in stage 0 whether to
 add the engine: one stopped L4 machine, with the design's cost line and, when
-the project already exists, the zone it would live in; the answer defaults to
+the project already exists, the zones it would start in; the answer defaults to
 no and is asked once. Stage 0 cannot read the accelerators of a project stage 1
 has not made yet, so for a yes `infra.voice-speech-zone` runs once Compute
-Engine is on: the first of the region's zones offering `nvidia-l4`
-(`acceleratorTypes`; one zone, one machine, no fallback zone), an
+Engine is on: every zone of the region offering `nvidia-l4`
+(`acceleratorTypes`), in letter order, recorded as `zones` (one machine at a
+time: swarm-api starts it in the first of these zones with a free L4, then the
+next; owner, 2026-11-09), an
 NVIDIA_L4_GPUS quota of at least 1 (the Quotas page opens, and the step waits
 until it is granted), and the newest Deep Learning VM image of an Ubuntu 22.04
 CUDA family, pinned by name. A region with no L4 zone turns the choice off and
@@ -384,7 +386,8 @@ def _ask_yes_no(ask: Callable[..., str], ctx: Any, step_id: str, question: str, 
 # -- Voice it's own speech engine (design voice-it-own-speech.md §15) -----------
 
 #: The install state's key: `{"enabled": bool}` from stage 0, and for a yes the
-#: `zone` and `image` stage 1 adds (tfvars.voice_speech renders them).
+#: `zones` (the region's L4 zones, in letter order) and `image` stage 1 adds
+#: (tfvars.voice_speech renders them).
 VOICE_SPEECH = "voice_speech"
 #: The machine's one GPU (a g2-standard-4 carries one) and its regional quota.
 L4 = "nvidia-l4"
@@ -405,7 +408,7 @@ check_speech_image = tfvars.check_speech_image
 SPEECH_COST = "about $0.71 an hour while used, $15 a month for its disk"
 SPEECH_QUESTION = ("Voice it's own speech engine (one stopped L4 machine in {where}; " + SPEECH_COST
                    + "). Add it? Optional, y or n")
-#: No by default, and never asked while Voice it is off (§15; BGD, 2026-11-05).
+#: No by default, and never asked while Voice it is off (§15; the owner, 2026-11-05).
 SPEECH_DEFAULT = "n"
 YES = ("y", "yes")
 NO = ("", "n", "no")
@@ -420,9 +423,9 @@ def _compute() -> str:
 
 
 def l4_zones(gcp: Any, project: str, region: str) -> list[str]:
-    """The zones of `region` offering the L4, by name (`acceleratorTypes.aggregatedList`).
+    """The zones of `region` offering the L4, sorted by name (`acceleratorTypes.aggregatedList`).
 
-    Only a zone infra's `voice_speech.zone` accepts counts: one letter after the
+    Only a zone infra's `voice_speech.zones` accepts counts: one letter after the
     region, so an AI zone such as `<region>-ai1a` is never picked."""
     zones: set[str] = set()
     params: dict[str, Any] = {"filter": f'name = "{L4}"'}
@@ -577,19 +580,18 @@ class VoiceSpeechChoiceStep(_SpeechStep):
     def plan(self, ctx: Any) -> Plan:
         return Plan("ask whether to add Voice it's own speech engine (optional; default no)")
 
-    def _zone_now(self, ctx: Any, region: str) -> str | None:
-        """The zone the machine would live in, when the project already exists
-        with Compute Engine on; else None (stage 1 reads it)."""
+    def _zones_now(self, ctx: Any, region: str) -> list[str]:
+        """The zones the machine would start in, when the project already exists
+        with Compute Engine on; else empty (stage 1 reads them)."""
         from .preflight import ApiError
 
         gcp = self.deps.gcp()
         try:
             if gcp.project(ctx.project) is None or "compute.googleapis.com" not in gcp.enabled_services(ctx.project):
-                return None
-            zones = l4_zones(gcp, ctx.project, region)
+                return []
+            return l4_zones(gcp, ctx.project, region)
         except ApiError:
-            return None
-        return zones[0] if zones else None
+            return []
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         from .preflight import remember
@@ -600,49 +602,53 @@ class VoiceSpeechChoiceStep(_SpeechStep):
         if not voice:
             return
         region = str(ctx.state.region)
-        zone = self._zone_now(ctx, region)
-        where = zone or f"the first zone of {region} that offers the L4, read once stage 1 has enabled Compute Engine"
+        zones = self._zones_now(ctx, region)
+        where = (f"the first of {', '.join(zones)} with a free L4" if zones else
+                 f"the first zone of {region} that offers the L4 and has one free, read once stage 1 has enabled "
+                 "Compute Engine")
         enabled = _ask_yes_no(self.ask, ctx, self.id, SPEECH_QUESTION.format(where=where), SPEECH_DEFAULT)
         remember(ctx, outputs={VOICE_SPEECH: {"enabled": enabled}})
 
 
 class VoiceSpeechZoneStep(_SpeechStep):
-    """For a yes: the L4 zone, one L4 of quota and the pinned image, once the project exists."""
+    """For a yes: the region's L4 zones, one L4 of quota and the pinned image, once the project exists."""
 
     id = "infra.voice-speech-zone"
     stage = 1
     read_only = False
     satisfies = ("other.voice-speech-zone",)
     _explain = (
-        "The speech machine lives in one zone, the first of the region's zones offering the NVIDIA L4, with "
-        "a Deep Learning VM image pinned by name so a stopped machine is never replaced under a session. A "
+        "The speech machine starts in the first of the region's zones offering the NVIDIA L4 (in letter order) "
+        "with a free L4, then the next, with a Deep Learning VM image pinned by name so a stopped machine is never replaced under a session. A "
         "project's accelerators and quotas can only be read once stage 1 has made it and enabled Compute Engine."
     )
 
     def check(self, ctx: Any) -> Observation:
         if _voice_it(ctx) is False:
-            return Observation(MET, "Voice it is off, so its own speech engine needs no zone or image")
+            return Observation(MET, "Voice it is off, so its own speech engine needs no zones or image")
         chosen = _chosen(ctx)
         if chosen is None:
             return Observation(UNMET, "Voice it's own speech engine is not chosen yet (infra.voice-speech asks)")
         if not chosen["enabled"]:
-            return Observation(MET, "Voice it's own speech engine is off: no zone or image is needed")
+            return Observation(MET, "Voice it's own speech engine is off: no zones or image is needed")
         try:
             speech = tfvars.voice_speech(ctx.state)
         except (LookupError, ValueError) as exc:
             return Observation(UNMET, str(exc))
         if speech is None or not speech["enabled"]:
-            return Observation(UNMET, "Voice it's own speech engine has no zone and image recorded")
+            return Observation(UNMET, "Voice it's own speech engine has no zones and image recorded")
         try:  # an image the operator recorded is held to the same driver floor; apply pins one that meets it
             check_speech_image(speech["image"])
         except ValueError as exc:
             return Observation(UNMET, str(exc))
-        return Observation(MET, f"the speech machine's zone is {speech['zone']}, its image {speech['image']}")
+        return Observation(MET, f"the speech machine's zones are {', '.join(speech['zones'])} (the first with a "
+                                f"free L4, then the next), its image {speech['image']}")
 
     def plan(self, ctx: Any) -> Plan:
         region = str(ctx.state.region)
-        return Plan("pick the speech machine's zone and pin its image", (
-            f"the first zone of {region} offering {L4} (acceleratorTypes)",
+        return Plan("record the speech machine's zones and pin its image", (
+            f"every zone of {region} offering {L4} (acceleratorTypes), in letter order: the machine starts in the "
+            "first of them with a free L4, then the next",
             f"{L4_QUOTA} in {region} at least 1, requested on the Quotas page if not",
             f"the newest Ubuntu 22.04 CUDA image of {IMAGE_PROJECT} with an NVIDIA driver of {DRIVER_FLOOR} or "
             "later, by name",
@@ -661,7 +667,8 @@ class VoiceSpeechZoneStep(_SpeechStep):
         region = str(ctx.state.region)
         zones = l4_zones(gcp, ctx.project, region)
         if not zones:
-            why = f"no zone of {region} offers the {L4}, so Voice it's own speech engine is off (one zone, one machine)"
+            why = (f"no zone of {region} offers the {L4}, so Voice it's own speech engine is off (the machine "
+                   f"starts only in a zone of {region} with a free L4)")
             ctx.events.emit("step_apply", step=self.id, message=why)
             remember(ctx, outputs={VOICE_SPEECH: {"enabled": False, "unavailable": why}})
             return
@@ -682,8 +689,10 @@ class VoiceSpeechZoneStep(_SpeechStep):
             wait_until(f"{self.id}:l4-quota", QUOTA_WAIT, granted, clock=ctx.clock, events=ctx.events,
                        on_poll=getattr(ctx.engine, "_heartbeat", None))
         image = speech_image(gcp, ctx.project)
-        ctx.events.emit("step_apply", step=self.id, message=f"the speech machine: {zones[0]}, image {image}")
-        remember(ctx, outputs={VOICE_SPEECH: {"enabled": True, "zone": zones[0], "image": image}})
+        ctx.events.emit("step_apply", step=self.id, message=(
+            f"the speech machine's zones: {', '.join(zones)} (it starts in the first with a free L4, then the "
+            f"next), image {image}"))
+        remember(ctx, outputs={VOICE_SPEECH: {"enabled": True, "zones": list(zones), "image": image}})
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:
