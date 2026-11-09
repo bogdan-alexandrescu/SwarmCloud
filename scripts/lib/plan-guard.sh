@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Judge a terraform plan against the shared-project rules. ONE implementation.
 #
-# `saga-agents-staging` holds another team's live GKE cluster, their VPC, their
-# buckets and twelve of their service accounts, so every plan -- apply or destroy
-# -- has to satisfy two assertions:
+# A shared project can hold another team's live GKE cluster, their VPC, their
+# buckets and their service accounts, so every plan -- apply or destroy -- has
+# to satisfy two assertions:
 #
 #   1. no change may touch anything on SHARED_DENY_LIST;
 #   2. everything this repository creates must carry managed-by=swarm-terraform,
@@ -393,36 +393,39 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
   step "Plan-guard self-test"
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-plan-guard.XXXXXX")"
   trap 'rm -rf "${WORK}"' EXIT INT TERM
+  # The placeholder never-touch list, through the same loader and rules as a
+  # deployment's: peer-bucket below is on it.
+  deny_list_use_example "${WORK}"
 
   cat >"${WORK}/plan.json" <<'FIXTURE_JSON'
 {"resource_changes":[
  {"address":"labelled.bucket","type":"google_storage_bucket",
   "change":{"actions":["create"],"before":null,
-    "after":{"name":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
+    "after":{"name":"swarm-artifacts-example-project","project":"example-project",
              "labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"unlabelled.topic","type":"google_pubsub_topic",
   "change":{"actions":["create"],"before":null,
-    "after":{"name":"swarm-scheduler-wake","project":"saga-agents-staging",
+    "after":{"name":"swarm-scheduler-wake","project":"example-project",
              "labels":{"component":"scheduler"}}}},
  {"address":"iam.edge","type":"google_storage_bucket_iam_member",
   "change":{"actions":["create"],"before":null,
-    "after":{"bucket":"swarm-artifacts-saga-agents-staging","project":"saga-agents-staging",
-             "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
+    "after":{"bucket":"swarm-artifacts-example-project","project":"example-project",
+             "member":"serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"}}},
  {"address":"unknown.labels","type":"google_cloud_run_v2_service",
   "change":{"actions":["create"],"before":null,
-    "after":{"name":"swarm-api","project":"saga-agents-staging"},
+    "after":{"name":"swarm-api","project":"example-project"},
     "after_unknown":{"labels":true}}},
  {"address":"iam.edge.delete","type":"google_secret_manager_secret_iam_binding",
   "change":{"actions":["delete"],
-    "before":{"secret_id":"swarm-tenant-eng-anthropic","project":"saga-agents-staging"}}},
+    "before":{"secret_id":"swarm-tenant-eng-anthropic","project":"example-project"}}},
  {"address":"firestore.doc.delete","type":"google_firestore_document",
   "change":{"actions":["delete"],
     "before":{"collection":"pools","document_id":"global","database":"swarm",
-              "project":"saga-agents-staging"}}},
+              "project":"example-project"}}},
  {"address":"theirs.binding","type":"google_storage_bucket_iam_member",
   "change":{"actions":["create"],"before":null,
-    "after":{"bucket":"saga-agents-files-staging","project":"saga-agents-staging",
-             "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}}
+    "after":{"bucket":"peer-bucket","project":"example-project",
+             "member":"serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"}}}
 ]}
 FIXTURE_JSON
 
@@ -504,7 +507,7 @@ FIXTURE_JSON
     '{"format_version":"1.2","resource_changes":[
       {"address":"module.iam.google_project_iam_custom_role.job_dispatcher","type":"google_project_iam_custom_role",
        "change":{"actions":["forget"],"after":null,
-         "before":{"project":"saga-agents-staging","role_id":"swarmJobDispatcher"}}}]}'
+         "before":{"project":"example-project","role_id":"swarmJobDispatcher"}}}]}'
   iam_case "an image digest update is not an IAM change" false \
     '{"format_version":"1.2","resource_changes":[
       {"address":"module.cloud_run.google_cloud_run_v2_service.this","type":"google_cloud_run_v2_service",

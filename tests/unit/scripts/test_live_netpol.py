@@ -52,6 +52,18 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 KUBERNETES = REPO / "kubernetes"
 APPLY = KUBERNETES / "apply.sh"
 LIVE_EGRESS_FILE = "network-policies/allow-live-egress.yaml"
@@ -115,7 +127,7 @@ def system_docs() -> list[dict[str, Any]]:
         _run(
             "swarm-system",
             "--swarm-api-egress-cidr", FAKE_API_CIDR,
-            "--swarm-api-egress-source", f"run/saga-agents-staging/us-central1/swarm-api/{FAKE_SUBNET}",
+            "--swarm-api-egress-source", f"run/{PROJECT}/us-central1/swarm-api/{FAKE_SUBNET}",
         )
     )
 
@@ -126,10 +138,10 @@ def _relay_manifest(api_cidr: str = FAKE_API_CIDR) -> str:
     holds that rendering; this one only needs plausible values). The digest is
     built here, never written out as one literal."""
     values = {
-        "__SWARM_LIVE_IMAGE__": "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:" + "7" * 64,
-        "__PROJECT_ID__": "saga-agents-staging",
-        "__ARTIFACT_BUCKET__": "saga-agents-staging-swarm-artifacts",
-        "__LIVE_KEY_VERSION__": "projects/saga-agents-staging/secrets/swarm-live-key/versions/latest",
+        "__SWARM_LIVE_IMAGE__": f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/swarm-live@sha256:" + "7" * 64,
+        "__PROJECT_ID__": PROJECT,
+        "__ARTIFACT_BUCKET__": f"{PROJECT}-swarm-artifacts",
+        "__LIVE_KEY_VERSION__": f"projects/{PROJECT}/secrets/swarm-live-key/versions/latest",
         "__SWARM_LIVE_ILB_IP__": "10.123.16.42",
         "__SWARM_API_EGRESS_CIDR__": api_cidr,
     }
@@ -223,7 +235,10 @@ PRE_L6_DIGESTS = {
 #: Re-read for DAYONE-K8S-1 (2026-10-29): an offline render has no default
 #: project, so its identities name render.py's OFFLINE_PROJECT where they named
 #: the live one; with that name swapped back the render is byte-identical.
-PRE_L6_TENANT_RENDER = "f79c97afab5dca95390390edf399242c9d1917f21754f16fd67b3f127fd981ad"
+#: Re-read for the generic-repository program (2026-11-08, part of #2688): the
+#: tenant manifests' comments name roles and placeholders; every rendered
+#: document parses to the same objects as before.
+PRE_L6_TENANT_RENDER = "9688fcb01407ed3cd95900cb91ae2a6e828984108d75b557db44b25e2efa96f0"
 
 
 def _tenant_values() -> dict[str, str]:
@@ -309,7 +324,7 @@ def test_the_relay_admits_only_tcp_8080_from_labelled_pods_and_swarm_apis_range(
 def test_the_rendered_range_is_recorded_on_the_policy(system_docs):
     annotations = _one(system_docs, parity.LIVE_INGRESS_POLICY)["metadata"]["annotations"]
     assert annotations[parity.API_CIDR_ANNOTATION] == FAKE_API_CIDR
-    assert annotations[parity.SOURCE_ANNOTATION] == f"run/saga-agents-staging/us-central1/swarm-api/{FAKE_SUBNET}"
+    assert annotations[parity.SOURCE_ANNOTATION] == f"run/{PROJECT}/us-central1/swarm-api/{FAKE_SUBNET}"
 
 
 def test_an_offline_swarm_system_render_is_marked_not_for_apply():
@@ -489,7 +504,7 @@ case "$*" in
   *"version --client"*) printf 'Client Version: v1.36.3\n' ;;
   *"config current-context"*) printf 'swarm-dev' ;;
   *"config view"*)
-    if [[ -f "${d}/cluster-entry" ]]; then cat "${d}/cluster-entry"; else printf 'gke_saga-agents-staging_us-central1_swarm-autopilot'; fi ;;
+    if [[ -f "${d}/cluster-entry" ]]; then cat "${d}/cluster-entry"; else printf 'gke_@PROJECT@_us-central1_swarm-autopilot'; fi ;;
   *"get namespace swarm-system"*) [[ -f "${d}/no-namespace" ]] && exit 1; printf 'namespace/swarm-system\n' ;;
   *"get networkpolicies"*) cat "${d}/applied.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
@@ -502,7 +517,7 @@ case "$*" in
     printf 'networkpolicy.networking.k8s.io/swarm-allow-live-ingress created\n' ;;
   *) printf 'fake kubectl: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
-"""
+""".replace("@PROJECT@", PROJECT)
 
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -567,7 +582,7 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     for name, body in (("kubectl", FAKE_KUBECTL), ("gcloud", FAKE_GCLOUD), ("terraform", FAKE_TERRAFORM)):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
-    (d / "service.json").write_text(json.dumps(_service(f"projects/saga-agents-staging/regions/us-central1/subnetworks/{FAKE_SUBNET}")))
+    (d / "service.json").write_text(json.dumps(_service(f"projects/{PROJECT}/regions/us-central1/subnetworks/{FAKE_SUBNET}")))
     (d / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
     (d / "relay.yaml").write_text(_relay_manifest())
     (d / "live_relay.json").write_text(json.dumps({"enabled": True, "port": 8080, "swarm_api_egress_cidr": FAKE_API_CIDR}))
@@ -575,8 +590,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     # TF_DATA_DIR is terraform's own override for where that is.
     (tmp_path / "tfdata").mkdir()
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+    env.update(placeholder_deployment.child_env(PROJECT))
     # common.sh has no default project any more: name the one the suite models.
-    env["PROJECT_ID"] = "saga-agents-staging"
+    env["PROJECT_ID"] = PROJECT
     env.update(
         PATH=f"{b}:{env.get('PATH', '')}",
         FAKE_CLUSTER_DIR=str(d),
@@ -586,7 +602,7 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
         # apply.sh has no default project (DAYONE-K8S-1): the one this fake
         # cluster's context and identities name is given, as an operator would.
-        PROJECT_ID="saga-agents-staging",
+        PROJECT_ID=PROJECT,
         HOME=str(tmp_path),
     )
     return {"dir": d, "env": env}
@@ -672,23 +688,23 @@ def test_apply_applies_the_relay_manifest_before_the_policies(cluster, confirm):
 @pytest.mark.parametrize(
     "how",
     [
-        ("--context", "gke_saga-agents-staging_us-central1-a_agents-staging"),
+        ("--context", f"gke_{PROJECT}_us-central1-a_{PEER_CLUSTER}"),
         ("label",),
     ],
 )
 def test_apply_refuses_the_shared_cluster_before_reading_the_relay(cluster, how):
-    """agents-staging is another team's cluster (CLAUDE.md rule 2). Refused by
+    """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's cluster (CLAUDE.md rule 2). Refused by
     the deny-list in scripts/lib/common.sh -- whether named as the context or
     reached through our own label -- before terraform is asked for anything
     and before anything is applied."""
-    other = "gke_saga-agents-staging_us-central1-a_agents-staging"
+    other = f"gke_{PROJECT}_us-central1-a_{PEER_CLUSTER}"
     if how[0] == "label":
         (cluster["dir"] / "cluster-entry").write_text(other)
         result = _apply(cluster, "--confirm")
     else:
         result = _apply(cluster, "--confirm", *how)
     assert result.returncode != 0
-    assert "agents-staging" in result.stderr and "deny-list" in result.stderr, result.stderr
+    assert PEER_CLUSTER in result.stderr and "deny-list" in result.stderr, result.stderr
     assert not (cluster["dir"] / "terraform.log").exists(), "the relay manifest was read for a refused cluster"
     assert not (cluster["dir"] / "applied.yaml").exists()
     assert not (cluster["dir"] / "applied-dry-run.yaml").exists()
@@ -757,7 +773,7 @@ def test_an_uninitialised_terraform_root_is_refused_first_with_the_init_command(
     assert result.returncode != 0, out
     assert "terraform/infra is not initialised" in result.stderr, result.stderr
     assert (
-        "init -input=false -reconfigure -backend-config=bucket=swarm-tfstate-saga-agents-staging"
+        f"init -input=false -reconfigure -backend-config=bucket=swarm-tfstate-{PROJECT}"
         " -backend-config=prefix=infra/dev"
     ) in result.stderr, result.stderr
     assert "--tenant" not in out, out

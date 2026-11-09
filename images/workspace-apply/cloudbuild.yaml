@@ -82,7 +82,7 @@ steps:
       - --build-arg
       - APT_REFRESH=${_APT_REFRESH}
       # The project's mirrors, which build-images.sh passes as substitutions
-      # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
+      # (recipe_mirror_subs; the Dockerfile names no project, the Day One image lane).
       - --build-arg
       - MIRROR_GHCR=${_MIRROR_GHCR}
       - --build-arg

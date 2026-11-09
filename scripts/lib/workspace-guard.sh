@@ -932,9 +932,13 @@ guard_real_bin() {
 # judge to read whole and as destroy-guard.jq takes it (deny_whole and
 # deny_scan in GUARD_JQ). Joined by the shell: the four jq and the grep the
 # two JSON forms took are gone (GUARD-SPEED).
+# Returns 1, with DENY_LIST_ERROR saying why, when the list cannot be loaded:
+# the judge prints that on stderr and refuses the call, because nothing runs without the list.
 GUARD_DENY_LINES=""
 guard_deny_lists() {
   local IFS=$'\n'
+  GUARD_DENY_LINES=""
+  deny_list_load || return 1
   GUARD_DENY_LINES="${SHARED_DENY_LIST[*]+${SHARED_DENY_LIST[*]}}"
 }
 
@@ -998,7 +1002,13 @@ guard_judge() {
 
   local stopped=false result
   [[ -e "${exp}.stop" ]] && stopped=true
-  guard_deny_lists
+  if ! guard_deny_lists; then
+    # A fixed sentence: the reason is the stop record's, and the loader's
+    # detail (the bucket path, the object's own text) stays on stderr.
+    printf 'workspace-guard: %s\n' "${DENY_LIST_ERROR}" | redact >&2
+    GUARD_REASON="the never-touch list is not readable, and nothing runs without it"
+    return 0
+  fi
   if ! result="$(jq -rn \
         --slurpfile rules_in "${GUARD_RULES_ACTIVE}" \
         --slurpfile e_in "${exp}" \
@@ -1506,6 +1516,10 @@ cmd_self_test() {
   export FIRESTORE_DATABASE="swarm" GKE_CLUSTER="swarm-autopilot" GKE_LOCATION="us-central1"
   unset ARTIFACT_BUCKET SWARM_CALL_GUARD_MODE SWARM_KUBECTL SWARM_APPROVAL_PIN
   export SWARM_CALL_GUARD="${tmp}/expect.json"
+  # The placeholder never-touch list, keyed to this fixed project, through the
+  # same loader and rules as a deployment's: the cases' other-team names
+  # (peer-cluster, peer-runner@...) are on it.
+  deny_list_use_example "${tmp}"
 
   local workspace
   workspace="$(jq -r '.workspace_id' "${GUARD_CASES}")"

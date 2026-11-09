@@ -69,7 +69,7 @@ steps:
       - |
         base="$$(cat /workspace/base-image-ref)"
         # The project's mirrors, which build-images.sh passes as substitutions
-        # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
+        # (recipe_mirror_subs; the Dockerfile names no project, the Day One image lane).
         docker build \
           --platform linux/amd64 \
           -f '${_DOCKERFILE}' \

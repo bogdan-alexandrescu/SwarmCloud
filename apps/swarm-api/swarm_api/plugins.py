@@ -47,10 +47,19 @@ enforces, so it is strict and never degrades to advisory. That contract is
 what the existing digest in the signed dispatch block binds, so no second
 signed field exists. Work contracts are behind SWARM_WORK_CONTRACTS: with it
 off a step naming plugins is refused, never stored to run without them.
+
+THE PLATFORM SWITCH. `enabled` is the platform's plugins switch (the owner's
+pick on PR 3648, docs/design/managed-plugins.md section 11): a platform
+admin's signed console setting when one is stored, else SWARM_PLUGINS, the
+Terraform value, `on` unless it says exactly `off`. Off, `check_step` refuses
+every step that names a plugin, whichever way it came, before anything else
+is checked; on, nothing changes. It ships `on`, so it refuses nothing a
+caller relied on until an admin turns it off.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
@@ -61,7 +70,7 @@ from pydantic import Field
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
-from . import workcontract
+from . import platformswitches, workcontract
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import RoleAdminRequired, ValidationFailed
@@ -86,6 +95,31 @@ from .plugincatalogue import (
 from .qasettings import authorize_read, can_edit
 from .roles import ADMIN, RoleStore
 from .schemas import StrictModel
+
+
+# --- the platform switch ----------------------------------------------------
+
+#: The Terraform value of the platform's plugins switch (var.plugins_switch).
+SWITCH_ENV = "SWARM_PLUGINS"
+
+
+def enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The switch: the platform admin's console setting when one is stored
+    and verifies (`platformswitches`), else the Terraform value in `environ`
+    (`environment_enabled`)."""
+    stored = platformswitches.stored(platformswitches.PLUGINS)
+    if stored is not None:
+        return stored == "on"
+    return environment_enabled(environ)
+
+
+def environment_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The Terraform value: on unless SWARM_PLUGINS is exactly `off`, so a
+    deployment that sets nothing accepts the plugins it accepted before. The
+    read is written `(os.environ if environ is None else environ).get(...)`
+    so that scripts/lib/check-env-parity.sh sees swarm-api read the key
+    terraform sets."""
+    return (os.environ if environ is None else environ).get(SWITCH_ENV, "").strip() != "off"
 
 
 # --- a step's plugins, at submission ---------------------------------------
@@ -129,7 +163,13 @@ def check_step(plugins: Mapping[str, Mapping[str, Any]], *, tenant_id: str,
     platform cannot run for it: a name outside the catalogue, a profile that
     cannot load it, a mode that needs the question bridge, a skill its mode
     does not offer, no skill at all, or a plugin the workspace has not allowed under a signed
-    block. Nothing to check for a step that names none."""
+    block; and any plugin at all while the platform's plugins switch is off
+    (`enabled`). Nothing to check for a step that names none."""
+    if plugins and not enabled():
+        raise _refuse(
+            "plugins are off on this platform: a platform admin turns them on in "
+            f"Admin › Plugins › Platform ({SWITCH_ENV})", step_id=step_id, field=field,
+            plugins=sorted(plugins))
     allowed = allowed_plugins(tenant_id, settings_doc, mac) if plugins else ()
     for name, chosen in sorted(plugins.items()):
         entry = CATALOGUE.get(name)
@@ -421,6 +461,8 @@ __all__ = [
     "catalogue_view",
     "check_step",
     "contract_id_of",
+    "enabled",
+    "environment_enabled",
     "normalise",
     "offered_skills",
     "step_contract",

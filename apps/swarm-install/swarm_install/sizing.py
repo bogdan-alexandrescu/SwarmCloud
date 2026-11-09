@@ -1,6 +1,6 @@
 """How big a deployment is: one person or a team of N, turned into the
 capacity ceilings and runtime limits stage 0 records as `state.outputs["sizing"]`
-(lane DAYONE-SIZING-ASK, part of #2688; decision 7, BGD 2026-10-30).
+(lane DAYONE-SIZING-ASK, part of #2688; decision 7, the owner, 2026-10-30).
 
 `propose(mode, members)` is a pure function of the constants below. The
 reference shape is the live deployment's own `pool_limits`
@@ -43,7 +43,7 @@ INDIVIDUAL = "individual"
 TEAM = "team"
 MODES = (INDIVIDUAL, TEAM)
 
-# -- the constants (stated in the PR body; BGD confirms them, questions.json) ---
+# -- the constants (stated in the PR body; the owner confirms them, questions.json) ---
 
 #: Agents one person runs at once while they work (a fan-out of a few tasks).
 AGENTS_PER_ACTIVE_MEMBER = 3
@@ -80,7 +80,7 @@ REFERENCE_RUNNER_PROFILES = {"claude-code": 80, "claude-code-browser": 100, "cla
 REFERENCE_BACKENDS = {"CLOUD_RUN_JOB": 100, "GKE_AUTOPILOT": 180}
 #: Team members per swarm-api instance, and the floor (two: one can roll).
 #: 10 -> 7 (2026-11-06, part of #2688): the reference team of 50 kept the live
-#: 5 instances at 5 of 5 for 359 of 360 minutes, and BGD's pick for it is 8
+#: 5 instances at 5 of 5 for 359 of 360 minutes, and the owner's pick for it is 8
 #: (of 2 vCPU and 2 GiB, terraform/infra/main.tf); ceil(50 / 7) = 8. One
 #: uvicorn process an instance, so the second vCPU does not double what one
 #: instance carries.

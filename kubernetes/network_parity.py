@@ -18,7 +18,7 @@ the cluster's DNS never uses. A worker ran for 390 s with every lookup dropped.
 
 TWO THINGS ARE COMPARED, because they fail differently:
 
-  * WHAT THE POLICY WAS RENDERED FOR -- the `swarm.saga.xyz/*` annotations the
+  * WHAT THE POLICY WAS RENDERED FOR -- the `swarm.<org_domain>/*` annotations the
     template records. Exact equality with the live values. A policy rendered
     for another network fails here even where it would still isolate (a pod
     range inside 10/8 is excepted either way), because the next difference may

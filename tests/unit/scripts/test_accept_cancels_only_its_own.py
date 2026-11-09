@@ -27,6 +27,7 @@ The accept.yml steps are run here as written, by bash, against a fake
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -41,6 +42,10 @@ from .test_release_reuses_ci_images import _code, _workflow
 REPO = Path(__file__).resolve().parents[3]
 VERIFY_REMOTE = REPO / "scripts" / "verify-remote.sh"
 ORIGIN = "SWARM_VERIFY_ORIGIN"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 #: The jobs that run swarm-verify executions and so clean up after a cancel.
 SUITE_JOBS = ("smoke", "acceptance", "acceptance-2", "tenant-isolation", "live-browser")
 
@@ -211,9 +216,12 @@ def _verify(tmp_path: Path, *targets: str, **extra: str) -> subprocess.Completed
     if not describe.exists():
         describe.write_text("{}")
     env = _env(tmp_path, FAKE_DESCRIBE=str(describe), FAKE_EXECUTION="swarm-verify-x7k2q", **extra)
-    # PROJECT_ID stays: no script guesses the project any more, so the
-    # caller names it (the fake gcloud answers for any project).
-    env.pop("REGION")
+    # PROJECT_ID and REGION stay: no script guesses the project or the
+    # region any more, so the caller names them (the fake gcloud answers for
+    # any). The region is the placeholder deployment's, and its never-touch
+    # list is served for this project, as common.sh requires once a project
+    # is named.
+    env.update(placeholder_deployment.child_env(env["PROJECT_ID"]))
     return subprocess.run(["bash", str(VERIFY_REMOTE), *targets], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
 

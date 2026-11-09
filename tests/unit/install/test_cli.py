@@ -221,7 +221,7 @@ def test_missing_manifest_is_a_usage_error(home, bucket, steps, monkeypatch, tmp
 
 
 def _state_with(*done: str, ready: bool = False) -> InstallState:
-    state = InstallState(project="proj-s", environment="prod", hostname="swarm.example.test")
+    state = InstallState(project="example-project", environment="prod", hostname="swarm.example.test")
     for i, step_id in enumerate(done):
         state.steps[step_id] = StepRecord(state="done", at=100.0 + i, by="admin@example.test")
     if ready:
@@ -232,11 +232,11 @@ def _state_with(*done: str, ready: bool = False) -> InstallState:
 def test_status_reads_the_bucket_and_writes_nothing(home, bucket, steps, capsys):
     bucket.objects[STATE_OBJECT] = (_state_with("preflight").to_bytes(), 3)
 
-    code = cli.main(["install", "--status", "--json", "--project", "proj-s", "--env", "prod"])
+    code = cli.main(["install", "--status", "--json", "--project", "example-project", "--env", "prod"])
 
     report = json.loads(capsys.readouterr().out)
     assert code == ExitCode.TROUBLE  # stage 1 is not done
-    assert report["source"] == "gs://swarm-tfstate-proj-s/swarm-install/state.json"
+    assert report["source"] == "gs://swarm-tfstate-example-project/swarm-install/state.json"
     assert report["stages"] == [
         {"stage": 0, "state": "done", "at": 100.0, "by": "admin@example.test"},
         {"stage": 1, "state": None, "at": None, "by": None},
@@ -248,7 +248,7 @@ def test_status_reads_the_bucket_and_writes_nothing(home, bucket, steps, capsys)
 def test_status_ready_screen(home, bucket, steps, capsys):
     bucket.objects[STATE_OBJECT] = (_state_with("preflight", "state-bucket", ready=True).to_bytes(), 3)
 
-    code = cli.main(["install", "--status", "--project", "proj-s", "--env", "prod"])
+    code = cli.main(["install", "--status", "--project", "example-project", "--env", "prod"])
 
     out = capsys.readouterr().out
     assert code == ExitCode.OK

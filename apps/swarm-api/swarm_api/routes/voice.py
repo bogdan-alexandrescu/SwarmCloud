@@ -1,9 +1,10 @@
 """Voice it session routes (docs/design/voice-it.md §3.6, §3.7, §10 phase 1).
 
     POST /v1/voice/sessions                   {offer_sdp?, project_id?}
-        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only)}
+        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only),
+            fallback: {from, reason} (a speech session that became text)}
     POST /v1/voice/sessions/{session_id}/turns  {text}
-        -> {turn_id, reply, cards}
+        -> {turn_id, reply, cards, delegation_id (speech, when delegated)}
     POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
 
@@ -96,22 +97,36 @@ broker's Voice it pool itself, and its pool refusals (403, or 409
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 
-THE MODE AND THE TURNS (owner, 4 November 2026: "both paths"; voice/
-sessions.py, `pick_mode`). The start asks the broker what the Voice it pool
-holds: with an OpenAI API key the session is `live` (GPT-Live, today's path:
-`offer_sdp` is required and `answer_sdp` comes back); with none it is `text`,
-on the pool's ChatGPT plan, which serves text but not Live: no SDP, any
-offer sent is dropped unread, and the browser posts each spoken turn to
-`/turns` as `{"text": 1..4000 characters}`, answered `{turn_id, reply,
-cards}`. A turn passes the same guards as every Voice it action -- the
+THE ENGINE AND THE TURNS (docs/design/voice-it-own-speech.md §4.1, §10.2;
+voice/sessions.py, `pick_engine`). The start takes no engine and no mode: the
+body is `{offer_sdp?, project_id?}` and anything else is 422. It reads Voice
+it › Settings once: own speech (the default) is a `speech` session, the fast
+Claude front at swarm-voice and the speech machine brought to RUNNING, with
+no SDP and no OpenAI pool asked; GPT-Live is `live`, today's path
+(`offer_sdp` is required and `answer_sdp` comes back), and with no OpenAI API
+key in the Voice it pool it is `text`, with `fallback: {from: "gpt-live",
+reason: "no_openai_key"}`. An own-speech session that cannot start becomes
+`text`, with `fallback: {from: "own", reason}` (`speech_not_deployed`,
+`front_refused`, `no_l4`, `not_ready`). Any offer a
+text or speech start is sent is dropped unread. The browser posts each turn
+of a text or speech session to `/turns` as `{"text": 1..4000 characters}`,
+answered `{turn_id, reply, cards}` (and `delegation_id` when the front
+delegated). A turn passes the same guards as every Voice it action -- the
 person on the Voice it list (403), the console's selected workspace through
 `tenant_scope`, the session the caller's own there (else the same 404) --
 and is 409 `conflict` (`voice_session_not_live`) on a session that is not a
-live text one; the plan's usage limit is 429 `rate_limited` with
+live text or speech one; the plan's usage limit is 429 `rate_limited` with
 `detail.resets_at`. It is not on the grant's lists (voice/grant.py): the
 session grant is what swarm-voice's planner acts with during the turn, and
 never what posts one. The person's text is never logged: it rides in the
 body alone, and nothing here writes it anywhere.
+
+THE SPEECH ROUTES (voice_speech.py: the audio socket and the machine's
+sweep) are mounted on this module's `router`, beside the Voice it routes,
+with their own paths and their own admission. Stop on a speech session also
+stops the machine. The machine's lifecycle is `app.state.speech_machine`
+when one is set (a test's), else voice_speech's `machine_for`, and none
+while SWARM_SPEECH_* leave the engine undeployed.
 
 swarm-voice's client is `app.state.voice_client` when one is set (a test's
 fake), else the deployment's from SWARM_VOICE_URL, else none.
@@ -138,6 +153,7 @@ from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
+from ..voice import settings as vsettings
 from ..voice import store as vstore
 from ..voice import stream as vstream
 
@@ -151,8 +167,8 @@ class StartSession(BaseModel):
     #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
-    #: Required for a Live session; a text session (no OpenAI API key in the
-    #: Voice it pool) has no WebRTC and drops it unread.
+    #: Required for a Live session (Settings name GPT-Live); a speech or text
+    #: session has no WebRTC and drops it unread. No engine is taken here.
     offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
     project_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
 
@@ -180,13 +196,23 @@ def allowed_person(auth: AuthContext = Depends(current_auth),
     return auth.email.strip().lower()
 
 
-def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
+def speech_machine(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    """The speech machine's lifecycle, or None when the engine is not
+    deployed here (SWARM_SPEECH_* empty)."""
+    if not rvs.speech_config(request.app).enabled:
+        return None
+    machine = getattr(request.app.state, "speech_machine", None)
+    return machine if machine is not None else rvs.machine_for(request.app, ctx)
+
+
+def _service(ctx: AppContext, client: Any, machine: Any = None) -> vs.VoiceSessions:
     if client is None:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             now=ctx.now,
-                            class_models=ctx.settings.worker_class_models)
+                            class_models=ctx.settings.worker_class_models,
+                            machine=machine)
 
 
 #: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
@@ -235,17 +261,22 @@ async def start_session(
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
     pool: AccountPool = Depends(account_pool),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client)
+    service = _service(ctx, client, machine)
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
-    mode = await run_in_threadpool(vs.pick_mode, pool, person)
-    if mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
+    # Settings' engine, read once: no engine is ever taken from the caller.
+    chosen = (await run_in_threadpool(vsettings.VoiceSettings(ctx.db, now=ctx.now).read))["settings"]
+    pick = await run_in_threadpool(
+        lambda: vs.pick_engine(chosen, pool, person, speech_deployed=machine is not None))
+    if pick.mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
         raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
 
     def _start() -> dict:
         return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp or "",
-                             project_id=body.project_id, mode=mode)
+                             project_id=body.project_id, mode=pick.mode, fallback=pick.fallback,
+                             chosen=chosen)
 
     return await run_in_threadpool(_start)
 
@@ -274,8 +305,9 @@ async def end_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client)
+    service = _service(ctx, client, machine)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
         service.end, tenant_id=tenant_id, person=person, session_id=session_id)
@@ -515,3 +547,19 @@ async def read_ledger(
     return await run_in_threadpool(
         _ledger(ctx, prefs, request).compute, tenant_id=tenant_id, person=person,
         session_id=session_id)
+
+
+# --------------------------------------------------------------------------
+# The speech routes (docs/design/voice-it-own-speech.md §14 row L6)
+# --------------------------------------------------------------------------
+
+# voice_speech's routes carry their own full paths (the audio socket under
+# /v1/voice, the sweep under /v1/internal), already resolved when they were
+# declared, so they join this router's list as they are and keep them; main.py
+# includes `router` alone. Not `include_router`: FastAPI nests an included
+# router lazily, and the route inventories read this router's routes flat.
+# Imported last: voice_speech imports voice_readback, which imports
+# `allowed_person` from this module.
+from . import voice_speech as rvs  # noqa: E402
+
+router.routes.extend(rvs.router.routes)

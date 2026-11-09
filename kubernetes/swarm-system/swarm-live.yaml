@@ -19,7 +19,7 @@
 # policies (network-policies/swarm-system-live.yaml) after it in the same
 # apply: this creates the namespace they go into.
 #
-# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# APPLY IT TO swarm-autopilot ONLY. `peer-cluster` in the same project is
 # another team's cluster (CLAUDE.md rule 2; the deny-list is
 # scripts/lib/common.sh's, and apply.sh refuses any context that resolves to a
 # cluster on it).

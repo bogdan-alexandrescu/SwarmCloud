@@ -154,6 +154,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 145 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
+| 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
 
 ---
 
@@ -17470,3 +17471,46 @@ None is touched: comments decide nothing.
 
 The owner, 7 November 2026, accepting the third, comments-only request this
 pull request's implement step asked about.
+
+## 150. `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS` (PR 3648, part of #2688)
+
+**Status:** REQUESTED 2026-11-08 by the pull request that adds this
+section; not applied.
+
+### Why
+
+The owner picked a third platform switch on PR 3648 ('Add a plugins
+switch'): `plugins` (`on`/`off`) in `platform_settings/switches`, beside
+`work_contracts` and `contract_review`. Contract request 144 covers only
+those two, and a key outside `PLATFORM_SETTINGS_MAC_FIELDS` is outside the
+contract's MAC, so a tenant worker could forge it. Until this request is
+applied, swarm-api signs the document a second time (`switches_mac`, over
+`platformswitches.canonical_switches`, purpose `swarm.platform-switches/v1`,
+every switch) and acts on the document only when both MACs verify.
+
+### The change
+
+```python
+PLATFORM_SETTINGS_MAC_FIELDS = ("work_contracts", "contract_review", "plugins")
+```
+
+### What it would break if accepted
+
+A stored document signed before it would fail the contract's MAC (its bytes
+gain `"plugins"`), and every switch would read as its Terraform value until a
+platform admin saves the switches again. Once applied, swarm-api can drop
+`switches_mac`.
+
+### Invariants
+
+None changes.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` would pin the new bytes;
+today `tests/unit/control_plane/test_platform_switches.py` holds a forged
+`plugins` value refused by the second MAC.
+
+### Who decided
+
+Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.

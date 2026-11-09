@@ -15,6 +15,7 @@ anything else.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import pickle
@@ -32,13 +33,24 @@ SCRIPT = REPO / "scripts" / "workspace-migrate-record.sh"
 FAKES_DIR = REPO / "tests" / "unit" / "control_plane"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 TENANT = "u-bogdan"
 PRINCIPAL = "bogdan@example.com"
 KEPT_ID = "w-752763"
 REQUEST_ID = "6f1c2d3e-0000-4000-8000-000000000001"
-PROJECT = "saga-agents-staging"
+PROJECT = placeholder_deployment.PROJECT
+#: The swarm cluster's context (common.sh's kube_context_allowed), and one ending in a
+#: cluster on the placeholder never-touch list.
+CONTEXT = f"gke_{PROJECT}_{placeholder_deployment.REGION}_swarm-autopilot"
+PEER_CONTEXT = f"gke_{PROJECT}_{placeholder_deployment.ZONE}_{placeholder_deployment.PEER['cluster']}"
 # The names A6 makes and A9 checks (scripts/lib/workspace-guard.sh expect).
 SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
 TWIN = SLOT + "-refresh"
@@ -67,12 +79,12 @@ if _world:
 FAKE_KUBECTL = """#!/bin/sh
 case "$*" in
   "version --client"*) echo "Client Version: v1.31.0" ;;
-  "config current-context") echo "gke_saga-agents-staging_us-central1_swarm-autopilot" ;;
+  "config current-context") echo "@CONTEXT@" ;;
   "get resourcequota swarm-tenant-quota -n swarm-tenant-u-bogdan -o json")
     echo '{"spec": {"hard": {"pods": "100", "requests.cpu": "400", "requests.memory": "800Gi"}}}' ;;
   *) echo "unexpected kubectl call: $*" >&2; exit 9 ;;
 esac
-"""
+""".replace("@CONTEXT@", CONTEXT)
 
 
 def _tenant_doc() -> dict:
@@ -121,8 +133,9 @@ class World:
             PATH=os.pathsep.join([str(bin_dir), env.get("PATH", "/usr/bin:/bin")]),
             KUBECONFIG=str(tmp / "kubeconfig"),
             PYTHONPATH=os.pathsep.join(filter(None, [str(site), env.get("PYTHONPATH", "")])),
-            PROJECT_ID="saga-agents-staging",
+            PROJECT_ID=PROJECT,
             ENVIRONMENT="dev",
+            **placeholder_deployment.child_env(PROJECT, "dev"),
             NO_COLOR="1",
             TMPDIR=str(tmp),
         )
@@ -299,9 +312,7 @@ def test_without_quota_flags_the_live_resourcequota_is_read(pending) -> None:
 
 
 def test_a_cluster_context_that_is_not_the_swarms_is_refused_before_any_read(pending) -> None:
-    pending.kubectl.write_text(FAKE_KUBECTL.replace(
-        "gke_saga-agents-staging_us-central1_swarm-autopilot",
-        "gke_saga-agents-staging_us-central1-a_agents-staging"))
+    pending.kubectl.write_text(FAKE_KUBECTL.replace(CONTEXT, PEER_CONTEXT))
     before = pending.read()
 
     proc = pending.run(TENANT)

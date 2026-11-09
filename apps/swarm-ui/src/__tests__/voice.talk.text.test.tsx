@@ -37,10 +37,18 @@ vi.mock('../api', async (importOriginal) => ({
   USE_FIXTURES: false,
 }))
 
-vi.mock('../fetch', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../fetch')>()),
-  write: fetchMock.write,
-}))
+vi.mock('../fetch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fetch')>()
+  return {
+    ...actual,
+    write: fetchMock.write,
+    // The ChatGPT plan is a GPT-Live deployment: Settings' engine is gpt-live, so Start sends the offer.
+    read: ((target, ...rest) =>
+      target.url === '/v1/voice/settings'
+        ? Promise.resolve({ status: 'ok', data: { settings: { engine: 'gpt-live' } }, fetchedAt: Date.now() })
+        : actual.read(target, ...rest)) as typeof actual.read,
+  }
+})
 
 vi.mock('../Shell', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../Shell')>()),
@@ -149,6 +157,8 @@ function turnBodies(): unknown[] {
 }
 
 async function start(): Promise<void> {
+  // The page reads Settings' engine when it opens.
+  await settle(act)
   fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
   await settle(act)
 }

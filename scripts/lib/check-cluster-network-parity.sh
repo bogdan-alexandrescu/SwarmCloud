@@ -78,8 +78,6 @@ case "${GKE_CLUSTER}" in
   swarm-*) ;;
   *) die "cluster '${GKE_CLUSTER}' does not start with 'swarm-'; refusing to read through it." ;;
 esac
-is_shared_resource "${GKE_CLUSTER}" \
-  && die "cluster '${GKE_CLUSTER}' is on the shared deny-list: it belongs to another team. Refusing."
 if [[ -n "${NAMESPACE}" ]]; then
   case "${NAMESPACE}" in
     "${TENANT_NAMESPACE_PREFIX}"?*) ;;
@@ -111,6 +109,11 @@ ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/
 [[ -n "${ACCOUNT}" ]] || skip "no active gcloud credentials"
 info "account  ${ACCOUNT}"
 require_project
+# The never-touch list is the project's (config/<env>/deny-list.json), so it is
+# read once there is a project and credentials, and before any cluster is: a
+# list that cannot be read stops the run here (deny_list_require).
+is_shared_resource "${GKE_CLUSTER}" \
+  && die "cluster '${GKE_CLUSTER}' is on the shared deny-list: it belongs to another team. Refusing."
 
 # --- the swarm cluster, and only it -----------------------------------------
 KUBECTL="$(kubectl_bin)"

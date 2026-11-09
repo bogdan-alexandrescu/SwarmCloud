@@ -1774,7 +1774,7 @@ def _same_install(recorded: "lsp_pass.Answered", server: str | None,
     """Whether a server that reported no version this run is the one the
     base's answers came from: the same server, whose base version was
     reported, at the same install (`lsp_pass.server_build`, the fingerprint
-    of its installed files, which the image pins). BGD's pick, 2026-11-06:
+    of its installed files, which the image pins). The owner's pick, 2026-11-06:
     without it the most expensive server, last in the pass, dropped every
     carried answer each time its grant ran out before initialize answered,
     and 0-3.8% of the servers' answers were carried between builds."""
@@ -3934,7 +3934,7 @@ def served_route(route: dict) -> dict | None:
     """A route in repo-index.json's own shape (`swarm_api.repoindex.Route`), or
     None when it cannot be served whole.
 
-    Measured on ai-studio, 2026-10-20: the extractor's 538 routes carried
+    Measured on a peer application, 2026-10-20: the extractor's 538 routes carried
     `id`, `language`, `start_line` and `end_line`, no `kind`, and 9 a null
     handler, so the agent re-mapped them by hand every run and 3 of 19 runs
     were refused at promotion. The graph keeps the extractor's own rows; the
