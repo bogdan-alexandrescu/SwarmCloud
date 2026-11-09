@@ -505,8 +505,9 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   request that touched no swarm-ui file, and nothing was ever re-run.
 * **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
   compiled today, whatever the cap (`COMPILED_REVIEW_ROUNDS`). Under
-  `integrate` only the integrator may be gated (and the one re-review
-  `"on_merge_verdict"` appends), and a second caller-built review needs a
+  `integrate` only the integrator may be gated (and the re-review an issue
+  run states, as `"on_merge_verdict"` appends where its fix loop cannot
+  apply), and a second caller-built review needs a
   gated step that is not the publisher
   ([workflows.md, "What this does not do"](workflows.md#what-this-does-not-do)).
 

@@ -76,9 +76,11 @@ swarm-api parses the same file on its side as
   review-then-fix rounds". The same docstring adds that ONE round is all the
   platform can compile. In practice the number bounds only the CI loop's
   rounds after the pull request opens (`issueci`).
-* **`validation.REREVIEW_ROUNDS = 1`.** `on_merge_verdict` appends exactly
+* **`validation.REREVIEW_ROUNDS = 1`.** `on_merge_verdict` appended exactly
   one `re-review` (`validation.rereview_step_for`) and a merge that reads it
-  (`merge_step_for`). The comment beside the constant gives the reason: "The
+  (`merge_step_for`). Since the owner's Q8 (b) of 2026-11-09 it appends a fix
+  loop instead when the integrator is gated on NOT_YET (§4.1); the re-review
+  remains its fallback. The comment beside the constant gives the reason: "The
   workflow is a DAG fixed at submission, so a round is a step that exists or
   not."
 * **The publisher rule.** `integrate` opens one pull request from the
@@ -229,8 +231,22 @@ Rules checked at submission (each a 422 naming the step, nothing written):
 * `metadata.merge: "on_merge_verdict"` with a loop: swarm-api appends **only
   the merge**, not the `re-review` (`rereview_step_for` is skipped). The
   merge's signed `merge_target` names the loop (§4.6). The loop's
-  `re-review:1` is the re-review `on_merge_verdict` would have run. Without a
-  loop, `on_merge_verdict` is unchanged (§9 Q8).
+  `re-review:1` is the re-review `on_merge_verdict` would have run. A declared
+  loop is kept as declared, `max_rounds` included.
+* `metadata.merge: "on_merge_verdict"` (or the repository's
+  `merge_policy`) **without** a declared loop, the owner's Q8 (b) of
+  2026-11-09: when the strategy is `integrate` and the integrator is gated on
+  the review with `verdict_in: ["NOT_YET"]`, swarm-api appends the loop
+  itself -- `{"review": <the review>, "fix": <the integrator>, "max_rounds":
+  3}` (`validation.FIX_LOOP_VERDICT_MERGE_ROUNDS`), depending on the fix,
+  checked by `resolve_fix_loop` and signed into `metadata.dispatch.fix_loop`
+  exactly as a declared one -- and then only the merge, reading the loop
+  (`validation.verdict_fix_loop_step`). It appends the one re-review as
+  before when the loop cannot apply: the gate names other verdicts, a
+  security review judges the integrator's head (a merge behind a loop reads
+  the loop alone, §4.6), or the `fix-loop` profile is still unavailable
+  (§7, request A), because an appended loop would then refuse every such
+  workflow as disabled. `direct-pr`, `collect` and issue runs are unchanged.
 * `publish_to_pr` workflows may loop. Their integrator pushes onto the named
   pull request, and the rounds continue that integrator (§4.3).
 
@@ -525,7 +541,9 @@ head.
 ```
 
 swarm-api appends `merge`, reading the loop (§4.6). The `re-review` step
-that `on_merge_verdict` appends today is not appended. The workflow page
+that `on_merge_verdict` appended before Q8 (b) is not appended. Since Q8 (b)
+the same spec without the `loop` step gets the same loop, with
+`max_rounds` 3, appended by swarm-api. The workflow page
 then shows, as rounds run: `re-review:1`, `review-fix:2`, `re-review:2`, and
 so on.
 
@@ -586,7 +604,7 @@ the first review (§9 Q9).
   ^(?:(?:ci|conflict|pick|review)-fix|re-review):[1-9][0-9]{0,2}$
   ```
 
-  `re-review` without `:<n>` (the `on_merge_verdict` step,
+  `re-review` without `:<n>` (the `on_merge_verdict` fallback step,
   `validation.REREVIEW_STEP_ID`) stays a caller-visible ordinary step,
   because the pattern needs the colon.
 * The terminal rule already fits: a round is judged by its owner step. For
@@ -784,6 +802,14 @@ integrator is gated;
 (b) can follow once loops are proven.
 
 The owner 2026-10-27: (a).
+
+The owner 2026-11-09: **(b)**, with `max_rounds` 3. A lane ran one fix round,
+its re-review said NOT_YET and the workflow ended FAILED at its merge, as it
+should; an operator then labelled the green pull request `ready`, GitHub's
+auto-merge merged it on CI alone, and the regression the review had found
+reached main. So every workflow that merges on its review's verdict runs the
+loop unless its spec declares its own (§4.1). The second fix the owner chose,
+a `review-not-yet` label that stops `ready` from merging, is another lane.
 
 **Q9. Issue runs.**
 (a) compile the loop with `max_rounds = fix_rounds`;
