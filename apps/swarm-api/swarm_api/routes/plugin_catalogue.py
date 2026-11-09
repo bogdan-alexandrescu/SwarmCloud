@@ -12,6 +12,7 @@ plugin-catalogue` for one workspace's private plugins):
     GET    {base}/installs/{install_id}/versions    an install and its versions
     POST   {base}/installs/{install_id}/update      a candidate version, by the same intake path
     GET    {base}/installs/{install_id}/diff        current -> a candidate, and the diff's digest
+    GET    {base}/installs/{install_id}/usage       who uses it, for Remove to show (section 9.2)
     POST   {base}/installs/{install_id}/apply       make the candidate current (quotes the digest)
     DELETE {base}/installs/{install_id}?confirm=    remove it: later submissions naming it are refused
 
@@ -954,6 +955,13 @@ def platform_versions(install_id: str, auth: AuthContext = Depends(admin_auth),
     return _versions_answer(store, _install_for(store, PLATFORM_SCOPE, install_id))
 
 
+@router.get(PLATFORM_BASE + "/installs/{install_id}/usage")
+def platform_usage(install_id: str, auth: AuthContext = Depends(admin_auth),
+                   ctx: AppContext = Depends(get_context)) -> dict:
+    store = _store(ctx)
+    return ps.install_usage(ctx.db, _install_for(store, PLATFORM_SCOPE, install_id), store.keys)
+
+
 @router.post(PLATFORM_BASE + "/installs/{install_id}/update", status_code=202)
 def platform_update(install_id: str, body: UpdateBody, request: Request,
                     auth: AuthContext = Depends(admin_auth), ctx: AppContext = Depends(get_context)) -> dict:
@@ -1029,6 +1037,14 @@ def workspace_versions(tenant_id: str, install_id: str, auth: AuthContext = Depe
     scope, _tenant = _workspace_read(auth, ctx, tenant_id)
     store = _store(ctx)
     return _versions_answer(store, _install_for(store, scope, install_id))
+
+
+@router.get(WORKSPACE_BASE + "/installs/{install_id}/usage")
+def workspace_usage(tenant_id: str, install_id: str, auth: AuthContext = Depends(current_auth),
+                    ctx: AppContext = Depends(get_context)) -> dict:
+    scope, _tenant = _workspace_read(auth, ctx, tenant_id)
+    store = _store(ctx)
+    return ps.install_usage(ctx.db, _install_for(store, scope, install_id), store.keys)
 
 
 @router.post(WORKSPACE_BASE + "/installs/{install_id}/update", status_code=202)
