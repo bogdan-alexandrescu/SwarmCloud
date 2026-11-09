@@ -145,7 +145,10 @@ PROD_FACING = {
     # gcloud directly.
     "promotes": lambda code: bool(re.search(r"docker\s+tags\s+(add|delete)\b", code))
     or any("--scan-only" not in line for line in code.splitlines() if _PUSH_IMAGES.search(line)),
-    "applies": lambda code: bool(re.search(r"\bterraform\b[^\n]*\s(apply|destroy|import)\b", code)),
+    # scripts/lib/release-apply.sh applies the saved plan, and on a failed
+    # apply a targeted one of the Cloud Run services: an apply either way.
+    "applies": lambda code: bool(re.search(r"\bterraform\b[^\n]*\s(apply|destroy|import)\b", code))
+    or bool(re.search(r"(^|[\s/])release-apply\.sh(\s|$)", code)),
     "deploys": lambda code: bool(re.search(r"(^|[\s/])(deploy|verify-remote|warm-jobs)\.sh(\s|$)", code)),
 }
 
