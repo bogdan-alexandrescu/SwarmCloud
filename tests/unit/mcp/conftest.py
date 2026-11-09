@@ -137,6 +137,23 @@ def _no_github_reads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_deployment_reads(monkeypatch):
+    """`swarm_check`'s rule `deploy_behind` reads `GET /v1/version` and then
+    GitHub's public API, once per check. A unit test runs with no network,
+    and the fake APIs of the other check tests serve no `/v1/version`, so
+    every test starts with the rule reading nothing; the rule's own tests
+    (test_check_deploy_behind.py) override this fixture."""
+    from swarm_mcp import check
+
+    def unread(client, key, now, github=None):  # noqa: ARG001
+        return {"deployment": {"rule": "deploy_behind", "state": "not read",
+                               "why": "not read: unit tests read no deployment"},
+                "flag": None, "unchecked": None}
+
+    monkeypatch.setattr(check, "deployment", unread, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_automatic_build_board(monkeypatch):
     """No test refreshes the build board behind its own back (BOARD-WIRE).
 
