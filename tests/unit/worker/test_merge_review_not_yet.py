@@ -21,6 +21,7 @@ network: GitHub is `merge_world`'s fake, the token made at runtime.
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import replace
 import secrets
 from typing import Any
 
@@ -32,7 +33,7 @@ from agent_worker.secrets import CredentialMissing
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from merge_world import API, NUMBER, PR, MergeWorld
+from merge_world import API, NUMBER, OPENER, PINNED, PR, WORKFLOW, MergeWorld
 from test_fix_loop_merge import _loop_world
 
 LABELS = f"{API}/issues/{NUMBER}/labels"
@@ -339,3 +340,51 @@ def test_a_fix_loops_final_merge_removes_review_not_yet(tmp_path):
     (removed,) = world.github.calls("DELETE", NOT_YET)
     (merged,) = world.merge_calls()
     assert world.github.seen.index(removed) < world.github.seen.index(merged)
+
+
+# ---------------------------------------------------------------------------
+# a merge step that reads no review refuses a held pull request
+# ---------------------------------------------------------------------------
+
+def _named(world: MergeWorld) -> Any:
+    """A `merge_pr` target: a number and a head, no review."""
+    world.target = {"number": NUMBER, "head_sha": PINNED, "base": "main"}
+    world.verdict = None
+    world.pr["head"] = {**world.pr["head"], "ref": "feature/price-sort"}
+    del world.docs[OPENER]
+    return world.context()
+
+
+def _other_workflows(world: MergeWorld) -> Any:
+    """A merge-only continuation of another workflow's pull request: no review."""
+    world.verdict = None
+    world.target = {"pull_request": OPENER, "pull_request_workflow": WORKFLOW}
+    ctx = world.context()
+    return replace(ctx, dispatch={**ctx.dispatch, "continues": OPENER})
+
+
+@pytest.mark.parametrize("target", [_named, _other_workflows], ids=["named", "other_workflow"])
+def test_a_merge_without_a_review_refuses_a_pull_request_labelled_review_not_yet(
+    tmp_path, target
+):
+    """MUTATION: drop the refusal, and a `merge_pr` merges what a review held."""
+    world = _merge_world(tmp_path)
+
+    outcome = merge.run_merge(target(world))
+
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "review_not_yet"
+    assert "review-not-yet" in outcome.message
+    assert world.merge_calls() == []
+    assert world.github.calls("DELETE", NOT_YET) == []
+
+
+@pytest.mark.parametrize("target", [_named, _other_workflows], ids=["named", "other_workflow"])
+def test_a_merge_without_a_review_merges_a_pull_request_without_the_label(tmp_path, target):
+    world = _merge_world(tmp_path, labelled=False)
+
+    outcome = merge.run_merge(target(world))
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1

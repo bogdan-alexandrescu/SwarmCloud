@@ -3541,6 +3541,15 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         # The review (or the fix loop's final re-review) said MERGE: an
         # earlier NOT_YET's label comes off before anything merges or boards.
         _clear_not_yet(run, merger, number)
+    elif REVIEW_NOT_YET_LABEL in pr.labels and not pr.merged:
+        # A step that read no MERGE -- a named pull request, another
+        # workflow's (`pull_request_workflow`), any target with no review --
+        # must not merge or board what a review held: only a later MERGE
+        # takes the label off.
+        return run.refuse("review_not_yet",
+                          f"pull request #{number} carries `{REVIEW_NOT_YET_LABEL}`: its review "
+                          "said NOT_YET, and only a merge step that reads a later MERGE "
+                          "verdict can merge it")
     if pr.merged:
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
