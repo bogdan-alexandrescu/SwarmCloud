@@ -503,8 +503,10 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   with `mergewake._rerun_first`). Why: run_7eddc5b3 failed at
   its cap of 3 on a 30 s vitest timeout in one swarm-ui shard of a pull
   request that touched no swarm-ui file, and nothing was ever re-run.
-* **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
-  compiled today, whatever the cap (`COMPILED_REVIEW_ROUNDS`). Under
+* **Review-then-fix rounds inside the compiled workflow**, up to the cap,
+  through the fix loop
+  ([below](#the-fix-loop-in-an-issue-run)). Where the loop cannot apply, one
+  is compiled whatever the cap (`COMPILED_REVIEW_ROUNDS`): under
   `integrate` only the integrator may be gated (and the re-review an issue
   run states, as `"on_merge_verdict"` appends where its fix loop cannot
   apply), and a second caller-built review needs a
@@ -615,6 +617,44 @@ skipped and is still red in the state, exactly as the merge step reads it
 document written before they were recorded serves each as `null`, never `0` or
 `false`: a zero would claim a reading that was never made, and the console
 prints "merge not reported" only for `merged: null`.
+
+## The fix loop in an issue run
+
+An issue run's compiled workflow ends its implement -> review -> fix with a
+fix loop ([workflows.md](workflows.md#the-fix-loop-review-fix-rounds-until-a-review-says-merge))
+whose `max_rounds` is the run's `fix_rounds`, under the same two conditions
+as any workflow that merges on its review (the owner, 9 November 2026;
+`issueruns._with_review_rounds`):
+
+* **the `fix-loop` runner type is available.** Until contract request 151
+  makes it so, the run compiles the single re-review it always had
+  (`issueruns._with_rereview`). Why: the loop is built, but it is not
+  switched on until its acceptance check passes.
+* **the run asked for no security review.** A run with a security review
+  keeps the single re-review. Why: a merge behind a loop reads only the
+  loop, and the security review judges one head, which later rounds would
+  move.
+
+Why the run's `fix_rounds`: the run already chose, 1-5, how many fix rounds
+it will pay for, and one number should bound its review-fix rounds as it
+bounds its CI fix rounds rather than a second cap nobody chose. The run
+records the rounds it compiled as `review_rounds_compiled`: the loop's
+`max_rounds`, or 1 for the single re-review.
+
+**The verdict the run follows is the loop's final review.** Auto-merge and
+the `Closes #N` block read the loop's `final_review`, never round 0's review
+(`issueci._loop_final_review`), and only from a loop that ended SUCCEEDED, is
+this run's, and whose final review is a SUCCEEDED review the loop itself ran.
+Anything else is no verdict: nothing merges, and the pull request says `part
+of #N`. Why: round 0's review judged code the rounds have since changed,
+and a loop that waits for a person, was stopped or expired has no review
+that said MERGE. A head a `review-fix:<k>` round pushed is the run's own,
+bound by the same signed round record (`issueci._loop_fix_heads`), since the
+rounds push the pull request's branch.
+
+A loop that runs out of rounds waits for a person exactly as a workflow's
+does: add a round or end the loop, on the workflow page, through the API or
+through the plugin's `swarm_fix_loop`.
 
 ## `Closes #N` only when the review confirmed every requirement
 

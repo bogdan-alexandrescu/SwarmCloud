@@ -83,16 +83,21 @@ def _constants(path: Path) -> dict[str, object]:
         if not isinstance(target, ast.Name):
             continue
         try:
-            found[target.id] = _literal(value)
+            found[target.id] = _literal(value, found)
         except ValueError:
             continue
     return found
 
 
-def _literal(node: ast.expr) -> object:
-    """A literal, or a product of literals (`7 * 86_400`, `4 * 1024`)."""
+def _literal(node: ast.expr, known: dict[str, object]) -> object:
+    """A literal, a product of literals (`7 * 86_400`), or a tuple of names
+    already bound to literals (`PERSON_PHASES = (EXHAUSTED, ...)`)."""
+    if isinstance(node, ast.Name) and node.id in known:
+        return known[node.id]
+    if isinstance(node, ast.Tuple):
+        return tuple(_literal(item, known) for item in node.elts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-        left, right = _literal(node.left), _literal(node.right)
+        left, right = _literal(node.left, known), _literal(node.right, known)
         if isinstance(left, int) and isinstance(right, int):
             return left * right
         raise ValueError("not a product of integers")
@@ -247,6 +252,12 @@ def test_delegate_says_how_a_spec_gets_a_loop_and_what_a_parked_one_needs():
     assert '"runner_profile": "fix-loop"' in body and '"fix_loop"' in body
     assert "`on_merge_verdict`" in body
     assert "`max_rounds`" in body
-    assert "`swarm_fix_loop`" in body and '"add_round"' in body and '"stop"' in body
-    assert "developer's word" in body, "the tool changes state"
+    # The skill grants no `swarm_fix_loop` (test_plugin_skills holds every tool
+    # it names to its allowed-tools), so it sends a parked loop to the `sc`
+    # skill's section on it, and to the routes, rather than naming the tool.
+    sc_heading = "### A fix loop that waits for you"
+    assert sc_heading in _text(REPO / "plugin" / "skills" / "sc" / "SKILL.md")
+    assert f'"{sc_heading[4:]}"' in body
+    assert f"`POST {ROUTE['ROUNDS_ROUTE']}`" in body and f"`POST {ROUTE['END_ROUTE']}`" in body
+    assert "developer's word" in body, "adding a round or stopping changes state"
     assert f"{LOOP['FIX_LOOP_ROUNDS_CEILING']} rounds" in body
