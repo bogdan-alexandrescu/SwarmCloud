@@ -858,9 +858,10 @@ _wf_check_expire() {
 #
 # NO SWITCH TURNS IT ON FOR THIS RUN. `available` is the frozen catalogue's, and
 # swarm-api refuses a step that names an unavailable profile for every caller
-# (validation.validate_runner_profile). await-input was proved the same way:
-# the owner made it available on dev first (contract request 105), and its
-# checks above ran after. Until the owner applies request 151, this is a SKIP.
+# (validation.validate_runner_profile). Unlike await-input (contract request
+# 105, made available on dev before its checks ran), the owner keeps fix-loop
+# off everywhere until FL-ISSUE, FL-UI and FL-DOCS are on main, then applies
+# request 151 and this check measures it. Until then, this is a SKIP.
 _wf_fix_loop_offered() {
   local out="${ACC_WORK}/wf-runtimes.json" offered
   WF_FIX_LOOP_SKIP=""
@@ -879,7 +880,7 @@ _wf_fix_loop_offered() {
     absent)
       WF_FIX_LOOP_SKIP="not measured: this deployment's catalogue (GET /runtimes) has no fix-loop profile" ;;
     no:*)
-      WF_FIX_LOOP_SKIP="not measured: this deployment ships fix-loop unavailable (${offered#no: }); the owner turns it on with contract request 151 (docs/contract-change-requests.md)" ;;
+      WF_FIX_LOOP_SKIP="not measured: this deployment ships fix-loop unavailable (${offered#no: }); the owner turns it on with contract request 151 once FL-ISSUE, FL-UI and FL-DOCS are on main (docs/contract-change-requests.md)" ;;
     *)
       WF_FIX_LOOP_PROBLEM="GET /runtimes answered something that is not a catalogue, so whether this deployment offers fix-loop is not known" ;;
   esac

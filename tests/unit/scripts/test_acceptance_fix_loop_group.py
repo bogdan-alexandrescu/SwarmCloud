@@ -294,6 +294,7 @@ def test_a_deployment_that_ships_fix_loop_unavailable_is_a_skip_and_submits_noth
     lines = [line for line in out.splitlines() if line.startswith(("PASS", "FAIL", "SKIP"))]
     assert len(lines) == 1 and lines[0].startswith(f"SKIP {CHECK}: not measured"), lines
     assert "fix-loop is not available yet" in lines[0] and "contract request 151" in lines[0]
+    assert "once FL-ISSUE, FL-UI and FL-DOCS are on main" in lines[0], lines[0]
 
 
 def test_an_unreadable_catalogue_is_a_failure_never_a_skip(tmp_path):
