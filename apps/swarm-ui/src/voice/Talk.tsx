@@ -205,14 +205,14 @@ function BootPhases({ boot }: { boot: readonly BootPhase[] }) {
   const done = boot.slice(0, -1)
   const now = boot[boot.length - 1]
   return (
-    <span className="vt-status" role="list" aria-label="Starting">
+    <span className="vt-boot" role="list" aria-label="Starting">
       {done.map((p) => (
-        <span key={p} role="listitem" aria-label={p} title={p}>
+        <span key={p} className="vt-boot-step is-done" role="listitem" aria-label={p} title={p}>
           <ToneMark tone="ok" />
         </span>
       ))}
       {now !== undefined && (
-        <span role="listitem" aria-current="step">
+        <span className="vt-boot-step is-now" role="listitem" aria-current="step">
           {now}
         </span>
       )}
@@ -750,7 +750,7 @@ export function TalkPane() {
           </TalkTip>
         </span>
         {textMode && fallback !== null && (
-          <p className="vt-note" role="status">
+          <p className="vt-fallback" role="status">
             {fallbackLine(fallback)}{' '}
             <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Dismiss" onClick={() => setFallback(null)}>
               <CloseGlyph />
