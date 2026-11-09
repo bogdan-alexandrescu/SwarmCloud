@@ -14,6 +14,10 @@ owner (the owner) on 6 November 2026 ("accept all five"):
   * 143 (P5) `canonical_platform_settings(fields)`, the bytes swarm-api MACs
     for the platform switches.
 
+And contract request 152 (P6), accepted by the owner on 9 November 2026: the
+plugin record kind `bundle`, a platform-scope `plugin_bundles/{bundle_id}`
+record MAC'd in P2's canonical form (design sections 1.4.3 and 14).
+
 The bytes are pinned literally: a MAC is over bytes, so a change to them is a
 new purpose, never an edit to this one.
 """
@@ -22,10 +26,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from datetime import datetime, timezone
 
 import pytest
 
+from swarm_api import pluginstore
 from swarm_common import models, specsign
 from swarm_common.models import Tenant, consumer_name, parse_consumer
 from swarm_common.specsign import (
@@ -77,6 +83,26 @@ VERSION = {
 
 INTAKE = {"intake_id": "i-1", "scope": "platform", "tenant_id": None, "state": "fetching"}
 
+#: A `plugin_bundles/{bundle_id}` record as design section 1.4.3 describes it:
+#: the bundle key (each bundled install's version, source and recipe), the
+#: base it was built FROM, the output digest per runner image, the built
+#: tree per plugin and the state. Platform scope, no tenant.
+BUNDLE = {
+    "bundle_id": "b-0123456789ab",
+    "scope": "platform",
+    "tenant_id": None,
+    "key": {
+        "builtin:gstack": {"version_id": "v-1", "source_sha256": SHA, "recipe_sha256": SHA},
+        "builtin:security-audit": {"version_id": "v-1", "source_sha256": SHA, "recipe_sha256": SHA},
+    },
+    "base": {"agent-runtime-base": "sha256:" + SHA},
+    "outputs": {"agent-runtime-base": "sha256:" + SHA},
+    "trees": {"builtin:gstack": SHA, "builtin:security-audit": SHA},
+    "state": "building",
+    "created_by": "admin@example.com",
+    "created_at": NOW,
+}
+
 
 # --------------------------------------------------------------------------
 # Request 141 (P2): canonical_plugin_record
@@ -86,12 +112,13 @@ INTAKE = {"intake_id": "i-1", "scope": "platform", "tenant_id": None, "state": "
 def test_the_record_constants_are_the_request():
     assert PLUGIN_RECORD_PURPOSE == "swarm.plugin-record/v1"
     assert PLUGIN_RECORD_PURPOSE not in (SPEC_PURPOSE, SETTINGS_PURPOSE, PLATFORM_SETTINGS_PURPOSE)
-    assert PLUGIN_RECORD_KINDS == ("install", "version", "intake")
+    assert PLUGIN_RECORD_KINDS == ("install", "version", "intake", "bundle")
     assert PLUGIN_SCOPES == ("platform", "workspace")
     assert dict(PLUGIN_RECORD_IDS) == {
         "install": ("install_id",),
         "version": ("install_id", "version_id"),
         "intake": ("intake_id",),
+        "bundle": ("bundle_id",),
     }
     assert PLUGIN_RECORD_UNCOVERED == ("mac", "created_at", "created_by", "updated_at", "updated_by")
     with pytest.raises(TypeError):
@@ -132,9 +159,9 @@ def test_scope_and_tenant_are_inside_the_bytes():
 
 
 def test_the_kind_is_inside_the_bytes():
-    """An intake's MAC never verifies an install, nor an install's a version."""
-    both = {**VERSION, "intake_id": "i-1"}
-    assert len({canonical_plugin_record(k, both) for k in PLUGIN_RECORD_KINDS}) == 3
+    """An intake's MAC never verifies an install, nor an install's a version, nor any a bundle."""
+    every = {**VERSION, "intake_id": "i-1", "bundle_id": "b-1", "scope": "platform", "tenant_id": None}
+    assert len({canonical_plugin_record(k, every) for k in PLUGIN_RECORD_KINDS}) == 4
 
 
 def test_every_stored_key_is_covered_but_the_mac_and_the_writer_record():
@@ -199,6 +226,62 @@ def test_fields_that_are_not_a_map_or_hold_a_timestamp_have_no_canonical_form():
     # A covered timestamp has no JSON form: only the writer-record keys may hold one.
     with pytest.raises(SpecNotCanonical):
         canonical_plugin_record("install", {**INSTALL, "removed_at": NOW})
+
+
+# --------------------------------------------------------------------------
+# Request 152 (P6): the plugin record kind `bundle`
+# --------------------------------------------------------------------------
+
+
+def test_a_bundle_records_bytes_are_stable():
+    digest = b'"sha256:' + SHA.encode() + b'"'
+    pins = b'{"recipe_sha256":"' + SHA.encode() + b'","source_sha256":"' + SHA.encode() + b'","version_id":"v-1"}'
+    assert canonical_plugin_record("bundle", BUNDLE) == (
+        b'{"fields":{"base":{"agent-runtime-base":' + digest + b'},"bundle_id":"b-0123456789ab",'
+        b'"key":{"builtin:gstack":' + pins + b',"builtin:security-audit":' + pins + b'},'
+        b'"outputs":{"agent-runtime-base":' + digest + b'},"state":"building",'
+        b'"trees":{"builtin:gstack":"' + SHA.encode() + b'","builtin:security-audit":"' + SHA.encode() + b'"}},'
+        b'"kind":"bundle","purpose":"swarm.plugin-record/v1","scope":"platform","tenant_id":null}'
+    )
+
+
+def test_a_signed_bundle_record_verifies_and_a_tampered_one_does_not():
+    """swarm-api's MAC over the contract's bytes: a tenant worker that rewrites a
+    bundle (a forged `ready`, another output digest) holds no key to re-sign it."""
+    keys = ("settings-" + secrets.token_hex(24),)
+    signed = {**BUNDLE, "mac": pluginstore.record_mac("bundle", BUNDLE, keys)}
+    assert pluginstore.record_verifies("bundle", signed, keys)
+    # The writer record is not covered: a later writer's name changes nothing.
+    assert pluginstore.record_verifies("bundle", {**signed, "updated_by": "other@example.com"}, keys)
+    for key, value in (
+        ("state", "ready"),
+        ("outputs", {"agent-runtime-base": "sha256:" + "b" * 64}),
+        ("key", {**BUNDLE["key"], "builtin:gstack": {"version_id": "v-2", "source_sha256": SHA,
+                                                      "recipe_sha256": SHA}}),
+        ("base", {"agent-runtime-base": "sha256:" + "c" * 64}),
+        ("trees", {**BUNDLE["trees"], "builtin:gstack": "d" * 64}),
+        ("bundle_id", "b-other"),
+        ("planted", True),
+    ):
+        assert not pluginstore.record_verifies("bundle", {**signed, key: value}, keys), key
+    # Another key, or the record read as another kind, does not verify.
+    assert not pluginstore.record_verifies("bundle", signed, ("settings-" + secrets.token_hex(24),))
+    assert not pluginstore.record_verifies("intake", {**signed, "intake_id": "b-0123456789ab"}, keys)
+
+
+@pytest.mark.parametrize("change", [
+    {"scope": "workspace", "tenant_id": "team-a"},
+    {"scope": "platform", "tenant_id": "team-a"},
+    {"scope": None},
+    {"bundle_id": None},
+    {"bundle_id": ""},
+])
+def test_a_bundle_is_platform_scope_only_and_names_its_id(change):
+    """Design section 1.4.2: a bundle image is built once per deployment, so a
+    bundle record is never a workspace's, and a workspace-scope one has no bytes
+    any MAC could cover."""
+    with pytest.raises(SpecNotCanonical):
+        canonical_plugin_record("bundle", {**BUNDLE, **change})
 
 
 # --------------------------------------------------------------------------
