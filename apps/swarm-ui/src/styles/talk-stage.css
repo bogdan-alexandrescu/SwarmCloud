@@ -114,6 +114,26 @@
 .vts-rb-done.is-expired { color: var(--text-dim); font-weight: 500; }
 .vts-hold-problem { margin: 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); overflow-wrap: anywhere; }
 
+/* ---- the heads-up edge's own lines (the owner's pick of 8 November 2026) ------
+   The speech machine's boot is one row of ticks, evenly spaced: a done phase is
+   its grey check (healthy is quiet, never a hue), the current one its words
+   after an open ring in the focus colour, so the two differ in shape as well
+   as in colour. The no-machine notice is its own boxed line on the opaque
+   surface, its close button at the line's end. */
+.vt-boot { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.vt-boot-step { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.vt-boot-step.is-done { flex: none; }
+.vt-boot-step.is-now { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.vt-boot-step.is-now::before {
+  content: ""; flex: none; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid var(--info); border-radius: 50%;
+}
+.vt-fallback {
+  margin: 0; flex-basis: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 4px 4px 10px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere;
+  border: 1px solid var(--line); border-left: 3px solid var(--info); border-radius: var(--r-card); background: var(--surface);
+}
+.vt-fallback > button { flex: none; margin-left: auto; }
+
 /* ---- phone: one column, nothing pans --------------------------------------- */
 @media (max-width: 760px) {
   .vt.has-stage { grid-template-areas: "hud" "stage" "core" "subs" "cards" "mic"; }
