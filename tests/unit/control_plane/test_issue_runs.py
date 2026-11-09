@@ -50,11 +50,6 @@ from swarm_api.validation import IssueRef, PullRequestReference, issue_run_mark_
 from . import forge_fakes
 from .conftest import api_settings, auth_header
 
-# Written against the re-review a workflow merging on its review's verdict
-# got while `fix-loop` shipped unavailable; available since contract
-# request 151, so this module holds that path with the profile off.
-pytestmark = pytest.mark.usefixtures("fix_loop_off")
-
 REF = "example-org/widgets#42"
 BUCKET = "swarm-artifacts-example-project"
 

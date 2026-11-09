@@ -16,8 +16,8 @@ NOT_YET, and the spec declares no `fix-loop` step, swarm-api appends:
 
 Unchanged: a spec's own loop, `max_rounds` included; a workflow that does not
 merge on the verdict; a fix gated on other verdicts; `direct-pr` and
-`collect`. While the `fix-loop` profile is unavailable (it shipped so, contract
-request 124, until request 151) the re-review is still appended
+`collect`. While the `fix-loop` profile ships unavailable (contract request
+124) the re-review is still appended
 (tests/unit/control_plane/test_merge_verdict_workflows.py holds that shape),
 because an appended loop would refuse every such workflow as disabled.
 
@@ -46,17 +46,9 @@ REPO = "https://github.com/octo-org/widget-shop.git"
 
 @pytest.fixture
 def loop_enabled(monkeypatch):
-    """`fix-loop`, available, as it is since contract request 151."""
+    """`fix-loop`, available for this test only, as it will be once its acceptance run passes."""
     monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
                         replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=True))
-
-
-@pytest.fixture
-def loop_disabled(monkeypatch):
-    """`fix-loop` unavailable for this test, as it shipped until contract request 151."""
-    monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
-                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=False,
-                                disabled_reason="fix-loop is not available (patched off for this test)"))
 
 
 @pytest.fixture(autouse=True)
@@ -249,7 +241,7 @@ def test_direct_pr_and_collect_are_refused_as_before(client, db, loop_enabled, s
     assert FIX_LOOP_PROFILE not in response.text
 
 
-def test_while_the_profile_is_unavailable_the_rereview_is_appended(client, db, loop_disabled):
+def test_while_the_profile_is_unavailable_the_rereview_is_appended(client, db):
     assert not RUNNER_PROFILES[FIX_LOOP_PROFILE].available
     response = _post(client, _gated(metadata={"merge": "on_merge_verdict"}))
     assert response.status_code == 201, response.text
