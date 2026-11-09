@@ -42,6 +42,8 @@ import { join } from 'node:path'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cascade } from './cssgate'
+import { colour, contrast, over, probe, resolveSheet, resolveVars, tokenTables, FLOORS, type RGBA } from './spaceprobe'
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 // The deployment's engine as Settings reads it: GPT-Live unless a test names another; 'pending' is a read not answered yet.
@@ -864,4 +866,125 @@ describe('the Talk pane on our own speech', () => {
     expect(FakePeer.all).toHaveLength(1)
     expect(FakeSocket.all).toHaveLength(0)
   })
+
+  // THE BOOT ROW AND THE NOTICE HAVE STYLES OF THEIR OWN (the owner's pick of
+  // 8 November 2026, part of #2688): the boot is `vt-boot`, one wrapping row
+  // with one gap between every step, a done step its grey check and the current
+  // one its words after an open ring; the no-machine notice is `vt-fallback`,
+  // a boxed line on the opaque surface with its close button pushed to the end.
+  // Weighed with the shipped sheets in load order (talk-stage.css before
+  // talk-pane.css, styles.css last) at 1440 and at 390, in both themes.
+  //
+  // MUTATIONS: give the boot back the status line's class; let the row scroll
+  // or fix it wider than the phone; drop the current step's ring; draw the
+  // notice as plain dim prose; move the close button off the line's end; put a
+  // literal colour in either rule.
+  describe('the boot row and the notice draw from talk-stage.css', () => {
+    const styles = join(__dirname, '..', 'styles')
+    const STAGE = readFileSync(join(styles, 'talk-stage.css'), 'utf8')
+    const SHEETS = [STAGE, readFileSync(join(styles, 'talk-pane.css'), 'utf8'), readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')].join('\n')
+    const TOKENS = tokenTables(SHEETS)
+    const THEMES = ['dark', 'light'] as const
+    const won = (el: Element, prop: string | readonly string[], width: number, pseudo: string | null = null) =>
+      cascade(SHEETS, el, prop, { width }, pseudo).winner?.value ?? null
+    /** A declared colour in `theme`, opaque over `ground` when it has alpha. */
+    const ink = (value: string | null, theme: (typeof THEMES)[number], ground?: RGBA): RGBA => {
+      const c = colour(resolveVars(value ?? '', TOKENS[theme]))
+      if (c === null) throw new Error(`no colour in ${value}`)
+      return ground === undefined ? c : over(c, ground)
+    }
+    const fixedPx = (v: string | null) => (v === null ? 0 : [...v.replace(/minmax\([^)]*\)/g, '').matchAll(/(\d+(?:\.\d+)?)px/g)].reduce((n, m) => n + parseFloat(m[1]!), 0))
+    const tooWide = (root: Element, width: number) =>
+      [root, ...root.querySelectorAll('*')].flatMap((el) =>
+        ['width', 'min-width', 'flex-basis'].filter((p) => fixedPx(won(el, p, width)) > 390 - 2 * 18).map((p) => `${el.className} ${p}`),
+      )
+
+    it('the new rules name console tokens, never a literal colour', () => {
+      const rules = STAGE.slice(STAGE.indexOf('.vt-boot {'), STAGE.indexOf('.vt-fallback > button')).split('\n')
+      expect(rules.filter((l) => /\.vt-(boot|fallback)/.test(l)).length).toBeGreaterThanOrEqual(5)
+      for (const r of rules) expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
+    })
+
+    it('draws the boot as one even row of ticks, the current step set apart by its ring', async () => {
+      serveOwn({ mode: 'speech' })
+      render(<TalkPane />)
+      await startOwn()
+      const ws = FakeSocket.last
+      await ws.open()
+      await ws.json({ t: 'status', state: 'starting machine' })
+      await ws.json({ t: 'status', state: 'updating speech server' })
+      await ws.json({ t: 'status', state: 'fetching model speech-small' })
+      const row = screen.getByRole('list', { name: 'Starting' })
+      expect(row.className).toBe('vt-boot')
+      const steps = within(row).getAllByRole('listitem')
+      expect(steps.map((s) => s.className)).toEqual(['vt-boot-step is-done', 'vt-boot-step is-done', 'vt-boot-step is-now'])
+      const now = steps[2]!
+      const ground = (theme: (typeof THEMES)[number]) => ink(won(row.closest('.vt')!, ['background', 'background-color'], 1440), theme)
+      for (const width of [1440, 390]) {
+        expect(won(row, 'display', width)).toBe('inline-flex')
+        // One row that wraps on a phone, never scrolls, with one gap between every step.
+        expect(won(row, 'flex-wrap', width)).toBe('wrap')
+        expect(won(row, ['overflow', 'overflow-x'], width)).toBeNull()
+        expect(won(row, ['gap', 'column-gap'], width)).toMatch(/^(\d+px )?\d+px$/)
+        for (const s of steps) expect([won(s, ['gap', 'column-gap', 'margin', 'margin-left', 'margin-right', 'padding'], width)]).toEqual(['6px'])
+        // The current step: its words after an open ring, the done ones a check alone.
+        expect(won(now, 'content', width, 'before')).toBe('""')
+        expect(won(now, ['border', 'border-color'], width, 'before')).toBe('2px solid var(--info)')
+        expect(won(steps[0]!, 'content', width, 'before')).toBeNull()
+        expect(steps[0]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('succeeded')
+        expect(tooWide(row, width)).toEqual([])
+      }
+      for (const theme of THEMES) {
+        const bg = ground(theme)
+        // Words at 4.5:1, a check and a ring (non-text) at 3:1, in both themes.
+        expect(contrast(ink(won(now, 'color', 1440), theme, bg), bg), `${theme} current words`).toBeGreaterThanOrEqual(4.5)
+        const tick = steps[0]!.querySelector('.sk-st')!
+        expect(contrast(ink(won(tick, 'color', 1440), theme, bg), bg), `${theme} done check`).toBeGreaterThanOrEqual(3)
+        expect(contrast(ink('var(--info)', theme, bg), bg), `${theme} current ring`).toBeGreaterThanOrEqual(3)
+      }
+    })
+
+    it('draws the notice as its own boxed line, its close button at the end', async () => {
+      serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: 'us-central1-a' } })
+      render(
+        <div className="app">
+          <TalkPane />
+        </div>,
+      )
+      await startOwn()
+      const line = screen.getByText('No L4 free in us-central1-a.')
+      expect(line.className).toBe('vt-fallback')
+      const close = within(line).getByRole('button', { name: 'Dismiss' })
+      for (const width of [1440, 390]) {
+        expect(won(line, 'display', width)).toBe('flex')
+        expect(won(line, 'flex-basis', width)).toBe('100%')
+        expect(won(line, 'background', width)).toBe('var(--surface)')
+        expect(won(line, 'border', width)).toBe('1px solid var(--line)')
+        expect(won(close, 'margin-left', width)).toBe('auto')
+        expect(won(close, 'flex', width)).toBe('none')
+        expect(won(line, 'overflow-wrap', width)).toBe('anywhere')
+        expect(tooWide(line, width)).toEqual([])
+      }
+      for (const theme of THEMES) {
+        const bg = ink(won(line, 'background', 1440), theme)
+        expect(contrast(ink(won(line, 'color', 1440), theme, bg), bg), `${theme} notice words`).toBeGreaterThanOrEqual(4.5)
+        expect(contrast(ink('var(--info)', theme, bg), bg), `${theme} notice edge`).toBeGreaterThanOrEqual(3)
+        // And the sweep's own probe over the box, its close button included.
+        const style = document.createElement('style')
+        style.textContent = resolveSheet(`${SHEETS}\nbody { background: var(--bg); }`, theme)
+        document.head.appendChild(style)
+        try {
+          const report = probe(line.parentElement!, [line, close])
+          // The box's own border is among what it measured, not skipped.
+          expect(report.bordered).toContain(line)
+          expect(report.findings.filter((f) => f.kind === 'divider-under-floor').map((f) => `${theme} ${f.where} ${f.measured} ${f.detail}`)).toEqual([])
+          expect(report.unresolved).toEqual([])
+        } finally {
+          style.remove()
+        }
+      }
+      expect(FLOORS.dividerContrast).toBeGreaterThan(1)
+    })
+  })
+
 })
