@@ -421,6 +421,27 @@ def test_the_route_falls_back_to_text_when_no_speech_machine_is_deployed():
     assert [c.mode for c in rig.voice.starts] == [vs.MODE_TEXT]
 
 
+def test_a_deployment_that_holds_the_template_back_runs_no_own_speech():
+    # voice_speech.template = false: the release renders every SWARM_SPEECH_*
+    # but an empty SWARM_SPEECH_TEMPLATE. Own speech fails closed: the start
+    # is text with speech_not_deployed ("own speech is not set up on this
+    # deployment"), and no Compute call is made, a create least of all.
+    config = sm.SpeechConfig.from_env({
+        "SWARM_SPEECH_PROJECT": "proj", "SWARM_SPEECH_ZONES": ",".join(CONFIG.zones),
+        "SWARM_SPEECH_INSTANCE": "swarm-speech-", "SWARM_SPEECH_ADDR": "10.40.0.9",
+        "SWARM_SPEECH_TEMPLATE": ""})
+    assert config.address and config.zones and config.instance and config.project
+    assert not config.enabled
+    rig = Rig()
+    client = _route_app(rig, FakePool(""), speech=config)
+    started = client.post("/v1/voice/sessions", json={})
+    assert started.status_code == 200, started.text
+    assert started.json()["mode"] == vs.MODE_TEXT
+    assert started.json()["fallback"] == {"from": cat.ENGINE_OWN, "reason": vs.FALLBACK_NOT_DEPLOYED}
+    assert [c.mode for c in rig.voice.starts] == [vs.MODE_TEXT]
+    assert rig.compute.calls == []
+
+
 def test_the_voice_router_mounts_the_speech_routes():
     paths = {getattr(route, "path", None) for route in rv.router.routes}
     assert {rvs.AUDIO_ROUTE, rvs.SWEEP_ROUTE} <= paths
