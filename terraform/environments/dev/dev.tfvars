@@ -81,13 +81,15 @@ gke_enable_fqdn_network_policy = true
 voice_it = "on"
 
 # Voice it's own speech engine (terraform/infra/voice_speech.tf): ON since
-# 2026-11-08 (the owner's plan for finishing Voice it). Its one L4 machine is
-# made STOPPED, with its firewall pair and grants; swarm-api starts it for a
-# session and stops it after. The image is pinned by name, the newest common
-# CUDA image on Ubuntu 22.04 with an NVIDIA driver of 580 or later, as the
-# installer picks it (docs/design/voice-it-own-speech.md section 5).
+# 2026-11-08 (the owner's plan for finishing Voice it). Its template, address,
+# firewall pair and grants are made here; swarm-api creates or starts its one
+# L4 machine for a session, in the first of `zones` with a free L4, then the
+# next (owner, 2026-11-09), and stops it after. The image is pinned by name,
+# the newest common CUDA image on Ubuntu 22.04 with an NVIDIA driver of 580 or
+# later, as the installer picks it (docs/design/voice-it-own-speech.md section 5).
 voice_speech = {
   enabled = true
+  zones   = ["us-central1-a", "us-central1-b", "us-central1-c"]
   image   = "projects/deeplearning-platform-release/global/images/common-cu129-ubuntu-2204-nvidia-580-v20261029"
 }
 

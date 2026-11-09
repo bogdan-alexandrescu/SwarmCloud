@@ -1,33 +1,50 @@
-# Voice it's own speech engine: the speech machine exists, stopped, on
-# swarm-vpc (docs/design/voice-it-own-speech.md §3.2, §5, §6 and §12.3; lane
-# L1 of its build plan, part of #2688).
+# Voice it's own speech engine: everything the speech machine needs on
+# swarm-vpc, and the template swarm-api makes it from
+# (docs/design/voice-it-own-speech.md §3.2, §5, §6 and §12.3; lane L1 of its
+# build plan, part of #2688; zone fallback, owner, 2026-11-09).
 #
 # What this file makes, and only this, all behind one switch:
 #
-#   * the speech machine: ONE g2-standard-4 (one NVIDIA L4) in ONE zone,
-#     on-demand, made STOPPED. swarm-api starts it for a Voice it session and
-#     stops it after (swarm_api/voice/speech_machine.py, lane L4);
+#   * the speech machine's regional instance TEMPLATE: one g2-standard-4 (one
+#     NVIDIA L4), on-demand, with the pinned image, the speech account, the
+#     network tag, the reserved address and the metadata the boot reads.
+#     NOT the machine itself: swarm-api creates it from the template, or
+#     starts it, for a Voice it session's Start and stops it after
+#     (swarm_api/voice/speech_machine.py);
 #   * its reserved internal address on the subnet, so swarm-api's
-#     SWARM_SPEECH_ADDR never moves;
+#     SWARM_SPEECH_ADDR never moves, whichever zone the machine is in;
 #   * a firewall pair on its tag: TCP 8080 from the subnet, everything else
 #     refused, ahead of allow_internal;
-#   * swarm-api's operator role on that one instance (row I1);
+#   * NOT swarm-api's operator role (row I1): terraform/bootstrap grants it,
+#     on the project, conditioned to the speech machine (see I1 below);
 #   * the machine account's three grants: its own image, its own logs, its own
 #     metrics (row I3 with the owner's answer 2);
 #   * the TTL policy that deletes the telemetry's 5-second samples.
 #
-# ONE ZONE, ONE MACHINE (owner, 2026-11-05, answer 1). A zone with no free L4
-# makes the session fall back to text mode; there is no second machine to try.
+# ZONES IN ORDER, ONE MACHINE (owner, 2026-11-09: "deploys in a if capacity
+# available, if not checks B and then C", revising 2026-11-05's one zone, one
+# machine). voice_speech.zones lists the region's L4 zones in the order
+# swarm-api tries them. A Start with no machine creates it in the first zone
+# with a free L4; a Start of a stopped machine whose zone has none deletes it
+# and creates it in the next zone; after the last zone the session falls back
+# to text mode. Never two machines: there is one name per zone,
+# `<name_prefix>-speech-<zone letter>`, and swarm-api keeps one.
+#
+# A RELEASE NEVER CREATES THE MACHINE. Until 2026-11-09 this file made the
+# instance, and a zone with no free L4 failed the release's whole apply. The
+# instance left Terraform through the `removed` block below, with
+# destroy = false: a machine a release made before stays where it is, and
+# swarm-api finds it by its name.
 #
 # ON-DEMAND (invariant 6: Spot is off platform-wide). GPU machines cannot
 # live-migrate, so a host event TERMINATEs it; automatic_restart = false keeps
 # it stopped after one, never running with no session to pay for.
 #
-# STOPPED, AND swarm-api OWNS ITS STATE. desired_status = "TERMINATED" makes
-# Terraform create it and stop it. From then on swarm-api starts and stops it,
-# and at each start applies Settings' machine type, the release's speech
-# server digest and the models (§4.2 step 1, §5.3, §11.4); ignore_changes keeps
-# the next plan from undoing any of that or stopping a machine mid-session.
+# swarm-api OWNS ITS STATE. At each start it applies Settings' machine type,
+# the release's speech server digest and the models (§4.2 step 1, §5.3,
+# §11.4): on a stopped machine with setMachineType and setMetadata, on a new
+# one in the create itself. The template's metadata leaves the image and the
+# models empty, so a new digest never re-plans anything here.
 #
 # THE IDENTITY CHECK IS THE REAL GATE (§3.2). Tenant Cloud Run Jobs on Direct
 # VPC egress also take addresses in the subnet, so the firewall's source range
@@ -38,15 +55,14 @@
 #
 # THE ACCOUNT. `swarm-speech` is made by terraform/bootstrap
 # (platform_service_accounts.tf) with its operator role and the two actAs
-# grants on it (the release deployer's, to attach it here; swarm-api's, row
-# I2). This root reads it and never makes it. Both roots take the account id
-# from modules/service_account_ids (speech_id) and the role id from
-# modules/custom_role_ids (speech_operator).
+# grants on it (the release deployer's, to attach it to the template;
+# swarm-api's, row I2, to create the machine as it). This root reads it and
+# never makes it. Both roots take the account id from
+# modules/service_account_ids (speech_id).
 #
-# OFF until both `voice_speech.enabled` and `voice_it = "on"`. Every
-# environment's tfvars leaves it off, so merging this makes nothing. Turning it
-# on is an IAM change, so the release that carries it waits at the IAM gate for
-# the owner.
+# OFF until both `voice_speech.enabled` and `voice_it = "on"`. Turning it on is
+# an IAM change, so the release that carries it waits at the IAM gate for the
+# owner.
 
 locals {
   voice_speech_on = var.voice_speech.enabled && var.voice_it == "on"
@@ -60,31 +76,25 @@ locals {
   # The firewall pair's target, and the machine's only network tag.
   speech_tag = "${var.name_prefix}-speech"
 
-  # "us-central1-a" -> "a": the machine is `<prefix>-speech-a`, one per zone.
-  speech_zone_suffix = element(split("-", var.voice_speech.zone), 2)
+  # The zones swarm-api tries, in order (owner, 2026-11-09). `zone`, the
+  # one-zone form, is read as a one-zone list for one release; neither set is
+  # the region's a, b and c.
+  speech_zones = (
+    length(var.voice_speech.zones) > 0 ? var.voice_speech.zones :
+    var.voice_speech.zone != null ? [var.voice_speech.zone] :
+    ["${var.region}-a", "${var.region}-b", "${var.region}-c"]
+  )
 
-  # The machine's name up to its zone letter, and so its boot disk's, which
-  # takes the instance's name. terraform/bootstrap/deployer_conditions.tf
-  # grants the release deployer the instance and disk verbs on names that start
-  # with exactly this (deployer_speech_machine_prefix): rename one, rename both
+  # The machine's name up to its zone letter (swarm-api names it
+  # `<prefix>-speech-<letter>` in the zone it creates it in), and so its boot
+  # disk's, which takes the instance's name; the template's name starts with
+  # it too. terraform/bootstrap/deployer_conditions.tf grants the release
+  # deployer its verbs on names that start with exactly this
+  # (deployer_speech_machine_prefix): rename one, rename both
   # (tests/unit/terraform/test_voice_speech.py holds them equal).
   speech_machine_prefix = "${var.name_prefix}-speech-"
 
   speech_labels = merge(local.labels, { "component" = "voice-speech" })
-
-  # The custom role terraform/bootstrap defines (platform_service_accounts.tf,
-  # google_project_iam_custom_role.speech_operator), by the name both roots
-  # read from modules/custom_role_ids. A plain string: this root may not read a
-  # role (#79).
-  speech_operator_role = module.speech_role_ids.names["speech_operator"]
-}
-
-# The custom role ids both roots spell from one place. No resource and no data
-# source: plain strings, known at plan.
-module "speech_role_ids" {
-  source = "../modules/custom_role_ids"
-
-  project_id = var.project_id
 }
 
 # The account terraform/bootstrap made. A plan against a project whose
@@ -165,38 +175,40 @@ resource "google_compute_firewall" "deny_speech_other" {
   description = "managed-by=swarm-terraform; refuses all other ingress to the speech machine, ahead of allow-internal"
 }
 
-# The machine (§5.1).
-resource "google_compute_instance" "speech" {
+# The machine (§5.1), as a regional template: everything a machine created
+# from it needs, in whichever zone of the region it is created. Templates are
+# immutable, so a change makes a new one under a new name (name_prefix) before
+# the old is deleted; swarm-api reads the current one's name from
+# SWARM_SPEECH_TEMPLATE, which the same apply rewrites.
+resource "google_compute_region_instance_template" "speech" {
   # checkov:skip=CKV_GCP_38:A customer-supplied key is raw key material in the Terraform config and state, and no secret goes into Terraform (CLAUDE.md). The disk holds the OS, the speech server image and public model weights, never audio or tenant data; it is encrypted with Google-managed keys.
   count = local.voice_speech_on ? 1 : 0
 
   project      = var.project_id
-  zone         = var.voice_speech.zone
-  name         = "${local.speech_machine_prefix}${local.speech_zone_suffix}"
+  region       = var.region
+  name_prefix  = local.speech_machine_prefix
   machine_type = var.voice_speech.machine_type
-  description  = "Voice it's speech machine: speech-to-text and text-to-speech on one L4. Kept stopped; swarm-api starts it for a session."
+  description  = "Voice it's speech machine: speech-to-text and text-to-speech on one L4. swarm-api creates it from this template for a session."
+
+  instance_description = "Voice it's speech machine: speech-to-text and text-to-speech on one L4. Kept stopped; swarm-api starts it for a session."
 
   # A g2 type brings its L4 with it: no guest_accelerator block.
   tags   = [local.speech_tag]
   labels = local.speech_labels
 
-  # Created, then stopped. swarm-api starts and stops it from here on.
-  desired_status            = "TERMINATED"
-  allow_stopping_for_update = true
-  deletion_protection       = var.deletion_protection
-
-  boot_disk {
-    initialize_params {
-      image  = var.voice_speech.image
-      size   = var.voice_speech.disk_gb
-      type   = "pd-balanced"
-      labels = local.speech_labels
-    }
+  disk {
+    source_image = var.voice_speech.image
+    disk_size_gb = var.voice_speech.disk_gb
+    disk_type    = "pd-balanced"
+    boot         = true
+    auto_delete  = true
+    labels       = local.speech_labels
   }
 
   # On swarm-vpc's subnet at the reserved address, with NO external IP (no
   # access_config): it pulls its image and the models' public weights through
-  # the subnet's Cloud NAT.
+  # the subnet's Cloud NAT. The address is regional, so a machine in any
+  # listed zone takes it; there is one machine at a time to take it.
   network_interface {
     subnetwork = module.network.subnetwork_id
     network_ip = google_compute_address.speech[0].address
@@ -225,10 +237,10 @@ resource "google_compute_instance" "speech" {
   }
 
   # Names and numbers only, never a secret. The image and the models are
-  # empty here: swarm-api writes them at the first start and rewrites them at
+  # empty here: swarm-api writes them into the create, and rewrites them at
   # any start where they changed (§4.2 step 1, §5.3) -- the release's
-  # swarm-speech digest reaches it as SWARM_SPEECH_IMAGE (lanes L3 and L4),
-  # never through this root, so a new digest never re-plans a stopped machine.
+  # swarm-speech digest reaches it as SWARM_SPEECH_IMAGE, never through this
+  # root, so a new digest never re-plans the template.
   metadata = {
     "swarm-speech-image"        = ""
     "swarm-speech-models"       = jsonencode({})
@@ -239,13 +251,7 @@ resource "google_compute_instance" "speech" {
   }
 
   lifecycle {
-    ignore_changes = [
-      desired_status,
-      machine_type,
-      metadata["swarm-speech-image"],
-      metadata["swarm-speech-models"],
-      metadata["swarm-speech-idle-minutes"],
-    ]
+    create_before_destroy = true
   }
 
   depends_on = [
@@ -254,21 +260,30 @@ resource "google_compute_instance" "speech" {
   ]
 }
 
+# The machine a release made before 2026-11-09 leaves Terraform's state and
+# stays where it is: swarm-api finds it by its name in its zone and starts it,
+# moves it or keeps it. destroy = false, so no plan ever deletes a machine.
+removed {
+  from = google_compute_instance.speech
+
+  lifecycle {
+    destroy = false
+  }
+}
+
 # --- IAM (§6; the owner's answer 2) ------------------------------------------
 #
-# I1. swarm-api starts, stops, reads and applies Settings to THIS instance,
-# and to no other: an instance-level member, never a project role. The role is
-# swarmSpeechOperator (get, start, stop, setMachineType, setMetadata,
-# getSerialPortOutput), defined by terraform/bootstrap.
-resource "google_compute_instance_iam_member" "api_speech_operator" {
-  count = local.voice_speech_on ? 1 : 0
-
-  project       = var.project_id
-  zone          = var.voice_speech.zone
-  instance_name = google_compute_instance.speech[0].name
-  role          = local.speech_operator_role
-  member        = module.iam.service_account_members["swarm-api"]
-}
+# I1. swarm-api creates, starts, stops, reads, deletes and applies Settings to
+# the speech machine, and to no other VM: swarmSpeechOperator, on the project
+# but conditioned to the machine's instance and disk names in a zone of the
+# region, its template, its address and its subnet. That grant is made by
+# terraform/bootstrap (speech_operator_grant.tf), which the owner applies,
+# NOT here: a project-level grant from this root would put the role on the
+# release deployer's grantable list, and hasOnly() limits which roles CI may
+# grant, never to whom or under what condition -- CI could then grant it to
+# anyone unconditioned, over every VM in a shared project. Until 2026-11-09
+# this root granted it on the one instance it made; that instance-level grant
+# is gone with the instance (the `removed` block above).
 
 # I3. The machine pulls its own speech server image: reader on the platform's
 # repository only.
@@ -340,8 +355,17 @@ check "voice_speech_needs_voice_it" {
 
 check "voice_speech_zone_in_region" {
   assert {
-    condition     = !local.voice_speech_on || startswith(var.voice_speech.zone, "${var.region}-")
-    error_message = "voice_speech.zone is not in var.region: the machine must sit on the region's subnet."
+    condition     = !local.voice_speech_on || alltrue([for z in local.speech_zones : startswith(z, "${var.region}-")])
+    error_message = "voice_speech.zones names a zone that is not in var.region: the machine must sit on the region's subnet."
+  }
+}
+
+# The one-zone form still plans, for one release (owner, 2026-11-09); this says
+# what to write instead.
+check "voice_speech_zone_is_replaced_by_zones" {
+  assert {
+    condition     = var.voice_speech.zone == null
+    error_message = "voice_speech.zone is replaced by voice_speech.zones, the ordered list of the region's L4 zones; it is read as a one-zone list for this release only."
   }
 }
 
@@ -349,8 +373,9 @@ output "voice_speech" {
   description = "Voice it's speech machine: what swarm-api needs to run it (SWARM_SPEECH_*). Names only; never a value."
   value = {
     enabled         = local.voice_speech_on
-    instance        = local.voice_speech_on ? google_compute_instance.speech[0].name : null
-    zone            = local.voice_speech_on ? var.voice_speech.zone : null
+    machine_prefix  = local.voice_speech_on ? local.speech_machine_prefix : null
+    template        = local.voice_speech_on ? google_compute_region_instance_template.speech[0].id : null
+    zones           = local.voice_speech_on ? local.speech_zones : null
     address         = local.voice_speech_on ? google_compute_address.speech[0].address : null
     port            = 8080
     audience        = "swarm-speech"

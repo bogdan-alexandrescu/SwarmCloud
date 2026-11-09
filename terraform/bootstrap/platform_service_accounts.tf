@@ -143,30 +143,56 @@ resource "google_service_account" "speech" {
   description  = "managed-by=swarm-terraform; Voice it's speech machine (one stopped L4 VM). No project roles here; terraform/infra/voice_speech.tf grants its image read, log write and metric write."
 }
 
-# Row I1's role: what swarm-api may do to the speech machine, granted on that
-# one instance by voice_speech.tf (google_compute_instance_iam_member), never
-# on the project. Start and stop for a session; get to poll RUNNING and
-# TERMINATED; setMachineType and setMetadata to apply Settings and a new
-# server digest while it is stopped (§4.2 step 1, §11.4); getSerialPortOutput
-# to read a failed boot. No create, no delete, no setIamPolicy, no disk or
-# network permission. Defined here because terraform/infra may not define or
-# read a role (#79); its id is modules/custom_role_ids' speech_operator, the
-# string voice_speech.tf binds.
+# Row I1's role: what swarm-api may do to the speech machine, granted on the
+# project by speech_operator_grant.tf, conditioned to that machine's names,
+# never unconditioned. Start and stop for a session; get to poll RUNNING and
+# TERMINATED and to find the machine in each listed zone; setMachineType and
+# setMetadata to apply Settings and a new server digest while it is stopped
+# (§4.2 step 1, §11.4); getSerialPortOutput to read a failed boot. Since
+# 2026-11-09 (owner: the machine is created and started in the first zone of
+# voice_speech.zones with a free L4, then the next) also create and delete:
+#
+#   instances.create, disks.create        a create from the template, and the
+#   instanceTemplates.get, .useReadOnly   boot disk it makes; the template read
+#                                         for its metadata, and used
+#   instances.setLabels, .setTags,        the fields a create sets on the new
+#   .setServiceAccount, disks.setLabels   instance and its disk (setMetadata is
+#                                         above; actAs on swarm-speech is row I2)
+#   subnetworks.use, addresses.useInternal  the subnet and reserved address the
+#                                         template's interface names
+#   instances.delete, disks.delete        a stopped machine moved out of a zone
+#                                         with no free L4, and its boot disk
+#
+# No setIamPolicy, no list, no image, network or firewall change. Defined here
+# because terraform/infra may not define or read a role (#79); its id is
+# modules/custom_role_ids' speech_operator.
 resource "google_project_iam_custom_role" "speech_operator" {
   project = var.project_id
   role_id = module.custom_role_ids.ids["speech_operator"]
   title   = "Swarm Speech Operator"
 
-  description = "managed-by=swarm-terraform; swarm-api starts, stops, reads and applies settings to Voice it's speech machine. Granted on that instance only."
+  description = "managed-by=swarm-terraform; swarm-api creates, starts, stops, reads, deletes and applies settings to Voice it's speech machine. Granted conditioned to that machine's names only."
   stage       = "GA"
 
   permissions = [
+    "compute.addresses.useInternal",
+    "compute.disks.create",
+    "compute.disks.delete",
+    "compute.disks.setLabels",
+    "compute.instanceTemplates.get",
+    "compute.instanceTemplates.useReadOnly",
+    "compute.instances.create",
+    "compute.instances.delete",
     "compute.instances.get",
     "compute.instances.getSerialPortOutput",
+    "compute.instances.setLabels",
     "compute.instances.setMachineType",
     "compute.instances.setMetadata",
+    "compute.instances.setServiceAccount",
+    "compute.instances.setTags",
     "compute.instances.start",
     "compute.instances.stop",
+    "compute.subnetworks.use",
   ]
 }
 
@@ -181,13 +207,13 @@ resource "google_service_account_iam_member" "deployer_acts_as_speech" {
   member             = "serviceAccount:${google_service_account.deployer[0].email}"
 }
 
-# Row I2: swarm-api acts as swarm-speech. Compute checks actAs on the attached
-# account for setMetadata on a machine that runs as one (a metadata write can
-# run code as that account); swarm-api writes the image, models and idle
-# minutes there at each start. The account holds only its three write-or-read
-# grants, so this reaches no more than those. If the machine lane's
-# measurement M3 shows start and setMetadata pass without it, the row is
-# dropped.
+# Row I2: swarm-api acts as swarm-speech, on this one account, never
+# project-wide. Compute checks actAs on the attached account when swarm-api
+# creates the machine from its template (since 2026-11-09) and for setMetadata
+# on a machine that runs as one (a metadata write can run code as that
+# account); swarm-api writes the image, models and idle minutes there at each
+# start. The account holds only its three write-or-read grants, so this
+# reaches no more than those. The create needs it, so the row stays.
 resource "google_service_account_iam_member" "api_acts_as_speech" {
   service_account_id = google_service_account.speech.name
   role               = "roles/iam.serviceAccountUser"

@@ -1,10 +1,12 @@
 # Lane L11 of Voice it's own speech engine (docs/design/voice-it-own-speech.md
 # sections 14 and 15, "The installer offers own speech"; part of #2688). Stage 0
 # asks, beside Voice it, whether to add the engine (one stopped L4 machine,
-# with the design's cost line), default no; for a yes, stage 1 picks the first
-# of the region's zones offering the L4, waits for an NVIDIA_L4_GPUS quota of
-# at least 1 and pins the newest Ubuntu 22.04 CUDA Deep Learning VM image by
-# name. Every infra pass then renders voice_speech.enabled, .zone and .image
+# with the design's cost line), default no; for a yes, stage 1 records every
+# zone of the region offering the L4, in letter order (swarm-api starts the
+# machine in the first of them with a free L4, then the next), waits for an
+# NVIDIA_L4_GPUS quota of at least 1 and pins the newest Ubuntu 22.04 CUDA Deep
+# Learning VM image by name. Every infra pass then renders
+# voice_speech.enabled, .zones and .image
 # (swarm_install/tfvars.py voice_speech); the machine itself, its address,
 # firewall pair and grants are voice-speech-machine.yaml's entries, made by
 # infra.pass-1 once voice_it is "on" as well. No secret slot: the engine reads
@@ -17,9 +19,9 @@ entries:
   stage: 0
   provider: human-in-terminal
   check: 'state.outputs.voice_speech is {"enabled": true or false}'
-  apply: 'infra.voice-speech asks "Voice it''s own speech engine (one stopped L4 machine in <zone>; about $0.71
-    an hour while used, $15 a month for its disk). Add it? Optional, y or n" with the default n, the zone read
-    when the project already has Compute Engine on, and records the answer; an empty answer is no'
+  apply: 'infra.voice-speech asks "Voice it''s own speech engine (one stopped L4 machine in <where>; about $0.71
+    an hour while used, $15 a month for its disk). Add it? Optional, y or n" with the default n, <where> naming the
+    first of the region''s L4 zones with a free L4, read when the project already has Compute Engine on, and records the answer; an empty answer is no'
   verify: infra.voice-speech re-check is MET
   explain: the speech machine costs money while it runs and its disk costs money while it is stopped, so a
     deployment has it only when the person says yes
@@ -35,15 +37,17 @@ entries:
   scope: core
   stage: 1
   provider: engine
-  check: 'for a yes, state.outputs.voice_speech has zone (one zone of the region, offering nvidia-l4) and image
+  check: 'for a yes, state.outputs.voice_speech has zones (the ordered list of the region''s zones offering
+    nvidia-l4, each one zone of the region, none twice) and image
     (projects/deeplearning-platform-release/global/images/<name>); MET for a no'
-  apply: infra.voice-speech-zone reads acceleratorTypes.aggregatedList for nvidia-l4 and takes the first zone of
-    the region; reads regions.get's NVIDIA_L4_GPUS and, below 1, opens the Quotas page on that metric and waits
+  apply: infra.voice-speech-zone reads acceleratorTypes.aggregatedList for nvidia-l4 and records every zone of
+    the region offering it, sorted by name, as zones; reads regions.get's NVIDIA_L4_GPUS and, below 1, opens the Quotas page on that metric and waits
     for the increase; lists deeplearning-platform-release's images and pins the newest READY, undeprecated
     common-cu*-ubuntu-2204 one by name. A region with no L4 zone records the choice off and says why
   verify: infra.voice-speech-zone re-check is MET
   explain: a new project's accelerators and quotas can be read only once stage 1 has made it and enabled Compute
-    Engine; one zone, one machine (owner, 2026-11-05), and an image by name so a plan never replaces the stopped
+    Engine; one machine at a time, started in the first of these zones with a free L4, then the next
+    (owner, 2026-11-09), and an image by name so a plan never replaces the stopped
     machine
   guards: reads only; never starts, stops or makes the machine
   secret_entry: null

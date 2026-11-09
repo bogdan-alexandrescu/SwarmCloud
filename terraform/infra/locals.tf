@@ -1227,9 +1227,11 @@ locals {
       # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
       # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
       # deployed", and no speech route touches Compute.
-      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
-      #     stops (one zone, one machine; a stock-out falls back to text and
-      #     never tries a second zone).
+      #   _PROJECT/_ZONES/_INSTANCE/_TEMPLATE: the zones swarm-api creates
+      #     or starts the one machine in, in order (owner, 2026-11-09: the
+      #     first with a free L4, then the next; after the last, text), the
+      #     machine's name up to its zone letter, and the regional template
+      #     it creates it from.
       #   _ADDR: the reserved internal address the relay dials on 8080.
       #   _AUDIENCE: the ID token's audience the speech server checks; the
       #     same constant the voice_speech output names.
@@ -1243,8 +1245,9 @@ locals {
       #     tick account, the scheduler identity this root already lists as
       #     a platform caller. Empty callers means every sweep is refused.
       SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
-      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
-      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? join(",", local.speech_zones) : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? local.speech_machine_prefix : ""
+      SWARM_SPEECH_TEMPLATE       = local.voice_speech_on ? google_compute_region_instance_template.speech[0].id : ""
       SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
       SWARM_SPEECH_AUDIENCE       = "swarm-speech"
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
