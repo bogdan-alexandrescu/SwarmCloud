@@ -702,10 +702,17 @@ jobs:
       - name: apply the reviewed plan
         id: apply
         if: steps.order.outputs.superseded != 'true'
-        run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan
+        # The reviewed plan, applied as it is; if that fails, the Cloud Run
+        # image updates it carried still ship through a targeted plan that
+        # changes nothing else and no IAM -- a subset of what the owner
+        # approved -- and this step still fails (scripts/lib/release-apply.sh).
+        run: |
+          ./scripts/lib/release-apply.sh --chdir "${TF_ROOT}" --plan plan.tfplan \
+            --lock-timeout 180s --outputs "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
 
       - name: record what dev now runs
-        if: steps.apply.outcome == 'success'
+        # Also when only the services shipped: dev runs this commit's images.
+        if: always() && (steps.apply.outcome == 'success' || steps.apply.outputs.outcome == 'services')
         run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what applied
 
       - name: drop the held plan

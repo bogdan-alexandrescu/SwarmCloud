@@ -225,11 +225,21 @@ runs:
       if: inputs.environment == 'prod' || steps.iam.outputs.iam == 'false'
       env:
         TF_LOCK_TIMEOUT: ${{ inputs.lock_timeout }}
+      #
+      # When the full apply fails, scripts/lib/release-apply.sh still ships the
+      # Cloud Run image updates this plan carried -- a targeted re-plan it
+      # applies only when that plan changes nothing else and no IAM -- reports
+      # the resource that failed, and fails this step: the release stays red.
       shell: bash
-      run: terraform -chdir="${TF_ROOT}" apply -input=false -lock-timeout="${TF_LOCK_TIMEOUT}" plan.tfplan
+      run: |
+        ./scripts/lib/release-apply.sh --chdir "${TF_ROOT}" --plan plan.tfplan \
+          --lock-timeout "${TF_LOCK_TIMEOUT}" --outputs "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
 
     - name: record what dev now runs
-      if: inputs.environment != 'prod' && steps.apply.outcome == 'success'
+      # Also when only the services shipped (outcome 'services'): dev runs this
+      # commit's images, and the order guard must not let an older lane roll
+      # them back.
+      if: always() && inputs.environment != 'prod' && (steps.apply.outcome == 'success' || steps.apply.outputs.outcome == 'services')
       shell: bash
       run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what applied
 
