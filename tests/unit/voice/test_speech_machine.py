@@ -47,7 +47,10 @@ class FakeCompute:
     `metadata` and `machine_type` read and write the one machine there is
     (made in `zone` unless `status` is None); `stockout` makes every zone
     answer a stockout, `full` only those zones. Each call is recorded as
-    (verb, zone), and the set calls as (verb, value)."""
+    (verb, zone), and the set calls as (verb, value). `cost` makes an
+    operation take that many seconds of `clock`, waited on in pieces of
+    RestCompute.TIMEOUT_SECONDS with the `Wait`'s tick between them, and
+    TIMEOUT once the `Wait`'s seconds are spent."""
 
     def __init__(self, status: str | None = sm.TERMINATED, *, machine_type: str = "g2-standard-4",
                  running_after: int = 1, stockout: bool = False, zone: str = ZONE,
@@ -62,6 +65,9 @@ class FakeCompute:
         self.created: list[dict[str, Any]] = []
         #: Every machine that existed at once, by zone, after each call.
         self.at_once: list[list[str]] = []
+        self.clock: Clock | None = None
+        self.cost: dict[str, float] = {}
+        self.waits: list[tuple[str, float]] = []
 
     def add(self, zone: str, status: str, *, machine_type: str = "g2-standard-4") -> None:
         self.machines[zone] = {"status": status, "machine_type": machine_type, "fingerprint": "fp1",
@@ -95,6 +101,23 @@ class FakeCompute:
         self.calls.append((verb, value))
         self.at_once.append(sorted(self.machines))
 
+    def _take_time(self, verb: str, wait: sm.Wait | None) -> None:
+        if wait is not None:
+            self.waits.append((verb, wait.seconds))
+        cost = self.cost.get(verb, 0.0)
+        if not cost or self.clock is None:
+            return
+        spent = 0.0
+        while spent < cost:
+            if wait is not None and spent >= wait.seconds:
+                raise sm.ComputeError("the compute operation did not finish", code=sm.TIMEOUT)
+            piece = min(sm.RestCompute.TIMEOUT_SECONDS, cost - spent,
+                        wait.seconds - spent if wait is not None else cost)
+            if wait is not None:
+                wait.tick()
+            self.clock.advance(piece)
+            spent += piece
+
     def _no_l4(self, zone: str) -> bool:
         return self.stockout or zone in self.full
 
@@ -110,10 +133,12 @@ class FakeCompute:
         return sm.Instance(status=m["status"], machine_type=m["machine_type"],
                            metadata=dict(m["metadata"]), fingerprint=m["fingerprint"], zone=zone)
 
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str]) -> None:
+    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
+               wait: sm.Wait | None = None) -> None:
         assert zone in CONFIG.zones
         assert zone not in self.machines, f"a second machine was created in {zone}"
         self._record("create", zone)
+        self._take_time("create", wait)
         if self._no_l4(zone):
             raise sm.ComputeError("no L4", code=STOCKOUT)
         assert not self.machines, "a second machine was created while one exists"
@@ -121,12 +146,14 @@ class FakeCompute:
         self.machines[zone].update(started=True, metadata=dict(metadata))
         self.created.append({"zone": zone, "machine_type": machine_type, "metadata": dict(metadata)})
 
-    def delete(self, zone: str) -> None:
+    def delete(self, zone: str, *, wait: sm.Wait | None = None) -> None:
         self._record("delete", zone)
+        self._take_time("delete", wait)
         self.machines.pop(zone, None)
 
-    def start(self, zone: str) -> None:
+    def start(self, zone: str, *, wait: sm.Wait | None = None) -> None:
         self._record("start", zone)
+        self._take_time("start", wait)
         if self._no_l4(zone):
             raise sm.ComputeError("no L4", code=STOCKOUT)
         self.machines[zone].update(started=True, status="PROVISIONING", gets=0)
@@ -138,13 +165,14 @@ class FakeCompute:
             raise sm.ComputeError("not found", code=sm.NOT_FOUND)
         m.update(status=sm.TERMINATED, started=False)
 
-    def set_machine_type(self, zone: str, machine_type: str) -> None:
+    def set_machine_type(self, zone: str, machine_type: str, *, wait: sm.Wait | None = None) -> None:
         assert self.machines[zone]["status"] == sm.TERMINATED, \
             "a machine type is only set on a stopped machine"
         self._record("set_machine_type", machine_type)
         self.machines[zone]["machine_type"] = machine_type
 
-    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str) -> None:
+    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str, *,
+                     wait: sm.Wait | None = None) -> None:
         assert self.machines[zone]["status"] == sm.TERMINATED
         assert fingerprint == self.machines[zone]["fingerprint"]
         self._record("set_metadata", dict(items))
@@ -455,6 +483,72 @@ def test_a_machine_not_running_in_four_minutes_is_stopped_and_not_ready(db):
     assert sum(clock.slept) <= sm.READY_SECONDS + sm.POLL_SECONDS
 
 
+def _heartbeat_gaps(db: FakeFirestore, clock: Clock) -> list[float]:
+    """Seconds since the lease's heartbeat, read after each tick of `clock`
+    while the start holds the lease."""
+    gaps: list[float] = []
+    advance = clock.advance
+
+    def watched(seconds: float) -> None:
+        advance(seconds)
+        lease = db.docs.get(f"{sm.COLLECTION}/{sm.LEASE}") or {}
+        if lease.get("state") == sm.STARTING:
+            gaps.append((clock.now() - lease["heartbeat_at"]).total_seconds())
+
+    clock.advance = watched  # type: ignore[method-assign]
+    return gaps
+
+
+@pytest.mark.parametrize("cost, ends", [(50.0, sm.NoFreeL4), (100.0, sm.MachineNotReady)])
+def test_a_slow_stockout_in_every_zone_ends_inside_the_budget_with_the_lease_fresh(db, cost, ends):
+    # A stopped machine in the first zone; every zone stocks out, and each
+    # operation (the start, the delete, each create) takes `cost` seconds.
+    compute, clock = FakeCompute(zone=ZONE, stockout=True), Clock()
+    compute.clock, compute.cost = clock, {"start": cost, "delete": cost, "create": cost}
+    gaps = _heartbeat_gaps(db, clock)
+    began = clock.clock()
+    with pytest.raises(ends) as raised:
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert clock.clock() - began <= sm.READY_SECONDS, "the start outlasted its four minutes"
+    assert gaps and max(gaps) < sm.HEARTBEAT_STALE_SECONDS, "the lease read as abandoned"
+    # No operation was given longer than what was left of the budget.
+    assert all(seconds <= sm.READY_SECONDS for _verb, seconds in compute.waits)
+    if ends is sm.MachineNotReady:
+        # start(a) and delete(a) took 200 s; create(b) ran out at 240 s.
+        assert str(raised.value).endswith(f"{ZONE_C} not tried")
+        assert ZONE in str(raised.value) and ZONE_B in str(raised.value)
+        assert [z for n, z in compute.calls if n == "create"] == [ZONE_B]
+    else:
+        assert [z for n, z in compute.calls if n == "create"] == [ZONE_B, ZONE_C]
+    assert _lease(db)["state"] == sm.STOPPED
+
+
+def test_a_stopped_machine_is_not_deleted_once_its_start_spent_the_budget(db):
+    compute, clock = FakeCompute(zone=ZONE, stockout=True), Clock()
+    compute.clock, compute.cost = clock, {"start": sm.READY_SECONDS}
+    with pytest.raises(sm.MachineNotReady) as raised:
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert "delete" not in compute.names() and "create" not in compute.names()
+    assert list(compute.machines) == [ZONE], "the machine left its zone with no time to move"
+    assert f"{ZONE_B}, {ZONE_C} not tried" in str(raised.value)
+
+
+def test_a_start_whose_lease_was_taken_falls_back_without_touching_the_machine(db):
+    compute, clock = FakeCompute(status=None, full=(ZONE,)), Clock()
+    create = compute.create
+
+    def taken(zone: str, **kwargs: Any) -> None:
+        # The sweep (or another take) ends the lease while Compute answers.
+        _lease(db)["generation"] += 1
+        create(zone, **kwargs)
+
+    compute.create = taken
+    with pytest.raises(sm.MachineNotReady):
+        _machine(db, compute, clock).start(ALICE, chosen=CHOSEN)
+    assert [z for n, z in compute.calls if n == "create"] == [ZONE]
+    assert "stop" not in compute.names() and "delete" not in compute.names()
+
+
 # ---- stop, idle, a closed tab, the sweep (§4.4, §4.5, §4.8) ------------------
 
 
@@ -642,7 +736,7 @@ def test_rest_compute_reads_a_stock_out_from_the_start_operation():
 
 def test_rest_compute_creates_from_the_template_keeping_its_metadata():
     template = {"properties": {"metadata": {"items": [
-        {"key": "swarm-speech-caller", "value": "api@example.iam.gserviceaccount.com"},
+        {"key": "swarm-speech-caller", "value": "api@example-project.iam.gserviceaccount.com"},
         {"key": sm.META_IMAGE, "value": ""}]}}}
     session = _Session([_Response(200, template), _Response(200, {"name": "op-2", "status": "DONE"})])
     sm.RestCompute(CONFIG, session=session).create(
@@ -655,8 +749,30 @@ def test_rest_compute_creates_from_the_template_keeping_its_metadata():
     assert body["name"] == "swarm-speech-c"
     assert body["machineType"] == f"zones/{ZONE_C}/machineTypes/g2-standard-8"
     items = {i["key"]: i["value"] for i in body["metadata"]["items"]}
-    assert items == {"swarm-speech-caller": "api@example.iam.gserviceaccount.com",
+    assert items == {"swarm-speech-caller": "api@example-project.iam.gserviceaccount.com",
                      sm.META_IMAGE: CONFIG.image}
+
+
+def test_rest_compute_waits_no_longer_than_the_wait_and_ticks_between_pieces():
+    import requests
+
+    class _Slow(_Session):
+        def request(self, method: str, url: str, json: Any = None, timeout: float = 0) -> _Response:
+            self.timeouts.append(timeout)
+            if url.endswith("/wait") and not self.answers:
+                raise requests.exceptions.ReadTimeout("the piece ended")
+            return super().request(method, url, json, timeout)
+
+    session = _Slow([_Response(200, {"name": "op-4", "status": "RUNNING"})])
+    session.timeouts = []
+    ticks: list[int] = []
+    compute = sm.RestCompute(CONFIG, session=session)
+    compute.TIMEOUT_SECONDS = 0.01
+    with pytest.raises(sm.ComputeError) as raised:
+        compute.start(ZONE, wait=sm.Wait(seconds=0.05, tick=lambda: ticks.append(1)))
+    assert raised.value.code == sm.TIMEOUT
+    assert ticks, "the heartbeat was not given a turn between the wait's pieces"
+    assert all(t <= 0.01 for t in session.timeouts[1:]), "a wait piece outlasted its share"
 
 
 def test_rest_compute_reads_a_missing_machine_as_none_and_deletes_by_name():

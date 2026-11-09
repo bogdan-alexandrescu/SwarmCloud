@@ -330,6 +330,17 @@ session.
 only one machine, and so one $15-a-month disk: a move deletes the stopped machine before it creates
 the next. Settings **show** the zone (pick 5); the zone the machine is in is the lease's.
 
+swarm-api looks for the machine only in the listed zones. Dropping a zone from `voice_speech.zones`
+while the machine sits in it orphans that machine: no Start finds it, and every create then fails on
+the reserved address (an error that is not a stockout, so the session falls back as not ready rather
+than moving). Before taking a zone out of the list, delete the machine in it (it is stopped between
+sessions, and the next Start creates it in the first listed zone with a free L4).
+
+Every Compute operation a Start makes (a start, a delete, a create) is waited on for no longer than
+what is left of the four minutes, and the lease's heartbeat is refreshed between operations and
+between each operation's wait pieces, so a chain of slow stockouts ends in the text fallback inside
+the budget, naming the zones tried and not tried, and never reads to the sweep as an abandoned lease.
+
 ## 6. IAM, as rows for the owner to approve
 
 | # | Principal | Role | On | Why |

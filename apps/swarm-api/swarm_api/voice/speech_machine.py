@@ -53,9 +53,14 @@ row counts the refused start, and the caller falls back to text. Then
 `instances.get` every POLL_SECONDS until RUNNING. READY_SECONDS is the budget
 of the whole Start, every zone's create and boot inside it: a zone is not
 tried once it is spent, and a machine not RUNNING inside it is stopped and
-`MachineNotReady`, which says which zones it tried. The start refreshes the
-lease's heartbeat while it waits, so the sweep never takes a starting
-machine for an abandoned one. One machine at a time, under the lease: the
+`MachineNotReady`, which says which zones it tried and which it did not.
+Each Compute operation (a start, a delete, a create) is waited on for no
+longer than what is left of READY_SECONDS (a `Wait`), so a chain of them
+never outlasts the budget. The start refreshes the lease's heartbeat while it
+waits, between operations and between each operation's wait pieces, so the
+sweep never takes a starting machine for an abandoned one; a start whose
+lease was taken from it all the same (`StaleLease`) falls back to text and
+touches the machine no more. One machine at a time, under the lease: the
 reserved address is the template's, and only one instance can hold it.
 
 THE COMPUTE API. `RestCompute` calls Compute Engine's v1 REST API with
@@ -164,6 +169,8 @@ STOCKOUT_CODES = frozenset({"ZONE_RESOURCE_POOL_EXHAUSTED",
                             "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS"})
 #: The code `RestCompute` gives an instance that does not exist (404).
 NOT_FOUND = "NOT_FOUND"
+#: The code of an operation that outlasted its wait (`Wait`, OPERATION_SECONDS).
+TIMEOUT = "TIMEOUT"
 
 META_IMAGE = "swarm-speech-image"
 META_MODELS = "swarm-speech-models"
@@ -311,30 +318,49 @@ class Instance:
     zone: str = ""
 
 
+def _no_tick() -> None:
+    return None
+
+
+@dataclass(frozen=True)
+class Wait:
+    """How long one Compute operation may be waited on (what is left of the
+    start's budget), and what runs between the wait's pieces (the lease's
+    heartbeat)."""
+    seconds: float
+    tick: Callable[[], None] = _no_tick
+
+
 class Compute(Protocol):
     """The speech machine in one zone, by its name there (`name_in`). Every
     call that changes it returns once Compute finished the operation, and
-    raises `ComputeError`: a STOCKOUT_CODES code when the zone has no L4."""
+    raises `ComputeError`: a STOCKOUT_CODES code when the zone has no L4,
+    TIMEOUT when the operation outlasts its `wait` (or OPERATION_SECONDS)."""
 
     def get(self, zone: str) -> Instance | None:
         """The machine in `zone`, or None when there is none."""
         ...
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str]) -> None:
+    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
+               wait: Wait | None = None) -> None:
         """Create it from the template; Compute starts it."""
         ...
-    def delete(self, zone: str) -> None: ...
-    def start(self, zone: str) -> None: ...
+    def delete(self, zone: str, *, wait: Wait | None = None) -> None: ...
+    def start(self, zone: str, *, wait: Wait | None = None) -> None: ...
     def stop(self, zone: str) -> None: ...
-    def set_machine_type(self, zone: str, machine_type: str) -> None: ...
-    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str) -> None: ...
+    def set_machine_type(self, zone: str, machine_type: str, *, wait: Wait | None = None) -> None: ...
+    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str, *,
+                     wait: Wait | None = None) -> None: ...
 
 
 class RestCompute:
     """Compute Engine v1 for the speech machine, with swarm-api's credentials."""
 
     BASE = "https://compute.googleapis.com/compute/v1"
-    #: Each operation is waited on in pieces of this (zoneOperations.wait's
-    #: own limit is two minutes), up to OPERATION_SECONDS in all.
+    #: Each operation is waited on in pieces of TIMEOUT_SECONDS at most
+    #: (zoneOperations.wait's own limit is two minutes, as long as a stale
+    #: heartbeat: a piece that ends with the operation still running is
+    #: asked again), up to OPERATION_SECONDS in all, or the `Wait`'s seconds
+    #: when they are fewer.
     OPERATION_SECONDS = 300.0
     TIMEOUT_SECONDS = 30.0
 
@@ -371,8 +397,10 @@ class RestCompute:
             code = NOT_FOUND
         return ComputeError(f"compute engine answered {status} ({code})", code=code)
 
-    def _call(self, method: str, url: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self._http().request(method, url, json=body, timeout=self.TIMEOUT_SECONDS)
+    def _call(self, method: str, url: str, body: dict[str, Any] | None = None, *,
+              timeout: float | None = None) -> dict[str, Any]:
+        response = self._http().request(method, url, json=body,
+                                        timeout=self.TIMEOUT_SECONDS if timeout is None else timeout)
         try:
             data = response.json()
         except ValueError:
@@ -381,13 +409,23 @@ class RestCompute:
             raise self._error(data, response.status_code)
         return data if isinstance(data, dict) else {}
 
-    def _finish(self, zone: str, operation: dict[str, Any]) -> None:
-        deadline = time.monotonic() + self.OPERATION_SECONDS
+    def _finish(self, zone: str, operation: dict[str, Any], wait: Wait | None) -> None:
+        import requests
+
+        seconds = self.OPERATION_SECONDS if wait is None else min(self.OPERATION_SECONDS, wait.seconds)
+        deadline = time.monotonic() + seconds
         while operation.get("status") != "DONE":
-            if time.monotonic() > deadline:
-                raise ComputeError("the compute operation did not finish", code="TIMEOUT")
-            operation = self._call(
-                "POST", f"{self._zone_url(zone)}/operations/{operation.get('name', '')}/wait")
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ComputeError("the compute operation did not finish", code=TIMEOUT)
+            if wait is not None:
+                wait.tick()
+            try:
+                operation = self._call(
+                    "POST", f"{self._zone_url(zone)}/operations/{operation.get('name', '')}/wait",
+                    timeout=min(self.TIMEOUT_SECONDS, left))
+            except requests.exceptions.Timeout:
+                continue  # the piece ended with the operation still running
         if operation.get("error"):
             raise self._error(operation, 409)
 
@@ -405,7 +443,8 @@ class RestCompute:
                         machine_type=str(data.get("machineType") or "").rsplit("/", 1)[-1],
                         metadata=items, fingerprint=str(meta.get("fingerprint") or ""), zone=zone)
 
-    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str]) -> None:
+    def create(self, zone: str, *, machine_type: str, metadata: Mapping[str, str],
+               wait: Wait | None = None) -> None:
         # An insert's metadata replaces the template's whole, so the
         # template's own items (the caller's email, no SSH keys, no serial
         # port) are read and kept, and the start's written over them.
@@ -418,29 +457,31 @@ class RestCompute:
             "POST", f"{self._zone_url(zone)}/instances?sourceInstanceTemplate={self._config.template}", {
                 "name": self._config.name_in(zone),
                 "machineType": f"zones/{zone}/machineTypes/{machine_type}",
-                "metadata": {"items": [{"key": k, "value": v} for k, v in sorted(items.items())]}}))
+                "metadata": {"items": [{"key": k, "value": v} for k, v in sorted(items.items())]}}),
+            wait)
 
-    def delete(self, zone: str) -> None:
+    def delete(self, zone: str, *, wait: Wait | None = None) -> None:
         try:
-            self._finish(zone, self._call("DELETE", self._url(zone)))
+            self._finish(zone, self._call("DELETE", self._url(zone)), wait)
         except ComputeError as exc:
             if exc.code != NOT_FOUND:
                 raise
 
-    def start(self, zone: str) -> None:
-        self._finish(zone, self._call("POST", f"{self._url(zone)}/start"))
+    def start(self, zone: str, *, wait: Wait | None = None) -> None:
+        self._finish(zone, self._call("POST", f"{self._url(zone)}/start"), wait)
 
     def stop(self, zone: str) -> None:
-        self._finish(zone, self._call("POST", f"{self._url(zone)}/stop"))
+        self._finish(zone, self._call("POST", f"{self._url(zone)}/stop"), None)
 
-    def set_machine_type(self, zone: str, machine_type: str) -> None:
+    def set_machine_type(self, zone: str, machine_type: str, *, wait: Wait | None = None) -> None:
         self._finish(zone, self._call("POST", f"{self._url(zone)}/setMachineType", {
-            "machineType": f"zones/{zone}/machineTypes/{machine_type}"}))
+            "machineType": f"zones/{zone}/machineTypes/{machine_type}"}), wait)
 
-    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str) -> None:
+    def set_metadata(self, zone: str, items: Mapping[str, str], fingerprint: str, *,
+                     wait: Wait | None = None) -> None:
         self._finish(zone, self._call("POST", f"{self._url(zone)}/setMetadata", {
             "fingerprint": fingerprint,
-            "items": [{"key": k, "value": v} for k, v in sorted(items.items())]}))
+            "items": [{"key": k, "value": v} for k, v in sorted(items.items())]}), wait)
 
 
 # --------------------------------------------------------------------------
@@ -740,19 +781,36 @@ class SpeechMachine:
             self._heartbeat_while_starting(holder, beat)
             self._sleep(POLL_SECONDS)
 
-    def _apply(self, instance: Instance, chosen: Mapping[str, str]) -> bool:
+    def _wait(self, holder: Holder, deadline: float, beat: list[float]) -> Wait:
+        """What is left of the start's budget for one Compute operation, with
+        the lease's heartbeat between the wait's pieces."""
+        return Wait(seconds=max(0.0, deadline - self._clock()),
+                    tick=lambda: self._heartbeat_while_starting(holder, beat))
+
+    def _ran_out(self, tried: list[str], during: str = "") -> MachineNotReady:
+        untried = [z for z in self.config.zones if z not in tried]
+        message = "the four-minute start ran out"
+        if during:
+            message += f" waiting for {during}"
+        if tried:
+            message += f"; tried {', '.join(tried)}"
+        if untried:
+            message += f"; {', '.join(untried)} not tried"
+        return MachineNotReady(message, zone=tried[-1] if tried else "")
+
+    def _apply(self, instance: Instance, chosen: Mapping[str, str], wait: Callable[[], Wait]) -> bool:
         """Settings onto the stopped machine; True when the image changed."""
         machine = chosen.get("machine") or cat.DEFAULTS["machine"]
         if cat.machine(machine) is not None and instance.machine_type != machine:
-            self._compute.set_machine_type(instance.zone, machine)
+            self._compute.set_machine_type(instance.zone, machine, wait=wait())
         wanted = wanted_metadata(chosen, self.config.image)
         changed = {k: v for k, v in wanted.items() if instance.metadata.get(k) != v}
         if changed:
             self._compute.set_metadata(instance.zone, {**instance.metadata, **changed},
-                                       instance.fingerprint)
+                                       instance.fingerprint, wait=wait())
         return META_IMAGE in changed
 
-    def find(self) -> Instance | None:
+    def find(self, wait: Callable[[], Wait | None] = lambda: None) -> Instance | None:
         """The one speech machine across the configured zones, or None. Two
         (a crash between a move's delete and its create) are made one: the
         running one is kept, else the first in zone order; the other is
@@ -765,7 +823,7 @@ class SpeechMachine:
             if other is not keep:
                 log.warning("speech machine found in %s and %s; deleting the one in %s",
                             keep.zone, other.zone, other.zone)
-                self._compute.delete(other.zone)
+                self._compute.delete(other.zone, wait=wait())
         return keep
 
     def _record_stockout(self, holder: Holder, session: SessionRef, zone: str) -> None:
@@ -784,9 +842,26 @@ class SpeechMachine:
                   deadline: float, beat: list[float], tried: list[str]) -> tuple[str, bool]:
         """Start the stopped machine, or create it, zone by zone (the module's
         START); (the zone it is in, whether its image changed). `NoFreeL4`
-        after the last zone; `MachineNotReady` when the budget ends first."""
+        after the last zone; `MachineNotReady` when the budget ends first,
+        naming the zones tried and not tried. Every operation is waited on
+        inside what is left of the budget, the heartbeat beating meanwhile."""
         zones = list(self.config.zones)
-        instance = self.find()
+
+        def wait() -> Wait:
+            return self._wait(holder, deadline, beat)
+
+        try:
+            return self._bring_up_in_order(holder, session, chosen, deadline, beat, tried,
+                                           zones, wait)
+        except ComputeError as exc:
+            if exc.code != TIMEOUT:
+                raise
+            raise self._ran_out(tried, "compute engine") from None
+
+    def _bring_up_in_order(self, holder: Holder, session: SessionRef, chosen: Mapping[str, str],
+                           deadline: float, beat: list[float], tried: list[str],
+                           zones: list[str], wait: Callable[[], Wait]) -> tuple[str, bool]:
+        instance = self.find(wait)
         if instance is not None and instance.status == INSTANCE_STOPPING:
             instance = self._wait_status(holder, instance.zone, AT_REST, deadline, beat) or instance
         if instance is not None and instance.status not in AT_REST:
@@ -797,18 +872,23 @@ class SpeechMachine:
         if instance is not None:
             own = instance.zone
             self._use_zone(holder, own)
-            image_changed = self._apply(instance, chosen)
+            image_changed = self._apply(instance, chosen, wait)
             tried.append(own)
             try:
-                self._compute.start(own)
+                self._compute.start(own, wait=wait())
                 return own, image_changed
             except ComputeError as exc:
                 if exc.code not in STOCKOUT_CODES:
                     raise
             self._record_stockout(holder, session, own)
+            self._heartbeat_while_starting(holder, beat)
+            if self._clock() >= deadline:
+                # The machine stays stopped in its zone; the next Start
+                # tries it there first.
+                raise self._ran_out(tried)
             # Its zone has no L4: the stopped machine leaves it, and the
             # zones after its own are tried, wrapping round once.
-            self._compute.delete(own)
+            self._compute.delete(own, wait=wait())
             if own in zones:
                 at = zones.index(own)
                 order = zones[at + 1:] + zones[:at]
@@ -817,16 +897,13 @@ class SpeechMachine:
             machine = cat.DEFAULTS["machine"]
         metadata = wanted_metadata(chosen, self.config.image)
         for zone in order:
-            if self._clock() >= deadline:
-                untried = [z for z in order if z not in tried]
-                raise MachineNotReady(
-                    f"the four-minute start ran out after no L4 in {', '.join(tried)}; "
-                    f"{', '.join(untried)} not tried", zone=tried[-1] if tried else "")
             self._heartbeat_while_starting(holder, beat)
+            if self._clock() >= deadline:
+                raise self._ran_out(tried)
             self._use_zone(holder, zone)
             tried.append(zone)
             try:
-                self._compute.create(zone, machine_type=machine, metadata=metadata)
+                self._compute.create(zone, machine_type=machine, metadata=metadata, wait=wait())
                 return zone, bool(self.config.image)
             except ComputeError as exc:
                 if exc.code not in STOCKOUT_CODES:
@@ -850,6 +927,20 @@ class SpeechMachine:
             if self._wait_status(holder, zone, frozenset({INSTANCE_RUNNING}), deadline, beat) is None:
                 raise MachineNotReady(f"the speech machine was not running in time in {zone}",
                                       zone=zone)
+            boot = self._clock() - began
+            applied = {f: str(chosen.get(f) or "") for f in APPLIED_FIELDS}
+            if not applied["zone"]:
+                applied["zone"] = self.config.zone
+
+            def record(lease: dict[str, Any], _now: datetime) -> dict[str, Any]:
+                phases = dict(lease.get("start_phases") or {})
+                phases["start.boot"] = round(boot, 3)
+                # On the lease, so whichever swarm-api instance the page's audio
+                # socket reaches can mark Settings applied at readiness.
+                return {"start_phases": phases, "image_changed": image_changed,
+                        "applied": applied, "image": self.config.image}
+
+            self._fenced(holder, record)
         except NoFreeL4 as exc:
             self._release(holder, exc.reason)
             self._audit(None, AUDIT_NO_L4, asdict(session), {
@@ -862,20 +953,13 @@ class SpeechMachine:
                 raise
             raise MachineNotReady("the speech machine could not be started",
                                   zone=tried[-1] if tried else self.config.zone) from None
-        boot = self._clock() - began
-        applied = {f: str(chosen.get(f) or "") for f in APPLIED_FIELDS}
-        if not applied["zone"]:
-            applied["zone"] = self.config.zone
-
-        def record(lease: dict[str, Any], _now: datetime) -> dict[str, Any]:
-            phases = dict(lease.get("start_phases") or {})
-            phases["start.boot"] = round(boot, 3)
-            # On the lease, so whichever swarm-api instance the page's audio
-            # socket reaches can mark Settings applied at readiness.
-            return {"start_phases": phases, "image_changed": image_changed,
-                    "applied": applied, "image": self.config.image}
-
-        self._fenced(holder, record)
+        except StaleLease:
+            # The lease was taken from this start (the sweep, or another
+            # session's take): the machine is no longer this holder's to stop
+            # or to write about, and the session falls back to text.
+            log.warning("speech machine start lost its lease (generation %s)", holder.generation)
+            raise MachineNotReady("the speech machine's lease was lost while it started",
+                                  zone=tried[-1] if tried else self.config.zone) from None
         log.info("speech machine started in %s generation=%s", zone, holder.generation)
         return Started(holder=holder, image_changed=image_changed, applied=applied,
                        image=self.config.image, boot_seconds=boot, idle_seconds=idle)
