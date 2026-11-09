@@ -18,9 +18,10 @@ source of truth for limits: `runner_profile`, `model_class`, `budget`,
 `max_turns` and `timeout_seconds` are compiled into the step fields the
 existing validation resolves and the existing signature covers.
 
-Off by default: `enabled()` reads SWARM_WORK_CONTRACTS, and nothing attaches a
-reference to a dispatch block unless it is `on`. Pure: no Firestore, no
-network, no clock.
+Off by default: `enabled()` reads the platform admin's console setting, else
+SWARM_WORK_CONTRACTS (`platformswitches`), and nothing attaches a reference to
+a dispatch block unless it is `on`. Pure but for that one cached read: no
+other Firestore, no network, no clock.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from swarm_common.workcontract import (  # noqa: F401 - re-exported
     canonical_bytes as _canonical_bytes,
 )
 
+from . import platformswitches
 from .plugincatalogue import MODES as _PLUGIN_MODES, offered_skills
 
 #: The switch. Off unless the environment says exactly `on`: a contract that
@@ -694,10 +696,20 @@ def verify_reference(contract: WorkContract, reference: Mapping[str, Any] | None
 
 
 def enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """The switch: on only when SWARM_WORK_CONTRACTS is exactly `on`. The read
-    is written `(os.environ if environ is None else environ).get(...)` so that
-    scripts/lib/check-env-parity.sh sees swarm-api read the key terraform sets
-    (terraform/infra var.work_contracts)."""
+    """The switch: the platform admin's console setting when one is stored
+    and verifies (`platformswitches`, docs/design/managed-plugins.md section
+    11), else the Terraform value in `environ` (`environment_enabled`)."""
+    stored = platformswitches.stored(platformswitches.WORK_CONTRACTS)
+    if stored is not None:
+        return stored == "on"
+    return environment_enabled(environ)
+
+
+def environment_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The Terraform value: on only when SWARM_WORK_CONTRACTS is exactly `on`.
+    The read is written `(os.environ if environ is None else environ).get(...)`
+    so that scripts/lib/check-env-parity.sh sees swarm-api read the key
+    terraform sets (terraform/infra var.work_contracts)."""
     return (os.environ if environ is None else environ).get(SWITCH_ENV, "").strip() == "on"
 
 

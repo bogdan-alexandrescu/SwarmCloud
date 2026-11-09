@@ -240,8 +240,25 @@ def _quota(cluster: Cluster) -> dict[str, str]:
     return quotas[0]["spec"]["hard"]
 
 
+#: The Terraform tenants of the environment apply.sh renders for, as its
+#: <env>.tfvars declares them: tf_var_file reads that file from the deployment's
+#: config/<env>/ (here the placeholder deployment's served directory), never
+#: from a tracked file, so the test writes the one block apply.sh reads.
+TERRAFORM_TENANTS_TFVARS = "tenants = {\n  eng = {\n  }\n  smoke = {\n  }\n}\n"
+
+
+def _terraform_tenants(cluster: Cluster) -> None:
+    env = cluster.env()
+    target = Path(env["SWARM_DEPLOY_CONFIG_DIR"]) / env.get("ENVIRONMENT", "dev")
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tfvars = target / f"{env.get('ENVIRONMENT', 'dev')}.tfvars"
+    tfvars.write_text(TERRAFORM_TENANTS_TFVARS)
+    tfvars.chmod(0o600)
+
+
 def _apply(tmp_path: Path, records: list[dict[str, Any]], *args: str, status: int = 200):
     cluster = Cluster(tmp_path, FAKE)
+    _terraform_tenants(cluster)
     api = Api(cluster, records, status)
     result = cluster.run(APPLY, *args, **api.env)
     return cluster, api, result

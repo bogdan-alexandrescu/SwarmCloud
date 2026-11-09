@@ -26,6 +26,7 @@ job (application.yml) builds it, because apps/** reaches that job.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -40,6 +41,10 @@ REPO = Path(__file__).resolve().parents[3]
 APP = REPO / "apps" / "swarm-egress"
 DOCKERFILE = APP / "Dockerfile"
 MANIFEST = REPO / "kubernetes" / "swarm-system" / "swarm-egress.yaml"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+placeholder_deployment = _PLACEHOLDERS.deployment()
 REGISTRY = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
 
 
@@ -52,6 +57,9 @@ def _targets(script: str) -> list[str]:
 def _env(tmp_path: Path) -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(tmp_path),
             "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
+            # The placeholder deployment's zone and never-touch list: common.sh
+            # has no default for either. REGION stays REGISTRY's, named last.
+            **placeholder_deployment.child_env("swarm-test-project"),
             "REGION": "us-central1", "ENVIRONMENT": "dev", "NO_COLOR": "1", "TMPDIR": str(tmp_path)}
 
 

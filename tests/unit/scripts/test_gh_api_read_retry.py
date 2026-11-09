@@ -133,6 +133,7 @@ CLOSING_ANSWER = {
                 "body": "Nothing named.",
                 "closingIssuesReferences": {"totalCount": 0, "nodes": []},
                 "commits": {"totalCount": 1, "nodes": [{"commit": {"message": "one commit"}}]},
+                "labels": {"totalCount": 1, "nodes": [{"name": "ready"}]},
             }
         }
     }

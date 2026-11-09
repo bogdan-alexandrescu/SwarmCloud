@@ -6,7 +6,7 @@
 #   kubernetes/apply.sh --tenant research --workspace-id w-1a2b3c --confirm
 #                         # a group or service workspace's namespace, as the
 #                         # workspace job's A7 applies it: the Namespace carries
-#                         # swarm.saga.xyz/workspace, which the deployer's scope
+#                         # swarm.<org_domain>/workspace, which the deployer's scope
 #                         # policy admits it by (docs/design/workspace-kinds.md)
 #   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies;
 #                         # refuses this environment's Terraform tenants'
@@ -63,7 +63,7 @@
 #    nothing. The binary is resolved explicitly, and its version is checked.
 #
 # 2. The right cluster. This kubeconfig reaches clusters that are not ours:
-#    `agents-staging` (a live GKE Standard cluster owned by another team in this
+#    `peer-cluster` (a live GKE Standard cluster owned by another team in this
 #    same shared project), `agents-prod`, and an EKS cluster. Applying a
 #    default-deny NetworkPolicy into the wrong one is a full outage for whoever
 #    owns it. Three independent refusals, because each catches what the others
@@ -129,7 +129,7 @@
 # range read from swarm-api. Afterwards it compares the applied policies with
 # that range (kubernetes/network_parity.py --live-ingress), exiting non-zero
 # on a difference. The relay is applied through the same context checks as
-# everything here: never to `agents-staging`.
+# everything here: never to `peer-cluster`.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -142,14 +142,10 @@ REPO="$(cd -- "${HERE}/.." && pwd)"
 # nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
 COMMON="${REPO}/scripts/lib/common.sh"
 # THE PROJECT IS THE CALLER'S, NEVER A DEFAULT (DAYONE-K8S-1, design §7).
-# common.sh's load_env fills an unset PROJECT_ID with the live project, so a
-# caller in any other project that forgot it would read that project's cluster
-# context check, uniqueIds and network, and render its identities. Marked here,
-# before load_env runs: the environment or the env file replaces the mark, and
-# a mark that survives is a project nobody gave, refused below once --help has
-# had its chance. "(none given)" is no project id, so load_env's `:-` keeps it.
-PROJECT_NOT_GIVEN="(none given)"
-[[ -n "${PROJECT_ID:-}" ]] || PROJECT_ID="${PROJECT_NOT_GIVEN}"
+# common.sh's load_env refuses an unset PROJECT_ID ("PROJECT_ID is not set")
+# as this file is sourced, before anything is contacted: there is no default
+# project to read a cluster context, uniqueIds or a network from. That refusal
+# runs before --help too, as it does for every script that sources common.sh.
 [[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
@@ -164,7 +160,7 @@ SERVER_DRY_RUN=0
 CONTEXT=""
 SPEC_VERIFY_KEYS_FILE=""
 # The workspace a group or service namespace is built for (the job's step A7,
-# docs/design/workspace-kinds.md §4.3): rendered as swarm.saga.xyz/workspace on
+# docs/design/workspace-kinds.md §4.3): rendered as swarm.<org_domain>/workspace on
 # the Namespace, which is what the deployer's scope policy admits a namespace
 # outside swarm-tenant-u-* by. Tenant mode only; empty for every other render.
 WORKSPACE_ID=""
@@ -311,12 +307,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- 0. the project, before anything is contacted ------------------------------
-[[ "${PROJECT_ID}" != "${PROJECT_NOT_GIVEN}" ]] \
-  || die "PROJECT_ID is not set (in the environment or ${SWARM_ENV_FILE:-.env}); refusing to render.
-       Every object here names its project's identities, and there is no default project.
-       Run: PROJECT_ID=<your project> $0 ..."
-
 # --- 0. the workspace label, before anything is contacted ---------------------
 # Checked here as well as in render.py so a refused id costs no cluster read,
 # and so it can only ever reach the one render that labels a Namespace: never
@@ -424,19 +414,19 @@ cluster_of() {
 #
 # THE CLUSTER, NOT THE WHOLE STRING. This used to be `*"${foreign}"*` over the
 # whole context name, which refused gcloud's own name for OUR cluster:
-# gke_saga-agents-staging_us-central1_swarm-autopilot contains `agents-staging`
-# -- the other team's cluster -- because our PROJECT id does. So the default
+# gke_<project>_us-central1_swarm-autopilot contained the other team's
+# cluster name whenever our PROJECT id did, as the live one does. So the default
 # context `gcloud container clusters get-credentials` writes was refused, and
 # scripts/register-tenant.sh, whose own guard (common.sh kube_context_allowed)
 # accepts that name and hands it to this script as --context, would then die
 # with "the tenant namespace is not isolated" (a consequence read from the two
 # scripts, not a run observed). Only the cluster segment says whose cluster
 # it is; the project is shared by definition. The other team's context,
-# gke_saga-agents-staging_us-central1-a_agents-staging, still ends in
-# `agents-staging` and is still refused -- as is our label pointing at it,
+# gke_<project>_us-central1-a_peer-cluster, still ends in
+# `peer-cluster` and is still refused -- as is our label pointing at it,
 # because the resolved cluster entry is judged too.
 #
-# Still a substring match WITHIN the cluster name, so `agents-staging-2` is
+# Still a substring match WITHIN the cluster name, so `peer-cluster-2` is
 # refused as well. Service accounts and the project's `default` VPC are on the
 # shared list but can never name a cluster, and `default` would match too much;
 # cluster-shaped entries only.
@@ -685,7 +675,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   # namespace that does not exist fails mid-apply.
   #
   # Read here, AFTER the context checks above, and applied only through them:
-  # nothing below can send it to agents-staging. Read FIRST in this mode,
+  # nothing below can send it to peer-cluster. Read FIRST in this mode,
   # before swarm-api is described, so a missing output is a precondition
   # reported up front rather than a late failure. To files, not $(...): the
   # exit status and the error are both kept (CLAUDE.md).
@@ -869,7 +859,7 @@ elif [[ "${MODE}" == "swarm-graph" ]]; then
   # NULL UNTIL graph_service.serve (every environment today), and then
   # nothing is applied and this exits 0: off is not a failure. Read here,
   # AFTER the context checks above, so nothing below can send it to
-  # agents-staging. To files, not $(...): the status and the error are kept.
+  # peer-cluster. To files, not $(...): the status and the error are kept.
   GRAPH_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-graph-apply.XXXXXX")"
   trap 'rm -rf "${GRAPH_WORK}"' EXIT
   TF_DIR="$(tf_root)"
@@ -922,7 +912,7 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   # 1402); one unnamed `output -json` tells them apart: an object without a
   # non-null value is off, a state terraform cannot read fails. Read here,
   # AFTER the context checks above, so nothing below can send it to
-  # agents-staging. To files, not $(...): the status and the error are kept.
+  # peer-cluster. To files, not $(...): the status and the error are kept.
   TSF_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-typesafe-fwd-apply.XXXXXX")"
   trap 'rm -rf "${TSF_WORK}"' EXIT
   TF_DIR="$(tf_root)"
@@ -1005,7 +995,7 @@ elif [[ "${MODE}" == "swarm-voice" ]]; then
   # exactly as an unreadable state does (PR 1402); one unnamed `output -json`
   # tells them apart. Neither read asks gcloud or the cluster anything. Read
   # here, AFTER the context checks above, so nothing below can send it to
-  # agents-staging. To files, not $(...): the status and the error are kept.
+  # peer-cluster. To files, not $(...): the status and the error are kept.
   VOICE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-voice-apply.XXXXXX")"
   trap 'rm -rf "${VOICE_WORK}"' EXIT
   TF_DIR="$(tf_root)"
@@ -1050,12 +1040,12 @@ elif [[ "${MODE}" == "swarm-voice" ]]; then
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph, --swarm-typesafe-fwd or --swarm-voice)"
 
-  # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; BGD's
+  # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; the owner's
   # decision, 2026-10-23). The workspace job's A7 renders the namespace with
   # five --quota-* flags from the record's limits, and its A9 fails the
   # workspace when the live quota has other numbers. This script, run by hand
   # with no quota flag, used to render render.py's flat defaults (pods 100,
-  # cpu 400) for every tenant, and on 2026-10-23 that failed u-bogdan's
+  # cpu 400) for every tenant, and on 2026-10-23 that failed a personal workspace's
   # workspace, whose 100 agents want pods 200, cpu 800. So:
   #   * all five --quota-* flags given (the job's A7, under a call guard that
   #     admits no call to swarm-api): rendered as given, nothing is read;
@@ -1581,7 +1571,7 @@ if [[ "${MODE}" == "swarm-system" ]]; then
   rm -rf "${LIVE_WORK}"
 fi
 if [[ "${MODE}" == "swarm-graph" ]]; then
-  # RUN, like --swarm-system's (CACHE-FOLLOWUPS, part of #1835; BGD,
+  # RUN, like --swarm-system's (CACHE-FOLLOWUPS, part of #1835; the owner,
   # 2026-10-28; docs/design/graph-answer-cache.md §5.3). swarm-graph-ingress
   # admits swarm-api's range on the stats port, and terraform rendered that
   # range from var.subnet_cidr, its own copy of the subnet; the range swarm-api

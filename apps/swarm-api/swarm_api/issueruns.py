@@ -115,13 +115,19 @@ re-publishes the review's verdict as its own. Its `verdict.json` is the
 latest verdict, the one `auto_merge` merges on (`issueci._review_verdict`);
 without it a fix that resolved every finding still failed the merge on the
 first review's NOT_YET. The run's `fix_rounds` (1-5, default 3) is the cap
-on review-then-fix rounds and travels in the workflow's metadata; ONE fix
-round is what the platform compiles, because under `integrate` only the
-integrator and that one re-review may be gated, and a second fix needs a
-gated step that is neither (docs/workflows.md, "What this does not do"). A
-re-review that still says NOT_YET leaves the pull request to a person. The
-same cap also bounds the CI loop's fix rounds after the pull request opens
-(`issueci`): one continuation per red reading, at most `fix_rounds` of them.
+on review-then-fix rounds and travels in the workflow's metadata. While the
+`fix-loop` runner type is unavailable (contract request 124) ONE fix round is
+what compiles: under `integrate` only the integrator and that one re-review
+may be gated, and a re-review that still says NOT_YET leaves the pull request
+to a person. Once it is available, the plan compiles a `fix-loop` step in
+place of the re-review (docs/design/fix-loop.md §5.3, `_with_review_rounds`):
+`{review, fix, max_rounds: fix_rounds}` depending on the fix, the step
+`validation.verdict_fix_loop_step` builds for a workflow that merges on its
+review's verdict, so submission checks and signs it as a declared loop. Its
+rounds run up to `fix_rounds` fixes, each re-reviewed, and the loop's
+`final_review` is the verdict `issueci` reads. The same cap also bounds the
+CI loop's fix rounds after the pull request opens (`issueci`): one
+continuation per red reading, at most `fix_rounds` of them.
 
 THE REVIEW ANSWERS EACH REQUIREMENT. Its prompt numbers the plan's
 `requirements` and asks for `requirements: [{index, met, note}]` in
@@ -244,9 +250,14 @@ from .validation import (
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
     IssueRef,
+    FIX_LOOP_FIELD,
+    FIX_LOOP_MAX_ROUNDS,
+    FIX_LOOP_MIN_ROUNDS,
+    FIX_LOOP_PROFILE,
     StepSpec,
     issue_run_mark_allowed,
     rereview_step_for,
+    verdict_fix_loop_step,
 )
 
 log = logging.getLogger(__name__)
@@ -442,9 +453,11 @@ FINDINGS_LOCATION_NOTE = (
     "line is still a blocker. "
 )
 
-#: The review-then-fix rounds `compile_plan` emits, whatever the cap (module
-#: docstring): one review, one gated fix. The re-review after the fix judges
-#: that one round and starts no second fix, so it does not count (#2217).
+#: The review-then-fix rounds `compile_plan` emits while the `fix-loop`
+#: runner type is unavailable (module docstring): one review, one gated fix.
+#: The re-review after the fix judges that one round and starts no second
+#: fix, so it does not count (#2217). With the loop compiled, the workflow's
+#: `review_rounds_compiled` is the loop's `max_rounds` instead.
 COMPILED_REVIEW_ROUNDS = 1
 
 #: The most of the review's `verdict.json` read for its requirements: the
@@ -2547,7 +2560,8 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
 
 def compile_plan(run: "IssueRun", review_context: str | None = None, *,
                  class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
-    """The approved plan as a workflow: implementers, review, gated fix, re-review.
+    """The approved plan as a workflow: implementers, review, gated fix, then
+    the fix loop or, while it is unavailable, the re-review (`_with_review_rounds`).
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
     states them compiles to stages (`_compile_staged`). A `mode: single` plan
@@ -2646,7 +2660,50 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
-    return _workflow(run, _with_security_review(run, _with_rereview(steps)))
+    return _workflow(run, _with_security_review(run, _with_review_rounds(run, steps)))
+
+
+def _step_specs(steps: list[dict[str, Any]]) -> list[StepSpec]:
+    """The compiled steps as the submission's DAG reads them."""
+    return [
+        StepSpec(
+            step_id=s["step_id"],
+            depends_on=tuple(s.get("depends_on") or ()),
+            input_from=dict(s.get("input_from") or {}),
+            when_step=s["when"]["step"] if s.get("when") else None,
+            when_verdicts=tuple(s["when"]["verdict_in"]) if s.get("when") else (),
+            builds_on=s.get("builds_on"),
+            runner_profile=s.get("runner_profile"),
+        )
+        for s in steps
+    ]
+
+
+def _with_review_rounds(run: "IssueRun", steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`steps`, then what judges the fix: the fix loop when it applies, else the re-review.
+
+    docs/design/fix-loop.md §5.3, and the owner's rule for every workflow
+    that merges on a review (§9 Q8 (b), 9 November 2026): a loop when it is
+    on, the one re-review until then. The loop is exactly the step
+    `validation.verdict_fix_loop_step` appends to such a workflow -- the
+    review, the fix as round 1, depending on the fix -- with `max_rounds` the
+    run's `fix_rounds` (1-5, the loop's own range), so submission checks it
+    with `resolve_fix_loop` and signs its block as it does a declared loop's.
+    `verdict_fix_loop_step` returns None while the `fix-loop` profile is
+    unavailable (contract request 124), and the plan then compiles as before.
+
+    A run that asked for a security review keeps the re-review: that review
+    builds on the fix's head, and a loop's fix must be the integrator nothing
+    else depends on (`resolve_fix_loop`), so the pair would be refused at
+    submission; it judges one head, and later rounds would move it.
+    """
+    if not getattr(run, "security_review", False):
+        loop = verdict_fix_loop_step(_step_specs(steps), "integrate")
+        if loop is not None:
+            rounds = min(max(int(run.fix_rounds), FIX_LOOP_MIN_ROUNDS), FIX_LOOP_MAX_ROUNDS)
+            loop[FIX_LOOP_FIELD] = {**loop[FIX_LOOP_FIELD], "max_rounds": rounds}
+            return [*steps, loop]
+    return _with_rereview(steps)
 
 
 def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2662,20 +2719,8 @@ def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Without it, a run whose fix resolved the review's findings failed its
     `auto_merge` on the first review's NOT_YET (wf_3cc4026eb34a43a885a4).
     """
-    dag = [
-        StepSpec(
-            step_id=s["step_id"],
-            depends_on=tuple(s.get("depends_on") or ()),
-            input_from=dict(s.get("input_from") or {}),
-            when_step=s["when"]["step"] if s.get("when") else None,
-            when_verdicts=tuple(s["when"]["verdict_in"]) if s.get("when") else (),
-            builds_on=s.get("builds_on"),
-            runner_profile=s.get("runner_profile"),
-        )
-        for s in steps
-    ]
     review = next(s for s in steps if s["step_id"] == REVIEW_STEP)
-    rereview = rereview_step_for(dag, review, "integrate")
+    rereview = rereview_step_for(_step_specs(steps), review, "integrate")
     if rereview is None or rereview["step_id"] != REREVIEW_STEP:
         # The fix is the integrator gated on the review, and the plan's ids
         # are reserved away from the re-review's: unreachable.
@@ -2836,8 +2881,8 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
 
     The review depends on EVERY implementer, so it starts only once all of
     them have ended, and sees each one's diff. It builds on the last step in
-    plan order, as the chain's does; the fix and the re-review are the
-    chain's, unchanged.
+    plan order, as the chain's does; the fix and what judges it (the loop
+    or the re-review, `_with_review_rounds`) are the chain's, unchanged.
     """
     ref = run.issue
     order = [step["step_id"] for step in plan["steps"]]
@@ -2937,7 +2982,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             ),
         },
     })
-    return _with_rereview(steps)
+    return _with_review_rounds(run, steps)
 
 
 #: The most characters a compiled workflow's `title` keeps. A list row and a
@@ -3034,6 +3079,14 @@ def workflow_description(run: "IssueRun") -> str | None:
     return kept
 
 
+def _review_rounds_compiled(steps: list[dict[str, Any]]) -> int:
+    """The compiled loop's `max_rounds`, else the one round (`COMPILED_REVIEW_ROUNDS`)."""
+    for step in steps:
+        if step.get("runner_profile") == FIX_LOOP_PROFILE:
+            return int(step[FIX_LOOP_FIELD]["max_rounds"])
+    return COMPILED_REVIEW_ROUNDS
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
@@ -3059,7 +3112,7 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
                 "issue": ref.short,
                 "plan_digest": run.plan_digest,
                 "fix_rounds": run.fix_rounds,
-                "review_rounds_compiled": COMPILED_REVIEW_ROUNDS,
+                "review_rounds_compiled": _review_rounds_compiled(steps),
             }
         },
     })

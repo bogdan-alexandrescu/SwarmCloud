@@ -71,6 +71,11 @@ def _clean_env(**extra: str) -> dict[str, str]:
         if not k.startswith(("API_", "SWARM_", "GITHUB_", "GH_"))
     }
     env["NO_COLOR"] = "1"
+    # The placeholder deployment's never-touch list (conftest.py) is the one
+    # SWARM_ variable a child keeps: common.sh reads it for the project the
+    # child names and stops without it.
+    if "SWARM_DEPLOY_CONFIG_DIR" in os.environ:
+        env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
     env.update(extra)
     return env
 

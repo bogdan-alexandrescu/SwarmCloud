@@ -15,8 +15,8 @@ directly: no app, no Firestore, no credentials, no network.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -26,6 +26,10 @@ from swarm_api import issueruns
 from .test_issue_runs import PLAN
 
 REPO = Path(__file__).resolve().parents[3]
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+PEER = _P.PEER
 
 
 def _plan(*files: str, prompt: str = "Change what the issue asks.") -> dict:
@@ -47,18 +51,29 @@ def _patch(*added: str, removed: tuple[str, ...] = (), header: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def _deny_list_from_common_sh() -> list[str]:
-    text = (REPO / "scripts/lib/common.sh").read_text()
-    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
-    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
-    return re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
+def _placeholder_deny_list() -> list[str]:
+    """The placeholder never-touch list (scripts/lib/deny-list.example.json), what
+    every test is given: no test names a real deployment's resources."""
+    entries = json.loads((REPO / "scripts/lib/deny-list.example.json").read_text())["entries"]
+    assert entries, "scripts/lib/deny-list.example.json holds no entries"
+    return entries
+
+
+#: What the hold judges by here: the placeholder entries, plus the quoted-only
+#: `default` (a shared default network) whose matching rule is tested below.
+DENY_LIST: tuple[str, ...] = (*_placeholder_deny_list(), "default")
 
 
 @pytest.fixture(autouse=True)
-def _rendered_from_common_sh(monkeypatch):
-    # swarm-api reads the list Terraform renders (SWARM_SHARED_DENY_LIST);
-    # these tests render common.sh's.
-    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(_deny_list_from_common_sh()))
+def _rendered_placeholder_list(monkeypatch):
+    """swarm-api reads the list Terraform renders (SWARM_SHARED_DENY_LIST);
+    these tests render the placeholder one.
+
+    The hold's MECHANISM -- which lines, prompts and names it holds -- is what
+    this file proves, so it judges by placeholders, never by a real
+    deployment's resources.
+    """
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
 
 
@@ -166,12 +181,17 @@ def test_a_prompt_naming_a_tenant_scope_function_is_held_at_plan():
 # shared
 # --------------------------------------------------------------------------
 
-def test_the_python_deny_list_is_the_one_in_common_sh():
-    # MUTATION: drop or add one entry of the rendered list as read and this is red.
-    assert list(issueruns.shared_deny_list()) == _deny_list_from_common_sh()
+def test_the_hold_judges_by_the_list_rendered_on_the_service(monkeypatch):
+    # MUTATION: drop or add one entry of the rendered list as read, or cache the
+    # list at import, and this is red.
+    assert issueruns.shared_deny_list() == DENY_LIST
+    monkeypatch.setenv("SWARM_SHARED_DENY_LIST", "[]")
+    assert issueruns.shared_deny_list() == ()
+    path = "terraform/infra/network.tf"
+    assert _hold([path], patches={path: _patch(f'  network = "{PEER["network"]}"')}) is None
 
 
-@pytest.mark.parametrize("name", [n for n in _deny_list_from_common_sh() if n != "default"])
+@pytest.mark.parametrize("name", [n for n in DENY_LIST if n != "default"])
 def test_an_added_line_naming_a_deny_list_entry_is_held_shared(name):
     path = "terraform/infra/network.tf"
     held = _hold([path], patches={path: _patch(f'  network = "{name}"')})
@@ -183,14 +203,14 @@ def test_an_added_line_naming_a_deny_list_entry_is_held_shared(name):
 def test_a_removed_line_naming_a_deny_list_entry_is_not_held_shared():
     path = "terraform/infra/network.tf"
     # MUTATION: scan removed lines for the deny-list and this is held.
-    assert _hold([path], patches={path: _patch("  x = 1", removed=('  network = "agents-staging-vpc"',))}) is None
+    assert _hold([path], patches={path: _patch("  x = 1", removed=(f'  network = "{PEER["network"]}"',))}) is None
 
 
 def test_a_deny_list_name_is_matched_whole_not_inside_a_longer_name():
     path = "terraform/infra/network.tf"
-    # "agents-staging" is a deny-list entry; "swarm-agents-staging-x" is not it.
+    # PEER["cluster"] is a deny-list entry; "swarm-<it>-x" is not it.
     # MUTATION: drop the name-boundary lookarounds and this is held.
-    assert _hold([path], patches={path: _patch('  name = "swarm-agents-staging-x"')}) is None
+    assert _hold([path], patches={path: _patch(f'  name = "swarm-{PEER["cluster"]}-x"')}) is None
 
 
 def test_default_is_held_only_as_a_quoted_name():
@@ -208,11 +228,11 @@ def test_the_deny_list_itself_is_held_shared():
 
 
 def test_a_prompt_naming_a_deny_list_entry_is_held_at_plan():
-    plan = _plan("terraform/infra/network.tf", prompt="Peer our VPC with agents-staging-vpc.")
+    plan = _plan("terraform/infra/network.tf", prompt=f"Peer our VPC with {PEER['network']}.")
     held = issueruns.plan_hold(plan, platform=True, hard_stop_paths=[])
     # MUTATION: scan only the patches, never the prompt text, and this is None.
     assert held is not None and held["reasons"] == ["shared"]
-    assert "agents-staging-vpc" in held["matched"]
+    assert PEER["network"] in held["matched"]
 
 
 # --------------------------------------------------------------------------
@@ -260,7 +280,7 @@ CATEGORY_CHANGES = [
     (["apps/swarm-api/swarm_api/auth.py"], None),
     (["scripts/lib/common.sh"], None),
     (["terraform/environments/dev/dev.tfvars"], None),
-    (["terraform/infra/network.tf"], {"terraform/infra/network.tf": _patch('  network = "agents-staging-vpc"')}),
+    (["terraform/infra/network.tf"], {"terraform/infra/network.tf": _patch(f'  network = "{PEER["network"]}"')}),
     (["apps/x.py"], {"apps/x.py": _patch("budget=BudgetCaps(per_run_usd=1)")}),
     (["apps/x.tf"], {"apps/x.tf": _patch('resource "google_secret_manager_secret" "s" {')}),
 ]

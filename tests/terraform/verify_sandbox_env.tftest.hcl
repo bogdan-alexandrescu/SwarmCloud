@@ -2,13 +2,14 @@
 # environment (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
 #
 # scripts/acceptance/config.sh reads SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL
-# and falls back to the live deployment's sandbox. verify-remote.sh runs the
-# job with --args only, so its environment is the job template's: unless
-# terraform renders the variable there, another company's acceptance would
-# push to the live deployment's sandbox.
+# and has no fallback: unset, it refuses until the variable is set.
+# verify-remote.sh runs the job with --args only, so its environment is the
+# job template's: unless terraform renders the variable there, the job's
+# acceptance refuses for want of a sandbox.
 #
-#   1. unset (null, the default): the job carries no such env, so the live
-#      deployment's plan shows no change;
+#   1. unset (null, the default): the job carries no such env, so a
+#      deployment that does not set it plans no change (and its acceptance
+#      refuses until it is set);
 #   2. set: the job's container env carries it, with the value given.
 
 mock_provider "google" {

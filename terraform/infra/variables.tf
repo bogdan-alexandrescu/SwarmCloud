@@ -547,19 +547,20 @@ variable "acceptance_sandbox_repository_url" {
   description = <<-EOT
     The sandbox repository the release acceptance pushes to and opens pull
     requests on (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL on the swarm-verify
-    job; scripts/acceptance/config.sh). Without it config.sh falls back to the
-    live deployment's sandbox, so another company's deployment sets its own
-    here and its acceptance never touches the live one's.
+    job; scripts/acceptance/config.sh). There is no fallback: without it
+    config.sh refuses to run the acceptance until the variable is set, so a
+    deployment's acceptance only ever touches the sandbox it names here.
 
     Null by default, and null renders no env at all, so a deployment that does
-    not set it plans no change (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
+    not set it plans no change and its acceptance refuses until it is set
+    (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
   EOT
   type        = string
   default     = null
 
   validation {
     condition     = var.acceptance_sandbox_repository_url == null || can(regex("^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+$", var.acceptance_sandbox_repository_url))
-    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null to keep the acceptance's default."
+    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null, with which the acceptance refuses until it is set."
   }
 }
 
@@ -1108,6 +1109,27 @@ variable "work_contracts" {
   }
 }
 
+variable "plugins_switch" {
+  description = <<-EOT
+    swarm-api's SWARM_PLUGINS (apps/swarm-api/swarm_api/plugins.py
+    SWITCH_ENV; docs/design/managed-plugins.md section 11): the platform's
+    plugins switch. "on" lets a step name plugins, subject to work contracts
+    and each workspace's signed allowed list as before; "off" refuses every
+    step that names a plugin. ON by default, the state swarm-api reads when
+    the variable is unset, so no environment plans a behaviour change; a
+    platform admin's console setting overrides it. plugins.enabled() reads
+    anything but exactly "off" as on; the validation refuses any other value
+    instead, so a misspelt "Off" never ships as a silent on.
+  EOT
+  type        = string
+  default     = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.plugins_switch)
+    error_message = "plugins_switch is on or off (swarm_api.plugins.enabled reads anything but exactly \"off\" as on)."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
@@ -1549,27 +1571,34 @@ variable "setup_github_org" {
 variable "voice_speech" {
   description = <<-EOT
     Voice it's own speech engine: the one speech machine (voice_speech.tf;
-    docs/design/voice-it-own-speech.md §5). It is made only while `voice_it`
-    is "on" as well, and it is made STOPPED: swarm-api starts it for a session
-    and stops it after.
+    docs/design/voice-it-own-speech.md §5). Its parts are made only while
+    `voice_it` is "on" as well. Terraform makes the machine's instance
+    template, never the machine: swarm-api creates it from the template, or
+    starts it, for a session's Start, and stops it after.
 
       enabled       false: nothing is made. Off in every environment's tfvars
                     until the owner turns it on; the installer offers it.
-      zone          "us-central1-a": the one zone the machine lives in. One
-                    zone, one machine (owner, 2026-11-05): a stock-out falls
-                    back to text mode, no second machine. Must be in
-                    var.region and offer L4s.
+      zones         [] = ["<region>-a", "<region>-b", "<region>-c"]: the
+                    zones of var.region that offer the L4, which the one
+                    regional bulk insert's location policy allows (owner,
+                    2026-11-09: "let Google pick the zone"). Google places
+                    the one machine in a zone with a free L4; when none has
+                    one, the session falls back to text mode. Every zone must be in var.region; the
+                    installer writes the region's L4 zones in letter order.
+      zone          null: REPLACED by `zones`, read as a one-zone list for
+                    this release only (owner, 2026-11-05's one zone, one
+                    machine, revised 2026-11-09). Write zones = ["<zone>"].
       machine_type  "g2-standard-4": 4 vCPU, 16 GB, one NVIDIA L4, about
-                    $0.71 an hour while running (§1 pick 1). Terraform sets it
-                    at create only; swarm-api applies Settings' pick
-                    afterwards.
+                    $0.71 an hour while running (§1 pick 1). The template's;
+                    swarm-api creates and starts the machine with Settings'
+                    pick.
       image         "" until set: a Deep Learning VM image BY NAME,
                     projects/deeplearning-platform-release/global/images/<name>,
                     with the NVIDIA driver and the container toolkit on it.
                     The driver is 580 or later (its family ends -nvidia-580
                     or higher): vLLM 0.33 is built on CUDA 13.
-                    Never a /family/ path, which moves under a stopped machine
-                    and would replace it at the next plan. Required once
+                    Never a /family/ path, which moves: the machine's next
+                    create would boot an image nobody pinned. Required once
                     enabled; the installer pins the newest such image at
                     install time.
       disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
@@ -1578,12 +1607,13 @@ variable "voice_speech" {
                     previous server image during an update (§5.1).
       idle_minutes  5: the session ends after this long without speech or
                     tool activity, and the machine stops (§4.4, pick 1).
-                    Written to the machine's metadata at create; Settings
-                    change it afterwards.
+                    Written to the template's metadata; Settings change it
+                    at each start.
   EOT
   type = object({
     enabled      = optional(bool, false)
-    zone         = optional(string, "us-central1-a")
+    zones        = optional(list(string), [])
+    zone         = optional(string)
     machine_type = optional(string, "g2-standard-4")
     image        = optional(string, "")
     disk_gb      = optional(number, 150)
@@ -1597,8 +1627,24 @@ variable "voice_speech" {
   }
 
   validation {
-    condition     = can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.voice_speech.zone))
-    error_message = "voice_speech.zone is one zone, e.g. us-central1-a."
+    condition     = alltrue([for z in var.voice_speech.zones : can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", z))])
+    error_message = "voice_speech.zones is a list of zones of var.region that offer the L4, in the order swarm-api tries them, e.g. [\"<region>-a\", \"<region>-b\", \"<region>-c\"]."
+  }
+
+  validation {
+    condition     = length(distinct(var.voice_speech.zones)) == length(var.voice_speech.zones)
+    error_message = "voice_speech.zones names a zone twice: each zone is tried at most once per Start."
+  }
+
+  # The one-zone form, for one release (owner, 2026-11-09).
+  validation {
+    condition     = var.voice_speech.zone == null || can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.voice_speech.zone))
+    error_message = "voice_speech.zone is replaced by voice_speech.zones, an ordered list of the region's L4 zones: write zones = [\"<region>-a\", \"<region>-b\", \"<region>-c\"]."
+  }
+
+  validation {
+    condition     = var.voice_speech.zone == null || length(var.voice_speech.zones) == 0
+    error_message = "voice_speech sets both zone and zones: zone is replaced by zones; keep only zones."
   }
 
   validation {

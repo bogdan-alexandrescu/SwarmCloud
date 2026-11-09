@@ -463,7 +463,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
             <Applied view={view} field="tts_model" />
           </Row>
           <Row label="Voice">
-            <Seg ro={ro} chips label="Voice" value={value('tts_voice')} onPick={pick('tts_voice')} options={(tts?.voices ?? []).map((v) => ({ key: v, label: <span className="vset-mono">{v}</span> }))} />
+            <Seg ro={ro} chips label="Voice" value={value('tts_voice')} onPick={pick('tts_voice')} options={(tts?.voices ?? []).map((v) => ({ key: v, label: <span className="vset-mono id">{v}</span> }))} />
           </Row>
         </Card>
 

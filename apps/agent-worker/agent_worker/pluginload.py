@@ -16,6 +16,17 @@ UNSIGNED does, so a set on a task with no signature is refused
 signature. No catalogue document is read: the set's digest is the only
 thing trusted about the bytes.
 
+WHAT IT SKIPS (section 7, the owner's answer to Q6). Beside the set, the
+signed block may carry `metadata.dispatch.plugins_skipped`
+(`swarm_api.plugins.StepPlugins.record_on`): each default the step could not
+run, `{"install_id", "code"}`, recorded by swarm-api rather than refused.
+With the platform's plugins switch off it is the ONLY plugin key, every
+default skipped with `plugins_off_on_platform` and no `plugins` at all, so
+the worker loads nothing and refuses nothing. That record is the step's own;
+the worker never loads a skipped install, and refuses a set that also names
+one (`plugin_set_invalid`): swarm-api never signs both, so either the merge
+is broken or the block is not the one it meant.
+
 INSTALL (section 4.2), per plugin, before the agent: download
 `<object>` from the plugins bucket into `private/plugins/<sha256>.tar`
 (private: never checkpointed, never uploaded), refuse the step when the
@@ -74,6 +85,9 @@ from .errors import ConfigError
 #: The signed dispatch block's key and, inside it, the set's.
 DISPATCH_KEY = "dispatch"
 BLOCK_KEY = "plugins"
+#: The defaults swarm-api skipped for the step, beside the set in the same
+#: signed block (`swarm_api.plugins.DISPATCH_SKIPPED`, restated).
+SKIPPED_KEY = "plugins_skipped"
 
 #: What the intake job puts before every hook and server command (section 4.4);
 #: `swarm_api.pluginconfig.LAUNCHER`, restated (the worker never imports the
@@ -248,7 +262,27 @@ def signed_set(task: Mapping[str, Any]) -> dict[str, Any]:
         raise PluginRefused("plugins_unsigned")
     if not isinstance(block, Mapping):
         raise PluginRefused("plugin_set_invalid")
+    if set(block) & set(skipped(task)):
+        raise PluginRefused("plugin_set_invalid")
     return dict(block)
+
+
+def skipped(task: Mapping[str, Any]) -> dict[str, str]:
+    """`metadata.dispatch.plugins_skipped` as install id -> its fixed code:
+    the defaults swarm-api skipped for this step, never loaded here. A row
+    not in the shape swarm-api writes is left out: the list only ever
+    removes plugins, so nothing in it can make the worker load one."""
+    metadata = task.get("metadata")
+    dispatch = metadata.get(DISPATCH_KEY) if isinstance(metadata, Mapping) else None
+    rows = dispatch.get(SKIPPED_KEY) if isinstance(dispatch, Mapping) else None
+    out: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        install_id, code = row.get("install_id"), row.get("code")
+        if isinstance(install_id, str) and install_id and isinstance(code, str) and code:
+            out[install_id] = code
+    return out
 
 
 def _strings(value: Any, key: re.Pattern[str]) -> dict[str, str] | None:
@@ -945,12 +979,14 @@ __all__ = [
     "PLACEHOLDER",
     "PluginRefused",
     "REFUSALS",
+    "SKIPPED_KEY",
     "entries",
     "fetch",
     "load",
     "options",
     "record",
     "signed_set",
+    "skipped",
     "unpack",
     "wrap_hooks",
     "wrap_servers",

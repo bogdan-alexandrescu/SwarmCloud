@@ -31,6 +31,7 @@ against it (`scripts/offboard-tenant.sh`, `scripts/pool-limit.sh`).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pty
@@ -53,6 +54,17 @@ pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
     reason="backfill-attempt-ends.sh needs bash and jq",
 )
+
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
+placeholder_deployment = _P.deployment()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    # common.sh has no default region or zone and reads the project's never-touch list.
+    yield from placeholder_deployment.activate(tmp_path_factory)
 
 FAKE_CURL = r'''#!{python} -S
 import json, os, sys
