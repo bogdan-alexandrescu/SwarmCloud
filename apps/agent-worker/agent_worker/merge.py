@@ -2120,8 +2120,10 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
 
 #: The catalogue profile of a fix-loop step (FL-CONTRACT, the owner Q10).
 FIX_LOOP_PROFILE = "fix-loop"
-#: The loop's signed dispatch block, as FL-SUBMIT signs it: `review` (and,
-#: under `integrate`, `fix`) are TASK ids, as `verdict_gate.task_id` is.
+#: The loop's signed dispatch block, as FL-SUBMIT signs it
+#: (`validation.FixLoopSpec.block`): `review` (and, under `integrate`, `fix`)
+#: are STEP ids; `review_task_id` (and `fix_task_id`) are their TASK ids.
+#: Only `review_task_id` names the declared review a round-0 merge rests on.
 FIX_LOOP_DISPATCH_KEY = "fix_loop"
 #: A round's signed dispatch record: `{loop_task, round, kind, head, ...}`,
 #: `kind` "review" for a `re-review:<k>`, "fix" for a `review-fix:<k>`.
@@ -2162,7 +2164,7 @@ def _loop_review(ctx: ActionContext, loop_id: str) -> _LoopReview:
     1. The loop: of this workflow, signed (`verify_upstream`), on the
        `fix-loop` profile, SUCCEEDED.
     2. Its `result_summary.fix_loop.final_review`, or for `rounds: 0` its
-       signed `fix_loop.review`.
+       signed `fix_loop.review_task_id` (`fix_loop.review` is the step id).
     3. That review: signed (a re-review is its own one-step workflow, so it
        is verified against the workflow its signature names), this tenant,
        SUCCEEDED, and either the loop's declared review or a round whose
@@ -2190,7 +2192,7 @@ def _loop_review(ctx: ActionContext, loop_id: str) -> _LoopReview:
                            "SUCCEEDED: its rounds ended without a review saying MERGE")
     block = _mapping(_mapping(_mapping(loop.get("metadata")).get("dispatch"))
                      .get(FIX_LOOP_DISPATCH_KEY))
-    declared = _task_id(block.get("review"))
+    declared = _task_id(block.get("review_task_id"))
     record = _mapping(_mapping(loop.get("result_summary")).get(FIX_LOOP_SUMMARY_KEY))
     final = record.get("final_review")
     rounds = record.get("rounds")
