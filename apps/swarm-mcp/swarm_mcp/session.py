@@ -51,7 +51,7 @@ THIS SESSION'S WORK, WITHIN THE PROJECT (SC-TITLES, #1511, owner decision
 dispatched from a project is appended to that project's `launched.jsonl`
 (`swarm_mcp.launch.record`, beside the run copies in
 `<project>/.sc-swarmcloud-runs/`; one an older bridge left in
-`<project>/.claude/sc-swarmcloud-runs/` is read too, PLUGIN-RUNDIR). `/sc check`, `/sc attach --all` and
+`<project>/.claude/sc-swarmcloud-runs/` is read too, PLUGIN-RUNDIR). `/sc check`, its attach and
 the SessionStart attach keep work that is BOTH tagged with this session AND in
 that record (`ownership` with a `record`; a submission is recorded by the
 workflow id SwarmCloud answered with, SC-TITLES-B), so work this project launched
@@ -318,7 +318,9 @@ def attached_note(owner: str | None, sid: str | None) -> str | None:
         return None
     if kind == "other_session":
         return (f"this workflow is NOT this session's: it was started by Claude Code session {owner}. "
-                "Attached because you asked by id; `/sc check` and `/sc attach --all` leave it out")
+                "Attached because you asked by id; `/sc check` leaves it out, and `/sc attach --all` "
+                "too unless it clones this project's repository")
     return ("this workflow is NOT this session's: it carries no Claude Code session tag (submitted "
             "before tagging existed, or by another client). Attached because you asked by id; "
-            "`/sc check` and `/sc attach --all` leave it out")
+            "`/sc check` leaves it out, and `/sc attach --all` too unless it clones this project's "
+            "repository")

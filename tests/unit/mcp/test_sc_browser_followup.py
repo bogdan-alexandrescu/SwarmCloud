@@ -16,8 +16,12 @@
    origin repository, whichever Claude Code session started it -- is named
    and attached (rows layout: `/sc attach --all --project`; pane layout: the
    pane lists it once read). Another repository's work from another session
-   is left out, and `/sc check` and the plain `/sc attach --all` stay this
-   session's alone (owner decision 2026-10-14).
+   is left out, and `/sc check` and the watch stay this session's alone
+   (owner decision 2026-10-14).
+4. THE PLAIN ATTACH-ALL TAKES THE SAME (the owner, 2026-11-09): `/sc attach
+   --all` attaches the project's running work another session started, each
+   marked `this_session: false`, outside the pane layout; `project: true`
+   still means the same.
 """
 
 from __future__ import annotations
@@ -155,12 +159,68 @@ def test_attach_all_project_attaches_the_projects_running_work_and_not_another_r
     assert reply["arm_watch"] is not None
 
 
-def test_plain_attach_all_and_check_stay_this_sessions(monkeypatch, tmp_path):
+#: A third Claude Code session, which started nothing.
+FRESH = "99999999-3333-4333-8444-555555555555"
+
+
+def test_plain_attach_all_from_a_session_with_no_work_attaches_the_projects_work_marked_started_elsewhere(
+        monkeypatch, tmp_path):
+    """The owner, 2026-11-09: the plain attach-all is the session start's."""
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FRESH)
+    reply = json.loads(server._call(_world(), "swarm_workflow_launch", {"attach": "all"}))
+    flows, tasks = _attached(reply)
+    assert flows == PROJECT  # MUTATION: keep the 14 October rule -- nothing, all left out as other_session.
+    assert tasks == {"task_single_app"}  # MUTATION: no repository check -- another repository's task too.
+    marks = {l.get("workflow_id") or tuple(l.get("task_ids") or ()): l.get("this_session") for l in reply["launches"]}
+    assert set(marks.values()) == {False}, marks  # MUTATION: no mark -- read as this session's own.
+    assert reply["project"]["from_other_sessions"] == 4
+    # Left out: another repository's work alone, counted as such.
+    assert reply["session"]["left_out"] == {
+        "workflows": {"other_session": 0, "untagged": 0, "not_this_project": 1},
+        "single_tasks": {"other_session": 0, "untagged": 0, "not_this_project": 1},
+    }  # MUTATION: count another repository's work as other_session.
+    assert reply["arm_watch"] is not None
+
+
+def test_plain_attach_all_marks_this_sessions_own_work_as_its_own(monkeypatch, tmp_path):
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     reply = json.loads(server._call(_world(), "swarm_workflow_launch", {"attach": "all"}))
-    assert _attached(reply)[0] == {"wf_mine"}  # MUTATION: widen attach-all itself -- every later attach is project-wide.
+    assert _attached(reply)[0] == PROJECT
+    marks = {l["workflow_id"]: l["this_session"] for l in reply["launches"] if l.get("workflow_id")}
+    assert marks == {"wf_mine": True, "wf_theirs_app": False, "wf_untagged_app": False}
+    assert reply["project"]["from_other_sessions"] == 3
+    # `project: true` is still accepted and means the same.
+    again = json.loads(server._call(_world(), "swarm_workflow_launch", {"attach": "all", "project": True}))
+    assert _attached(again) == _attached(reply)
+
+
+def test_check_its_attach_and_the_watch_stay_this_sessions(monkeypatch, tmp_path):
+    """`/sc check` and the watch (which runs it) read and attach this session's work alone."""
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     result = check.run(_world(), now=NOW, names=lambda _c: {}, repository=APP)
     assert [w["workflow_id"] for w in result["running"]["workflows"]] == ["wf_mine"]  # MUTATION: widen /sc check too.
+    tool = json.loads(server._call(_world(), "swarm_check", {}))
+    assert [w["workflow_id"] for w in tool["running"]["workflows"]] == ["wf_mine"]  # MUTATION: widen swarm_check.
+    # The check's attach, what the watch's cron run ends with.
+    attach = json.loads(server._call(_world(), "swarm_workflow_launch",
+                                     {"attach": "all", "repository": "origin", "new_only": True}))
+    assert _attached(attach)[0] == {"wf_mine"}  # MUTATION: widen the check's new_only attach.
+    assert "project" not in attach
+    # A session with no work of its own: the check finds nothing, and attaches nothing.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", FRESH)
+    launch.forget_attached()
+    assert check.run(_world(), now=NOW, names=lambda _c: {}, repository=APP)["running"]["workflows"] == []
+    empty = json.loads(server._call(_world(), "swarm_workflow_launch",
+                                    {"attach": "all", "repository": "origin", "new_only": True}))
+    assert _attached(empty) == (set(), set())
+
+
+def test_in_the_pane_rows_mode_the_plain_attach_all_stays_this_sessions(monkeypatch, tmp_path):
+    """The pane lists the project's work with no model row; its quiet rows stay this session's."""
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    reply = json.loads(server._call(_world(), "swarm_workflow_launch", {"attach": "all", "rows": "pane"}))
+    assert _attached(reply)[0] == {"wf_mine"}  # MUTATION: widen the pane's rows -- a model row per project workflow.
 
 
 def test_project_is_taken_only_with_attach_all():
@@ -235,7 +295,8 @@ def test_the_skill_and_the_command_say_a_switch_reattaches_and_which_attach_is_p
     skill = " ".join(_SKILL.read_text().split())
     command = " ".join(_COMMAND.read_text().split())
     assert "/sc attach --all --project" in skill and '"project": true' in skill.replace("project: true", '"project": true')
-    assert "at session start only" in skill  # MUTATION: no word of when the widening applies.
+    assert "the plain `/sc attach --all`'s" in skill  # MUTATION: no word of when the widening applies.
+    assert '`{attach: "all"}` and `{attach: "all", project: true}` mean the same' in skill
     assert "`/sc check` and the watch stay scoped to this session" in skill
     for text in (skill, command):
         assert "then queue" in text.lower() or "queues" in text.lower()

@@ -56,8 +56,9 @@ module answers `/sc layout` before this file is read, and the same run goes
 on as `/sc attach --all` (one chat turn).
 
 If the arguments are `attach --all --project`, it is the SessionStart hook's
-ask, at session start only: the skill's `attach --all` with `project: true`
-(its "Session start" section). `/sc check` and the watch stay this session's.
+ask: the skill's `attach --all` with `project: true`, which since 2026-11-09
+means the same as the plain `attach --all` (its "Session start" section).
+`/sc check` and the watch stay this session's.
 
 If the arguments are `inputs` or `answer <wf_id> <step_id> [file ...]`, do
 **not** run them here: `sc` has no such view. `inputs` is one `swarm_inputs`

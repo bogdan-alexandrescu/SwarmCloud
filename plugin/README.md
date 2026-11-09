@@ -1212,9 +1212,10 @@ when several sessions share one tenant or workspace.
   conflict-fix and CI-fix rounds copy their merge task's tag, so a session's
   own fix rounds are its own. swarm-api serves it back as `claude_session` on
   task rows (the summary view too), workflow rows and runs.
-* **The scope.** `/sc check`, `/sc attach --all` (and the check's `new_only`
-  attach), the SessionStart hook's "attach and arm" context, and so the watch
-  consider ONLY work tagged with this session's id. Another session's work,
+* **The scope.** `/sc check` (and its `new_only` attach) and so the watch
+  consider ONLY work tagged with this session's id; `/sc attach --all` and the
+  SessionStart hook's context also take this project's running work,
+  whichever session started it (owner, 2026-11-09). Another session's work,
   and untagged work (submitted before this change, or by another client),
   are never automatic candidates; each answer counts them in
   `session.left_out`. With no session id known, nothing is a candidate and
@@ -1361,9 +1362,12 @@ this checkout's origin repository, whichever session started it. In the rows
 layout it asks for `/sc attach --all --project` (`swarm_workflow_launch
 {attach: "all", project: true}`); in the pane layout the pane's Level 1 lists
 it once read (`swarm_browse {level: "workflows", project: true}`). Another
-repository's work from another session is left out, and `/sc check`, the watch
-and the plain `/sc attach --all` stay this session's (owner decision
-2026-10-14).
+repository's work from another session is left out, and `/sc check` and the
+watch stay this session's (owner decision 2026-10-14). Since 2026-11-09 (the
+owner's decision) the plain `/sc attach --all` takes the same as
+`--project`, outside the pane layout: the project's running work another
+session started is attached, marked `this_session: false`, instead of being
+left out as `other_session`.
 
 What the pane needs and what was not measured: Claude Code's function hooks,
 early access in this build (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without
