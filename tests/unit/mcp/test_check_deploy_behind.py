@@ -125,6 +125,23 @@ def test_a_deployment_behind_main_past_the_window_is_stuck_with_its_release_fail
     assert got["deployment"]["state"] == "behind"
 
 
+def test_the_twelve_character_sha_the_build_stamps_is_compared_and_flagged():
+    """scripts/lib/common.sh `git_sha` stamps `git rev-parse --short=12`: the
+    shape every real deployment serves. GitHub's compare resolves it, and its
+    `base_commit` names the deployed commit in full."""
+    deployed = _sha()
+    github = _GitHub(deployed, NOW - timedelta(hours=11), [(_sha(), NOW - timedelta(hours=10))],
+                     [_failed_run(_sha())], [FAILED_JOB])
+
+    got = check.deployment(_Api({"git_sha": deployed[:12]}), KEY, NOW, github)
+
+    assert got["unchecked"] is None
+    assert got["flag"] is not None and got["flag"]["kind"] == check.STUCK
+    assert github.compared == [(deployed[:12], "main")]
+    assert got["deployment"]["deployed"]["commit"] == deployed
+    assert got["deployment"]["state"] == "behind"
+
+
 def test_a_deployment_behind_main_inside_the_window_is_not_flagged():
     deployed = _sha()
     head = _sha()
@@ -157,6 +174,7 @@ def test_a_reused_image_whose_release_succeeded_is_not_behind():
 @pytest.mark.parametrize("served", [
     SwarmError("HTTP 503 from the API"),
     {"git_sha": None, "build_time": None},
+    {"git_sha": "not-a-commit", "build_time": None},
 ])
 def test_an_unreadable_deployed_commit_is_not_read_never_current(served):
     github = _GitHub(_sha(), NOW, [], [])

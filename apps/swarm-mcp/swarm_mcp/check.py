@@ -450,7 +450,9 @@ RELEASE_JOBS_PAGE = 100
 #: The route that serves the commit swarm-api's image was built from.
 VERSION_ROUTE = "/v1/version"
 DEPLOY_RULE = "deploy_behind"
-_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+#: A commit, full or abbreviated: the build stamps `git rev-parse --short=12`
+#: (scripts/lib/common.sh git_sha), and GitHub's compare resolves either.
+_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 
 
 class DeployGitHub:
@@ -603,7 +605,7 @@ def deployment(client: SwarmClient, key: str | None, now: datetime,
     sha = sha.strip().lower() if isinstance(sha, str) else sha
     if not isinstance(sha, str) or not _COMMIT.match(sha):
         return not_read(f"the deployed commit: GET {VERSION_ROUTE} served git_sha {sha!r}, "
-                        "not a 40-hex commit (an image built with no GIT_SHA)")
+                        "not a hex commit of 7 to 40 characters")
     state["deployed"] = {"commit": sha, "source": f"GET {VERSION_ROUTE} git_sha, the commit "
                                                   "that built swarm-api's image"}
     if key is None:
@@ -625,7 +627,12 @@ def deployment(client: SwarmClient, key: str | None, now: datetime,
 
     commits = [c for c in diff["commits"] if isinstance(c, dict)]
     shas = [str(c.get("sha") or "").lower() for c in commits]
-    deployed_at = _committed_at(diff.get("base_commit"))
+    base = diff.get("base_commit")
+    full = str(base.get("sha") or "").lower() if isinstance(base, dict) else ""
+    if _COMMIT.match(full) and full.startswith(sha):
+        # The served sha is abbreviated; the comparison names it in full.
+        state["deployed"]["commit"] = sha = full
+    deployed_at = _committed_at(base)
     state["deployed"].update(committed_at=_iso(deployed_at),
                              age_minutes=_minutes((now - deployed_at).total_seconds()) if deployed_at else None)
     start = 0
