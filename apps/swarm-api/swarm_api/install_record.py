@@ -5,7 +5,8 @@ subcollections. **Every document has exactly one writer.** The engine (the
 `swarm install` CLI) writes `swarm-install/<env>`; swarm-api reads it and never
 writes it. swarm-api writes the console's documents, the team documents
 (`teams/<id>`) and `health/latest` (on behalf of `swarm-doctor`), and
-nothing else under the collection.
+nothing else under the collection. A write an admin must answer for
+(`create`, `delete`) carries its `admin_audit` row in the same transaction.
 
 `SWARM_API_DOCUMENTS` restates swarm-api's rows of `swarm_install.record.WRITERS`
 (DAYONE-ENGINE-1). It is restated, not imported, because swarm-api's image does
@@ -21,6 +22,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+
+from .admins import AUDIT_COLLECTION
 
 COLLECTION = "swarm-install"
 
@@ -51,6 +54,10 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     #: client's id, when and by whom it was saved. Its secret goes to Secret
     #: Manager (`swarm-iap-desktop-client-secret`) only, never here.
     "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
+    #: Admin › Setup's optional "add a plugin" step (managed-plugins §15.1):
+    #: when and by whom a platform admin skipped it. Removed, not blanked,
+    #: when the skip is undone; the step's state is otherwise derived.
+    "swarm-install/{env}/console/plugins_step": frozenset({"skipped_at", "skipped_by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 #: `link_made_at` is when the account's one-time link was made, stored with
@@ -83,6 +90,7 @@ TEAMS = "teams"
 VERIFY_RUNS = "verify_runs"
 PERSONAL = "personal"
 SIGN_IN_CLIENT = "sign_in_client"
+PLUGINS_STEP = "plugins_step"
 
 
 class RecordFieldRefused(ValueError):
@@ -185,6 +193,57 @@ class InstallRecord:
         _apply(self._db.transaction())
         return merged
 
+    def create(self, path: str, data: Mapping[str, Any], *,
+               audit: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Write `data` at `path` only when no document is there, with `audit`
+        as one `admin_audit` row in the same transaction; a document already
+        there is answered unchanged and nothing is audited. Answers the
+        document and whether it was created."""
+        check_fields(path, self.env, data)
+        from google.cloud import firestore  # lazy: nothing built at import time
+
+        ref = self._ref(path)
+        found: dict[str, Any] = {}
+        created: list[bool] = []
+
+        @firestore.transactional
+        def _apply(transaction: Any) -> None:
+            snapshot = ref.get(transaction=transaction)
+            found.clear()
+            created.clear()
+            if snapshot.exists:
+                found.update(snapshot.to_dict() or {})
+                return
+            found.update(data)
+            transaction.set(ref, dict(data))
+            transaction.set(self._db.collection(AUDIT_COLLECTION).document(), dict(audit))
+            created.append(True)
+
+        _apply(self._db.transaction())
+        return dict(found), bool(created)
+
+    def delete(self, path: str, *, audit: Mapping[str, Any]) -> bool:
+        """Remove the document at `path`, with `audit` as one `admin_audit`
+        row in the same transaction; with no document there, nothing is
+        written or audited. Answers whether there was one."""
+        _template(path, self.env)
+        from google.cloud import firestore  # lazy: nothing built at import time
+
+        ref = self._ref(path)
+        removed: list[bool] = []
+
+        @firestore.transactional
+        def _apply(transaction: Any) -> None:
+            removed.clear()
+            if not ref.get(transaction=transaction).exists:
+                return
+            transaction.delete(ref)
+            transaction.set(self._db.collection(AUDIT_COLLECTION).document(), dict(audit))
+            removed.append(True)
+
+        _apply(self._db.transaction())
+        return bool(removed)
+
 
 __all__ = [
     "ACCOUNTS",
@@ -198,6 +257,7 @@ __all__ = [
     "InstallRecord",
     "PASS_FIELDS",
     "PERSONAL",
+    "PLUGINS_STEP",
     "RecordFieldRefused",
     "SIGN_IN_CLIENT",
     "SIZING_FIELDS",
