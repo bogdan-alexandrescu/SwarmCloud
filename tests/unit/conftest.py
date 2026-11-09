@@ -25,3 +25,20 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     except flaky_quarantine.QuarantineListError as exc:
         raise pytest.UsageError(str(exc)) from None
     flaky_quarantine.apply(items, entries, pytest.mark.flaky)
+
+
+@pytest.fixture
+def fix_loop_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `fix-loop` profile unavailable, as it shipped until contract request
+    151 (2026-11-09). A module written against the re-review that a workflow
+    merging on its review's verdict got before then (one fix round, a
+    `re-review` step) holds that path with
+    `pytestmark = pytest.mark.usefixtures("fix_loop_off")`; the loop itself is
+    held by the test_fix_loop_*.py and test_issue_run_fix_loop.py modules."""
+    from dataclasses import replace
+
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    monkeypatch.setitem(RUNNER_PROFILES, "fix-loop", replace(
+        RUNNER_PROFILES["fix-loop"], available=False,
+        disabled_reason="fix-loop is not available (patched off for this test)"))

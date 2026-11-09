@@ -46,6 +46,11 @@ from swarm_api.waker import NullWaker
 from .conftest import PROJECT, api_settings, auth_header, seed_pool, seed_task, seed_tenant
 from .spec_signer import LocalSpecSigner
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 BROWSER = "claude-code-browser"
 CODE = "claude-code"
 POLICY = {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE}
