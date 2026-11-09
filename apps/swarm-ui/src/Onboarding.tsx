@@ -3,6 +3,7 @@ import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError } from './fetch'
 import { connectionOf, Refusal } from './GitHubConnect'
+import { GuideLink } from './Guide'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { WorkspaceTabWords } from './Profile'
@@ -492,7 +493,8 @@ export function SetupCard() {
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
         This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
-        browser; <WorkspaceTabWords tab="Setup" /> still shows them.
+        browser; <WorkspaceTabWords tab="Setup" /> still shows them. Every step, explained:{' '}
+        <GuideLink slug="sign-in">the user guide</GuideLink>.
       </p>
     </Card>
   )
@@ -510,7 +512,8 @@ export function OnboardingScreen() {
       <p className="ur-sub">
         Connect GitHub as yourself, install the App where your repositories are, enable the orgs SwarmCloud may reach,
         choose the repositories it may read or write, and verify that it can, all on GitHub access. Each step is checked
-        again on every read; nothing here is marked done by hand.
+        again on every read; nothing here is marked done by hand. Every step, explained:{' '}
+        <GuideLink slug="sign-in">the user guide</GuideLink>.
       </p>
       <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your setup checklist" onRetry={doc.reload} lines={6}>
         {(d) =>

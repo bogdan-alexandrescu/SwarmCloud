@@ -1,0 +1,135 @@
+/* THE USER GUIDE (/guide, Guide.tsx): prose pages, one column, the console's
+   own tokens, so both themes follow the console's. Nothing is wider than its
+   column: tables and code scroll inside their own box, which takes focus so a
+   keyboard can scroll it too. */
+.guide {
+  max-width: var(--measure);
+  min-width: 0;
+  color: var(--text);
+}
+.guide-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ctl-s2) var(--ctl-s3);
+  margin-bottom: var(--ctl-s3);
+}
+.guide-home {
+  font-weight: 600;
+  color: var(--text);
+}
+.guide-search {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.guide-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.guide-hits {
+  margin-bottom: var(--ctl-s3);
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+}
+.guide-hits ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.guide-article {
+  font-size: var(--t-body);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.guide-article h1 {
+  font-size: var(--t-figure);
+  margin: 0 0 var(--ctl-s3);
+}
+.guide-article h2 {
+  font-size: var(--t-title);
+  margin: var(--ctl-s5) 0 var(--ctl-s2);
+}
+.guide-article h3 {
+  font-size: var(--t-lead);
+  margin: var(--ctl-s3) 0 var(--ctl-s2);
+}
+.guide-article p {
+  margin: 0 0 var(--ctl-s3);
+}
+.guide-article ol,
+.guide-article ul {
+  margin: 0 0 var(--ctl-s3);
+  padding-left: 22px;
+}
+.guide-article li {
+  margin-bottom: var(--ctl-s1);
+}
+.guide-article li > ol,
+.guide-article li > ul,
+.guide-article li > p {
+  margin: var(--ctl-s1) 0 0;
+}
+.guide-article code {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+.guide-code {
+  margin: 0 0 var(--ctl-s3);
+  padding: var(--ctl-s2) var(--ctl-s3);
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+}
+.guide-code code {
+  padding: 0;
+  background: none;
+}
+.guide-table {
+  margin: 0 0 var(--ctl-s3);
+  overflow-x: auto;
+}
+.guide-table table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.guide-table th,
+.guide-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.guide-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.guide-pager {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--ctl-s2);
+  margin-top: var(--ctl-s5);
+  padding-top: var(--ctl-s3);
+  border-top: 1px solid var(--line);
+}
+.guide :focus-visible {
+  outline: 2px solid var(--ctl-bd);
+  outline-offset: 2px;
+}
+/* Help's line pointing here (HelpSection.tsx). */
+.help-guide {
+  margin: var(--ctl-s2) 0 var(--ctl-s3);
+  font-size: var(--t-meta);
+  color: var(--text-dim);
+}
