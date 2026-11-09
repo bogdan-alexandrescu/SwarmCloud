@@ -12,7 +12,7 @@ Find the words you see, then do what the right-hand column says.
 | "Your tenant is disabled" | Ask an admin. |
 | "… is for platform admins" or "… is for workspace admins" | That page is not for your role. Press **Open Overview**. |
 | "We could not confirm which team you belong to" | Pick a workspace you belong to. The console forgets the old choice for you. |
-| `sign-in required for …: run sc login` (Claude Code) | In a terminal, run `uv run sc login`, then try again. |
+| `sign-in required for …: run sc login` (Claude Code) | In a terminal, run `sc login` ([Quick start, step 2](quick-start.md): `uv tool run --from …` without a checkout, `uv run sc login` inside one), then try again. |
 | `401` with "IAP error code 900" (Claude Code) | The deployment does not accept this sign-in yet. Run `/sc:doctor` and send its output to your platform team. |
 
 ## Starting work

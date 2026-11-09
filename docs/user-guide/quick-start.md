@@ -19,7 +19,14 @@ Then type `/reload-plugins` and `/mcp`. You should see `plugin:sc:swarmcloud` as
 
 ## 2. Sign in (1 minute)
 
-In a terminal:
+In a terminal. If you have only the plugin (no SwarmCloud checkout), run `sc` from the same package the plugin uses; `<version>` is the plugin's version, shown by `/plugin`:
+
+```bash
+uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/swarmcloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login
+uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/swarmcloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc whoami
+```
+
+Inside a SwarmCloud checkout, the short form works:
 
 ```bash
 uv run sc login     # a browser window opens: pick your work account
