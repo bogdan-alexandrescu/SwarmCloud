@@ -62,7 +62,7 @@ def _reading(**over: Any) -> dict[str, Any]:
 
 
 def _hhmm(at: datetime) -> str:
-    return at.strftime("%H:%M")
+    return at.strftime("%H:%MZ")
 
 
 def test_a_held_merge_wait_serves_its_last_check_and_no_past_next_check():
