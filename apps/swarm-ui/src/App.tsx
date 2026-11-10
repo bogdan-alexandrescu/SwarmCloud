@@ -69,6 +69,8 @@ import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
+import { lpOn } from './lpmock/lp' // MOCK-HOOK
+import { LlmProvidersTable } from './lpmock/LpTable' // MOCK-HOOK
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
@@ -652,6 +654,7 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
 ]
+if (lpOn()) for (const t of SECTIONS.find((s) => s.id === CAPACITY)?.tabs ?? []) if (t.id === 'accounts') (t as { label: string }).label = 'LLM Providers' // MOCK-HOOK
 
 /**
  * THE OLD ADDRESS OF API READS, and nothing else now. It was a utility route
@@ -1099,6 +1102,7 @@ export function fromAddress(full: string): Route {
   const toPage = movedToWorkspacePage(full)
   if (toPage !== null) return fromAddress(toPage)
   if (full === HOME) return HOME_ROUTE
+  if (lpOn() && full.startsWith('capacity/llm-providers')) return { sectionId: CAPACITY, tab: 'accounts', page: (full.includes('api-keys') ? 'api-keys' : 'plans') as unknown as Route['page'], taskId: null, taskPane: 'detail' } // MOCK-HOOK
   const queryAt = full.indexOf('?')
   const hash = queryAt === -1 ? full : full.slice(0, queryAt)
   const query = queryAt === -1 ? '' : full.slice(queryAt + 1)
@@ -1357,6 +1361,7 @@ export function canonical(r: Route): string {
   if (r.sectionId === JOIN) return JOIN
   if (r.sectionId === SETUP_LINK) return SETUP_LINK
   if (r.sectionId === HOME) return HOME
+  if (lpOn() && r.sectionId === CAPACITY && r.tab === 'accounts') return `capacity/llm-providers/${(r.page as string | null | undefined) === 'api-keys' ? 'api-keys' : 'plans'}` // MOCK-HOOK
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
@@ -2552,6 +2557,7 @@ function SectionBody({
     case 'capacity/holders':
       return <HoldersScreen />
     case 'capacity/accounts':
+      if (lpOn()) return <LlmProvidersTable sub={(page as string | null) === 'api-keys' ? 'api-keys' : 'plans'} go={go} /> // MOCK-HOOK
       return <AccountsScreen />
     case 'capacity/account-health':
       return <AccountHealthScreen />

@@ -35,6 +35,7 @@ import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
 import { VoiceProjects } from './Projects'
 import { VoiceSettings } from './Settings'
 import { TalkPane } from './Talk'
+import { lpFirst, lpOn } from '../lpmock/lp' // MOCK-HOOK
 import { VoiceTelemetry } from './Telemetry'
 
 /**
@@ -76,7 +77,8 @@ function useVoiceItOpen(): boolean | null {
  * else (the address is kept, as Admin's pages keep theirs).
  */
 function Gate({ children }: { children: ReactNode }) {
-  const open = useVoiceItOpen()
+  const realOpen = useVoiceItOpen()
+  const open = lpOn() && lpFirst('lpv') === 'tier' ? true : realOpen // MOCK-HOOK: draw the Talk stage as its owner sees it
   if (open === null) return null
   if (!open) {
     return (

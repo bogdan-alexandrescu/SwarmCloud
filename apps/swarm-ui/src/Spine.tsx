@@ -68,6 +68,7 @@ import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished,
 import { voiceItOpen } from './voice/Section'
 import { HOME_JUMPS } from './Home'
 import { aboutOf } from './WorkflowFacts'
+import { lpOn, lpSub } from './lpmock/lp' // MOCK-HOOK
 
 export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
@@ -372,8 +373,18 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
   if (section === 'work' && row === 'agents') return { row, kid: agentTab }
+  if (lpOn() && section === 'capacity' && tab === 'accounts') return { row, kid: lpSub() } // MOCK-HOOK
   return { row, kid: tab === '' ? page.kids[0]!.key : tab }
 }
+
+// MOCK-HOOK: Capacity › Accounts becomes LLM Providers with its two sub-pages (direction "table").
+function lpRows(rows: readonly PanelPage[]): readonly PanelPage[] { // MOCK-HOOK
+  return rows.map((p) => (p.key !== 'accounts' ? p : { ...p, label: 'LLM Providers', to: 'capacity/llm-providers/plans', kids: [ // MOCK-HOOK
+    { key: 'plans', label: 'Plans', to: 'capacity/llm-providers/plans' }, // MOCK-HOOK
+    { key: 'api-keys', label: 'API Keys', to: 'capacity/llm-providers/api-keys' }, // MOCK-HOOK
+    ...(p.kids ?? []).filter((k) => k.key !== 'accounts'), // MOCK-HOOK
+  ] })) // MOCK-HOOK
+} // MOCK-HOOK
 
 /** The path an address is written as, for a link's `href`. */
 export function hrefOf(to: string): string {
@@ -3542,7 +3553,7 @@ function PanelRows({
   const badges = useConfigBadges()
   return (
     <>
-      {rows.map((p) => {
+      {(sec === 'capacity' && lpOn() ? lpRows(rows) : rows).map((p) => { // MOCK-HOOK
         const group = p.key === lit.row
         // THE PAGE ITSELF IS LIT (#503). A row with children is a group: it
         // opens its children, and one of them is the page.

@@ -9,6 +9,8 @@ import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
+import { lpOn } from './lpmock/lp' // MOCK-HOOK
+import { LpAttemptChip, LpAttemptMoves } from './lpmock/LpVoice' // MOCK-HOOK
 import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
@@ -459,6 +461,7 @@ function AttemptCard({
           </span>
           {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
+          {lpOn() && a && isLatest && <LpAttemptChip />} {/* MOCK-HOOK */}
         </h2>
         <span className="ctl-card-note">
           {/* NOT `0 events` (QA-113, run 2). Three cards each saying `0
@@ -483,6 +486,7 @@ function AttemptCard({
       </div>
 
       <div className="ctl-card-body">
+        {lpOn() && a && isLatest && <LpAttemptMoves />} {/* MOCK-HOOK */}
         {a && (
           // FIVE `<dt>/<dd>` PAIRS BECAME ONE STRIP, and every absence keeps
           // its key and its slot. A row that disappears when its value is null

@@ -44,6 +44,8 @@ import { Absent } from '../primitives'
 import { PageHead } from '../Shell'
 import { clockTime } from '../types'
 import '../styles/voice-settings.css'
+import { lpFirst, lpOn } from '../lpmock/lp' // MOCK-HOOK
+import { LpVoiceKeyCard } from '../lpmock/LpVoice' // MOCK-HOOK
 
 type Draft = Partial<Record<VoiceSettingField, string>>
 type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'idle'
@@ -204,7 +206,8 @@ interface Conflict {
 }
 
 /** Voice it › Settings: the four cards, editable for a platform admin, read only otherwise. */
-export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
+export function VoiceSettings({ canEdit: realCanEdit }: { canEdit: boolean }) {
+  const canEdit = realCanEdit || (lpOn() && lpFirst('lpadmin') === '1') // MOCK-HOOK: draw it as a platform admin sees it
   const [catalogue, setCatalogue] = useState<VoiceCatalogue | null>(null)
   const [view, setView] = useState<VoiceSettingsView | null>(null)
   const [readError, setReadError] = useState<ApiError | null>(null)
@@ -396,8 +399,9 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
               options={catalogue.planner_models.map((m) => ({ key: m.name, label: m.model ? `${m.label} · ${m.model}` : m.label }))}
             />
           </Row>
-          <KeyStatus view={view} />
+          {!lpOn() && <KeyStatus view={view} />} {/* MOCK-HOOK: the key moves to its own card */}
         </Card>
+        {lpOn() && <LpVoiceKeyCard canEdit={canEdit} />} {/* MOCK-HOOK */}
 
         <Card
           title="Machine"

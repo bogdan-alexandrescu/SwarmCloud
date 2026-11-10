@@ -80,7 +80,7 @@
  * route first, and sends it as a turn only when it answered nothing.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { normVoiceSettings, USE_FIXTURES, VOICE_SETTINGS } from '../api'
 import { Button, buttonClass, Segmented, ToneMark } from '../components'
@@ -109,6 +109,8 @@ import {
 import { stageFeed, TalkStage, TalkTip } from './Stage'
 import { startVoiceDetection, type VoiceDetection } from './vad'
 import '../styles/talk-pane.css'
+import { lpFirst, lpOn } from '../lpmock/lp' // MOCK-HOOK
+import { LP_TIER_LINES, LpTierCaption, LpTierMark } from '../lpmock/LpVoice' // MOCK-HOOK
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
 
@@ -311,7 +313,7 @@ function MicGlyph({ off = false }: { off?: boolean }) {
  * so a reader hears each segment once, whole; the line still being spoken is
  * drawn muted under it and hidden from the reader.
  */
-function Captions({ lines }: { lines: CaptionLine[] }) {
+function Captions({ lines, lpAfter }: { lines: CaptionLine[]; lpAfter?: number }) {
   const finals = lines.filter((l) => l.final)
   const partials = lines.filter((l) => !l.final)
   const box = useRef<HTMLDivElement | null>(null)
@@ -321,11 +323,14 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
   return (
     <div ref={box} className="vt-subs">
       <div className="vt-captions" role="log" aria-live="polite" aria-relevant="additions" aria-label="Captions">
-        {finals.map((l) => (
-          <p key={l.id} className={`vt-cap is-${l.side}`}>
-            <span className="vt-cap-who">{WHO[l.side]}</span>
-            <span className="vt-cap-text">{l.text}</span>
-          </p>
+        {finals.map((l, i) => (
+          <Fragment key={l.id}>
+            <p className={`vt-cap is-${l.side}`}>
+              <span className="vt-cap-who">{WHO[l.side]}</span>
+              <span className="vt-cap-text">{l.text}</span>
+            </p>
+            {lpAfter === i && <LpTierCaption />}
+          </Fragment>
         ))}
       </div>
       {partials.length > 0 && (
@@ -347,11 +352,12 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
 }
 
 export function TalkPane() {
+  const lpTier = lpOn() && lpFirst('lpv') === 'tier' // MOCK-HOOK: a session mid-way, on the shared key
   const [phase, setPhase] = useState<Phase>('idle')
   const [problem, setProblem] = useState<string | null>(null)
   /** A start refusal's full sentence, behind the problem line's (i). */
   const [problemTip, setProblemTip] = useState<string | null>(null)
-  const [lines, setLines] = useState<CaptionLine[]>([])
+  const [lines, setLines] = useState<CaptionLine[]>(lpTier ? LP_TIER_LINES : []) // MOCK-HOOK
   const [voice, setVoice] = useState<MediaStream | null>(null)
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
   const [track, setTrack] = useState<MediaStreamTrack | null>(null)
@@ -761,7 +767,7 @@ export function TalkPane() {
 
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const booting = speechMode && boot.length > 0
-  const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
+  const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : lpTier ? 'listening' : 'idle' // MOCK-HOOK
 
   return (
     <div className="vt has-stage" data-state={state}>
@@ -769,8 +775,9 @@ export function TalkPane() {
 
       <div className="vt-hud">
         <p className="vt-status" role="status">
-          <ToneMark tone={live ? 'live' : 'unknown'} />
-          {phase === 'idle' && 'Not connected'}
+          <ToneMark tone={live || lpTier ? 'live' : 'unknown'} />
+          {lpTier && <>Live <LpTierMark /></>}{/* MOCK-HOOK */}
+          {phase === 'idle' && !lpTier && 'Not connected'}
           {phase === 'connecting' && 'Connecting to Voice it…'}
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
@@ -779,7 +786,7 @@ export function TalkPane() {
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
-          {live || phase === 'ending' ? (
+          {live || phase === 'ending' || lpTier ? (
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
             </Button>
@@ -844,7 +851,7 @@ export function TalkPane() {
           <Ring state={state} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} />
         </div>
         <div className="vt-subs-band">
-          <Captions lines={lines} />
+          <Captions lines={lines} lpAfter={lpTier ? 1 : undefined} />
           {textMode && (
             <form
               className="c-field"

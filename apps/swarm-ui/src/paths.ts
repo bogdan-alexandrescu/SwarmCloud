@@ -18,6 +18,7 @@
  * THE SERVER MUST SERVE index.html FOR EVERY PATH. images/swarm-ui/nginx.conf
  * already does (`try_files $uri $uri/ /index.html`); `/v1/*` never reaches it.
  */
+import { lpOn } from './lpmock/lp' // MOCK-HOOK
 import { AGENT_TABS, RECENT_STATES, agentList, agentListQuery, listFlags, parseAgentList, type AgentList, type AgentTab, type RecentState } from './agentlist'
 import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 
@@ -621,6 +622,7 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   const bare = q === -1 ? address : address.slice(0, q)
   const query = q === -1 ? '' : address.slice(q + 1)
   const seg = bare.split('/')
+  if (lpOn() && bare.startsWith('capacity/llm-providers')) return `/${bare}${query ? `?${query}` : typeof window === 'undefined' ? '' : window.location.search}` // MOCK-HOOK
 
   // One agent: `work/task/<id>[/<pane>]` -> `/agents/<tab>/<id>[/<pane>]`.
   if (seg[0] === 'work' && seg[1] === 'task' && seg.length > 2) {
@@ -773,6 +775,7 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   const plain = (address: string): PathRoute => ({ address, agentTab: null })
 
   if (path === '/') return plain('overview/now')
+  if (lpOn() && seg[0] === 'capacity' && seg[1] === 'llm-providers') return plain(seg.slice(0, 3).join('/')) // MOCK-HOOK
 
   if (seg[0] === 'agents') {
     const tab = seg[1]
