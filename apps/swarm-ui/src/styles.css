@@ -11241,6 +11241,15 @@ span.sk-ttile { cursor: default; }
   .sk-pbar { height: var(--sk-pbar-h, auto); }
   /* Eased so the compaction below is not a jump; reduced motion stops it. */
   .sk-pbar { transition: height 120ms ease-out; }
+  /* THE BAR CLIPS ITS CONTROLS' 44PX HIT AREAS (`::after`, below) AT ITS
+     SIDES, NEVER ABOVE OR BELOW (QA, seen again
+     2026-11-09): `Top`'s 44px box, centred on a ~29px arrow, stood ~2px past
+     the bar's 6px padding, and every page at 390 was 392px wide; a long
+     chip pushed it further. The bar is the glass's width, so what is cut is
+     off the glass and no touch could reach it; every target keeps 44px
+     where the glass has room. `clip` on x alone, not `hidden`: the 36px
+     compact bar keeps its 44px-tall boxes, and nothing becomes a scroller. */
+  .sk-pbar { overflow-x: clip; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   /* ITS HOVER IS THE SPINE'S, NOT THE PANEL'S (visual QA V027, 2026-10-11).
      `.sk-ibtn:hover` fills with `--sk-hv`, a near-white in light, and a
@@ -11336,14 +11345,6 @@ span.sk-ttile { cursor: default; }
   .sk-pbar > .sk-ibtn, .sk-pbar > .sk-tchip { position: relative; }
   .sk-pbar > .sk-ibtn::after, .sk-pbar > .sk-tchip::after { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
   .sk-pbar > .sk-tchip { overflow: visible; }
-  /* THE BAR CLIPS THEM AT ITS SIDES, NEVER ABOVE OR BELOW (QA, seen again
-     2026-11-09): `Top`'s 44px box, centred on a ~29px arrow, stood ~2px past
-     the bar's 6px padding, and every page at 390 was 392px wide; a long
-     chip pushed it further. The bar is the glass's width, so what is cut is
-     off the glass and no touch could reach it; every target keeps 44px
-     where the glass has room. `clip` on x alone, not `hidden`: the 36px
-     compact bar keeps its 44px-tall boxes, and nothing becomes a scroller. */
-  .sk-pbar { overflow-x: clip; }
   /* AND SO THE CHIP SAYS `min-width: 0` ITSELF (visual QA run 5b, QA-017,
      part of #1680). Its `overflow: hidden` had been its zero floor (OV-19,
      above); once `visible`, a flex item's automatic minimum is its content,
