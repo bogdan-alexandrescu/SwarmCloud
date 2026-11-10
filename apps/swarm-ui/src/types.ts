@@ -3042,7 +3042,9 @@ export interface Waiting extends WaitingRow {
   /**
    * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
    * pull_request {number, url}, head, code, pending, failed, wakes,
-   * attempts_counted, last_checked_at, wake_requested_at, train_since.
+   * attempts_counted, last_checked_at, held_last_check_at (the tick's last
+   * check while the scheduler holds the wait; next_check_at is then null),
+   * wake_requested_at, train_since.
    * READY_CAPACITY:
    * waiting_for, pool, pool_state, active, limit, units, place_in_line,
    * place_in_line_unavailable, last_pass. Provider parks: provider, account,
