@@ -140,3 +140,27 @@ def test_the_query_has_its_composite_index():
         ("tenant_id", "ASCENDING"), ("submitted_by", "ASCENDING"),
         ("completed_at", "ASCENDING"), ("result_summary.questions", "ASCENDING"),
     ]
+
+
+def test_without_a_session_the_callers_own_open_questions_of_every_session_are_served(db, client):
+    """Voice it's planner has no Claude Code session: its `open_questions`
+    read answered 422 on every call (10 November 2026)."""
+    seed_tenant(db, "eng")
+    now = datetime.now(timezone.utc)
+    _task(db, "task_mine", ended=now - timedelta(hours=1), asked=1)
+    _task(db, "task_other_session", ended=now - timedelta(hours=2), asked=1, sid=THEIRS)
+    _task(db, "task_untagged", ended=now - timedelta(hours=3), asked=1, sid=None)
+    _task(db, "task_answered", ended=now - timedelta(hours=1), asked=1, answered=(0,))
+    _task(db, "task_someone_else", ended=now - timedelta(hours=1), asked=1, by="root@example.com")
+    _task(db, "task_too_old", ended=now - timedelta(days=8), asked=1)
+    _task(db, "task_still_running", ended=now - timedelta(hours=1), asked=1, state="RUNNING")
+    response = client.get("/v1/tasks/open-questions", headers=auth_header("alice"))
+    # MUTATION: keep `claude_session` required and this is a 422.
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [t["id"] for t in body["tasks"]] == ["task_mine", "task_other_session", "task_untagged"]
+    assert body["complete"] is True
+    assert body["filter"] == {"claude_session": None, "since": body["filter"]["since"],
+                              "open_questions": True}
+    # Given a session, it is still that session's alone.
+    assert [t["id"] for t in _open(client)["tasks"]] == ["task_mine"]
