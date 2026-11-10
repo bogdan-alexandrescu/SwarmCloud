@@ -17255,6 +17255,7 @@ export async function saveVoiceSettings(version: number, changes: Partial<Record
 export const VOICE_VISUALS = '/v1/voice/projects/{project_id}/visuals'
 export const VOICE_VISUAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}'
 export const VOICE_NOTE = '/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}'
+export const VOICE_APPROVAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}/approval'
 export const VOICE_READBACK_PENDING = '/v1/voice/sessions/{session_id}/readbacks/pending'
 export const VOICE_READBACK_GO = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/go'
 export const VOICE_READBACK_NOT_THAT = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/not-that'
@@ -17282,6 +17283,16 @@ export interface VoiceVisual {
   lines: { from: number; to: number } | null
   created_by: string | null
   updated_at: string | null
+  /** A mock-up's approved frame: which, who approved it, how and when (`Visuals.approve`). */
+  approved: VoiceApproval | null
+}
+
+export interface VoiceApproval {
+  frame_id: string
+  label: string
+  by: string
+  via: 'voice' | 'stage'
+  at: string | null
 }
 
 export interface VoiceNote {
@@ -17346,14 +17357,23 @@ export function normVoiceVisual(v: unknown): VoiceVisual | null {
     parts: Array.isArray(d.parts)
       ? d.parts.flatMap((p) => {
           const part = p as Record<string, unknown> | null
-          const pid = vStr(part?.part_id)
-          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? undefined }]
+          // swarm-api serves a part as `{id, label}`.
+          const pid = vStr(part?.part_id) ?? vStr(part?.id)
+          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? vStr(part?.label) ?? undefined }]
         })
       : [],
     lines: from !== null && to !== null ? { from, to } : null,
     created_by: vStr(d.created_by),
     updated_at: vStr(d.updated_at),
+    approved: normApproval(d.approved),
   }
+}
+
+function normApproval(v: unknown): VoiceApproval | null {
+  const a = (v ?? null) as Record<string, unknown> | null
+  const frame = vStr(a?.frame_id)
+  if (a === null || typeof a !== 'object' || frame === null) return null
+  return { frame_id: frame, label: vStr(a.label) ?? frame, by: vStr(a.by) ?? '', via: a.via === 'stage' ? 'stage' : 'voice', at: vStr(a.at) }
 }
 
 function normVoiceNote(v: unknown): VoiceNote | null {
@@ -17401,6 +17421,7 @@ const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
       lines: { from: 40, to: 52 },
       created_by: 'planner',
       updated_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
+      approved: null,
     },
     body: [
       'export function StepFilters({ steps, onPick }: StepFiltersProps) {',
@@ -17440,6 +17461,7 @@ const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
       lines: { from: 1, to: 4 },
       created_by: 'planner',
       updated_at: new Date(FIXTURE_NOW - 120_000).toISOString(),
+      approved: null,
     },
     body: [
       'Running 14 tests using 2 workers',
@@ -17500,6 +17522,19 @@ export async function resolveVoiceNote(projectId: string, visualId: string, note
     return voiceFixtureOk(target, { note_id: noteId, state: 'resolved' })
   }
   return write(target, 'PATCH', sessionId === null ? { state: 'resolved' } : { state: 'resolved', session_id: sessionId })
+}
+
+/**
+ * `POST /v1/voice/projects/{p}/visuals/{v}/approval` with `{frame}`: the
+ * person approves one of a mock-up's frames on the Stage. Answers the visual
+ * with its approval.
+ */
+export async function approveVoiceMockup(projectId: string, visualId: string, frame: string, sessionId: string | null): Promise<Result<VoiceVisual | null>> {
+  const target = route(VOICE_APPROVAL, { project_id: projectId, visual_id: visualId })
+  if (USE_FIXTURES) return voiceFixtureOk(target, null)
+  const r = await write(target, 'POST', sessionId === null ? { frame } : { frame, session_id: sessionId })
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceVisual((r.data as { visual?: unknown } | null)?.visual) }
 }
 
 /** `GET /v1/voice/sessions/{s}/readbacks/pending`: the read-back waiting on the person, or null. */

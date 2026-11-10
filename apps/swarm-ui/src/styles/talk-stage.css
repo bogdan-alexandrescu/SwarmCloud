@@ -79,6 +79,13 @@
 .vts-loose-one > .vts-note { flex: 1 1 16em; margin: 0; }
 
 /* A mock-up: the planner's HTML in a frame that allows nothing. */
+/* A mock-up's frames side by side, as many to a row as fit; one to a row on a phone. */
+.vts-mockups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 12px; padding: 12px; min-width: 0; }
+.vts-mockup-one { display: flex; flex-direction: column; gap: 6px; min-width: 0; border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px; }
+.vts-mockup-one.is-approved { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+.vts-mockup-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.vts-mockup-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.vts-approved { display: inline-flex; color: var(--ok-ink); }
 .vts-mockup { aspect-ratio: 16 / 10; min-width: 0; }
 .vts-mockup-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
 
