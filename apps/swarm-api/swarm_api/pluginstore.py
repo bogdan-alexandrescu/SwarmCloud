@@ -291,7 +291,9 @@ def parse_report(raw: bytes, intake: Mapping[str, Any]) -> dict[str, Any]:
         raise PluginRefused("report_invalid")
     try:
         report = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: nesting deeper than the parser's stack, well inside
+        # the size cap. Never a reason to retry: the same bytes fail again.
         raise PluginRefused("report_invalid") from None
     if not isinstance(report, dict) or set(report) - _REPORT_KEYS:
         raise PluginRefused("report_invalid")

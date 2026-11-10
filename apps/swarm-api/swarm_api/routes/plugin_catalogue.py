@@ -77,7 +77,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Iterable, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, TypeVar
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -156,6 +156,35 @@ class ArchiveTooLarge(Exception):
 
 class SourceUnreachable(Exception):
     """GitHub did not answer as expected. Carries no upstream text."""
+
+
+#: Why an intake's report was not finished, as the log names it: fixed codes
+#: beside the exception's class, never its message (which can carry report
+#: content or a transport's text).
+REASON_STORAGE = "storage_unavailable"
+REASON_REPORT = "report_invalid"
+REASON_UNEXPECTED = "finish_failed"
+
+
+class IntakeUnavailable(Exception):
+    """The plugins bucket could not be read or copied while finishing an
+    intake. Transient: the intake stays running, the callback answers 503 so
+    Pub/Sub redelivers, the console's status read answers 503."""
+
+    def __init__(self, reason: str, cause: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.cause = cause
+
+
+_T = TypeVar("_T")
+
+
+def _storage(step: Callable[[], _T]) -> _T:
+    try:
+        return step()
+    except Exception as exc:  # noqa: BLE001 -- the message may carry the transport's text; never passed on
+        raise IntakeUnavailable(REASON_STORAGE, type(exc).__name__) from None
 
 
 class PluginBucket(Protocol):
@@ -258,7 +287,10 @@ class GcsPluginBucket:
         if blob is None:
             return None
         digest, size = hashlib.sha256(), 0
-        with blob.open("rb", generation=blob.generation, chunk_size=self.CHUNK) as handle:
+        # get_blob's blob already names its generation, so the reader reads
+        # exactly that one; BlobReader takes no `generation` argument (it
+        # raises ValueError for one), only the generation preconditions.
+        with blob.open("rb", chunk_size=self.CHUNK, if_generation_match=blob.generation) as handle:
             while True:
                 chunk = handle.read(self.CHUNK)
                 if not chunk:
@@ -285,7 +317,7 @@ class GcsPluginBucket:
         if existing is None:
             return False
         digest = hashlib.sha256()
-        with existing.open("rb", generation=existing.generation, chunk_size=self.CHUNK) as handle:
+        with existing.open("rb", chunk_size=self.CHUNK, if_generation_match=existing.generation) as handle:
             for chunk in iter(lambda: handle.read(self.CHUNK), b""):
                 digest.update(chunk)
         return digest.hexdigest() == sha256
@@ -718,20 +750,23 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
     write the version. None while there is no report yet."""
     intake_id = intake["intake_id"]
     bucket = _bucket(request, ctx)
-    raw = bucket.read_report(intake_id, ps.MAX_REPORT_BYTES)
+    raw = _storage(lambda: bucket.read_report(intake_id, ps.MAX_REPORT_BYTES))
     if raw is None:
         return None
     try:
         report = ps.parse_report(raw, intake)
     except ps.PluginRefused as refusal:
+        log.warning("plugin intake report refused intake_id=%s reason=%s (PluginRefused)", intake_id, refusal.code)
         ended = store.refuse(intake_id, refusal.code)
         _clean(request, ctx, intake_id)
         return ended
+    except _UNUSABLE as exc:
+        return _unusable(request, ctx, store, intake_id, exc)
     if report["outcome"] == "refused":
         ended = store.refuse(intake_id, report["code"], entry_index=report["entry_index"])
         _clean(request, ctx, intake_id)
         return ended
-    staged = bucket.staged_digest(intake_id)
+    staged = _storage(lambda: bucket.staged_digest(intake_id))
     if staged is None or staged[0] != report["runnable_sha256"] or staged[1] != report["runnable_bytes"]:
         ended = store.refuse(intake_id, "intake_digest_mismatch")
         _clean(request, ctx, intake_id)
@@ -742,7 +777,7 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
         _clean(request, ctx, intake_id)
         return ended
     object_name = f"{ps.scope_prefix(intake['scope'], intake.get('tenant_id'))}/{report['runnable_sha256']}.tar"
-    if not bucket.pin(intake_id, object_name, staged[2], report["runnable_sha256"]):
+    if not _storage(lambda: bucket.pin(intake_id, object_name, staged[2], report["runnable_sha256"])):
         ended = store.refuse(intake_id, "pinned_copy_differs")
         _clean(request, ctx, intake_id)
         return ended
@@ -750,8 +785,25 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
         store.pin(intake_id, {**report, "overlay_requested": intake.get("overlay")}, object_name)
     except ps.PluginRefused as refusal:
         store.refuse(intake_id, refusal.code)
+    except _UNUSABLE as exc:
+        return _unusable(request, ctx, store, intake_id, exc)
     _clean(request, ctx, intake_id)
     return store.intake(intake_id)
+
+
+#: What a report swarm-api cannot use raises past `parse_report`: the same
+#: bytes raise it again, so the intake ends refused instead of being retried.
+#: A storage or Firestore failure is none of these and stays transient.
+_UNUSABLE = (ValueError, TypeError, KeyError, RecursionError)
+
+
+def _unusable(request: Request, ctx: AppContext, store: ps.PluginStore, intake_id: str,
+              exc: BaseException) -> dict[str, Any] | None:
+    log.warning("plugin intake report refused intake_id=%s reason=%s (%s)",
+                intake_id, REASON_REPORT, type(exc).__name__)
+    ended = store.refuse(intake_id, REASON_REPORT)
+    _clean(request, ctx, intake_id)
+    return ended or store.intake(intake_id)
 
 
 def intake_view(intake: Mapping[str, Any]) -> dict[str, Any]:
@@ -881,7 +933,12 @@ def _status(request: Request, ctx: AppContext, scope: Scope, intake_id: str) -> 
     store = _store(ctx)
     intake = _intake_for(request, ctx, store, scope, intake_id)
     if intake.get("state") == ps.INTAKE_RUNNING:
-        intake = finish_intake(request, ctx, store, intake) or intake
+        try:
+            intake = finish_intake(request, ctx, store, intake) or intake
+        except IntakeUnavailable as exc:
+            log.warning("plugin intake status not finished intake_id=%s reason=%s (%s)",
+                        intake_id, exc.reason, exc.cause)
+            raise UpstreamUnavailable("the plugin intake report could not be read; try again") from None
     if store.timed_out(intake):
         code = "upload_missing" if intake.get("state") == ps.INTAKE_AWAITING_UPLOAD else "intake_timed_out"
         intake = store.refuse(intake_id, code) or intake
@@ -1138,6 +1195,11 @@ async def intake_report(request: Request) -> dict[str, Any]:
         return await run_in_threadpool(_finish)
     except ps.PluginRefused:
         raise
+    except IntakeUnavailable as exc:
+        log.warning("plugin intake report not processed intake_id=%s reason=%s (%s)",
+                    intake_id, exc.reason, exc.cause)
+        raise UpstreamUnavailable("the plugin intake report could not be processed; it is retried") from None
     except Exception as exc:  # noqa: BLE001 -- 503, so Pub/Sub redelivers
-        log.warning("plugin intake report not processed intake_id=%s (%s)", intake_id, type(exc).__name__)
+        log.warning("plugin intake report not processed intake_id=%s reason=%s (%s)",
+                    intake_id, REASON_UNEXPECTED, type(exc).__name__)
         raise UpstreamUnavailable("the plugin intake report could not be processed; it is retried") from None

@@ -309,7 +309,7 @@ def test_a_storage_error_answers_503_so_pubsub_retries_and_logs_its_reason(gcs, 
     # Still running, nothing cleaned: the redelivery finishes it.
     seen = status(w, intake["intake_id"])
     assert seen.status_code == 503, seen.text
-    assert seen.json()["error"]["code"] == "upstream_unavailable"
+    assert seen.json()["code"] == "upstream_unavailable"
     assert f"staging/{intake['intake_id']}/report.json" in w["memory"].objects
     w["memory"].read_error = None
     retried = notify(w, intake["intake_id"])
