@@ -93,7 +93,7 @@ export function VoicePreferences() {
   }, [])
 
   return (
-    <Card title="ChatGPT plan" action={<CardLink href={CAPACITY_ACCOUNTS_HREF}>Capacity › LLM Providers › Plans</CardLink>}>
+    <Card title="ChatGPT plan" action={<CardLink href={CAPACITY_ACCOUNTS_HREF}>LLM Providers</CardLink>}>
       {readError !== null ? (
         <Banner tone="bad" title="Could not read the Voice it pool" role="alert">
           {readError}

@@ -1045,7 +1045,7 @@ function ClaudeAccountsCard({ p }: { p: Profile }) {
     )
   }
   return (
-    <Card title="Claude accounts" action={<ButtonLink size="sm" className="pf-head-act" href="/capacity/llm-providers/plans">Capacity › LLM Providers › Plans</ButtonLink>}>
+    <Card title="Claude accounts" action={<ButtonLink size="sm" className="pf-head-act" href="/capacity/llm-providers/plans">LLM Providers</ButtonLink>}>
       {body}
       {actingGroup && <p className="ur-small">This workspace&rsquo;s shared accounts are on Capacity › Accounts.</p>}
     </Card>

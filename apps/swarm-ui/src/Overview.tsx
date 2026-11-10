@@ -1562,7 +1562,10 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
     <>
       <h3 className="ov-sub2">Can start now, by runner profile</h3>
       <CapacityStacks state={capacity} />
-      <h3 className="ov-sub2">Subscription accounts</h3>
+      {/* PLANS, NOT "Subscription accounts" (LP-U1): the line's link reads
+          LLM Providers, the tab it opens, and the heading names the page under
+          it, Plans, so the Overview says no more words than before the move. */}
+      <h3 className="ov-sub2">Plans</h3>
       <AccountLine state={accounts} />
     </>
   )

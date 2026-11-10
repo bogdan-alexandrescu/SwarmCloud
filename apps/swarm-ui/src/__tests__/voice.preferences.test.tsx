@@ -3,7 +3,7 @@
 // Voice it pool).
 //
 //   * one line from `GET /v1/voice/pool`: the account's name (or label), or
-//     why there is none, with a link to Capacity › LLM Providers › Plans;
+//     why there is none, with a link to LLM Providers (Plans);
 //   * no ChatGPT sign-in: no button, no field, and no call to the removed
 //     `/v1/voice/chatgpt*` routes, read or write;
 //   * a refusal is said in swarm-api's words.
@@ -75,7 +75,7 @@ describe('Voice it › Preferences, the Voice it pool line', () => {
     await settle()
 
     expect(screen.getByText("Your next session will use the Voice it pool's ChatGPT plan: Team plan A.")).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Capacity › LLM Providers › Plans/ }).getAttribute('href')).toBe(CAPACITY_ACCOUNTS_HREF)
+    expect(screen.getByRole('link', { name: /LLM Providers/ }).getAttribute('href')).toBe(CAPACITY_ACCOUNTS_HREF)
     expect(readUrls()).toEqual([VOICE_POOL])
     noSignIn()
   })
@@ -101,7 +101,7 @@ describe('Voice it › Preferences, the Voice it pool line', () => {
     render(<VoicePreferences />)
     await settle()
     expect(screen.getByText('You are not in the Voice it pool.')).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Capacity › LLM Providers › Plans/ })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /LLM Providers/ })).toBeTruthy()
   })
 
   it("says a refusal in swarm-api's words", async () => {

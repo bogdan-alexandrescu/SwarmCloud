@@ -540,7 +540,7 @@ describe('Settings › Profile carries no explanatory prose on its surface', () 
       ['Admin › Workspaces › Your workspace › Setup', '/admin/workspaces?tab=setup'],
       ['Config › GitHub access', '/config/github'],
       ['Config › Secrets', '/config/secrets'],
-      ['Capacity › LLM Providers › Plans', '/capacity/llm-providers/plans'],
+      ['LLM Providers', '/capacity/llm-providers/plans'],
     ]
     for (const [name, href] of outs) {
       const link = screen.getByRole('link', { name })
