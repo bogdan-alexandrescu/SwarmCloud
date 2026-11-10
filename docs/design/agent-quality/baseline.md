@@ -10,9 +10,21 @@ never zero.
 The rest of the inventory: [capability matrix](capability-matrix.md),
 [known failures](known-failures.md), [experiment protocol](experiment-protocol.md),
 [ownership](ownership.md). `scripts/agent_quality_inventory.py` re-reads the
-parts of this page that the tree holds (the model pins, the cited tests, the
-skip counts), and `tests/unit/scripts/test_agent_quality_inventory.py` fails
-when one of them moves without this page.
+parts of these pages that the tree holds (the model pins, the cited tests, and
+every skip, expected failure and quarantined test), and
+`tests/unit/scripts/test_agent_quality_inventory.py` fails when one of them
+moves without its page.
+
+A skip is registered as a row, never counted: [known failures
+§3](known-failures.md#3-every-skip-by-location) lists each skip, expected
+failure and `importorskip` under `tests/` by file, enclosing test and kind,
+with its reason, and each `tests/flaky.txt` entry in its quarantine table. A
+change that adds a skip adds its row (the failing test prints the row to add)
+and one that removes a skip deletes it; only the file, test and kind are
+matched, so a reason can be reworded freely. Why rows and not a count (the
+owner, 6 November 2026): two green changes that each add a skip and bump the
+same count conflict or fail when they land together, while two that each add
+their own row pass together as each passed alone.
 
 ## 1. Pinned source commit
 

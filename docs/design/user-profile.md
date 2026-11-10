@@ -4,8 +4,13 @@
 2026-10-18 (lane PROFILE-DESIGN-B) for the owner's answers to §7, given on
 2026-10-17/18 in PR 1506's comments.** Nothing here is built. The owner
 approves this revision before any build lane starts. Two questions the answers
-left open, Q11 and Q12, were answered on 2026-10-18 (§7.1): the edited name also names the agent's commits, and only names of two
+left open, Q11 and Q12, were answered on 2026-10-18 (§7.1): the edited name was to name the agent's commits too, and only names of two
 or more words are checked for containment. Nothing is open (§7.2).
+**Superseded for commits (owner rule, 2026-11-07):** no commit names the display
+name any more. An agent's commits carry the person's connected GitHub username and
+its no-reply address, else the SwarmCloud bot (§2.2, §4.4, Q11), because GitHub refused
+every push that would publish a person's private address (GH007) and no commit
+may carry an address identifying a person or a company.
 
 Every file and symbol cited below was read on 2026-10-18 at `6174f32`, and the
 ones this revision added were read at `8ab9f26`. Lines move, so each citation
@@ -82,7 +87,7 @@ The issue's table, checked against the code on 2026-10-18:
 | GitHub connection and repository grants | Work › Access, `/access` | `apps/swarm-ui/src/Access.tsx::AccessScreen`, over `GET /v1/access` (`routes/access.py::overview`). The connection is **per workspace and person**: `forgeapp.py::connection_id_for(tenant_id, email)`. |
 | Personal Claude accounts | Capacity › Accounts, `/capacity/accounts` | `apps/swarm-ui/src/Accounts.tsx::AccountsScreen`, over `GET /v1/accounts` (`routes/accounts.py::list_accounts`), scoped to the **acting** workspace. "Personal" is not a field. It is implied by `owner_tenant` being a `u-` workspace. |
 | Onboarding | Work › Setup, `/setup` | the workspace request and the loan request (`routes/workspaces.py`) |
-| Who I am | **no page** | `GET /v1/tenants/me` returns `principal.email`, `domain`, `groups`, `is_admin`. `AuthContext.display_name` exists only when the token carries a `name` claim, and an IAP assertion never does (`auth.py::AuthContext`). Its one use today is the author name on the agent's commits (`gitidentity.py::for_caller`, contract request P37). No page shows a person's name to anyone else. |
+| Who I am | **no page** | `GET /v1/tenants/me` returns `principal.email`, `domain`, `groups`, `is_admin`. `AuthContext.display_name` exists only when the token carries a `name` claim, and an IAP assertion never does (`auth.py::AuthContext`). When this was read it was the author name on the agent's commits (contract request P37); since 2026-11-07 commits no longer use it: `gitidentity.py::for_caller` names the person's connected GitHub account, else the bot. No page shows a person's name to anyone else. |
 | My workspaces and my role in each | **no page** | `GET /v1/tenants/mine` lists the choices (`routes/tenants.py::get_mine`). There is **no per-workspace role**: `routes/provider_keys.py` and `routes/gittokens.py` both say "there is no per-tenant admin role". The only roles are platform roles, `admin_roles/{email}` (`admins.py`). |
 | A default workspace | **no page, and not stored** | The default is computed on every request: the personal `u-` workspace when it is `ready`, else the first confirmed group (`auth.py::Authenticator._with_own_workspace`, owner decision 2026-10-12). |
 | Notification preferences | **no page, and no concept** | The bell (`apps/swarm-api/swarm_api/notifications.py`) derives 5 groups from 8 sources on each read. Nobody can turn any of them off. A grep of `apps/` for `remind` finds nothing, so nothing repeats either. |
@@ -176,12 +181,21 @@ is exact: four pages hold four things, and four things have no page.
   so `bob@a` and `bob@b` derive one id. `auth.PersonalTenants.ready` tells
   them apart by the stored principal. Anything that names "your personal
   workspace" must go through that check, not through the slug alone.
-* **`AuthContext.display_name` already reaches commits.** It is cleaned by
-  `gitidentity.py::clean_name` (no `<`, `>` or control characters, at most
-  `NAME_MAX_CHARS` = 100) and recorded in the agent's dispatch block, which the
-  worker turns into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. The edited
-  name also names commits (Q11, §7.1), so the rules in §4.4, which are
-  stricter than `clean_name`, apply to what reaches git.
+* **No display name reaches commits.** When this was read,
+  `AuthContext.display_name` named the agent's commits. Since the owner's rule
+  of 2026-11-07, `gitidentity.py::for_caller` records in the agent's dispatch
+  block the person's connected GitHub account instead, as
+  `{"name": <login>, "email": "<id>+<login>@users.noreply.github.com"}`, read
+  from the workspace's GitHub connection (`gitidentity.py::connected_github`),
+  and the worker turns it into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`
+  (`agent_worker/gitidentity.py::commit_identity`). A person with no
+  connection, a revoked or malformed one, or a service account commits as the
+  SwarmCloud bot (`gitidentity.BOT_IDENTITY`). Why: commits used to carry the
+  person's address, GitHub refused every push that would publish a private one
+  (GH007), and no commit may carry an address identifying a person or a
+  company. The no-reply address is the one GitHub itself attributes to the
+  connected account. So the edited name (§4.4) is a console label only, and
+  its rules guard what other people see, not what reaches git.
 * **The Settings tabs are not in `SECTIONS`.** They are constants in
   `apps/swarm-ui/src/App.tsx` (`SETTINGS`, `KEYS_TAB`, `WORKSPACE_TAB`).
   `tests/unit/scripts/test_issue_forms.py::_nav_options` adds them to the
@@ -219,9 +233,11 @@ changes.
 written. The default workspace is resolved **before** a submission is
 admitted, exactly where the computed default is resolved today. A task
 records the tenant it was admitted in, and a later change of default never
-moves it. A changed display name never rewrites an agent already admitted: the
-name an agent's commits carry (Q11, §7.1) is the one recorded in its
-dispatch block when it was admitted, as P37 already records it.
+moves it. A changed display name never reaches an agent at all: an agent's
+commits carry the person's connected GitHub username and its no-reply
+address, else the SwarmCloud bot (Q11, §7.1), recorded in its dispatch block
+when it was admitted, as P37 records it, so a later change of either never
+rewrites a commit.
 
 **6. Spot disabled; 7. requests == limits.** Untouched. No infrastructure.
 
@@ -269,9 +285,11 @@ in six places:
 **10. Callers pick a `runner_profile` by name.** Untouched. Preferences hold
 a display name, a workspace id, topic names and a reminder name, each checked
 against a rule or a closed set. None of them is an image, a command, a
-resource or a backend parameter. The display name is the one that can reach
-an agent, and only through the existing cleaned `git_identity` record (P37), as Q11
-decided. It is an author name, not a parameter of the backend.
+resource or a backend parameter. None of them reaches an agent: Q11 once let
+the display name reach one through the cleaned `git_identity` record (P37), and
+since the owner's rule of 2026-11-07 that record names the person's connected
+GitHub username and its no-reply address, else the SwarmCloud bot. It is an
+author identity the platform resolves, never a parameter of the backend.
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
 
@@ -748,8 +766,10 @@ reason:
    spaces collapsed to one. The stored name is the normalised one.
 2. *1 to 64 characters.* Long enough for any real name; short enough that
    `PersonName` can always fit the email beside it. A stricter subset of
-   `gitidentity.NAME_MAX_CHARS` (100), so a stored name is always a valid
-   commit name.
+   `gitidentity.NAME_MAX_CHARS` (100), the cap on any name swarm-api cleans.
+   A stored name no longer names a commit: commits carry the person's
+   connected GitHub username and its no-reply address, else the SwarmCloud bot
+   (§2.2).
 3. *Only letters (Unicode category L), combining marks (M), spaces and
    `.`, `'`, `-`.* No digits, no `@`, no `<` or `>`, no punctuation that
    could form an address, a URL or a role tag such as `[admin]`, and none of
@@ -820,11 +840,15 @@ another person:
   serves the claim, after the rules above, as `display_name_suggested`, and
   the editor offers it. Others see the email alone until the person saves.
   A claim that fails a rule is not suggested.
-* *As the commit author's name (Q11 (a), decided 2026-10-18).*
-  `AuthContext.display_name` becomes the stored name when there is one, else
-  the token's name claim, else the email's local part (today's value). The
-  email is in every commit beside it, and an agent keeps the name recorded at
-  admission, so a later rename never rewrites a commit.
+* *As `AuthContext.display_name` (Q11 (a), decided 2026-10-18).* It is the
+  stored name when there is one, else the token's name claim, else the email's
+  local part. Q11 (a) made that the commit author's name; the owner's rule of
+  2026-11-07 took it off commits. An agent's commits now carry the person's
+  connected GitHub username and its no-reply address, else the SwarmCloud bot
+  (§2.2), because a commit carrying the person's own address was refused by
+  GitHub when the address was private (GH007) and no commit may carry an
+  address identifying a person or a company. The record is made at admission,
+  so a later rename or a new connection never rewrites a commit.
 
 ### 4.5 The default workspace: one rule, applied in authentication
 
@@ -1117,9 +1141,10 @@ one.
   `user_preferences`. The scheduler, reconciler and worker never see it. A
   type in `swarm_common` would invite exactly those readers.
 * **The display name is not a contract type.** It is served beside emails by
-  swarm-api only. Where it reaches an agent (Q11, §7.1), it travels in the
-  existing `git_identity` record of the dispatch block (P37), whose shape is
-  unchanged.
+  swarm-api only and never reaches an agent: the `git_identity` record of the
+  dispatch block (P37), whose shape is unchanged, carries the person's
+  connected GitHub username and its no-reply address, else the SwarmCloud bot
+  (Q11, §7.1).
 * **Roles are not a contract type here.** `workspace_role.py::role_in` is
   swarm-api's. If the roles design needs a role in the contract, it
   files its own request.
@@ -1407,7 +1432,7 @@ other's state.
 | Q8 | May an admin see or change another person's preferences? | No: no admin route, no `?user=`, no preferences section on Admin › People | §4.3, PROFILE-API, PROFILE-NAMES-API |
 | Q9 | If the preferences cannot be read, what does a headerless request do? | 503 `preferences_unavailable`, saying how to name a workspace; nothing submitted; never a silent fallback | §4.5, PROFILE-DEFAULT, PROFILE-SC |
 | Q10 | Which workspaces does the GitHub summary cover? | Every workspace the person can act in, one row each, from one batched read (as recommended) | §4.2, PROFILE-API |
-| Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18:** the stored name, else the token's name claim, else the email's local part. The email is in every commit beside it, and an agent keeps the name recorded at admission, so a later rename never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
+| Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18; superseded by the owner's rule of 2026-11-07:** commits carry the person's connected GitHub username and its no-reply address, else the SwarmCloud bot. The display name is the stored name, else the token's name claim, else the email's local part, and names nobody's commits. A commit that carried the person's own address was refused by GitHub when it was private (GH007), and no commit may carry an address identifying a person or a company. The record is made at admission, so a later change never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
 | Q12 | Does a one-word name block every longer name that contains it? | **No, answered 2026-10-18:** only names of two or more words are checked for containment. An exact match is still refused for every name, and "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists, but "Bob Smith" is allowed when "Bob" exists; the email shown beside every name covers the rest. Departs from the lane's recommendation | §4.4 rule 6, PROFILE-STORE |
 
 #### Amendment, 2026-10-19: first name in the console, full name where the person is the subject
@@ -1416,11 +1441,13 @@ The owner checked the built Profile page in Chrome and decided: *"Show the
 first name for each user, only show full name in the profile page or in the
 user administration sections in admin for each user."*
 
-This narrows Q11's "one name everywhere" to **what is stored and what names a
-commit**. It does not change either: the stored name is still the whole name
-the person saved, and Q11 (a) still makes that whole name the agent's commit
-author. Only how the console **displays** a person changes (lane
-PROFILE-FIRSTNAME):
+This narrows Q11's "one name everywhere" to **what is stored**. It does not
+change it: the stored name is still the whole name the person saved. When this
+was decided Q11 (a) also made that whole name the agent's commit author; since
+the owner's rule of 2026-11-07 commits carry the person's connected GitHub
+username and its no-reply address, else the SwarmCloud bot, so no form of the
+display name reaches a commit. Only how the console **displays** a person
+changes (lane PROFILE-FIRSTNAME):
 
 * `PersonName` (`apps/swarm-ui/src/PersonName.tsx`) prints the saved name's
   **first word** by default (`variant="first"`): split on whitespace only, so
