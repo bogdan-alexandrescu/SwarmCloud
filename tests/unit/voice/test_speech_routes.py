@@ -173,7 +173,7 @@ def test_the_sweep_with_the_engine_off_touches_nothing():
     reply = rig.sweep(rig.verifier.token)
     assert reply.status_code == 200
     assert reply.json() == {"enabled": False, "lease": None, "ended": None, "stopped": False,
-                            "instance": None}
+                            "instance": None, "abandoned": 0}
     assert rig.compute.calls == []
 
 

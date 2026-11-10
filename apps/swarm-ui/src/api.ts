@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -4870,7 +4870,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "claude-code-medium": {"available": true, "disabled_reason": ""},
   "claude-code-lightpanda": {"available": true, "disabled_reason": ""},
   "await-input": {"available": true, "disabled_reason": ""},
-  "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
+  "fix-loop": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -15171,6 +15171,1541 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
   }
   const r = await write(target, 'PUT', { allowed: [...allowed] })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
+}
+
+// --------------------------------------------------------------------------
+// Config › Plugins, managed (docs/design/managed-plugins.md §6, §7, lane 10c):
+// the workspace's catalogue (`routes/plugin_catalogue.py`), each plugin's
+// settings, secrets and bindings, and the plugins on for every step
+// (`routes/plugin_config.py`). A secret's value is sent once, on its own
+// route, with a one-time link's token, and no answer here ever carries one.
+// --------------------------------------------------------------------------
+
+const PLUGIN_CATALOGUE_OF = '/v1/workspaces/{tenant_id}/plugin-catalogue'
+const PLUGIN_CONFIG_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}'
+const PLUGIN_SECRET_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}/secrets/{field}'
+const PLUGIN_DEFAULTS_OF = '/v1/workspaces/{tenant_id}/plugin-defaults'
+
+/** Where a catalogue entry comes from: baked in the image, the platform's catalogue, or this workspace's own. */
+export type PluginScope = 'built_in' | 'platform' | 'workspace'
+
+export interface PluginComponentCounts {
+  skills: number
+  commands: number
+  agents: number
+  hooks: number
+  mcp_servers: number
+}
+
+/** One card of the workspace's catalogue (`pluginstore.install_view`, `plugincatalogue.builtin_entries`). */
+export interface PluginEntry {
+  install_id: string
+  name: string
+  scope: PluginScope
+  version: string | null
+  description: string | null
+  /** The install's source as the API serves it (`kind`, `repository`, `ref`, `commit`, `filename`); null for a built-in. */
+  source: Record<string, unknown> | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts of what the pinned copy ships; null for a built-in, whose skills ride per mode. */
+  components: PluginComponentCounts | null
+  /** A built-in's skills per mode; null for an install. */
+  skills_by_mode: Record<string, string[]> | null
+  runner_profiles: string[]
+  updated_at: string | null
+  updated_by: string | null
+}
+
+export interface WorkspaceCatalogue {
+  tenant_id: string
+  entries: PluginEntry[]
+  /** The caller is the workspace's owner or admin: it may install a private plugin. */
+  can_install: boolean
+}
+
+function pText(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pTally(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0
+}
+
+function normPluginEntry(raw: unknown, scope: PluginScope): PluginEntry | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.install_id)
+  const name = pText(r.name) ?? pText(r.display_name)
+  if (id === null || name === null) return null
+  const c = r.components === undefined || r.components === null ? null : pluginRecord(r.components)
+  const modes = r.skills === undefined || r.skills === null ? null : pluginRecord(r.skills)
+  return {
+    install_id: id,
+    name,
+    scope,
+    version: pText(r.version),
+    description: pText(r.description),
+    source: scope === 'built_in' ? null : pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: c === null ? null : { skills: pTally(c.skills), commands: pTally(c.commands), agents: pTally(c.agents), hooks: pTally(c.hooks), mcp_servers: pTally(c.mcp_servers) },
+    skills_by_mode: modes === null ? null : Object.fromEntries(Object.entries(modes).map(([m, s]) => [m, pluginStrings(s)])),
+    runner_profiles: pluginStrings(r.runner_profiles),
+    updated_at: pText(r.updated_at),
+    updated_by: pText(r.updated_by),
+  }
+}
+
+/** What `GET /v1/workspaces/{tenant_id}/plugin-catalogue` answers, as one list of cards. */
+export function normWorkspaceCatalogue(raw: unknown): WorkspaceCatalogue {
+  const r = pluginRecord(raw)
+  const list = (v: unknown, scope: PluginScope) =>
+    (Array.isArray(v) ? v : []).map((e) => normPluginEntry(e, scope)).filter((e): e is PluginEntry => e !== null)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    entries: [...list(r.built_in, 'built_in'), ...list(r.platform_installs, 'platform'), ...list(r.installs, 'workspace')],
+    can_install: r.can_install === true,
+  }
+}
+
+/** The value of a plugin's field kinds (`pluginconfig.form_fields`): a value, a path in the checkout, a secret, a file. */
+export type PluginFieldKind = 'value' | 'path' | 'secret' | 'file'
+
+export interface PluginField {
+  key: string
+  source: 'user_config' | 'overlay'
+  /** `string`, `number`, `boolean`, `directory` or `file`, as the manifest or the overlay declares it. */
+  type: string
+  kind: PluginFieldKind
+  title: string | null
+  description: string | null
+  required: boolean
+  multiple: boolean
+  default: unknown
+  /** `env` or `file`: where the worker puts it. */
+  target: string
+  variable: string | null
+  /** The workspace keys this field may use instead of a value (`typesafe`). */
+  bindable: string[]
+}
+
+/** What the console is shown of one field's value: a non-secret value, or only whether a secret or file is set. */
+export interface PluginFieldState {
+  set: boolean
+  value?: unknown
+  binding?: { kind: string; provider: string }
+  set_at?: string | null
+  set_by?: string | null
+  sha256?: string | null
+  bytes?: number | null
+}
+
+export interface PluginConfig {
+  tenant_id: string
+  install_id: string
+  version_id: string
+  fields: PluginField[]
+  revision: number
+  values: Record<string, PluginFieldState>
+  missing: string[]
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+}
+
+const FIELD_KINDS: readonly PluginFieldKind[] = ['value', 'path', 'secret', 'file']
+
+function normPluginField(raw: unknown): PluginField | null {
+  const r = pluginRecord(raw)
+  const key = pText(r.key)
+  const kind = FIELD_KINDS.find((k) => k === r.kind)
+  if (key === null || kind === undefined) return null
+  return {
+    key,
+    source: r.source === 'overlay' ? 'overlay' : 'user_config',
+    type: pText(r.type) ?? 'string',
+    kind,
+    title: pText(r.title),
+    description: pText(r.description),
+    required: r.required === true,
+    multiple: r.multiple === true,
+    default: r.default ?? null,
+    target: pText(r.target) ?? 'env',
+    variable: pText(r.variable),
+    bindable: pluginStrings(r.bindable),
+  }
+}
+
+function normFieldState(raw: unknown): PluginFieldState {
+  const r = pluginRecord(raw)
+  const b = r.binding === undefined || r.binding === null ? null : pluginRecord(r.binding)
+  // Only the shape a console may show: a value for a non-secret field, the
+  // binding, who set it and when. Anything else the answer carried is dropped.
+  return {
+    set: r.set === true,
+    ...('value' in r ? { value: r.value } : {}),
+    ...(b !== null ? { binding: { kind: pText(b.kind) ?? '', provider: pText(b.provider) ?? '' } } : {}),
+    ...('set_at' in r ? { set_at: pText(r.set_at) } : {}),
+    ...('set_by' in r ? { set_by: pText(r.set_by) } : {}),
+    ...('sha256' in r ? { sha256: pText(r.sha256) } : {}),
+    ...('bytes' in r ? { bytes: typeof r.bytes === 'number' ? r.bytes : null } : {}),
+  }
+}
+
+/** What `GET` and `PUT .../plugin-config/{install_id}` answer. */
+export function normPluginConfig(raw: unknown): PluginConfig {
+  const r = pluginRecord(raw)
+  const form = pluginRecord(r.form)
+  const values = pluginRecord(r.values)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    install_id: typeof form.install_id === 'string' ? form.install_id : '',
+    version_id: typeof form.version_id === 'string' ? form.version_id : '',
+    fields: (Array.isArray(form.fields) ? form.fields : []).map(normPluginField).filter((f): f is PluginField => f !== null),
+    revision: typeof r.revision === 'number' ? r.revision : 0,
+    values: Object.fromEntries(Object.entries(values).map(([k, v]) => [k, normFieldState(v)])),
+    missing: pluginStrings(r.missing),
+    set_at: pText(r.set_at),
+    set_by: pText(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+export interface PluginDefaults {
+  tenant_id: string
+  /** Built-in names and install ids on for every step. */
+  defaults: string[]
+  can_edit: boolean
+}
+
+function normPluginDefaults(raw: unknown): PluginDefaults {
+  const r = pluginRecord(raw)
+  return { tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '', defaults: pluginStrings(r.defaults), can_edit: r.can_edit === true }
+}
+
+/** A one-time link to one secret or file setting's form: ten minutes, one use, this caller's. */
+export interface PluginSecretLink {
+  field: string
+  /** The console address the API minted (absolute when it knows the console's origin). */
+  url: string | null
+  path: string
+  expires_at: string | null
+  /** The link's `t`, held in memory to send back with the value; never drawn. */
+  token: string | null
+}
+
+function normSecretLink(raw: unknown): PluginSecretLink {
+  const r = pluginRecord(raw)
+  const path = typeof r.path === 'string' ? r.path : ''
+  const at = path.indexOf('?')
+  const t = at === -1 ? null : new URLSearchParams(path.slice(at + 1)).get('t')
+  return { field: typeof r.field === 'string' ? r.field : '', url: pText(r.url), path, expires_at: pText(r.expires_at), token: t === null || t === '' ? null : t }
+}
+
+function normIntake(raw: unknown): PluginIntake {
+  const r = pluginRecord(raw)
+  const refusal = r.refusal === null || r.refusal === undefined ? null : pluginRecord(r.refusal)
+  return {
+    intake_id: typeof r.intake_id === 'string' ? r.intake_id : '',
+    state: typeof r.state === 'string' ? r.state : '',
+    install_id: pText(r.install_id),
+    version_id: pText(r.version_id),
+    refusal: refusal === null ? null : { code: pText(refusal.code) ?? '', sentence: pText(refusal.sentence) },
+    deadline: pText(r.deadline),
+  }
+}
+
+/** A pinned version as the preview draws it (`pluginstore.version_view`). */
+export interface WorkspacePluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  license: string | null
+  description: string | null
+  source: Record<string, unknown>
+  runnable_sha256: string | null
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hooks: { event: string; matcher: string | null; command: string }[]
+  mcp_servers: { name: string; url_host: string | null }[]
+  runtimes: string[]
+  hosts: string[]
+  profiles: string[]
+  user_config: number
+  created_at: string | null
+  created_by: string | null
+}
+
+// The managed plugin catalogue (docs/design/managed-plugins.md §1, §2;
+// swarm-api routes/plugin_catalogue.py). Admin › Plugins reads the platform
+// catalogue; a workspace's private plugins answer the same shapes.
+// --------------------------------------------------------------------------
+
+/** Which catalogue a call names: the platform's (a platform admin's), or one workspace's. */
+export type PluginCatalogueScope = { kind: 'platform' } | { kind: 'workspace'; tenantId: string }
+
+export const PLATFORM_PLUGIN_CATALOGUE: PluginCatalogueScope = { kind: 'platform' }
+
+/** Each catalogue route, the platform's template and the workspace's, as the router declares them. */
+const CATALOGUE_ROUTES = {
+  catalogue: ['/v1/admin/plugin-catalogue', '/v1/workspaces/{tenant_id}/plugin-catalogue'],
+  installs: ['/v1/admin/plugin-catalogue/installs', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs'],
+  uploads: ['/v1/admin/plugin-catalogue/uploads', '/v1/workspaces/{tenant_id}/plugin-catalogue/uploads'],
+  intake: ['/v1/admin/plugin-catalogue/intakes/{intake_id}', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}'],
+  start: ['/v1/admin/plugin-catalogue/intakes/{intake_id}/start', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}/start'],
+  versions: ['/v1/admin/plugin-catalogue/installs/{install_id}/versions', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs/{install_id}/versions'],
+} as const
+
+function catalogueRoute(scope: PluginCatalogueScope, which: keyof typeof CATALOGUE_ROUTES, params: Readonly<Record<string, string>> = {}): ApiRoute {
+  const [platform, workspace] = CATALOGUE_ROUTES[which]
+  return scope.kind === 'platform' ? route(platform, params) : route(workspace, { ...params, tenant_id: scope.tenantId })
+}
+
+/** Where a plugin came from, as the install or version records it. */
+export interface CatalogueSource {
+  /** `github`, `marketplace`, `upload`, or `image` for a built-in. */
+  kind: string
+  repository: string | null
+  ref: string | null
+  commit: string | null
+  subdir: string | null
+  /** The marketplace entry's name. */
+  plugin: string | null
+  /** An upload's file name. */
+  filename: string | null
+}
+
+/** One card of the catalogue: `pluginstore.install_view`, or a built-in entry. */
+export interface CatalogueEntry {
+  install_id: string
+  name: string
+  display_name: string
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  built_in: boolean
+  source: CatalogueSource
+  version: string | null
+  description: string | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts per component kind; a built-in's skills come from its modes. */
+  components: { skills: number; commands: number; agents: number; hooks: number; mcp_servers: number }
+  runner_profiles: string[]
+  removable: boolean
+  updatable: boolean
+  updated_at: string | null
+  updated_by: string | null
+  /** In a workspace's view of the platform's installs: whether it allows the plugin. */
+  allowed: boolean | null
+}
+
+export interface PluginCatalogue {
+  scope: 'platform' | 'workspace'
+  built_in: CatalogueEntry[]
+  installs: CatalogueEntry[]
+  /** The platform view's workspace installs; a workspace view's platform installs. */
+  others: CatalogueEntry[]
+  /** The intake's caps (the owner's Q8 answer), or null from an API that did not serve them. */
+  limits: { max_packed_bytes: number; max_unpacked_bytes: number; max_files: number; max_expansion_ratio: number } | null
+  can_install: boolean
+}
+
+/** One fetch or upload in flight: `routes.plugin_catalogue.intake_view`. */
+export interface CatalogueIntake {
+  intake_id: string
+  /** `awaiting_upload`, `running`, `pinned` or `refused`. */
+  state: string
+  install_id: string | null
+  version_id: string | null
+  source: CatalogueSource | null
+  /** A fixed code; `sentence` is swarm-api's own for its codes, null for one the intake job reported. */
+  refusal: { code: string; sentence: string | null; entry_index: number | null } | null
+  deadline: string | null
+}
+
+/** One pinned version: `pluginstore.version_view`. */
+export interface PluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  source: CatalogueSource | null
+  source_sha256: string | null
+  runnable_sha256: string | null
+  runnable_bytes: number | null
+  files: number | null
+  unpacked_bytes: number | null
+  manifest: Record<string, unknown>
+  components: {
+    skills: { name: string }[]
+    commands: { name: string }[]
+    agents: { name: string }[]
+    hooks: { event: string; matcher: string | null; command: string }[]
+    mcp_servers: { name: string; command: string | null }[]
+  }
+  /** Runtimes the intake found or the overlay declared, as `name` or `name >= min`. */
+  runtimes: string[]
+  profiles: string[]
+  hosts: string[]
+  created_at: string | null
+  created_by: string | null
+}
+
+function pluginNames(v: unknown): string[] {
+  return (Array.isArray(v) ? v : []).map((e) => pText(pluginRecord(e).name)).filter((n): n is string => n !== null)
+}
+
+function normVersion(raw: unknown): WorkspacePluginVersion {
+  const r = pluginRecord(raw)
+  const m = pluginRecord(r.manifest)
+  const c = pluginRecord(r.components)
+  const req = pluginRecord(r.requires)
+  return {
+    version_id: typeof r.version_id === 'string' ? r.version_id : '',
+    current: r.current === true,
+    version: pText(r.version) ?? pText(m.version),
+    license: pText(m.license),
+    description: pText(m.description),
+    source: pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    skills: pluginNames(c.skills),
+    commands: pluginNames(c.commands),
+    agents: pluginNames(c.agents),
+    hooks: (Array.isArray(c.hooks) ? c.hooks : []).map((h) => {
+      const x = pluginRecord(h)
+      return { event: pText(x.event) ?? '', matcher: pText(x.matcher), command: pText(x.command) ?? '' }
+    }),
+    mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).map((s) => {
+      const x = pluginRecord(s)
+      return { name: pText(x.name) ?? '', url_host: pText(x.url_host) }
+    }),
+    runtimes: (Array.isArray(req.runtimes) ? req.runtimes : []).map((x) => {
+      const t = pluginRecord(x)
+      const n = pText(t.name)
+      const v = pText(t.min_version)
+      return n === null ? '' : v === null ? n : `${n} ${v}`
+    }).filter((n) => n !== ''),
+    hosts: pluginStrings(r.hosts),
+    profiles: pluginStrings(req.profiles),
+    user_config: Array.isArray(m.user_config) ? m.user_config.length : 0,
+    created_at: pText(r.created_at),
+    created_by: pText(r.created_by),
+  }
+}
+
+const PLUGIN_FIXTURE_TENANT = 'u-owner'
+
+/** The fixture build's catalogue: the two built-ins the fixture Allowed list serves, nothing installed. */
+function fixtureCatalogue(): Record<string, unknown> {
+  const served = normWorkspacePlugins(fixturePlugins())
+  return {
+    scope: 'workspace',
+    tenant_id: PLUGIN_FIXTURE_TENANT,
+    built_in: served.catalogue.map((p) => ({
+      install_id: `builtin:${p.name}`, name: p.name, display_name: p.name, scope: 'platform', built_in: true, state: 'active',
+      source: { kind: 'image' }, current_version: null, version: p.version, runner_profiles: p.runner_profiles,
+      skills: Object.fromEntries(Object.entries(p.modes).map(([m, o]) => [m, o?.skills ?? []])), hosts: [],
+    })),
+    platform_installs: [],
+    installs: [],
+    can_install: true,
+  }
+}
+
+let fixturePluginDefaults: string[] = []
+
+async function pluginFixture<T>(target: ApiRoute, value: T): Promise<Result<T>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe(target, 40, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: value }
+}
+
+function mapPlugin<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`: the built-ins, the platform's installs and this workspace's own. */
+export async function loadWorkspaceCatalogue(tenantId: string): Promise<Result<WorkspaceCatalogue>> {
+  const target = route(PLUGIN_CATALOGUE_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return pluginFixture(target, normWorkspaceCatalogue(fixtureCatalogue()))
+  return mapPlugin(await read<unknown>(target, () => false), normWorkspaceCatalogue)
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: the plugins on for every step. */
+export async function loadPluginDefaults(tenantId: string): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  return mapPlugin(await read<unknown>(target, () => false), normPluginDefaults)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/plugin-defaults` with `{defaults}`: signed and audited by the API. */
+export async function savePluginDefaults(tenantId: string, defaults: readonly string[]): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    fixturePluginDefaults = [...new Set(defaults)].sort()
+    return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  }
+  return mapPlugin(await write(target, 'PUT', { defaults: [...defaults] }), normPluginDefaults)
+}
+
+/** `GET .../plugin-config/{install_id}`: the form the pinned version declares and the workspace's values (never a secret's). */
+export async function loadPluginConfig(tenantId: string, installId: string): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normPluginConfig)
+}
+
+/**
+ * `PUT .../plugin-config/{install_id}`: non-secret values only, against the
+ * version and the revision the form was read at (a stale form is refused
+ * `form_changed` or `config_conflict`). `null` clears a value.
+ */
+export async function savePluginValues(
+  tenantId: string,
+  installId: string,
+  body: { version_id: string; revision: number; values: Record<string, unknown> },
+): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', body), normPluginConfig)
+}
+
+/** `POST .../secrets/{field}/links`: a one-time link to set one secret or file setting. */
+export async function mintPluginSecretLink(tenantId: string, installId: string, field: string): Promise<Result<PluginSecretLink>> {
+  const target = route(`${PLUGIN_SECRET_OF}/links`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST'), normSecretLink)
+}
+
+/** `PUT .../secrets/{field}`: the value, once, with its link's token. The answer says only that it is set. */
+export async function storePluginSecret(tenantId: string, installId: string, field: string, value: string, linkToken: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { value, link_token: linkToken }), normFieldState)
+}
+
+/** `DELETE .../secrets/{field}`: destroy a secret or a file setting's content. */
+export async function removePluginSecret(tenantId: string, installId: string, field: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'DELETE')
+  return mapPlugin(await write(target, 'DELETE'), normFieldState)
+}
+
+/** `PUT .../secrets/{field}/binding`: use a workspace key (a closed list: `typesafe`) instead of a value. */
+export async function bindPluginSecret(tenantId: string, installId: string, field: string, provider: string): Promise<Result<PluginFieldState>> {
+  const target = route(`${PLUGIN_SECRET_OF}/binding`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { provider }), normFieldState)
+}
+
+/** A workspace install's source: a GitHub repository at a ref, or a marketplace's entry. */
+export type PluginSourceBody =
+  | { kind: 'github'; repository: string; ref: string; subdir: string }
+  | { kind: 'marketplace'; repository: string; ref: string; plugin: string }
+
+/** `POST .../plugin-catalogue/installs`: fetch, quarantine and start the network-less intake. Its owner's or admin's. */
+export async function installWorkspacePlugin(tenantId: string, source: PluginSourceBody, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST', overlay === null ? { source } : { source, overlay }), normIntake)
+}
+
+/**
+ * An upload's three steps: `POST .../uploads` opens the intake and a signed
+ * URL bound to the archive's type and size; the bytes go straight to it, never
+ * through swarm-api; `POST .../intakes/{id}/start` runs the intake.
+ */
+export async function uploadWorkspacePlugin(tenantId: string, file: File, subdir: string, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const opened = route(`${PLUGIN_CATALOGUE_OF}/uploads`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(opened, 'POST')
+  const body: Record<string, unknown> = { filename: file.name, size: file.size, subdir }
+  if (overlay !== null) body.overlay = overlay
+  const r = await write(opened, 'POST', body)
+  if (r.status !== 'ok' && r.status !== 'stale') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was not opened.' } }
+  const answer = pluginRecord(r.data)
+  const intake = normIntake(answer.intake)
+  const upload = pluginRecord(answer.upload)
+  const url = pText(upload.url)
+  if (url === null || intake.intake_id === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was opened without a destination.' } }
+  }
+  const headers = Object.fromEntries(Object.entries(pluginRecord(upload.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  const tenant = chosenTenant()
+  let sent: Response
+  try {
+    sent = await fetch(url, {
+      method: 'PUT', body: file,
+      headers: apiHeaders(headers, tenant),
+    })
+  } catch {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The archive could not be sent.' } }
+  }
+  if (!sent.ok) {
+    let code: string | null = null
+    try {
+      const parsed: unknown = await sent.json()
+      if (typeof parsed === 'object' && parsed !== null && typeof (parsed as { code?: unknown }).code === 'string') code = (parsed as { code: string }).code
+    } catch {
+      code = null
+    }
+    dropRefusedTenant(sent.status, code, tenant)
+    return { status: 'error', error: { kind: 'server_error', httpStatus: sent.status, code: null, message: `The archive was refused by its destination (HTTP ${sent.status}).` } }
+  }
+  const start = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}/start`, { tenant_id: tenantId, intake_id: intake.intake_id })
+  return mapPlugin(await write(start, 'POST'), normIntake)
+}
+
+/** `GET .../plugin-catalogue/intakes/{intake_id}`: its state; reading it finishes one whose report is there. */
+export async function readWorkspaceIntake(tenantId: string, intakeId: string): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}`, { tenant_id: tenantId, intake_id: intakeId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normIntake)
+}
+
+/** `GET .../plugin-catalogue/installs/{install_id}/versions`: the pinned versions, current first as the API orders them. */
+export async function loadWorkspacePluginVersions(tenantId: string, installId: string): Promise<Result<WorkspacePluginVersion[]>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs/{install_id}/versions`, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), (raw) => {
+    const v = pluginRecord(raw).versions
+    return (Array.isArray(v) ? v : []).map(normVersion)
+  })
+}
+
+export interface CatalogueVersions {
+  install: CatalogueEntry
+  versions: PluginVersion[]
+}
+
+/** A GitHub repository or a marketplace entry, as Add plugin sends it (`SourceBody`). */
+export interface PluginSourceInput {
+  kind: 'github' | 'marketplace'
+  repository: string
+  ref: string
+  subdir: string
+  plugin: string | null
+}
+
+/** The signed upload URL `POST .../uploads` answers: valid ten minutes, never kept. */
+export interface PluginUploadTarget {
+  method: string
+  url: string
+  headers: Record<string, string>
+}
+
+function catStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function catNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normCatalogueSource(raw: unknown): CatalogueSource {
+  const r = pluginRecord(raw)
+  return {
+    kind: catStr(r.kind) ?? 'unknown',
+    repository: catStr(r.repository),
+    ref: catStr(r.ref),
+    commit: catStr(r.commit),
+    subdir: catStr(r.subdir),
+    plugin: catStr(r.plugin),
+    filename: catStr(r.filename),
+  }
+}
+
+function normCatalogueEntry(raw: unknown): CatalogueEntry | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.install_id)
+  const name = catStr(r.name)
+  if (id === null || name === null) return null
+  const counts = pluginRecord(r.components)
+  const count = (k: string) => catNum(counts[k]) ?? 0
+  // A built-in serves its skills per mode; the card counts the distinct ones.
+  const modeSkills = new Set(Object.values(pluginRecord(r.skills)).flatMap(pluginStrings))
+  return {
+    install_id: id,
+    name,
+    display_name: catStr(r.display_name) ?? name,
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    tenant_id: catStr(r.tenant_id),
+    built_in: r.built_in === true,
+    source: normCatalogueSource(r.source),
+    version: catStr(r.version),
+    description: catStr(r.description),
+    runnable_sha256: catStr(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: { skills: Math.max(count('skills'), modeSkills.size), commands: count('commands'), agents: count('agents'), hooks: count('hooks'), mcp_servers: count('mcp_servers') },
+    runner_profiles: pluginStrings(r.runner_profiles),
+    removable: r.removable === true,
+    updatable: r.updatable === true,
+    updated_at: catStr(r.updated_at),
+    updated_by: catStr(r.updated_by),
+    allowed: typeof r.allowed === 'boolean' ? r.allowed : null,
+  }
+}
+
+function catEntries(v: unknown): CatalogueEntry[] {
+  return (Array.isArray(v) ? v : []).map(normCatalogueEntry).filter((e): e is CatalogueEntry => e !== null)
+}
+
+/** `GET {base}`: the catalogue's built-ins, its installs and the other scope's. */
+export function normPluginCatalogue(raw: unknown): PluginCatalogue {
+  const r = pluginRecord(raw)
+  const l = pluginRecord(r.limits)
+  const packed = catNum(l.max_packed_bytes)
+  return {
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    built_in: catEntries(r.built_in),
+    installs: catEntries(r.installs),
+    others: catEntries(r.scope === 'workspace' ? r.platform_installs : r.workspace_installs),
+    limits: packed === null ? null : { max_packed_bytes: packed, max_unpacked_bytes: catNum(l.max_unpacked_bytes) ?? 0, max_files: catNum(l.max_files) ?? 0, max_expansion_ratio: catNum(l.max_expansion_ratio) ?? 0 },
+    can_install: r.can_install === true,
+  }
+}
+
+export function normCatalogueIntake(raw: unknown): CatalogueIntake | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.intake_id)
+  const state = catStr(r.state)
+  if (id === null || state === null) return null
+  const refusal = pluginRecord(r.refusal)
+  const code = catStr(refusal.code)
+  return {
+    intake_id: id,
+    state,
+    install_id: catStr(r.install_id),
+    version_id: catStr(r.version_id),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    refusal: code === null ? null : { code, sentence: catStr(refusal.sentence), entry_index: catNum(refusal.entry_index) },
+    deadline: catStr(r.deadline),
+  }
+}
+
+function catNamed(v: unknown): { name: string }[] {
+  return (Array.isArray(v) ? v : []).flatMap((x) => {
+    const n = catStr(pluginRecord(x).name)
+    return n === null ? [] : [{ name: n }]
+  })
+}
+
+function catRuntimes(requires: Record<string, unknown>): string[] {
+  const out = new Set<string>()
+  for (const part of ['suggested', 'declared']) {
+    for (const rt of Array.isArray(pluginRecord(requires[part]).runtimes) ? (pluginRecord(requires[part]).runtimes as unknown[]) : []) {
+      if (typeof rt === 'string') out.add(rt)
+      const o = pluginRecord(rt)
+      const n = catStr(o.name)
+      if (n !== null) out.add(catStr(o.min_version) === null ? n : `${n} >= ${String(o.min_version)}`)
+    }
+  }
+  return [...out].sort()
+}
+
+function normPluginVersion(raw: unknown): PluginVersion | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.version_id)
+  if (id === null) return null
+  const c = pluginRecord(r.components)
+  const requires = pluginRecord(r.requires)
+  return {
+    version_id: id,
+    current: r.current === true,
+    version: catStr(r.version),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    source_sha256: catStr(r.source_sha256),
+    runnable_sha256: catStr(r.runnable_sha256),
+    runnable_bytes: catNum(r.runnable_bytes),
+    files: catNum(r.files),
+    unpacked_bytes: catNum(r.unpacked_bytes),
+    manifest: pluginRecord(r.manifest),
+    components: {
+      skills: catNamed(c.skills),
+      commands: catNamed(c.commands),
+      agents: catNamed(c.agents),
+      hooks: (Array.isArray(c.hooks) ? c.hooks : []).flatMap((x) => {
+        const h = pluginRecord(x)
+        const event = catStr(h.event)
+        return event === null ? [] : [{ event, matcher: catStr(h.matcher), command: catStr(h.command) ?? '' }]
+      }),
+      mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).flatMap((x) => {
+        const s = pluginRecord(x)
+        const n = catStr(s.name)
+        return n === null ? [] : [{ name: n, command: catStr(s.command) }]
+      }),
+    },
+    runtimes: catRuntimes(requires),
+    profiles: pluginStrings(pluginRecord(requires.declared).profiles),
+    hosts: pluginStrings(r.hosts),
+    created_at: catStr(r.created_at),
+    created_by: catStr(r.created_by),
+  }
+}
+
+export function normCatalogueVersions(raw: unknown): CatalogueVersions | null {
+  const r = pluginRecord(raw)
+  const install = normCatalogueEntry(r.install)
+  if (install === null) return null
+  return { install, versions: (Array.isArray(r.versions) ? r.versions : []).map(normPluginVersion).filter((v): v is PluginVersion => v !== null) }
+}
+
+/** `GET {base}`: the catalogue, as its reader may see it. */
+export async function loadPluginCatalogue(scope: PluginCatalogueScope): Promise<Result<PluginCatalogue>> {
+  return readAs(catalogueRoute(scope, 'catalogue'), normPluginCatalogue)
+}
+
+/** `GET {base}/installs/{install_id}/versions`: an install and its pinned versions. */
+export async function loadCatalogueVersions(scope: PluginCatalogueScope, installId: string): Promise<Result<CatalogueVersions | null>> {
+  return readAs(catalogueRoute(scope, 'versions', { install_id: installId }), normCatalogueVersions)
+}
+
+/** `GET {base}/intakes/{intake_id}`: an intake's state; reading it also finishes one whose report is in. */
+export async function loadCatalogueIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<CatalogueIntake | null>> {
+  return readAs(catalogueRoute(scope, 'intake', { intake_id: intakeId }), normCatalogueIntake)
+}
+
+function catIntake(r: Result<unknown>): Result<CatalogueIntake | null> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normCatalogueIntake(r.data) }
+  return r
+}
+
+/** `POST {base}/installs`: resolve a GitHub ref or a marketplace entry, fetch it into quarantine, start the intake. */
+export async function startPluginInstall(scope: PluginCatalogueScope, source: PluginSourceInput, overlay: Record<string, unknown> | null): Promise<Result<CatalogueIntake | null>> {
+  const body = {
+    source: source.kind === 'github'
+      ? { kind: 'github', repository: source.repository, ref: source.ref, subdir: source.subdir }
+      : { kind: 'marketplace', repository: source.repository, ref: source.ref, plugin: source.plugin },
+    ...(overlay === null ? {} : { overlay }),
+  }
+  return catIntake(await writeTo(catalogueRoute(scope, 'installs'), 'POST', body))
+}
+
+/** `POST {base}/uploads`: an intake awaiting its archive, and the signed URL to put it at. */
+export async function openPluginUpload(
+  scope: PluginCatalogueScope,
+  file: { name: string; size: number },
+  subdir: string,
+  overlay: Record<string, unknown> | null,
+): Promise<Result<{ intake: CatalogueIntake; upload: PluginUploadTarget } | null>> {
+  const r = await writeTo(catalogueRoute(scope, 'uploads'), 'POST', { filename: file.name, size: file.size, subdir, ...(overlay === null ? {} : { overlay }) })
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const raw = pluginRecord(r.data)
+  const intake = normCatalogueIntake(raw.intake)
+  const u = pluginRecord(raw.upload)
+  const url = catStr(u.url)
+  const headers = Object.fromEntries(Object.entries(pluginRecord(u.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  return { ...r, data: intake === null || url === null ? null : { intake, upload: { method: catStr(u.method) ?? 'PUT', url, headers } } }
+}
+
+/**
+ * The archive's bytes, straight to Cloud Storage at the signed URL, so they
+ * never pass through swarm-api (§2.2). Answers whether the store took them;
+ * the URL is never logged or kept.
+ */
+export async function putPluginArchive(upload: PluginUploadTarget, file: Blob): Promise<boolean> {
+  // apiHeaders with no tenant: the store is cross-origin, the signed URL is
+  // the authority, and the chosen tenant (X-Swarm-Tenant) is swarm-api's
+  // header, never sent to Cloud Storage.
+  const tenant: string | null = null
+  try {
+    const r = await fetch(upload.url, {
+      method: upload.method,
+      headers: apiHeaders(upload.headers, tenant),
+      body: file,
+      credentials: 'omit',
+    })
+    // A refusal names the tenant that was sent, and none was: nothing to forget.
+    dropRefusedTenant(r.status, null, tenant)
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
+/** `POST {base}/intakes/{intake_id}/start`: the upload arrived, run the intake. */
+export async function startPluginIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<CatalogueIntake | null>> {
+  return catIntake(await writeTo(catalogueRoute(scope, 'start', { intake_id: intakeId }), 'POST'))
+}
+
+// --------------------------------------------------------------------------
+// A managed plugin's page (docs/design/managed-plugins.md section 9, lane
+// 10b): its install and versions, the diff to a candidate and its apply, a
+// check for an update, its removal, its settings as the workspace holds them,
+// and who uses it. `swarm_api.routes.plugin_catalogue` and `plugin_config`.
+// --------------------------------------------------------------------------
+
+const PLUGIN_CATALOGUE_PLATFORM = '/v1/admin/plugin-catalogue'
+const PLUGIN_CATALOGUE_WORKSPACE = PLUGIN_CATALOGUE_OF
+
+/**
+ * Which catalogue holds an install: its id says it (`p-` the platform's,
+ * `w-` a workspace's, `swarm_api.pluginstore.INSTALL_ID`), and a workspace's
+ * catalogue is read through that workspace.
+ */
+export interface PluginPlace {
+  installId: string
+  /** The workspace the page is read in; null on Admin › Plugins. */
+  tenantId: string | null
+}
+
+export function pluginScopeOf(installId: string): 'platform' | 'workspace' {
+  return installId.startsWith('w-') ? 'workspace' : 'platform'
+}
+
+/** The catalogue route an install's own routes hang from; null when a workspace install has no workspace to read it in. */
+function pluginCatalogueBase(p: PluginPlace): { template: string; params: Record<string, string> } | null {
+  if (pluginScopeOf(p.installId) === 'platform') return { template: PLUGIN_CATALOGUE_PLATFORM, params: {} }
+  if (p.tenantId === null) return null
+  return { template: PLUGIN_CATALOGUE_WORKSPACE, params: { tenant_id: p.tenantId } }
+}
+
+export interface PluginHook {
+  event: string
+  matcher: string | null
+  command: string
+}
+
+export interface PluginComponents {
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hooks: PluginHook[]
+  mcp_servers: string[]
+}
+
+/** `pluginstore.install_view`: an install with its current version's summary. */
+export interface ManagedInstall {
+  install_id: string
+  name: string
+  display_name: string | null
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  state: string
+  /** The source as stored: `kind` and the strings it carries (repository, ref, commit, ...). */
+  source: Record<string, string>
+  current_version: string | null
+  version: string | null
+  description: string | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** How many of each component the current version ships. */
+  counts: Record<keyof PluginComponents, number>
+  removable: boolean
+  updatable: boolean
+  updated_at: string | null
+  updated_by: string | null
+  /** In a workspace's catalogue, a platform install: whether that workspace allows it; null where not said. */
+  allowed: boolean | null
+}
+
+/** `pluginstore.version_view`: one pinned version. */
+export interface ManagedVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  source: Record<string, string>
+  runnable_sha256: string | null
+  runnable_bytes: number | null
+  files: number | null
+  unpacked_bytes: number | null
+  license: string | null
+  homepage: string | null
+  components: PluginComponents
+  /** `requires`' runtimes, as the manifest or the overlay declares them. */
+  runtimes: string[]
+  hosts: string[]
+  created_at: string | null
+  created_by: string | null
+}
+
+export interface PluginVersions {
+  install: ManagedInstall
+  /** Newest first. */
+  versions: ManagedVersion[]
+}
+
+export interface PluginAddedRemoved {
+  added: string[]
+  removed: string[]
+}
+
+/** `pluginstore.version_diff`: what changes from the current version to another. */
+export interface PluginVersionDiff {
+  from_version_id: string | null
+  to_version_id: string | null
+  manifest: { field: string; from: string | null; to: string | null }[]
+  hooks: { added: PluginHook[]; removed: PluginHook[]; changed: { from: PluginHook; to: PluginHook }[] }
+  mcp_servers: PluginAddedRemoved & { changed: string[] }
+  skills: PluginAddedRemoved
+  commands: PluginAddedRemoved
+  agents: PluginAddedRemoved
+  settings: PluginAddedRemoved & { retyped: string[]; newly_sensitive: string[] }
+  hosts: PluginAddedRemoved
+  runtimes: { from: string[]; to: string[] } | null
+  files: { from: number | null; to: number | null }
+  unpacked_bytes: { from: number | null; to: number | null }
+  runnable_sha256: { from: string | null; to: string | null }
+  source: { from_commit: string | null; to_commit: string | null; compare: string | null }
+  /** Where a malicious update acts: hooks, mcp_servers, hosts, sensitive. */
+  marked: string[]
+  needs_confirmation: boolean
+}
+
+export interface PluginDiffAnswer {
+  install_id: string
+  diff: PluginVersionDiff
+  /** What an apply quotes: proof the admin applies the diff they read. */
+  diff_sha256: string
+}
+
+/**
+ * `routes.plugin_catalogue.intake_view`: a fetch or an upload being pinned,
+ * or a check for an update, while the intake job runs and after.
+ */
+export interface PluginIntake {
+  intake_id: string
+  state: 'awaiting_upload' | 'running' | 'pinned' | 'refused' | string
+  install_id: string | null
+  version_id: string | null
+  refusal: { code: string; sentence: string | null } | null
+  deadline: string | null
+}
+
+/** One field of `pluginconfig.form`, and the workspace's value for it (`values_view`). */
+export interface PluginSettingRow {
+  key: string
+  title: string | null
+  description: string | null
+  type: string
+  kind: string
+  required: boolean
+  sensitive: boolean
+  default: string | number | boolean | null
+  /** A value field's value, when set; never a secret's. */
+  value: string | number | boolean | null
+  set: boolean
+  set_by: string | null
+  set_at: string | null
+  /** A secret bound to a workspace key instead of stored: the provider. */
+  binding: string | null
+}
+
+export interface PluginSettings {
+  tenant_id: string
+  version_id: string | null
+  fields: PluginSettingRow[]
+  missing: string[]
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+}
+
+/**
+ * Who uses an install (section 9.2): the workspaces that allow it or make it
+ * an every-step default, saved workflows and agents whose steps name it, the
+ * schedules that run them, and steps queued or running with it now.
+ */
+export interface PluginUsage {
+  workspaces: { tenant_id: string; allowed: boolean; every_step: boolean }[]
+  workflows: { tenant_id: string; id: string; name: string; kind: string; steps: string[]; how: string }[]
+  schedules: { tenant_id: string; schedule_id: string; name: string }[]
+  steps: { tenant_id: string; task_id: string; workflow_id: string | null; step: string | null; state: string }[]
+}
+
+/** The workspace's own facts about a plugin: its catalogue's entry and its every-step defaults. */
+export interface PluginInWorkspace {
+  tenant_id: string
+  entry: ManagedInstall | null
+  every_step: boolean
+  can_install: boolean
+}
+
+function pCount(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function pStrings(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, x] of Object.entries(pluginRecord(v))) if (typeof x === 'string' && x !== '') out[k] = x
+  return out
+}
+
+function pNames(v: unknown): string[] {
+  return (Array.isArray(v) ? v : []).flatMap((e) => {
+    if (typeof e === 'string' && e !== '') return [e]
+    const n = pText(pluginRecord(e).name)
+    return n === null ? [] : [n]
+  })
+}
+
+function pHook(v: unknown): PluginHook | null {
+  const r = pluginRecord(v)
+  const event = pText(r.event)
+  return event === null ? null : { event, matcher: pText(r.matcher), command: pText(r.command) ?? '' }
+}
+
+function pHooks(v: unknown): PluginHook[] {
+  return (Array.isArray(v) ? v : []).map(pHook).filter((h): h is PluginHook => h !== null)
+}
+
+function pAddedRemoved(v: unknown): PluginAddedRemoved {
+  const r = pluginRecord(v)
+  return { added: pluginStrings(r.added), removed: pluginStrings(r.removed) }
+}
+
+const PLUGIN_COMPONENT_KEYS = ['skills', 'commands', 'agents', 'hooks', 'mcp_servers'] as const
+
+function normManagedInstall(raw: unknown): ManagedInstall | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.install_id)
+  const name = pText(r.name)
+  if (id === null || name === null) return null
+  const c = pluginRecord(r.components)
+  const counts = Object.fromEntries(PLUGIN_COMPONENT_KEYS.map((k) => [k, pCount(c[k]) ?? 0])) as ManagedInstall['counts']
+  return {
+    install_id: id,
+    name,
+    display_name: pText(r.display_name),
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    tenant_id: pText(r.tenant_id),
+    state: pText(r.state) ?? 'active',
+    source: pStrings(r.source),
+    current_version: pText(r.current_version),
+    version: pText(r.version),
+    description: pText(r.description),
+    runnable_sha256: pText(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    counts,
+    removable: r.removable === true,
+    updatable: r.updatable === true,
+    updated_at: pText(r.updated_at),
+    updated_by: pText(r.updated_by),
+    allowed: typeof r.allowed === 'boolean' ? r.allowed : null,
+  }
+}
+
+function normRuntimes(requires: unknown): string[] {
+  const r = pluginRecord(requires)
+  const declared = pluginRecord(r.declared)
+  const block = Object.keys(declared).length > 0 ? declared : pluginRecord(r.suggested)
+  return (Array.isArray(block.runtimes) ? block.runtimes : []).flatMap((x) => {
+    if (typeof x === 'string' && x !== '') return [x]
+    const o = pluginRecord(x)
+    const n = pText(o.name)
+    if (n === null) return []
+    const v = pText(o.version) ?? pText(o.min)
+    return [v === null ? n : `${n} ${v}`]
+  })
+}
+
+function normManagedVersion(raw: unknown): ManagedVersion | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.version_id)
+  if (id === null) return null
+  const m = pluginRecord(r.manifest)
+  const c = pluginRecord(r.components)
+  return {
+    version_id: id,
+    current: r.current === true,
+    version: pText(r.version) ?? pText(m.version),
+    source: pStrings(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    runnable_bytes: pCount(r.runnable_bytes),
+    files: pCount(r.files),
+    unpacked_bytes: pCount(r.unpacked_bytes),
+    license: pText(m.license),
+    homepage: pText(m.homepage),
+    components: {
+      skills: pNames(c.skills),
+      commands: pNames(c.commands),
+      agents: pNames(c.agents),
+      hooks: pHooks(c.hooks),
+      mcp_servers: pNames(c.mcp_servers),
+    },
+    runtimes: normRuntimes(r.requires),
+    hosts: pluginStrings(r.hosts),
+    created_at: pText(r.created_at),
+    created_by: pText(r.created_by),
+  }
+}
+
+export function normPluginVersions(raw: unknown): PluginVersions | null {
+  const r = pluginRecord(raw)
+  const install = normManagedInstall(r.install)
+  if (install === null) return null
+  const versions = (Array.isArray(r.versions) ? r.versions : [])
+    .map(normManagedVersion)
+    .filter((v): v is ManagedVersion => v !== null)
+    .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+  return { install, versions }
+}
+
+function pFromTo(v: unknown): { from: number | null; to: number | null } {
+  const r = pluginRecord(v)
+  return { from: pCount(r.from), to: pCount(r.to) }
+}
+
+function pScalar(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  return typeof v === 'string' ? v : JSON.stringify(v)
+}
+
+export function normPluginDiff(raw: unknown): PluginDiffAnswer | null {
+  const r = pluginRecord(raw)
+  const d = pluginRecord(r.diff)
+  const sha = pText(r.diff_sha256)
+  if (sha === null || Object.keys(d).length === 0) return null
+  const hooks = pluginRecord(d.hooks)
+  const servers = pluginRecord(d.mcp_servers)
+  const settings = pluginRecord(d.settings)
+  const runtimes = d.runtimes === null || d.runtimes === undefined ? null : pluginRecord(d.runtimes)
+  const digests = pluginRecord(d.runnable_sha256)
+  const source = pluginRecord(d.source)
+  return {
+    install_id: pText(r.install_id) ?? '',
+    diff_sha256: sha,
+    diff: {
+      from_version_id: pText(d.from_version_id),
+      to_version_id: pText(d.to_version_id),
+      manifest: Object.entries(pluginRecord(d.manifest)).map(([field, ft]) => {
+        const o = pluginRecord(ft)
+        return { field, from: pScalar(o.from), to: pScalar(o.to) }
+      }),
+      hooks: {
+        added: pHooks(hooks.added),
+        removed: pHooks(hooks.removed),
+        changed: (Array.isArray(hooks.changed) ? hooks.changed : []).flatMap((c) => {
+          const o = pluginRecord(c)
+          const from = pHook(o.from)
+          const to = pHook(o.to)
+          return from === null || to === null ? [] : [{ from, to }]
+        }),
+      },
+      mcp_servers: { ...pAddedRemoved(servers), changed: pluginStrings(servers.changed) },
+      skills: pAddedRemoved(d.skills),
+      commands: pAddedRemoved(d.commands),
+      agents: pAddedRemoved(d.agents),
+      settings: { ...pAddedRemoved(settings), retyped: pluginStrings(settings.retyped), newly_sensitive: pluginStrings(settings.newly_sensitive) },
+      hosts: pAddedRemoved(d.hosts),
+      runtimes: runtimes === null ? null : { from: normRuntimes({ declared: { runtimes: runtimes.from } }), to: normRuntimes({ declared: { runtimes: runtimes.to } }) },
+      files: pFromTo(d.files),
+      unpacked_bytes: pFromTo(d.unpacked_bytes),
+      runnable_sha256: { from: pText(digests.from), to: pText(digests.to) },
+      source: { from_commit: pText(source.from_commit), to_commit: pText(source.to_commit), compare: pText(source.compare) },
+      marked: pluginStrings(d.marked),
+      needs_confirmation: d.needs_confirmation === true,
+    },
+  }
+}
+
+function normPluginIntake(raw: unknown): PluginIntake | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.intake_id)
+  if (id === null) return null
+  const refusal = pluginRecord(r.refusal)
+  const code = pText(refusal.code)
+  return {
+    intake_id: id,
+    state: pText(r.state) ?? 'running',
+    install_id: pText(r.install_id),
+    version_id: pText(r.version_id),
+    refusal: code === null ? null : { code, sentence: pText(refusal.sentence) },
+    deadline: pText(r.deadline),
+  }
+}
+
+function pSettingValue(v: unknown): string | number | boolean | null {
+  return typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) ? v : null
+}
+
+export function normPluginSettings(raw: unknown): PluginSettings {
+  const r = pluginRecord(raw)
+  const form = pluginRecord(r.form)
+  const values = pluginRecord(r.values)
+  const fields = (Array.isArray(form.fields) ? form.fields : []).flatMap((f): PluginSettingRow[] => {
+    const o = pluginRecord(f)
+    const key = pText(o.key)
+    if (key === null) return []
+    const v = pluginRecord(values[key])
+    const binding = pluginRecord(v.binding)
+    return [{
+      key,
+      title: pText(o.title),
+      description: pText(o.description),
+      type: pText(o.type) ?? 'string',
+      kind: pText(o.kind) ?? 'value',
+      required: o.required === true,
+      sensitive: o.sensitive === true,
+      default: o.sensitive === true ? null : pSettingValue(o.default),
+      // A secret's value never comes back (section 6.2); only a value field's is read.
+      value: o.sensitive === true ? null : pSettingValue(v.value),
+      set: v.set === true,
+      set_by: pText(v.set_by),
+      set_at: pText(v.set_at),
+      binding: pText(binding.provider),
+    }]
+  })
+  return {
+    tenant_id: pText(r.tenant_id) ?? '',
+    version_id: pText(form.version_id),
+    fields,
+    missing: pluginStrings(r.missing),
+    set_at: pText(r.set_at),
+    set_by: pText(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+export function normPluginUsage(raw: unknown): PluginUsage {
+  const r = pluginRecord(raw)
+  const rows = (v: unknown) => (Array.isArray(v) ? v : []).map(pluginRecord)
+  return {
+    workspaces: rows(r.workspaces).flatMap((o) => {
+      const t = pText(o.tenant_id)
+      return t === null ? [] : [{ tenant_id: t, allowed: o.allowed === true, every_step: o.every_step === true }]
+    }),
+    workflows: rows(r.workflows).flatMap((o) => {
+      const id = pText(o.id)
+      return id === null
+        ? []
+        : [{ tenant_id: pText(o.tenant_id) ?? '', id, name: pText(o.name) ?? id, kind: pText(o.kind) ?? 'workflow', steps: pluginStrings(o.steps), how: pText(o.how) ?? 'added' }]
+    }),
+    schedules: rows(r.schedules).flatMap((o) => {
+      const id = pText(o.schedule_id)
+      return id === null ? [] : [{ tenant_id: pText(o.tenant_id) ?? '', schedule_id: id, name: pText(o.name) ?? id }]
+    }),
+    steps: rows(r.steps).flatMap((o) => {
+      const id = pText(o.task_id)
+      return id === null
+        ? []
+        : [{ tenant_id: pText(o.tenant_id) ?? '', task_id: id, workflow_id: pText(o.workflow_id), step: pText(o.step), state: pText(o.state) ?? 'queued' }]
+    }),
+  }
+}
+
+/** A refusal the page can say in place: the route answered, and what it answered is not the shape asked for. */
+function pluginShapeError(target: ApiRoute): Result<never> {
+  return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: `${target.template} answered a shape this console does not read` } }
+}
+
+function noPluginWorkspace(): Result<never> {
+  return { status: 'error', error: { kind: 'invalid', httpStatus: null, code: null, message: 'No workspace is chosen to read this plugin in' } }
+}
+
+/* The fixture build's one managed plugin: invented, generic, two versions. */
+const FIXTURE_PLUGIN_INSTALL = 'w-0123456789ab'
+const FIXTURE_PLUGIN_HOOK = { event: 'Stop', matcher: null, command: 'node check.mjs' }
+const FIXTURE_PLUGIN_NEW_HOOK = { event: 'PreToolUse', matcher: 'Bash', command: 'node guard.mjs' }
+let fixturePluginCurrent = 'v-000000000001'
+
+function fixturePluginVersion(id: string, version: string, at: number, hooks: unknown[]): Record<string, unknown> {
+  return {
+    version_id: id, current: id === fixturePluginCurrent, version,
+    source: { kind: 'github', repository: 'example-org/example-plugin', ref: `v${version}`, commit: id.slice(-1).repeat(40) },
+    runnable_sha256: id.slice(-1).repeat(64), runnable_bytes: 48_213, files: 12, unpacked_bytes: 131_072,
+    manifest: { name: 'example-plugin', version, license: 'MIT' },
+    components: { skills: [{ name: 'check' }], hooks, commands: [], agents: [], mcp_servers: [] },
+    requires: { declared: { runtimes: ['node'], hosts: ['api.example.com'] } }, hosts: ['api.example.com'],
+    created_at: new Date(at).toISOString(), created_by: 'member@example.com',
+  }
+}
+
+function fixturePluginVersions(): Record<string, unknown> {
+  const versions = [
+    fixturePluginVersion('v-000000000002', '0.3.0', FIXTURE_NOW - 2 * 3_600_000, [FIXTURE_PLUGIN_HOOK, FIXTURE_PLUGIN_NEW_HOOK]),
+    fixturePluginVersion('v-000000000001', '0.2.0', FIXTURE_NOW - 50 * 3_600_000, [FIXTURE_PLUGIN_HOOK]),
+  ]
+  const current = versions.find((v) => v.current === true) ?? versions[1]!
+  return {
+    install: {
+      install_id: FIXTURE_PLUGIN_INSTALL, name: 'example-plugin', scope: 'workspace', tenant_id: 'eng', state: 'active',
+      source: current.source, current_version: fixturePluginCurrent, version: current.version, description: 'Checks each turn before it ends',
+      runnable_sha256: current.runnable_sha256, hosts: ['api.example.com'],
+      components: { skills: 1, commands: 0, agents: 0, hooks: (current.components as { hooks: unknown[] }).hooks.length, mcp_servers: 0 },
+      removable: true, updatable: true, updated_at: current.created_at, updated_by: 'member@example.com',
+    },
+    versions,
+  }
+}
+
+function fixturePluginDiff(versionId: string): Record<string, unknown> {
+  const forward = versionId === 'v-000000000002'
+  const hooks = { added: forward ? [FIXTURE_PLUGIN_NEW_HOOK] : [], removed: forward ? [] : [FIXTURE_PLUGIN_NEW_HOOK], changed: [] }
+  const none = { added: [], removed: [] }
+  return {
+    install_id: FIXTURE_PLUGIN_INSTALL,
+    diff_sha256: forward ? 'a'.repeat(64) : 'b'.repeat(64),
+    diff: {
+      from_version_id: fixturePluginCurrent, to_version_id: versionId,
+      manifest: { version: { from: forward ? '0.2.0' : '0.3.0', to: forward ? '0.3.0' : '0.2.0' } },
+      hooks, mcp_servers: { ...none, changed: [] }, skills: none, commands: none, agents: none,
+      settings: { added: forward ? ['max_retries'] : [], removed: [], retyped: [], newly_sensitive: [] },
+      hosts: none, runtimes: null, files: { from: 12, to: 12 }, unpacked_bytes: { from: 131_072, to: 131_072 },
+      runnable_sha256: { from: '1'.repeat(64), to: '2'.repeat(64) }, source: { from_commit: '1'.repeat(40), to_commit: '2'.repeat(40), compare: null },
+      marked: ['hooks'], needs_confirmation: true,
+    },
+  }
+}
+
+async function fixturePluginAnswer<T>(target: ApiRoute, norm: (raw: unknown) => T | null, raw: unknown): Promise<Result<T>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(target, 60, true)
+  const data = norm(raw)
+  return data === null ? pluginShapeError(target) : { status: 'ok', fetchedAt: Date.now(), data }
+}
+
+/** `GET {base}/installs/{install_id}/versions`: the install and every version it has pinned. */
+export async function loadPluginVersions(p: PluginPlace): Promise<Result<PluginVersions>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/versions`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginVersions, fixturePluginVersions())
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginVersions(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET {base}/installs/{install_id}/diff?version_id=`: current to `versionId`, from the two stored versions. */
+export async function loadPluginDiff(p: PluginPlace, versionId: string): Promise<Result<PluginDiffAnswer>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/diff`, { ...base.params, install_id: p.installId }, new URLSearchParams({ version_id: versionId }))
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginDiff, fixturePluginDiff(versionId))
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginDiff(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/**
+ * `POST {base}/installs/{install_id}/apply`: make `versionId` current. It
+ * quotes the digest of the diff the admin read, and the plugin's name typed
+ * when the diff is marked; the API refuses `diff_changed` when the diff moved.
+ */
+export async function applyPluginVersion(p: PluginPlace, versionId: string, diffSha256: string, confirmName: string | null): Promise<Result<PluginVersions>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/apply`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) {
+    fixturePluginCurrent = versionId
+    return fixturePluginAnswer(target, normPluginVersions, fixturePluginVersions())
+  }
+  const r = await write(target, 'POST', { version_id: versionId, diff_sha256: diffSha256, ...(confirmName === null ? {} : { confirm_name: confirmName }) })
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normPluginVersions(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/**
+ * `POST {base}/installs/{install_id}/update`: check a GitHub or marketplace
+ * install's ref (its own, or `ref`) for a new version. The intake runs as an
+ * install's does; its result is a candidate, never current until applied.
+ */
+export async function checkPluginUpdate(p: PluginPlace, ref: string | null): Promise<Result<PluginIntake>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/update`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginIntake, { intake_id: '0'.repeat(32), state: 'pinned', version_id: 'v-000000000002' })
+  const r = await write(target, 'POST', ref === null || ref === '' ? {} : { ref })
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normPluginIntake(pluginRecord(r.data).intake ?? r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET {base}/intakes/{intake_id}`: an update check's state; reading it finishes an intake whose report is in. */
+export async function loadPluginIntake(p: PluginPlace, intakeId: string): Promise<Result<PluginIntake>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/intakes/{intake_id}`, { ...base.params, intake_id: intakeId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginIntake, { intake_id: intakeId, state: 'pinned', version_id: 'v-000000000002' })
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginIntake(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `DELETE {base}/installs/{install_id}?confirm=<name>`: remove it; later submissions naming it are refused. */
+export async function removePlugin(p: PluginPlace, confirmName: string): Promise<Result<ManagedInstall>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}`, { ...base.params, install_id: p.installId }, new URLSearchParams({ confirm: confirmName }))
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normManagedInstall, { ...pluginRecord(fixturePluginVersions().install), state: 'removed', removable: false, updatable: false })
+  const r = await write(target, 'DELETE')
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normManagedInstall(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-config/{install_id}`: the form and the workspace's values, never a secret's. */
+export async function loadPluginSettings(tenantId: string, installId: string): Promise<Result<PluginSettings>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) {
+    return fixturePluginAnswer(target, normPluginSettings, {
+      tenant_id: tenantId,
+      form: { version_id: fixturePluginCurrent, fields: [
+        { key: 'threshold', type: 'number', kind: 'value', title: 'Threshold', required: false, sensitive: false, default: 0.7 },
+        { key: 'service_key', type: 'string', kind: 'secret', title: 'Service key', required: true, sensitive: true, default: null },
+      ] },
+      values: { threshold: { set: true, value: 0.75 }, service_key: { set: true, set_by: 'member@example.com', set_at: new Date(FIXTURE_NOW - 40 * 3_600_000).toISOString() } },
+      missing: [], set_at: new Date(FIXTURE_NOW - 40 * 3_600_000).toISOString(), set_by: 'member@example.com', can_edit: true,
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPluginSettings(r.data) }
+  return r
+}
+
+/**
+ * The workspace's own facts about a plugin: its catalogue's entry (whether it
+ * allows a platform plugin, whether this caller may change its plugins) and
+ * whether it is on for every step (`GET .../plugin-defaults`).
+ */
+export async function loadPluginInWorkspace(tenantId: string, installId: string): Promise<Result<PluginInWorkspace>> {
+  const cat = route(PLUGIN_CATALOGUE_WORKSPACE, { tenant_id: tenantId })
+  const defs = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(cat, 40, true)
+    noteFixtureProbe(defs, 40, true)
+    const entry = normManagedInstall(fixturePluginVersions().install)
+    return { status: 'ok', fetchedAt: Date.now(), data: { tenant_id: tenantId, entry: installId === FIXTURE_PLUGIN_INSTALL ? entry : null, every_step: false, can_install: true } }
+  }
+  const [c, d] = await Promise.all([read<unknown>(cat, () => false), read<unknown>(defs, () => false)])
+  if (c.status !== 'ok' && c.status !== 'stale') return c
+  if (d.status !== 'ok' && d.status !== 'stale') return d
+  const cr = pluginRecord(c.data)
+  const entries = [...(Array.isArray(cr.installs) ? cr.installs : []), ...(Array.isArray(cr.platform_installs) ? cr.platform_installs : [])]
+  const entry = entries.map(normManagedInstall).find((e) => e?.install_id === installId) ?? null
+  const data: PluginInWorkspace = {
+    tenant_id: tenantId,
+    entry,
+    every_step: pluginStrings(pluginRecord(d.data).defaults).includes(installId),
+    can_install: cr.can_install === true,
+  }
+  return c.status === 'stale' ? { ...c, data } : d.status === 'stale' ? { ...d, data } : { status: 'ok', fetchedAt: Math.min(c.fetchedAt, d.fetchedAt), data }
+}
+
+/**
+ * `GET {base}/installs/{install_id}/usage`: who uses it (section 9.2). The
+ * catalogue lane's routes do not serve it yet; until they do the page says so
+ * in place (a 404 with no code), never as nobody.
+ */
+export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsage>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/usage`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) {
+    return fixturePluginAnswer(target, normPluginUsage, {
+      workspaces: [{ tenant_id: 'eng', allowed: true, every_step: false }],
+      workflows: [{ tenant_id: 'eng', id: 'wf-nightly', name: 'nightly-check', kind: 'workflow', steps: ['review', 'verify'], how: 'added' }],
+      schedules: [{ tenant_id: 'eng', schedule_id: 'sch-1', name: 'nightly' }],
+      steps: [],
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPluginUsage(r.data) }
   return r
 }
 

@@ -93,6 +93,7 @@ from .model import (
     Termination,
     as_datetime,
 )
+from .plugingc import PluginCollector
 from .memory import OutOfMemory, out_of_memory_killed, stalled_at_memory_limit
 from .progress import assess
 from .startproblem import START_PROBLEM_STATES
@@ -476,6 +477,9 @@ class ReconcileReport:
     #: None and a zero-filled report mean different things and are reported as
     #: different things.
     checkpoint_sweep: dict[str, Any] | None = None
+    #: The plugin copy sweep's counters and deletions (`plugingc`), None when
+    #: it did not run on this pass: it runs once a day.
+    plugin_gc: dict[str, Any] | None = None
     #: `full` or `incremental`: whether this pass read every live task and
     #: lease, or what changed since the last pass and what falls due before the
     #: next (`Reconciler._snapshot`). `tasks_examined` and `leases_examined`
@@ -512,6 +516,7 @@ class ReconcileReport:
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
             "skipped": sum(1 for o in self.outcomes if o.skipped),
             "checkpoint_sweep": self.checkpoint_sweep,
+            "plugin_gc": self.plugin_gc,
             "outcomes": [o.as_dict() for o in self.outcomes],
             "errors": self.errors,
         }
@@ -558,8 +563,11 @@ class Reconciler:
         checkpoint_store: CheckpointStore | None = None,
         hold_releaser: HoldReleaser | None = _FROM_ENV,
         finish_announcer: FinishAnnouncer | None = _FROM_ENV,
+        plugin_gc: PluginCollector | None = None,
     ) -> None:
         self._store = store
+        # None: no pinned plugin copy is collected (`plugingc`).
+        self._plugin_gc = plugin_gc
         self._backends = backends
         self._config = config
         self._log = logger
@@ -754,6 +762,13 @@ class Reconciler:
             # correct. The error is on the report, not swallowed.
             self._log.exception("checkpoint collection failed", exc)
             report.errors.append(f"checkpoint_gc: {exc}")
+
+        try:
+            self._collect_plugins(report, now=snapshot.taken_at)
+        except Exception as exc:
+            # Never fatal, for the checkpoint sweep's reason above.
+            self._log.exception("plugin copy collection failed", exc)
+            report.errors.append(f"plugin_gc: {exc}")
 
         report.finished_at = utcnow()
         self._log.info("reconciliation pass complete", **{
@@ -3196,6 +3211,32 @@ class Reconciler:
                 outcome.actions.append(f"would delete {item.prefix}")
             else:
                 outcome.actions.append(f"kept {item.prefix}")
+            report.outcomes.append(outcome)
+
+    # ------------------------------------------------------------------
+    def _collect_plugins(self, report: ReconcileReport, *, now: datetime) -> None:
+        """Delete pinned plugin copies nothing names (managed-plugins.md
+        section 9.3; `plugingc`). Daily, claimed across instances; a dry run
+        claims nothing and sweeps every pass, as the checkpoint sweep does."""
+        if self._plugin_gc is None or not self._plugin_gc.enabled:
+            return
+        if not self._config.dry_run and not self._plugin_gc.claim(now=now):
+            return
+        sweep = self._plugin_gc.sweep(now=now)
+        report.plugin_gc = sweep.as_dict()
+        report.errors.extend(sweep.errors)
+        for item in sweep.deletions:
+            outcome = RepairOutcome(
+                kind="plugin_copy_deleted",
+                reason="unreferenced past retention",
+                tenant_id=item.tenant_id,
+                skipped="dry_run" if sweep.dry_run else None,
+            )
+            if sweep.dry_run:
+                outcome.actions.append(f"would delete {item.object}")
+            else:
+                outcome.deleted = item.object
+                outcome.actions.append(f"deleted {item.object} generation {item.generation}")
             report.outcomes.append(outcome)
 
     # ------------------------------------------------------------------

@@ -57,6 +57,11 @@ from .test_approval_owner_waiver import _owner_hold_merge_waiting, _waivers
 from .test_issue_run_ci import PR, SHA_A, _read
 from .test_issue_runs import FULL_PLAN
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 #: Each person's GitHub account: (login, GitHub user id).
 LOGINS = {"alice": ("alice-gh", 1001), "dave": ("Dave-GH", 1004), "erin": ("erin-gh", 1005),
           "root": ("root-gh", 1000)}

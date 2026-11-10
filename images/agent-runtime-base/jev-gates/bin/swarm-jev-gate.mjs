@@ -390,6 +390,39 @@ export function installBrowserFilter(env = process.env) {
   };
 }
 
+// The variables that would point a Jev tool elsewhere, or turn on a text log
+// of what it sends: removed from every process the adapter runs.
+export const REDIRECT_VARS = ["JEV_BASE_URL", "JEV_API_KEY", "JEV_BELAY_LOG"];
+
+/** THE JEV ADAPTER, shared by this launcher and the managed Jev plugins'
+ * (`jev-adapter.mjs`, docs/design/managed-plugins.md section 6.2, "A binding
+ * brings its adapter"): in THIS process, `fetch` replaced by one that sends
+ * only to TypeSafe's API or the shim, every body through the outbound filter,
+ * every call recorded in `callsFile`; the redirecting variables removed; the
+ * key (or the shim's token) set in each of `variables`. `keepOptions`: a
+ * managed plugin keeps its own `CLAUDE_PLUGIN_OPTION_*` values (its admin's
+ * settings); the baked gates take none. Returns the call counter. */
+export function adaptProcess({ found, env = process.env, secretNames = [], hardStop = [], cwd = "",
+  python = REDACTION_PYTHON, callsFile = "", hook = "", variables = ["TYPESAFE_API_KEY"], keepOptions = false,
+  realFetch = globalThis.fetch.bind(globalThis) }) {
+  const secrets = secretValues(found.key, secretNames, env);
+  const counter = { calls: 0, dropped: 0, denied: 0, withheld: 0 };
+  globalThis.fetch = guardedFetch(realFetch, {
+    url: found.url, key: found.key, secrets, counter,
+    hardStop: Array.isArray(hardStop) ? hardStop : [],
+    cwd, python: typeof python === "string" && python ? python : REDACTION_PYTHON,
+    callsFile: typeof callsFile === "string" ? callsFile : "", hook,
+  });
+  if (!keepOptions) {
+    for (const name of Object.keys(env)) {
+      if (name.startsWith("CLAUDE_PLUGIN_OPTION_")) delete env[name];
+    }
+  }
+  for (const name of REDIRECT_VARS) delete env[name];
+  for (const name of variables) env[name] = found.key;
+  return counter;
+}
+
 /** What one hook run says it did, from its exit code and what it printed. */
 export function outcome(hook, exitCode, stdout) {
   if (hook === "belay") return { blocked: exitCode === 2, rules: 0 };
@@ -419,20 +452,12 @@ async function main(argv) {
   const entry = realpathSync(mode.entry);
 
   const env = process.env;
-  const secrets = secretValues(found.key, config.secret_env_names, env);
-  const counter = { calls: 0, dropped: 0, denied: 0, withheld: 0 };
-  globalThis.fetch = guardedFetch(globalThis.fetch.bind(globalThis), {
-    url: found.url, key: found.key, secrets, counter,
-    hardStop: Array.isArray(config.hard_stop_paths) ? config.hard_stop_paths : [],
-    cwd: process.cwd(),
-    python: typeof config.redaction_python === "string" && config.redaction_python ? config.redaction_python : REDACTION_PYTHON,
-    callsFile: typeof config.calls_file === "string" ? config.calls_file : "", hook: mode.hook,
+  const counter = adaptProcess({
+    found, env, secretNames: config.secret_env_names, hardStop: config.hard_stop_paths, cwd: process.cwd(),
+    python: config.redaction_python, callsFile: config.calls_file, hook: mode.hook,
   });
-  for (const name of Object.keys(env)) {
-    if (name.startsWith("CLAUDE_PLUGIN_OPTION_")) delete env[name];
-  }
-  for (const name of ["JEV_BASE_URL", "JEV_API_KEY", "JEV_BELAY_LOG", "JEV_BELAY_SHADOW", "JEV_ENFORCE_OFF"]) delete env[name];
-  env.TYPESAFE_API_KEY = found.key;
+  // The baked gates run as the platform set them: no shadow mode, never off.
+  for (const name of ["JEV_BELAY_SHADOW", "JEV_ENFORCE_OFF"]) delete env[name];
   env.JEV_ENFORCE_MODE = "end";
   if (typeof config.data_dir === "string" && config.data_dir) env.CLAUDE_PLUGIN_DATA = config.data_dir;
 

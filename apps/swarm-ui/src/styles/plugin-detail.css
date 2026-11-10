@@ -1,0 +1,107 @@
+/* A managed plugin's page (PluginDetail.tsx, PluginDiff.tsx): the cards
+   direction the owner picked on 6 November 2026. Console tokens only, so light
+   and dark follow the theme; no type below --t-micro (12px); every row wraps,
+   so nothing is wider than the page at phone width. */
+
+.pd-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 1240px; }
+.pd-dim { color: var(--text-dim); }
+.pd-push { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-weight: 400; font-size: var(--t-meta); }
+.pd-wrap { overflow-wrap: anywhere; }
+
+/* The head: name and version, scope and the workspace's facts, Remove. */
+.pd-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; min-width: 0; }
+.pd-head-t { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 240px; }
+.pd-head h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; overflow-wrap: anywhere; }
+.pd-ver { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+.pd-head-m { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pd-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* Scope and facts: a word in a small outlined box, its tone from the theme. */
+.pd-scope, .pd-fact, .pd-mark { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-xs); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
+.pd-scope.is-platform { color: var(--info-ink); border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
+.pd-scope.is-workspace { color: var(--text); }
+.pd-fact.is-on { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok-ink) 40%, var(--line)); }
+.pd-fact.is-off { color: var(--text-dim); border-style: dashed; }
+.pd-fact.is-new { color: var(--info-ink); border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
+.pd-fact.is-warn, .pd-mark { color: var(--warn-ink); border-color: color-mix(in srgb, var(--warn-ink) 45%, var(--line)); }
+
+.pd-tabs { margin-top: 2px; }
+.pd-panel { min-width: 0; display: flex; flex-direction: column; gap: var(--ctl-s3); }
+
+/* A panel: one bordered box with its heading. */
+.pd-box { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 12px 14px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.pd-box-h { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-body); font-weight: 600; min-width: 0; }
+.pd-box-h em { font-style: normal; font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.pd-desc { margin: 0; color: var(--text); font-size: var(--t-body); overflow-wrap: anywhere; }
+
+/* Overview: the parts left, the pinned copy right; one column on a narrow screen. */
+.pd-ov { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); gap: var(--ctl-s3); align-items: start; }
+.pd-ov-main { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+.pd-facts { margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pd-facts > div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.pd-facts dt { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.pd-facts dd { margin: 0; font-size: var(--t-meta); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+.pd-counts { flex-direction: row; flex-wrap: wrap; gap: 8px 20px; }
+.pd-counts > div { grid-template-columns: auto auto; }
+.pd-pin { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.pd-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.pd-names li { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-meta); }
+.pd-names code, .pd-line code { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: var(--r-xs); padding: 0 5px; overflow-wrap: anywhere; }
+
+/* A hook: event and matcher, then the command it runs. */
+.pd-hooks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pd-hook { display: grid; grid-template-columns: minmax(0, 200px) minmax(0, 1fr); gap: 4px 12px; align-items: baseline; padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: var(--r-tile); background: var(--bg); min-width: 0; }
+.pd-hook-ev { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: var(--t-meta); }
+.pd-hook-ev code, .pd-hook-cmd { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; min-width: 0; }
+.pd-hook.is-add, .pd-names .is-add { border-color: color-mix(in srgb, var(--ok-ink) 45%, var(--line)); }
+.pd-hook.is-del, .pd-names .is-del { border-color: color-mix(in srgb, var(--bad-ink) 45%, var(--line)); }
+.pd-hookpair { list-style: none; }
+.pd-sign { font: 600 var(--t-meta)/var(--lh-flush) var(--mono); width: 1ch; }
+.is-add > .pd-sign, .is-add .pd-hook-ev > .pd-sign { color: var(--ok-ink); }
+.is-del > .pd-sign, .is-del .pd-hook-ev > .pd-sign { color: var(--bad-ink); }
+.is-chg > .pd-sign { color: var(--warn-ink); }
+
+/* Versions: one row each, its state and its action at the end. */
+.pd-vers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.pd-vr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 10px 0; font-size: var(--t-meta); min-width: 0; }
+.pd-vr + .pd-vr { border-top: 1px solid var(--line-soft); }
+.pd-vr-v { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); min-width: 7ch; overflow-wrap: anywhere; }
+.pd-vr-s { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pd-check { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* The update: the diff, then the bar that applies it. */
+.pd-diff { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pd-dsec { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pd-dsec h3 { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-meta); font-weight: 600; }
+.pd-dsec.is-marked { padding-left: 10px; border-left: 3px solid var(--warn-ink); }
+.pd-fromto { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pd-fromto > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.pd-fromto dt { color: var(--text-dim); font: 400 var(--t-micro)/var(--lh-micro) var(--mono); }
+.pd-fromto dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: var(--t-meta); overflow-wrap: anywhere; min-width: 0; }
+.pd-fromto del { color: var(--bad-ink); }
+.pd-fromto ins { color: var(--ok-ink); text-decoration: none; }
+.pd-copy { padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.pd-line { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: var(--t-meta); }
+.pd-k { color: var(--text-dim); font-size: var(--t-micro); }
+.pd-bar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.pd-marked-line { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Settings and usage rows: a grid that folds to one column at phone width. */
+.pd-rows { display: flex; flex-direction: column; min-width: 0; }
+.pd-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .6fr) minmax(0, 1.2fr); gap: 4px 12px; align-items: center; padding: 8px 0; font-size: var(--t-meta); min-width: 0; }
+.pd-row + .pd-row { border-top: 1px solid var(--line-soft); }
+.pd-row > span { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+.pd-row > .pd-row-k { flex-direction: column; align-items: flex-start; gap: 2px; }
+.pd-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pd-usage, .pd-usage-tab, .pd-rm { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pd-wsfacts { flex-direction: row; flex-wrap: wrap; gap: 6px 20px; }
+.pd-wsfacts > div { grid-template-columns: auto auto; }
+.pd-rm-h { margin: 0; display: flex; align-items: center; gap: 6px; }
+
+@media (max-width: 760px) {
+  .pd-ov { grid-template-columns: minmax(0, 1fr); }
+  .pd-hook { grid-template-columns: minmax(0, 1fr); }
+  .pd-row { grid-template-columns: minmax(0, 1fr); }
+  .pd-vr-s { margin-left: 0; }
+  .pd-fromto > div, .pd-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}

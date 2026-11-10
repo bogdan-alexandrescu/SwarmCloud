@@ -18,6 +18,8 @@ DAYONE-SETUP-API-1, part of #2688).
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
     POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api (routes/addon_probe.py)
+    POST /v1/admin/setup/plugins/skip             skip the optional plugin step (`console/plugins_step`)
+    DELETE /v1/admin/setup/plugins/skip           undo the skip ("Add one anyway")
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM
@@ -64,6 +66,15 @@ publisher is off the first-team step says it waits (`steps.first_team.state
 nothing, and for one person the personal workspace is not filed: the page's
 `personal.reason` is `publishing_off` until it is.
 
+THE OPTIONAL PLUGIN STEP (docs/design/managed-plugins.md §15.1, the owner's
+Q15 of 6 November 2026). `steps.plugins` is derived on every read from the
+plugin catalogue (`pluginstore`, read only): `done` once an active install
+that is not bundled exists, platform or any workspace's own; `skipped` when a
+platform admin skipped it and none exists; else `todo`. The two bundled
+installs (§1.4) never count. A skip is `console/plugins_step`, created and
+removed with its `admin_audit` row in the same transaction. It is optional:
+`finish` and the engine's readiness never read it.
+
 No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
@@ -83,6 +94,7 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .. import install_record as ir
+from .. import pluginstore as ps
 from .. import refusals, roles
 from .. import setup_links as sl
 from .. import workspaces as ws
@@ -93,6 +105,7 @@ from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
+from ..judgment import settings_mac
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
 from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
@@ -1031,6 +1044,53 @@ def engine_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
     return {**engine, "verify": verify}
 
 
+#: The optional plugin step's key in `steps`, its audit actions and the
+#: `target` they name (managed-plugins §15.1).
+PLUGINS_STEP = "plugins"
+AUDIT_STEP_SKIPPED = "setup_step_skipped"
+AUDIT_STEP_UNSKIPPED = "setup_step_unskipped"
+PLUGINS_DONE = "done"
+PLUGINS_SKIPPED = "skipped"
+#: The design's word for a line not yet done (§15.1), which the console's
+#: checklist reads; the first-team and invites steps predate it with `to_do`.
+PLUGINS_TODO = "todo"
+
+
+def _bundled(install: dict[str, Any]) -> bool:
+    """A bundled install (§1.4.1): there without anyone adding it. Its id is
+    reserved (`builtin:<name>`), it is `built_in` and its build is the image."""
+    return (bool(install.get("built_in")) or install.get("build") == "image"
+            or str(install.get("install_id") or "").startswith("builtin:"))
+
+
+def added_plugins(ctx: AppContext) -> list[dict[str, Any]]:
+    """Every active install a person added, platform first then each
+    workspace's, as the step lists them. Only installs whose MAC verifies
+    are read (`PluginStore.installs`), so a hand-written document counts for
+    nothing; with no settings key, none does."""
+    store = ps.PluginStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
+    return [{"install_id": i["install_id"], "name": i.get("name"),
+             "display_name": i.get("display_name") or i.get("name"),
+             "scope": i.get("scope"), "tenant_id": i.get("tenant_id")}
+            for scope in (ps.PLATFORM, ps.WORKSPACE) for i in store.installs(scope)
+            if i.get("state") == ps.STATE_ACTIVE and not _bundled(i)]
+
+
+def plugins_step_view(ctx: AppContext, record: ir.InstallRecord) -> dict[str, Any]:
+    """The optional ninth line: never needed, its state derived on each read;
+    an added plugin wins over a skip."""
+    added = added_plugins(ctx)
+    skipped = record.read(record.console_path(ir.PLUGINS_STEP))
+    state = PLUGINS_DONE if added else PLUGINS_SKIPPED if skipped is not None else PLUGINS_TODO
+    return {"needed": False, "optional": True, "state": state, "count": len(added),
+            "added": added, "skipped": skipped}
+
+
+def _step_audit(action: str, record: ir.InstallRecord, by: str, at: datetime) -> dict[str, Any]:
+    return {"action": action, "by": by, "at": at, "target": PLUGINS_STEP,
+            "detail": {"step": PLUGINS_STEP, "env": record.env}}
+
+
 @router.get("", dependencies=[Depends(admin_auth)])
 def setup_state(
     request: Request,
@@ -1080,7 +1140,8 @@ def setup_state(
         "engine": engine_view(engine),
         "mode": mode,
         "sizing": sizing_view(engine),
-        "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
+        "steps": {**steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
+                  PLUGINS_STEP: plugins_step_view(ctx, record)},
         "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
@@ -1100,6 +1161,36 @@ def setup_state(
         "typical_waits": TYPICAL_WAITS,
         "passes": passes_view(engine),
     }
+
+
+@router.post("/plugins/skip", dependencies=[Depends(admin_auth)])
+def skip_plugins_step(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """Skip the optional plugin step: `console/plugins_step` and its
+    `setup_step_skipped` row, in one transaction. Skipping again changes
+    nothing and audits nothing."""
+    now = ctx.now()
+    doc, _created = record.create(record.console_path(ir.PLUGINS_STEP),
+                                  {"skipped_at": now, "skipped_by": caller.email},
+                                  audit=_step_audit(AUDIT_STEP_SKIPPED, record, caller.email, now))
+    return {"plugins": plugins_step_view(ctx, record), "skipped": doc}
+
+
+@router.delete("/plugins/skip", dependencies=[Depends(admin_auth)])
+def undo_plugins_skip(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """Undo the skip ("Add one anyway"): `console/plugins_step` removed with
+    its `setup_step_unskipped` row, in one transaction; with no skip there,
+    nothing is written or audited."""
+    removed = record.delete(record.console_path(ir.PLUGINS_STEP),
+                            audit=_step_audit(AUDIT_STEP_UNSKIPPED, record, caller.email, ctx.now()))
+    return {"plugins": plugins_step_view(ctx, record), "removed": removed}
 
 
 class SignInClient(StrictModel):

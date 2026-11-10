@@ -228,9 +228,21 @@ RUN uv pip check --python /opt/venv/bin/python
 #     helpers 0755, and never `.git` (finding 3: with it, every skill start
 #     prints a lease warning). Everything else stays in this stage.
 #
-# Bumping the pin is one PR: the ARGs here and in the browser image's
-# Dockerfile, the two rows in tool-mirror.sha256, and both lists regenerated
-# with `gstack-layers derive` (tests/unit/scripts/test_gstack_image.py).
+# MANAGED SINCE THE BUNDLE BUILD (owner decision 6 November 2026, Q13;
+# docs/design/managed-plugins.md, section 1.4): gstack is a managed plugin
+# whose versions are BUILT into an image version. The steps above are the
+# recipe images/plugin-bundler/recipes/gstack/build, unchanged, which the
+# bundler image runs in a deployment's own bundle build with a newer pin; this
+# stage runs the same recipe at the release's default pins, read from
+# bundled-plugins.json beside this file (the one place they are written), so
+# both builds set up and stage the same tree. The recipe writes
+# /out/gstack/.swarm-bundle.json last: the install id, the source's commit and
+# sha256, the recipe digest and the built tree's sha256, which the worker holds
+# against the signed entry before a step runs (section 1.4.4).
+#
+# Bumping the pin is one PR: the gstack entry in bundled-plugins.json, the two
+# rows in tool-mirror.sha256, and both lists regenerated with
+# `gstack-layers derive` (tests/unit/scripts/test_gstack_image.py).
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS gstack-build
 
 ARG APT_REFRESH=unset
@@ -239,41 +251,17 @@ RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get install --no-install-recommends -y ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/*
 
-ARG GSTACK_VERSION=1.92.55.0
-ARG GSTACK_SHA256=63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2
-ARG GSTACK_COMMIT=2512dd7624a474fee036326989ea0c6bb8470e69
-ARG BUN_VERSION=1.4.2
-ARG BUN_SHA256=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=images/plugin-bundler,target=/tmp/plugin-bundler \
     --mount=type=bind,source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py \
     --mount=type=bind,source=images/agent-runtime-base,target=/tmp/gstack-build/base \
     --mount=type=bind,source=images/agent-runtime-browser/gstack-browser-files.txt,target=/tmp/gstack-build/gstack-browser-files.txt \
-    scratch="$(mktemp -d)" \
- && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/bun.zip \
-      "file:///tmp/tool-mirror/github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
- && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/gstack.tar.gz \
-      "file:///tmp/tool-mirror/github.com/garrytan/gstack/archive/refs/tags/v${GSTACK_VERSION}.tar.gz" \
- && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
- && echo "${GSTACK_SHA256}  /tmp/gstack.tar.gz" | sha256sum -c - \
- && python3 -m zipfile -e /tmp/bun.zip "${scratch}/bun" \
- && install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun \
- && test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}" \
- && test "$(gzip -dc /tmp/gstack.tar.gz | git get-tar-commit-id)" = "${GSTACK_COMMIT}" \
- && mkdir -p /opt/swarm/plugins/gstack "${scratch}/home" \
- && tar -xzf /tmp/gstack.tar.gz -C /opt/swarm/plugins/gstack --strip-components=1 \
- && test "$(cat /opt/swarm/plugins/gstack/VERSION)" = "${GSTACK_VERSION}" \
- && cd /opt/swarm/plugins/gstack \
- && HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
-    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
-      ./setup --host claude --no-browser \
- && python3 /tmp/gstack-build/base/gstack-layers check \
-      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+    /tmp/plugin-bundler/recipes/gstack/build \
+      --pins /tmp/gstack-build/base/bundled-plugins.json --mirror /tmp/tool-mirror \
+      --layers /tmp/gstack-build/base/gstack-layers --measure /tmp/gstack-build/gstack_packaging_measure.py \
       --base-list /tmp/gstack-build/base/gstack-base-files.txt \
       --browser-list /tmp/gstack-build/gstack-browser-files.txt \
- && python3 /tmp/gstack-build/base/gstack-layers stage \
-      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
-      --base-list /tmp/gstack-build/base/gstack-base-files.txt --list base --out /out/gstack \
- && rm -rf "${scratch}" /tmp/bun.zip /tmp/gstack.tar.gz
+      --list base --bun install --out /out/gstack
 
 # ---------------------------------------------------------------------------
 # security-audit-build: Cloudflare's security audit skill, at its pinned commit
@@ -298,9 +286,19 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 #     step and no package to install: the skill is markdown, JSON and two
 #     self-contained .cjs files.
 #
-# Bumping the pin is one PR: SECURITY_AUDIT_COMMIT and SECURITY_AUDIT_SHA256
-# here, the row in tool-mirror.sha256 and the catalogue's version
-# (tests/unit/scripts/test_security_audit_image.py holds the four equal and
+# MANAGED SINCE THE BUNDLE BUILD (owner decision 6 November 2026, Q13;
+# docs/design/managed-plugins.md, section 1.4): the steps above are the recipe
+# images/plugin-bundler/recipes/security-audit/build, unchanged, run here at
+# the release's default pins from bundled-plugins.json, and in a deployment's
+# bundle build by the bundler image at a newer pin. It also runs the skill's
+# own validator tests on a copy of the staged skill, under the Node the
+# runtime ships (copied from nodebin for this stage only), because those
+# validators decide whether a security review's findings count (section
+# 1.4.6), and writes /out/security-audit/.swarm-bundle.json last.
+#
+# Bumping the pin is one PR: the security-audit entry in bundled-plugins.json,
+# the row in tool-mirror.sha256 and the catalogue's version
+# (tests/unit/scripts/test_security_audit_image.py holds the three equal and
 # runs the skill's own validator tests on the pinned copy).
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS security-audit-build
 
@@ -310,24 +308,13 @@ RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get install --no-install-recommends -y ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/*
 
-ARG SECURITY_AUDIT_COMMIT=c1c8a8c1471069fb0e188eeaff69b8e8db6564a8
-ARG SECURITY_AUDIT_SHA256=53e708ebf770dfe35b57df0586a5058707081a870cd149ce30a2d57c51ed29b6
+COPY --from=nodebin /usr/local/bin/node /usr/local/bin/node
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
-    scratch="$(mktemp -d)" \
- && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/security-audit.tar.gz \
-      "file:///tmp/tool-mirror/github.com/cloudflare/security-audit-skill/archive/${SECURITY_AUDIT_COMMIT}.tar.gz" \
- && echo "${SECURITY_AUDIT_SHA256}  /tmp/security-audit.tar.gz" | sha256sum -c - \
- && test "$(gzip -dc /tmp/security-audit.tar.gz | git get-tar-commit-id)" = "${SECURITY_AUDIT_COMMIT}" \
- && tar -xzf /tmp/security-audit.tar.gz -C "${scratch}" --strip-components=1 \
- && test -f "${scratch}/skills/security-audit/SKILL.md" \
- && test -f "${scratch}/LICENSE" \
- && mkdir -p /out/security-audit/skills \
- && cp -R "${scratch}/skills/security-audit" /out/security-audit/skills/security-audit \
- && cp "${scratch}/LICENSE" /out/security-audit/LICENSE \
- && test -z "$(find /out/security-audit ! -type f ! -type d)" \
- && find /out/security-audit -type d -exec chmod 0755 {} + \
- && find /out/security-audit -type f -exec chmod 0644 {} + \
- && rm -rf "${scratch}" /tmp/security-audit.tar.gz
+    --mount=type=bind,source=images/plugin-bundler,target=/tmp/plugin-bundler \
+    --mount=type=bind,source=images/agent-runtime-base/bundled-plugins.json,target=/tmp/bundled-plugins.json \
+    /tmp/plugin-bundler/recipes/security-audit/build \
+      --pins /tmp/bundled-plugins.json --mirror /tmp/tool-mirror \
+      --validate-with /usr/local/bin/node --out /out/security-audit
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -1229,6 +1216,7 @@ ARG JEV_ENFORCE_SHA512=9964c65068cb2e6b423d610c66b90b82f6fe391b3c3d85a9e8eac1e75
 RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev-gates-build \
     install -d -m 0755 /opt/swarm/jev-gates /opt/swarm/jev-gates/bin \
  && install -o root -g root -m 0555 /tmp/jev-gates-build/bin/swarm-jev-gate.mjs /opt/swarm/jev-gates/bin/swarm-jev-gate.mjs \
+ && install -o root -g root -m 0444 /tmp/jev-gates-build/bin/jev-adapter.mjs /opt/swarm/jev-gates/bin/jev-adapter.mjs \
  && if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
       JE_TGZ="/tmp/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
       && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${JE_TGZ}" \
@@ -1246,6 +1234,17 @@ RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev
       && rm -rf /tmp/jev-enforce-src "${JE_TGZ}" ; \
     fi \
  && chmod -R a+rX,a-w /opt/swarm/jev-gates
+
+# swarm-plugin-exec, the managed plugins' launcher (docs/design/managed-plugins.md
+# section 4.4): every hook and MCP server command of a managed plugin runs
+# through it, so that plugin, and only that plugin, gets its settings and
+# secrets (from 0600 files the worker writes under private/, never the agent's
+# environment), its output is scrubbed before the CLI reads it, and its runs
+# are counted for the step's record. Python, on the worker's own /opt/venv
+# interpreter (it imports agent_worker.redact); root-owned, read-only. Beside
+# it, in /opt/swarm/jev-gates/bin above, jev-adapter.mjs: the Jev adapter it
+# preloads into the node commands of a plugin bound to the TypeSafe key.
+COPY --chown=root:root --chmod=0555 images/agent-runtime-base/swarm-plugin-exec /opt/swarm/bin/swarm-plugin-exec
 
 # gstack, the first agent plugin (the gstack-build stage above says how it is
 # built and why). Bun goes in /usr/local/bin, not under the plugin, because

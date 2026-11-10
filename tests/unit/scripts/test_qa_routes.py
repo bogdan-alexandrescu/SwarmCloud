@@ -264,7 +264,7 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
 #: draw their body only for the person Voice it is open to, a platform admin
 #: until swarm-api's session routes say who (voice/Section.tsx `voiceItOpen`).
 ADMIN_ROUTES = (
-    "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "setup", "health", "people", "workspaces",
+    "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "plugins", "setup", "health", "people", "workspaces",
     "voice-talk", "voice-projects", "voice-preferences", "voice-settings", "voice-telemetry",
 )
 

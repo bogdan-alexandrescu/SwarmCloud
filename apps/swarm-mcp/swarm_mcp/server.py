@@ -30,6 +30,7 @@ start disagreeing.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import json
 import os
@@ -6805,6 +6806,30 @@ def _human_typed_label(account: dict[str, Any], label: str) -> None:
         raise SwarmError("the label typed was not this account's; nothing was removed")
 
 
+def _with_plugin_files_missing(text: str) -> str:
+    """`text`, carrying `plugin_files_missing: {root, action}` at its top level
+    when the plugin folder this bridge was started with is gone
+    (`launch.plugin_files_missing`, PLUGIN-VERSION-GUARD); unchanged otherwise.
+
+    EVERY reply, errors included, because the one symptom a session saw for
+    hours was `rows.error: .../workflows/run.js is not a file` buried in each
+    launch: a JSON object gains the key first; any other reply (plain text, a
+    list) gains one more line holding it as its own JSON object."""
+    from . import launch
+
+    missing = launch.plugin_files_missing()
+    if missing is None:
+        return text
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return json.dumps({"plugin_files_missing": missing,
+                           **{k: v for k, v in parsed.items() if k != "plugin_files_missing"}}, indent=2)
+    return f"{text}\n\n{json.dumps({'plugin_files_missing': missing})}"
+
+
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
@@ -6861,21 +6886,24 @@ def serve(stdin=None, stdout=None) -> int:
                 if alive is not None:
                     alive.stop()
             if isinstance(text, artifacts.ImageAnswer):
+                text = dataclasses.replace(text, text=_with_plugin_files_missing(text.text))
                 _respond(message_id, {"content": text.content()})
             else:
-                _respond(message_id, {"content": [{"type": "text", "text": text}]})
+                _respond(message_id, {"content": [{"type": "text", "text": _with_plugin_files_missing(text)}]})
         except SwarmError as exc:
             # isError, not a JSON-RPC error: the CALL failed, the protocol
             # did not, and a host that saw a transport error would drop the
             # session rather than show the operator what went wrong.
             _respond(
                 message_id,
-                {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
+                {"content": [{"type": "text", "text": _with_plugin_files_missing(_tool_error_text(exc))}],
+                 "isError": True},
             )
         except Exception as exc:  # pragma: no cover - defensive
             _respond(
                 message_id,
-                {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                {"content": [{"type": "text",
+                              "text": _with_plugin_files_missing(f"{type(exc).__name__}: {exc}")}],
                  "isError": True},
             )
 
@@ -6965,6 +6993,20 @@ def check_session_target() -> str | None:
     return None
 
 
+def report_plugin_files() -> dict[str, str] | None:
+    """The start-up check of the plugin's own files (PLUGIN-VERSION-GUARD):
+    `launch.plugin_files_missing`, said on STDERR -- the bridge's log -- when
+    they are gone. Never fatal: the tools still answer, each reply carrying
+    the same `plugin_files_missing` (`_with_plugin_files_missing`)."""
+    from . import launch
+
+    missing = launch.plugin_files_missing()
+    if missing is not None:
+        print(f"swarm-mcp: the sc plugin's files are missing at {missing['root']}: "
+              f"{missing['action']}", file=sys.stderr)
+    return missing
+
+
 def main() -> int:
     problem = check_session_target()
     if problem is not None:
@@ -6973,6 +7015,7 @@ def main() -> int:
         print(f"swarm-mcp: refusing to start: {problem}", file=sys.stderr)
         return 2
     seed_plugin_config()
+    report_plugin_files()
     return serve()
 
 

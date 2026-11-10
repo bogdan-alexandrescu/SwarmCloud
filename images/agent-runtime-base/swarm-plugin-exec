@@ -1,0 +1,286 @@
+#!/opt/venv/bin/python -I
+"""swarm-plugin-exec: run one managed plugin's hook or MCP server with that plugin's settings and secrets, and nothing else's.
+
+    swarm-plugin-exec <install_id> [--mcp <server>] -- <the original command...>
+
+docs/design/managed-plugins.md section 4.4 (lane 8). Every hook command and
+every MCP server command of a managed plugin is this launcher followed by the
+original (the intake job's rewrite, or the worker's at unpack:
+`agent_worker.pluginload.wrap_tree`). For one process it:
+
+  1. reads `$SWARM_PLUGIN_ENV_DIR/<install_id>.json` (0600, written by the
+     worker at start: that plugin's non-secret values, the PATHS of its
+     secret and file settings, its data folder, its runs file, the other
+     plugins' variable names, and the Jev adapter when a secret is bound to
+     the workspace's TypeSafe key);
+  2. removes from the child's environment every variable no plugin may
+     inherit: the worker's and the runner's own (`SWARM_*`, cloud and forge
+     credentials, anything named like a token, a secret, a password or a
+     key) and every other plugin's; each removed value is also scrubbed;
+  3. sets that plugin's variables, its secrets read from their files (each
+     registered for scrubbing), each file setting's PATH, and
+     `CLAUDE_PLUGIN_DATA` under `private/` (the CLI's default is under the
+     checkpointed HOME, spike section 3);
+  4. for a TypeSafe-bound plugin, runs a `node` command with the Jev adapter
+     preloaded (`--import`), which alone sets the key in that process; any
+     other command of that plugin gets no key at all;
+  5. runs the command, passes stdin through, and scrubs the child's stdout
+     and stderr of every registered value, longest first
+     (`agent_worker.redact.scrub_text`), before the CLI sees them: hook output
+     reaches the model (spike section 4);
+  6. appends one line of counts -- kind, event, tool, exit code, duration;
+     never argv, input or output -- to the plugin's runs file, the record's
+     only source (the stream reports only SessionStart hooks).
+
+A launcher that cannot read its plugin's env file runs nothing and exits 1:
+a hook that errors is reported and skipped, and a server does not start.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from agent_worker.redact import MIN_SECRET_LENGTH, scrub_text
+
+ENV_DIR_ENV = "SWARM_PLUGIN_ENV_DIR"
+ADAPTER_ENV = "SWARM_JEV_ADAPTER_CONFIG"
+INSTALL_ID = re.compile(r"^[pw]-[0-9a-f]{12}$")
+VARIABLE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+SERVER = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+EVENT = re.compile(r"^[A-Za-z]{1,40}$")
+TOOL = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
+#: Never inherited by a plugin: the worker's and the runner's own variables
+#: and every cloud, model and forge credential.
+DROPPED_PREFIXES = ("SWARM_", "GOOGLE_", "CLOUDSDK_", "GCE_", "ANTHROPIC_", "AWS_", "AZURE_", "GH_",
+                    "GITHUB_", "GITLAB_", "OPENAI_", "TYPESAFE_", "JEV_", "NODE_OPTIONS")
+DROPPED_WORDS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "CREDENTIAL", "PRIVATE_KEY")
+#: Kept although a word above matches: the plugin's own options, which the
+#: CLI sets from the settings file (a sensitive one only as a placeholder).
+KEPT_PREFIXES = (OPTION_PREFIX, "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR")
+#: What the launcher reads of stdin to name a hook's event.
+PEEK_BYTES = 64 * 1024
+NODE_NAMES = ("node", "nodejs")
+MAX_ENV_FILE_BYTES = 256 * 1024
+
+
+def fail(sentence: str) -> int:
+    sys.stderr.write(f"swarm-plugin-exec: {sentence}\n")
+    return 1
+
+
+def parse_argv(argv: list[str]) -> tuple[str, str | None, list[str]] | None:
+    """(install_id, MCP server name or None, the command), or None."""
+    if len(argv) < 3 or not INSTALL_ID.match(argv[0]):
+        return None
+    rest = argv[1:]
+    server = None
+    if rest[:1] == ["--mcp"] and len(rest) >= 2:
+        server = rest[1] if SERVER.match(rest[1]) else "server"
+        rest = rest[2:]
+    if rest[:1] != ["--"] or len(rest) < 2:
+        return None
+    return argv[0], server, rest[1:]
+
+
+def dropped(name: str) -> bool:
+    if name.startswith(KEPT_PREFIXES):
+        return False
+    upper = name.upper()
+    return upper.startswith(DROPPED_PREFIXES) or any(word in upper for word in DROPPED_WORDS)
+
+
+def read_text(path: object) -> str | None:
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def key_value(text: str) -> str:
+    """The key's text, or the shim's token (`{shim_url, token}`)."""
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped
+        if isinstance(parsed, dict) and isinstance(parsed.get("token"), str):
+            return parsed["token"]
+    return stripped
+
+
+def child_environment(config: dict, base: dict[str, str], env_file: Path,
+                      command: list[str]) -> tuple[dict[str, str], list[str], list[str], bool]:
+    """(the child's environment, the values to scrub, the command, whether
+    the Jev adapter runs it)."""
+    others = {v for v in config.get("drop") or () if isinstance(v, str)}
+    scrub: list[str] = []
+    env: dict[str, str] = {}
+    for name, value in base.items():
+        if name in others or dropped(name):
+            scrub.append(value)
+            continue
+        env[name] = value
+    for name, value in (config.get("env") or {}).items():
+        if isinstance(name, str) and VARIABLE.match(name) and isinstance(value, str):
+            env[name] = value
+    for name, path in (config.get("files") or {}).items():
+        if isinstance(name, str) and VARIABLE.match(name) and isinstance(path, str):
+            env[name] = path
+    for name, path in (config.get("secrets") or {}).items():
+        value = read_text(path)
+        if isinstance(name, str) and VARIABLE.match(name) and value:
+            env[name] = value
+            scrub.append(value)
+    data_dir = config.get("data_dir")
+    if isinstance(data_dir, str) and data_dir:
+        Path(data_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
+        env["CLAUDE_PLUGIN_DATA"] = data_dir
+    adapter = config.get("adapter")
+    adapted = False
+    if isinstance(adapter, dict):
+        key = read_text(adapter.get("key_file"))
+        if key:
+            scrub.append(key_value(key))
+        for name in adapter.get("variables") or ():
+            # The bound variable is the adapter's to set, in node alone.
+            if isinstance(name, str):
+                env.pop(name, None)
+        module = adapter.get("module")
+        if (key and isinstance(module, str) and module.startswith("/")
+                and os.path.basename(command[0]) in NODE_NAMES):
+            command = [command[0], "--import", Path(module).as_uri(), *command[1:]]
+            env[ADAPTER_ENV] = str(env_file)
+            adapted = True
+    return env, [s for s in scrub if isinstance(s, str) and len(s) >= MIN_SECRET_LENGTH], command, adapted
+
+
+def pump_out(source, sink, secrets: list[str]) -> None:
+    """Line by line, every registered value replaced, flushed per line (an
+    MCP server's JSON-RPC is one message per line)."""
+    try:
+        for raw in iter(source.readline, b""):
+            text = raw.decode("utf-8", errors="replace")
+            sink.write(scrub_text(text, secrets).encode("utf-8"))
+            sink.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        source.close()
+
+
+def pump_in(source, sink, peek: bytearray) -> None:
+    try:
+        while True:
+            chunk = source.read1(65536) if hasattr(source, "read1") else source.read(65536)
+            if not chunk:
+                break
+            if len(peek) < PEEK_BYTES:
+                peek.extend(chunk[:PEEK_BYTES - len(peek)])
+            sink.write(chunk)
+            sink.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            sink.close()
+        except OSError:
+            pass
+
+
+def hook_names(peek: bytes) -> tuple[str | None, str | None]:
+    try:
+        event = json.loads(peek.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(event, dict):
+        return None, None
+    name, tool = event.get("hook_event_name"), event.get("tool_name")
+    return (name if isinstance(name, str) and EVENT.match(name) else None,
+            tool if isinstance(tool, str) and TOOL.match(tool) else None)
+
+
+def append_run(runs_file: object, row: dict) -> None:
+    if not isinstance(runs_file, str) or not runs_file:
+        return
+    try:
+        fd = os.open(runs_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def main(argv: list[str]) -> int:
+    parsed = parse_argv(argv)
+    if parsed is None:
+        return fail("usage: swarm-plugin-exec <install_id> [--mcp <server>] -- <command...>")
+    install_id, server, command = parsed
+    env_dir = os.environ.get(ENV_DIR_ENV, "")
+    env_file = Path(env_dir) / f"{install_id}.json"
+    try:
+        if not env_dir or env_file.stat().st_size > MAX_ENV_FILE_BYTES:
+            raise OSError
+        config = json.loads(env_file.read_text(encoding="utf-8"))
+        if not isinstance(config, dict) or config.get("install_id") != install_id:
+            raise ValueError
+    except (OSError, ValueError):
+        return fail("this plugin's settings file could not be read, so nothing was run.")
+    env, secrets, command, adapted = child_environment(config, dict(os.environ), env_file, command)
+    runs_file = config.get("runs_file")
+    if server is not None:
+        append_run(runs_file, {"kind": "mcp", "server": server, "event": "start"})
+    started = time.monotonic()
+    try:
+        child = subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+    except OSError:
+        append_run(runs_file, {"kind": "mcp" if server else "hook", "event": "spawn_failed", "exit": 127})
+        return fail("the plugin's command could not be started.")
+
+    def forward(signum, _frame):
+        try:
+            child.send_signal(signum)
+        except OSError:
+            pass
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, forward)
+    peek = bytearray()
+    threads = [
+        threading.Thread(target=pump_in, args=(sys.stdin.buffer, child.stdin, peek), daemon=True),
+        threading.Thread(target=pump_out, args=(child.stdout, sys.stdout.buffer, secrets)),
+        threading.Thread(target=pump_out, args=(child.stderr, sys.stderr.buffer, secrets)),
+    ]
+    for thread in threads:
+        thread.start()
+    code = child.wait()
+    for thread in threads[1:]:
+        thread.join()
+    millis = int((time.monotonic() - started) * 1000)
+    if server is None:
+        event, tool = hook_names(bytes(peek))
+        row = {"kind": "hook", "event": event or "unknown", "exit": code, "ms": millis}
+        if tool:
+            row["tool"] = tool
+        if adapted:
+            row["adapter"] = True
+        append_run(runs_file, row)
+    else:
+        append_run(runs_file, {"kind": "mcp", "server": server, "event": "exit", "exit": code, "ms": millis})
+    return code if code >= 0 else 128 - code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

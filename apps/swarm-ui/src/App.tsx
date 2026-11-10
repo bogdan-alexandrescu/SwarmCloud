@@ -43,7 +43,13 @@ import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
-import { ConfigPluginsScreen } from './ConfigPlugins'
+import { ConfigPluginsScreen, pluginLinkOf, type PluginLinkAt } from './ConfigPlugins'
+import { ADMIN_PLUGINS_PATH, AdminPluginsScreen, catalogueCards } from './AdminPlugins'
+import { AdminPluginInstallScreen } from './AdminPluginInstall'
+import { PluginDetailScreen } from './PluginDetail'
+import { PluginSettingsForm } from './PluginSettingsForm'
+import { loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
+import { UrRegion, useUrRead } from './RepositoriesParts'
 import { SecretsScreen } from './Secrets'
 import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
@@ -65,6 +71,7 @@ import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePage, workspaceTabOf, type WorkspaceTab } from './WorkspacePage'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
+import { GuideScreen, guidePath, guideSlugFrom } from './Guide'
 import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
@@ -599,6 +606,10 @@ export const SECTIONS: SectionDef[] = [
       // S7): each platform secret's status from Secret Manager metadata. No
       // value and no form: the operator's script writes every one of them.
       { id: 'platform-secrets', label: 'Platform secrets', admin: true },
+      // MANAGED PLUGINS (part of #2688; docs/design/managed-plugins.md): the
+      // platform catalogue, Add plugin and each plugin's page. A platform
+      // admin's alone: its read is `admin_auth`.
+      { id: 'plugins', label: 'Plugins', admin: true },
       // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1,
       // §5.2): Admin › Setup, the people part of an install that swarm
       // install hands over to the console, and its Health page, the
@@ -701,6 +712,14 @@ const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
  * never in an address this app writes.
  */
 const JOIN = 'join'
+
+/**
+ * THE USER GUIDE (`/guide`, `/guide/<page>`; Guide.tsx). Not a section and not
+ * a tab, for the join page's reason: Help and the setup checklist link here,
+ * nothing in the nav does. Its tail is the page; a fragment is a heading on
+ * it, never an old `#...` address.
+ */
+const GUIDE = 'guide'
 
 /**
  * ADMIN › SETUP'S ONE-TIME LINK (`/admin/setup/link/<token>`, lane
@@ -1063,6 +1082,8 @@ export function fromLocation(): Route {
   // Before the legacy-hash check: the fragment on `/join` is a join code,
   // never an old `#...` address, whatever it happens to spell.
   if (pathname === JOIN_PATH || pathname === `${JOIN_PATH}/`) return { sectionId: JOIN, tab: '', taskId: null, taskPane: 'detail' }
+  const guide = guideSlugFrom(pathname)
+  if (guide !== null) return { sectionId: GUIDE, tab: guide, taskId: null, taskPane: 'detail' }
   // Before pathToAddress: `/admin/setup/...` would otherwise read as Admin ›
   // Setup, the admin's page, with the token taken for a page of it.
   if (isSetupLinkPath(pathname)) return { sectionId: SETUP_LINK, tab: '', taskId: null, taskPane: 'detail' }
@@ -1237,6 +1258,14 @@ export function fromAddress(full: string): Route {
     }
   }
 
+  // A PLUGIN CATALOGUE'S PAGES (paths.ts `pluginPageSegments`):
+  // `admin/plugins/add`, `admin/plugins/<install_id>` and
+  // `config/plugins/<install_id>`, each riding in `view` on its tab.
+  if ((head === ADMIN_SECTION || head === CONFIG) && tail[0] === PLUGINS_TAB && tail.length === 2 && tail[1] !== '') {
+    const add = head === ADMIN_SECTION && tail[1] === PLUGIN_ADD
+    return { sectionId: head, tab: PLUGINS_TAB, ...blank, view: add ? `part=${PLUGIN_ADD}` : new URLSearchParams({ plugin: decodeSegment(tail[1]!) }).toString() }
+  }
+
   const section = sectionOf(head)
   if (section) {
     const wanted = tail.join('/')
@@ -1300,6 +1329,18 @@ export function workspacePageOf(r: Pick<Route, 'sectionId' | 'tab' | 'view'>): {
   const tenant = v.get('workspace')
   return { tenant: tenant === null || tenant === '' ? null : tenant, tab: workspaceTabOf(r.view) }
 }
+/** Admin › Plugins and Config › Plugins: the catalogues, Add plugin and each plugin's page under them. */
+const PLUGINS_TAB = 'plugins'
+const PLUGIN_ADD = 'add'
+
+/** A plugin catalogue's page off its route's `view`: Add plugin (Admin's), one plugin, or null for the catalogue. */
+export function pluginPageOf(r: Pick<Route, 'sectionId' | 'tab' | 'view'>): { kind: 'add' } | { kind: 'plugin'; installId: string } | null {
+  if ((r.sectionId !== ADMIN_SECTION && r.sectionId !== CONFIG) || r.tab !== PLUGINS_TAB || !r.view) return null
+  const v = new URLSearchParams(r.view)
+  if (r.sectionId === ADMIN_SECTION && v.get('part') === PLUGIN_ADD) return { kind: 'add' }
+  const id = v.get('plugin')
+  return id === null || id === '' ? null : { kind: 'plugin', installId: id }
+}
 const AUTOMATE = 'automate'
 const VOICE = 'voice'
 
@@ -1355,6 +1396,7 @@ export function canonical(r: Route): string {
   // GitHub's single-use code leaves the bar: the route keeps it in `view`.
   if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
+  if (r.sectionId === GUIDE) return GUIDE
   if (r.sectionId === SETUP_LINK) return SETUP_LINK
   if (r.sectionId === HOME) return HOME
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
@@ -1379,6 +1421,9 @@ export function canonical(r: Route): string {
   if (r.sectionId === CONFIG && (r.tab === 'repositories' || r.tab === CONFIG_SECRETS_TAB || r.tab === CONFIG_WORKSPACE_TAB) && r.view) {
     return `${CONFIG}/${r.tab}?${r.view}`
   }
+  // A plugin catalogue's page: `admin/plugins/add`, `<section>/plugins/<install_id>`.
+  const plugin = pluginPageOf(r)
+  if (plugin !== null) return `${r.sectionId}/${PLUGINS_TAB}/${plugin.kind === 'add' ? PLUGIN_ADD : encodeURIComponent(plugin.installId)}`
   // One workspace's page: `admin/workspaces/<tenant>?tab=<tab>` (paths.ts).
   const wsPage = workspacePageOf(r)
   if (wsPage !== null) return workspacePageAddress(wsPage.tenant, wsPage.tab)
@@ -1460,6 +1505,18 @@ export function App() {
   useEffect(() => {
     if (onQaPage) qaLink.current = null
   }, [onQaPage])
+  // CONFIG › PLUGINS' ONE-TIME SETTINGS LINK (ConfigPlugins.tsx `pluginLinkOf`;
+  // paths.ts drops its field and token from the route), read here for the key
+  // link's reason. The page opens the plugin's settings with it only once its
+  // read has drawn, so the link is held while the page stays open and dropped
+  // when it is left: a later visit is never handed a used token.
+  const pluginLink = useRef<PluginLinkAt | null>(typeof window === 'undefined' ? null : pluginLinkOf(window.location.pathname, window.location.search))
+  const onPluginsPage = at.missing == null && at.taskId === null && at.sectionId === CONFIG && at.tab === PLUGINS_TAB && !at.view
+  const pluginLinkShown = useRef(false)
+  useEffect(() => {
+    if (onPluginsPage) pluginLinkShown.current = true
+    else if (pluginLinkShown.current) pluginLink.current = null
+  }, [onPluginsPage])
   // THE JOIN LINK'S CODE (`/join#<code>`), read off the bar here, before the
   // normalise effect rewrites it to `/join` without the fragment. Held in
   // this state alone and handed to the page, which posts it in a body: never
@@ -1481,6 +1538,11 @@ export function App() {
     (r: Route) => {
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
+      // The fragment is a heading on the page, kept while the page is the one in the bar.
+      if (r.sectionId === GUIDE) {
+        const path = guidePath(r.tab)
+        return window.location.pathname === path ? path + window.location.hash : path
+      }
       if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
       if (r.sectionId === HOME) return HOME_PATH
       const list = r.list ?? lastList.current
@@ -1696,6 +1758,8 @@ export function App() {
           ? 'Connect GitHub'
           : at.sectionId === JOIN
             ? 'Join a workspace'
+            : at.sectionId === GUIDE
+              ? 'User guide'
             : at.sectionId === SETUP_LINK
               ? 'Your setup link'
             : at.sectionId === HOME
@@ -1767,7 +1831,8 @@ export function App() {
             // Capacity's last page now.
             <div className="ctl-nav-util sk-foot">
               <a
-                className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
+                // The guide lights Help, its short form, but is not the Help page.
+                className={`sk-ri${at.sectionId === HELP || at.sectionId === GUIDE ? ' is-on' : ''}`}
                 aria-current={at.sectionId === HELP ? 'page' : undefined}
                 href={addressToPath(HELP)}
                 onClick={(e) => {
@@ -1813,6 +1878,8 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === GUIDE ? (
+                  <GuideScreen slug={at.tab} />
                 ) : at.sectionId === JOIN ? (
                   // Keyed by the code, so a second link pasted into the tab asks afresh.
                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
@@ -1851,6 +1918,7 @@ export function App() {
                         onApiFilter={setApiFailuresOnly}
                         qaLink={onQaPage ? qaLink.current : null}
                         secretsLink={onSecretsPage && at.view ? secretsLink.current : null}
+                        pluginLink={onPluginsPage ? pluginLink.current : null}
                       />
                     )
                     return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
@@ -1898,6 +1966,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     case VOICE:
       return 'voice'
     case HELP:
+    // The guide is Help's long form: the same rail entry lights.
+    case GUIDE:
       return 'help'
     case GITHUB_CALLBACK:
       return 'work'
@@ -2311,6 +2381,8 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'admin/counts': 'platform-counts',
   'admin/platform-secrets': 'platform-secrets',
   'admin/workspaces': 'workspaces-you-admin',
+  // Admin › Plugins says Config › Plugins' topic: one plugin, allowed per workspace.
+  'admin/plugins': 'agent-plugins',
   // ONE WORKSPACE'S PAGE, by its tab (owner, 3 November 2026): People and
   // Roles are Config › People and roles' parts and Settings and Setup are
   // Workspace Settings', so each says the topic its Config page said.
@@ -2436,6 +2508,7 @@ function SectionBody({
   onApiFilter,
   qaLink = null,
   secretsLink = null,
+  pluginLink = null,
 }: {
   sectionId: string
   tab: string
@@ -2461,6 +2534,8 @@ function SectionBody({
   qaLink?: QaLink | null
   /** The one-time link's token App read off the bar for Config › Secrets, or null. Never drawn. */
   secretsLink?: string | null
+  /** Config › Plugins' one-time settings link App read off the bar, or null. Never drawn. */
+  pluginLink?: PluginLinkAt | null
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2519,6 +2594,13 @@ function SectionBody({
   // One workspace's page under Admin › Workspaces (`/admin/workspaces/<tenant>`).
   const wsPage = workspacePageOf({ sectionId, tab, view })
   if (wsPage !== null) return <WorkspacePageRoute tenant={wsPage.tenant} tab={wsPage.tab} onView={onView} go={go} />
+  // A plugin catalogue's pages: Admin's Add plugin, and one plugin's page from either catalogue.
+  const pluginPage = pluginPageOf({ sectionId, tab, view })
+  if (pluginPage !== null) {
+    if (pluginPage.kind === 'add') return <AdminPluginInstallScreen />
+    if (sectionId === ADMIN_SECTION) return <AdminPluginRoute key={pluginPage.installId} installId={pluginPage.installId} />
+    return <WorkspacePluginRoute key={pluginPage.installId} installId={pluginPage.installId} />
+  }
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
@@ -2574,7 +2656,7 @@ function SectionBody({
     case 'config/mcp-servers':
       return <McpServersScreen />
     case 'config/plugins':
-      return <ConfigPluginsScreen />
+      return <ConfigPluginsScreen link={pluginLink} />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
@@ -2597,6 +2679,8 @@ function SectionBody({
       return <AdminPlatformSecretsScreen />
     case 'admin/workspaces':
       return <WorkspacesYouAdminScreen go={go} />
+    case 'admin/plugins':
+      return <AdminPluginsScreen />
 
     // VOICE IT (voice-it.md §10): the three panes' shells; each says what it
     // holds and when it arrives, and offers nothing that cannot work yet.
@@ -2632,6 +2716,45 @@ function SectionBody({
         </div>
       )
   }
+}
+
+/**
+ * ONE PLUGIN'S PAGE UNDER ADMIN › PLUGINS (`/admin/plugins/<install_id>`). A
+ * platform install is read as the platform's. A workspace's install (`w-`) is
+ * read in its own workspace, which the platform catalogue names: the card's
+ * address carries only the install id.
+ */
+export function AdminPluginRoute({ installId }: { installId: string }) {
+  if (pluginScopeOf(installId) === 'platform') return <PluginDetailScreen installId={installId} tenantId={null} backHref={ADMIN_PLUGINS_PATH} />
+  return <AdminWorkspacePluginRoute installId={installId} />
+}
+
+function AdminWorkspacePluginRoute({ installId }: { installId: string }) {
+  const read = useUrRead(() => loadPluginCatalogue(PLATFORM_PLUGIN_CATALOGUE), 'admin-plugins')
+  return (
+    <UrRegion state={read.state} route="GET /v1/admin/plugin-catalogue" what="The plugin catalogue" onRetry={read.reload}>
+      {(d) => <PluginDetailScreen installId={installId} tenantId={catalogueCards(d).find((e) => e.install_id === installId)?.tenant_id ?? null} backHref={ADMIN_PLUGINS_PATH} />}
+    </UrRegion>
+  )
+}
+
+/**
+ * ONE PLUGIN'S PAGE UNDER CONFIG › PLUGINS (`/config/plugins/<install_id>`):
+ * read in the selected workspace, which `GET /v1/plugins` names, as Config ›
+ * Plugins reads it. A removal is said on the page, which stays open. Config's
+ * cards link here (owner pick, PR #3750), so its Settings tab is Config's
+ * editable form (PluginSettingsForm.tsx), not the read-only rows.
+ */
+export function WorkspacePluginRoute({ installId }: { installId: string }) {
+  const read = useUrRead(loadWorkspacePlugins, 'plugin-page-workspace')
+  return (
+    <UrRegion state={read.state} route="GET /v1/plugins" what="The workspace's plugins" plural onRetry={read.reload}>
+      {(d) => (
+        <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)}
+          settings={(name) => <PluginSettingsForm tenantId={d.tenant_id} installId={installId} name={name} />} />
+      )}
+    </UrRegion>
+  )
 }
 
 /**

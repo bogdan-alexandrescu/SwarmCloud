@@ -116,6 +116,20 @@ title) to close the issue on merge. The worker's own title says "part of #N".
 An unmet requirement the gated `fix` step went on to address is still named:
 nothing confirmed it.
 
+A COMPILED FIX LOOP IS READ THROUGH ITS FINAL REVIEW (docs/design/fix-loop.md
+§5.3, §4.6). When the run's workflow carries a `fix-loop` step (compiled once
+the runner type is available, `issueruns._with_review_rounds`), the verdict
+the merge reads and `Closes #N` follows is the loop's last re-review,
+`result_summary.fix_loop.final_review`, never round 0's review
+(`_loop_final_review`). That summary is tenant-writable, so it is held to what
+it cannot forge, the worker merge's rule: the loop is this run's, SUCCEEDED,
+its spec verifies on `fix-loop`; the review it names is SUCCEEDED, this
+tenant's, and either the loop's own signed `review_task_id` or a re-review
+whose signed `fix_loop_round` names this loop. Anything else reads as no
+verdict: no merge, and `part of #N`. The loop's `review-fix:<k>` rounds push
+the pull request's head, so a head one of them pushed is the run's
+(`_loop_fix_heads`), bound by the same signed record.
+
 ALREADY ON MAIN (#646, owner decision 2026-10-05). The build steps are
 compiled with `allow_empty_diff`, so a workflow whose agents found the work
 already on the default branch SUCCEEDS with no pull request: each build
@@ -235,7 +249,8 @@ from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
 from .validation import (
-    DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, SECURITY_VERDICT_FILE, IssueRef,
+    DISPATCH_METADATA_KEY, FIX_LOOP_FIELD, FIX_LOOP_PROFILE, MERGE_METADATA_KEY, MERGE_STEP_ID,
+    SECURITY_VERDICT_FILE, IssueRef,
 )
 
 log = logging.getLogger(__name__)
@@ -391,26 +406,140 @@ def keyword_pending(run: IssueRun) -> bool:
     return (run.pull_request or {}).get("keyword_written") != keyword_mark(closes)
 
 
-def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> str | None:
-    """The task whose verdict.json is the run's LATEST verdict (#2217).
-
-    The re-review's, when the workflow has one: after a fix it judged the
-    fixed head, and on MERGE its shut gate re-published the review's verdict
-    as its own, so it is the verdict on both paths. The review's for a
-    workflow compiled before the re-review was, which has none.
-    """
+def _run_workflow(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> Any:
+    """`workflow`, else the run's own read under its tenant, else None."""
     if workflow is None and run.workflow_id:
         try:
             workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
         except NotFound:
             return None
+    return workflow
+
+
+def _loop_step(workflow: Any) -> Any:
+    """The workflow's `fix-loop` step, when it was compiled with one, else None."""
+    return next((
+        step for step in getattr(workflow, "steps", None) or []
+        if getattr(step, "runner_profile", None) == FIX_LOOP_PROFILE
+    ), None)
+
+
+def _review_task_id(
+    ctx: Any, tenant_id: str, run: IssueRun, workflow: Any,
+) -> tuple[str | None, str | None]:
+    """`(task, why none)`: the task whose verdict.json is the run's LATEST verdict.
+
+    The fix loop's final review, when the workflow has a loop
+    (`_loop_final_review`): never round 0's review, which a later round
+    superseded. The re-review's, when the workflow has one (#2217): after a
+    fix it judged the fixed head, and on MERGE its shut gate re-published the
+    review's verdict as its own, so it is the verdict on both paths. The
+    review's for a workflow compiled before the re-review was, which has none.
+    """
+    workflow = _run_workflow(ctx, tenant_id, run, workflow)
+    loop = _loop_step(workflow)
+    if loop is not None:
+        return _loop_final_review(ctx, tenant_id, run, getattr(loop, "task_id", None))
     found = {
         getattr(step, "step_id", None): getattr(step, "task_id", None)
         for step in getattr(workflow, "steps", None) or []
     }
     if REREVIEW_STEP in found:
-        return found[REREVIEW_STEP]
-    return found.get(REVIEW_STEP)
+        return found[REREVIEW_STEP], None
+    return found.get(REVIEW_STEP), None
+
+
+def _verified_loop(ctx: Any, tenant_id: str, run: IssueRun,
+                   loop_id: Any) -> tuple[dict[str, Any] | None, Mapping[str, Any], str]:
+    """`(loop document, its signed block, why not)`: the run's own fix loop.
+
+    Read under the run's tenant by the id its workflow names; it must be of
+    the run's workflow and its spec must verify on `fix-loop`
+    (`fixloop._signed_block`), so its signed `review_task_id` can be trusted.
+    """
+    # Function-local: fixloop imports this module at module level.
+    from . import fixloop
+
+    doc = fixloop._doc(ctx.db, tenant_id, fixloop._task_id(loop_id))
+    if doc is None or not run.workflow_id or doc.get("workflow_id") != run.workflow_id:
+        return None, {}, f"the fix loop task {loop_id} is not this run's"
+    block = fixloop._signed_block(ctx, doc)
+    if block is None:
+        return None, {}, f"the fix loop {loop_id}'s spec does not verify"
+    return doc, block, ""
+
+
+def _loop_final_review(
+    ctx: Any, tenant_id: str, run: IssueRun, loop_id: Any,
+) -> tuple[str | None, str | None]:
+    """`(task, why none)`: the fix loop's final review, as the worker's merge reads it.
+
+    docs/design/fix-loop.md §4.6. The loop must have ended SUCCEEDED -- a
+    loop parked for a person, stopped or exhausted has no review that said
+    MERGE -- and its `result_summary.fix_loop.final_review`, tenant-writable,
+    is held to what it cannot forge: a SUCCEEDED task of this tenant that is
+    the loop's own review by its signed `review_task_id` (round 0's MERGE),
+    or a re-review whose verified spec carries a `fix_loop_round` of kind
+    `review` naming this loop. Never round 0's review in its place.
+    """
+    from . import fixloop
+
+    loop, block, why = _verified_loop(ctx, tenant_id, run, loop_id)
+    if loop is None:
+        return None, why
+    if loop.get("state") != TaskState.SUCCEEDED.value:
+        return None, (
+            f"the fix loop {loop['id']} is {loop.get('state')}, not SUCCEEDED: no review "
+            "of its rounds said MERGE"
+        )
+    summary = loop.get("result_summary")
+    record = summary.get(FIX_LOOP_FIELD) if isinstance(summary, Mapping) else None
+    final = fixloop._task_id(record.get("final_review")) if isinstance(record, Mapping) else None
+    if final is None:
+        return None, f"the fix loop {loop['id']} recorded no final review"
+    review = fixloop._doc(ctx.db, tenant_id, final)
+    if review is None or review.get("state") != TaskState.SUCCEEDED.value:
+        return None, f"the fix loop's final review {final} is not a SUCCEEDED task of this run"
+    if final == block.get("review_task_id"):
+        bound = fixloop.spec_refusal(ctx.settings, review, final) is None
+    else:
+        signed = fixloop._signed_round(ctx, review, str(loop["id"]))
+        bound = signed is not None and signed.get("kind") == fixloop.REVIEW_KIND
+    if not bound:
+        return None, f"the fix loop's final review {final} is not one of that loop's reviews"
+    return final, None
+
+
+def _loop_fix_heads(ctx: Any, tenant_id: str, run: IssueRun) -> dict[str, str]:
+    """`{task: pushed head}` of the run's fix loop's `review-fix:<k>` rounds, newest first.
+
+    Each round pushes onto the pull request's own branch, so its head is the
+    run's. The rounds are named by the loop's tenant-writable state; each is
+    held to its own verified spec, whose signed `fix_loop_round` names this
+    run's loop with kind `fix`, and read under the run's tenant.
+    """
+    from . import fixloop
+
+    workflow = _run_workflow(ctx, tenant_id, run, None)
+    step = _loop_step(workflow)
+    if step is None:
+        return {}
+    loop, _block, _why = _verified_loop(ctx, tenant_id, run, getattr(step, "task_id", None))
+    if loop is None:
+        return {}
+    heads: dict[str, str] = {}
+    for entry in reversed(fixloop._rounds(fixloop._state(loop))):
+        task_id = fixloop._task_id(entry.get("task_id"))
+        if task_id is None or entry.get("kind") != fixloop.FIX_KIND:
+            continue
+        doc = fixloop._doc(ctx.db, tenant_id, task_id)
+        if doc is None:
+            continue
+        signed = fixloop._signed_round(ctx, doc, str(loop["id"]))
+        head = fixloop._pushed_head(doc)
+        if signed is not None and signed.get("kind") == fixloop.FIX_KIND and head:
+            heads.setdefault(task_id, head)
+    return heads
 
 
 def _read_review_verdict(
@@ -455,8 +584,9 @@ def evaluate_requirements(
     missing, malformed or incomplete list is stored as not all met, with
     the reason in `requirements_note`.
     """
-    content, problem = _read_review_verdict(
-        ctx, tenant_id, _review_task_id(ctx, tenant_id, run, workflow)
+    task_id, unbound = _review_task_id(ctx, tenant_id, run, workflow)
+    content, problem = (None, unbound) if unbound else _read_review_verdict(
+        ctx, tenant_id, task_id
     )
     met, unmet, note = requirements_finding(run.plan, content, problem=problem)
     log.info(
@@ -1993,7 +2123,8 @@ def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str
     (#900): the worker verifies the task's signed spec against that
     workflow, not the merge's. This is what makes that workflow this run's
     to merge: the integrator is `run.pr_task_id` of `run.workflow_id`, and
-    any other pushing task is a CI-fix round of one of `run.ci_fix_workflows`
+    any other pushing task is a CI-fix round of one of `run.ci_fix_workflows`,
+    a `review-fix` round of the run's fix loop (`_loop_fix_heads`),
     or one of this run's pr-shepherd conflict fixes (`_conflict_fix_tasks`:
     marked for this run, continuing its integrator) whose own workflow is
     that fix's one-step round. Anything else -- a task of another workflow,
@@ -2009,6 +2140,9 @@ def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str
         bound = bool(run.workflow_id) and workflow_id == run.workflow_id
     elif workflow_id and workflow_id in run.ci_fix_workflows:
         bound = True
+    elif pushed_by in _loop_fix_heads(ctx, tenant_id, run):
+        # A fix loop's round, bound by its signed record to this run's loop.
+        bound = True
     else:
         bound = (bool(workflow_id) and pushed_by in _conflict_fix_tasks(ctx, tenant_id, run)
                  and _conflict_fix_workflow(ctx, tenant_id, workflow_id, pushed_by))
@@ -2017,7 +2151,7 @@ def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str
     return (
         f"its pushing task {pushed_by} belongs to workflow {workflow_id}, which is not this "
         f"run's (workflow {run.workflow_id}, CI-fix rounds {list(run.ci_fix_workflows)}, "
-        f"nor one of its conflict fixes)"
+        f"nor one of its fix loop's rounds or conflict fixes)"
     )
 
 
@@ -2113,13 +2247,17 @@ def _pushed_head(task: Any) -> str | None:
 def _pushing_task(ctx: Any, tenant_id: str, run: IssueRun, head: str) -> str | None:
     """The run's own task that pushed `head`: the newest CI-fix round's, else the
     newest of its pr-shepherd conflict fixes' (`_conflict_fix_tasks`: a conflict
-    fix's head is the run's), else the integrator."""
+    fix's head is the run's), else the newest of its fix loop's `review-fix`
+    rounds' (`_loop_fix_heads`), else the integrator."""
     found = pushing_task(
         ctx, tenant_id, head, fix_workflows=run.ci_fix_workflows, root_task_id=None
     )
     if found is not None:
         return found
     for task_id, pushed in _conflict_fix_tasks(ctx, tenant_id, run).items():
+        if pushed == head:
+            return task_id
+    for task_id, pushed in _loop_fix_heads(ctx, tenant_id, run).items():
         if pushed == head:
             return task_id
     return pushing_task(ctx, tenant_id, head, fix_workflows=[], root_task_id=run.pr_task_id)
@@ -2386,8 +2524,9 @@ def merge_gate(
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
     """`(verdict, why not)`: the review's `verdict`, read as `evaluate_requirements` reads it."""
-    content, problem = _read_review_verdict(
-        ctx, tenant_id, _review_task_id(ctx, tenant_id, run, None)
+    task_id, unbound = _review_task_id(ctx, tenant_id, run, None)
+    content, problem = (None, unbound) if unbound else _read_review_verdict(
+        ctx, tenant_id, task_id
     )
     return _verdict_of(content, problem, what="review", name=VERDICT_FILE)
 

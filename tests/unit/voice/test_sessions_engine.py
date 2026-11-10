@@ -187,11 +187,38 @@ def test_a_stockout_falls_back_to_text_with_its_reason_and_tries_no_other_zone()
     assert answer["fallback"] == {"from": cat.ENGINE_OWN, "reason": sm.FALLBACK_NO_L4}
     session = rig.session(answer)
     assert session["mode"] == vs.MODE_TEXT and session["fallback"]["reason"] == "no_l4"
-    # The front was told to end, then the same session started as text.
-    assert [c.mode for c in rig.voice.starts] == [vs.MODE_SPEECH, vs.MODE_TEXT]
-    assert rig.voice.ends == [(answer["session_id"], sm.FALLBACK_NO_L4)]
+    # The front keeps the session and its Claude account: it is not ended, and
+    # no second start leases the Voice it pool's plan for a text conversation.
+    assert [c.mode for c in rig.voice.starts] == [vs.MODE_SPEECH]
+    assert rig.voice.ends == []
     assert [c for c, _ in rig.compute.calls].count("start") == 1
     assert _lease(rig.db)["state"] == sm.STOPPED
+
+
+def test_a_no_l4_fallback_reaches_a_working_text_session_on_the_front():
+    rig = Rig(stockout=True)
+    service = rig.sessions()
+    answer = rig.start(vs.MODE_SPEECH)
+
+    said = service.turn(tenant_id=TENANT, person=ALICE, session_id=answer["session_id"], text="plan it")
+    # The text page shows no delegation: the turn waits for the planner's line.
+    assert said == {"turn_id": "vf_1", "reply": "Looking at that now. Three steps are on screen.", "cards": []}
+    assert rig.voice.turns == [(answer["session_id"], "plan it")]
+    assert rig.voice.asked == [(answer["session_id"], "vd_1", vs.DELEGATION_WAIT_SECONDS)]
+    assert rig.voice.ends == []
+    ended = service.end(tenant_id=TENANT, person=ALICE, session_id=answer["session_id"])
+    assert ended["changed"] is True
+    assert rig.voice.ends == [(answer["session_id"], vs.END_BY_PERSON)]
+
+
+def test_a_text_fallbacks_turn_keeps_the_fronts_reply_when_the_planner_says_nothing():
+    rig = Rig(stockout=True)
+    service = rig.sessions()
+    answer = rig.start(vs.MODE_SPEECH)
+    rig.voice.delegation = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+    said = service.turn(tenant_id=TENANT, person=ALICE, session_id=answer["session_id"], text="plan it")
+    assert said == {"turn_id": "vf_1", "reply": "Looking at that now.", "cards": []}
 
 
 def test_a_start_past_the_four_minute_wait_falls_back_to_text():
@@ -200,7 +227,7 @@ def test_a_start_past_the_four_minute_wait_falls_back_to_text():
 
     assert answer["mode"] == vs.MODE_TEXT
     assert answer["fallback"] == {"from": cat.ENGINE_OWN, "reason": sm.FALLBACK_NOT_READY}
-    assert rig.voice.ends == [(answer["session_id"], sm.FALLBACK_NOT_READY)]
+    assert [c.mode for c in rig.voice.starts] == [vs.MODE_SPEECH] and rig.voice.ends == []
     assert rig.compute.status == sm.TERMINATED
 
 
@@ -419,6 +446,27 @@ def test_the_route_falls_back_to_text_when_no_speech_machine_is_deployed():
     assert started.json()["mode"] == vs.MODE_TEXT
     assert started.json()["fallback"] == {"from": cat.ENGINE_OWN, "reason": vs.FALLBACK_NOT_DEPLOYED}
     assert [c.mode for c in rig.voice.starts] == [vs.MODE_TEXT]
+
+
+def test_a_deployment_that_holds_the_template_back_runs_no_own_speech():
+    # voice_speech.template = false: the release renders every SWARM_SPEECH_*
+    # but an empty SWARM_SPEECH_TEMPLATE. Own speech fails closed: the start
+    # is text with speech_not_deployed ("own speech is not set up on this
+    # deployment"), and no Compute call is made, a create least of all.
+    config = sm.SpeechConfig.from_env({
+        "SWARM_SPEECH_PROJECT": "proj", "SWARM_SPEECH_ZONES": ",".join(CONFIG.zones),
+        "SWARM_SPEECH_INSTANCE": "swarm-speech-", "SWARM_SPEECH_ADDR": "10.40.0.9",
+        "SWARM_SPEECH_TEMPLATE": ""})
+    assert config.address and config.zones and config.instance and config.project
+    assert not config.enabled
+    rig = Rig()
+    client = _route_app(rig, FakePool(""), speech=config)
+    started = client.post("/v1/voice/sessions", json={})
+    assert started.status_code == 200, started.text
+    assert started.json()["mode"] == vs.MODE_TEXT
+    assert started.json()["fallback"] == {"from": cat.ENGINE_OWN, "reason": vs.FALLBACK_NOT_DEPLOYED}
+    assert [c.mode for c in rig.voice.starts] == [vs.MODE_TEXT]
+    assert rig.compute.calls == []
 
 
 def test_the_voice_router_mounts_the_speech_routes():

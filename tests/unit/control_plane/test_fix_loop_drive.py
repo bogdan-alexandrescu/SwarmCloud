@@ -100,7 +100,7 @@ def clock() -> Clock:
 
 @pytest.fixture
 def loop_enabled(monkeypatch):
-    """`fix-loop`, available for this test only (FL-ACCEPT makes it so for real)."""
+    """`fix-loop`, available, as it is since contract request 151."""
     monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
                         replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=True))
 

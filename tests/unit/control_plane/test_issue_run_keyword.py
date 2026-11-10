@@ -49,6 +49,11 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
 from .test_issue_runs import BUCKET, FULL_PLAN, _approve, _create, _finish_planner, _run
 from .test_issue_writeback import _bare_run
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 REQUIREMENTS = FULL_PLAN["requirements"]
 CLOSING = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+#42\b")
 
