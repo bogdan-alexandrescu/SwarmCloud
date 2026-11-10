@@ -198,7 +198,9 @@ class Typed:
 def make(tmp_path: Path, world: FakeWorld, *, answer: str = "", release: str = OLD) -> tuple[up.Upgrade, StateStore,
                                                                                              list[str]]:
     store = StateStore(project=PROJECT, environment="prod", local=tmp_path / "state.json")
-    store.save(InstallState(project=PROJECT, environment="prod", release=release, region="us-central1"))
+    # An upgrade runs on a deployment that reached READY.
+    store.save(InstallState(project=PROJECT, environment="prod", release=release, region="us-central1",
+                            ready_at=1.0))
     lines: list[str] = []
     clock = Clock()
     flow = up.Upgrade(project=PROJECT, world=world, store=store, events=Events(clock.now, out=_Sink()),
@@ -619,3 +621,78 @@ def test_a_drain_that_gives_up_names_swarm_upgrade(tmp_path: Path) -> None:
         flow.run(NEW)
     assert gave_up.value.step == "upgrade.drain"
     assert "Run swarm upgrade" in str(gave_up.value) and "swarm install" not in str(gave_up.value)
+
+
+# -- the plugin bundles (managed-plugins.md sections 1.4.4, 1.4.7 and 15.2) ---------
+
+
+class BundlerRelease(FakeWorld):
+    """A world whose target release ships swarm-plugin-bundler (bundle manifests)."""
+
+    def fetch(self, version: str, name: str) -> bytes:
+        found = json.loads(super().fetch(version, name))
+        if version == NEW:
+            found[up.BUNDLER_IMAGE] = digest("bundler")
+        return json.dumps(found).encode()
+
+
+def _switch(store: StateStore, value: str) -> None:
+    store.update(lambda s: s.outputs.update(builtins_managed=value))
+
+
+def test_rebuild_bundles_sits_between_the_image_copy_and_infra(tmp_path: Path) -> None:
+    world = FakeWorld()
+    flow, _, lines = make(tmp_path, world)
+    assert flow.run(NEW) == ExitCode.OK
+    assert up.ORDER.index(up.COPY_IMAGES) + 1 == up.ORDER.index(up.REBUILD_BUNDLES) < up.ORDER.index(up.INFRA)
+    assert "  bundles to rebuild: 0" in lines
+
+
+def test_retained_bundles_refuse_the_upgrade_before_anything_is_applied(tmp_path: Path) -> None:
+    world = FakeWorld()
+    world.docs.data = {f"{up.BUNDLES_COLLECTION}/b1": {"state": "ready"},
+                       f"{up.BUNDLES_COLLECTION}/b2": {"state": "building"},
+                       f"{up.BUNDLES_COLLECTION}/b3": {"state": "failed"},
+                       f"{up.BUNDLES_COLLECTION}/b4": {"state": "retired"}}
+    world.docs.times = dict.fromkeys(world.docs.data, 1)
+    flow, store, _ = make(tmp_path, world, answer=PROJECT)
+    with pytest.raises(up.UpgradeRefused, match="2 plugin bundle"):
+        flow.run(NEW)
+    assert not [c for c in world.calls if c[0] not in ("plan", "read_app")], "nothing applied"
+    assert store.load().release == OLD
+    assert up.retained_bundles(world.docs) == [f"{up.BUNDLES_COLLECTION}/b1", f"{up.BUNDLES_COLLECTION}/b2"]
+
+
+def test_a_bundle_made_after_the_plan_stops_before_infra_and_resumes_there(tmp_path: Path) -> None:
+    class Late(FakeWorld):
+        def copy_images(self, version: str, images: Mapping[str, str]) -> None:
+            super().copy_images(version, images)
+            self.docs.data[f"{up.BUNDLES_COLLECTION}/late"] = {"state": "ready"}
+            self.docs.times[f"{up.BUNDLES_COLLECTION}/late"] = 1
+
+    world = Late()
+    flow, store, _ = make(tmp_path, world)
+    with pytest.raises(up.UpgradeRefused, match="1 plugin bundle"):
+        flow.run(NEW)
+    assert not [c for c in world.calls if c[0] == "apply_root"], "infra never moved to the new base"
+    assert world.calls[-1] == ("resume_dispatch",)
+    assert store.load().outputs[up.UPGRADE_KEY]["failed"] == up.REBUILD_BUNDLES
+
+
+def test_switch_on_refuses_a_release_without_bundle_manifests(tmp_path: Path) -> None:
+    world = FakeWorld()
+    flow, store, _ = make(tmp_path, world)
+    _switch(store, "on")
+    with pytest.raises(up.UpgradeRefused, match="no plugin bundle manifests"):
+        flow.run(NEW)
+    assert not [c for c in world.calls if c[0] == "copy_images"]
+
+    with_manifests = BundlerRelease()
+    flow2, store2, _ = make(tmp_path / "bundler", with_manifests)
+    _switch(store2, "on")
+    assert flow2.run(NEW) == ExitCode.OK
+
+    off = FakeWorld()
+    flow3, store3, _ = make(tmp_path / "off", off)
+    _switch(store3, "off")
+    assert flow3.run(NEW) == ExitCode.OK

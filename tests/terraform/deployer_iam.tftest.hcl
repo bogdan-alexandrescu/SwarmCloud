@@ -1451,6 +1451,46 @@ run "the_speech_machines_project_roles_are_grantable" {
   }
 }
 
+# terraform/infra/plugin-bundles.tf (managed plugins' bundle build, lane 15 of
+# managed-plugins.md section 17.1) grants swarm-plugin-bundler its log writes
+# on the project, only with builtins_managed "on" -- so it is planned on here,
+# and the grant is held to exist, not passed over an empty count.
+run "the_plugin_bundlers_project_role_is_grantable" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment      = "dev"
+    tenants          = {}
+    builtins_managed = "on"
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys; the fixture plugin_bundles.tftest.hcl uses.
+    image_refs = {
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+
+  assert {
+    condition = length(google_project_iam_member.plugin_bundler_logs) == 1 && alltrue([
+      for k, g in google_project_iam_member.plugin_bundler_logs : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
+    ])
+    error_message = "terraform/infra/plugin-bundles.tf grants swarm-plugin-bundler a log-write role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+}
+
 # The runs above read grants by name, and a grant nobody named is checked
 # by none of them. This one reads the files CI applies and this file, as text
 # (./project_iam_inventory), and holds every declaration that writes the
