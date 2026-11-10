@@ -326,7 +326,12 @@ MERGE_CI_MAX_WAKES = 60
 #: cannot use, then costs a wake every 15 minutes -- one lease of a few
 #: seconds -- instead of stranding the merge. Not shorter, the design's 900:
 #: each fallback wake is a Job execution and a cold start, which the tick
-#: exists to avoid.
+#: exists to avoid. Since 2026-11-10 the scheduler holds this fallback while
+#: the tick's own reading of the park (`merge_wait.reading`) is fresh and
+#: says CI has no answer (`scheduler.loop.merge_wait_due`, which restates
+#: this, CI_STUCK_SECONDS and MERGE_CI_MAX_SECONDS): the park then waits for
+#: the tick's mark, or for the first of those bounds, so a merge step makes
+#: no attempt per check -- 5,303 attempts for 439 merges in the 7 days before.
 MERGE_CI_FALLBACK_SECONDS = 900
 
 #: How many times the step updates its branch WHILE HOLDING its repository's
