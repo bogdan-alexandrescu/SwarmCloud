@@ -6,6 +6,39 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.86 (2026-11-10)
+
+Releases the plugin and bridge changes merged since 0.5.85; none of them
+reached a session until this version moved.
+
+* A workflow spec's step may carry `work_contract`, sent as the step's
+  `metadata.work_contract`. The bridge checks its shape against the frozen
+  contract and refuses a malformed one before anything is sent, naming the
+  step and the field; swarm-api still decides its values. A step's raw
+  `metadata` stays refused.
+* A step may carry a `fix_loop` block, so a spec can declare the platform's
+  fix loop.
+* Every workflow and task name is capped at 30 characters, so it fits one
+  console row, and a single task may carry a description shown on its agent
+  page.
+* `swarm_dispatch` re-sends a prompt whose earlier task failed before it ran,
+  and takes `retry_of` for a deliberate retry.
+* A task row holds until its task ends or parks for a person, and
+  `swarm_dispatch`'s rows follow the same `rows` setting as attach.
+* `swarm_check` flags a deployment behind its repository's default branch
+  (`deploy_behind`), a dispatched task whose row never started, a merge
+  step's CI wait aged across its repair rounds, and missing plugin files
+  (`plugin_files_missing`); the session-start hook marks the plugin's
+  version folder in use, so a cache clean-up keeps it.
+* A followed workflow is read once per poll and backs off while quiet.
+* Every web call the bridge makes names its user agent.
+* A step may ask for the medium runner size, and the bridge warns on a step
+  that asks for large.
+* An answer takes `reply=short`, and `swarm_task_answers` records up to 200
+  answers through the same route.
+* The skills and README name no company, person or live deployment, and
+  describe the fix loop and pull-request steps as built.
+
 ## 0.5.85 (2026-11-06)
 
 * Every running single task has a row and a run of its own, whatever the
