@@ -58,6 +58,14 @@ export interface Problem {
   n: number
   headline: string
   detail: string
+  /**
+   * What the problem means, as the card title's tooltip (the owner's pick,
+   * 2026-11-05: no explanatory prose on the surface). `detail` keeps the
+   * facts of this read -- the names, the counts, the ages; this is the
+   * sentence that explained them, which reads the same on every read. Absent
+   * where the detail is only facts.
+   */
+  why?: string
   href: string
   /**
    * What the link says, when "open" would land somewhere the reader may not be
@@ -243,8 +251,8 @@ function dispatchCheck(stats: Result<Stats>): Check {
           severity: 'bad',
           n: 1,
           headline: 'Dispatch is paused platform-wide',
-          detail:
-            'Admission still runs and leases are still taken, but nothing is handed to a backend. Every agent submitted from now on waits.',
+          detail: '',
+          why: 'Admission still runs and leases are still taken, but nothing is handed to a backend. Every agent submitted from now on waits.',
           href: '#admin/limits',
         },
       ],
@@ -282,8 +290,8 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       severity: 'bad',
       n: dead.length,
       headline: `${dead.length} lease${dead.length === 1 ? ' is' : 's are'} past the TTL`,
-      detail:
-        'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
+      detail: '',
+      why: 'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
       href: '#capacity/holders',
       linkLabel: 'holders',
     })
@@ -297,7 +305,8 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       severity: 'warn',
       n: silent.length,
       headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period: ${namesOf(quietest.map((l) => l.task_id))}`,
-      detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more. This is already the reconciler's trigger, and its next pass is up to five minutes away.`,
+      detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more.`,
+      why: "This is already the reconciler's trigger, and its next pass is up to five minutes away.",
       href: '#capacity/holders',
       linkLabel: 'holders',
     })
@@ -307,8 +316,8 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       severity: 'bad',
       n: overdue.length,
       headline: `${overdue.length} lease${overdue.length === 1 ? ' was' : 's were'} admitted but never dispatched`,
-      detail:
-        'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
+      detail: '',
+      why: 'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
       href: '#capacity/holders',
       linkLabel: 'holders',
     })
@@ -365,7 +374,8 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
             // `clearsIn`, not `timeAgo`: a reset is in the FUTURE and timeAgo
             // floors at zero, so it would render every pending reset as
             // "just now" -- the opposite of what it says.
-            : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, now)}` : ''}. Work on this provider parks rather than fails.`,
+            : `Quota is spent. Effective limit is ${q.effective_limit}${q.reset_at ? `, resetting in ${clearsIn(q.reset_at, now)}` : ''}.`,
+        ...(q.state === 'DISABLED' ? {} : { why: 'Work on this provider parks rather than fails.' }),
         href: '#capacity/quota',
         linkLabel: 'quota, all workspaces · admin',
       })
@@ -374,7 +384,8 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         severity: 'warn',
         n: 1,
         headline: `${p.provider} is ${q.state.toLowerCase()}`,
-        detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}. Throughput is reduced, not stopped.`,
+        detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}.`,
+        why: 'Throughput is reduced, not stopped.',
         href: '#capacity/quota',
         linkLabel: 'quota, all workspaces · admin',
       })
@@ -416,7 +427,8 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'bad',
       n: reauth.length,
       headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
-      detail: `${reauth.map((a) => accountName(a)).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
+      detail: reauth.map((a) => accountName(a)).join(', '),
+      why: 'The broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.',
       href: '#capacity/accounts',
     })
   }
@@ -425,7 +437,8 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'warn',
       n: never.length,
       headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
-      detail: `${never.map((a) => accountName(a)).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
+      detail: never.map((a) => accountName(a)).join(', '),
+      why: 'No reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.',
       href: '#capacity/accounts',
     })
   }
@@ -434,7 +447,8 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'warn',
       n: stale.length,
       headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
-      detail: `${stale.map((a) => accountName(a)).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
+      detail: stale.map((a) => accountName(a)).join(', '),
+      why: "The last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.",
       href: '#capacity/accounts',
     })
   }
@@ -476,7 +490,8 @@ function poolCheck(capacity: Result<Capacity>): Check {
       severity: 'bad',
       n: over.length,
       headline: `${over.length} pool${over.length === 1 ? '' : 's'} holding more than the ceiling allows`,
-      detail: `${over.map((p) => poolLabel(p.name)).join(', ')} — admission cannot produce this, so it is a ceiling lowered under running work or a slot never released. Running "make pool-check" resolves which.`,
+      detail: over.map((p) => poolLabel(p.name)).join(', '),
+      why: 'Admission cannot produce this, so it is a ceiling lowered under running work or a slot never released. Running "make pool-check" resolves which.',
       href: '#capacity/pools',
     })
   }
@@ -485,7 +500,8 @@ function poolCheck(capacity: Result<Capacity>): Check {
       severity: 'warn',
       n: paused.length,
       headline: `${paused.length} pool${paused.length === 1 ? '' : 's'} paused by an operator`,
-      detail: `${paused.map((p) => poolLabel(p.name)).join(', ')} — deliberate, and it admits nothing until resumed. Anything whose profile lists one of these can start no agents at all.`,
+      detail: paused.map((p) => poolLabel(p.name)).join(', '),
+      why: 'Deliberate, and it admits nothing until resumed. Anything whose profile lists one of these can start no agents at all.',
       href: '#admin/limits',
     })
   }
@@ -894,11 +910,10 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
         (others.length > 0
           ? `Also ${others.slice(0, 2).map((w) => `${w.workflow_id} (${timeAgo(w.updated_at, now)})`).join(', ')}${others.length > 2 ? ` and ${others.length - 2} more` : ''}. `
           : '') +
-        `No step of any of them is leased, dispatched, starting or running, so none is holding capacity and none is costing anything — ` +
-        `this is a progress problem, not a full pool. ` +
         (eligible.length > 0
           ? `${eligible.length} ${eligible.length === 1 ? 'has a step' : 'have steps'} ready: eligible, and picked up by nothing.`
           : 'Every stalled step is parked or not yet started; the parked check says on what.'),
+      why: 'No step of any of them is leased, dispatched, starting or running, so none is holding capacity and none is costing anything — this is a progress problem, not a full pool.',
       href: stalled.length === 1 ? `#work/workflows?wf=${encodeURIComponent(worst.workflow_id)}` : '#work/workflows',
       ...(stalled.length === 1 ? { linkLabel: 'workflow' } : {}),
     })
@@ -916,7 +931,8 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
       severity: 'warn',
       n: unjudged.length,
       headline: `${unjudged.length} workflow${unjudged.length === 1 ? ' could' : 's could'} not be judged`,
-      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} — ${why}. Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
+      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} — ${why}.`,
+      why: `Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
       href: '#work/workflows',
     })
   }
@@ -977,7 +993,8 @@ function stalledProblem(
         severity: 'warn',
         n: 1,
         headline: "The reconciler's workflow stall check is not known",
-        detail: `${report.check_error ?? 'The API gave no count.'} Whether a workflow has stopped is unknown, not fine.`,
+        detail: report.check_error ?? 'The API gave no count.',
+        why: 'Whether a workflow has stopped is unknown, not fine.',
         href: '#work/workflows',
       },
     }
@@ -1078,7 +1095,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       severity: 'bad',
       n: person.length,
       headline: `${person.length} parked ${unitFor(person)} will not resume without a person`,
-      detail: `${whyEach(person)}. No timer ends any of these. They hold no capacity while they wait, so nothing is being spent -- the work is simply not happening.`,
+      detail: `${whyEach(person)}.`,
+      why: 'No timer ends any of these. They hold no capacity while they wait, so nothing is being spent -- the work is simply not happening.',
       href: '#work/running/waiting',
       linkLabel: 'waiting agents',
     })
@@ -1088,7 +1106,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       severity: 'warn',
       n: clock.length,
       headline: `${clock.length} parked ${unitFor(clock)} waiting on a clock`,
-      detail: `${whyEach(clock)}. ${soonest(clock, now)} Parked work holds no capacity, so this costs nothing while it waits.`,
+      detail: `${whyEach(clock)}. ${soonest(clock, now)}`,
+      why: 'Parked work holds no capacity, so this costs nothing while it waits.',
       href: '#work/running/waiting',
       linkLabel: 'waiting agents',
     })
@@ -1098,7 +1117,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       severity: 'warn',
       n: unclassified.length,
       headline: `${unclassified.length} parked ${unitFor(unclassified)} with no reason this build understands`,
-      detail: `${whyEach(unclassified)}. Either the platform grew a park reason newer than this bundle, or the agent was parked without one recorded. Whether it will resume by itself is unknown.`,
+      detail: `${whyEach(unclassified)}.`,
+      why: 'Either the platform grew a park reason newer than this bundle, or the agent was parked without one recorded. Whether it will resume by itself is unknown.',
       href: '#work/running/waiting',
       linkLabel: 'waiting agents',
     })
