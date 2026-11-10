@@ -580,7 +580,7 @@ def test_swarm_doctor_checks_the_plugins_infrastructure(verb, capsys):
 # -- the bundle build (managed-plugins.md §1.4.2 and §15.2) -------------------------
 
 BUNDLER = f"swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com"
-BUNDLER_ACCOUNT_URL = f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/{BUNDLER}"
+BUNDLER_ACCOUNT_URL = f"https://iam.googleapis.com/v1/projects/-/serviceAccounts/{BUNDLER}"
 REPOSITORIES_URL = f"https://artifactregistry.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/repositories"
 
 

@@ -289,7 +289,7 @@ def bundles_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
         return doctor.Finding(BUNDLES_CHECK, UNKNOWN, "the install state records no region to look for the "
                               f"{BUNDLES_REPOSITORY} repository in", fix=BUNDLES_FIX)
     email = bundler_email(target.project)
-    account = f"projects/{target.project}/serviceAccounts/{email}"
+    account = f"projects/-/serviceAccounts/{email}"
     repositories = f"projects/{target.project}/locations/{target.region}/repositories"
 
     def policy(repository: str) -> Mapping[str, Any] | None:

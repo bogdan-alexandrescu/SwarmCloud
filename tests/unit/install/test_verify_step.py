@@ -1587,7 +1587,7 @@ _PLATFORM_READ = {
 }
 
 
-_BUNDLER_ACCOUNT = (f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/"
+_BUNDLER_ACCOUNT = ("https://iam.googleapis.com/v1/projects/-/serviceAccounts/"
                     f"swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com")
 _REPOSITORIES = f"https://artifactregistry.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/repositories"
 
