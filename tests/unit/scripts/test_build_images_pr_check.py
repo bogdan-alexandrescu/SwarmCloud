@@ -79,10 +79,13 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
 # apps/swarm-voice/Dockerfile), which copies only the contract in, and
 # swarm-speech (own speech L3, apps/swarm-speech/Dockerfile), which copies
-# nothing of ours but its own app.
+# nothing of ours but its own app, and swarm-plugin-intake (managed plugins,
+# apps/plugin-intake/Dockerfile: its directory has no swarm- prefix), which
+# copies only its own package in.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "swarm-voice", "swarm-speech", "workspace-apply"}
+                                  "swarm-voice", "swarm-speech", "swarm-plugin-intake",
+                                  "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -198,6 +201,10 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
         (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
         (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
+        # The plugin intake job: its recipe beside its app, which is named
+        # plugin-intake, and copying only its own package in.
+        (["apps/plugin-intake/plugin_intake/intake.py"], {"swarm-plugin-intake"}),
+        (["apps/plugin-intake/Dockerfile"], {"swarm-plugin-intake"}),
         # Voice it's own speech server (own speech L3): the same shape again,
         # copying nothing of ours but itself, so a contract change above does
         # not reach it.

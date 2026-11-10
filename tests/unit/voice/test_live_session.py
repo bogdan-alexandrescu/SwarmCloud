@@ -355,7 +355,8 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         busy = await h.post("/internal/sessions", _start_body(voice_id="vs_second0002"))
         assert busy.status_code == 409
         assert busy.json() == {"code": "voice_pool_busy", "message":
-                               "Voice it's OpenAI API key is in use by another session; try again when it ends."}
+                               "Voice it's OpenAI API key is in use by another session; try again when it ends.",
+                               "reason": "no_voice_account_available", "capability": "live"}
         assert len(h.openai.creates) == 1 and h.sessions.get("vs_second0002") is None
         # Once the first ends, its account is free again.
         assert (await h.post(f"/internal/sessions/{first['voice_session_id']}/end")).status_code == 200

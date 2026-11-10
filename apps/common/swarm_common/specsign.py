@@ -431,7 +431,7 @@ PLUGIN_RECORD_PURPOSE = "swarm.plugin-record/v1"
 
 #: `plugin_installs/{install_id}`, `plugin_installs/{install_id}/versions/
 #: {version_id}`, `plugin_intake/{intake_id}` and `plugin_bundles/{bundle_id}`
-#: (contract request 152, managed plugins P6, design sections 1.4.3 and 14,
+#: (contract request 153, managed plugins P6, design sections 1.4.3 and 14,
 #: accepted by the owner 2026-11-09): a bundle is platform scope only, because
 #: its image is built once per deployment and serves every workspace.
 PLUGIN_RECORD_KINDS: tuple[str, ...] = ("install", "version", "intake", "bundle")

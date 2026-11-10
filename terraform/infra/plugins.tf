@@ -125,6 +125,28 @@ resource "google_storage_bucket" "plugins" {
     }
   }
 
+  # THE CONSOLE'S UPLOAD. Config > Plugins > Add plugin > Upload is a browser
+  # PUT straight to the V4 URL swarm-api signs for one quarantine/ object
+  # (apps/swarm-ui/src/api.ts putPluginArchive), and that PUT is cross-origin:
+  # without this rule its preflight admits nothing and no upload from the
+  # console can arrive. The one origin is the console's own (local.console_url,
+  # never "*"), the one method PUT (Cloud Storage answers the OPTIONS preflight
+  # itself), and the headers are exactly the two the URL is signed with and the
+  # console sends. CORS grants no access: the signed URL still names the one
+  # object, and no IAM changes. Without a console (enable_frontend off or no
+  # frontend_hostname, so console_url is "") there is no origin to admit and
+  # the rule is omitted, so such a deployment still plans.
+  dynamic "cors" {
+    for_each = local.console_url == "" ? [] : [local.console_url]
+    content {
+      origin          = [cors.value]
+      method          = ["PUT"]
+      response_header = ["Content-Type", "x-goog-content-length-range"]
+      # Minutes, not hours: a changed rule reaches browsers within five.
+      max_age_seconds = 300
+    }
+  }
+
   # Intake leftovers: a quarantine object is deleted by swarm-api once its
   # intake ends, and staging/ is copied out; whatever a crash leaves goes after
   # a day. platform/ and tenants/ are the reconciler's (§9.3), never aged here.

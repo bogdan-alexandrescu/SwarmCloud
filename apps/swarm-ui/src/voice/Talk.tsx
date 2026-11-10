@@ -184,12 +184,54 @@ async function answeredReadback(sessionId: string, text: string): Promise<boolea
   }
 }
 
-/** The one line a fallback draws (§4.7). */
+/** The one line a fallback draws (§4.7); its details are `fallbackTip`'s. */
 export function fallbackLine(f: SpeechFallback): string {
-  if (f.reason === 'no_l4') return f.zone === null ? 'No L4 free.' : `No L4 free in ${f.zone}.`
-  if (f.reason === 'not_ready') return 'Speech machine not ready.'
-  if (f.reason === 'engine_down') return 'Engine down.'
-  return 'Own speech unavailable.'
+  if (f.reason === 'no_l4') return f.zone === null ? 'No L4 free: text mode.' : `No L4 free in ${f.zone}: text mode.`
+  if (f.reason === 'not_ready') return 'Speech machine not ready: text mode.'
+  if (f.reason === 'engine_down') return 'Engine down: text mode.'
+  if (f.reason === 'front_refused') return 'No Claude account free: text mode.'
+  return 'Own speech unavailable: text mode.'
+}
+
+/** What the fallback's line holds behind its (i): why, what carries the talk, and when to retry. */
+export function fallbackTip(f: SpeechFallback): string {
+  if (f.reason === 'no_l4' || f.reason === 'not_ready') {
+    const why = f.reason === 'no_l4' ? 'No speech machine (L4) was free.' : 'The speech machine did not start in time.'
+    return `${why} This talk continues as text with Voice it's Claude front, on the account it already holds. Start again in a few minutes to try own speech.`
+  }
+  if (f.reason === 'engine_down') return "The speech engine went down. This talk continues as text with Voice it's Claude front."
+  if (f.reason === 'front_refused') return "No Claude account was free for the voice front. This talk continues as text on Voice it's plan."
+  return 'Own speech could not start. This talk continues as text.'
+}
+
+/**
+ * Whether a text session runs on Voice it's ChatGPT plan: one that started as
+ * text, or whose fallback started swarm-voice's text session because no front
+ * held anything (`front_refused`, `speech_not_deployed`). A no-L4, not-ready or
+ * engine-down fallback stays on the Claude front with the account it holds.
+ */
+export function onChatGptPlan(f: SpeechFallback | null): boolean {
+  return f === null || f.reason === 'front_refused' || f.reason === 'speech_not_deployed'
+}
+
+/**
+ * A start refusal's one line, by its cause (`detail.reason`); swarm-api's full
+ * sentence goes behind the (i). The OpenAI key is named only when a Live
+ * start found it held by another session.
+ */
+export function refusalLine(reason: string): string | null {
+  if (reason === 'openai_key_in_use') return 'OpenAI key in use by another session.'
+  if (reason === 'no_voice_account_available') return 'No Voice it plan account free.'
+  return null
+}
+
+function InfoGlyph() {
+  return (
+    <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11v5.5M12 7.75v.01" />
+    </svg>
+  )
 }
 
 function CloseGlyph() {
@@ -245,9 +287,13 @@ function eventType(data: unknown): string | null {
  * to), so it is not wrapped in words of the page's own. A failure in this
  * browser has no such sentence and is headed as one.
  */
-function startProblem(e: unknown): string {
-  if (e instanceof TalkError && e.api !== null && e.api.message.trim() !== '') return e.api.message
-  return `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`
+function startProblem(e: unknown): { line: string; tip: string | null } {
+  if (e instanceof TalkError && e.api !== null && e.api.message.trim() !== '') {
+    const detail = e.api.detail as { reason?: unknown } | undefined
+    const line = typeof detail?.reason === 'string' ? refusalLine(detail.reason) : null
+    return line === null ? { line: e.api.message, tip: null } : { line, tip: e.api.message }
+  }
+  return { line: `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`, tip: null }
 }
 
 function MicGlyph({ off = false }: { off?: boolean }) {
@@ -303,6 +349,8 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
 export function TalkPane() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [problem, setProblem] = useState<string | null>(null)
+  /** A start refusal's full sentence, behind the problem line's (i). */
+  const [problemTip, setProblemTip] = useState<string | null>(null)
   const [lines, setLines] = useState<CaptionLine[]>([])
   const [voice, setVoice] = useState<MediaStream | null>(null)
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
@@ -318,6 +366,8 @@ export function TalkPane() {
   const [speechState, setSpeechState] = useState<string | null>(null)
   // Why this session is in text mode instead of on its engine; null once dismissed.
   const [fallback, setFallback] = useState<SpeechFallback | null>(null)
+  // Kept apart from `fallback`, which Dismiss clears: the status line must not change with it.
+  const [onPlan, setOnPlan] = useState(true)
   // A text session's spoken reply, 0..1, or null when nothing is spoken.
   const [level, setLevel] = useState<number | null>(null)
   // Why a text session types instead of listening; null while it listens.
@@ -526,6 +576,7 @@ export function TalkPane() {
       setVoicePlaying(false)
       setLines((l) => l.filter((x) => x.final))
       setFallback(text.fallback)
+      setOnPlan(onChatGptPlan(text.fallback))
       setTalkMode('text')
       beginText()
     },
@@ -612,6 +663,7 @@ export function TalkPane() {
 
   const start = useCallback(async () => {
     setProblem(null)
+    setProblemTip(null)
     setLines([])
     setTyped(null)
     setDraft('')
@@ -644,7 +696,9 @@ export function TalkPane() {
       setProjectId(c.projectId)
       setTalkMode(c.mode)
       if (c.mode === 'text') {
-        if ('fallback' in c) setFallback(c.fallback)
+        const f = 'fallback' in c ? c.fallback : null
+        setFallback(f)
+        setOnPlan(onChatGptPlan(f))
         beginText()
       } else if (c.mode === 'speech') beginSpeech(c)
       setSessionId(c.sessionId)
@@ -653,7 +707,9 @@ export function TalkPane() {
       setPhase('live')
     } catch (e) {
       if (!mounted.current) return
-      setProblem(startProblem(e))
+      const said = startProblem(e)
+      setProblem(said.line)
+      setProblemTip(said.tip)
       setPhase('idle')
     }
   }, [onEvent, end, beginText, beginSpeech])
@@ -719,7 +775,7 @@ export function TalkPane() {
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
           {speechMode && boot.length === 0 && (speechState ?? (mic.muted ? 'muted' : 'listening'))}
-          {textMode && ', on the ChatGPT plan'}
+          {textMode && onPlan && ', on the ChatGPT plan'}
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
@@ -737,21 +793,23 @@ export function TalkPane() {
           <TalkTip
             tip={
               textMode
-                ? "A text conversation on the ChatGPT plan: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
+                ? "A text conversation: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
                 : "Headphones are advised: the browser's echo cancellation is what lets you talk over Voice it."
             }
           >
             <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="About headphones">
-              <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <circle cx="12" cy="12" r="8.5" />
-                <path d="M12 11v5.5M12 7.75v.01" />
-              </svg>
+              <InfoGlyph />
             </button>
           </TalkTip>
         </span>
         {textMode && fallback !== null && (
           <p className="vt-fallback" role="status">
-            {fallbackLine(fallback)}{' '}
+            <span>{fallbackLine(fallback)}</span>{' '}
+            <TalkTip tip={fallbackTip(fallback)}>
+              <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Why text mode">
+                <InfoGlyph />
+              </button>
+            </TalkTip>
             <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Dismiss" onClick={() => setFallback(null)}>
               <CloseGlyph />
             </button>
@@ -760,7 +818,17 @@ export function TalkPane() {
         {textMode && typed !== null && <p className="vt-note">{typed}</p>}
         {problem !== null && (
           <p className="vt-problem" role="alert">
-            {problem}
+            <span>{problem}</span>
+            {problemTip !== null && (
+              <>
+                {' '}
+                <TalkTip tip={problemTip}>
+                  <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Why it did not start">
+                    <InfoGlyph />
+                  </button>
+                </TalkTip>
+              </>
+            )}
           </p>
         )}
       </div>

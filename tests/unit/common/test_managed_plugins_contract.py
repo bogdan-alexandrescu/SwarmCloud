@@ -14,7 +14,7 @@ owner (the owner) on 6 November 2026 ("accept all five"):
   * 143 (P5) `canonical_platform_settings(fields)`, the bytes swarm-api MACs
     for the platform switches.
 
-And contract request 152 (P6), accepted by the owner on 9 November 2026: the
+And contract request 153 (P6), accepted by the owner on 9 November 2026: the
 plugin record kind `bundle`, a platform-scope `plugin_bundles/{bundle_id}`
 record MAC'd in P2's canonical form (design sections 1.4.3 and 14).
 
@@ -229,7 +229,7 @@ def test_fields_that_are_not_a_map_or_hold_a_timestamp_have_no_canonical_form():
 
 
 # --------------------------------------------------------------------------
-# Request 152 (P6): the plugin record kind `bundle`
+# Request 153 (P6): the plugin record kind `bundle`
 # --------------------------------------------------------------------------
 
 
