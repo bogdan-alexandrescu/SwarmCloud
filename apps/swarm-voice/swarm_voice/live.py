@@ -93,6 +93,41 @@ turn with neither does not run: the voice asks the person to say it again
 (SAY_ASK_AGAIN). A turn that starts with an empty transcript logs the counts
 of the sideband event TYPES the session has seen -- types only, never content
 -- so the next live run shows what arrives.
+
+THE SIDEBAND SENDS ONLY DELTAS (dev, 10 November 2026). That log line then
+showed `session.input_transcript.delta` and `session.output_transcript.delta`
+and never a final, so every planner turn still started empty and no card or
+mock-up was drawn. So deltas are read too (`delta_speaker`: a type ending in
+`transcript.delta` or `transcription.delta`, by side as for finals; the text is
+the event's `delta`, then `text`, then `transcript`). They are grouped into one
+segment per item (`item_id`, then `response_id`; without either, a change of
+speaker starts a new one), and the planner reads every segment, the ones still
+open included, as one line per speaker turn in the order they began: a
+delegation usually arrives while the person's request is still mid-segment. A
+final for a segment replaces its accumulated text rather than adding a line,
+and a late delta of a finished segment adds nothing. `session.commentary.appended`
+is the model's own commentary and never becomes a line. A delta's text is never
+logged; when one carries no text field its keys are logged once, at debug.
+
+WHOLE UTTERANCES (the owner, 10 November 2026, after using it: "it should allow
+me to speak an entire sentence before acting on it"). The person's deltas form
+one utterance -- one line for the planner -- until it ends: its text ends a
+sentence (a period, question mark or exclamation mark; never a comma) and
+UTTERANCE_END_GAP_SECONDS pass with no new delta of theirs, or
+UTTERANCE_IDLE_GAP_SECONDS pass whatever its text, or a new item starts, the
+voice speaks over an utterance that names no item (one that does is still
+being transcribed behind the reply), a final arrives, or the voice delegates.
+Every sideband event, and a timer for when none comes, checks the gaps on an
+injectable clock. Each ended utterance goes in one piece, once, to swarm-api's
+read-back gate (`_answer`): this engine sends no person final, so the gate was
+never posted before. And the voice is asked to wait for a whole sentence
+(TURN_INSTRUCTIONS): the Live create documents no end-of-turn setting, only the
+instructions, so that is where the patience goes.
+
+NO CARD THAT IS NOT THERE (the same day: the voice said a card was on screen
+when the planner drew none). The planner's result now ends by saying what it
+drew, counted, or that it drew nothing (planner.drew), and DELEGATE_INSTRUCTIONS
+lets the voice point at a card only when the result says one was drawn.
 """
 
 from __future__ import annotations
@@ -102,6 +137,7 @@ import contextlib
 import json
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import httpx
@@ -174,7 +210,24 @@ INSTRUCTIONS = (
 DELEGATE_INSTRUCTIONS = (
     " When the person asks for something to be planned, drawn, shown, looked up or explained from "
     "SwarmCloud, delegate it, say a few words while you wait, then speak the result you are "
-    "given and point at the card on screen. Never invent a plan or a status yourself."
+    "given. Say a card or mock-up is on screen only when the result you are given says it drew "
+    "or put one there, and point at that one; when it says nothing was drawn, never say "
+    "anything is on screen. Never invent a plan or a status yourself."
+)
+
+#: Turn-taking, added to every session's instructions. The Live API offers no
+#: end-of-turn setting at create: its reference lists only `model`, `audio`,
+#: `client`, `delegation`, `input`, `instructions`, `store` and `triggers`
+#: (/api/reference/resources/live/methods/create, read 10 November 2026), and its
+#: prompting guide says turn-taking is shaped by the instructions
+#: (/api/docs/guides/live-prompting: "Keep listening while the user pauses to
+#: think"). So the patience is asked for here, in the guide's words: the owner
+#: (10 November 2026) was answered and delegated for each word, mid-sentence.
+TURN_INSTRUCTIONS = (
+    " Let the person finish a whole sentence before you answer or delegate: keep listening "
+    "while they pause to think or between clauses, and treat a comma or a rising voice as "
+    "more to come. Answer once they have finished and fallen silent. Do not treat a cough, "
+    "music or nearby conversation as a new request."
 )
 
 #: The sideband event that starts a planner turn, and the one its result goes back as.
@@ -191,6 +244,14 @@ TRANSCRIPT_FINAL = {
 #: The families a final of another name is recognised by (`final_speaker`), and
 #: the words of its type that say whose it is.
 TRANSCRIPT_FINAL_SUFFIXES = ("transcript.done", "transcription.completed", "transcript.completed")
+#: The families of transcript deltas (`delta_speaker`), by side as for finals:
+#: the Live sideband sends `session.input_transcript.delta` (the person) and
+#: `session.output_transcript.delta` (the voice) and no final (10 November 2026).
+TRANSCRIPT_DELTA_SUFFIXES = ("transcript.delta", "transcription.delta")
+#: Where a delta's text is, in order.
+DELTA_TEXT_FIELDS = ("delta", "text", "transcript")
+#: The model's own commentary on the sideband: never a line of the transcript.
+COMMENTARY_APPENDED = "session.commentary.appended"
 PERSON_WORDS = frozenset({"input", "user"})
 VOICE_WORDS = frozenset({"output", "response"})
 #: Fields of a delegation event (or of its `delegation`) that may carry the
@@ -201,11 +262,31 @@ DELEGATION_TEXT_DEPTH = 4
 DELEGATION_TEXT_MAX = 4000
 #: What the voice says for a turn with no transcript and no delegation text,
 #: in place of a planner turn that would read the inbox and report "nothing".
-SAY_ASK_AGAIN = "I didn't catch what you asked for. Could you say it again?"
+SAY_ASK_AGAIN = ("I didn't catch what you asked for, so nothing was drawn and nothing new is "
+                 "on screen. Could you say it again?")
 #: Distinct sideband event types counted per session; later ones count as "(other)".
 EVENT_TYPES_COUNTED = 64
 #: Segments of transcript kept for the planner.
 TRANSCRIPT_LINES = 200
+#: The most characters one segment keeps (a final's or its deltas'): an item
+#: whose deltas never end cannot grow the window without bound. A minute of
+#: speech is about 1,000 characters.
+TRANSCRIPT_SEGMENT_MAX = 8000
+#: WHOLE UTTERANCES (owner, 10 November 2026: "speak an entire sentence before
+#: acting on it"). The person's deltas are one utterance until it ends: after
+#: UTTERANCE_END_GAP_SECONDS with no new delta of theirs once its text ends in
+#: UTTERANCE_END_MARKS, after UTTERANCE_IDLE_GAP_SECONDS with none whatever its
+#: text, or at once on a new item, a change of speaker, a final or a delegation.
+#: 0.8 s after a period is the low end of a cascade's end-of-speech wait
+#: (voice-it.md §1, an estimate: about 0.8 to 1.3 s) -- the punctuation already says the
+#: sentence ended; 1.6 s without it is twice that, since a pause mid-clause is
+#: a person thinking, not done.
+UTTERANCE_END_GAP_SECONDS = 0.8
+UTTERANCE_IDLE_GAP_SECONDS = 1.6
+#: What ends a sentence; a comma, a colon or a dash never ends an utterance. A
+#: closing quote or bracket after it is skipped.
+UTTERANCE_END_MARKS = (".", "?", "!", "\u2026")
+_UTTERANCE_TRAILING = "\"')]}\u201d\u2019 \t\n"
 
 
 class LiveError(RuntimeError):
@@ -409,7 +490,18 @@ def final_speaker(kind: str) -> str | None:
     a side, the person's first."""
     if kind in TRANSCRIPT_FINAL:
         return TRANSCRIPT_FINAL[kind]
-    if not kind.endswith(TRANSCRIPT_FINAL_SUFFIXES):
+    return _side(kind, TRANSCRIPT_FINAL_SUFFIXES)
+
+
+def delta_speaker(kind: str) -> str | None:
+    """Whose transcript delta an event of type `kind` is -- "person" or "voice" --
+    or None when it is not one: a type of a delta's family
+    (TRANSCRIPT_DELTA_SUFFIXES) whose words name a side, the person's first."""
+    return _side(kind, TRANSCRIPT_DELTA_SUFFIXES)
+
+
+def _side(kind: str, suffixes: tuple[str, ...]) -> str | None:
+    if not kind.endswith(suffixes):
         return None
     words = set(re.split(r"[._]", kind))
     if words & PERSON_WORDS:
@@ -424,6 +516,63 @@ def _final_text(event: dict) -> str:
     if not isinstance(text, str):
         text = event.get("text")
     return text.strip() if isinstance(text, str) else ""
+
+
+def _delta_text(event: dict) -> str | None:
+    """A delta's text, unstripped (its spaces join it to the next); None when no
+    DELTA_TEXT_FIELDS holds a string."""
+    for field in DELTA_TEXT_FIELDS:
+        text = event.get(field)
+        if isinstance(text, str):
+            return text
+    return None
+
+
+def _segment_key(event: dict) -> str | None:
+    """The item or response a transcript event belongs to, if it names one."""
+    for field in ("item_id", "response_id"):
+        value = event.get(field)
+        if isinstance(value, str) and value:
+            return f"{field}:{value}"
+    return None
+
+
+def ends_sentence(text: str) -> bool:
+    """Whether `text` ends in sentence-ending punctuation (UTTERANCE_END_MARKS),
+    past any closing quote or bracket; a comma never does."""
+    return text.rstrip(_UTTERANCE_TRAILING).endswith(UTTERANCE_END_MARKS)
+
+
+def utterance_gap(text: str) -> float:
+    """How long the person must be silent after `text` for it to be a whole utterance."""
+    return UTTERANCE_END_GAP_SECONDS if ends_sentence(text) else UTTERANCE_IDLE_GAP_SECONDS
+
+
+def _after(text: str, heard: str) -> str:
+    """What a final of an item adds to the utterances already heard of it: the
+    rest of `text` when it starts with `heard` (spaces aside), else all of it."""
+    flat, prefix = " ".join(text.split()), " ".join(heard.split())
+    if prefix and flat.startswith(prefix):
+        return flat[len(prefix):].strip()
+    return text
+
+
+class _Segment:
+    """One speaker turn of the transcript: its deltas, or its final. A person's
+    segment is one utterance: `ended` once it is whole (WHOLE UTTERANCES)."""
+
+    __slots__ = ("speaker", "key", "text", "final", "ended", "last_at")
+
+    def __init__(self, speaker: str, key: str | None, text: str = "", final: bool = False) -> None:
+        self.speaker = speaker
+        self.key = key
+        self.text = text
+        #: Its text is a final's: a late delta of its item adds nothing.
+        self.final = final
+        #: Nothing more joins it: a final, or a person's utterance that ended.
+        self.ended = final
+        #: The session clock at its last delta.
+        self.last_at = 0.0
 
 
 def _texts(value: Any, out: list[str], depth: int = 0) -> None:
@@ -465,7 +614,8 @@ class LiveSession:
     def __init__(self, voice_id: str, live_id: str, credential: LeasedCredential, api: LiveApi,
                  *, on_event: EventSink | None, on_closed: Callable[["LiveSession"], None],
                  person: str = "", planner: "Planner | None" = None,
-                 finals: vreadback.Finals | None = None) -> None:
+                 finals: vreadback.Finals | None = None,
+                 clock: Callable[[], float] | None = None) -> None:
         self.voice_id = voice_id
         self.live_id = live_id
         self._credential = credential
@@ -486,13 +636,30 @@ class LiveSession:
         self._planner = planner
         #: Posts the person's finals to swarm-api's read-back gate (readback.py).
         self._finals = finals
-        #: (speaker, text) of the final transcript segments, newest last.
-        self.transcript: list[tuple[str, str]] = []
+        #: The transcript's segments in the order they began, open ones (deltas
+        #: still arriving) included, at most TRANSCRIPT_LINES; `transcript` reads them.
+        self._segments: list[_Segment] = []
+        #: Seconds, monotonic: what the utterance gaps are measured on (tests inject one).
+        self._clock = clock or time.monotonic
+        #: Wakes when the person's open utterance may have gone idle long enough.
+        self._utterance_timer: asyncio.TimerHandle | None = None
+        #: Whether a delta without text has had its keys logged (once a session).
+        self._textless_logged = False
         #: How many sideband events of each type arrived (`_event_type`, never content).
         self.event_types: dict[str, int] = {}
         self._turns: set[asyncio.Task] = set()
         #: The planner model read at this session's start; None keeps the pin.
         self.planner_model: str | None = None
+
+    @property
+    def transcript(self) -> list[tuple[str, str]]:
+        """(speaker, text) of each segment with text, newest last: what the planner reads."""
+        lines = []
+        for segment in self._segments:
+            text = segment.text.strip()
+            if text:
+                lines.append((segment.speaker, text))
+        return lines
 
     @property
     def attached(self) -> bool:
@@ -563,16 +730,26 @@ class LiveSession:
                         continue
                     kind = str(event.get("type", ""))
                     self._count(event)
+                    # Any event is a moment to see whether the person has been quiet long enough.
+                    self._end_idle_utterances()
                     if kind == "session.closed":
                         self._note_closed(event)
                         break
                     speaker = final_speaker(kind)
+                    delta = delta_speaker(kind) if speaker is None else None
                     if speaker is not None:
                         self._note_transcript(speaker, event)
-                        if speaker == "person":
-                            self._answer(event)
-                    elif kind == DELEGATION_CREATED and self._planner is not None:
-                        self._delegated(event)
+                    elif delta is not None:
+                        self._note_delta(delta, event)
+                    elif kind == COMMENTARY_APPENDED:
+                        # The model's own commentary: never a line of the person's.
+                        pass
+                    elif kind == DELEGATION_CREATED:
+                        # A handoff ends what the person was saying: the planner and
+                        # the read-back gate hear it whole, the gate first.
+                        self._end_utterances()
+                        if self._planner is not None:
+                            self._delegated(event)
                     if kind == "error":
                         # The error's code only: its message may quote what was sent.
                         error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -585,6 +762,9 @@ class LiveSession:
         except WebSocketException as exc:
             log.info("voice session %s: sideband dropped (%s)", self.voice_id, type(exc).__name__)
         finally:
+            if self._utterance_timer is not None:
+                self._utterance_timer.cancel()
+                self._utterance_timer = None
             with contextlib.suppress(Exception):
                 await socket.close()
             if self._closed.is_set():
@@ -606,22 +786,138 @@ class LiveSession:
         return ", ".join(f"{kind} x{count}" for kind, count in ranked)
 
     def _note_transcript(self, speaker: str, event: dict) -> None:
-        text = _final_text(event)
-        if text:
-            self.transcript.append((speaker, text))
-            del self.transcript[:-TRANSCRIPT_LINES]
+        """A final: it replaces the text of its segment's deltas, else adds a
+        segment. The person's ends their utterance, which then goes to the
+        read-back gate; of an item already heard in part (an utterance ended by
+        a gap), only the rest of the final is new."""
+        text = _final_text(event)[:TRANSCRIPT_SEGMENT_MAX]
+        if not text:
+            return
+        key = _segment_key(event)
+        segment = self._open_segment(speaker, key)
+        if speaker == "person" and key is not None:
+            heard = " ".join(s.text for s in self._segments
+                             if s.ended and s.speaker == speaker and s.key == key)
+            text = _after(text, heard) if heard else text
+            if not text:
+                if segment is not None:
+                    self._end(segment)
+                return
+        if segment is None:
+            segment = self._add(_Segment(speaker, key, text, final=True))
+            segment.ended = False
+        else:
+            segment.text = text
+            segment.final = True
+        self._end(segment)
 
-    def _answer(self, event: dict) -> None:
-        """Post the person's final to swarm-api's read-back gate before the
-        planner hears it (voice-it-own-speech.md §7.3): a "go" or a refusal
+    def _note_delta(self, speaker: str, event: dict) -> None:
+        """A delta: added to its segment, or the start of a new one."""
+        text = _delta_text(event)
+        if text is None:
+            if not self._textless_logged:
+                self._textless_logged = True
+                keys = sorted(k for k in event if isinstance(k, str) and _EVENT_TYPE.fullmatch(k))
+                log.debug("voice session %s: a transcript delta had no text field; its keys: %s",
+                          self.voice_id, ", ".join(keys) or "none")
+            return
+        key = _segment_key(event)
+        if key is not None and any(s.final and s.key == key and s.speaker == speaker
+                                   for s in self._segments):
+            # A late delta of a segment its final has already replaced.
+            return
+        if speaker == "voice":
+            # A change of speaker ends the person's utterance -- unless it names its
+            # item: the person's transcription runs behind the voice's reply, and
+            # an item is ended by the next item, the gaps, a final or a handoff.
+            self._end_utterances(unkeyed_only=True)
+        segment = self._open_segment(speaker, key)
+        if segment is None:
+            if speaker == "person":
+                # A new item, or the person again after the voice: what was open is whole.
+                self._end_utterances()
+            segment = self._add(_Segment(speaker, key))
+        elif segment.key is None:
+            segment.key = key
+        segment.text = (segment.text + text)[:TRANSCRIPT_SEGMENT_MAX]
+        if speaker == "person":
+            segment.last_at = self._clock()
+            self._watch_utterance(segment)
+
+    def _end(self, segment: _Segment) -> None:
+        """Nothing more joins `segment`; a person's whole utterance goes, in one
+        piece and once, to swarm-api's read-back gate."""
+        if segment.ended:
+            return
+        segment.ended = True
+        if segment.speaker == "person":
+            self._answer(segment.text)
+
+    def _end_utterances(self, *, unkeyed_only: bool = False) -> None:
+        """End the person's open utterances (those naming no item only, if asked)."""
+        for segment in list(self._segments):
+            if segment.speaker == "person" and not segment.ended and not (unkeyed_only and segment.key):
+                self._end(segment)
+
+    def _end_idle_utterances(self) -> float | None:
+        """End each open utterance of the person's that has been quiet for its
+        gap (`utterance_gap`); the seconds until the next still open one is due,
+        or None when none is open."""
+        now = self._clock()
+        wait: float | None = None
+        for segment in list(self._segments):
+            if segment.speaker != "person" or segment.ended:
+                continue
+            left = segment.last_at + utterance_gap(segment.text) - now
+            if left <= 0:
+                self._end(segment)
+            else:
+                wait = left if wait is None else min(wait, left)
+        return wait
+
+    def _watch_utterance(self, segment: _Segment) -> None:
+        """Wake when `segment` would be due: the person may say nothing more and
+        no other event may arrive to notice it."""
+        if self._utterance_timer is not None:
+            self._utterance_timer.cancel()
+        self._utterance_timer = asyncio.get_running_loop().call_later(
+            utterance_gap(segment.text), self._utterance_due)
+
+    def _utterance_due(self) -> None:
+        self._utterance_timer = None
+        wait = self._end_idle_utterances()
+        if wait is not None:
+            # Woken a little early, or by an injected clock: look again when it is due.
+            self._utterance_timer = asyncio.get_running_loop().call_later(
+                max(wait, 0.05), self._utterance_due)
+
+    def _open_segment(self, speaker: str, key: str | None) -> _Segment | None:
+        """The open segment `speaker`'s event of `key` belongs to: the one of the
+        same item or response; for an event naming neither, or a segment that
+        named neither, the newest segment if it is still open and the speaker's
+        (a change of speaker starts a new one)."""
+        if key is not None:
+            for segment in reversed(self._segments):
+                if not segment.ended and segment.speaker == speaker and segment.key == key:
+                    return segment
+        if self._segments:
+            newest = self._segments[-1]
+            if not newest.ended and newest.speaker == speaker and (key is None or newest.key is None):
+                return newest
+        return None
+
+    def _add(self, segment: _Segment) -> _Segment:
+        self._segments.append(segment)
+        del self._segments[:-TRANSCRIPT_LINES]
+        return segment
+
+    def _answer(self, text: str) -> None:
+        """Post the person's whole utterance to swarm-api's read-back gate before
+        the planner hears it (voice-it-own-speech.md §7.3): a "go" or a refusal
         answers a pending read-back there, whatever the voice does."""
-        if self._finals is None or self.grant is None:
+        if self._finals is None or self.grant is None or not text.strip():
             return
-        text = event.get("transcript")
-        if not isinstance(text, str):
-            text = event.get("text")
-        if not isinstance(text, str) or not text.strip():
-            return
+        text = text.strip()
         task = asyncio.create_task(self._finals.post(self.grant, text),
                                    name=f"readback-answer-{self.voice_id}")
         self._turns.add(task)
@@ -785,9 +1081,10 @@ class Sessions:
                 async with asyncio.timeout_at(deadline) as bound:
                     credential = await self._leases.lease(person=person, voice_session_id=voice_id)
                     credential.start_renewing()
-                    config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS}
+                    config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS + TURN_INSTRUCTIONS}
                     if self._planner is not None:
-                        config = {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS,
+                        config = {"model": MODEL,
+                                  "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS + TURN_INSTRUCTIONS,
                                   "delegation": {"type": "client"}}
                     stage = "the create"
                     live_id, answer = await self.api.create(credential, offer, config)

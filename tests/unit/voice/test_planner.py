@@ -265,13 +265,22 @@ def test_a_turn_leases_one_account_draws_one_card_speaks_two_sentences_and_relea
     result = _delegate(world)
     assert result.error is None, result.error
     assert [c["kind"] for c in result.cards] == ["details_input"] and len(world.cards) == 1
-    assert _sentences(result.spoken) <= 2 and result.spoken.startswith("The question is on screen.")
+    # The planner's two sentences, then what the turn drew, counted (planner.drew).
+    assert result.spoken == "The question is on screen. Pick a repository. I drew 1 card on screen."
     assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-1/release"]
     assign = world.broker_calls[0][1]
     assert assign == {"provider": "anthropic", "holder": "voice-planner", "person": PERSON,
                       "voice_session_id": world.grant.session_id}
     release = world.broker_calls[1][1]
     assert release["voice_session_id"] == world.grant.session_id and release["assignment_id"].startswith("as-")
+
+
+def test_a_turn_that_drew_nothing_says_so_whatever_the_model_said(world):
+    world.plan = {"calls": [["speak", {"summary": "The plan is on screen."}]]}
+    result = _delegate(world)
+    assert result.error is None and result.cards == [] and world.cards == []
+    # MUTATION: speak the model's words alone and the voice hears a card that is not there.
+    assert result.spoken == "The plan is on screen. " + pl.NOTHING_DRAWN
 
 
 def test_the_account_is_released_even_when_the_child_fails(world):
@@ -501,7 +510,8 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert r.status_code == 201, r.text
                 create = openai.creates[0]["session"]
                 assert create["delegation"] == {"type": "client"}
-                assert create["instructions"].startswith(live.INSTRUCTIONS)
+                assert create["instructions"] == (live.INSTRUCTIONS + live.DELEGATE_INSTRUCTIONS
+                                                  + live.TURN_INSTRUCTIONS)
                 for _ in range(200):
                     if any(e.get("type") == "session.commentary.append" for e in openai.received):
                         break

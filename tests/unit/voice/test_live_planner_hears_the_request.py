@@ -113,8 +113,8 @@ def test_finals_under_other_names_fill_the_planners_transcript_by_side():
         {"type": "session.output_audio_transcript.done", "text": "Sure, working on it."},
         {"type": "session.user_transcript.completed", "text": "A small one for a bakery."},
         {"type": "session.response.transcript.done", "transcript": "On it."},
-        # Not finals: deltas and other events stay out of the window.
-        {"type": "session.input_transcript.delta", "delta": "Help"},
+        # Not a final of either side: it stays out of the window. (Deltas are
+        # heard since the sideband was seen to send only them: test_live_transcript_deltas.py.)
         {"type": "session.delegation.transcript.done", "transcript": "neither side"},
         delegated,
     ])
