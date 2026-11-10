@@ -14652,6 +14652,31 @@ export interface SetupStepNeed {
   reason: string | null
 }
 
+/** One install a person added, as `steps.plugins.added` lists it (swarm-api's `added_plugins`). */
+export interface SetupAddedPlugin {
+  install_id: string
+  name: string
+  display_name: string
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+}
+
+/**
+ * `steps.plugins`, the optional plugin step (managed-plugins §15.1, swarm-api's
+ * `plugins_step_view`): `done` once an install a person added is active (the
+ * bundled ones never count), `skipped` when a platform admin skipped it and
+ * none exists, else `todo`. It is never needed.
+ */
+export interface SetupPluginsStep {
+  state: 'todo' | 'skipped' | 'done'
+  count: number
+  added: SetupAddedPlugin[]
+  /** `console/plugins_step`: who skipped it and when; null when it is not skipped. */
+  skipped: { skipped_at: string | null; skipped_by: string | null } | null
+  /** The active bundled installs' names (§1.4), never counted; empty when the route serves none. */
+  bundled: string[]
+}
+
 /** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
 export interface SetupVerifyRuns {
   task: string | null
@@ -14730,7 +14755,7 @@ export interface SetupState {
   /** The personal workspace's row for one person; null for a team. */
   personal: SetupPersonal | null
   /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
-  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
+  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null; plugins?: SetupPluginsStep | null } | null
   /** The usual length of each wait (`typical_s`); empty when the route serves none. */
   typical_s: SetupTypical
 }
@@ -14869,6 +14894,28 @@ function normPersonal(raw: unknown): SetupPersonal | null {
   }
 }
 
+/** `steps.plugins`, or null from a route that serves none: then no plugin line is drawn. */
+export function normPluginsStep(raw: unknown): SetupPluginsStep | null {
+  const s = objOf(raw)
+  if (s === null) return null
+  const added = (Array.isArray(s.added) ? s.added : [])
+    .map(objOf)
+    .filter((a): a is Record<string, unknown> => a !== null && strOf(a.install_id) !== null)
+    .map((a): SetupAddedPlugin => {
+      const name = strOf(a.name) ?? (strOf(a.install_id) as string)
+      return { install_id: strOf(a.install_id) as string, name, display_name: strOf(a.display_name) ?? name, scope: a.scope === 'workspace' ? 'workspace' : 'platform', tenant_id: strOf(a.tenant_id) }
+    })
+  const skipped = objOf(s.skipped)
+  const state = s.state === 'done' || s.state === 'skipped' ? s.state : 'todo'
+  return {
+    state,
+    count: typeof s.count === 'number' && Number.isFinite(s.count) && s.count >= 0 ? s.count : added.length,
+    added,
+    skipped: skipped === null ? null : { skipped_at: timeOf(skipped.skipped_at), skipped_by: strOf(skipped.skipped_by) },
+    bundled: labelsOf(s.bundled),
+  }
+}
+
 function normStepNeed(raw: unknown): SetupStepNeed | null {
   const s = objOf(raw)
   return s === null ? null : { needed: s.needed !== false, state: strOf(s.state) ?? '', reason: strOf(s.reason) }
@@ -14971,7 +15018,7 @@ export function normSetupState(raw: unknown): SetupState {
     sizing,
     mode,
     personal: mode === 'individual' ? normPersonal(d.personal) : null,
-    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
+    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites), plugins: normPluginsStep(steps.plugins) },
     typical_s: normTypical(d.typical_s),
   }
 }
@@ -15085,7 +15132,7 @@ export function normSetupHealth(raw: unknown): SetupHealth | null {
 }
 
 /** A write's answer as T, or the write's own error. */
-async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
+async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 120))
     if (!fixtureIsAdmin) return fixtureAdminRefusal<T>(target, 120)
@@ -15192,6 +15239,41 @@ export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; 
     undefined,
     (raw) => ({ workspace: strOf(objOf(raw)?.workspace), smoke: normSmoke(objOf(raw)?.smoke) }),
     () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null, started_at: null } }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/plugins/skip`: a platform admin skips the optional
+ * plugin step (`console/plugins_step`, audited `setup_step_skipped`). The
+ * answer is the step as it now reads; skipping again changes nothing.
+ */
+export function skipSetupPlugins(): Promise<Result<SetupPluginsStep | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/plugins/skip'),
+    'POST',
+    undefined,
+    (raw) => normPluginsStep(objOf(raw)?.plugins),
+    () => {
+      fixturePluginsSkipped = fixturePluginsSkipped ?? { skipped_at: new Date(FIXTURE_NOW).toISOString(), skipped_by: 'ana@example.com' }
+      return normPluginsStep(fixturePluginsStep())
+    },
+  )
+}
+
+/**
+ * `DELETE /v1/admin/setup/plugins/skip` ("Add one anyway"): the skip removed
+ * (audited `setup_step_unskipped`), and the step as it now reads.
+ */
+export function undoSetupPluginsSkip(): Promise<Result<SetupPluginsStep | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/plugins/skip'),
+    'DELETE',
+    undefined,
+    (raw) => normPluginsStep(objOf(raw)?.plugins),
+    () => {
+      fixturePluginsSkipped = null
+      return normPluginsStep(fixturePluginsStep())
+    },
   )
 }
 
@@ -15313,6 +15395,18 @@ function fixtureSignInClient(): Record<string, unknown> {
 }
 
 /** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+/**
+ * The fixture build's skip of the optional plugin step: the skip and undo
+ * fixtures set and clear it, and every fixture read of GET /v1/admin/setup
+ * serves it, so a skip holds across the re-read that follows it.
+ */
+let fixturePluginsSkipped: { skipped_at: string; skipped_by: string } | null = null
+
+/** The fixture's `steps.plugins` (managed-plugins §15.1): nothing added yet; skipped once the skip fixture ran. */
+function fixturePluginsStep(): Record<string, unknown> {
+  return { needed: false, optional: true, state: fixturePluginsSkipped === null ? 'todo' : 'skipped', count: 0, added: [], skipped: fixturePluginsSkipped, bundled: ['gstack', 'security-audit'] }
+}
+
 function fixtureSetupState(): Record<string, unknown> {
   const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
   const t0 = FIXTURE_NOW / 1000 - 240
@@ -15366,6 +15460,7 @@ function fixtureSetupState(): Record<string, unknown> {
       pool_accounts: 3,
       budget_usd: 900,
     },
+    steps: { plugins: fixturePluginsStep() },
   }
 }
 
