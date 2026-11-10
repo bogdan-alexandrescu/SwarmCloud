@@ -19,7 +19,7 @@
 //
 // Stubbed fetch only; no network, no credentials.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
@@ -76,6 +76,13 @@ const pickPlugins = () => fireEvent.click(within(item('plugins')).getAllByRole('
 
 const TIP = 'A plugin adds skills, commands or hooks to agent steps. One added to the platform catalogue serves only the workspaces that allow it. Optional: nothing waits on it, and you can add one any time from Admin › Plugins.'
 
+// The first cold import of the Setup page transforms its whole module graph
+// (about 18 s alone, past 30 s beside other files): pay it once here, under its
+// own budget, so no case's 30 s is spent on it. Later imports reuse the transform.
+beforeAll(async () => {
+  await import('../AdminSetup')
+}, 180_000)
+
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
@@ -96,7 +103,8 @@ describe('the plugin step: its line', () => {
     // MUTATION: print what a plugin is on the surface -> fails.
     expect(shown(document.body)).not.toContain('A plugin adds skills')
     expect(tipOf(screen.getByRole('button', { name: 'About Add a plugin' }))).toBe(TIP)
-  })
+    // The file's first render still pays the first evaluation of the page (about 12 s alone).
+  }, 90_000)
 
   it('draws no ninth line from a route that serves no plugin step', async () => {
     await draw('verify-running', null)
