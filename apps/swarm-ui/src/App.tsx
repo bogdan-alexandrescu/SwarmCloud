@@ -65,6 +65,7 @@ import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePage, workspaceTabOf, type WorkspaceTab } from './WorkspacePage'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
+import { GuideScreen, guidePath, guideSlugFrom } from './Guide'
 import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
@@ -703,6 +704,14 @@ const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 const JOIN = 'join'
 
 /**
+ * THE USER GUIDE (`/guide`, `/guide/<page>`; Guide.tsx). Not a section and not
+ * a tab, for the join page's reason: Help and the setup checklist link here,
+ * nothing in the nav does. Its tail is the page; a fragment is a heading on
+ * it, never an old `#...` address.
+ */
+const GUIDE = 'guide'
+
+/**
  * ADMIN › SETUP'S ONE-TIME LINK (`/admin/setup/link/<token>`, lane
  * DAYONE-SETUP-UI-5B; part of #2688). Not a section and not a tab, and NOT
  * behind the admin gate though its path is under Admin: the person a link
@@ -1063,6 +1072,8 @@ export function fromLocation(): Route {
   // Before the legacy-hash check: the fragment on `/join` is a join code,
   // never an old `#...` address, whatever it happens to spell.
   if (pathname === JOIN_PATH || pathname === `${JOIN_PATH}/`) return { sectionId: JOIN, tab: '', taskId: null, taskPane: 'detail' }
+  const guide = guideSlugFrom(pathname)
+  if (guide !== null) return { sectionId: GUIDE, tab: guide, taskId: null, taskPane: 'detail' }
   // Before pathToAddress: `/admin/setup/...` would otherwise read as Admin ›
   // Setup, the admin's page, with the token taken for a page of it.
   if (isSetupLinkPath(pathname)) return { sectionId: SETUP_LINK, tab: '', taskId: null, taskPane: 'detail' }
@@ -1355,6 +1366,7 @@ export function canonical(r: Route): string {
   // GitHub's single-use code leaves the bar: the route keeps it in `view`.
   if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
+  if (r.sectionId === GUIDE) return GUIDE
   if (r.sectionId === SETUP_LINK) return SETUP_LINK
   if (r.sectionId === HOME) return HOME
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
@@ -1481,6 +1493,11 @@ export function App() {
     (r: Route) => {
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
+      // The fragment is a heading on the page, kept while the page is the one in the bar.
+      if (r.sectionId === GUIDE) {
+        const path = guidePath(r.tab)
+        return window.location.pathname === path ? path + window.location.hash : path
+      }
       if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
       if (r.sectionId === HOME) return HOME_PATH
       const list = r.list ?? lastList.current
@@ -1696,6 +1713,8 @@ export function App() {
           ? 'Connect GitHub'
           : at.sectionId === JOIN
             ? 'Join a workspace'
+            : at.sectionId === GUIDE
+              ? 'User guide'
             : at.sectionId === SETUP_LINK
               ? 'Your setup link'
             : at.sectionId === HOME
@@ -1767,7 +1786,8 @@ export function App() {
             // Capacity's last page now.
             <div className="ctl-nav-util sk-foot">
               <a
-                className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
+                // The guide lights Help, its short form, but is not the Help page.
+                className={`sk-ri${at.sectionId === HELP || at.sectionId === GUIDE ? ' is-on' : ''}`}
                 aria-current={at.sectionId === HELP ? 'page' : undefined}
                 href={addressToPath(HELP)}
                 onClick={(e) => {
@@ -1813,6 +1833,8 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === GUIDE ? (
+                  <GuideScreen slug={at.tab} />
                 ) : at.sectionId === JOIN ? (
                   // Keyed by the code, so a second link pasted into the tab asks afresh.
                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
@@ -1898,6 +1920,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     case VOICE:
       return 'voice'
     case HELP:
+    // The guide is Help's long form: the same rail entry lights.
+    case GUIDE:
       return 'help'
     case GITHUB_CALLBACK:
       return 'work'
