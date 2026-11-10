@@ -7,11 +7,16 @@ in-memory Firestore, a static token verifier, static groups, no forge
 credential, no Secret Manager. Nothing here reaches a cloud API, so the run
 needs no credentials and no emulator.
 
-Each worker process calls `create_app()` itself, so each holds its OWN
+Each worker process calls `build_app()` itself, so each holds its OWN
 in-memory Firestore. The seed is deterministic, so every worker serves the same
 documents and a read answers the same whichever worker takes it. What it does
 not model is Firestore's network round trip: these numbers are the API's own
 CPU per read, the part a second worker can parallelise.
+
+The factory is `build_app`, not `create_app`: this is a measurement harness,
+not a deployed service, and scripts/lib/check-contract-parity.sh treats every
+module that defines a create_app factory as a Cloud Run service and holds it
+to the health check path.
 
 The bearer token is not written anywhere: the script draws it at run time
 (`secrets.token_hex`) and passes it in `SWARM_PERF_TOKEN`.
@@ -66,7 +71,7 @@ def seeded_db() -> FakeFirestore:
     return db
 
 
-def create_app() -> FastAPI:
+def build_app() -> FastAPI:
     token = os.environ["SWARM_PERF_TOKEN"]
     os.environ.setdefault("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
     os.environ.setdefault("SWARM_SHARED_DENY_LIST_SET", "1")

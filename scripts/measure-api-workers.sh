@@ -120,7 +120,7 @@ while [[ "${round}" -le "${rounds}" ]]; do
       # setsid: the server leads its own process group, so stopping it stops
       # every worker uvicorn forked, not only the parent.
       setsid "${PIN_SERVER[@]+"${PIN_SERVER[@]}"}" "${PY[@]}" -m uvicorn --factory \
-        swarm_api_workers_app:create_app --host 127.0.0.1 --port "${port}" \
+        swarm_api_workers_app:build_app --host 127.0.0.1 --port "${port}" \
         --workers "${workers}" --log-level warning --no-access-log >"${server_log}" 2>&1 &
       server_pid=$!
       if ! result="$("${PIN_CLIENT[@]+"${PIN_CLIENT[@]}"}" "${PY[@]}" "${REPO_ROOT}/tests/perf/drive_reads.py" \
