@@ -308,6 +308,14 @@ AUDIT_ENDED = "voice_session_ended"
 #: An SDP offer or answer larger than this is not one a browser made.
 MAX_SDP_BYTES = 64 * 1024
 
+#: How long a start waits for swarm-voice's answer; past it the person reads
+#: "swarm-voice could not be reached". swarm-voice bounds its whole Live start
+#: (lease, create, every sideband attach try, the lease's release on a failure)
+#: by swarm_voice.live.START_WORST_SECONDS (17.0), held below this with a margin
+#: for the hop by tests/unit/voice/test_live_sideband_events.py, so a refusal
+#: swarm-voice has reaches the person as itself (10 November 2026: two 10 s attach
+#: tries after the create outran this and the console said "could not be reached").
+#: Raise both together, never this alone below swarm-voice's bound.
 START_TIMEOUT_SECONDS = 20.0
 #: The longest a delegation is waited on: swarm-voice's
 #: claudefront.MAX_WAIT_SECONDS, the planner's turn.

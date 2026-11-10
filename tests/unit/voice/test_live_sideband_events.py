@@ -2,13 +2,20 @@
 
 Live QA, 9 November 2026: on a funded developer API key the session create
 answered 201 and the sideband's first event was not `session.updated`, so an
-attach that read exactly one event refused a good session. This holds that:
+attach that read exactly one event refused a good session. Live check, 10
+November 2026: the sideband sent only `session.usage.updated`, which the closed
+list of confirming events then did not take, and the start's two attach tries
+outran swarm-api's start timeout, so the console said "could not be reached".
+This holds that:
 
-* an attach waits, within ATTACH_SECONDS, for `session.updated` or
-  `session.created`, skipping any other non-error event and logging the skipped
-  TYPES once, never their content;
+* an attach waits, within ATTACH_SECONDS, for any `session.*` event (the socket
+  carries only its session's events), `session.usage.updated` among them,
+  skipping any other non-error event and logging the skipped TYPES once, never
+  their content;
 * an `error` event is still refused at once, and nothing confirming within the
   bound is refused with the types seen;
+* a start -- lease, create, every attach try -- finishes inside START_SECONDS,
+  and its worst case stays below swarm-api's START_TIMEOUT_SECONDS;
 * a re-attach after a drop and the close handshake tolerate the same
   interleaved events, and a re-attach to a session that already ended is not
   sent a second close.
@@ -147,6 +154,15 @@ def _spoken() -> dict:
     return {"type": "session.input_transcript.done", "transcript": SPOKEN}
 
 
+def _heard() -> dict:
+    """A transcript event outside `session.*`: skipped by an attach, not confirming."""
+    return {"type": "conversation.item.input_audio_transcription.completed", "transcript": SPOKEN}
+
+
+def _usage() -> dict:
+    return {"type": "session.usage.updated", "usage": {"seconds": 3}}
+
+
 def _closed(seconds: int = 42) -> dict:
     return {"type": "session.closed", "reason": "client_close", "usage": {"seconds": seconds}}
 
@@ -182,13 +198,13 @@ def test_session_created_alone_attaches(monkeypatch):
 
 def test_a_rate_limits_event_before_session_updated_attaches_and_logs_its_type_only(monkeypatch, caplog):
     caplog.set_level(logging.DEBUG, logger="swarm_voice")
-    socket = FakeSocket([_rate_limits(), _spoken(), _updated()])
+    socket = FakeSocket([_rate_limits(), _heard(), _updated()])
     api, _ = _api(monkeypatch, [socket])
     assert _attach(api) is socket and not socket.closed
     lines = [r.getMessage() for r in caplog.records if "before session.updated" in r.getMessage()]
     # One line for the attach, naming each skipped type in order.
-    assert lines == ["the Live sideband sent rate_limits.updated, session.input_transcript.done "
-                     "before session.updated"]
+    assert lines == ["the Live sideband sent rate_limits.updated, "
+                     "conversation.item.input_audio_transcription.completed before session.updated"]
     # Never their content.
     assert SPOKEN not in _logged(caplog) and "remaining" not in _logged(caplog)
 
@@ -225,13 +241,14 @@ def test_an_error_after_skipped_events_is_still_refused(monkeypatch):
 def test_nothing_confirming_within_the_bound_is_refused_with_the_types_seen(monkeypatch, caplog):
     caplog.set_level(logging.DEBUG, logger="swarm_voice")
     monkeypatch.setattr(live, "ATTACH_SECONDS", 0.2)
-    socket = FakeSocket([_rate_limits(), _spoken(), "not json", {"type": "Has Spaces " + SPOKEN}])
+    socket = FakeSocket([_rate_limits(), _heard(), "not json", {"type": "Has Spaces " + SPOKEN}])
     api, _ = _api(monkeypatch, [socket])
     with pytest.raises(live.LiveError) as raised:
         _attach(api)
     assert not isinstance(raised.value, live.LiveRefused)
     message = str(raised.value)
-    assert ("saw rate_limits.updated, session.input_transcript.done, (unreadable), (unnamed)"
+    assert ("saw rate_limits.updated, conversation.item.input_audio_transcription.completed, "
+            "(unreadable), (unnamed)"
             in message), message
     assert "TimeoutError" in message
     assert SPOKEN not in message and SPOKEN not in _logged(caplog)
@@ -248,12 +265,141 @@ def test_a_socket_that_closes_before_confirming_is_refused_with_the_types_seen(m
 
 
 def test_the_skipped_events_are_held_for_the_reader(monkeypatch):
-    rate, spoken, created = _rate_limits(), _spoken(), _created()
+    rate, spoken, created = _rate_limits(), _heard(), _created()
     socket = FakeSocket([rate, spoken, created])
     api, _ = _api(monkeypatch, [socket])
     held: list = []
     assert _attach(api, held) is socket
     assert held == [rate, spoken, created]
+
+
+def test_a_sideband_that_sends_only_session_usage_updated_attaches_and_holds_it(monkeypatch):
+    """10 November 2026, on dev: the create answered 201 and the sideband sent only
+    `session.usage.updated`; the attach refused it. Any `session.*` event confirms."""
+    usage = _usage()
+    socket = FakeSocket([usage])
+    api, _ = _api(monkeypatch, [socket])
+    held: list = []
+    assert _attach(api, held) is socket and not socket.closed
+    assert held == [usage]
+
+
+def test_a_session_event_after_skipped_ones_confirms_and_all_are_held(monkeypatch):
+    rate, heard, spoken = _rate_limits(), _heard(), _spoken()
+    socket = FakeSocket([rate, heard, spoken, _updated()])
+    api, _ = _api(monkeypatch, [socket])
+    held: list = []
+    assert _attach(api, held) is socket
+    # Confirmed by the session's own transcript event; nothing after it is read here.
+    assert held == [rate, heard, spoken]
+
+
+def test_an_unrelated_event_then_silence_is_still_refused_naming_it(monkeypatch):
+    monkeypatch.setattr(live, "ATTACH_SECONDS", 0.2)
+    socket = FakeSocket([_rate_limits()])
+    api, _ = _api(monkeypatch, [socket])
+    with pytest.raises(live.LiveError) as raised:
+        _attach(api)
+    assert not isinstance(raised.value, live.LiveRefused)
+    assert "TimeoutError; saw rate_limits.updated)" in str(raised.value)
+    assert socket.closed
+
+
+# ---------------------------------------------------------------- the start's time budget
+
+
+def test_voices_worst_case_start_is_inside_swarm_apis_start_timeout():
+    """swarm-api gives a start START_TIMEOUT_SECONDS; past it the person reads "could
+    not be reached" in place of swarm-voice's refusal. Voice's worst case -- the
+    whole start bound plus the wait on a failed start's lease release -- stays
+    below it with room for the hop and the answer."""
+    from swarm_api.voice import sessions as api_sessions
+
+    margin = 2.0
+    assert live.START_WORST_SECONDS == live.START_SECONDS + live.RELEASE_WAIT_SECONDS
+    assert live.START_WORST_SECONDS + margin <= api_sessions.START_TIMEOUT_SECONDS
+    # One attach try alone fits, so a start that leased and created quickly gets a full try.
+    assert live.ATTACH_SECONDS < live.START_SECONDS
+    # Unbounded, the tries would outrun swarm-api: the deadline is what holds it.
+    assert live.ATTACH_TRIES * live.ATTACH_SECONDS > api_sessions.START_TIMEOUT_SECONDS - margin
+
+
+class _SlowRelease(_Lease):
+    def __init__(self) -> None:
+        self.released = asyncio.Event()
+
+    async def release(self) -> None:
+        await asyncio.sleep(30)
+        self.released.set()
+
+
+class _Leases:
+    def __init__(self, lease: _Lease) -> None:
+        self.lease_ = lease
+
+    async def lease(self, *, person: str, voice_session_id: str) -> _Lease:
+        return self.lease_
+
+
+def _sessions(monkeypatch, sockets: list[FakeSocket], lease: _Lease) -> live.Sessions:
+    api, _ = _api(monkeypatch, sockets)
+
+    async def create(credential, offer, session):
+        return "live_" + secrets.token_hex(6), "v=0"
+
+    monkeypatch.setattr(api, "create", create)
+    return live.Sessions(api, leases=_Leases(lease))  # type: ignore[arg-type]
+
+
+def test_attach_tries_that_never_confirm_are_refused_inside_the_start_deadline(monkeypatch):
+    """Two silent sidebands, each try allowed far longer than the start: the start
+    still answers its refusal at START_SECONDS, naming the sideband, and does not
+    wait out a slow lease release past RELEASE_WAIT_SECONDS."""
+    monkeypatch.setattr(live, "ATTACH_SECONDS", 30.0)
+    monkeypatch.setattr(live, "START_SECONDS", 0.4)
+    monkeypatch.setattr(live, "ATTACH_MIN_SECONDS", 0.05)
+    monkeypatch.setattr(live, "ATTACH_RESERVE_SECONDS", 0.05)
+    monkeypatch.setattr(live, "RELEASE_WAIT_SECONDS", 0.1)
+    first, second = FakeSocket([_rate_limits()]), FakeSocket([])
+    lease = _SlowRelease()
+    sessions = _sessions(monkeypatch, [first, second], lease)
+
+    async def timed():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(live.LiveError) as raised:
+            await sessions.start("vs_" + secrets.token_hex(5), person="p", offer="v=0")
+        took = loop.time() - started
+        for task in list(sessions._releases):
+            task.cancel()
+        return raised.value, took
+
+    refused, took = asyncio.run(timed())
+    assert took < 1.5, took
+    assert "the Live sideband confirmed no session" in str(refused)
+    assert "saw rate_limits.updated" in str(refused)
+    assert first.closed
+    assert sessions.counts() == {"sessions": 0, "attached": 0}
+
+
+def test_a_start_whose_create_outruns_the_deadline_is_refused_naming_the_stage(monkeypatch):
+    monkeypatch.setattr(live, "START_SECONDS", 0.2)
+    sessions = _sessions(monkeypatch, [], _Lease())
+
+    async def stuck(credential, offer, session):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(sessions.api, "create", stuck)
+
+    async def scenario():
+        with pytest.raises(live.LiveError) as raised:
+            await sessions.start("vs_" + secrets.token_hex(5), person="p", offer="v=0")
+        await sessions.drain_releases()
+        return raised.value
+
+    refused = asyncio.run(scenario())
+    assert not isinstance(refused, live.LiveRefused)
+    assert str(refused) == "the Live start did not finish within 0.2 s (at the create)"
 
 
 # ---------------------------------------------------------------- the session's sideband

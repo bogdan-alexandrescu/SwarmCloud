@@ -17,15 +17,33 @@ WHAT THE WIRE SENT (live QA, 9 November 2026): on a funded developer API key the
 create answered 201 and the sideband's first event was NOT `session.updated`, so
 an attach that read exactly one event refused a good session (the console saw a
 502). The log did not record what the event was. So an attach no longer trusts
-the first event: within ATTACH_SECONDS it waits for the session to be confirmed
-by `session.updated` or `session.created` (the usual first server event on
-OpenAI's realtime sockets), or by `session.closed` (a re-attach to a session
-that has already ended). Any other event -- rate limits, conversation or
-input-buffer events -- is held, not refused, and handed to the session's reader
-once it starts, so a re-attach loses no transcript final. An `error` event is
-still refused at once, with its code and type. Each attach logs the TYPES of
-the events it skipped, once and never their content (which can carry
-transcript text), and a refusal after the bound names the types it saw.
+the first event: within ATTACH_SECONDS it waits for the session to be confirmed.
+Any other event -- rate limits, conversation or input-buffer events -- is held,
+not refused, and handed to the session's reader once it starts, so a re-attach
+loses no transcript final. An `error` event is still refused at once, with its
+code and type. Each attach logs the TYPES of the events it skipped, once and
+never their content (which can carry transcript text), and a refusal after the
+bound names the types it saw.
+
+AND AGAIN (live check, 10 November 2026): with that fix the sideband of a
+created session sent only `session.usage.updated` within the bound, which the
+then-closed list (`session.updated`, `session.created`, `session.closed`) did not
+accept, so a good session was refused. A socket opened on
+`/v1/live/sessions/{id}/attach` carries only the events of that existing
+session, so ANY `session.*` server event (CONFIRMS_PREFIX) proves the attach:
+`session.closed` still reads as a session that has already ended (a re-attach),
+and `error` is still refused at once. The same check showed the second defect
+below (THE START HAS ONE DEADLINE).
+
+THE START HAS ONE DEADLINE (10 November 2026). swarm-api waits
+START_TIMEOUT_SECONDS (20.0, swarm_api.voice.sessions) for a start's answer and
+reads a later one as "swarm-voice could not be reached". Two attach tries of
+ATTACH_SECONDS each, after the lease and the create, took longer than that, so
+the person saw "could not be reached" in place of the refusal this process had.
+So a start -- lease, create, every attach try -- runs inside START_SECONDS, and a
+failed start waits at most RELEASE_WAIT_SECONDS for its lease's release before it
+answers: START_WORST_SECONDS is held below swarm-api's timeout with a margin by a
+unit test (tests/unit/voice/test_live_sideband_events.py).
 * END: `{"type": "session.close"}`, answered by `session.closed` with the final
   `usage.seconds` and `reason` (/api/docs/guides/live-conversations, "Usage and
   graceful close"). The Live API documents no HTTP hangup, so the sideband is
@@ -92,12 +110,15 @@ _ws_log.setLevel(logging.INFO)
 OPENAI_API = "https://api.openai.com"
 OPENAI_WS = "wss://api.openai.com"
 MODEL = "gpt-live-1"
-#: How long an attach may take to see the session confirmed (CONFIRMED_BY).
+#: How long one attach try may take to see the session confirmed (CONFIRMS_PREFIX);
+#: inside a start, also no longer than what is left of START_SECONDS.
 ATTACH_SECONDS = 10.0
-#: Sideband events that confirm an attach: the reference names `session.updated`;
-#: `session.created` opens OpenAI's realtime sockets; `session.closed` answers a
-#: re-attach to a session that has already ended (9 November 2026, see above).
-CONFIRMED_BY = frozenset({"session.updated", "session.created", "session.closed"})
+#: Sideband events that confirm an attach: any `session.*` server event, since a
+#: socket on /v1/live/sessions/{id}/attach carries only that session's events
+#: (the reference names `session.updated`; 10 November 2026 the wire sent only
+#: `session.usage.updated`, see above). `session.closed` among them answers a
+#: re-attach to a session that has already ended; `error` is refused, not skipped.
+CONFIRMS_PREFIX = "session."
 #: Events held for the reader while an attach waits; later ones are skipped unheld.
 ATTACH_HELD = 64
 #: Event types named in an attach's log line or refusal.
@@ -105,7 +126,23 @@ ATTACH_TYPES_NAMED = 20
 #: What an event type must look like to be logged: OpenAI's are dotted words.
 _EVENT_TYPE = re.compile(r"[a-z0-9_.]{1,64}")
 #: Attempts at the sideband before a start gives up, or an end of a dropped one.
+#: Inside a start the tries share START_SECONDS: a try is not begun with less
+#: than ATTACH_MIN_SECONDS left.
 ATTACH_TRIES = 2
+ATTACH_MIN_SECONDS = 1.0
+#: The attach tries of a start end this long before its deadline, so their own
+#: refusal (naming the events seen) is what answers, not the bare deadline.
+ATTACH_RESERVE_SECONDS = 0.5
+#: The whole of a Live start -- the lease, the create, every attach try. It MUST
+#: stay below swarm-api's START_TIMEOUT_SECONDS (20.0, swarm_api.voice.sessions)
+#: with a margin for the hop and the answer: past that, swarm-api reads a
+#: refusal this process would have given as "swarm-voice could not be reached"
+#: (10 November 2026). START_WORST_SECONDS is what a start can take at most.
+START_SECONDS = 15.0
+#: How long a failed start waits for its lease's release before it answers; the
+#: release goes on in the background past it (drained at shutdown).
+RELEASE_WAIT_SECONDS = 2.0
+START_WORST_SECONDS = START_SECONDS + RELEASE_WAIT_SECONDS
 #: Largest SDP offer accepted (a browser's is a few KiB).
 MAX_OFFER_BYTES = 64 * 1024
 
@@ -260,18 +297,21 @@ class LiveApi:
         raise LiveError("OpenAI refused the Live session (HTTP 401)")
 
     async def attach(self, credential: Credential, live_id: str,
-                     held: list[dict] | None = None) -> Any:
-        """The sideband socket, once an event in CONFIRMED_BY has arrived.
+                     held: list[dict] | None = None, *, seconds: float | None = None) -> Any:
+        """The sideband socket, once a `session.*` event (CONFIRMS_PREFIX) has arrived.
 
         Other events before it are skipped (appended to `held`, when given, for
         the session's reader); an `error` is refused at once; nothing confirming
-        within ATTACH_SECONDS is refused with the event types seen."""
+        within `seconds` (ATTACH_SECONDS when not given) is refused with the
+        event types seen."""
+        if seconds is None:
+            seconds = ATTACH_SECONDS
         bearer = await credential.bearer()
         try:
             socket = await ws_connect(
                 f"{self.ws_base}/v1/live/sessions/{live_id}/attach",
                 additional_headers=bearer.headers(),
-                open_timeout=ATTACH_SECONDS,
+                open_timeout=seconds,
                 logger=_ws_log,
                 max_size=4 * 1024 * 1024,
             )
@@ -280,7 +320,7 @@ class LiveApi:
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
             raise LiveError(f"the Live sideband could not attach ({type(exc).__name__})") from None
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + ATTACH_SECONDS
+        deadline = loop.time() + seconds
         skipped: list[str] = []
         while True:
             try:
@@ -289,6 +329,10 @@ class LiveApi:
                 await socket.close()
                 raise LiveError(f"the Live sideband confirmed no session ({type(exc).__name__}; "
                                 f"saw {_named(skipped)})") from None
+            except asyncio.CancelledError:
+                # A start's deadline (START_SECONDS) passed: the socket goes with it.
+                await socket.close()
+                raise
             try:
                 event = json.loads(raw)
             except (ValueError, TypeError):
@@ -297,7 +341,7 @@ class LiveApi:
             if kind == "error":
                 await socket.close()
                 raise _refused("the Live sideband", None, json.dumps(event))
-            if kind in CONFIRMED_BY:
+            if kind.startswith(CONFIRMS_PREFIX):
                 if skipped:
                     log.info("the Live sideband sent %s before %s", _named(skipped), kind)
                 if held is not None:
@@ -373,12 +417,22 @@ class LiveSession:
     def ended(self) -> bool:
         return self._closed.is_set()
 
-    async def attach(self) -> None:
+    async def attach(self, deadline: float | None = None) -> None:
+        """Attach the sideband, in at most ATTACH_TRIES tries. With `deadline` (the
+        event loop's clock, a start's START_SECONDS), each try gets no longer than
+        what is left of it, and none starts with less than ATTACH_MIN_SECONDS."""
+        loop = asyncio.get_running_loop()
         last: LiveError | None = None
         for _ in range(ATTACH_TRIES):
+            seconds = ATTACH_SECONDS
+            if deadline is not None:
+                seconds = min(seconds, deadline - loop.time())
+                if seconds < ATTACH_MIN_SECONDS:
+                    break
             held: list[dict] = []
             try:
-                self._socket = await self._api.attach(self._credential, self.live_id, held)
+                self._socket = await self._api.attach(self._credential, self.live_id, held,
+                                                      seconds=seconds)
             except (LiveError, CredentialError) as exc:
                 last = exc if isinstance(exc, LiveError) else LiveError(str(exc))
                 continue
@@ -390,7 +444,9 @@ class LiveSession:
             self._reader = asyncio.create_task(self._read(self._socket, held),
                                                name=f"sideband-{self.voice_id}")
             return
-        assert last is not None
+        if last is None:
+            raise LiveError(f"the Live sideband had no time left to attach within the start's "
+                            f"{START_SECONDS:g} s")
         raise last
 
     async def _events(self, socket: Any, held: list[dict]) -> AsyncIterator[Any]:
@@ -578,11 +634,12 @@ class Sessions:
         # shutdown, or OpenAI's own `session.closed` on the sideband.
         self._release(session._credential)
 
-    def _release(self, credential: LeasedCredential) -> None:
+    def _release(self, credential: LeasedCredential) -> asyncio.Task:
         task = asyncio.get_running_loop().create_task(credential.release(),
                                                       name="voice-lease-release")
         self._releases.add(task)
         task.add_done_callback(self._releases.discard)
+        return task
 
     async def drain_releases(self) -> None:
         """Wait for the releases in flight (a shutdown must not drop one)."""
@@ -594,35 +651,54 @@ class Sessions:
         """Lease a Voice it pool account for `person`, create the GPT-Live session for
         `offer` on it, attach its sideband, and hold it. Raises SessionExists,
         accountlease.VoicePoolRefused (nothing started), CredentialError or LiveError;
-        on any failure after the lease, the lease is released before raising."""
+        on any failure after the lease, the lease's release is begun before raising.
+
+        The whole start runs inside START_SECONDS, and a failure waits at most
+        RELEASE_WAIT_SECONDS for the release: swarm-api must have this answer
+        before its START_TIMEOUT_SECONDS, or it shows the person "could not be
+        reached" in place of the refusal (see THE START HAS ONE DEADLINE)."""
         if voice_id in self._live or voice_id in self._starting:
             raise SessionExists(voice_id)
         self._starting.add(voice_id)
         credential: LeasedCredential | None = None
+        deadline = asyncio.get_running_loop().time() + START_SECONDS
+        stage = "the lease"
         try:
-            credential = await self._leases.lease(person=person, voice_session_id=voice_id)
-            credential.start_renewing()
-            config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS}
-            if self._planner is not None:
-                config = {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS,
-                          "delegation": {"type": "client"}}
-            live_id, answer = await self.api.create(credential, offer, config)
-            session = LiveSession(voice_id, live_id, credential, self.api,
-                                  on_event=self._on_event, on_closed=self._forget,
-                                  person=person, planner=self._planner, finals=self._finals)
-            session.answer = answer
-            session.grant = grant
-            session.planner_model = planner_model
-            # Attached BEFORE the answer goes back: a session this process cannot end
-            # must never be handed to a browser to start talking (and billing) on.
-            await session.attach()
+            bound: asyncio.Timeout | None = None
+            try:
+                async with asyncio.timeout_at(deadline) as bound:
+                    credential = await self._leases.lease(person=person, voice_session_id=voice_id)
+                    credential.start_renewing()
+                    config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS}
+                    if self._planner is not None:
+                        config = {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS,
+                                  "delegation": {"type": "client"}}
+                    stage = "the create"
+                    live_id, answer = await self.api.create(credential, offer, config)
+                    session = LiveSession(voice_id, live_id, credential, self.api,
+                                          on_event=self._on_event, on_closed=self._forget,
+                                          person=person, planner=self._planner, finals=self._finals)
+                    session.answer = answer
+                    session.grant = grant
+                    session.planner_model = planner_model
+                    # Attached BEFORE the answer goes back: a session this process cannot end
+                    # must never be handed to a browser to start talking (and billing) on.
+                    stage = "the sideband"
+                    await session.attach(deadline - ATTACH_RESERVE_SECONDS)
+            except TimeoutError:
+                if bound is None or not bound.expired():
+                    raise
+                raise LiveError(f"the Live start did not finish within {START_SECONDS:g} s "
+                                f"(at {stage})") from None
             self._live[voice_id] = session
             log.info("voice session %s: live session %s attached", voice_id, live_id)
             credential = None  # held by the session now; released when it is forgotten
             return session
         except BaseException:
             if credential is not None:
-                await credential.release()
+                # Begun now and waited on briefly: the refusal must not wait out a
+                # slow broker; a release still in flight is drained at shutdown.
+                await asyncio.wait({self._release(credential)}, timeout=RELEASE_WAIT_SECONDS)
             raise
         finally:
             self._starting.discard(voice_id)
