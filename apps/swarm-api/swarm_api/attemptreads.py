@@ -79,6 +79,7 @@ from .ratelimit import TokenBucketLimiter
 from .redaction import JsonMasker
 from .store import LEASES, TASKS, WORKFLOWS
 from .task_input import masking_for
+from .workers import per_worker, per_worker_rate
 
 # --------------------------------------------------------------------------
 # The vocabulary. `agent_worker.statemcp.server` restates it for its fast
@@ -453,7 +454,11 @@ def log_rows(entries: list[Mapping[str, Any]], *, max_bytes: int = LOG_BYTES) ->
 # --------------------------------------------------------------------------
 
 #: The attempts' budget, shared by every request this process serves.
-_BUDGET = TokenBucketLimiter(CALLS_PER_HOUR / 3600.0, CALLS_PER_HOUR)
+#: `CALLS_PER_HOUR` is the instance's figure; each uvicorn worker holds its own
+#: bucket, so each gets it divided by the worker count (`workers`,
+#: SWARM_API_WORKERS; owner's choice 2026-11-10): 120 an hour with one
+#: worker, 60 in each of two. Undivided, two would let an attempt 240.
+_BUDGET = TokenBucketLimiter(per_worker_rate(CALLS_PER_HOUR / 3600.0), per_worker(CALLS_PER_HOUR))
 
 
 class AttemptReads:

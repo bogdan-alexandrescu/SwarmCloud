@@ -121,6 +121,7 @@ from .validation import (
 )
 from .verdictpublish import Decline, parse_verdict, spec_refusal
 from .waker import TASK_FINISHED, ring
+from .workers import per_worker
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +145,13 @@ MAX_JSON_BODY_BYTES = MAX_FORM_BYTES + 4 * 1024
 #: 1 GiB at concurrency 80; four 16 MiB bodies with the one copy
 #: `routes.await_input.parse_multipart` makes of their parts are at most
 #: 128 MiB, whatever the bytes are (a test holds the parser to that copy).
-MAX_CONCURRENT_MULTIPART = 4
+MAX_CONCURRENT_MULTIPART_PER_INSTANCE = 4
+#: Multipart answers one swarm-api PROCESS holds at once: the instance's 4
+#: divided by its uvicorn workers (`workers.per_worker`, SWARM_API_WORKERS;
+#: owner's choice 2026-11-10). Each worker builds its own `answer_slots` in
+#: create_app(), so undivided, two workers would hold 8 (256 MiB). One worker
+#: keeps 4; two keep 2 each.
+MAX_CONCURRENT_MULTIPART = per_worker(MAX_CONCURRENT_MULTIPART_PER_INSTANCE)
 #: Steps the expiry sweep ends per tick; the next tick takes the rest.
 EXPIRE_LIMIT = 200
 #: How `expire_due` begins the `last_error` of a step it dead-letters. Named
