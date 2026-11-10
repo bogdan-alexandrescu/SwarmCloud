@@ -441,7 +441,7 @@ def verb(monkeypatch):
     entry = _entry("api.run", {"type": "service_enabled", "name": "run.googleapis.com"},
                    step="foundations.apis")
     seen: dict[str, Any] = {"gcp": FakeGcp({"https://serviceusage.googleapis.com/": {"state": "ENABLED"},
-                                            **_plugin_answers()})}
+                                            **_plugin_answers(), **_bundle_answers()})}
     monkeypatch.setattr(doctor_verb, "client_tier", lambda: None)
     monkeypatch.setattr(doctor_verb, "read_state", lambda project: (_state(), "gs://b/o"))
     monkeypatch.setattr(doctor_verb, "load_manifest", lambda path: _manifest(entry))
@@ -463,7 +463,8 @@ def test_swarm_doctor_prints_each_entry_and_says_the_hourly_doctor_is_off(verb, 
 def test_swarm_doctor_json_and_exit_3_on_unmet(verb, capsys):
     from swarm_install import cli
 
-    verb["gcp"] = FakeGcp({"https://serviceusage.googleapis.com/": {"state": "DISABLED"}, **_plugin_answers()})
+    verb["gcp"] = FakeGcp({"https://serviceusage.googleapis.com/": {"state": "DISABLED"}, **_plugin_answers(),
+                           **_bundle_answers()})
     code = cli.main(["doctor", "--project", PROJECT, "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert code == ExitCode.TROUBLE
@@ -574,3 +575,100 @@ def test_swarm_doctor_checks_the_plugins_infrastructure(verb, capsys):
     assert code == ExitCode.TROUBLE
     found = [c for c in doc["checks"] if c["id"] == doctor_verb.PLUGINS_CHECK]
     assert found and found[0]["status"] == UNMET and "swarm-plugin-intake" in found[0]["detail"]
+
+
+# -- the bundle build (managed-plugins.md §1.4.2 and §15.2) -------------------------
+
+BUNDLER = f"swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com"
+BUNDLER_ACCOUNT_URL = f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/{BUNDLER}"
+REPOSITORIES_URL = f"https://artifactregistry.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/repositories"
+
+
+def _push(role: str = "roles/artifactregistry.writer", member: str = f"serviceAccount:{BUNDLER}") -> dict[str, Any]:
+    return {"role": role, "members": [member]}
+
+
+def _bundle_answers(own: Mapping[str, Any] | None = None, *, account: bool = True, repository: bool = True,
+                    **read_only: Mapping[str, Any]) -> dict[str, Any]:
+    answers: dict[str, Any] = {}
+    if account:
+        answers[BUNDLER_ACCOUNT_URL] = {"email": BUNDLER}
+    if repository:
+        answers[f"{REPOSITORIES_URL}/swarm-plugin-bundles:getIamPolicy"] = dict(
+            own if own is not None else {"bindings": [_push()]})
+    for name in doctor_verb.BUNDLER_READ_ONLY_REPOSITORIES:
+        reader = {"bindings": [_push("roles/artifactregistry.reader")]}
+        answers[f"{REPOSITORIES_URL}/{name}:getIamPolicy"] = dict(read_only.get(name.replace("-", "_"), reader))
+    return answers
+
+
+def test_bundle_build_met_when_the_builder_pushes_to_its_repository_only():
+    gcp = FakeGcp(_bundle_answers())
+    finding = doctor_verb.bundles_finding(_target(builtins_managed="on"), gcp)
+    assert finding.id == doctor_verb.BUNDLES_CHECK
+    assert finding.status == MET, finding.detail
+    assert BUNDLER in finding.detail and "swarm-plugin-bundles only" in finding.detail
+    assert all(method == "GET" for method, _ in gcp.calls), "the check only reads"
+
+
+def test_bundle_build_switch_off_reads_nothing_and_is_met():
+    gcp = FakeGcp({})
+    for outputs in ({"builtins_managed": "off"}, {}):
+        finding = doctor_verb.bundles_finding(_target(**outputs), gcp)
+        assert finding.status == MET and "builtins_managed is off" in finding.detail
+    assert gcp.calls == []
+    # The doctor names the key the infra pass records (it loads no tfvars).
+    from swarm_install import tfvars
+
+    assert doctor_verb.BUILTINS_MANAGED_KEY == tfvars.BUILTINS_MANAGED_KEY
+
+
+@pytest.mark.parametrize(("answers", "said"), [
+    (_bundle_answers(account=False), f"{BUNDLER} does not exist"),
+    (_bundle_answers(repository=False), "swarm-plugin-bundles repository does not exist"),
+    (_bundle_answers({"bindings": [_push("roles/artifactregistry.reader")]}), "may not push to swarm-plugin-bundles"),
+    # another account's push is not the builder's
+    (_bundle_answers({"bindings": [_push(member=f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com")]}),
+     "may not push to swarm-plugin-bundles"),
+    (_bundle_answers(swarm_images={"bindings": [_push()]}), "may also push to swarm-images"),
+    (_bundle_answers(swarm_mirror_npm={"bindings": [_push("roles/artifactregistry.repoAdmin")]}),
+     "may also push to swarm-mirror-npm"),
+])
+def test_bundle_build_unmet_names_what_is_wrong(answers, said):
+    finding = doctor_verb.bundles_finding(_target(builtins_managed="on"), FakeGcp(answers))
+    assert finding.status == UNMET
+    assert said in finding.detail
+    assert "swarm install" in finding.fix
+
+
+def test_bundle_build_unknown_when_a_read_is_refused():
+    answers = _bundle_answers()
+    answers[BUNDLER_ACCOUNT_URL] = doctor.Denied("iam.serviceAccounts.get", BUNDLER)
+    finding = doctor_verb.bundles_finding(_target(builtins_managed="on"), FakeGcp(answers))
+    assert finding.status == UNKNOWN and "iam.serviceAccounts.get" in finding.detail
+
+
+def test_swarm_doctor_checks_the_bundle_build_infra_applied(verb, monkeypatch, capsys):
+    from swarm_install import cli
+
+    applied = _state()
+    applied.outputs["builtins_managed"] = "on"
+    monkeypatch.setattr(doctor_verb, "read_state", lambda project: (applied, "gs://b/o"))
+    code = cli.main(["doctor", "--project", PROJECT])
+    out = capsys.readouterr().out
+    assert code == ExitCode.OK, out
+    assert doctor_verb.BUNDLES_CHECK in out
+
+    verb["gcp"].answers.pop(BUNDLER_ACCOUNT_URL)
+    code = cli.main(["doctor", "--project", PROJECT, "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert code == ExitCode.TROUBLE
+    found = [c for c in doc["checks"] if c["id"] == doctor_verb.BUNDLES_CHECK]
+    assert found and found[0]["status"] == UNMET and BUNDLER in found[0]["detail"]
+
+    # Nothing recorded: no infra pass planned plugin-bundles.tf, nothing to find.
+    monkeypatch.setattr(doctor_verb, "read_state", lambda project: (_state(), "gs://b/o"))
+    code = cli.main(["doctor", "--project", PROJECT, "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    found = [c for c in doc["checks"] if c["id"] == doctor_verb.BUNDLES_CHECK]
+    assert code == ExitCode.OK and found[0]["status"] == MET and "off" in found[0]["detail"]

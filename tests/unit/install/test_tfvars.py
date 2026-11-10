@@ -698,3 +698,20 @@ def test_swarm_api_always_gets_an_allowed_caller() -> None:
             assert inputs["admin_users"] == ["admin@example.com"], (pass_name, sized)
     with pytest.raises((LookupError, ValueError)):
         _infra("infra-2", org_domain="")
+
+
+@pytest.mark.parametrize("pass_name, value", [("infra-1", "on"), ("infra-4", "off"), ("bootstrap-1", None)])
+def test_an_infra_pass_records_the_builtins_switch_it_applied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                              pass_name: str, value: str | None) -> None:
+    # What tfvars.builtins_managed reads back on the next pass or upgrade.
+    from swarm_install.steps import bootstrap
+
+    from .test_terraform_runner import FakeCtx
+
+    inputs = {"project_id": "p"} if value is None else {"project_id": "p", "builtins_managed": value}
+    monkeypatch.setattr(bootstrap, "generate", lambda ctx, name, gcp: dict(inputs))
+    monkeypatch.setattr(bootstrap, "guards_for", lambda gcp, as_deployer, project: None)
+    monkeypatch.setattr(bootstrap, "run_pass", lambda tf, name, inputs, **kw: {})
+    ctx = FakeCtx()
+    bootstrap.apply_pass(ctx, bootstrap.Deps(gcp=lambda: None, root_dir=lambda ctx, root: tmp_path / root), pass_name)
+    assert ctx.outputs.get(tfvars.BUILTINS_MANAGED_KEY) == value
