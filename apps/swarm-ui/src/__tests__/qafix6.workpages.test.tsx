@@ -75,19 +75,21 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     expect(cells[0]!.getAttribute('title')).toBe("This run's plan needs a person's approval.")
   })
 
-  it("the fixture build's own two runs read 'awaiting' and 'approved'", async () => {
+  it("the fixture build's own runs read 'awaiting' and 'approved'", async () => {
     vi.stubEnv('VITE_LIVE', '')
     vi.resetModules()
     const { RunsScreen } = await import('../Runs')
     const { container } = render(<RunsScreen view={null} go={vi.fn()} />)
     const cells = await waitFor(() => {
       const c = [...container.querySelectorAll<HTMLElement>('.rn-row > td[data-label="Plan approval"]')]
-      expect(c).toHaveLength(2)
+      // The approval page's three example plans (api.ts `fixtureExampleRuns`),
+      // then the two runs the fixture build has always had.
+      expect(c).toHaveLength(5)
       return c
     }, WAIT)
-    // MUTATION: print `{r.plan_approval}` in the cell again (both fixture runs
-    // read "required"), or put back 'awaiting approval'.
-    expect(cells.map(visible)).toEqual(['awaiting', 'approved'])
+    // MUTATION: print `{r.plan_approval}` in the cell again (every fixture run
+    // reads "required"), or put back 'awaiting approval'.
+    expect(cells.map(visible)).toEqual(['awaiting', 'awaiting', 'awaiting', 'awaiting', 'approved'])
   })
 
   it("a run that ended before its plan was approved reads 'not given'", async () => {
@@ -105,7 +107,9 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     const { container } = render(<RunsScreen view={null} go={vi.fn()} />)
     const cells = await waitFor(() => {
       const c = [...container.querySelectorAll<HTMLElement>('.rn-row > td[data-label="Plan approval"]')]
-      expect(c).toHaveLength(2)
+      // The approval page's three example plans (api.ts `fixtureExampleRuns`),
+      // then the two runs the fixture build has always had.
+      expect(c).toHaveLength(5)
       return c
     }, WAIT)
     const th = container.querySelector<HTMLElement>('.rn-table th[data-col="approval"]')!
