@@ -199,7 +199,7 @@ function approvedTip(a: VoiceApproval): string {
 /** The approved frame's tick; its tip says who approved it, how and when. */
 function ApprovedTick({ approval }: { approval: VoiceApproval }) {
   return (
-    <TalkTip tip={approvedTip(approval)}>
+    <TalkTip tip={approvedTip(approval)} end>
       <span className="vts-approved" role="img" aria-label="Approved" tabIndex={0}>
         <svg className="vts-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M5 12.5l4.5 4.5L19 7.5" />
@@ -215,9 +215,10 @@ function ApprovedTick({ approval }: { approval: VoiceApproval }) {
  * tapped button), with `data-help-description` on the tip so its sentence
  * stays out of the words the prose ratchet counts (proseapp.tsx), as People's
  * InfoTip and Profile's AboutTip are kept. The read-back's clock and the Talk
- * pane's (i) use it.
+ * pane's (i) use it. `end` opens it leftwards, for a tip at the right of a
+ * row (the approved tick ends a frame's header, and the frame clips past it).
  */
-export function TalkTip({ tip, children }: { tip: string; children: ReactNode }) {
+export function TalkTip({ tip, end = false, children }: { tip: string; end?: boolean; children: ReactNode }) {
   const id = useId()
   const [open, setOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -233,7 +234,7 @@ export function TalkTip({ tip, children }: { tip: string; children: ReactNode })
   useEffect(() => () => hide(), [])
   return (
     <span
-      className="c-tip-host"
+      className={`c-tip-host${end ? ' is-end' : ''}`}
       aria-describedby={id}
       onMouseEnter={() => show(false)}
       onMouseLeave={hide}

@@ -23,6 +23,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import STAGE_CSS from '../styles/talk-stage.css?raw'
 import TALK_CSS from '../styles/talk-pane.css?raw'
 import STYLES from '../styles.css?raw'
@@ -543,6 +544,17 @@ describe('a mock-up visual', () => {
     expect(tick.closest('.c-tip-host')!.querySelector('[role="tooltip"]')!.textContent).toMatch(/alice@example\.com/)
     expect(tick.closest('.c-tip-host')!.querySelector('[role="tooltip"]')!.textContent).toMatch(/2026|Nov|11/)
     expect(within(screen.getByRole('group', { name: 'Cards' })).queryByRole('img', { name: 'Approved' })).toBeNull()
+  })
+
+  it("opens the approved tick's tip leftwards, so the frame's right edge does not clip it", async () => {
+    answerMockup(MOCKUP.approved)
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const list = await screen.findByRole('group', { name: 'List' })
+    const tip = within(list).getByRole('img', { name: 'Approved' }).closest('.c-tip-host')!.querySelector('[role="tooltip"]')!
+    const sheets = [COMPONENTS_CSS, STYLES, STAGE_CSS].join('\n')
+    const won = (prop: string): string | null => cascade(sheets, tip, prop, { width: 1440 }).winner?.value ?? null
+    expect(won('left')).toBe('auto')
+    expect(won('right')).toBe('0')
   })
 
   it('posts Approve on a frame to the approval route and ticks it', async () => {

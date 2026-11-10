@@ -86,6 +86,8 @@
 .vts-mockup-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .vts-mockup-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .vts-approved { display: inline-flex; color: var(--ok-ink); }
+/* The tick ends the frame's header and the frame clips past it: its tip opens leftwards. */
+.c-tip-host.is-end > .c-tip { left: auto; right: 0; }
 .vts-mockup { aspect-ratio: 16 / 10; min-width: 0; }
 .vts-mockup-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
 
