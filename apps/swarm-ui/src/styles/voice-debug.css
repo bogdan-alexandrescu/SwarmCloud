@@ -1,0 +1,135 @@
+/* MOCK-HOOK FILE */
+/* VOICE IT DEBUG MODE, direction "Trace on Telemetry" (voice/DebugTrace.tsx).
+   Every colour is a console token, so both themes hold. */
+
+/* ---- tips that hold more than a sentence ----------------------------------- */
+.vdg-tip { white-space: normal; text-align: left; font-weight: 400; }
+.vdg-tip.is-wide { max-width: min(420px, calc(100vw - 32px)); width: max-content; }
+.c-tip-host.is-end > .vdg-tip { left: auto; right: 0; }
+.vset-card:has(.vdg-tiphost) { overflow: visible; }
+
+/* ---- Settings: the switch ---------------------------------------------------- */
+.vdg-switchrow { display: inline-flex; align-items: center; gap: 12px; min-width: 0; }
+.vdg-switch { appearance: none; position: relative; flex: none; width: 40px; height: 24px; padding: 0; border: 0; border-radius: 12px; cursor: pointer;
+  background: var(--ctl-q-fill); box-shadow: inset 0 0 0 1px var(--ctl-bd); transition: background 140ms ease; }
+.vdg-switch i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--text-dim);
+  transition: transform 140ms ease, background 140ms ease; }
+.vdg-switch[aria-checked="true"] { background: var(--info); box-shadow: none; }
+.vdg-switch[aria-checked="true"] i { transform: translateX(16px); background: #fff; }
+.vdg-switch:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vdg-switch:disabled { cursor: default; opacity: 0.6; }
+
+/* ---- shared pieces ------------------------------------------------------------- */
+.vdg-num { font-variant-numeric: tabular-nums; }
+.vdg-r { text-align: right; justify-self: end; }
+.vdg-dim { color: var(--text-faint); }
+.vdg-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-pill); white-space: nowrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface-2); }
+.vdg-chip.is-drawn { color: var(--info-ink); background: color-mix(in srgb, var(--info) 12%, transparent); }
+.vdg-chip.is-refused { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 11%, transparent); }
+.vdg-mask { display: inline-block; padding: 0 5px; margin: 0 1px; border-radius: 4px; font: var(--t-micro)/1.5 var(--mono);
+  color: var(--text-dim); background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, color-mix(in srgb, var(--line) 60%, var(--surface-2)) 4px 8px); }
+.vdg-outcome { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.vdg-refused { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 0; }
+
+/* ---- Talk: the one line under the Stage ---------------------------------------- */
+.vt.has-stage.has-turn {
+  grid-template-areas: "hud hud hud" "stage stage stage" "turn turn turn" "left core right" "subs subs subs" "mic mic mic" "cards cards cards";
+}
+.vdg-turn { grid-area: turn; display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: -4px; padding: 2px 4px 2px 12px;
+  border: 1px solid var(--line-soft); border-radius: var(--r-card); background: color-mix(in srgb, var(--surface) 72%, transparent);
+  font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vdg-turn > .c-tip-host { flex: 1 1 auto; min-width: 0; }
+.vdg-turn > button { flex: none; }
+.vdg-turn-main { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; padding: 5px 0; border-radius: 4px; cursor: default; }
+.vdg-turn-main:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vdg-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.vdg-dot.is-ok { background: var(--ok); }
+.vdg-dot.is-warn { background: var(--warn-ink); }
+.vdg-turn-n { flex: none; font-family: var(--mono); font-size: var(--t-micro); color: var(--text-dim); }
+.vdg-turn-heard { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.vdg-turn-heard.is-none { color: var(--warn-ink); }
+.vdg-turn-out { flex: none; color: var(--text); font-weight: 500; }
+.vdg-turn-secs { flex: none; margin-left: auto; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vdg-turn .vdg-tip { top: calc(100% + 6px); }
+
+/* ---- one turn in full -------------------------------------------------------- */
+.vdg-detail { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 16px; margin: 0; }
+.vdg-detail > div { display: contents; }
+.vdg-detail dt { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-body); }
+.vdg-detail dd { margin: 0; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.vdg-detail.is-compact { grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; }
+.vdg-detail.is-compact dt { color: inherit; opacity: 0.7; font-size: inherit; line-height: inherit; white-space: nowrap; }
+.vdg-detail.is-compact dd { font-size: inherit; line-height: inherit; }
+.vdg-lines, .vdg-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.vdg-lines li, .vdg-handoff { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin: 0; }
+.vdg-handoff { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.vdg-who { color: var(--text-dim); font-size: var(--t-meta); }
+.vdg-list li b { font-weight: 600; margin-right: 4px; }
+.vdg-list li.is-refused b { color: var(--bad-ink); }
+.vdg-frames { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.vdg-frames .vdg-chip { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.vdg-why { display: block; color: var(--text-dim); font-size: var(--t-meta); }
+.vdg-told { padding-left: 10px; border-left: 2px solid var(--line); }
+.vdg-detail.is-compact .vdg-told { border-left: 0; padding-left: 0; font-style: italic; }
+
+/* ---- Telemetry: the trace ---------------------------------------------------- */
+.vdg-trace { overflow: visible; }
+.vdg-sfacts { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; color: var(--text-dim); }
+.vdg-sfacts > span { white-space: nowrap; }
+
+.vdg-session { min-width: 0; padding: 4px 18px 16px; display: flex; flex-direction: column; gap: 10px; }
+.vdg-session-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.vdg-session-head h3 { margin: 0; font-size: var(--t-body); font-weight: 600; }
+.vdg-events { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--t-meta); color: var(--text-dim); }
+.vdg-events > span, .vdg-count { white-space: nowrap; }
+.vdg-events b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.vdg-turns { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vdg-turns th { text-align: left; font-weight: 400; font-size: var(--t-micro); color: var(--text-faint); padding: 0 8px 6px; border-bottom: 1px solid var(--line); }
+.vdg-turns td { padding: 0 8px; height: 40px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.vdg-turns th.vdg-r, .vdg-turns td.vdg-r { text-align: right; }
+.vdg-turns th:nth-child(4) { width: 34%; }
+.vdg-c-n { width: 64px; }
+.vdg-c-at { width: 56px; color: var(--text-dim); }
+.vdg-turns th:last-child { width: 60px; }
+.vdg-c-heard { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vdg-open { appearance: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px 0 2px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); font: 600 var(--t-meta)/1 var(--mono); cursor: pointer; }
+.vdg-open:hover { background: var(--surface-2); }
+.vdg-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.vdg-caret { width: 14px; height: 14px; fill: none; stroke: var(--text-dim); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 120ms ease; }
+.vdg-open[aria-expanded="true"] .vdg-caret { transform: rotate(90deg); }
+.vdg-trow.is-open td { background: var(--surface-2); border-bottom-color: transparent; }
+.vdg-trow-detail td { height: auto; padding: 4px 16px 16px 38px; background: var(--surface-2); }
+.vdg-trow-detail .vdg-detail { padding-top: 10px; border-top: 1px solid var(--line-soft); }
+
+/* ---- phone: one column, nothing wider than the screen ------------------------- */
+@media (max-width: 760px) {
+  .vt.has-stage.has-turn { grid-template-areas: "hud" "stage" "turn" "core" "subs" "cards" "mic"; }
+  .vdg-turn { position: relative; align-items: flex-start; padding: 4px 4px 4px 10px; }
+  .vdg-turn > .c-tip-host { position: static; }
+  .vdg-turn-main { flex-wrap: wrap; gap: 2px 8px; }
+  .vdg-turn-heard { flex-basis: calc(100% - 80px); }
+  .vdg-turn-secs { margin-left: 0; }
+  /* the open tip flows in the line rather than over the ring below it */
+  .vdg-turn > .c-tip-host { display: flex; flex-direction: column; }
+  .vdg-turn .vdg-tip.is-wide { position: static; width: auto; max-width: none; margin: 4px 0 2px; }
+  .vdg-sfacts { margin-left: 0; }
+  .vdg-session { padding: 12px 14px 14px; }
+  .vdg-turns, .vdg-turns tbody, .vdg-trow-detail, .vdg-trow-detail td { display: block; width: auto; }
+  .vdg-turns thead, .vdg-turns td.vdg-c-at { display: none; }
+  .vdg-trow { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; grid-template-areas: "n out took" "n heard heard";
+    align-items: center; column-gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .vdg-trow td { height: auto; padding: 0; border: 0; }
+  .vdg-trow td.vdg-c-n { grid-area: n; width: auto; align-self: start; }
+  .vdg-trow td:nth-child(4) { grid-area: out; }
+  .vdg-trow td.vdg-r { grid-area: took; padding-right: 6px; }
+  .vdg-trow td.vdg-c-heard { grid-area: heard; padding-top: 2px; color: var(--text-dim); }
+  .vdg-trow.is-open { background: var(--surface-2); border-bottom-color: transparent; }
+  .vdg-trow.is-open td { background: transparent; }
+  .vdg-trow-detail td { padding: 4px 10px 14px; border-bottom: 1px solid var(--line-soft); }
+  .vdg-detail { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .vdg-detail dd { margin-bottom: 8px; }
+  .vdg-lines li, .vdg-handoff { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}

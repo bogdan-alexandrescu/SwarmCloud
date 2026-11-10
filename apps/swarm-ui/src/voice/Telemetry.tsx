@@ -48,6 +48,8 @@ import { clockTime } from '../types'
 import { Bars, CapMeter, PhaseTrack, Spark, Tile, orderedPhases, phaseWord, quantile, usd } from './telemetryCharts'
 import '../styles/voice-settings.css'
 import '../styles/voice-telemetry.css'
+import { DebugTrace, TraceFacts, useDebugOn } from './DebugTrace' // MOCK-HOOK
+import { DEBUG_VD, sessionParam, TRACE_SESSIONS } from './debugFixture' // MOCK-HOOK
 
 /**
  * The owner's caps (§1 decision record; swarm-api's voice/ledger.py
@@ -310,7 +312,8 @@ function DaysCard({ days, range }: { days: readonly VoiceTelemetryDay[]; range: 
 
 // ---- sessions ----------------------------------------------------------------
 
-function SessionRow({ s, on, onPick }: { s: VoiceTelemetrySession; on: boolean; onPick: () => void }) {
+function SessionRow({ s, on, onPick, debug = false }: { s: VoiceTelemetrySession; on: boolean; onPick: () => void; debug?: boolean }) {
+  const trace = debug ? TRACE_SESSIONS.find((t) => t.session_id === s.session_id) : undefined // MOCK-HOOK
   return (
     <li className={`vtel-srow${on ? ' is-on' : ''}`} data-session={s.session_id}>
       <button type="button" className="vtel-sline" aria-pressed={on} onClick={onPick}>
@@ -324,6 +327,7 @@ function SessionRow({ s, on, onPick }: { s: VoiceTelemetrySession; on: boolean; 
           {s.machine_usd === null ? '—' : usd(s.machine_usd)}
         </span>
         {s.stockouts !== null && s.stockouts > 0 && <Tick tone="warn">{s.stockouts} stock-out</Tick>}
+        {trace !== undefined && <TraceFacts s={trace} />}{/* MOCK-HOOK */}
       </button>
     </li>
   )
@@ -430,10 +434,11 @@ export function VoiceTelemetry() {
   const [range, setRange] = useState<Range>(30)
   const [data, setData] = useState<Read | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
-  const [picked, setPicked] = useState<string | null>(null)
+  const [picked, setPicked] = useState<string | null>(DEBUG_VD ? (new URLSearchParams(location.search).get('s') ?? sessionParam()) : null) // MOCK-HOOK: the trace's `?s=`
   const [detail, setDetail] = useState<VoiceTelemetrySessionDetail | null>(null)
   const [detailError, setDetailError] = useState<ApiError | null>(null)
   const live = useLive()
+  const debug = useDebugOn() // MOCK-HOOK
 
   const load = useCallback(async () => {
     const span = { from: dayIn(tz, range - 1), to: dayIn(tz), tz }
@@ -515,11 +520,12 @@ export function VoiceTelemetry() {
         <section className="vtel-sessions" aria-label="Sessions">
           <ol className="vtel-slist">
             {data.sessions.map((s) => (
-              <SessionRow key={s.session_id} s={s} on={s.session_id === sessionId} onPick={() => setPicked(s.session_id)} />
+              <SessionRow key={s.session_id} s={s} on={s.session_id === sessionId} onPick={() => setPicked(s.session_id)} debug={DEBUG_VD && debug} />
             ))}
           </ol>
         </section>
       )}
+      {DEBUG_VD && debug && sessionId !== null && <DebugTrace sessionId={sessionId} />}{/* MOCK-HOOK */}
       {session !== null && <SessionCards s={session} day={day} detail={detail} detailError={detailError} onRetry={() => void loadDetail()} />}
     </div>
   )

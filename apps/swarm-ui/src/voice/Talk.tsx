@@ -109,6 +109,8 @@ import {
 import { stageFeed, TalkStage, TalkTip } from './Stage'
 import { startVoiceDetection, type VoiceDetection } from './vad'
 import '../styles/talk-pane.css'
+import { TurnLine, useDebugOn } from './DebugTrace' // MOCK-HOOK
+import { BAKERY_CARDS, DEBUG_VD, liveCaptions, turnParam } from './debugFixture' // MOCK-HOOK
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
 
@@ -351,7 +353,8 @@ export function TalkPane() {
   const [problem, setProblem] = useState<string | null>(null)
   /** A start refusal's full sentence, behind the problem line's (i). */
   const [problemTip, setProblemTip] = useState<string | null>(null)
-  const [lines, setLines] = useState<CaptionLine[]>([])
+  const [lines, setLines] = useState<CaptionLine[]>(() => (DEBUG_VD ? liveCaptions() : [])) // MOCK-HOOK (was [])
+  const debug = useDebugOn() // MOCK-HOOK
   const [voice, setVoice] = useState<MediaStream | null>(null)
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
   const [track, setTrack] = useState<MediaStreamTrack | null>(null)
@@ -761,16 +764,17 @@ export function TalkPane() {
 
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const booting = speechMode && boot.length > 0
-  const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
+  const realState: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'  // MOCK-HOOK (was const state)
+  const state: ScopeState = DEBUG_VD && phase === 'idle' ? 'listening' : realState // MOCK-HOOK: the mock-ups show Talk mid-session
 
   return (
-    <div className="vt has-stage" data-state={state}>
+    <div className={`vt has-stage${debug ? ' has-turn' : ''}`} data-state={state}>{/* MOCK-HOOK (was className="vt has-stage") */}
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
         <p className="vt-status" role="status">
-          <ToneMark tone={live ? 'live' : 'unknown'} />
-          {phase === 'idle' && 'Not connected'}
+          <ToneMark tone={live || DEBUG_VD ? 'live' : 'unknown'} />{/* MOCK-HOOK (was live) */}
+          {phase === 'idle' && (DEBUG_VD ? 'Live' : 'Not connected')}{/* MOCK-HOOK (was 'Not connected') */}
           {phase === 'connecting' && 'Connecting to Voice it…'}
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
@@ -779,7 +783,7 @@ export function TalkPane() {
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
-          {live || phase === 'ending' ? (
+          {live || phase === 'ending' || DEBUG_VD ? ( // MOCK-HOOK (was live || phase === 'ending')
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
             </Button>
@@ -838,6 +842,7 @@ export function TalkPane() {
       ) : (
         <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={feed} />
       )}
+      {debug && <TurnLine />}{/* MOCK-HOOK */}
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
@@ -907,7 +912,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} fixtures={DEBUG_VD ? (turnParam() === 'empty' ? [] : BAKERY_CARDS) : undefined} />{/* MOCK-HOOK (fixtures) */}
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}

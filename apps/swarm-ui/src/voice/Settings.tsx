@@ -44,6 +44,8 @@ import { Absent } from '../primitives'
 import { PageHead } from '../Shell'
 import { clockTime } from '../types'
 import '../styles/voice-settings.css'
+import { DebugSwitch, DebugWhy } from './DebugTrace' // MOCK-HOOK
+import { DEBUG_VD } from './debugFixture' // MOCK-HOOK
 
 type Draft = Partial<Record<VoiceSettingField, string>>
 type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'idle'
@@ -396,6 +398,17 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
               options={catalogue.planner_models.map((m) => ({ key: m.name, label: m.model ? `${m.label} · ${m.model}` : m.label }))}
             />
           </Row>
+          {DEBUG_VD && ( // MOCK-HOOK
+            <div className="vset-row" data-row="debug">{/* MOCK-HOOK */}
+              <div className="vset-row-lbl">{/* MOCK-HOOK */}
+                Debug{/* MOCK-HOOK */}
+                <DebugWhy />{/* MOCK-HOOK */}
+              </div>{/* MOCK-HOOK */}
+              <div className="vset-row-val">{/* MOCK-HOOK */}
+                <DebugSwitch ro={ro} />{/* MOCK-HOOK */}
+              </div>{/* MOCK-HOOK */}
+            </div> // MOCK-HOOK
+          )}{/* MOCK-HOOK */}
           <KeyStatus view={view} />
         </Card>
 

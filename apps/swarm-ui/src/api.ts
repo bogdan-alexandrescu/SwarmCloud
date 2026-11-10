@@ -74,6 +74,8 @@ export type { AnswerVia, OwnerAnswer, OwnerAnswerVersion } from './types'
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
  *  flag rather than restating the expression. */
 export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
+/** MOCK-HOOK: the debug-mode mock-ups' query (`?vd=telemetry&…`), read before the router rewrites the address. */
+export const VD_QUERY: string = USE_FIXTURES && typeof location !== 'undefined' ? location.search : '' // MOCK-HOOK
 
 /**
  * THE INSTANT EVERY FIXTURE TIME IS COUNTED FROM (QAFIX6-FIXTURE a, visual QA
@@ -17409,7 +17411,7 @@ export function normVoiceReadback(v: unknown): VoiceReadback | null {
 }
 
 // The fixture project: one file slice with a note on two of its lines, and one log.
-const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
+let FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [ // MOCK-HOOK (was const)
   {
     visual: {
       visual_id: 'vv_fixture_code',
@@ -17474,6 +17476,12 @@ const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
 ]
 
 let fixtureReadback: VoiceReadback | null = null
+let fixtureNoReadback = false // MOCK-HOOK
+/** MOCK-HOOK: the debug-mode mock-ups (voice/debugFixture.ts) put their own visuals on the stage, and no read-back. */
+export function setFixtureVoiceStage(visuals: readonly VoiceVisualDetail[]): void { // MOCK-HOOK
+  FIXTURE_VISUALS = visuals // MOCK-HOOK
+  fixtureNoReadback = true // MOCK-HOOK
+} // MOCK-HOOK
 let fixtureNotesResolved = new Set<string>()
 
 function voiceFixtureOk<T>(target: ApiRoute, data: T): Result<T> {
@@ -17540,6 +17548,7 @@ export async function approveVoiceMockup(projectId: string, visualId: string, fr
 /** `GET /v1/voice/sessions/{s}/readbacks/pending`: the read-back waiting on the person, or null. */
 export async function loadPendingReadback(sessionId: string): Promise<Result<VoiceReadback | null>> {
   const target = route(VOICE_READBACK_PENDING, { session_id: sessionId })
+  if (USE_FIXTURES && fixtureNoReadback) return voiceFixtureOk(target, null) // MOCK-HOOK
   if (USE_FIXTURES) {
     fixtureReadback ??= {
       readback_id: 'rb_fixture',
@@ -17722,11 +17731,18 @@ function telemetryQuery(q: Record<string, string>): URLSearchParams {
   return new URLSearchParams({ ...q, scope: 'platform' })
 }
 
+let fixtureTelemetry: ((url: string) => unknown) | null = null // MOCK-HOOK
+/** MOCK-HOOK: the debug-mode mock-ups (voice/debugFixture.ts) serve invented telemetry, raw as the server would. */
+export function setFixtureVoiceTelemetry(serve: (url: string) => unknown): void { // MOCK-HOOK
+  fixtureTelemetry = serve // MOCK-HOOK
+} // MOCK-HOOK
+
 /**
  * The fixture build serves no telemetry: an empty read, so the page draws its
  * empty state rather than invented numbers.
  */
 async function telemetryRead<T>(target: ApiRoute, norm: (raw: unknown) => T, none: T): Promise<Result<T>> {
+  if (USE_FIXTURES && fixtureTelemetry !== null) return voiceFixtureOk(target, norm(fixtureTelemetry(target.url))) // MOCK-HOOK
   if (USE_FIXTURES) return voiceFixtureOk(target, none)
   const r = await read<unknown>(target, () => false)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
