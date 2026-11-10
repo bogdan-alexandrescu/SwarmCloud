@@ -414,6 +414,16 @@ resource "google_cloud_run_v2_job" "plugin_intake" {
         }
 
         # Names and numbers only: no secret, no credential, no database.
+        #
+        # NO VOLUME, ON PURPOSE. The job reads quarantine/<intake_id> and
+        # creates staging/<intake_id>/... through the Cloud Storage JSON API
+        # with this name (apps/plugin-intake/plugin_intake/bucket.py), over
+        # Private Google Access, as the execution's account: one object get,
+        # object creates, exactly the two grants above. A Cloud Storage FUSE
+        # volume would look directories up by listing them, which the account
+        # must not do (live QA finding, 10 November 2026: with neither, every
+        # intake failed at its first read; tests/unit/terraform/
+        # test_plugin_intake_job_access.py).
         env {
           name  = "PLUGINS_BUCKET"
           value = google_storage_bucket.plugins.name

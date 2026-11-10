@@ -12,6 +12,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from fake_bucket import FakeBucket
 from intake_archives import file, folder, symlink, tar_gz, zip_archive
 from plugin_intake import main as job
 from plugin_intake.intake import run_intake
@@ -221,7 +222,7 @@ def test_an_overlay_hook_is_a_runtime_and_a_path_inside(command):
     assert intake(belay_archive(), overlay=json.dumps(overlay))[0]["refusal"]["code"] == "overlay_hook_path_missing"
 
 
-# --- the job: files in, files out, never a socket -----------------------------------
+# --- the job: bucket in, bucket out, never another socket -----------------------------------
 
 
 @pytest.fixture
@@ -238,19 +239,19 @@ def no_network(monkeypatch):
     return opened
 
 
-def run_job(tmp_path: Path, packed: bytes, **env) -> tuple[int, Path]:
+def run_job(packed: bytes, **env) -> tuple[int, FakeBucket, str]:
     intake_id = env.pop("intake_id", secrets.token_hex(16))
-    (tmp_path / "quarantine").mkdir(exist_ok=True)
-    (tmp_path / "quarantine" / intake_id).write_bytes(packed)
-    environ = {"SWARM_INTAKE_ID": intake_id, "SWARM_INTAKE_SCOPE": "platform", "SWARM_INTAKE_MOUNT": str(tmp_path), **env}
-    return job.main(environ), tmp_path / "staging" / intake_id
+    bucket = env.pop("bucket", None) or FakeBucket()
+    bucket.objects[f"quarantine/{intake_id}"] = packed
+    environ = {"SWARM_INTAKE_ID": intake_id, "SWARM_INTAKE_SCOPE": "platform", "PLUGINS_BUCKET": "example-plugins", **env}
+    return job.main(environ, bucket=bucket), bucket, f"staging/{intake_id}"
 
 
-def test_the_job_pins_from_quarantine_to_staging_without_a_socket(tmp_path, no_network):
-    code, staging = run_job(tmp_path, tar_gz(clean_members()))
+def test_the_job_pins_from_quarantine_to_staging_without_a_socket(no_network):
+    code, bucket, staging = run_job(tar_gz(clean_members()))
     assert code == 0 and no_network == []
-    report = json.loads((staging / "report.json").read_text())
-    runnable = (staging / "runnable.tar").read_bytes()
+    report = json.loads(bucket.objects[f"{staging}/report.json"])
+    runnable = bucket.objects[f"{staging}/runnable.tar"]
     assert report["outcome"] == "pinned" and report["runnable_sha256"] == hashlib.sha256(runnable).hexdigest()
     # The guard the job installs is in force afterwards.
     with pytest.raises(Exception, match="never opens a socket"):
@@ -259,21 +260,20 @@ def test_the_job_pins_from_quarantine_to_staging_without_a_socket(tmp_path, no_n
         socket.create_connection(("192.0.2.1", 443))
 
 
-def test_a_refusal_writes_only_the_report(tmp_path, no_network):
-    code, staging = run_job(tmp_path, tar_gz([file("x/.claude-plugin/plugin.json", "{}"), file("/etc/x", "x")]))
+def test_a_refusal_writes_only_the_report(no_network):
+    code, bucket, staging = run_job(tar_gz([file("x/.claude-plugin/plugin.json", "{}"), file("/etc/x", "x")]))
     assert code == 0 and no_network == []
-    assert sorted(p.name for p in staging.iterdir()) == ["report.json"]
-    assert json.loads((staging / "report.json").read_text())["refusal"]["code"] == "entry_path_absolute"
+    assert sorted(name for name in bucket.objects if name.startswith(staging)) == [f"{staging}/report.json"]
+    assert json.loads(bucket.objects[f"{staging}/report.json"])["refusal"]["code"] == "entry_path_absolute"
 
 
-def test_the_job_never_overwrites_a_staging_object(tmp_path, no_network):
+def test_the_job_never_overwrites_a_staging_object(no_network):
     intake_id = secrets.token_hex(16)
-    (tmp_path / "staging" / intake_id).mkdir(parents=True)
-    (tmp_path / "staging" / intake_id / "runnable.tar").write_bytes(b"planted")
-    code, staging = run_job(tmp_path, tar_gz(clean_members()), intake_id=intake_id)
+    bucket = FakeBucket({f"staging/{intake_id}/runnable.tar": b"planted"})
+    code, bucket, staging = run_job(tar_gz(clean_members()), intake_id=intake_id, bucket=bucket)
     assert code == 1
-    assert (staging / "runnable.tar").read_bytes() == b"planted"
-    assert json.loads((staging / "report.json").read_text())["refusal"]["code"] == "intake_internal_error"
+    assert bucket.objects[f"{staging}/runnable.tar"] == b"planted"
+    assert json.loads(bucket.objects[f"{staging}/report.json"])["refusal"]["code"] == "intake_internal_error"
 
 
 @pytest.mark.parametrize(
@@ -286,10 +286,11 @@ def test_the_job_never_overwrites_a_staging_object(tmp_path, no_network):
         {"SWARM_INTAKE_ID": "../" + "0" * 29},
     ],
 )
-def test_an_invalid_environment_writes_nothing(tmp_path, no_network, env):
-    environ = {"SWARM_INTAKE_ID": secrets.token_hex(16), "SWARM_INTAKE_SCOPE": "platform", "SWARM_INTAKE_MOUNT": str(tmp_path), **env}
-    assert job.main(environ) == 2
-    assert not (tmp_path / "staging").exists()
+def test_an_invalid_environment_writes_nothing(no_network, env):
+    bucket = FakeBucket()
+    environ = {"SWARM_INTAKE_ID": secrets.token_hex(16), "SWARM_INTAKE_SCOPE": "platform", "PLUGINS_BUCKET": "example-plugins", **env}
+    assert job.main(environ, bucket=bucket) == 2
+    assert bucket.reads == [] and bucket.creates == []
 
 
 def test_no_module_imports_a_network_client():
@@ -304,6 +305,10 @@ def test_no_module_imports_a_network_client():
             for name in names:
                 if path.name == "nonet.py" and name == "socket":
                     continue
+                # The bucket's one channel: the metadata server and Cloud
+                # Storage only, through the sockets nonet leaves it (bucket.py).
+                if path.name == "bucket.py" and name in {"socket", "ssl", "http.client"}:
+                    continue
                 assert name not in forbidden and name.split(".")[0] not in {"http", "ssl", "requests", "httpx"}, (path.name, name)
 
 
@@ -312,3 +317,6 @@ def test_the_image_runs_the_job_as_a_non_root_user_with_no_dependencies():
     assert "USER 10001" in dockerfile
     assert 'ENTRYPOINT ["python", "-m", "plugin_intake"]' in dockerfile
     assert "pip install" not in dockerfile and "npm" not in dockerfile
+    # The job reaches Cloud Storage over TLS (bucket.py): the build proves the
+    # base's CA bundle is there, so a TLS failure never reaches a deployment.
+    assert "cert_store_stats()['x509_ca']" in dockerfile
