@@ -82,7 +82,7 @@ them learnt nothing the control plane did not already know.
 
 1. **The step parks with no lease.** The worker's park
    (`control.ControlPlane.park_ci_pending`) is one fenced transaction: the
-   task goes PARKED on CI_PENDING, its lease and slot are given back, the
+   agent goes PARKED on CI_PENDING, its lease and slot are given back, the
    attempt is refunded (up to `MERGE_CI_MAX_WAKES`, 60), `metadata.merge_wait`
    records the head, the pull request and the pending names, and
    `next_eligible_at` is set to the park plus 900 s, the fallback instant.
@@ -152,15 +152,15 @@ fallback.
   while it does. A forged marker costs one early wake, whose worker trusts
   nothing the tick saw.
 * **Invariant 3 (concurrency counts from LEASED).** The scheduler's
-  promotion (`promote_to_ready`) writes the task alone, guarded on the state
+  promotion (`promote_to_ready`) writes the agent alone, guarded on the state
   and park reason the sweep read: no lease and no pool count. Only admission,
   later, takes capacity, all-or-nothing, and the step's concurrency counts
   from that lease. Fewer wakes means fewer leases, never a lease not counted.
 * **Invariant 5 (fencing).** The park is written in one fenced transaction,
   so a superseded attempt gets `FencedWriteRefused` and can neither park the
-  task nor refund an attempt. A held wait has no worker and no generation in
+  agent nor refund an attempt. A held wait has no worker and no generation in
   flight. Every wake, held or not, is a fresh admission with a new
-  generation; the tick's writes are guarded on the task still being PARKED on
+  generation; the tick's writes are guarded on the agent still being PARKED on
   CI_PENDING at the head it read, and neither the tick nor the scheduler
   touches a lease.
 
