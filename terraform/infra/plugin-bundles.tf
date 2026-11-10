@@ -68,7 +68,9 @@ locals {
 
   # The image path every bundle image is under: what the scheduler accepts a
   # bundle record's digest under (§1.4.4) and what swarm-api pushes to. ""
-  # with the switch off, so nothing accepts a bundle digest.
+  # with the switch off, so nothing accepts a bundle digest. Read only by
+  # tests/terraform until lanes 17 and 18 set it on swarm-api and the scheduler.
+  # tflint-ignore: terraform_unused_declarations
   plugin_bundle_repository = local.builtins_managed_on ? "${var.region}-docker.pkg.dev/${var.project_id}/${local.plugin_bundles_repository_id}" : ""
 
   # The pinned source archives a bundle builds from (§1.4.3): get only.
