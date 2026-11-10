@@ -11241,6 +11241,10 @@ span.sk-ttile { cursor: default; }
   .sk-pbar { height: var(--sk-pbar-h, auto); }
   /* Eased so the compaction below is not a jump; reduced motion stops it. */
   .sk-pbar { transition: height 120ms ease-out; }
+  /* MOCK-HOOK (fix-line, shell): beside the admin's chip the bar's side padding is 6px, and `Top`'s 44px hit
+     area (centred on a 29px chip) reached 1.5px past the glass: the page was 392 wide at 390, with a sideways
+     scrollbar. The bar clips sideways only, so the hit areas still reach above and below it. */
+  .sk-pbar { overflow-x: clip; } /* MOCK-HOOK */
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   /* ITS HOVER IS THE SPINE'S, NOT THE PANEL'S (visual QA V027, 2026-10-11).
      `.sk-ibtn:hover` fills with `--sk-hv`, a near-white in light, and a

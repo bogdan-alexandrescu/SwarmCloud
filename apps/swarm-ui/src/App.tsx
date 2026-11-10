@@ -48,6 +48,9 @@ import { SecretsScreen } from './Secrets'
 import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
 import { NotFound, nearestPath } from './NotFound'
+import { USE_FIXTURES as MOCK_FIXTURES } from './api' // MOCK-HOOK
+import { AdminPluginInstallScreen } from './AdminPluginInstall' // MOCK-HOOK
+import { ADMIN_PLUGIN_ADD_PATH } from './AdminPlugins' // MOCK-HOOK
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { NotificationBell } from './Notifications'
@@ -1687,7 +1690,9 @@ export function App() {
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.
   const title = at.missing
-    ? NOT_FOUND_TITLE
+    ? MOCK_FIXTURES && at.missing === ADMIN_PLUGIN_ADD_PATH /* MOCK-HOOK: lane 10e routes it; its PageHead's title */
+      ? 'Add plugin'
+      : NOT_FOUND_TITLE
     : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
@@ -1835,7 +1840,7 @@ export function App() {
                 // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
-                  {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
+                  {at.missing && MOCK_FIXTURES && at.missing === ADMIN_PLUGIN_ADD_PATH /* MOCK-HOOK: lane 10e routes it */ ? <AdminPluginInstallScreen /> : at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
                     const body = (
                       <SectionBody
                         sectionId={section.id}

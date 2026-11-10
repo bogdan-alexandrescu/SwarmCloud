@@ -116,3 +116,26 @@
 @media (max-width: 900px) {
   .cfc-about .cfc-facts { grid-template-columns: 1fr 1fr; }
 }
+/* MOCK-HOOK: direction A, the optional plugin step as a ninth line (consolefinish/pluginStep.tsx). */
+.cfc-item.is-optional { position: relative; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); border-radius: 0 0 8px 8px; } /* MOCK-HOOK */
+.cfc-item.is-optional > .cfc-pick { padding-right: 36px; } /* MOCK-HOOK: room for the (i) */
+.cfp-about { position: absolute; top: 9px; right: 6px; } /* MOCK-HOOK */
+.cfc-item.is-optional .cfc-item-h .c-tag { margin-left: 0; } /* MOCK-HOOK */
+.cfc-item.is-skipped .cfg-mark { stroke-dasharray: none; stroke: var(--text-faint); } /* MOCK-HOOK */
+.cfc-item.is-skipped .cfc-item-h b { color: var(--text-faint); } /* MOCK-HOOK */
+.cfp-facts { display: flex; flex-direction: column; gap: 8px; min-width: 0; } /* MOCK-HOOK */
+.cfp-fact { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; align-items: center; min-width: 0; } /* MOCK-HOOK */
+.cfp-k { font-size: var(--t-meta); color: var(--text-dim); } /* MOCK-HOOK */
+.cfp-v { font-size: var(--t-body); color: var(--text); font-weight: 650; } /* MOCK-HOOK */
+.cfp-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; min-width: 0; } /* MOCK-HOOK */
+.cfp-tag { font-size: var(--t-micro); color: var(--text-faint); } /* MOCK-HOOK */
+.cfp-skipped { margin: 0; font-size: var(--t-meta); color: var(--text-dim); } /* MOCK-HOOK */
+.cfp-added { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; } /* MOCK-HOOK */
+.cfp-added li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; font-size: var(--t-body); min-width: 0; } /* MOCK-HOOK */
+.cfp-added a { font-weight: 600; } /* MOCK-HOOK */
+.cfp-scope { font-size: var(--t-micro); color: var(--text-dim); } /* MOCK-HOOK */
+.cfc-panel-h.is-skipped .cfg-mark { stroke-dasharray: none; stroke: var(--text-faint); } /* MOCK-HOOK */
+/* MOCK-HOOK: Add one anyway pressed -- the line flashes once (2.4s, UNDONE_MS in pluginStep.tsx) so the change back to todo is seen where it happened. */
+.cfc-item.is-optional.is-undone > .cfc-pick { animation: cfp-undone 2.4s ease-out backwards; } /* MOCK-HOOK */
+@keyframes cfp-undone { 0%, 45% { background: color-mix(in srgb, var(--info) 16%, transparent); box-shadow: inset 3px 0 0 var(--info); } 100% { background: transparent; box-shadow: inset 3px 0 0 transparent; } } /* MOCK-HOOK */
+@media (prefers-reduced-motion: reduce) { .cfc-item.is-optional.is-undone > .cfc-pick { animation: none; box-shadow: inset 3px 0 0 var(--info); } } /* MOCK-HOOK */

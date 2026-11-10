@@ -14394,6 +14394,8 @@ export interface SetupState {
   steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
   /** The usual length of each wait (`typical_s`); empty when the route serves none. */
   typical_s: SetupTypical
+  /** The optional plugin step, `steps.plugins` (managed-plugins §15.1); null from a route that serves none. */ // MOCK-HOOK
+  plugins?: import('./consolefinish/pluginStep').PluginStepView | null // MOCK-HOOK
 }
 
 const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -14634,6 +14636,7 @@ export function normSetupState(raw: unknown): SetupState {
     personal: mode === 'individual' ? normPersonal(d.personal) : null,
     steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
     typical_s: normTypical(d.typical_s),
+    plugins: steps === null || objOf(steps.plugins) === null ? null : (steps.plugins as import('./consolefinish/pluginStep').PluginStepView), // MOCK-HOOK
   }
 }
 
@@ -15953,6 +15956,10 @@ export function normCatalogueVersions(raw: unknown): CatalogueVersions | null {
 
 /** `GET {base}`: the catalogue, as its reader may see it. */
 export async function loadPluginCatalogue(scope: PluginCatalogueScope): Promise<Result<PluginCatalogue>> {
+  if (USE_FIXTURES) { // MOCK-HOOK: the Add plugin page's catalogue in the fixture build, the two bundled installs
+    const builtIn = ['gstack', 'security-audit'].map((name) => ({ install_id: `builtin:${name}`, name, built_in: true, scope: 'platform', version: '2026.11.0' })) // MOCK-HOOK
+    return { status: 'ok', data: normPluginCatalogue({ scope: scope.kind === 'platform' ? 'platform' : 'workspace', built_in: builtIn, installs: [], limits: { max_packed_bytes: 52428800, max_unpacked_bytes: 209715200, max_files: 5000, max_expansion_ratio: 20 }, can_install: true }), fetchedAt: Date.now() } // MOCK-HOOK
+  } // MOCK-HOOK
   return readAs(catalogueRoute(scope, 'catalogue'), normPluginCatalogue)
 }
 

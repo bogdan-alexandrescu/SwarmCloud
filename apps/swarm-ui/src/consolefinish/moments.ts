@@ -20,6 +20,7 @@
  * ready 340. one-person is its own install, read at its accounts step.
  */
 import { USE_FIXTURES } from '../api'
+import { fixturePluginStep, plugFixture } from './pluginStep' // MOCK-HOOK
 
 export const FINISH_MOMENTS = [
   'arrive',
@@ -246,8 +247,8 @@ export function momentSetupState(m: FinishMoment, nowMs: number): Record<string,
         }
       : null,
     steps: onePerson
-      ? { first_team: { needed: false, state: 'not_needed', reason: 'individual' }, invites: { needed: false, state: 'not_needed', reason: 'individual' } }
-      : { first_team: { needed: true, state: reached(m, 62) ? 'started' : 'todo', reason: null }, invites: { needed: true, state: reached(m, 90) ? 'done' : reached(m, 62) ? 'waiting' : 'todo', reason: null } },
+      ? { first_team: { needed: false, state: 'not_needed', reason: 'individual' }, invites: { needed: false, state: 'not_needed', reason: 'individual' }, plugins: fixturePluginStep(plugFixture(), nowMs) /* MOCK-HOOK */ }
+      : { first_team: { needed: true, state: reached(m, 62) ? 'started' : 'todo', reason: null }, invites: { needed: true, state: reached(m, 90) ? 'done' : reached(m, 62) ? 'waiting' : 'todo', reason: null }, plugins: fixturePluginStep(plugFixture(), nowMs) /* MOCK-HOOK */ },
     sizing: onePerson
       ? {
           mode: 'individual',

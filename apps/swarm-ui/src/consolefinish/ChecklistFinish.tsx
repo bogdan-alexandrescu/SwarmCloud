@@ -52,7 +52,8 @@ import {
 } from '../AdminSetupSteps'
 import { restartSetupSmoke, type SetupState } from '../api'
 import { About, Explained } from '../AdminSetupHealth'
-import { Button, Chip, CodeBlock } from '../components'
+import { Button, Chip, CodeBlock, Tag } from '../components' // MOCK-HOOK: Tag
+import { PLUGIN_TIP, PluginBody, pluginLineOn, pluginNow, usePluginStep, type PluginStepView } from './pluginStep' // MOCK-HOOK
 import '../styles/admin-setup.css'
 import '../styles/console-finish.css'
 
@@ -77,7 +78,7 @@ interface Wait {
   usual: string | null
 }
 
-export type LineKey = 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'smoke' | 'verify' | 'send'
+export type LineKey = 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'smoke' | 'verify' | 'send' | 'plugins' // MOCK-HOOK: | 'plugins'
 
 /** One line of the compact checklist. */
 export interface Line {
@@ -93,7 +94,18 @@ export interface Line {
   waits: Wait[]
   /** How long the actor's part usually takes, from the route's `typical_s`. */
   usual?: string
+  /** Never needed: not counted, not followed, never a gate (managed-plugins §15.1). */ // MOCK-HOOK
+  optional?: boolean // MOCK-HOOK
+  /** A platform admin skipped it (`console/plugins_step`). */ // MOCK-HOOK
+  skipped?: boolean // MOCK-HOOK
+  /** Add one anyway was just pressed: the line flashes once. */ // MOCK-HOOK
+  undone?: boolean // MOCK-HOOK
 }
+// MOCK-HOOK
+/** The optional plugin step's line, last, from `steps.plugins`. */ // MOCK-HOOK
+export function pluginsLine(v: PluginStepView, undone = false): Line { // MOCK-HOOK
+  return { key: 'plugins', name: 'Add a plugin', state: v.state === 'done' ? 'done' : 'todo', actor: null, since: null, now: pluginNow(v), waits: [], optional: true, skipped: v.state === 'skipped', undone } // MOCK-HOOK
+} // MOCK-HOOK
 
 const ms = (iso: string | null | undefined): number | null => {
   if (iso === null || iso === undefined) return null
@@ -287,7 +299,8 @@ export function finishLines(state: SetupState, nowMs: number): Line[] {
 }
 
 /** The line the panel follows by itself: the first one the person can act on, else the first not done, else Send. */
-export function nextLineKey(ls: Line[]): LineKey {
+export function nextLineKey(all: Line[]): LineKey { // MOCK-HOOK: was (ls: Line[])
+  const ls = all.filter((l) => l.optional !== true) // MOCK-HOOK: an optional line is never followed by itself
   const mine = ls.find((l) => l.state !== 'done' && l.actor === 'you')
   if (mine !== undefined) return mine.key
   return ls.find((l) => l.state !== 'done')?.key ?? 'send'
@@ -307,7 +320,8 @@ function StepMark({ state }: { state: StepState }) {
 // the status line: what swarm install is doing now
 // ---------------------------------------------------------------------------
 
-function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; nowMs: number }) {
+function TerminalLine({ state, ls: all, nowMs }: { state: SetupState; ls: Line[]; nowMs: number }) { // MOCK-HOOK: ls: all
+  const ls = all.filter((l) => l.optional !== true) // MOCK-HOOK: the count is the required lines only
   const e = state.engine
   const beat = ms(e?.lease?.heartbeat)
   const seen = beat === null ? 'not recorded' : `${spanWords((nowMs - beat) / 1000)} ago`
@@ -407,7 +421,7 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
         {ls.map((l, i) => {
           const others = l.waits.filter((w) => w.who === 'teammate' || w.who === 'google')
           return (
-            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}`}>
+            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}${l.optional === true ? ' is-optional' : '' /* MOCK-HOOK */}${l.skipped === true ? ' is-skipped' : '' /* MOCK-HOOK */}${l.undone === true ? ' is-undone' : '' /* MOCK-HOOK */}`}>
               <button type="button" className="cfc-pick" aria-current={l.key === selected ? 'step' : undefined} onClick={() => onPick(l.key)}>
                 <StepMark state={l.state} />
                 <span className="cfc-item-main">
@@ -416,8 +430,11 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
                       {i + 1}. {l.name}
                     </b>
                     {l.state === 'failed' && <Chip tone="bad">failed</Chip>}
+                    {l.optional === true && <Tag>Optional</Tag> /* MOCK-HOOK */}
                   </span>
-                  {l.state === 'done' ? (
+                  {l.optional === true ? ( // MOCK-HOOK
+                    <span className="cfc-item-now">{l.state === 'done' ? <><span className="cfc-done">done</span> · {l.now}</> : l.now}</span> // MOCK-HOOK
+                  ) : l.state === 'done' ? ( // MOCK-HOOK: was {l.state === 'done' ? (
                     <span className="cfc-item-now">
                       <span className="cfc-done">{l.since === null ? 'done' : `done ${clock(l.since)}`}</span> · {l.now}
                     </span>
@@ -434,6 +451,7 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
                   )}
                 </span>
               </button>
+              {l.optional === true && <span className="cfp-about"><About label={l.name} tip={PLUGIN_TIP} /></span> /* MOCK-HOOK */}
               {others.length > 0 && (
                 <ul className="cfc-subs" aria-label={`${l.name}: waiting on others`}>
                   {others.map((w, j) => (
@@ -619,7 +637,7 @@ function PanelHead({ kicker, tip, line, children }: { kicker: string; tip?: stri
   return (
     <header className="cfc-panel-head">
       <p className="cfc-kicker">{tip === undefined ? kicker : <Explained tip={tip}>{kicker}</Explained>}</p>
-      <h2 className={`cfc-panel-h is-${line.state}`}>
+      <h2 className={`cfc-panel-h is-${line.state}${line.skipped === true ? ' is-skipped' : '' /* MOCK-HOOK */}`}>
         <StepMark state={line.state} />
         {line.name}
       </h2>
@@ -628,11 +646,12 @@ function PanelHead({ kicker, tip, line, children }: { kicker: string; tip?: stri
   )
 }
 
-function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { line: Line; n: number; total: number; state: SetupState; rows: Partial<Record<LineKey, Row>>; nowMs: number; onChanged: () => void; following: boolean }) {
+function Panel({ line, n, total, state, rows, nowMs, onChanged, following, plugin }: { line: Line; n: number; total: number; state: SetupState; rows: Partial<Record<LineKey, Row>>; nowMs: number; onChanged: () => void; following: boolean; plugin?: ReactNode /* MOCK-HOOK */ }) {
   const row = rows[line.key]
   const closed = !state.cli_running && state.engine?.ready_at == null
   let body: ReactNode = null
-  if (line.key === 'cloud') body = <CloudBody state={state} nowMs={nowMs} />
+  if (line.key === 'plugins') body = plugin // MOCK-HOOK
+  else if (line.key === 'cloud') body = <CloudBody state={state} nowMs={nowMs} /> // MOCK-HOOK: else
   else if (line.key === 'smoke') body = <SmokeBody state={state} onChanged={onChanged} />
   else if (line.key === 'send') body = <SendBody state={state} />
   else if (line.key === 'verify' && state.engine?.verify != null) body = <VerifyBody state={state} onChanged={onChanged} />
@@ -650,7 +669,8 @@ function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { l
   }
   return (
     <section className="cfc-panel" aria-label={`Step ${n}: ${line.name}`}>
-      <PanelHead kicker={`Step ${n} of ${total}${following ? '' : ' · picked by you'}`} tip={following ? 'The panel follows the next step you can act on.' : 'Follow the next step again, under the list, returns the panel to the next step you can act on.'} line={line}>
+      <PanelHead kicker={line.optional === true ? `Step ${n} · optional` /* MOCK-HOOK: never followed, so never 'picked by you' */ : `Step ${n} of ${total}${following ? '' : ' · picked by you'}`} tip={line.optional === true ? 'Never a gate: Send to your team unlocks on verify alone, and the panel never moves here by itself.' /* MOCK-HOOK */ : following ? 'The panel follows the next step you can act on.' : 'Follow the next step again, under the list, returns the panel to the next step you can act on.'} line={line}>
+        {line.optional !== true && ( // MOCK-HOOK: the optional line's kicker says it; its (i) is the line's
         <p className="cfc-panel-who">
           {line.state === 'done' ? (
             <span className="cfc-done">Done{line.since === null ? '' : ` at ${clock(line.since)}`}, from the install record</span>
@@ -663,6 +683,7 @@ function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { l
             </>
           )}
         </p>
+        ) /* MOCK-HOOK */}
       </PanelHead>
       <WaitTable waits={line.waits} nowMs={nowMs} closed={closed} />
       <div className="cfc-panel-body">{body}</div>
@@ -727,7 +748,10 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
   const githubAct = useAction(reread)
   useAutoSelfCheck(state, githubAct)
   const [picked, setPicked] = useState<LineKey | null>(null)
+  const plug = usePluginStep(state.plugins, nowMs) // MOCK-HOOK
   const ls = finishLines(state, nowMs)
+  if (pluginLineOn()) ls.push(pluginsLine(plug.view, plug.undone)) // MOCK-HOOK: the ninth line, last
+  const required = ls.filter((l) => l.optional !== true).length // MOCK-HOOK
   const following = picked === null && callback === undefined
   const selected: LineKey = callback !== undefined ? 'github' : picked ?? nextLineKey(ls)
   const rows: Partial<Record<LineKey, Row>> = {
@@ -749,11 +773,11 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
         <div className="cfc-right">
           {callback !== undefined ? (
             <section className="cfc-panel" aria-label="Back from GitHub">
-              <PanelHead kicker={`Step ${i + 1} of ${ls.length} · back from GitHub`} line={line} />
+              <PanelHead kicker={`Step ${i + 1} of ${required /* MOCK-HOOK: was ls.length */} · back from GitHub`} line={line} />
               <div className="cfc-panel-body">{callback}</div>
             </section>
           ) : (
-            <Panel line={line} n={i + 1} total={ls.length} state={state} rows={rows} nowMs={nowMs} onChanged={reread} following={following} />
+            <Panel line={line} n={i + 1} total={required /* MOCK-HOOK: was ls.length */} state={state} rows={rows} nowMs={nowMs} onChanged={reread} following={following} plugin={<PluginBody view={plug.view} undone={plug.undone} onSkip={plug.skip} onUndo={plug.undo} clock={clock} /> /* MOCK-HOOK */} />
           )}
           <ThisInstall state={state} />
         </div>
