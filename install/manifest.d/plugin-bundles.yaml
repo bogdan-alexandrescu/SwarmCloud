@@ -4,7 +4,7 @@
 # the npm mirror the build installs gstack's dependencies through (Q19), all only with
 # builtins_managed "on", which swarm install renders for a fresh deployment
 # (swarm_install.tfvars.BUILTINS_MANAGED). The infra passes apply them with no prompt
-# and no step of their own; verify.plugins and swarm doctor's plugins.infrastructure
+# and no step of their own; verify.plugins and swarm doctor's plugins.bundle-build
 # check that the builder may push only to swarm-plugin-bundles.
 version: 1
 entries:
