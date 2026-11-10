@@ -392,6 +392,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_publish_outcomes.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_after_merging_main.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_cli.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_publish_scan_stacked_branch_floor.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scans_a_clean_repository.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_to_pr.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_to_pr_own_moved_head.py` | `<module>` | `skipif` | git is not installed |
