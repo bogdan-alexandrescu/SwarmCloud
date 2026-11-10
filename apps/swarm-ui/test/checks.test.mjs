@@ -133,8 +133,11 @@ test('THE STALL IS NEVER PHRASED AS A CAPACITY PROBLEM', () => {
     NOW,
   )
   const p = checkNamed(checks, 'Workflows').problems[0]
-  assert.match(p.detail, /not a full pool/)
-  assert.match(p.detail, /nothing is holding capacity|none is holding capacity/)
+  // What a stall means is the card title's tooltip, not its detail (the
+  // owner's pick, 2026-11-05).
+  assert.match(p.why, /not a full pool/)
+  assert.match(p.why, /nothing is holding capacity|none is holding capacity/)
+  assert.doesNotMatch(p.detail, /not a full pool/)
 })
 
 test('MUTATION GUARD: the threshold is crossed at exactly 720 seconds', () => {
@@ -255,7 +258,8 @@ test('MUTATION GUARD: an incomplete rollup is never judged, and never silent', (
   const p = check.problems[0]
   assert.match(p.headline, /could not be judged/)
   assert.match(p.detail, /wf_partial/)
-  assert.match(p.detail, /unknown, not fine/)
+  assert.match(p.why, /unknown, not fine/)
+  assert.doesNotMatch(p.detail, /unknown, not fine/)
 })
 
 test('an exhausted step-read budget is named as the reason rows are unjudged', () => {
@@ -311,7 +315,8 @@ test('parked steps that need a person are reported, with the reason', () => {
   assert.match(p.detail, /CREDENTIAL_MISSING/)
   assert.match(p.detail, /No provider key is registered for this workspace/)
   assert.match(p.detail, /BUDGET_EXHAUSTED/)
-  assert.match(p.detail, /No timer ends any of these/)
+  assert.match(p.why, /No timer ends any of these/)
+  assert.doesNotMatch(p.detail, /No timer ends/)
 })
 
 test('PARKED WORK IS NEVER PHRASED AS A CAPACITY PROBLEM', () => {
@@ -323,7 +328,7 @@ test('PARKED WORK IS NEVER PHRASED AS A CAPACITY PROBLEM', () => {
     }),
     NOW,
   )
-  assert.match(checkNamed(checks, 'Parked work').problems[0].detail, /hold no capacity/)
+  assert.match(checkNamed(checks, 'Parked work').problems[0].why, /hold no capacity/)
 })
 
 test('parked steps waiting on a clock are watch, and say when', () => {
