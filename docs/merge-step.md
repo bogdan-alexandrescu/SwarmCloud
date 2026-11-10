@@ -45,10 +45,144 @@ below.**
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
 **Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
-readied on `claude-code`, never the browser -- the second section below.**
+readied on `claude-code`, never the browser -- the third section below.**
 **Revised 2026-11-09: a merge behind a fix loop reads the loop's final
 review, and a merge step that refuses a NOT_YET labels the pull request
-`review-not-yet`, which `ready` cannot merge -- the section below.**
+`review-not-yet`, which `ready` cannot merge -- the second section below.**
+**Revised 2026-11-10: a merge step waiting on CI holds no lease between
+checks -- the scheduler holds its 15-minute fallback while swarm-api's wake
+tick is reading the checks and finding no answer -- the section below.**
+
+## Revised 2026-11-10: a merge step waiting on CI holds no lease between checks
+
+The owner chose on 10 November 2026 that this document describes the change
+made by the merged lane "A merge step waiting on CI holds no capacity lease
+between checks" (the owner's pick of 6 November 2026, after the load
+analysis). The code is `scheduler.loop.merge_wait_due` and
+`Scheduler._promote_ci_waits`, the comments on `MERGE_CI_FALLBACK_SECONDS` in
+`apps/agent-worker/agent_worker/merge.py`, and swarm-api's wake tick
+(`swarm_api.mergewake`); `tests/unit/control_plane/test_merge_wait_no_lease.py`
+drives it end to end. This section supersedes what "Revised 2026-10-06" §1
+says about the fallback waking a park every 15 minutes.
+
+### Why: each wake was a new attempt with a lease
+
+A merge step that finds its pull request's checks still running parks
+CI_PENDING and exits. The park itself always held nothing. But the scheduler
+returned every park to READY at its fallback instant -- the park plus
+`MERGE_CI_FALLBACK_SECONDS` (900 s) -- whether or not anything had changed,
+and every READY was admitted: a lease, a pool count, a Job execution and a
+worker start, to read checks that swarm-api's wake tick had read a minute
+before and found still running, and then park again. In the 7 days to
+6 November 2026 that was 5,303 merge-step attempts for 439 merges: about 12
+attempts per merge, and a third of all the platform's attempts. Nearly all of
+them learnt nothing the control plane did not already know.
+
+### What happens now
+
+1. **The step parks with no lease.** The worker's park
+   (`control.ControlPlane.park_ci_pending`) is one fenced transaction: the
+   agent goes PARKED on CI_PENDING, its lease and slot are given back, the
+   attempt is refunded (up to `MERGE_CI_MAX_WAKES`, 60), `metadata.merge_wait`
+   records the head, the pull request and the pending names, and
+   `next_eligible_at` is set to the park plus 900 s, the fallback instant.
+   Unchanged by this revision.
+2. **The wake tick reads the checks, and now records what it read.** The
+   clock is the deployment's per-tenant Cloud Scheduler job `merge_wake`,
+   every minute; each park is read at most once per `CI_READ_SECONDS` (30 s),
+   with the tenant's own token. When CI has an answer -- green, red with no
+   repair round left, the head moved, the pull request closed or merged --
+   the tick writes `merge_wait.wake_requested_at`, as before. When it has no
+   answer yet -- checks still running, or a repair round running at a red
+   head -- it writes `merge_wait.reading`: `{head, read_at, pending, failed}`,
+   plus the round under way.
+3. **The scheduler holds the fallback while that reading is fresh.**
+   `_promote_ci_waits` promotes a marked park at once. An unmarked one goes
+   through `merge_wait_due`: while the tick's reading is of THIS park -- the
+   park's head, read at or after the park instant and not in the future --
+   and younger than `MERGE_CI_FALLBACK_SECONDS`, the park stays PARKED even
+   past its fallback instant. Each such pass is counted in the drain report's
+   `held_ci_waits`: a lease and a worker start not spent.
+4. **A held wait still has deadlines.** It wakes on its own (`wait_deadline`)
+   at the first of these still ahead of the park, and never before the
+   fallback instant:
+   * `MERGE_CI_RECHECK_SECONDS` (90 min) from this park, so the worker reads
+     every fact itself at least that often;
+   * `CI_STUCK_SECONDS` (90 min) from the wait's start (`merge.ci_stuck`),
+     the window `/sc check` flags a wait at;
+   * `MERGE_CI_MAX_SECONDS` (6 h) from `first_parked_at`, where the worker
+     refuses `checks_timeout` (not while a slot or train wait has paused the
+     CI clock).
+   The scheduler image restates these bounds; the test above holds them
+   equal to the worker's.
+5. **Otherwise the fallback decides, as it always did.** No reading, a
+   reading at another head, one older than the park or from the future, or a
+   tick silent for 900 s (30 of its reads: it is not reading this park) --
+   then the park is due at its fallback instant (`fallback_due`). So a dead
+   tick, a broken token or a GitHub outage still never strands a merge; it
+   costs a wake every 15 minutes, as before this revision.
+
+**What wakes a merge step is the tick, not a webhook.** The push receiver
+(`apps/swarm-github-hooks`) forwards only a push to a repository's default
+branch and drops every other event, check events included, as
+`ignored_event`. No check event marks or wakes a merge park today: the
+answer reaches the step through the tick's next read, at most about a minute
+after CI settles.
+
+**The held fallback, worked through.** A step parks at 10:00 with three
+checks pending; its fallback instant is 10:15. The tick reads the checks at
+within a minute and every minute after, each time writing a fresh `reading`.
+At 10:15 the scheduler finds the instant passed but the reading 30 s old, so
+it holds the park and counts it in `held_ci_waits`. CI goes green at 10:22;
+the tick's next read marks the park, the scheduler's next pass makes it
+READY, and admission leases it once: one attempt for the whole wait, where
+the old fallback would have made two. Had CI still been running at 11:30,
+the recheck bound would have woken the worker once to read every fact
+itself, and parked it again. Had the tick died at 10:05, the reading would
+have gone stale at 10:20 and the park would have woken then, on the
+fallback.
+
+### How the invariants hold
+
+* **Invariant 1 (only LEASED/DISPATCHED/STARTING/RUNNING create demand).** A
+  held park is PARKED: no lease, no pool count, no Job execution, no pending
+  pod. Holding it longer creates no demand; it only removes demand that
+  bought nothing. A forged reading -- `merge_wait` is tenant-writable -- can
+  at most hold a park until `MERGE_CI_RECHECK_SECONDS`, and costs no capacity
+  while it does. A forged marker costs one early wake, whose worker trusts
+  nothing the tick saw.
+* **Invariant 3 (concurrency counts from LEASED).** The scheduler's
+  promotion (`promote_to_ready`) writes the agent alone, guarded on the state
+  and park reason the sweep read: no lease and no pool count. Only admission,
+  later, takes capacity, all-or-nothing, and the step's concurrency counts
+  from that lease. Fewer wakes means fewer leases, never a lease not counted.
+* **Invariant 5 (fencing).** The park is written in one fenced transaction,
+  so a superseded attempt gets `FencedWriteRefused` and can neither park the
+  agent nor refund an attempt. A held wait has no worker and no generation in
+  flight. Every wake, held or not, is a fresh admission with a new
+  generation; the tick's writes are guarded on the agent still being PARKED on
+  CI_PENDING at the head it read, and neither the tick nor the scheduler
+  touches a lease.
+
+### How the console's waiting line reads during a held wait
+
+The line is `waiting_detail._ci`'s summary. While the tick's reading is
+newer than the park, the line shows the reading's pending and failed names,
+not the park's, and says when they were read:
+
+```
+CI on PR #N: 3 checks pending (a, b, c); read 10:21Z; re-checked 1 times; next check 10:15Z
+```
+
+and its "resumes when" says `its pull request's checks settle (swarm-api's
+wake tick marks the step), or the fallback re-check at 10:15Z`. During a
+held wait the `next check` time is the fallback instant, which has passed:
+read it as "the fallback is being held". The `read` time is what shows the
+wait is live; it moves every minute while the tick reads. The line does not
+name the hold's own deadline (`MERGE_CI_RECHECK_SECONDS` and the others in
+step 4); `GET /v1/tasks/{id}` serves the `merge_wait` they are computed from.
+A `read` time that stops moving for 15 minutes means the tick is not reading
+the park, and the fallback wakes it.
 
 ## Revised 2026-11-09: the merge reads the fix loop's final review, and a NOT_YET holds the pull request with `review-not-yet`
 
