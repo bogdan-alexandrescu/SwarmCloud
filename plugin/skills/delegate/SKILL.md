@@ -220,8 +220,16 @@ the review runs however small the change (a mock-up review, say); a block
 `{"min_lines": 40, "risk_paths": ["apps/redaction/**"]}` (and
 `requirements_check`) sets it. It is sent as the step's
 `metadata.review_gate`, and a malformed one is refused before anything is
-sent. It is the one step metadata a spec sets: a step carrying `metadata`
-is refused, like any key outside the accepted list.
+sent. A step carrying `metadata` itself is refused, like any key outside
+the accepted list.
+
+**A step's work contract is the step's `work_contract`**, beside its
+`runner_profile`, in a `swarm_workflow` step and in a `/sc:swarmcloud` spec
+alike. It is sent as the step's `metadata.work_contract`, which contract
+review runs on; a malformed one (not an object, a `schema` other than 1, a
+key the contract does not have) is refused before anything is sent, naming
+the step and the field. `review_gate` and `work_contract` are the only step
+metadata a spec sets.
 
 **A repository's whole Playwright suite is `swarm_suite_gate`, not a
 hand-written workflow.** Name the registered `repository`, the `ref`, `suite:

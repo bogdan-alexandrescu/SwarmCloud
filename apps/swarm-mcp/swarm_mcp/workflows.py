@@ -45,12 +45,15 @@ to disagree with it.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import re
 import threading
 from typing import Any, Callable
 
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.workcontract import SCHEMA_VERSION as WORK_CONTRACT_SCHEMA
+from swarm_common.workcontract import Requirement, WorkContract
 
 from . import awaitinput
 from . import profiles as catalogue
@@ -117,6 +120,12 @@ _STEP_KEYS = frozenset(
         # Sent as the step's `metadata.review_gate`, the one metadata key a
         # spec may set: `metadata` itself stays refused (invariant 10).
         "review_gate",
+        # The step's work contract (the owner's choice, 10 November 2026), so
+        # a spec can submit steps contract review runs on. Sent as the step's
+        # `metadata.work_contract`, which swarm-api decodes, compiles and
+        # signs (`workcontract.prepare`); checked for shape first by
+        # `check_work_contract`. `metadata` itself stays refused.
+        "work_contract",
     }
 )
 
@@ -182,6 +191,95 @@ def check_review_gate(value: Any, *, where: str) -> bool | dict[str, Any]:
             )
         return {**value, "risk_paths": list(paths)}
     return dict(value)
+
+
+def _contract_skeleton() -> dict[str, Any]:
+    """The frozen contract's canonical projection of an empty contract: its
+    keys at every level are the closed sets a contract document may carry.
+    Each field is given the empty value of its declared type."""
+    empty = {"int": 0, "str": ""}
+    fields = {
+        f.name: () if str(f.type).startswith("tuple") else
+        {} if str(f.type).startswith("Mapping") else empty.get(str(f.type))
+        for f in dataclasses.fields(WorkContract)
+    }
+    return WorkContract(**fields).to_document()
+
+
+_CONTRACT_SKELETON = _contract_skeleton()
+
+#: The top-level keys a step's `work_contract` may carry: the frozen
+#: projection's (`swarm_common.workcontract.WorkContract.to_document`) plus
+#: `acceptance`, the one key swarm-api's subclass adds to it (written only
+#: when it is not the default, so it is absent from the empty projection).
+#: Read off the frozen type, never restated; tests/unit/mcp/
+#: test_spec_work_contract.py holds it equal to swarm-api's and runs every
+#: shape through swarm-api's own `workcontract.decode`.
+WORK_CONTRACT_KEYS = frozenset(_CONTRACT_SKELETON) | {"acceptance"}
+
+#: The nested maps, each closed to the projection's keys, and the lists.
+_CONTRACT_MAPS = {k: frozenset(v) for k, v in _CONTRACT_SKELETON.items()
+                  if isinstance(v, dict)}
+_CONTRACT_LISTS = frozenset(k for k, v in _CONTRACT_SKELETON.items() if isinstance(v, list))
+_REQUIREMENT_KEYS = frozenset(f.name for f in dataclasses.fields(Requirement))
+
+
+def check_work_contract(value: Any, *, where: str) -> dict[str, Any]:
+    """A step's `work_contract`, as its `metadata.work_contract`: a copy.
+
+    THE SHAPE ONLY, read off the frozen contract (`swarm_common.workcontract`):
+    an object, `schema` equal to its `SCHEMA_VERSION`, each level closed to
+    the keys its canonical projection carries, maps and lists where it has
+    them, and each requirement closed to `Requirement`'s fields. Every value
+    rule -- the id patterns, the catalogues, the limits against the step's,
+    the tenant -- is swarm-api's (`workcontract.decode` and `prepare`), which
+    this package cannot import (it reads Firestore) and does not restate;
+    a contract that passes here can still be refused there, by name."""
+
+    def refuse(field: str, why: str) -> SwarmError:
+        return SwarmError(f"{where}: `{field}` {why}. Nothing was sent")
+
+    if not isinstance(value, dict):
+        raise refuse("work_contract", "must be an object -- the step's work contract, "
+                     f'e.g. {{"schema": {WORK_CONTRACT_SCHEMA}, "contract_id": "wc-<name>", ...}}')
+    unknown = sorted(map(str, set(value) - WORK_CONTRACT_KEYS))
+    if unknown:
+        raise refuse("work_contract", f"carries {unknown}; a contract carries only "
+                     f"{sorted(WORK_CONTRACT_KEYS)}")
+    schema = value.get("schema")
+    if isinstance(schema, bool) or schema != WORK_CONTRACT_SCHEMA:
+        raise refuse("work_contract.schema", f"must be {WORK_CONTRACT_SCHEMA}")
+    for key, allowed in sorted(_CONTRACT_MAPS.items()):
+        block = value.get(key)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            raise refuse(f"work_contract.{key}", "must be an object")
+        extra = sorted(map(str, set(block) - allowed))
+        if extra:
+            raise refuse(f"work_contract.{key}", f"carries {extra}; it carries only "
+                         f"{sorted(allowed)}")
+        for inner, shape in sorted(_CONTRACT_SKELETON[key].items()):
+            item = block.get(inner)
+            if item is None:
+                continue
+            if isinstance(shape, list) and not isinstance(item, list):
+                raise refuse(f"work_contract.{key}.{inner}", "must be a list")
+            if isinstance(shape, dict) and not isinstance(item, dict):
+                raise refuse(f"work_contract.{key}.{inner}", "must be an object")
+    for key in sorted(_CONTRACT_LISTS):
+        items = value.get(key)
+        if items is not None and not isinstance(items, list):
+            raise refuse(f"work_contract.{key}", "must be a list")
+        for i, item in enumerate(items or ()):
+            if not isinstance(item, dict):
+                raise refuse(f"work_contract.{key}[{i}]", "must be an object")
+            if key == "requirements":
+                extra = sorted(map(str, set(item) - _REQUIREMENT_KEYS))
+                if extra:
+                    raise refuse(f"work_contract.{key}[{i}]", f"carries {extra}; a "
+                                 f"requirement carries only {sorted(_REQUIREMENT_KEYS)}")
+    return copy.deepcopy(value)
 
 
 #: A step key that is READ HERE AND NEVER SENT. `stage` was the group a step was
@@ -664,6 +762,9 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         if "review_gate" in raw:
             # `None` is refused with the rest: `false` is how a spec says "no gate".
             metadata["review_gate"] = check_review_gate(raw["review_gate"], where=where)
+        if "work_contract" in raw:
+            # `None` is refused with the rest: a step with no contract leaves the key out.
+            metadata["work_contract"] = check_work_contract(raw["work_contract"], where=where)
         if metadata:
             step["metadata"] = metadata
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):

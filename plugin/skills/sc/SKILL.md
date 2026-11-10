@@ -940,6 +940,17 @@ anything is submitted. A step carrying `metadata` itself is refused, like
 every key outside the accepted list. Never add or drop a gate the spec did
 not name.
 
+A step's work contract is the step's `work_contract`, beside its
+`runner_profile`: the document swarm-api decodes, compiles and signs, and
+that contract review runs on. It is sent as the step's
+`metadata.work_contract`. Its shape is checked first against the frozen
+contract (an object, `schema` 1, each level closed to the contract's own
+keys, maps and lists where it has them); a malformed one is refused before
+anything is submitted, with a message naming the step and the field.
+swarm-api still checks every value -- the ids, the catalogues, the tenant,
+the limits against the step's -- and its 422 is reported in its own words.
+Never write, amend or drop a contract the spec did not carry.
+
 ### `runs`
 
 ONE read: call `swarm_runs` (in a terminal, `sc runs`) and report each
