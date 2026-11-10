@@ -402,9 +402,10 @@ run "the_intake_job_has_no_egress_and_no_secret" {
   assert {
     condition = (
       length(google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].volumes) == 0
+      && length(google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].containers[0].volume_mounts) == 0
       && toset([for e in google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].containers[0].env : e.name]) == toset(["PLUGINS_BUCKET", "PLUGIN_MAX_PACKED_BYTES", "PLUGIN_MAX_UNPACKED_BYTES", "PLUGIN_MAX_FILES"])
     )
-    error_message = "the intake job mounts nothing and is told only the bucket and the caps"
+    error_message = "the intake job mounts nothing (it reads and writes the bucket through the API: a FUSE mount lists) and is told only the bucket and the caps"
   }
 
   assert {
