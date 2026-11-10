@@ -10,7 +10,8 @@ ONE TURN, as §3.3 lays it out. When the live voice delegates (live.py sees
   2. reads the card catalogue from swarm-api's schema route WITH THE GRANT, and
      offers the model exactly its `draw_<kind>` tools, the read tools
      (tools_read.py), the visual tools (tools_visual.py: `show_file`,
-     `show_diff`, `show_log`, `add_note`, `notes_to_work`) and `speak`, whose
+     `show_diff`, `show_log`, `show_mockup`, `approve_mockup`,
+     `approved_mockups`, `add_note`, `notes_to_work`) and `speak`, whose
      `point_at` reaches the page as a `focus` (voice-it-own-speech.md §8.5);
   3. leases ONE Claude subscription account from the quota broker for the
      person's own workspace (plannerlease.py), released in a finally whatever
@@ -162,10 +163,12 @@ class Planner:
 
     async def delegate(self, *, person: str, grant: SessionGrant | None,
                        transcript: list[tuple[str, str]], delegation_id: str | None = None,
-                       model: str | None = None) -> TurnResult:
+                       model: str | None = None, request: str | None = None) -> TurnResult:
         """Run one turn for a delegation; never raises for a refusal or a failure:
         the result's `spoken` always says what happened. `model` is the
-        session's planner model, read at its start; None keeps the pin."""
+        session's planner model, read at its start; None keeps the pin.
+        `request` is the delegation's own text, when the voice gave it any
+        (GPT-Live's delegation event, live.py), handed over beside the transcript."""
         try:
             api = tools_read.SwarmApi.for_session(self._http, base_url=self._api_base,
                                                   id_tokens=self._id_tokens, grant=grant)
@@ -177,7 +180,8 @@ class Planner:
             result = TurnResult(delegation_id, "")
             try:
                 return await asyncio.wait_for(
-                    self._turn(api, result, person=person, transcript=transcript, model=model),
+                    self._turn(api, result, person=person, transcript=transcript, model=model,
+                               request=request),
                     self._turn_seconds)
             except asyncio.TimeoutError:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
@@ -185,7 +189,8 @@ class Planner:
                 return result
 
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
-                    transcript: list[tuple[str, str]], model: str | None) -> TurnResult:
+                    transcript: list[tuple[str, str]], model: str | None,
+                    request: str | None = None) -> TurnResult:
         self.ledger(api.session_id).begin_turn()
         try:
             catalogue = await api.catalogue()
@@ -201,7 +206,8 @@ class Planner:
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
                 return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
-                                       claude=self._claude.with_model(model) if model else self._claude)
+                                       claude=self._claude.with_model(model) if model else self._claude,
+                                       request=request)
         except PoolFull as exc:
             log.warning("voice session %s: no planner account: %s", api.session_id, exc.reason)
             result.spoken = SAY_NO_POOL if exc.reason == NO_ACCOUNTS_REGISTERED else SAY_POOL_FULL
@@ -213,7 +219,8 @@ class Planner:
             return result
 
     async def _run(self, api: tools_read.SwarmApi, result: TurnResult, token: str, tools: list[dict],
-                   kinds: set[str], transcript: list[tuple[str, str]], *, claude: ClaudeCode) -> TurnResult:
+                   kinds: set[str], transcript: list[tuple[str, str]], *, claude: ClaudeCode,
+                   request: str | None = None) -> TurnResult:
         known = (token, *api.known_secrets())
         said: list[str] = []
         done = asyncio.Event()
@@ -228,7 +235,7 @@ class Planner:
 
         try:
             outcome = await claude.run(
-                prompt=prompts.turn_message(transcript, secrets_=known), system=prompts.SYSTEM, token=token,
+                prompt=prompts.turn_message(transcript, request=request, secrets_=known), system=prompts.SYSTEM, token=token,
                 tools=tools, handler=handler, known=known, done=done)
         except OSError as exc:
             log.warning("voice session %s: the planner could not start Claude Code (%s)", api.session_id,

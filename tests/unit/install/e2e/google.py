@@ -99,6 +99,8 @@ class Cloud:
     scheduler_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> Cloud Run job
     bucket_policies: dict[str, dict[str, Any]] = field(default_factory=dict)  # bucket -> its IAM policy
+    #: Artifact Registry repository name (projects/p/locations/r/repositories/id) -> its IAM policy.
+    repository_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Cloud Monitoring: notification channels, swarm_* log metric descriptor types, alert policies.
     channels: list[dict[str, Any]] = field(default_factory=list)
     descriptors: list[str] = field(default_factory=list)
@@ -460,6 +462,13 @@ def register(world: World, cloud: Cloud) -> None:
         return {"payload": {"data": base64.b64encode(found[n - 1]).decode()}}
 
     # -- Artifact Registry ---------------------------------------------------------------------
+    @route("GET", r"https://artifactregistry\.googleapis\.com/v1/(projects/[^/]+/locations/[^/]+/repositories/"
+                  r"[^/:]+):getIamPolicy")
+    def repository_policy(call: Call) -> Any:
+        if call.group(1) not in world.registries and call.group(1) not in cloud.repository_policies:
+            return error(404, "NOT_FOUND", call.group(1))
+        return cloud.repository_policies.get(call.group(1)) or {"bindings": [], "etag": "BwE2E"}
+
     @route("GET", r"https://artifactregistry\.googleapis\.com/v1/projects/([^/]+)/locations/([^/]+)/repositories/"
                   r"([^/]+)/dockerImages/(.+)")
     def docker_image(call: Call) -> Any:

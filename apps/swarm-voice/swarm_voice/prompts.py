@@ -42,6 +42,8 @@ SPOKEN_MAX = 400
 #: Longest transcript window put in one turn, and longest tool result.
 TRANSCRIPT_MAX = 12_000
 RESULT_MAX = 16_000
+#: The most of a delegation's own request (live.py) one turn message carries.
+REQUEST_MAX = 4_000
 
 MASK = "[redacted]"
 
@@ -63,11 +65,16 @@ approvals, repositories, search). They are read-only.
 
 To discuss something concrete, put it on screen as a visual: `show_file` (a file of a \
 workspace repository), `show_diff` (a pull request's diff) and `show_log` (a failed \
-step's log tail) name the source and SwarmCloud reads it; a `draw_spec`, `draw_diagram` or \
-`draw_mockup` card is drawn as before. When the person says a note about a visual, pin it \
-with `add_note` (anchor null when they are pointing at it, else the part or lines they \
-name). When they ask for the notes to become work, call `notes_to_work`. To talk over a \
-visual, give `speak` a `point_at` naming the visual and the place.
+step's log tail) name the source and SwarmCloud reads it; a `draw_spec` or `draw_diagram` \
+card is drawn as before. When the person asks to see something, or the talk is about a page or a \
+screen, show it with `show_mockup`: one mock-up per proposal, its options as frames (two or \
+three), each frame a whole HTML page with inline CSS, no script and no links or images from \
+anywhere. When the person says a note about a visual, pin it with `add_note` (anchor null when \
+they are pointing at it, else the part or lines they name; on a mock-up, the frame as a part). \
+When they pick a frame ("go with the second one"), call `approve_mockup` with that frame; \
+approving records the choice and builds nothing. To say what was approved and what comes \
+next, read `approved_mockups`. When they ask for the notes to become work, call \
+`notes_to_work`. To talk over a visual, give `speak` a `point_at` naming the visual and the place.
 
 When the person answers an agent's question (see `agent_questions` and \
 `open_questions`), call `answer_question` with the option label, their own words, or \
@@ -113,8 +120,10 @@ def as_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def turn_message(transcript: list[tuple[str, str]], *, secrets_: Iterable[str] = ()) -> str:
-    """The user message of one planner turn: the transcript window, fenced.
+def turn_message(transcript: list[tuple[str, str]], *, request: str | None = None,
+                 secrets_: Iterable[str] = ()) -> str:
+    """The user message of one planner turn: the transcript window, fenced, and
+    the delegation's own request, fenced apart, when the voice gave one.
 
     `transcript` is (speaker, text) in order, speaker "person" or "voice"; the
     newest lines are kept when it is longer than `TRANSCRIPT_MAX`."""
@@ -123,8 +132,13 @@ def turn_message(transcript: list[tuple[str, str]], *, secrets_: Iterable[str] =
     window = "\n".join(lines)
     if len(window) > TRANSCRIPT_MAX:
         window = "[... earlier lines cut]\n" + window[-TRANSCRIPT_MAX:]
+    asked = ""
+    if request and request.strip():
+        asked = ("\nThe voice's delegation asked for:\n"
+                 + fence("delegation", scrub(request.strip(), known), limit=REQUEST_MAX))
     return ("The voice delegated to you. The conversation so far, newest last:\n"
             + fence("transcript", window or "(nothing said yet)", limit=TRANSCRIPT_MAX + 64)
+            + asked
             + "\nDraw what this needs, then call `speak`.")
 
 

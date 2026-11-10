@@ -1109,6 +1109,31 @@ variable "work_contracts" {
   }
 }
 
+variable "builtins_managed" {
+  description = <<-EOT
+    swarm-api's SWARM_BUILTINS_MANAGED (docs/design/managed-plugins.md
+    section 1.4.5): "on" moves gstack and security-audit onto the managed
+    plugin path -- swarm-api seeds their two platform installs and resolves a
+    step naming them to the managed install's current version -- and plans
+    the bundle build's account, grants and repositories (plugin-bundles.tf).
+    OFF by default, so nothing changes at merge for an existing deployment:
+    its queued steps carry the code entries' capabilities.plugins, and a
+    platform admin turns it on once the release with the bundle manifests is
+    live (step 1 of section 1.4.5). Off also plans nothing in
+    plugin-bundles.tf, so nothing there costs money or grants access before
+    the switch. A fresh deployment renders "on" (swarm_install.tfvars), having
+    no queued step to carry across. The validation refuses anything but the
+    two values, so a misspelt "On" never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["on", "off"], var.builtins_managed)
+    error_message = "builtins_managed is on or off (managed-plugins.md section 1.4.5)."
+  }
+}
+
 variable "plugins_switch" {
   description = <<-EOT
     swarm-api's SWARM_PLUGINS (apps/swarm-api/swarm_api/plugins.py
@@ -1280,6 +1305,29 @@ variable "api_refusals" {
   validation {
     condition     = alltrue([for code in keys(var.api_refusals) : can(regex("^[A-Za-z][A-Za-z0-9_]*$", code))])
     error_message = "api_refusals keys are swarm-api error codes: letters, digits and underscores."
+  }
+}
+
+variable "api_workers" {
+  description = <<-EOT
+    uvicorn worker processes in each swarm-api instance, rendered as
+    SWARM_API_WORKERS (local.service_env, images/swarm-api/Dockerfile).
+
+    DEFAULT 1, the one process swarm-api has always run, so an environment
+    that sets nothing -- and a fresh install, whose tfvars the installer
+    renders without it -- changes nothing. Each worker holds its own
+    in-process caps, so swarm_api.workers divides every per-instance cap (git
+    calls, multipart answer slots, the per-principal and per-attempt rates)
+    by this count: raising it adds CPU parallelism, not capacity per cap.
+    Memory is per worker too (about 150 MB each idle), against the
+    instance's 2 GiB (main.tf).
+  EOT
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.api_workers >= 1 && var.api_workers <= 4 && floor(var.api_workers) == var.api_workers
+    error_message = "api_workers is a whole number of uvicorn workers from 1 to 4; the instance has 2 vCPU and 2 GiB."
   }
 }
 

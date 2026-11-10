@@ -873,6 +873,12 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
+      # uvicorn workers an instance (var.api_workers, default 1; dev sets 2,
+      # the owner's choice of 2026-11-10). The image passes it to
+      # `uvicorn --workers`, and swarm_api.workers divides each per-instance
+      # cap by it, so the instance's caps stay what they were.
+      SWARM_API_WORKERS = tostring(var.api_workers)
+
       # Where a cancel asks for its task's execution to be stopped now rather
       # than at the worker's next poll or the reconciler's next pass (#627).
       # The reconciler stops it: swarm-api holds no compute permission, by
@@ -1070,6 +1076,12 @@ locals {
       # tfvars sets "on". swarm-api alone reads it: the worker reads a
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
+
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) and
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository) are set here
+      # by lane 17 of managed-plugins.md section 17.1, with the swarm-api code
+      # that reads them: scripts/lib/check-env-parity.sh refuses a variable
+      # terraform sets and nothing reads.
 
       # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
       # var.plugins_switch says what each value does): "off" refuses every
@@ -1345,6 +1357,12 @@ locals {
       # failed with `404 Image '...agent-runtime-base:latest' not found`. A
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
+
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository, the one
+      # image path a bundle record's digest may name; managed-plugins.md
+      # section 1.4.4) is set here by lane 18 of section 17.1, with the
+      # scheduler code that reads it: scripts/lib/check-env-parity.sh refuses
+      # a variable terraform sets and nothing reads.
 
       # The model each profile's agent runs when a step names no class, for
       # the Jobs this scheduler creates (tenants this root does not list). The

@@ -79,6 +79,20 @@ session's person and grant; the planner's at most two sentences go back as
 append). Without a planner nothing changes: no delegation is configured, so
 the voice never waits on one. Transcript events are still passed to `on_event`
 and not stored here: storing them waits for the redaction step of §3.9.
+
+THE PLANNER HEARD NOTHING (live use, 10 November 2026). A person asked the voice
+to help build a website; every planner turn drew nothing and read only the
+inbox, and the voice said nothing had come back. The window was filled from
+five exact event names only, so finals sent under any other name left it empty
+and the planner was handed no request. So a final is recognised by its family
+(`final_speaker`: a type ending in `transcript.done`, `transcription.completed`
+or `transcript.completed`; `input`/`user` is the person, `output`/`response`
+the voice), any text the delegation event carries of its own
+(`delegation_request`) goes to the planner as the delegation's request, and a
+turn with neither does not run: the voice asks the person to say it again
+(SAY_ASK_AGAIN). A turn that starts with an empty transcript logs the counts
+of the sideband event TYPES the session has seen -- types only, never content
+-- so the next live run shows what arrives.
 """
 
 from __future__ import annotations
@@ -158,7 +172,7 @@ INSTRUCTIONS = (
 
 #: Added to the instructions when a planner is configured (§3.3 step 1).
 DELEGATE_INSTRUCTIONS = (
-    " When the person asks for something to be planned, drawn, looked up or explained from "
+    " When the person asks for something to be planned, drawn, shown, looked up or explained from "
     "SwarmCloud, delegate it, say a few words while you wait, then speak the result you are "
     "given and point at the card on screen. Never invent a plan or a status yourself."
 )
@@ -174,6 +188,22 @@ TRANSCRIPT_FINAL = {
     "response.output_audio_transcript.done": "voice",
     "response.audio_transcript.done": "voice",
 }
+#: The families a final of another name is recognised by (`final_speaker`), and
+#: the words of its type that say whose it is.
+TRANSCRIPT_FINAL_SUFFIXES = ("transcript.done", "transcription.completed", "transcript.completed")
+PERSON_WORDS = frozenset({"input", "user"})
+VOICE_WORDS = frozenset({"output", "response"})
+#: Fields of a delegation event (or of its `delegation`) that may carry the
+#: delegation's own text; the reference says it carries none, so any is a bonus.
+DELEGATION_TEXT_FIELDS = ("arguments", "instructions", "description", "input")
+#: How deep `delegation_request` reads nested arguments, and the most it keeps.
+DELEGATION_TEXT_DEPTH = 4
+DELEGATION_TEXT_MAX = 4000
+#: What the voice says for a turn with no transcript and no delegation text,
+#: in place of a planner turn that would read the inbox and report "nothing".
+SAY_ASK_AGAIN = "I didn't catch what you asked for. Could you say it again?"
+#: Distinct sideband event types counted per session; later ones count as "(other)".
+EVENT_TYPES_COUNTED = 64
 #: Segments of transcript kept for the planner.
 TRANSCRIPT_LINES = 200
 
@@ -372,6 +402,63 @@ def _named(kinds: list[str]) -> str:
     return named
 
 
+def final_speaker(kind: str) -> str | None:
+    """Whose final transcript segment an event of type `kind` is -- "person" or
+    "voice" -- or None when it is not one: the names of TRANSCRIPT_FINAL, then
+    any type of a final's family (TRANSCRIPT_FINAL_SUFFIXES) whose words name
+    a side, the person's first."""
+    if kind in TRANSCRIPT_FINAL:
+        return TRANSCRIPT_FINAL[kind]
+    if not kind.endswith(TRANSCRIPT_FINAL_SUFFIXES):
+        return None
+    words = set(re.split(r"[._]", kind))
+    if words & PERSON_WORDS:
+        return "person"
+    if words & VOICE_WORDS:
+        return "voice"
+    return None
+
+
+def _final_text(event: dict) -> str:
+    text = event.get("transcript")
+    if not isinstance(text, str):
+        text = event.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _texts(value: Any, out: list[str], depth: int = 0) -> None:
+    """The strings in `value`, a JSON string read as its value, in order."""
+    if depth > DELEGATION_TEXT_DEPTH:
+        return
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] in ("{", "["):
+            try:
+                _texts(json.loads(text), out, depth + 1)
+                return
+            except ValueError:
+                pass
+        if text and text not in out:
+            out.append(text)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _texts(item, out, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _texts(item, out, depth + 1)
+
+
+def delegation_request(event: dict) -> str:
+    """The text a delegation event carries of its own (DELEGATION_TEXT_FIELDS of
+    its `delegation`, then of the event), at most DELEGATION_TEXT_MAX; "" for none."""
+    delegation = event.get("delegation") if isinstance(event.get("delegation"), dict) else {}
+    found: list[str] = []
+    for source in (delegation, event):
+        for field in DELEGATION_TEXT_FIELDS:
+            _texts(source.get(field), found)
+    return "\n".join(found)[:DELEGATION_TEXT_MAX]
+
+
 class LiveSession:
     """One GPT-Live session and the sideband held for it."""
 
@@ -401,6 +488,8 @@ class LiveSession:
         self._finals = finals
         #: (speaker, text) of the final transcript segments, newest last.
         self.transcript: list[tuple[str, str]] = []
+        #: How many sideband events of each type arrived (`_event_type`, never content).
+        self.event_types: dict[str, int] = {}
         self._turns: set[asyncio.Task] = set()
         #: The planner model read at this session's start; None keeps the pin.
         self.planner_model: str | None = None
@@ -473,12 +562,14 @@ class LiveSession:
                     if not isinstance(event, dict):
                         continue
                     kind = str(event.get("type", ""))
+                    self._count(event)
                     if kind == "session.closed":
                         self._note_closed(event)
                         break
-                    if kind in TRANSCRIPT_FINAL:
-                        self._note_transcript(TRANSCRIPT_FINAL[kind], event)
-                        if TRANSCRIPT_FINAL[kind] == "person":
+                    speaker = final_speaker(kind)
+                    if speaker is not None:
+                        self._note_transcript(speaker, event)
+                        if speaker == "person":
                             self._answer(event)
                     elif kind == DELEGATION_CREATED and self._planner is not None:
                         self._delegated(event)
@@ -501,12 +592,23 @@ class LiveSession:
             else:
                 log.info("voice session %s: sideband detached; the next end attaches again", self.voice_id)
 
+    def _count(self, event: Any) -> None:
+        kind = _event_type(event)
+        if kind not in self.event_types and len(self.event_types) >= EVENT_TYPES_COUNTED:
+            kind = "(other)"
+        self.event_types[kind] = self.event_types.get(kind, 0) + 1
+
+    def _types_seen(self) -> str:
+        """The sideband event types seen so far with their counts, most first."""
+        if not self.event_types:
+            return "no event"
+        ranked = sorted(self.event_types.items(), key=lambda item: (-item[1], item[0]))
+        return ", ".join(f"{kind} x{count}" for kind, count in ranked)
+
     def _note_transcript(self, speaker: str, event: dict) -> None:
-        text = event.get("transcript")
-        if not isinstance(text, str):
-            text = event.get("text")
-        if isinstance(text, str) and text.strip():
-            self.transcript.append((speaker, text.strip()))
+        text = _final_text(event)
+        if text:
+            self.transcript.append((speaker, text))
             del self.transcript[:-TRANSCRIPT_LINES]
 
     def _answer(self, event: dict) -> None:
@@ -532,21 +634,35 @@ class LiveSession:
         if not isinstance(delegation_id, str) or not delegation_id:
             log.warning("voice session %s: a delegation without an id was ignored", self.voice_id)
             return
-        task = asyncio.create_task(self._plan(delegation_id), name=f"planner-{self.voice_id}")
+        task = asyncio.create_task(self._plan(delegation_id, delegation_request(event)),
+                                   name=f"planner-{self.voice_id}")
         self._turns.add(task)
         task.add_done_callback(self._turns.discard)
 
-    async def _plan(self, delegation_id: str) -> None:
+    async def _plan(self, delegation_id: str, request: str = "") -> None:
         assert self._planner is not None
+        transcript = list(self.transcript)
+        if not transcript:
+            log.warning("voice session %s: a planner turn started with an empty transcript "
+                        "(delegation text: %s); sideband event types so far: %s", self.voice_id,
+                        "yes" if request else "none", self._types_seen())
+            if not request:
+                # Nothing to plan from: a turn would read the inbox and report "nothing".
+                await self._say(delegation_id, SAY_ASK_AGAIN)
+                return
         result = await self._planner.delegate(person=self.person, grant=self.grant,
-                                              transcript=list(self.transcript),
-                                              delegation_id=delegation_id, model=self.planner_model)
-        if self.ended or self._socket is None or not result.spoken:
+                                              transcript=transcript, delegation_id=delegation_id,
+                                              model=self.planner_model, request=request or None)
+        await self._say(delegation_id, result.spoken)
+
+    async def _say(self, delegation_id: str, spoken: str) -> None:
+        """Send `spoken` back as the delegation's commentary, unless the session ended."""
+        if self.ended or self._socket is None or not spoken:
             return
         try:
             await self._socket.send(json.dumps({
                 "type": COMMENTARY_APPEND, "event_id": f"planner_{delegation_id}"[:64],
-                "delegation_id": delegation_id, "content": result.spoken}))
+                "delegation_id": delegation_id, "content": spoken}))
         except WebSocketException as exc:
             log.info("voice session %s: the planner's summary was not sent (%s)",
                      self.voice_id, type(exc).__name__)

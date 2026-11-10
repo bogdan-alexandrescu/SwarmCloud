@@ -215,6 +215,12 @@ describe('what the prose meter counts', () => {
     expect(m.arrows).toBe(0)
   })
 
+  it("does not count the visually hidden words a screen reader is given", () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<b>Swarm</b> <span class="sk-vh">4 waiting for approval</span>'
+    expect(measure(root).words).toBe(1)
+  })
+
   it('counts a text link with an arrow as an action that should be a button, and a button not', () => {
     const root = document.createElement('div')
     root.innerHTML =

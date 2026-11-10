@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 from swarm_common.models import (
     Attempt,
+    CREDENTIAL_TIERS,
     EndCause,
     FORGE_ACCESS,
     FORGE_CREDENTIAL,
@@ -1118,6 +1119,19 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         sized_memory_gib=data.get("sized_memory_gib"),
         sized_disk_gib=data.get("sized_disk_gib"),
         sized_live_split=_sized_live_split(data.get("sized_live_split")),
+        # Contract request 152 (accepted by the owner 2026-11-09): the account
+        # and the credential tier the attempt ran on, which the worker writes
+        # (lane LP-W1). Read explicitly, as the spend fields once were not.
+        # None on every attempt from before it: not recorded. A stored tier
+        # `Attempt` would refuse is read as not recorded, so one bad document
+        # never makes the attempt list unreadable.
+        account_id=data.get("account_id"),
+        credential_source=data.get("credential_source"),
+        credential_tier=(
+            data.get("credential_tier")
+            if data.get("credential_tier") in CREDENTIAL_TIERS
+            else None
+        ),
     )
 
 
@@ -1442,6 +1456,12 @@ def attempt_to_api(
         "sized_memory_gib": attempt.sized_memory_gib,
         "sized_disk_gib": attempt.sized_disk_gib,
         "sized_live_split": attempt.sized_live_split,
+        # Contract request 152: the account and the tier (plan or api_key) the
+        # attempt kept last. Null is not recorded, never "tenant secret" or
+        # "plan"; the console's attempt chip (lane LP-U5) reads them.
+        "account_id": attempt.account_id,
+        "credential_source": attempt.credential_source,
+        "credential_tier": attempt.credential_tier,
     }
 
 

@@ -9,7 +9,7 @@ patching a single import.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import logging
 
@@ -61,6 +61,7 @@ from .store import Store
 from .voice import grant as voice_grant
 from .voice import sessions as voice_sessions
 from .waker import SchedulerWaker, waker_for
+from .workers import per_worker, per_worker_rate
 
 #: Sentinel for "the caller did not pass this", kept distinct from None because
 #: None is a real value for `objects` -- it is how a deployment says it has no
@@ -145,6 +146,24 @@ class AppContext:
         except Exception as exc:  # pragma: no cover - depends on live Firestore
             return False, f"firestore unavailable: {type(exc).__name__}"
         return True, "ok"
+
+
+def request_limiter(settings: Any, environ: Mapping[str, str] | None = None) -> TokenBucketLimiter:
+    """The per-principal token bucket of ONE uvicorn worker.
+
+    `requests_per_second` and `rate_limit_burst` are configured per INSTANCE
+    (`served_limits` serves them under those names), and each worker builds
+    its own bucket here, so each gets the instance's figures divided by the
+    worker count (`workers`, SWARM_API_WORKERS; owner's choice 2026-11-10).
+    Undivided, two workers would let a principal twice the rate and burst an
+    instance is configured for. One worker keeps today's figures. The
+    workers share one listening socket, so a principal's requests spread over
+    them: the instance's total stays the configured one, and a caller held by
+    one worker's half may retry and land on the other."""
+    return TokenBucketLimiter(
+        rate_per_second=per_worker_rate(settings.core.requests_per_second, environ),
+        burst=per_worker(settings.rate_limit_burst, environ),
+    )
 
 
 def build_firestore(settings: ApiSettings) -> Any:
@@ -269,10 +288,7 @@ def build_context(
         forge_tokens=forge_tokens,
         forge_writer=forge_writer,
     )
-    limiter = TokenBucketLimiter(
-        rate_per_second=settings.core.requests_per_second,
-        burst=settings.rate_limit_burst,
-    )
+    limiter = request_limiter(settings)
     reader = (
         build_object_reader(
             bucket=settings.core.artifact_bucket, project_id=settings.project_id

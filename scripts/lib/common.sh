@@ -2888,6 +2888,24 @@ redact() {
   local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
   local m_glued="[];)}]${m_glued_tail}"
   local m_construct='[$](\([^()]{0,255}[^()]?\)|\{\{[^{}]{0,255}[^{}]?\}\})('"${m_glued_tail}"')?'
+  # A SECRET WITH SPACES INSIDE ONE QUOTED VALUE IS MASKED WHOLE (the owner,
+  # 6 November 2026; `swarm_redaction.rules._QUOTED_TAIL`). A value that opens
+  # with a double quote runs across blanks to the quote that closes it; a
+  # backslash escapes the character after it, so `\"` does not close it. The
+  # two expressions after the escaped-quote ones take such a value first and
+  # mark it with $keep, so the assignment rules below cannot take part of it.
+  # `Authorization: "Bearer ********"` keeps its house style (#260): when a
+  # quoted value under `authorization` is a scheme word and one run already
+  # holding the mask up to the closing quote, an expression before them puts
+  # $keep after the scheme word, and no run that crosses blanks crosses $keep.
+  # A value opened by an escaped quote runs across blanks to its next
+  # backslash. An unquoted value still ends at whitespace.
+  # A single-quoted value runs the same way to its closing `'` (the owner's
+  # pick 'single-quotes-too' on PR #3775; `_SINGLE_QUOTED_TAIL`), and a comma
+  # inside any quoted value, escaped quote or not, does not end it (the
+  # owner's pick 'span-commas' on PR #3775): only an unquoted value ends at one.
+  local m_quoted="(${m_glued}|\\\\.|[^\"[:space:]\\\\${keep}]|[[:blank:]])*"
+  local m_squoted="(\\\\.|[^'[:space:]\\\\${keep}]|[[:blank:]])*"
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -3135,8 +3153,13 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
+    -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2})?\\\\*\"${keep}?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws))([[:blank:]]+[^\"\\\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\\\,[:space:]]*(\\\\*\"|\$))/\\1${keep}\\5/Ig" \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[[:blank:]]*[^"\\[:space:]]([^"\\[:space:]'"${keep}"']|[[:blank:]])*/\1'"${keep}"'\7********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[[:blank:]]*[]0-9.)}]*[^]0-9.)}"\\[:space:]]([^"\\[:space:]'"${keep}"']|[[:blank:]])*/\1'"${keep}"'\5********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?")[[:blank:]]*('"${m_construct}"'|\\.|[^"[:space:]\\])'"${m_quoted}"'/\1'"${keep}"'\6********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?")[[:blank:]]*('"${m_construct}"'|\\.|[]0-9.)}]*[^]0-9.)}"[:space:]\\])'"${m_quoted}"'/\1'"${keep}"'\4********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?'"'"')[[:blank:]]*(\\.|[^'"'"'[:space:]\\])'"${m_squoted}"'/\1'"${keep}"'\6********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?'"'"')[[:blank:]]*(\\.|[]0-9.)}]*[^]0-9.)}'"'"'[:space:]\\])'"${m_squoted}"'/\1'"${keep}"'\4********/Ig' \
     -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[^",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e "s/${keep}//g"

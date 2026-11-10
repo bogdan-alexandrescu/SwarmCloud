@@ -75,6 +75,12 @@ from .accounts import (
     AccountError,
     AccountState,
     Hold,
+    key_secret_name,
+    plan_labels_with_key_mark,
+    refuse_plan_label,
+    validate_lends,
+    validate_per_workspace_max,
+    validate_spend_cap,
     choose_voice,
     validate_pools,
     Unavailable,
@@ -89,6 +95,7 @@ from .accounts import (
     holds_to_firestore,
     hold_log_entry,
     max_agents_from_firestore,
+    per_workspace_max_from_firestore,
     secret_name,
     subscription_identity,
     validate_label,
@@ -117,7 +124,8 @@ from .accountstore import (
 )
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
-from . import openai_api_key, openai_plan
+from . import api_key, openai_api_key, openai_plan
+from .api_key import VENDOR_OF
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
@@ -230,6 +238,19 @@ class AccountRegister(StrictModel):
     #: stored the key, on the key account's document
     #: (`openai_api_key.added_fields`; the owner, 5 November 2026).
     added_by: str | None = Field(default=None, max_length=254)
+    #: An API key's lends (§4.6, Q7): {borrowing workspace: {max_agents,
+    #: monthly_spend_cap_usd}}, both required on a key. A plan may send it
+    #: too, with `max_agents` alone; `lend_to` is then refused beside it.
+    #: Checked by `accounts.validate_lends`, the one check of it.
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+    #: An API key only. None: an `openai-api` key is the dedicated Voice it
+    #: key, as every one registered before §4 was (Q9); an `anthropic-api`
+    #: key is a pool key (Q2: no dedicated Anthropic key).
+    voice_dedicated: bool | None = None
+    #: A pool key only, and a platform admin's: the key also serves Voice it
+    #: (`voice-it` in its pools, §4.6), after the plans and before the
+    #: dedicated key.
+    share_with_voice_it: bool = False
 
 
 class AccountAuthorize(StrictModel):
@@ -256,7 +277,45 @@ class AccountExchange(StrictModel):
 
 
 class AccountLending(StrictModel):
-    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    """Who may borrow an account, and each borrower's cap (§4.6, Q7).
+
+    `lends` is the shape: {workspace: {max_agents, monthly_spend_cap_usd}},
+    `max_agents` required on both kinds and the spend cap required on a key.
+    `lend_to`, a bare list, is still read FOR A PLAN, so today's callers keep
+    working: a borrower already lent keeps its cap, a new one gets the
+    account's own `max_agents`, marked not set, as today's lends were carried
+    over. A key's bare list is refused: a key is lent only with a spend cap.
+    Neither: lent to nobody, as an empty list always meant.
+    """
+
+    lend_to: list[str] | None = Field(default=None, max_length=50)
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+
+
+class AccountPerWorkspaceMax(StrictModel):
+    """Each workspace's cap on the agents it holds on an account (Q6).
+    REQUIRED, so an empty body is refused rather than read as "no caps";
+    `{}` clears every cap."""
+
+    per_workspace_max: dict[str, Any] = Field(max_length=51)
+
+
+class AccountSpendCap(StrictModel):
+    """A key's monthly spend ceiling in US dollars, or null for none (§4.6).
+    REQUIRED, so an empty body is refused rather than read as "clear"."""
+
+    monthly_spend_cap_usd: float | None
+
+
+class ImportWorkspaceKeys(StrictModel):
+    """Import each workspace's own provider key as a pool key (Q7).
+
+    `tenants` narrows the import to those workspaces; empty imports every
+    `swarm-tenant-<tenant>-<vendor>` key the secret store lists. `added_by`
+    is the platform admin who asked, recorded on each imported key."""
+
+    tenants: list[str] = Field(default_factory=list, max_length=200)
+    added_by: str = Field(min_length=3, max_length=254)
 
 
 class AccountModelClasses(StrictModel):
@@ -719,11 +778,29 @@ ACCOUNT_PROVIDERS = ("anthropic", openai_plan.PROVIDER)
 #: pairs the sweep refreshes and swarm-api's `schemas.ACCOUNT_PROVIDERS`
 #: restates, because no workspace's sign-in or task ever names one.
 VOICE_ONLY_PROVIDERS = (openai_api_key.PROVIDER,)
+#: Both developer API key kinds (docs/design/llm-providers.md §3): the new
+#: `anthropic-api` and `openai-api`, which is no longer Voice it only once it
+#: is registered as a pool key (`voice_dedicated` False). Registered through
+#: `_register_api_key`, never refreshed, never polled.
+API_KEY_PROVIDERS = api_key.PROVIDERS
+
+
+#: The API key kind a workspace's own provider secret is imported as (Q7):
+#: `swarm-tenant-<tenant>-<vendor>` holds that vendor's developer key.
+WORKSPACE_KEY_PROVIDER: dict[str, str] = {
+    "anthropic": api_key.ANTHROPIC_API,
+    "openai": api_key.OPENAI_API,
+}
+#: Where an imported key was copied from, on its account document (§4.4: its
+#: delete says the workspace's own secret still holds the value).
+IMPORTED_FROM = "key_imported_from"
 
 
 def _account_provider(provider: str) -> str:
     name = (provider or "").strip().lower()
-    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS
+    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS + tuple(
+        p for p in API_KEY_PROVIDERS if p not in VOICE_ONLY_PROVIDERS
+    )
     if name not in known:
         raise BrokerValidationError(
             f"a pool account is one of {', '.join(known)}, not {provider!r}"
@@ -1004,6 +1081,22 @@ def account_to_api(
         "state": account.state.value,
         "reason": account.reason,
         "lend_to": list(account.lend_to),
+        #: docs/design/llm-providers.md §3 and §4.6. `getattr` for the reason
+        #: `model_classes` gives. The vendor groups a plan with its keys; a
+        #: lend's `cap_set` False is one carried over from `lend_to`, shown
+        #: `cap not set`. Never a key's value: the value is in Secret Manager.
+        "vendor": VENDOR_OF.get(account.provider, account.provider),
+        "kind": "api_key" if api_key.is_key(account.provider) else "plan",
+        "lends": {
+            t: c.to_firestore() for t, c in (getattr(account, "lends", None) or {}).items()
+        },
+        "per_workspace_max": dict(getattr(account, "per_workspace_max", None) or {}),
+        "monthly_spend_cap_usd": getattr(account, "monthly_spend_cap_usd", None),
+        "exhausted_at": (
+            account.exhausted_at.isoformat()
+            if isinstance(getattr(account, "exhausted_at", None), datetime) else None
+        ),
+        "voice_dedicated": bool(getattr(account, "voice_dedicated", False)),
         #: The classes this account's plan serves; empty means every class
         #: (R5). `getattr` for the same reason as `observed_at` above.
         "model_classes": list(getattr(account, "model_classes", ()) or ()),
@@ -1516,6 +1609,11 @@ def acquire_hold(
         if not _raw_has_room(data, holds):
             # Full since the listing: nothing is counted, and the route
             # answers as it does for an account paused in the same gap.
+            return None
+        if not voice_it and not _raw_workspace_has_room(data, holds, tenant_id):
+            # THIS WORKSPACE at its `per_workspace_max` (Q6): checked and
+            # counted in this one transaction, so two of its agents racing
+            # for its last slot cannot both win, and a refusal writes nothing.
             return None
         hold = Hold(
             assignment_id=assignment_id,
@@ -2053,6 +2151,21 @@ def set_account_pools(
     return _apply(transaction)
 
 
+def _raw_workspace_has_room(data: dict[str, Any], live: list[Hold], tenant_id: str) -> bool:
+    """Whether `tenant_id`'s live holds on a raw document leave room for one
+    more under its `per_workspace_max` (Q6; `Account.is_full_for`). LIVE
+    holds of that tenant, counted from the grant (CONTRACT.md invariant 3). A
+    malformed cap is no room, as a malformed `max_agents` is."""
+    try:
+        caps = per_workspace_max_from_firestore(data.get("per_workspace_max"))
+    except ValueError:
+        return False
+    cap = caps.get(tenant_id)
+    if cap is None:
+        return True
+    return sum(1 for h in live if h.tenant_id == tenant_id) < cap
+
+
 def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
     """Whether a raw document's live holds leave room for one more (#2222).
 
@@ -2066,7 +2179,7 @@ def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
         cap = max_agents_from_firestore(data.get("max_agents"))
     except ValueError:
         return False
-    if data.get("observed_at") is None and data.get("provider") != openai_api_key.PROVIDER:
+    if data.get("observed_at") is None and not api_key.is_key(data.get("provider")):
         # ONE UNTIL MEASURED (#2222), re-checked here for the reason the cap
         # is: two assigns racing for a never-observed account's one slot. An
         # OpenAI API key is never measured (`Account.measured`), so its
@@ -3065,6 +3178,10 @@ def create_app(
     # The ChatGPT token endpoint, for an `openai` account's sign-in (#2688);
     # injected for the same reason as the Claude one above.
     app.state.plan_token_endpoint = plan_token_endpoint or openai_plan.HttpPlanTokenEndpoint()
+    # The one read-only call an API key must pass before it is stored
+    # (docs/design/llm-providers.md §4.1); injected so tests never make a
+    # network call.
+    app.state.key_validator = api_key.HttpKeyValidator()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
@@ -3814,6 +3931,7 @@ def create_app(
         credential_payload: str,
         access_token: str,
         organisation: Organisation | None = None,
+        lends: dict[str, Any] | None = None,
     ) -> Any:
         """Create both secrets, bind their readers, then publish the account.
 
@@ -3832,8 +3950,13 @@ def create_app(
         # the rule's own sentence (#1912). Unhandled, `AccountError` was a 500,
         # and swarm-api reads every status but 409/422 as the pool being down.
         # Named before anything is created, so a refusal leaves no secret.
+        existing = store.get(f"{owner_tenant}:{label}")
         try:
             base = secret_name(owner_tenant, label)
+            if existing is None:
+                # A NEW plan never carries the key mark (§4.1): `--key-` must
+                # name a key's secret alone, the one IAM lets the broker delete.
+                refuse_plan_label(label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
         # ONE SEAT, ONE ACCOUNT (#2222, #2282), refused before any secret is
@@ -3844,11 +3967,10 @@ def create_app(
         # A KEY'S LABEL IS NEVER RE-REGISTERED AS A PLAN: it would rewrite the
         # provider and bind the owner's worker to `{base}`, whose older
         # version still holds the key the broker alone may read.
-        existing = store.get(f"{owner_tenant}:{label}")
-        if existing is not None and existing.provider == openai_api_key.PROVIDER:
+        if existing is not None and api_key.is_key(existing.provider):
             raise BrokerValidationError(
-                f"{existing.account_id} is an OpenAI API key; a {provider} account "
-                "needs a label of its own"
+                f"{existing.account_id} is an {'OpenAI' if existing.provider == api_key.OPENAI_API else 'Anthropic'} "
+                f"API key; a {provider} account needs a label of its own"
             )
         labels = {
             "managed-by": "swarm-secrets",
@@ -3890,7 +4012,7 @@ def create_app(
                 secrets,
                 secret=base,
                 owner_tenant=owner_tenant,
-                lend_to=lend_to,
+                lend_to=list(lends) if lends is not None else lend_to,
                 revoke=False,
             )
             secrets.add_version(f"{base}{REFRESH_SUFFIX}", credential_payload)
@@ -3931,7 +4053,7 @@ def create_app(
                 )
 
         account = store.register(
-            owner_tenant, label, provider=provider, lend_to=lend_to
+            owner_tenant, label, provider=provider, lend_to=lend_to, lends=lends
         )
         # Re-registering is also how lending changes (`AccountStore.register`),
         # so a borrower dropped from the list loses the secret here.
@@ -3961,6 +4083,144 @@ def create_app(
         mark_duplicates(store)
         return store.get(account.account_id) or account
 
+    def _lends_for(
+        body_lends: dict[str, Any] | None, *, owner_tenant: str, key: bool
+    ) -> dict[str, Any] | None:
+        """A caller's `lends`, validated (`accounts.validate_lends`), or None
+        when it sent none. A cap's `cap_set` is the broker's mark of a
+        carried-over lend and is never taken from a caller."""
+        if body_lends is None:
+            return None
+        if any(isinstance(c, dict) and "cap_set" in c for c in body_lends.values()):
+            raise BrokerValidationError("a lend's cap is max_agents and monthly_spend_cap_usd alone")
+        try:
+            lends = validate_lends(body_lends, owner_tenant=owner_tenant, key=key)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        bad = [t for t in lends if not LENDABLE_TENANT.fullmatch(t)]
+        if bad:
+            raise BrokerValidationError(
+                f"lends names {len(bad)} entr{'y' if len(bad) == 1 else 'ies'} "
+                "that are not tenant ids (lowercase letters, digits and dashes)"
+            )
+        return lends
+
+    def _check_key_with_vendor(request: Request, provider: str, key: str) -> api_key.KeyCheck:
+        """The vendor's answer to the key's one read-only call (§4.1). A
+        refusal is the caller's: 422, "the provider refused this key". A
+        vendor that cannot be asked stores nothing: 422 too, naming the
+        status, never the key, so swarm-api does not read it as the pool
+        being down."""
+        validator = request.app.state.key_validator
+        try:
+            check = validator.check(provider, key)
+        except api_key.KeyCheckUnavailable as exc:
+            raise BrokerValidationError(
+                f"the key could not be checked with the provider ({exc}); nothing was stored"
+            ) from None
+        if check.outcome == api_key.CHECK_REFUSED:
+            raise BrokerValidationError("the provider refused this key; nothing was stored")
+        return check
+
+    def _store_api_key(
+        request: Request,
+        *,
+        store: Any,
+        secrets: Any,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        key: str,
+        check: api_key.KeyCheck,
+        lends: dict[str, Any],
+        voice_dedicated: bool,
+        share_with_voice_it: bool,
+        added: dict[str, Any],
+    ) -> Any:
+        """Write a validated key to its one secret, then publish the account.
+
+        PROVISION FIRST, REGISTER LAST, as `_provision_and_register` does. The
+        secret is the recorded one when the label exists (a dedicated Voice
+        it key from before §4 keeps `--<label>`), else `--key-<label>`. Its
+        readers: the broker always; for a pool key, the owner's worker and
+        every borrower's (`_sync_lending`), as a plan's `{base}` has; for the
+        dedicated Voice it key, nobody else.
+        """
+        existing = store.get(f"{owner_tenant}:{label}")
+        try:
+            base = store.secret_for(existing) if existing is not None else key_secret_name(
+                owner_tenant, label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": owner_tenant,
+            "account": label,
+            "provider": provider,
+            "environment": request.app.state.environment,
+        }
+        accessors = [broker_sa] if broker_sa else []
+        if not voice_dedicated:
+            worker_sa = request.app.state.worker_service_account(owner_tenant)
+            accessors += [worker_sa] if worker_sa else []
+        try:
+            secrets.ensure_secret(
+                base, labels=labels, accessors=accessors, region=request.app.state.region
+            )
+            if not voice_dedicated:
+                _sync_lending(
+                    request, secrets, secret=base, owner_tenant=owner_tenant,
+                    lend_to=list(lends), revoke=False,
+                )
+            secrets.add_version(base, api_key.serialise(provider, key))
+        except BrokerValidationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not store an API key account's secret",
+                extra={"tenant_id": owner_tenant, "label": label, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the key for {owner_tenant}:{label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+        account = store.register(
+            owner_tenant, label, provider=provider, lends=dict(lends),
+            voice_dedicated=voice_dedicated,
+        )
+        now = datetime.now(timezone.utc)
+        pools = None
+        if voice_dedicated:
+            pools = (POOL_VOICE_IT,)
+        elif share_with_voice_it:
+            pools = (POOL_WORKSPACE, POOL_VOICE_IT)
+        if pools is not None:
+            set_account_pools(
+                request.app.state.broker.db, account.account_id, pools=pools,
+                voice_it_people=request.app.state.voice_it_people, now=now,
+            )
+        if account.state is AccountState.REAUTH_REQUIRED:
+            store.clear_reauth_required(account.account_id)
+        # A replacement overwrites both fields; `registered_at` keeps the first.
+        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
+            account.account_id
+        ).update(added)
+        if check.outcome == api_key.CHECK_LIMITED:
+            # ADDED AS LIMITED (§4.1): the vendor's 429 holds it as a plan's
+            # does, until its `retry-after`.
+            store.record_health(
+                account.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was added",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        if not voice_dedicated:
+            _revoke_unlent(request, secrets, secret=base, account=store.get(account.account_id) or account)
+        return store.get(account.account_id) or account
+
     def _register_api_key(
         request: Request,
         body: AccountRegister,
@@ -3968,106 +4228,107 @@ def create_app(
         *,
         store: Any,
         secrets: Any,
+        provider: str,
     ) -> dict[str, Any]:
-        """File an OpenAI developer API key into the Voice it pool, and ONLY
-        there (`openai_api_key`; the owner, 4 November 2026, after OpenAI
-        refused the ChatGPT plan for GPT-Live).
+        """File a developer API key (`api_key`, docs/design/llm-providers.md §4.1).
 
-        PLATFORM ONLY, like a pool move: the account serves the Voice it
-        people the broker names (`VOICE_IT_PEOPLE`), which no one workspace
-        decides. Never lent. ONE secret, `{base}`, the broker its only
-        accessor and writer: no worker service account is bound (no agent
-        ever runs on it) and no `{base}-refresh` exists (a key does not
-        rotate). Parsed before anything is written, so a refusal leaves no
-        secret and no document; the key is never logged or answered.
+        TWO KINDS OF KEY. The DEDICATED Voice it key (`voice_dedicated`, an
+        `openai-api` key alone, the default for that provider so today's
+        Voice it settings path is unchanged; the owner, 4 November 2026, Q9):
+        platform only, in the Voice it pool alone, never lent, the broker its
+        only reader, one per deployment. A POOL key (every `anthropic-api`
+        key, Q2, and an `openai-api` key sent `voice_dedicated: false`): the
+        owner's workspace's, read by its worker and its borrowers', each lend
+        capped (`lends`, Q7), shared with Voice it only by a platform admin.
+
+        Parsed and VALIDATED WITH THE VENDOR before anything is written (one
+        list-models call), so a refusal leaves no secret and no document; the
+        key is never logged or answered.
         """
-        _platform_only(
-            request,
-            authorization,
-            "only a platform admin may add an OpenAI API key to the Voice it pool",
+        dedicated = (
+            body.voice_dedicated
+            if body.voice_dedicated is not None
+            else provider == api_key.OPENAI_API
         )
-        if body.lend_to:
+        if dedicated and provider != api_key.OPENAI_API:
+            raise BrokerValidationError(
+                "only an OpenAI API key may be the dedicated Voice it key; there is no "
+                "dedicated Anthropic key"
+            )
+        if dedicated or body.share_with_voice_it:
+            _platform_only(
+                request,
+                authorization,
+                "only a platform admin may add an OpenAI API key to the Voice it pool"
+                if dedicated else "only a platform admin may share a key with Voice it",
+            )
+        if dedicated and (body.lend_to or body.lends or body.share_with_voice_it):
             raise BrokerValidationError(
                 "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
             )
+        if body.lend_to:
+            raise BrokerValidationError(
+                "an API key is lent only with a cap: send lends, each with max_agents "
+                "and monthly_spend_cap_usd, not lend_to"
+            )
         try:
             validate_label(body.label)
-            base = secret_name(body.owner_tenant, body.label)
+            key_secret_name(body.owner_tenant, body.label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
+        lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=True) or {}
         try:
-            key = openai_api_key.parse_api_key(body.credential)
+            key = api_key.parse_api_key(provider, body.credential)
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
         # WHO ADDED IT, checked before anything is written, like the key.
         if body.added_by is None:
             raise BrokerValidationError(
-                "an OpenAI API key is recorded with the platform admin who added it; "
-                "send added_by"
+                "an API key is recorded with the person who added it; send added_by"
             )
         try:
             added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
         existing = store.get(f"{body.owner_tenant}:{body.label}")
-        if existing is not None and existing.provider != openai_api_key.PROVIDER:
+        if existing is not None and existing.provider != provider:
             raise BrokerValidationError(
-                f"{existing.account_id} is a {existing.provider} account; an OpenAI API key "
+                f"{existing.account_id} is a {existing.provider} account; an API key "
                 "needs a label of its own"
             )
-        broker_sa = request.app.state.broker_service_account
-        if broker_sa and not broker_sa.startswith("serviceAccount:"):
-            broker_sa = f"serviceAccount:{broker_sa}"
-        labels = {
-            "managed-by": "swarm-secrets",
-            "component": "swarm-account",
-            "tenant": body.owner_tenant,
-            "account": body.label,
-            "provider": openai_api_key.PROVIDER,
-            "environment": request.app.state.environment,
-        }
-        try:
-            secrets.ensure_secret(
-                base,
-                labels=labels,
-                accessors=[broker_sa] if broker_sa else [],
-                region=request.app.state.region,
-            )
-            secrets.add_version(base, openai_api_key.serialise(key))
-        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
-            log.error(
-                "could not store an OpenAI API key account's secret",
-                extra={"tenant_id": body.owner_tenant, "label": body.label,
-                       "error": type(exc).__name__},
-            )
+        if dedicated:
+            others = [a.account_id for a in store.list()
+                      if a.voice_dedicated and a.account_id != f"{body.owner_tenant}:{body.label}"]
+            if others:
+                raise BrokerValidationError(
+                    f"{others[0]} is already the dedicated Voice it key; a deployment has one"
+                )
+        elif existing is not None and existing.voice_dedicated:
             raise BrokerValidationError(
-                f"could not store the key for {body.owner_tenant}:{body.label}: "
-                f"{type(exc).__name__}. No account was registered."
-            ) from None
-        account = store.register(
-            body.owner_tenant, body.label, provider=openai_api_key.PROVIDER, lend_to=()
+                f"{existing.account_id} is the dedicated Voice it key; a pool key needs a "
+                "label of its own"
+            )
+        check = _check_key_with_vendor(request, provider, key)
+        registered = _store_api_key(
+            request, store=store, secrets=secrets, owner_tenant=body.owner_tenant,
+            label=body.label, provider=provider, key=key, check=check, lends=lends,
+            voice_dedicated=dedicated, share_with_voice_it=body.share_with_voice_it,
+            added=added,
         )
-        set_account_pools(
-            request.app.state.broker.db,
-            account.account_id,
-            pools=(POOL_VOICE_IT,),
-            voice_it_people=request.app.state.voice_it_people,
-            now=datetime.now(timezone.utc),
-        )
-        if account.state is AccountState.REAUTH_REQUIRED:
-            store.clear_reauth_required(account.account_id)
-        # A replacement overwrites both fields; `registered_at` keeps the first.
-        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
-            account.account_id
-        ).update(added)
         log.info(
-            "audit: an OpenAI API key was added to the Voice it pool",
-            extra={"audit": True, "account_id": account.account_id, "pool": POOL_VOICE_IT},
+            "audit: an API key was added",
+            extra={"audit": True, "account_id": registered.account_id,
+                   "provider": provider, "voice_dedicated": dedicated,
+                   "pools": list(registered.pools)},
         )
-        registered = store.get(account.account_id) or account
+        where = (
+            "in the Voice it pool only" if dedicated
+            else f"in {', '.join(registered.pools)}"
+        )
         return {
             "account": account_to_api(registered, platform_wide=True),
-            "registered": f"{registered.account_id}: an OpenAI API key, in the Voice it pool only",
+            "registered": f"{registered.account_id}: an API key ({provider}), {where}"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
             "organisation": None,
             "expires_at": None,
             "note": "stored write-only; no route in this service returns key material",
@@ -4147,19 +4408,22 @@ def create_app(
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         _authorize(request, authorization, body.owner_tenant)
-        _accounts(request)  # refuse early if the pool is not configured
+        pool_store = _accounts(request)  # refuse early if the pool is not configured
         # Before the pending record is written, so a refused label leaves no
         # sign-in that could never finish. A 422 with the rule's sentence, not
         # the 500 that read as "the account pool is down" (#1912).
         try:
             validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                # A NEW plan never carries the key mark (§4.1).
+                refuse_plan_label(body.label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
 
         provider = _account_provider(body.provider)
-        if provider == openai_api_key.PROVIDER:
+        if api_key.is_key(provider):
             raise BrokerValidationError(
-                "an OpenAI API key has no sign-in: it is pasted once, through the console's "
+                "an API key has no sign-in: it is pasted once, through the console's "
                 "one-time link, and stored by this broker"
             )
         verifier = new_verifier()
@@ -4391,12 +4655,22 @@ def create_app(
         # message; accepting it costs them a pool entry that looks healthy and
         # dies silently at its first expiry.
         provider = _account_provider(body.provider)
-        if provider == openai_api_key.PROVIDER:
-            return _register_api_key(request, body, authorization, store=store, secrets=secrets)
+        if api_key.is_key(provider):
+            return _register_api_key(
+                request, body, authorization, store=store, secrets=secrets, provider=provider
+            )
         if body.added_by is not None:
             raise BrokerValidationError(
                 "added_by is recorded for an OpenAI API key alone; send none for this provider"
             )
+        if body.voice_dedicated is not None or body.share_with_voice_it:
+            raise BrokerValidationError(
+                "voice_dedicated and share_with_voice_it are an API key's; a plan moves "
+                "between pools through its pools route"
+            )
+        if body.lends is not None and body.lend_to:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        plan_lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=False)
         if provider == openai_plan.PROVIDER:
             # A ChatGPT plan's pair, or codex's own auth.json (#2688). Its
             # organisation is what the pasted id_token says, when it carries one.
@@ -4412,6 +4686,7 @@ def create_app(
                 label=body.label,
                 provider=provider,
                 lend_to=body.lend_to,
+                lends=plan_lends,
                 credential_payload=openai_plan.serialise_plan(plan),
                 access_token=openai_plan.published_value(plan),
                 organisation=plan.organisation,
@@ -4445,6 +4720,7 @@ def create_app(
             label=body.label,
             provider=body.provider,
             lend_to=body.lend_to,
+            lends=plan_lends,
             credential_payload=body.credential,
             access_token=credential.access_token,
             organisation=organisation,
@@ -4470,15 +4746,26 @@ def create_app(
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
-        if account.provider == openai_api_key.PROVIDER:
+        if account.voice_dedicated:
             # Even `lend_to: []` would bind the owner's worker as a reader of
-            # `{base}` (`_sync_lending`): the key's secret stays the broker's
-            # alone, so a key account has no lending to change.
+            # `{base}` (`_sync_lending`): the dedicated key's secret stays the
+            # broker's alone, so it has no lending to change.
             raise BrokerValidationError(
                 f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
                 "is never lent and no worker reads its secret"
             )
-        if body.lend_to and POOL_WORKSPACE not in account.pools:
+        if body.lends is not None and body.lend_to is not None:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        lends = _lends_for(body.lends, owner_tenant=account.owner_tenant, key=account.is_api_key)
+        if lends is None and account.is_api_key and body.lend_to:
+            raise BrokerValidationError(
+                f"{account_id} is an API key, lent only with a cap: send lends, each "
+                "with max_agents and monthly_spend_cap_usd"
+            )
+        if lends is None and account.is_api_key:
+            lends = {}
+        borrowers = list(lends) if lends is not None else list(body.lend_to or [])
+        if borrowers and POOL_WORKSPACE not in account.pools:
             # Reserved for Voice it: never lent, and no borrower is granted
             # read of its secret.
             raise BrokerValidationError(
@@ -4496,7 +4783,7 @@ def create_app(
                     secrets,
                     secret=secret,
                     owner_tenant=account.owner_tenant,
-                    lend_to=body.lend_to,
+                    lend_to=borrowers,
                     revoke=False,
                 )
             except BrokerValidationError:
@@ -4524,11 +4811,182 @@ def create_app(
             account.owner_tenant,
             account.label,
             provider=account.provider,
-            lend_to=body.lend_to,
+            lend_to=borrowers,
+            lends=lends,
         )
         if secrets is not None:
             _revoke_unlent(request, secrets, secret=secret, account=updated)
+        log.info(
+            "an account's lends changed",
+            extra={"account_id": account_id, "lends": {
+                t: c.to_firestore() for t, c in updated.lends.items()}},
+        )
         return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/per-workspace-max")
+    def set_per_workspace_max(
+        request: Request,
+        account_id: str,
+        body: AccountPerWorkspaceMax,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Each workspace's cap on the agents it holds on this account (Q6,
+        both kinds). The lender sets it: the owner's admin or the platform.
+
+        A workspace named here is the owner or a borrower: a cap on a
+        workspace that may not use the account would read as a permission.
+        Lowering a cap closes no hold; the next grant over it is refused
+        inside `acquire_hold`'s transaction.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            caps = validate_per_workspace_max(body.per_workspace_max)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        allowed = {account.owner_tenant, *account.lends}
+        stranger = sorted(t for t in caps if t not in allowed)
+        if stranger:
+            raise BrokerValidationError(
+                f"per_workspace_max names {stranger[0]}, which neither owns nor borrows {account_id}"
+            )
+        updated = store.set_per_workspace_max(account_id, caps)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's per-workspace caps changed",
+            extra={"account_id": account_id, "per_workspace_max": dict(updated.per_workspace_max)},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/spend-cap")
+    def set_spend_cap(
+        request: Request,
+        account_id: str,
+        body: AccountSpendCap,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A key's monthly spend ceiling, metered from the workers' `cost_usd`
+        estimates (§4.6, Q5), or null for none. A plan has none: its price is
+        flat. Lowering it closes no hold."""
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if not account.is_api_key:
+            raise BrokerValidationError(
+                f"{account_id} is a plan, whose price is flat; a spend cap is an API key's"
+            )
+        try:
+            cap = None if body.monthly_spend_cap_usd is None else validate_spend_cap(
+                body.monthly_spend_cap_usd)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_monthly_spend_cap(account_id, cap)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "a key's monthly spend cap changed",
+            extra={"account_id": account_id, "monthly_spend_cap_usd": cap},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.post("/v1/accounts/carry-over-lends")
+    def carry_over_lends(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Write `lends` on every account lent before the field (§4.6):
+        each borrower capped at the account's own `max_agents`, marked not
+        set. Platform only; idempotent. Also lists the plans whose label
+        carries the key mark, which must be none before the delete grant of
+        §8.3 is made."""
+        _platform_only(request, authorization, "only the platform may carry lends over")
+        store = _accounts(request)
+        written = store.carry_over_lends()
+        marked = plan_labels_with_key_mark(store.list())
+        log.info(
+            "audit: today's lends were carried over with a cap",
+            extra={"audit": True, "accounts": written, "plans_with_key_mark": marked},
+        )
+        return {"carried_over": written, "plans_with_key_mark": marked}
+
+    @app.post("/v1/accounts/import-workspace-keys")
+    def import_workspace_keys(
+        request: Request,
+        body: ImportWorkspaceKeys,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Import each workspace's own provider key as a pool key (Q7).
+
+        A COPY (§5.3): the broker reads `swarm-tenant-<tenant>-<vendor>`,
+        validates it as an add is validated, and registers it as that
+        workspace's `*-api` account, labelled `workspace-<vendor>`, lent to
+        nobody, its value written to its own `--key-` secret. The tenant
+        secret stays where it is, `scripts/create-secrets.sh`'s, the outage
+        path. A key that cannot be validated -- not a key at all (a
+        subscription token), refused by the vendor, or not checkable -- is
+        SKIPPED and listed with the reason, never registered half-checked.
+        An account already on the label is skipped, so a repeat is harmless.
+        Platform only. Never answers or logs a value.
+        """
+        _platform_only(request, authorization, "only the platform may import workspace keys")
+        store = _accounts(request)
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        wanted = set(body.tenants)
+        imported: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for tenant, vendor in secrets.workspace_provider_keys():
+            if wanted and tenant not in wanted:
+                continue
+            source = f"swarm-tenant-{tenant}-{vendor}"
+            provider = WORKSPACE_KEY_PROVIDER.get(vendor)
+            label = f"workspace-{vendor}"
+            entry = {"tenant_id": tenant, "vendor": vendor, "source": source}
+            if provider is None:
+                skipped.append({**entry, "reason": "no API key kind for this vendor"})
+                continue
+            if store.get(f"{tenant}:{label}") is not None:
+                skipped.append({**entry, "reason": "already imported"})
+                continue
+            try:
+                raw = secrets.access(source)
+            except Exception as exc:  # noqa: BLE001 -- the type only
+                skipped.append({**entry, "reason": f"unreadable: {type(exc).__name__}"})
+                continue
+            try:
+                key = api_key.parse_api_key(provider, raw)
+                check = _check_key_with_vendor(request, provider, key)
+                account = _store_api_key(
+                    request, store=store, secrets=secrets, owner_tenant=tenant,
+                    label=label, provider=provider, key=key, check=check, lends={},
+                    voice_dedicated=False, share_with_voice_it=False,
+                    added={**added, IMPORTED_FROM: source},
+                )
+            except CredentialError:
+                skipped.append({**entry, "reason": "not an API key"})
+                continue
+            except BrokerValidationError as exc:
+                skipped.append({**entry, "reason": str(exc)})
+                continue
+            imported.append({**entry, "account_id": account.account_id,
+                             "limited": check.outcome == api_key.CHECK_LIMITED})
+        log.info(
+            "audit: workspace provider keys were imported as pool keys",
+            extra={"audit": True, "imported": [i["account_id"] for i in imported],
+                   "skipped": [f"{s['source']}: {s['reason']}" for s in skipped]},
+        )
+        return {"imported": imported, "skipped": skipped}
 
     @app.put("/v1/accounts/{account_id}/model-classes")
     def set_model_classes(
@@ -4833,7 +5291,7 @@ def create_app(
             pools = validate_pools(body.pools)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
-        if account.provider == openai_api_key.PROVIDER and pools != (POOL_VOICE_IT,):
+        if account.voice_dedicated and pools != (POOL_VOICE_IT,):
             # Never lent to any agent or workspace: a key in the workspace
             # pool would be one `may_serve` hands a task.
             raise BrokerValidationError(

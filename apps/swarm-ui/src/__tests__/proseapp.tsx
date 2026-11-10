@@ -115,12 +115,15 @@ const ARROW = /[→›]/
  * What a reader sees of `root`: the help copy, the stylesheets and the scripts
  * taken out, the content a page shows rather than says
  * (`[data-prose-content]`: the lines of a file, diff or log Voice it's stage
- * draws, which are the planner's, not the console's explanatory prose), and
- * the rail (`.sk-side`), whose labels are the nav's, not the page's.
+ * draws, which are the planner's, not the console's explanatory prose), the
+ * rail (`.sk-side`), whose labels are the nav's, not the page's, and the
+ * visually hidden words (`.sk-vh`): they are a screen reader's, not the
+ * surface's -- the phone menu button's "4 waiting for approval" is its
+ * accessible description, drawn as the badge's digit.
  */
 export function measure(root: HTMLElement): Measure {
   const clone = root.cloneNode(true) as HTMLElement
-  for (const el of [...clone.querySelectorAll('[data-help-description], [data-prose-content], .sk-side, style, script')]) el.remove()
+  for (const el of [...clone.querySelectorAll('[data-help-description], [data-prose-content], .sk-side, .sk-vh, style, script')]) el.remove()
   const tokens = (clone.textContent ?? '').split(/\s+/).filter(Boolean)
   const arrowLinks = [...clone.querySelectorAll('a, [role="link"]')]
     .map((a) => (a.textContent ?? '').replace(/\s+/g, ' ').trim())

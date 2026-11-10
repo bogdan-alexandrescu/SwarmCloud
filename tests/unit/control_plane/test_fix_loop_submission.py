@@ -22,10 +22,9 @@ nothing else (invariant 10). What is held here:
   5. the loop is never the integrator: under `integrate` the fix still is,
      and integrates the implementer only.
 
-The profile shipped unavailable (contract request 124) and is available since
-request 151: the tests that need it on or off patch the catalogue entry with
-`monkeypatch`, never profiles.py, and the first test pins that, unavailable,
-the step is refused as disabled.
+The profile SHIPS UNAVAILABLE (contract request 124): the tests that need it
+patch the catalogue entry with `monkeypatch`, never profiles.py, and the first
+test pins that, unavailable, the step is refused as disabled.
 
 Measured for §10 before relying on `direct-pr` (FL-SUBMIT's first item): a
 `direct-pr` step with `allow_empty_diff: true` that changes nothing ends
@@ -70,17 +69,9 @@ _DROP = object()
 
 @pytest.fixture
 def loop_enabled(monkeypatch):
-    """`fix-loop`, available, as it is since contract request 151."""
+    """`fix-loop`, available for this test only (FL-ACCEPT makes it so for real)."""
     monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
                         replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=True))
-
-
-@pytest.fixture
-def loop_disabled(monkeypatch):
-    """`fix-loop` unavailable for this test, as it shipped until contract request 151."""
-    monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
-                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=False,
-                                disabled_reason="fix-loop is not available (patched off for this test)"))
 
 
 @pytest.fixture(autouse=True)
@@ -176,10 +167,10 @@ def _refused(client, db, spec, field: str, *, step_id: str = "loop") -> dict[str
 
 
 # --------------------------------------------------------------------------
-# An unavailable profile (as it shipped) is refused
+# The profile ships unavailable
 # --------------------------------------------------------------------------
 
-def test_an_unavailable_fix_loop_is_refused_as_disabled(client, db, loop_disabled):
+def test_an_unavailable_fix_loop_is_refused_as_disabled(client, db):
     assert not RUNNER_PROFILES[FIX_LOOP_PROFILE].available
     response = _post(client, _integrate())
     assert response.status_code == 422, response.text
@@ -382,7 +373,7 @@ def test_a_stated_merge_behind_a_loop_must_read_the_loop(client, db, loop_enable
 
 
 def test_on_merge_verdict_without_a_loop_appends_the_rereview_while_the_profile_is_unavailable(
-    client, db, loop_disabled,
+    client, db,
 ):
     # Q8 (b): with the profile available the loop is appended instead
     # (test_fix_loop_by_default.py); unavailable, an appended loop would be

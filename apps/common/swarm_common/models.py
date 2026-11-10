@@ -921,8 +921,36 @@ class Attempt:
     sized_disk_gib: int | None = None
     sized_live_split: dict[str, dict[str, float]] | None = None
 
+    # The account and the credential tier the attempt RAN on. Contract
+    # request 152 (accepted by the owner 2026-11-09, docs/design/llm-providers.md
+    # §8.2, Q8), taking up request 13. Written by the worker alone; each names
+    # the account the attempt KEPT LAST, never a history -- every move stays in
+    # the broker's `account_holds` log and on the timeline. At the end of the
+    # class for the reason given above.
+    #
+    #: The pool account this attempt's agent RAN on: the last assignment it kept,
+    #: not every one it was offered or moved through. None means "not recorded" --
+    #: an older attempt, or a worker that never reached account selection.
+    account_id: str | None = None
+    #: "account_pool" or "tenant_secret". None means "not recorded". Separate from
+    #: account_id because "no account" has two meanings that want different
+    #: readings: the pool is not how this tenant runs, or nobody wrote it down.
+    credential_source: str | None = None
+    #: The kind of credential account_id is: "plan" (a subscription the broker
+    #: refreshes) or "api_key" (a metered developer key). None when
+    #: credential_source is not "account_pool", or not recorded.
+    credential_tier: str | None = None
+
     def __post_init__(self) -> None:
         check_sized_live_split(self.sized_live_split)
+        # Request 152: None (every older document) passes; a tier no reader
+        # can name, which no writer produces, is refused.
+        if self.credential_tier is not None and self.credential_tier not in CREDENTIAL_TIERS:
+            raise ValueError(f"credential_tier is None or one of {CREDENTIAL_TIERS}")
+
+
+#: The values of `Attempt.credential_tier` (request 152).
+CREDENTIAL_TIERS = ("plan", "api_key")
 
 
 #: The containers and numbers of `Attempt.sized_live_split` (request 111).
