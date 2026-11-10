@@ -1283,6 +1283,29 @@ variable "api_refusals" {
   }
 }
 
+variable "api_workers" {
+  description = <<-EOT
+    uvicorn worker processes in each swarm-api instance, rendered as
+    SWARM_API_WORKERS (local.service_env, images/swarm-api/Dockerfile).
+
+    DEFAULT 1, the one process swarm-api has always run, so an environment
+    that sets nothing -- and a fresh install, whose tfvars the installer
+    renders without it -- changes nothing. Each worker holds its own
+    in-process caps, so swarm_api.workers divides every per-instance cap (git
+    calls, multipart answer slots, the per-principal and per-attempt rates)
+    by this count: raising it adds CPU parallelism, not capacity per cap.
+    Memory is per worker too (about 150 MB each idle), against the
+    instance's 2 GiB (main.tf).
+  EOT
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.api_workers >= 1 && var.api_workers <= 4 && floor(var.api_workers) == var.api_workers
+    error_message = "api_workers is a whole number of uvicorn workers from 1 to 4; the instance has 2 vCPU and 2 GiB."
+  }
+}
+
 variable "mirror_kms_key_name" {
   description = "Customer-managed key for the pull-through mirror repositories (build_mirror.tf); empty keeps Google-managed encryption, as modules/artifact_registry does for kms_key_name."
   type        = string
