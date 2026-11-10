@@ -39,9 +39,11 @@ def test_a_start_up_line_is_printed_before_uvicorn_is_execed():
 def test_uvicorn_is_still_execed_with_the_same_arguments():
     script = _entrypoint_script()
     # MUTATION: drop `exec` (uvicorn becomes a grandchild of tini and misses
-    # SIGTERM) or change its arguments, and this fails.
+    # SIGTERM) or change its arguments, and this fails. The worker count is
+    # SWARM_API_WORKERS, default 1 (test_api_image_workers_setting.py).
     assert script.endswith(
         "exec uvicorn --factory swarm_api.main:create_app --host 0.0.0.0 --port ${PORT:-8080}"
+        " --workers ${SWARM_API_WORKERS:-1}"
     ), script
 
 
