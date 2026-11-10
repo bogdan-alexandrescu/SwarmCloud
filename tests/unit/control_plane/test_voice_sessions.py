@@ -412,7 +412,7 @@ def test_the_personal_chatgpt_sign_in_routes_are_gone(client):
 @pytest.mark.parametrize(("refusal", "status", "reason"), [
     (lambda m: vs.pool_refusal(403, ('{"detail": "%s"}' % m).encode()), 403, "voice_pool_refused"),
     (lambda m: vs.pool_refusal(409, ('{"code": "voice_pool_busy", "message": "%s"}' % m).encode()),
-     409, "voice_pool_busy"),
+     409, "openai_key_in_use"),
     (lambda m: vs.pool_refusal(409, ('{"detail": {"code": "voice_pool_refused", "message": "%s"}}'
                                      % m).encode()), 409, "voice_pool_refused"),
 ], ids=["403-not-in-pool", "409-busy", "409-refused"])
@@ -600,7 +600,7 @@ def test_the_http_client_reads_a_refusal_as_unreachable(swarm_voice):
     (403, {"detail": "bob@example.com is not in the Voice it pool."}, vs.VoicePoolRefused,
      "voice_pool_refused"),
     (409, {"code": "voice_pool_busy", "message": "The Voice it account is busy."}, vs.VoicePoolBusy,
-     "voice_pool_busy"),
+     "openai_key_in_use"),
     (409, {"detail": {"code": "voice_pool_refused", "message": "The broker refused the lease."}},
      vs.VoicePoolBusy, "voice_pool_refused"),
 ], ids=["403", "409-busy", "409-refused"])
@@ -620,6 +620,40 @@ def test_the_http_client_reads_a_pool_refusal_with_its_sentence(swarm_voice, sta
     assert raised.value.message == sentence
     assert raised.value.detail == {"reason": reason}
     assert "credential" not in seen[0]["body"]
+
+
+@pytest.mark.parametrize("sent", [
+    # An older swarm-voice sent the Live sentence for a text start too.
+    {"code": "voice_pool_busy", "message":
+     "Voice it's OpenAI API key is in use by another session; try again when it ends."},
+    {"code": "voice_pool_busy", "message": "No Voice it plan account is free.",
+     "reason": "no_voice_account_available", "capability": "text"},
+], ids=["older-swarm-voice", "this-swarm-voice"])
+def test_a_text_start_with_no_plan_free_says_so_and_never_blames_the_openai_key(swarm_voice, sent):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 409, sent
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="bob@example.com",
+                        offer="", grant="g", mode=vs.MODE_TEXT)
+
+    with pytest.raises(vs.VoicePoolBusy) as raised:
+        client.start(call)
+    assert raised.value.detail == {"reason": vs.NO_PLAN_FREE}
+    assert raised.value.message == vs.NO_PLAN_SENTENCE
+    assert "OpenAI" not in raised.value.message and "another session" not in raised.value.message
+
+
+def test_only_a_live_start_whose_key_is_held_says_the_key_is_in_use(swarm_voice):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 409, {"code": "voice_pool_busy", "message": ""}
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    live = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="bob@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoicePoolBusy) as raised:
+        client.start(live)
+    assert raised.value.detail == {"reason": vs.OPENAI_KEY_IN_USE}
+    assert raised.value.message == vs.KEY_IN_USE_SENTENCE
 
 
 def test_a_409_that_names_no_pool_code_is_the_generic_refusal(swarm_voice):

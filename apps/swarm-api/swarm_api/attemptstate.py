@@ -88,7 +88,7 @@ from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLE
 from .rollup import derived_state_write
 from .task_accounts import account_after
 from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
-from .validation import HUMAN_READY_METADATA_KEY
+from .validation import FIX_LOOP_PROFILE, FIX_LOOP_ROUND_FIELD, HUMAN_READY_METADATA_KEY
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
@@ -711,6 +711,22 @@ class _Walk:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+#: A fix loop's re-review round, as `fixloop.REVIEW_KIND` signs it in the
+#: round's `fix_loop_round` record.
+FIX_LOOP_REVIEW_KIND = "review"
+
+
+def _declared_parents(task: Mapping[str, Any]) -> set[str]:
+    """The ids a task's spec declares as its parents: its `depends_on`, its
+    `metadata.input_from` and its dispatch block's `input_parents`."""
+    declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
+    metadata = _mapping(task.get("metadata"))
+    declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
+    dispatch = _mapping(metadata.get("dispatch"))
+    declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+    return declared
 
 
 def _builds_on(metadata: Mapping[str, Any]) -> str | None:
@@ -2189,11 +2205,8 @@ class AttemptState:
                         attempt.tenant_id, attempt.task_id, attempt.attempt_id, refusal)
             raise UpstreamNotDeclared(
                 "this task's spec does not verify, so it declares no upstream")
-        declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
-        metadata = _mapping(task.get("metadata"))
-        declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
-        dispatch = _mapping(metadata.get("dispatch"))
-        declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+        declared = _declared_parents(task)
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
         # A merge-only continuation (`issueci.merge_workflow`,
         # `MergeSources(continued=True)`) depends on nothing: the task it
         # merges, in another workflow, is named only here, and is the
@@ -2264,6 +2277,11 @@ class AttemptState:
             (in `upstream`), the opener's and the candidate's. Unverified, a
             rewrite of any one would serve any same-tenant task it named.
             The worker still holds each one to its signed spec as well.
+          * a merge step's fix loop's re-review (`agent_worker.merge.
+            _loop_review`): a task of this tenant whose own signed
+            `fix_loop_round` is of kind "review" and names a loop this merge
+            step declares, of its workflow and on `fix-loop`
+            (`_is_fix_loop_rereview`).
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
@@ -2272,7 +2290,43 @@ class AttemptState:
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id, walk)
                 or self._is_gate_review(attempt, task, upstream_task_id, walk)
                 or self._is_workflow_ancestor(attempt, task, upstream_task_id, walk)
-                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk))
+                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk)
+                or self._is_fix_loop_rereview(attempt, task, upstream_task_id, walk))
+
+    def _is_fix_loop_rereview(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                              upstream_task_id: str, walk: "_Walk") -> bool:
+        """A merge step's read of a `re-review:<k>` its fix loop ran
+        (`agent_worker.merge._loop_review`, docs/design/fix-loop.md §4.6).
+
+        A re-review is a one-step workflow of its own, named only by the
+        loop's tenant-writable `result_summary.fix_loop.final_review`, so
+        nothing the merge declares names it. It is served when ALL hold,
+        each read from a document verified HERE by the id it was read by:
+        this task's signed dispatch carries a `merge_target` (it is a merge
+        step); the re-review, of this tenant, carries a signed
+        `fix_loop_round` of kind "review" whose `loop_task` is one this
+        task declares (`_declared_parents`); and that loop is this tenant's,
+        of this task's workflow, on the `fix-loop` profile. A task the
+        loop's summary names without that signed round record, or a
+        re-review of another loop, stays the 403."""
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
+        workflow_id = task.get("workflow_id")
+        if (not _mapping(dispatch.get("merge_target")) or not isinstance(workflow_id, str)
+                or not workflow_id):
+            return False
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
+            return False
+        record = _mapping(_mapping(_mapping(doc.get("metadata")).get("dispatch"))
+                          .get(FIX_LOOP_ROUND_FIELD))
+        loop_id = record.get("loop_task")
+        if (record.get("kind") != FIX_LOOP_REVIEW_KIND or not isinstance(loop_id, str)
+                or loop_id not in _declared_parents(task)):
+            return False
+        loop = self._read(self._ref(TASKS, loop_id))
+        return (loop is not None and self._verified(attempt, loop, loop_id, walk)
+                and loop.get("workflow_id") == workflow_id
+                and loop.get("runner_profile") == FIX_LOOP_PROFILE)
 
     def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
                              upstream_task_id: str, walk: "_Walk") -> bool:

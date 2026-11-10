@@ -109,6 +109,21 @@ def test_the_final_rereviews_merge_merges_at_the_head_it_judged(tmp_path):
     assert (RR2, f"wf_{RR2}") in world.verified
 
 
+def test_a_one_round_loops_rereview_merge_merges(tmp_path):
+    """The live finding (9 November 2026): `re-review:1` said MERGE and the
+    merge step's read of it was refused by the state route
+    (`attemptstate._is_fix_loop_rereview` now serves it)."""
+    world = _loop_world(tmp_path, final_review=RR1, rounds=1)
+    world.docs[RR1] = _review_doc(world, RR1, {"verdict": "MERGE", "findings": []}, round_=1)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["review_task"] == RR1
+    assert [call.body["sha"] for call in world.merge_calls()] == [FIX2_HEAD]
+    assert (RR1, f"wf_{RR1}") in world.verified
+
+
 def test_a_final_rereviews_not_yet_is_verdict_not_merge(tmp_path):
     world = _loop_world(tmp_path, verdict={"verdict": "NOT_YET", "findings": ["still broken"]})
 
