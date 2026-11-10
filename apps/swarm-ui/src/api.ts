@@ -108,19 +108,40 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
 export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
-function readFixturePersona(): FixturePersona {
-  if (typeof document === 'undefined') return 'member'
+/** One fixture switch's cookie value, or null when the page has no such cookie. */
+function readFixtureCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
-    if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      const value = part.slice(at + 1).trim()
-      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
-    }
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim()
   }
-  return 'member'
+  return null
+}
+
+function readFixturePersona(): FixturePersona {
+  const value = readFixtureCookie(PERSONA_COOKIE)
+  return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
 }
 
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
+
+/**
+ * THE EXAMPLE PLANS' SWITCH (owner, 6 November 2026: the approval page can be
+ * seen and tested on its fixtures). The approval page's three example plans
+ * (`fixtureExampleRuns`) and the fixture inbox that projects the PLANNED runs
+ * (`fixtureApprovalItems`) load only when the page carries this cookie as
+ * `on`, set by hand in a dev server's console or by a test before it imports
+ * this module:
+ *
+ *   document.cookie = 'swarm_fixture_example_plans=on'
+ *
+ * Off by default, so the default fixtures are what they always were: the
+ * Runs list, Home's waiting list, the Automate badge and the inbox draw the
+ * pages every prose ratchet measures. A cookie, as the persona is, and read
+ * ONCE, here, and only in the fixture build; any other value is off.
+ */
+const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
+const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
 /**
@@ -1708,6 +1729,264 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
 }
 
 /**
+ * A plan with the planner's approval sections (plansections.py: `purpose`,
+ * `why`, `changes`, `risk`, `validation`, `graph`), as the run read serves
+ * them. The sections are the server's and absent from `RunPlan`, which types
+ * the plan before them; the approval page reads them off the plan as served.
+ */
+type FixtureSectionedPlan = RunPlan & {
+  purpose: string
+  why: string
+  changes: { file: string; area: string; kind: 'add' | 'modify' | 'delete' | 'test'; what: string }[]
+  risk: { level: 'low' | 'medium' | 'high'; factors: string[]; blast_radius: string; invariants: number[]; mitigations: string[]; rollback: string }
+  validation: { tests: { file: string; proves: string; requirements: number[] }[]; qa: { check: string; where: string; when: string }[] }
+  graph: { nodes: { id: string; label: string; kind: 'changed' | 'caller' | 'test' | 'route'; file?: string }[]; edges: { from: string; to: string; kind: 'calls' | 'imports' | 'tests' }[] }
+}
+
+/**
+ * THE APPROVAL PAGE'S THREE EXAMPLE PLANS (owner, 6 November 2026: the page
+ * can be seen and tested on its fixtures). Each is an issue run waiting for
+ * approval with every section the run read serves: a small one-step plan, a
+ * high-risk plan over admission and a frozen contract file, and a three-step
+ * plan whose steps and change graph have an order. Invented repositories,
+ * files and people.
+ */
+const FIXTURE_PLAN_SMALL: FixtureSectionedPlan = {
+  summary: 'Date each exported note in its own time zone, not the server\'s.',
+  purpose: 'Date each exported note in the zone it was written in, so a late-evening note keeps its day.',
+  why: 'The export formats every date in the server\'s zone, so a note saved after 23:00 lands on the next day.',
+  estimate: '1 h',
+  requirements: ['An exported note is dated in the zone it was written in', 'A note with no zone is dated in UTC, as today'],
+  steps: [{
+    step_id: 'export-zone',
+    title: 'Format export dates in the note\'s zone',
+    prompt: 'Pass the note\'s zone to format_day() in src/notes/export.py, with the test first.',
+    files: ['src/notes/export.py', 'src/notes/timefmt.py', 'tests/test_export_zone.py', 'docs/export.md'],
+    estimate: '1 h',
+  }],
+  changes: [
+    { file: 'src/notes/export.py', area: 'Export', kind: 'modify', what: 'Passes each note\'s zone to format_day()' },
+    { file: 'src/notes/timefmt.py', area: 'Export', kind: 'modify', what: 'format_day() takes a zone, UTC when none' },
+    { file: 'tests/test_export_zone.py', area: 'Tests', kind: 'test', what: 'Red first: a 23:30 note keeps its day' },
+    { file: 'docs/export.md', area: 'Docs', kind: 'modify', what: 'Says which zone an exported date is in' },
+  ],
+  risk: {
+    level: 'low',
+    factors: ['Changes one formatter that only the export calls'],
+    blast_radius: 'The notes export. No write path, no stored data.',
+    invariants: [],
+    mitigations: ['A note with no zone keeps today\'s UTC date'],
+    rollback: 'Revert the pull request; nothing stored changes.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/test_export_zone.py', proves: 'A note saved at 23:30 in its zone is exported on that day', requirements: [1] },
+      { file: 'tests/test_export_zone.py', proves: 'A note with no zone is exported in UTC', requirements: [2] },
+    ],
+    qa: [{ check: 'Export a note written late in the evening and read its date', where: 'staging · /notes/export', when: 'after deploy' }],
+  },
+  graph: {
+    nodes: [
+      { id: 'c1', label: 'export_notes()', kind: 'changed', file: 'src/notes/export.py' },
+      { id: 'c2', label: 'format_day()', kind: 'changed', file: 'src/notes/timefmt.py' },
+      { id: 'k1', label: 'GET /notes/export', kind: 'caller', file: 'src/notes/routes.py' },
+      { id: 't1', label: '2 tests · new', kind: 'test', file: 'tests/test_export_zone.py' },
+    ],
+    edges: [
+      { from: 'k1', to: 'c1', kind: 'calls' },
+      { from: 'c1', to: 'c2', kind: 'calls' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+    ],
+  },
+}
+
+const FIXTURE_PLAN_HIGH_RISK: FixtureSectionedPlan = {
+  summary: 'Reserve every pool a lease needs in one transaction at admission, all or nothing.',
+  purpose: 'Admit a run only when every pool it needs is reserved together, in one transaction.',
+  why: 'Admission reserves pools one at a time, so two runs racing for the last slot each held half and neither started.',
+  estimate: '5 h',
+  requirements: ['A run is admitted only with every pool reserved', 'A refused reservation leaves no pool held', 'Concurrency counts a run from LEASED'],
+  steps: [
+    {
+      step_id: 'contract-reservation',
+      title: 'Add the reservation\'s pools to the contract',
+      prompt: 'Add a pools list to Reservation in apps/common/swarm_common/contract.py, through a contract request.',
+      files: ['apps/common/swarm_common/contract.py'],
+      estimate: '1 h',
+    },
+    {
+      step_id: 'admission-all-or-nothing',
+      title: 'Reserve every pool in one transaction',
+      prompt: 'Move the per-pool reservations in admission.py into one transaction in capacity.py, with the race test first.',
+      files: [
+        'apps/scheduler-api/scheduler_api/admission.py', 'apps/scheduler-api/scheduler_api/capacity.py',
+        'tests/unit/scheduler/test_admission_all_or_nothing.py', 'tests/unit/scheduler/test_capacity_race.py',
+      ],
+      estimate: '4 h',
+    },
+  ],
+  changes: [
+    { file: 'apps/common/swarm_common/contract.py', area: 'Contract', kind: 'modify', what: 'Reservation gains the list of pools it holds' },
+    { file: 'apps/scheduler-api/scheduler_api/admission.py', area: 'Admission', kind: 'modify', what: 'admit() reserves through one call, not one per pool' },
+    { file: 'apps/scheduler-api/scheduler_api/capacity.py', area: 'Capacity', kind: 'modify', what: 'reserve_all() takes every pool in one transaction' },
+    { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', area: 'Tests', kind: 'test', what: 'Red first: a refused pool leaves none held' },
+    { file: 'tests/unit/scheduler/test_capacity_race.py', area: 'Tests', kind: 'test', what: 'Red first: two racing runs, one admitted whole' },
+  ],
+  risk: {
+    level: 'high',
+    factors: ['Changes how every run is admitted', 'Edits a frozen contract file', 'A transaction over every pool can contend'],
+    blast_radius: 'Admission and capacity for every tenant: a defect holds or leaks capacity.',
+    invariants: [2, 3],
+    mitigations: ['The race test runs two admissions against one free slot', 'The transaction retries a contended read three times, then refuses'],
+    rollback: 'Revert the pull request; reservations made since carry an unread pools list.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', proves: 'A run with one pool refused holds no other pool', requirements: [1, 2] },
+      { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', proves: 'An admitted run counts against concurrency from LEASED', requirements: [3] },
+      { file: 'tests/unit/scheduler/test_capacity_race.py', proves: 'Two runs racing for the last slot: one admitted, one queued', requirements: [1] },
+    ],
+    qa: [
+      { check: 'Submit two runs for one free slot and read that one leases and one queues', where: 'staging · /work/runs', when: 'after deploy' },
+      { check: 'Read the capacity board: no pool shows a held slot without a lease', where: 'staging · /capacity', when: 'after deploy' },
+    ],
+  },
+  graph: {
+    nodes: [
+      { id: 'f1', label: 'Reservation', kind: 'changed', file: 'apps/common/swarm_common/contract.py' },
+      { id: 'c1', label: 'admit()', kind: 'changed', file: 'apps/scheduler-api/scheduler_api/admission.py' },
+      { id: 'c2', label: 'reserve_all()', kind: 'changed', file: 'apps/scheduler-api/scheduler_api/capacity.py' },
+      { id: 'k1', label: 'dispatch_next()', kind: 'caller', file: 'apps/scheduler-api/scheduler_api/dispatch.py' },
+      { id: 't1', label: '2 tests · new', kind: 'test', file: 'tests/unit/scheduler/test_admission_all_or_nothing.py' },
+      { id: 't2', label: '1 test · new', kind: 'test', file: 'tests/unit/scheduler/test_capacity_race.py' },
+    ],
+    edges: [
+      { from: 'k1', to: 'c1', kind: 'calls' },
+      { from: 'c1', to: 'c2', kind: 'calls' },
+      { from: 'c2', to: 'f1', kind: 'imports' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+      { from: 't2', to: 'c2', kind: 'tests' },
+    ],
+  },
+}
+
+const FIXTURE_PLAN_THREE_STEPS: FixtureSectionedPlan = {
+  summary: 'Break the monthly invoice down by team: the ledger column, the API, then the page.',
+  purpose: 'Show each team\'s share on the monthly invoice, from the ledger through the API to the page.',
+  why: 'The invoice gives one total, so finance splits each month\'s bill between teams by hand.',
+  estimate: '6 h',
+  requirements: ['Each ledger entry records its team', 'The invoice read serves a total per team', 'The invoice page draws a row per team'],
+  steps: [
+    {
+      step_id: 'ledger-team',
+      title: 'Record the team on each ledger entry',
+      prompt: 'Add a team column to the ledger in src/ledger/schema.py with a migration, with tests first.',
+      files: ['src/ledger/schema.py', 'migrations/0042_entry_team.sql', 'tests/test_ledger_team.py'],
+      estimate: '2 h',
+    },
+    {
+      step_id: 'invoice-api',
+      title: 'Serve a total per team on the invoice read',
+      prompt: 'Group the month\'s entries by team in src/invoices/totals.py and serve them on GET /invoices/{month}.',
+      depends_on: ['ledger-team'],
+      files: ['src/invoices/totals.py', 'src/invoices/routes.py', 'tests/test_invoice_teams.py'],
+      estimate: '2 h',
+    },
+    {
+      step_id: 'invoice-page',
+      title: 'Draw a row per team on the invoice page',
+      prompt: 'Draw the teams\' rows in web/src/Invoice.tsx from the invoice read, with a test first.',
+      depends_on: ['invoice-api'],
+      files: ['web/src/Invoice.tsx', 'web/src/__tests__/invoice.teams.test.tsx'],
+      estimate: '2 h',
+    },
+  ],
+  changes: [
+    { file: 'src/ledger/schema.py', area: 'Ledger', kind: 'modify', what: 'LedgerEntry gains a team column' },
+    { file: 'migrations/0042_entry_team.sql', area: 'Ledger', kind: 'add', what: 'Adds the team column, unset on older entries' },
+    { file: 'tests/test_ledger_team.py', area: 'Tests', kind: 'test', what: 'Red first: a new entry keeps its team' },
+    { file: 'src/invoices/totals.py', area: 'Invoices', kind: 'modify', what: 'month_totals() groups entries by team' },
+    { file: 'src/invoices/routes.py', area: 'Invoices', kind: 'modify', what: 'GET /invoices/{month} serves the teams\' totals' },
+    { file: 'tests/test_invoice_teams.py', area: 'Tests', kind: 'test', what: 'Red first: the teams\' totals add up to the total' },
+    { file: 'web/src/Invoice.tsx', area: 'Invoice page', kind: 'modify', what: 'Draws one row per team under the total' },
+    { file: 'web/src/__tests__/invoice.teams.test.tsx', area: 'Tests', kind: 'test', what: 'Red first: a row per team, in the served order' },
+  ],
+  risk: {
+    level: 'medium',
+    factors: ['A migration on the ledger table', 'Older entries have no team'],
+    blast_radius: 'The ledger\'s writes and the invoice read and page.',
+    invariants: [],
+    mitigations: ['Older entries total under "No team" rather than being dropped', 'The migration adds a column and rewrites no row'],
+    rollback: 'Revert the pull request; the added column stays and is unread.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/test_ledger_team.py', proves: 'A new ledger entry is stored with its team', requirements: [1] },
+      { file: 'tests/test_invoice_teams.py', proves: 'The teams\' totals add up to the invoice total', requirements: [2] },
+      { file: 'web/src/__tests__/invoice.teams.test.tsx', proves: 'The page draws one row per served team', requirements: [3] },
+    ],
+    qa: [{ check: 'Open last month\'s invoice and read a row per team that adds up', where: 'staging · /billing/invoices', when: 'after deploy' }],
+  },
+  graph: {
+    nodes: [
+      { id: 'c1', label: 'LedgerEntry', kind: 'changed', file: 'src/ledger/schema.py' },
+      { id: 'c2', label: 'month_totals()', kind: 'changed', file: 'src/invoices/totals.py' },
+      { id: 'r1', label: 'GET /invoices/{month}', kind: 'route', file: 'src/invoices/routes.py' },
+      { id: 'c3', label: 'Invoice', kind: 'changed', file: 'web/src/Invoice.tsx' },
+      { id: 't1', label: '1 test · new', kind: 'test', file: 'tests/test_ledger_team.py' },
+      { id: 't2', label: '1 test · new', kind: 'test', file: 'tests/test_invoice_teams.py' },
+      { id: 't3', label: '1 test · new', kind: 'test', file: 'web/src/__tests__/invoice.teams.test.tsx' },
+    ],
+    edges: [
+      { from: 'c2', to: 'c1', kind: 'imports' },
+      { from: 'r1', to: 'c2', kind: 'calls' },
+      { from: 'c3', to: 'r1', kind: 'calls' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+      { from: 't2', to: 'c2', kind: 'tests' },
+      { from: 't3', to: 'c3', kind: 'tests' },
+    ],
+  },
+}
+
+/** An example plan's run: its own invented issue, planned `minutes` ago and waiting for approval. */
+function fixtureExampleRun(id: string, plan: FixtureSectionedPlan, issue: { owner: string; repo: string; number: number; title: string; body: string; labels: string[] }, minutes: number, by: string): IssueRun {
+  const ref = `${issue.owner}/${issue.repo}#${issue.number}`
+  const url = `https://github.com/${issue.owner}/${issue.repo}/issues/${issue.number}`
+  const created = new Date(FIXTURE_NOW - (minutes + 4) * 60_000).toISOString()
+  const planned = new Date(FIXTURE_NOW - minutes * 60_000).toISOString()
+  return fixtureIssueRun(id, {
+    issue: { ref, owner: issue.owner, repo: issue.repo, number: issue.number, url, repository_url: `https://github.com/${issue.owner}/${issue.repo}` },
+    plan,
+    // Built, not a literal, as the first run's digest is.
+    plan_digest: `sha256:${id.slice(4).padEnd(64, '0')}`,
+    created_by: by, created_at: created, updated_at: planned,
+    history: [{ at: created, from: null, to: 'PLANNING', by }, { at: planned, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+    issue_read: { title: issue.title, labels: issue.labels, state: 'open', comments: 2, url, body: issue.body, body_truncated: false, body_redacted: false, read_at: created },
+  })
+}
+
+function fixtureExampleRuns(): IssueRun[] {
+  if (!FIXTURE_EXAMPLE_PLANS) return []
+  return [
+    fixtureExampleRun('run_5a1d3e70', FIXTURE_PLAN_SMALL, {
+      owner: 'example-org', repo: 'notes-service', number: 88, labels: ['bug'],
+      title: 'An exported note saved after 23:00 is dated the next day',
+      body: 'Export a note written at 23:30: its date is the following day.',
+    }, 12, 'member@example.com'),
+    fixtureExampleRun('run_7e02b9c4', FIXTURE_PLAN_HIGH_RISK, {
+      owner: 'example-org', repo: 'example-scheduler', number: 640, labels: ['bug', 'capacity'],
+      title: 'Two runs racing for the last slot each reserve half of it and neither starts',
+      body: 'Submit two runs when one slot is free: both hold one pool and wait for the other.',
+    }, 25, 'operator@example.com'),
+    fixtureExampleRun('run_3c8f6a15', FIXTURE_PLAN_THREE_STEPS, {
+      owner: 'example-org', repo: 'billing-ledger', number: 215, labels: ['enhancement'],
+      title: 'The monthly invoice gives one total, with no share per team',
+      body: 'Show each team\'s share of the month on the invoice.',
+    }, 55, 'reviewer@example.com'),
+  ]
+}
+
+/**
  * THE FIXTURE RUNS REMEMBER WHAT WAS DONE TO THEM (QA1-FIX-24, part of
  * #2596): a run planned from Submit is a new run created now (runs-submit-15),
  * and an approval or a rejection is still there on the next read
@@ -1722,6 +2001,7 @@ function fixtureIssueRuns(): IssueRun[] {
   const created = new Date(FIXTURE_NOW - 50 * 60_000).toISOString()
   return [
     ...fixtureRunsMade,
+    ...fixtureExampleRuns(),
     fixtureIssueRun('run_4c1e09d2'),
     // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
@@ -13070,12 +13350,14 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
  * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
  * The development fixtures serve no inbox, and say so by being empty rather
- * than by inventing items.
+ * than by inventing items; behind the example plans' switch
+ * (`FIXTURE_EXAMPLE_PLANS`) it is their PLANNED runs, projected as the live
+ * API projects them (`fixtureApprovalItems`).
  */
 export async function loadApprovals(
   options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
 ): Promise<Result<{ approvals: ApprovalItem[] }>> {
-  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  if (USE_FIXTURES) return fixtureApprovals(options)
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
@@ -13139,7 +13421,7 @@ export interface ApprovalDetail {
 export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
   const target = route('/v1/approvals/{id}', { id: itemId })
   if (USE_FIXTURES) {
-    const made = fixtureContractApproval(itemId)
+    const made = fixtureContractApproval(itemId) ?? fixtureRunApproval(itemId)
     if (made === null) return scheduleNotServed(target)
     noteFixtureProbe(target, 0, true)
     return { status: 'ok', fetchedAt: Date.now(), data: made }
@@ -13148,9 +13430,66 @@ export async function loadApproval(itemId: string): Promise<Result<ApprovalDetai
 }
 
 /**
+ * THE FIXTURE INBOX: every PLANNED fixture run, as `approvals.project_run`
+ * projects one -- `run:<id>`, its digest the plan's, its summary the issue and
+ * the plan's summary, pending until the run is approved or rejected. Among
+ * them are the approval page's three example plans (`fixtureExampleRuns`).
+ * Only behind the example plans' switch (`FIXTURE_EXAMPLE_PLANS`): off it the
+ * inbox is empty and no `run:<id>` item is served or decided.
+ */
+const FIXTURE_RUN_APPROVAL = 'run:'
+
+function fixtureApprovalItems(): (ApprovalItem & { digest: string | null; approvers: string; may_decide: unknown })[] {
+  // Off the switch the fixture inbox is empty, as it always was.
+  if (!FIXTURE_EXAMPLE_PLANS) return []
+  return fixtureIssueRuns()
+    .filter((r) => r.state === 'PLANNED' && r.plan_approval === 'required')
+    .map((r) => ({
+      approval_id: `${FIXTURE_RUN_APPROVAL}${r.id}`, kind: 'plan',
+      subject: { run_id: r.id, issue: r.issue.ref, schedule_id: null, firing_id: null },
+      digest: r.plan_digest,
+      summary: `${r.issue.ref}: ${r.plan?.summary ?? ''}`,
+      approvers: 'members', state: 'pending',
+      requested_at: [...r.history].reverse().find((h) => h.to === 'PLANNED')?.at ?? r.created_at,
+      // A run made by hand waits as it always has.
+      expires_at: null, projected: true,
+      may_decide: { approve: true, reject: true, why: null, deciders: ['members'] },
+    }))
+    // Oldest first, as the inbox is.
+    .sort((a, b) => (a.requested_at ?? '').localeCompare(b.requested_at ?? ''))
+}
+
+async function fixtureApprovals(options: { kind?: string; state?: string }): Promise<Result<{ approvals: ApprovalItem[] }>> {
+  // No fixture probe, as before the example plans: the inbox is read by the
+  // frame on every page, and a probe here would add a `/v1/approvals` row to
+  // Capacity > API reads that the fixture build never showed.
+  // Every projected item is pending: a decided plan's run is no longer PLANNED.
+  const approvals = options.state === 'decided' || options.state === 'expired'
+    ? []
+    : fixtureApprovalItems().filter((i) => options.kind === undefined || options.kind === '' || i.kind === options.kind)
+  return approvals.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', fetchedAt: Date.now(), data: { approvals } }
+}
+
+/** `GET /v1/approvals/run:<id>` on the fixtures: the projected item and its run, as the route serves them. */
+function fixtureRunApproval(itemId: string): ApprovalDetail | null {
+  const approval = fixtureApprovalItems().find((i) => i.approval_id === itemId)
+  const run = fixtureIssueRuns().find((r) => r.id === approval?.subject.run_id)
+  return approval === undefined || run === undefined ? null : { approval, run: run as unknown as ApprovalDetail['run'] }
+}
+
+/** A projected plan's decision on the fixtures is its run's own, as the route decides it; null for any other item. */
+async function fixtureRunDecision(itemId: string, action: 'approve' | 'reject', reason = ''): Promise<Result<unknown> | null> {
+  const item = fixtureApprovalItems().find((i) => i.approval_id === itemId)
+  if (item === undefined || item.subject.run_id === undefined) return null
+  const r = await fixturePlanAction(item.subject.run_id, action, undefined, reason)
+  if (r.status !== 'ok') return r
+  return { status: 'ok', fetchedAt: r.fetchedAt, data: { approval: { ...item, state: action === 'approve' ? 'approved' : 'rejected' }, run: r.data.run } }
+}
+
+/**
  * THE FIXTURE BUILD'S JEV JUDGMENTS (jev-contract.md lane 7), each a merge
- * waiting on its owner and opened by address, `/automate/approvals/<id>`: the
- * inbox stays empty, as the fixture build's inbox always is.
+ * waiting on its owner and opened by address, `/automate/approvals/<id>`: none
+ * is in the fixture inbox, which lists only the PLANNED runs.
  *
  *   * `apr_fixture_contract_judged`: Jev judged three requirements, one unmet,
  *     and the step was already sent back twice;
@@ -13255,14 +13594,14 @@ export function fixtureContractRefusal(body: Record<string, unknown>): { code: s
  */
 export async function approveApproval(itemId: string, body: { digest: unknown; confirm?: string }): Promise<Result<unknown>> {
   const target = route('/v1/approvals/{id}:approve', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) return (await fixtureRunDecision(itemId, 'approve')) ?? scheduleNotServed(target)
   return write(target, 'POST', body)
 }
 
 /** `POST /v1/approvals/{id}:reject`: any member may, and a reason is required (§4.5). */
 export async function rejectApproval(itemId: string, body: { reason: string }): Promise<Result<unknown>> {
   const target = route('/v1/approvals/{id}:reject', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) return (await fixtureRunDecision(itemId, 'reject', body.reason)) ?? scheduleNotServed(target)
   return write(target, 'POST', body)
 }
 
