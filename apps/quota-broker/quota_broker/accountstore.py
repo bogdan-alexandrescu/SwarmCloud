@@ -39,17 +39,22 @@ from .accounts import (
     Account,
     AccountError,
     AccountState,
+    Lend,
     WindowReading,
     _withheld,
     account_id_for,
     accounts_serving,
+    key_secret_name,
     secret_name,
     validate_display_name,
     validate_label,
     validate_max_agents,
     validate_model_classes,
+    validate_per_workspace_max,
+    validate_spend_cap,
     windows_to_firestore,
 )
+from . import api_key
 
 log = logging.getLogger(__name__)
 
@@ -646,12 +651,23 @@ class AccountStore:
         *,
         provider: str = "anthropic",
         lend_to: Iterable[str] = (),
+        lends: dict[str, Lend] | None = None,
+        voice_dedicated: bool | None = None,
     ) -> Account:
         """Record an account. Does NOT write the credential.
 
         The credential goes to Secret Manager out of band, by the same rule that
         keeps provider keys out of terraform state: the value must not pass
         through a component whose job is bookkeeping.
+
+        `lends` (§4.6) is who may borrow it, each with its cap; validated by
+        the caller (`accounts.validate_lends`). With `lends` None, `lend_to`
+        names the borrowers as before, and each keeps the cap the account
+        already gave it, or is carried over with the account's `max_agents`,
+        marked not set (`Account.__post_init__`).
+
+        `voice_dedicated` None keeps what the document says (False on a new
+        account); a key's new account derives its `--key-` secret name.
         """
         validate_label(label)
         if not owner_tenant:
@@ -670,6 +686,16 @@ class AccountStore:
             # point: a `set` built from a document nobody could read would
             # replace its holds and state with defaults.
             current = _decode(account_id, existing.to_dict() or {})
+            if lends is None:
+                # A bare list: a borrower already lent keeps its cap; a new one
+                # is carried over with the account's own `max_agents`.
+                lends = {
+                    t: current.lends.get(t) or Lend(current.max_agents, None, cap_set=False)
+                    for t in dict.fromkeys(lend)
+                }
+                if api_key.is_key(provider):
+                    # A key is lent only with a spend cap: a bare name lends nothing new.
+                    lends = {t: c for t, c in lends.items() if c.monthly_spend_cap_usd is not None}
             updated = Account(
                 account_id=account_id,
                 owner_tenant=owner_tenant,
@@ -733,6 +759,16 @@ class AccountStore:
                 # account back in the workspace pool.
                 pools=current.pools,
                 voice_it_people=current.voice_it_people,
+                # The caps of §4.6, CARRIED OVER for the reason `max_agents`
+                # is: a lending change or a key's replacement must not lift a
+                # workspace's cap, a key's spend ceiling or its exhausted mark.
+                lends=lends,
+                per_workspace_max=dict(current.per_workspace_max),
+                monthly_spend_cap_usd=current.monthly_spend_cap_usd,
+                exhausted_at=current.exhausted_at,
+                voice_dedicated=(
+                    current.voice_dedicated if voice_dedicated is None else voice_dedicated
+                ),
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -748,7 +784,15 @@ class AccountStore:
             label=label,
             provider=provider,
             lend_to=lend,
-            secret_ref=secret_name(owner_tenant, label),
+            lends=lends or {},
+            voice_dedicated=bool(voice_dedicated),
+            # A key's one secret carries the `key-` mark (§4.1), so IAM can
+            # tell it from a plan's.
+            secret_ref=(
+                key_secret_name(owner_tenant, label)
+                if api_key.is_key(provider)
+                else secret_name(owner_tenant, label)
+            ),
             # Which of two registrations of one organisation is the older
             # (`accounts.duplicates`, #2222).
             registered_at=self._now(),
@@ -913,6 +957,67 @@ class AccountStore:
             return None
         ref.update({"max_agents": stored})
         return self.get(account_id)
+
+    def set_per_workspace_max(self, account_id: str, caps: dict[str, int]) -> Account | None:
+        """Each workspace's cap on the agents it holds on this account (Q6).
+
+        Validated by `validate_per_workspace_max`. An UPDATE of the one field,
+        as `set_max_agents` is: lowering a cap moves no agent; the next grant
+        over it is refused (`acquire_hold`). None when no such account exists.
+        """
+        stored = validate_per_workspace_max(caps)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"per_workspace_max": stored})
+        return self.get(account_id)
+
+    def set_monthly_spend_cap(self, account_id: str, cap: float | None) -> Account | None:
+        """A key's monthly spend ceiling in US dollars, or None for none (§4.6).
+        An UPDATE of the one field. None when no such account exists."""
+        stored = None if cap is None else validate_spend_cap(cap)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"monthly_spend_cap_usd": stored})
+        return self.get(account_id)
+
+    def carry_over_lends(self) -> list[str]:
+        """Write `lends` on every account document that has `lend_to` and no
+        `lends` (§4.6, "Today's lends"): each borrower with the account's own
+        `max_agents`, marked not set. Each in its own transaction, so a lend
+        changed meanwhile is never overwritten. Returns the ids written; a
+        malformed document is skipped, as the listing skips it."""
+        from google.cloud import firestore
+
+        from .sweeplease import txn_snapshot
+
+        written: list[str] = []
+        for snap in self._db.collection(COLLECTION).stream():
+            data = snap.to_dict() or {}
+            if data.get("lends") is not None or not data.get("lend_to"):
+                continue
+            ref = self._db.collection(COLLECTION).document(snap.id)
+
+            @firestore.transactional
+            def _apply(txn: Any, ref: Any = ref, account_id: str = snap.id) -> bool:
+                current = txn_snapshot(txn.get(ref))
+                raw = current.to_dict() if getattr(current, "exists", False) else None
+                if not raw or raw.get("lends") is not None:
+                    return False
+                try:
+                    account = _decode(account_id, raw)
+                except MalformedAccountError:
+                    return False
+                txn.update(ref, {
+                    "lends": {t: c.to_firestore() for t, c in account.lends.items()},
+                    "lend_to": list(account.lend_to),
+                })
+                return True
+
+            if _apply(self._db.transaction()):
+                written.append(snap.id)
+        return sorted(written)
 
     def remove(self, account_id: str) -> None:
         """Forget the account. Does NOT delete the secret.
@@ -1167,15 +1272,25 @@ class AccountStore:
             # write inside one transaction.
             snap = txn_snapshot(txn.get(ref))
             account_snap = (
-                txn_snapshot(txn.get(account_ref)) if limited_until is not None else None
+                txn_snapshot(txn.get(account_ref))
+                if limited_until is not None or kind == "exhausted"
+                else None
             )
             raw = snap.to_dict() if getattr(snap, "exists", False) else None
             folded = fold_health(raw, event, now, limited_until=limited_until)
             txn.set(ref, folded)
             if account_snap is None or not getattr(account_snap, "exists", False):
                 return
-            stored = folded["limited_until"]
             current = account_snap.to_dict() or {}
+            if kind == "exhausted" and api_key.is_key(current.get("provider")):
+                # A KEY HAS NO WINDOW (§5.2): its exhausted report is credit
+                # gone, which does not reset by itself. Marked once; a
+                # Resume or a passing probe clears it, never a later report.
+                if not isinstance(current.get("exhausted_at"), datetime):
+                    txn.update(account_ref, {"exhausted_at": now})
+            if limited_until is None:
+                return
+            stored = folded["limited_until"]
             window = (
                 event["window"]
                 if stored == limited_until

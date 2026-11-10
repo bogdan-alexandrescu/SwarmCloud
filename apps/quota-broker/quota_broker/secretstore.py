@@ -592,6 +592,28 @@ class SecretManagerStore:
             pairs.append((tenant, provider))
         return sorted(set(pairs))
 
+    def workspace_provider_keys(self) -> list[tuple[str, str]]:
+        """Every (tenant_id, vendor) whose own provider secret,
+        `swarm-tenant-<tenant>-<vendor>`, `scripts/create-secrets.sh` wrote
+        (its `component=tenant-credential` labels), for the import of Q7.
+        Names only: the value is read by the import, one secret at a time,
+        and never listed. A secret whose name is not exactly what its labels
+        derive is skipped, so a label cannot point the import at another
+        secret."""
+        pairs: list[tuple[str, str]] = []
+        for secret in self._list():
+            name = secret.name.rsplit("/", 1)[-1]
+            if name.endswith(REFRESH_SUFFIX):
+                continue
+            labels = dict(getattr(secret, "labels", {}) or {})
+            tenant, vendor = labels.get("tenant"), labels.get("provider")
+            if not tenant or vendor not in ("anthropic", "openai"):
+                continue
+            if name != f"swarm-tenant-{tenant}-{vendor}":
+                continue
+            pairs.append((tenant, vendor))
+        return sorted(set(pairs))
+
     def _list(self) -> Iterator[Any]:
         client = self._secret_client()
         return iter(

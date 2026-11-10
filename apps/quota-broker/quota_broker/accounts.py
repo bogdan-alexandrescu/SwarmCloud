@@ -74,7 +74,8 @@ from typing import Any, Iterable
 
 from swarm_common.profiles import MODEL_CLASSES
 
-from . import openai_api_key
+from . import api_key, openai_api_key
+from .api_key import VENDOR_OF
 
 #: Secret Manager holds the credential; Firestore holds everything else. The
 #: secret name is derived, never supplied, for the same reason tenant secret
@@ -370,6 +371,47 @@ def secret_name(owner_tenant: str, label: str) -> str:
     return f"{_SECRET_PREFIX}-{owner_tenant}{_SEPARATOR}{label}"
 
 
+#: The mark between the separator and a KEY's label (docs/design/llm-providers.md
+#: §4.1): `swarm-account-<tenant>--key-<label>`. A tenant id cannot hold `--`
+#: (`secret_name`) and a plan's label may not begin `key-` or hold `--key-`
+#: (`refuse_plan_label`), so a name holds `--key-` exactly when it is a key's,
+#: which is what lets IAM tell a key's secret from a plan's (§8.3).
+KEY_MARK = "key-"
+
+
+def key_secret_name(owner_tenant: str, label: str) -> str:
+    """`swarm-account-<tenant>--key-<label>`: an API key's one secret. Derived,
+    never supplied, as `secret_name` is, and checked by the same rules."""
+    plain = secret_name(owner_tenant, label)
+    return plain.replace(f"{_SEPARATOR}{label}", f"{_SEPARATOR}{KEY_MARK}{label}", 1)
+
+
+def refuse_plan_label(label: str) -> str:
+    """`label`, or AccountError when a PLAN may not carry it: one that begins
+    `key-` or holds `--key-` would derive a secret name IAM reads as a key's,
+    which the broker may delete (§4.1, §8.3)."""
+    validate_label(label)
+    if label.startswith(KEY_MARK) or f"{_SEPARATOR}{KEY_MARK}" in label:
+        raise AccountError(
+            f"a plan's label may not begin {KEY_MARK!r} or hold {_SEPARATOR + KEY_MARK!r}: "
+            "that mark names an API key's secret"
+        )
+    return label
+
+
+def plan_labels_with_key_mark(accounts: Iterable["Account"]) -> list[str]:
+    """The ids of plans registered before `refuse_plan_label` whose label
+    carries the key mark. Stage (a) of LP-B1 lists them so the delete grant of
+    §8.3 is made only when this is empty."""
+    found = []
+    for a in accounts:
+        if api_key.is_key(a.provider):
+            continue
+        if a.label.startswith(KEY_MARK) or f"{_SEPARATOR}{KEY_MARK}" in a.label:
+            found.append(a.account_id)
+    return sorted(found)
+
+
 def validate_label(label: str) -> str:
     if not _LABEL.match(label or ""):
         raise AccountError(
@@ -493,6 +535,160 @@ def _people_from_firestore(raw: Any) -> tuple[str, ...]:
     return tuple(p.strip().lower() for p in raw if isinstance(p, str) and p.strip())
 
 
+#: The most a monthly spend cap may be, in US dollars: a bound on a typo, not
+#: a budget. A key's own cap and a lend's cap share it.
+SPEND_CAP_MAX_USD = 1_000_000.0
+
+
+def validate_spend_cap(value: Any) -> float:
+    """A monthly spend cap in US dollars: a number above 0 and at most
+    SPEND_CAP_MAX_USD. AccountError otherwise."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AccountError("a monthly spend cap is a number of US dollars")
+    cap = float(value)
+    if not 0 < cap <= SPEND_CAP_MAX_USD:
+        raise AccountError(
+            f"a monthly spend cap is above 0 and at most {SPEND_CAP_MAX_USD:,.0f} US dollars"
+        )
+    return cap
+
+
+@dataclass(frozen=True)
+class Lend:
+    """One borrowing workspace's cap on an account it is lent (§4.6, Q7).
+
+    The owner's note on Q7: "When an account or an API key is leased to
+    another workspace, a cap for that lease should be set and tracked and
+    enforced as well". So a lend is no longer a bare name: `max_agents` is
+    required on both kinds, and `monthly_spend_cap_usd` is required on a key
+    (a metered credential lent with no ceiling is exactly the open-ended cost
+    the note was about) and absent on a plan, whose price is flat.
+
+    `cap_set` is False on a lend carried over from `lend_to` (§4.6, "Today's
+    lends"): it carries the account's own `max_agents`, the limit it had, and
+    the console marks it `cap not set` until a lender saves one.
+    """
+
+    max_agents: int
+    monthly_spend_cap_usd: float | None = None
+    cap_set: bool = True
+
+    def to_firestore(self) -> dict[str, Any]:
+        return {
+            "max_agents": self.max_agents,
+            "monthly_spend_cap_usd": self.monthly_spend_cap_usd,
+            "cap_set": self.cap_set,
+        }
+
+
+#: The most workspaces one account may be lent to; the bound `lend_to` had.
+MAX_LENDS = 50
+
+
+def validate_lends(raw: Any, *, owner_tenant: str, key: bool) -> dict[str, Lend]:
+    """`raw` ({tenant: {max_agents, monthly_spend_cap_usd}}) as an account
+    stores it, or AccountError in words the lender can act on.
+
+    Every lend carries a cap (Q7): a lend without `max_agents`, or a key's
+    without `monthly_spend_cap_usd`, is refused, never defaulted. The owning
+    workspace is never a borrower: its own limit is `per_workspace_max`.
+    """
+    if not isinstance(raw, dict):
+        raise AccountError("lends is a map from the borrowing workspace to its cap")
+    if len(raw) > MAX_LENDS:
+        raise AccountError(f"an account is lent to at most {MAX_LENDS} workspaces")
+    lends: dict[str, Lend] = {}
+    for tenant, cap in raw.items():
+        if not isinstance(tenant, str) or not tenant:
+            raise AccountError("a lend names its borrowing workspace")
+        if tenant == owner_tenant:
+            raise AccountError(
+                "an account is not lent to its own workspace; its own limit is per_workspace_max"
+            )
+        if not isinstance(cap, dict) or cap.get("max_agents") is None:
+            raise AccountError(
+                f"the lend to {tenant} carries no cap; every lend sets max_agents"
+                + (" and monthly_spend_cap_usd" if key else "")
+            )
+        unknown = set(cap) - {"max_agents", "monthly_spend_cap_usd", "cap_set"}
+        if unknown:
+            raise AccountError(f"a lend's cap is max_agents and monthly_spend_cap_usd, not {sorted(unknown)[0]!r}")
+        try:
+            agents = validate_max_agents(cap["max_agents"])
+        except AccountError as exc:
+            raise AccountError(f"the lend to {tenant}: {exc}") from None
+        spend = cap.get("monthly_spend_cap_usd")
+        if key:
+            if spend is None:
+                raise AccountError(
+                    f"the lend to {tenant} carries no monthly_spend_cap_usd; a key is lent "
+                    "only with a spend cap"
+                )
+            try:
+                spend = validate_spend_cap(spend)
+            except AccountError as exc:
+                raise AccountError(f"the lend to {tenant}: {exc}") from None
+        elif spend is not None:
+            raise AccountError(
+                f"the lend to {tenant} carries a monthly_spend_cap_usd, and a plan's price "
+                "is flat; send none"
+            )
+        lends[tenant] = Lend(agents, spend, cap.get("cap_set") is not False)
+    return lends
+
+
+def lends_from_firestore(raw: Any, *, owner_tenant: str, key: bool) -> dict[str, Lend] | None:
+    """A stored `lends`, None when absent (the carry-over reads `lend_to`).
+
+    NOT descriptive: it says who may use the account, so a malformed value
+    raises ValueError and the document is unreadable -- out of the pool --
+    rather than read as lent to nobody or to someone with no cap."""
+    if raw is None:
+        return None
+    try:
+        return validate_lends(raw, owner_tenant=owner_tenant, key=key)
+    except AccountError as exc:
+        raise ValueError(str(exc)) from None
+
+
+def validate_per_workspace_max(raw: Any) -> dict[str, int]:
+    """`{tenant: n}`, each n a whole number from 1 to MAX_AGENTS_LIMIT (Q6)."""
+    if not isinstance(raw, dict):
+        raise AccountError("per_workspace_max is a map from a workspace to its agent cap")
+    if len(raw) > MAX_LENDS + 1:
+        raise AccountError(f"per_workspace_max names at most {MAX_LENDS + 1} workspaces")
+    caps: dict[str, int] = {}
+    for tenant, value in raw.items():
+        if not isinstance(tenant, str) or not tenant:
+            raise AccountError("per_workspace_max names each workspace")
+        try:
+            caps[tenant] = validate_max_agents(value)
+        except AccountError as exc:
+            raise AccountError(f"per_workspace_max for {tenant}: {exc}") from None
+    return caps
+
+
+def per_workspace_max_from_firestore(raw: Any) -> dict[str, int]:
+    """A stored `per_workspace_max`; empty when absent. NOT descriptive, like
+    `max_agents`: a cap nobody chose must not be read as no cap."""
+    if raw is None:
+        return {}
+    try:
+        return validate_per_workspace_max(raw)
+    except AccountError as exc:
+        raise ValueError(str(exc)) from None
+
+
+def spend_cap_from_firestore(raw: Any) -> float | None:
+    """A stored `monthly_spend_cap_usd`; None when absent. NOT descriptive."""
+    if raw is None:
+        return None
+    try:
+        return validate_spend_cap(raw)
+    except AccountError as exc:
+        raise ValueError(str(exc)) from None
+
+
 @dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
@@ -550,7 +746,11 @@ class Account:
     state: AccountState = AccountState.AVAILABLE
 
     #: Tenants this account's owner has explicitly lent it to. Empty is the
-    #: default and the safe one.
+    #: default and the safe one. A PROJECTION of `lends` (§4.6): its keys, kept
+    #: on the document because the scheduler, swarm-api's queries
+    #: (`array_contains`) and the console read it. Built from `lends` in
+    #: `__post_init__`; a caller naming only `lend_to` gets today's lends
+    #: carried over there.
     lend_to: tuple[str, ...] = ()
 
     #: Per-window readings, keyed by the API's own window name
@@ -728,6 +928,62 @@ class Account:
     #: pool is added; read-only everywhere else.
     voice_it_people: tuple[str, ...] = ()
 
+    #: Who may borrow this account, each with its cap (§4.6, Q7): the source
+    #: of `lend_to`. Empty with a non-empty `lend_to` is a document (or a
+    #: caller) from before the field, carried over in `__post_init__`.
+    lends: dict[str, Lend] = field(default_factory=dict)
+
+    #: A cap per workspace on the agents it may hold on this account at once
+    #: (Q6, both kinds): live holds whose tenant is that workspace, checked
+    #: inside `acquire_hold`'s transaction. Empty: no workspace is capped
+    #: below `max_agents`.
+    per_workspace_max: dict[str, int] = field(default_factory=dict)
+
+    #: A key's ceiling on its metered spend this calendar month, UTC (§4.6):
+    #: None is no ceiling. Never set on a plan (flat price).
+    monthly_spend_cap_usd: float | None = None
+
+    #: When a credit-gone refusal (§5.2: `credit_balance_exhausted`,
+    #: `insufficient_quota`) marked this key. Unlike `limited_until` it does
+    #: not lapse by itself: a person's Resume or a successful probe clears it.
+    exhausted_at: datetime | None = None
+
+    #: The dedicated Voice it key (§5.3, Q9): an `openai-api` account in the
+    #: Voice it pool alone, never lent, read by the broker alone, one per
+    #: deployment. Every `openai-api` account written before this field was
+    #: one, so absent reads True on that provider.
+    voice_dedicated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.lends:
+            # `lends` decides; `lend_to` is its projection, the owner never in it.
+            lends = {t: c for t, c in self.lends.items() if t and t != self.owner_tenant}
+            object.__setattr__(self, "lends", lends)
+            object.__setattr__(self, "lend_to", tuple(lends))
+            return
+        borrowers = tuple(dict.fromkeys(t for t in self.lend_to if t and t != self.owner_tenant))
+        if api_key.is_key(self.provider):
+            # A key is lent only with a spend cap, which no `lend_to` carries:
+            # no key was ever lent before `lends`, and none is lent by a bare name.
+            object.__setattr__(self, "lend_to", ())
+            return
+        # TODAY'S LENDS, CARRIED OVER (§4.6): each with the account's own
+        # `max_agents`, exactly the limit it has today, marked not set.
+        object.__setattr__(self, "lends", {
+            t: Lend(self.max_agents, None, cap_set=False) for t in borrowers
+        })
+        object.__setattr__(self, "lend_to", borrowers)
+
+    @property
+    def vendor(self) -> str:
+        """`VENDOR_OF` this account's provider; the provider itself for one
+        the table does not name."""
+        return VENDOR_OF.get(self.provider, self.provider)
+
+    @property
+    def is_api_key(self) -> bool:
+        return api_key.is_key(self.provider)
+
     def in_pool(self, pool: str) -> bool:
         return pool in self.pools
 
@@ -735,18 +991,18 @@ class Account:
     def measured(self) -> bool:
         """Whether this account's kind has usage windows to read at all.
 
-        False for an OpenAI developer API key (`openai_api_key`): it is billed
-        per minute and has no plan window, so nothing polls it, its windows
-        read "not measured" rather than 0, and the "one agent before its first
-        reading" rule, which waits for a reading that never comes, does not
-        hold it to one session."""
-        return self.provider != openai_api_key.PROVIDER
+        False for a developer API key of either vendor (`api_key`): it is
+        billed per token or per minute and has no plan window, so nothing
+        polls it, its windows read "not measured" rather than 0, and the "one
+        agent before its first reading" rule, which waits for a reading that
+        never comes, does not hold it to one session."""
+        return not api_key.is_key(self.provider)
 
     @property
     def refreshes(self) -> bool:
         """Whether this account's credential is a pair the sweep exchanges. A
         developer API key does not rotate: there is no `{base}-refresh`."""
-        return self.provider != openai_api_key.PROVIDER
+        return not api_key.is_key(self.provider)
 
     def may_serve_voice(self, person: str) -> bool:
         """Whether a Voice it session of `person` may lease this account."""
@@ -781,6 +1037,16 @@ class Account:
         they re-check the cap (`quota_broker.main.acquire_hold`).
         """
         return len(self.live_holds(now)) >= self.max_agents
+
+    def is_full_for(self, tenant_id: str, now: datetime) -> bool:
+        """Whether `tenant_id` already holds as many agents on this account as
+        its `per_workspace_max` allows (Q6). LIVE holds of that tenant, as
+        `is_full` counts, and the rule `acquire_hold` re-checks where the hold
+        commits. False for a workspace with no cap."""
+        cap = self.per_workspace_max.get(tenant_id)
+        if cap is None:
+            return False
+        return sum(1 for h in self.live_holds(now) if h.tenant_id == tenant_id) >= cap
 
     def awaits_first_reading(self, now: datetime) -> bool:
         """Whether this account has no reading yet AND already holds the one
@@ -1149,6 +1415,11 @@ class Account:
             "limited_window": self.limited_window,
             "pools": list(self.pools),
             "voice_it_people": list(self.voice_it_people),
+            "lends": {t: c.to_firestore() for t, c in self.lends.items()},
+            "per_workspace_max": dict(self.per_workspace_max),
+            "monthly_spend_cap_usd": self.monthly_spend_cap_usd,
+            "exhausted_at": self.exhausted_at,
+            "voice_dedicated": self.voice_dedicated,
         }
 
     @classmethod
@@ -1165,11 +1436,14 @@ class Account:
                 observed_at=_aware(seen) if isinstance(seen, datetime) else None,
             )
         observed = data.get("observed_at")
+        provider = data.get("provider", "anthropic")
+        is_key = api_key.is_key(provider)
+        dedicated = data.get("voice_dedicated")
         return cls(
             account_id=data["account_id"],
             owner_tenant=data["owner_tenant"],
             label=data["label"],
-            provider=data.get("provider", "anthropic"),
+            provider=provider,
             state=AccountState(data.get("state", AccountState.AVAILABLE.value)),
             lend_to=tuple(data.get("lend_to") or ()),
             secret_ref=str(data.get("secret") or ""),
@@ -1229,6 +1503,21 @@ class Account:
             limited_window=_optional_text(data.get("limited_window")),
             pools=_pools_from_firestore(data.get("pools")),
             voice_it_people=_people_from_firestore(data.get("voice_it_people")),
+            # NOT descriptive, like `max_agents`: each says who may use the
+            # account and how much, so a malformed value raises. Absent `lends`
+            # is a document from before the field, and `__post_init__` carries
+            # its `lend_to` over with the account's own cap.
+            lends=lends_from_firestore(
+                data.get("lends"), owner_tenant=data["owner_tenant"], key=is_key) or {},
+            per_workspace_max=per_workspace_max_from_firestore(data.get("per_workspace_max")),
+            monthly_spend_cap_usd=spend_cap_from_firestore(data.get("monthly_spend_cap_usd")),
+            # Descriptive, like `limited_until`.
+            exhausted_at=_optional_instant(data.get("exhausted_at")),
+            # Every `openai-api` account before the field was the dedicated
+            # Voice it key (§5.3, Q9); a stored value is read as stored.
+            voice_dedicated=(
+                dedicated is True if dedicated is not None else provider == api_key.OPENAI_API
+            ),
         )
 
 
@@ -1920,6 +2209,7 @@ def choose(
         and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
         and a.assignable(now, floor=assign_floor, stale_after=stale_after)
         and not a.is_full(now)
+        and not a.is_full_for(tenant_id, now)
     ]
     if not candidates:
         return None
@@ -2077,8 +2367,9 @@ def eligibility(
             # `is_full` so a never-measured account whose cap is one reads as
             # waiting on that reading, not as full.
             waiting_on_poll = True
-        elif a.is_full(now):
-            # Room by every window, and every slot taken: it frees when an
+        elif a.is_full(now) or a.is_full_for(tenant_id, now):
+            # Room by every window, and every slot taken -- the account's, or
+            # this workspace's `per_workspace_max` (Q6): it frees when an
             # agent on it finishes, sooner than any window but undated.
             full = True
     earliest = min(instants) if instants else None

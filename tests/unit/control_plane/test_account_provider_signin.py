@@ -96,6 +96,15 @@ class _Token:
         return "t"
 
 
+class _AcceptingValidator:
+    """Every key the vendor is asked about is valid."""
+
+    def check(self, provider, key):  # noqa: ANN001
+        from quota_broker import api_key
+
+        return api_key.KeyCheck(api_key.CHECK_VALID)
+
+
 @pytest.fixture()
 def broker_app(broker, monkeypatch):
     from quota_broker.accountstore import AccountStore
@@ -121,6 +130,9 @@ def broker_app(broker, monkeypatch):
     app.state.secret_store = _Secrets()
     app.state.token_endpoint = _ClaudeEndpoint()
     app.state.test_plan_endpoint = plan_endpoint
+    # The vendor's list-models call a key passes before it is stored
+    # (docs/design/llm-providers.md §4.1), answered without a network.
+    app.state.key_validator = _AcceptingValidator()
     return app
 
 
