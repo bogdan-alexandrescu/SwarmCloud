@@ -11241,6 +11241,15 @@ span.sk-ttile { cursor: default; }
   .sk-pbar { height: var(--sk-pbar-h, auto); }
   /* Eased so the compaction below is not a jump; reduced motion stops it. */
   .sk-pbar { transition: height 120ms ease-out; }
+  /* THE BAR CLIPS ITS CONTROLS' 44PX HIT AREAS (`::after`, below) AT ITS
+     SIDES, NEVER ABOVE OR BELOW (QA, seen again
+     2026-11-09): `Top`'s 44px box, centred on a ~29px arrow, stood ~2px past
+     the bar's 6px padding, and every page at 390 was 392px wide; a long
+     chip pushed it further. The bar is the glass's width, so what is cut is
+     off the glass and no touch could reach it; every target keeps 44px
+     where the glass has room. `clip` on x alone, not `hidden`: the 36px
+     compact bar keeps its 44px-tall boxes, and nothing becomes a scroller. */
+  .sk-pbar { overflow-x: clip; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   /* ITS HOVER IS THE SPINE'S, NOT THE PANEL'S (visual QA V027, 2026-10-11).
      `.sk-ibtn:hover` fills with `--sk-hv`, a near-white in light, and a
