@@ -1,15 +1,14 @@
 # The managed plugins' bundle build (docs/design/managed-plugins.md §1.4.2,
-# §1.4.5, §15.2; lane 15 of §17.1): terraform/infra/plugin-bundles.tf and the
-# two environment variables it feeds.
+# §1.4.5, §15.2; lane 15 of §17.1): terraform/infra/plugin-bundles.tf. The
+# builder account is terraform/bootstrap's (bootstrap.tftest.hcl holds it).
 #
 # What is held here:
 #
 #   * builtins_managed is "off" by default, and off plans NOTHING in
 #     plugin-bundles.tf: no account, no repository, no grant, so nothing costs
-#     money or grants access before the switch; the two variables render
-#     SWARM_BUILTINS_MANAGED="off" and an empty PLUGIN_BUNDLE_REPOSITORY;
-#   * on, the builder account and the two repositories exist, labelled (or
-#     described) managed-by=swarm-terraform; the bundle repository refuses a
+#     money or grants access before the switch; the bundle image path is "";
+#   * on, this root reads the builder account and the two repositories exist,
+#     labelled managed-by=swarm-terraform; the bundle repository refuses a
 #     moved tag; the npm mirror is a remote repository of the npm registry;
 #   * the builder reads platform/sources/ only (the condition is evaluated
 #     against admitted and refused names), reads the platform repository and
@@ -19,8 +18,8 @@
 #     role: both are the owner's (plugin-bundles.tf header);
 #   * the control plane reads the bundle repository and a tenant pulls from it
 #     without enumerating, as from the platform repository;
-#   * SWARM_BUILTINS_MANAGED goes to swarm-api alone, PLUGIN_BUNDLE_REPOSITORY
-#     to swarm-api and the scheduler alone;
+#   * no service is handed SWARM_BUILTINS_MANAGED or PLUGIN_BUNDLE_REPOSITORY
+#     yet: lanes 17 and 18 set them with the code that reads them;
 #   * any value but "on" or "off" is refused.
 
 mock_provider "google" {
@@ -62,7 +61,7 @@ run "off_by_default_plans_nothing" {
 
   assert {
     condition = (
-      length(google_service_account.plugin_bundler) == 0
+      length(data.google_service_account.plugin_bundler) == 0
       && length(google_artifact_registry_repository.plugin_bundles) == 0
       && length(google_artifact_registry_repository.mirror_npm) == 0
       && length(google_storage_bucket_iam_member.plugin_bundler_sources) == 0
@@ -79,12 +78,8 @@ run "off_by_default_plans_nothing" {
   }
 
   assert {
-    condition = (
-      local.service_env["swarm-api"].SWARM_BUILTINS_MANAGED == "off"
-      && local.service_env["swarm-api"].PLUGIN_BUNDLE_REPOSITORY == ""
-      && local.service_env["swarm-scheduler"].PLUGIN_BUNDLE_REPOSITORY == ""
-    )
-    error_message = "off renders SWARM_BUILTINS_MANAGED=\"off\" and an empty PLUGIN_BUNDLE_REPOSITORY: no bundle digest is accepted"
+    condition     = local.plugin_bundle_repository == ""
+    error_message = "off spells no bundle image path: no bundle digest is accepted"
   }
 }
 
@@ -100,11 +95,8 @@ run "on_makes_the_builder_and_its_repositories" {
   }
 
   assert {
-    condition = (
-      google_service_account.plugin_bundler[0].account_id == "swarm-plugin-bundler"
-      && startswith(google_service_account.plugin_bundler[0].description, "managed-by=swarm-terraform;")
-    )
-    error_message = "the builder account is swarm-plugin-bundler, described managed-by=swarm-terraform (an account takes no labels)"
+    condition     = data.google_service_account.plugin_bundler[0].account_id == "swarm-plugin-bundler"
+    error_message = "on reads the builder account swarm-plugin-bundler, which terraform/bootstrap creates (plan §8)"
   }
 
   assert {
@@ -130,28 +122,17 @@ run "on_makes_the_builder_and_its_repositories" {
   }
 
   assert {
-    condition = (
-      local.service_env["swarm-api"].SWARM_BUILTINS_MANAGED == "on"
-      && local.service_env["swarm-api"].PLUGIN_BUNDLE_REPOSITORY == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
-      && local.service_env["swarm-scheduler"].PLUGIN_BUNDLE_REPOSITORY == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
-    )
-    error_message = "on renders SWARM_BUILTINS_MANAGED=\"on\" and the bundle repository's image path to swarm-api and the scheduler"
+    condition     = local.plugin_bundle_repository == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
+    error_message = "on spells the bundle repository's image path, the one a bundle digest may name"
   }
 
   assert {
     condition = alltrue([
-      for svc in ["swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"] :
+      for svc in keys(local.service_env) :
       !contains(keys(local.service_env[svc]), "SWARM_BUILTINS_MANAGED")
+      && !contains(keys(local.service_env[svc]), "PLUGIN_BUNDLE_REPOSITORY")
     ])
-    error_message = "SWARM_BUILTINS_MANAGED is read at submission, by swarm-api alone"
-  }
-
-  assert {
-    condition = alltrue([
-      for svc in ["swarm-quota-broker", "swarm-reconciler"] :
-      !contains(keys(local.service_env[svc]), "PLUGIN_BUNDLE_REPOSITORY")
-    ])
-    error_message = "PLUGIN_BUNDLE_REPOSITORY goes to swarm-api and the scheduler only"
+    error_message = "no service is handed SWARM_BUILTINS_MANAGED or PLUGIN_BUNDLE_REPOSITORY before the code that reads it (scripts/lib/check-env-parity.sh)"
   }
 }
 

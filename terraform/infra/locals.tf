@@ -1077,15 +1077,11 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
-      # The built-ins switch (managed-plugins.md section 1.4.5;
-      # var.builtins_managed says what each value does): "on" seeds gstack and
-      # security-audit as managed platform installs and resolves a step naming
-      # them through the catalogue. "off" unless the environment's tfvars sets
-      # "on", the state swarm-api reads when the key is unset.
-      SWARM_BUILTINS_MANAGED = var.builtins_managed
-      # Where a bundle build pushes (plugin-bundles.tf): the image path swarm-api
-      # names a bundle image under. "" with the switch off: no build starts.
-      PLUGIN_BUNDLE_REPOSITORY = local.plugin_bundle_repository
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) and
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository) are set here
+      # by lane 17 of managed-plugins.md section 17.1, with the swarm-api code
+      # that reads them: scripts/lib/check-env-parity.sh refuses a variable
+      # terraform sets and nothing reads.
 
       # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
       # var.plugins_switch says what each value does): "off" refuses every
@@ -1362,12 +1358,11 @@ locals {
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
-      # The one image path a bundle record's output digest may name
-      # (plugin-bundles.tf; managed-plugins.md section 1.4.4): the scheduler
-      # runs a step's bundle image only from under it, so a forged record can
-      # point only at another image the builder account built. "" with
-      # var.builtins_managed off: no bundle digest is accepted.
-      PLUGIN_BUNDLE_REPOSITORY = local.plugin_bundle_repository
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository, the one
+      # image path a bundle record's digest may name; managed-plugins.md
+      # section 1.4.4) is set here by lane 18 of section 17.1, with the
+      # scheduler code that reads it: scripts/lib/check-env-parity.sh refuses
+      # a variable terraform sets and nothing reads.
 
       # The model each profile's agent runs when a step names no class, for
       # the Jobs this scheduler creates (tenants this root does not list). The

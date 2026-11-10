@@ -79,13 +79,14 @@ locals {
 # The builder account.
 # ---------------------------------------------------------------------------
 
-resource "google_service_account" "plugin_bundler" {
+# The account is a platform account, so terraform/bootstrap creates it
+# (bootstrap/plugin_bundler.tf; plan §8) and this root reads it, only with the
+# switch on, as every grant below is.
+data "google_service_account" "plugin_bundler" {
   count = local.builtins_managed_on ? 1 : 0
 
-  project      = var.project_id
-  account_id   = local.plugin_bundler_name
-  display_name = "Swarm plugin bundle builder"
-  description  = "managed-by=swarm-terraform; the bundle build of the managed plugins gstack and security-audit (managed-plugins.md section 1.4.2). Reads platform/sources/, the release images and the mirrors; pushes to the plugin-bundles repository only."
+  project    = var.project_id
+  account_id = local.plugin_bundler_name
 }
 
 # ---------------------------------------------------------------------------
@@ -167,7 +168,7 @@ resource "google_storage_bucket_iam_member" "plugin_bundler_sources" {
     expression  = local.plugins_sources_condition
   }
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # Bun's pinned zip, at its upstream URL without https:// (tool-mirror.sha256),
@@ -179,7 +180,7 @@ resource "google_storage_bucket_iam_member" "plugin_bundler_tool_mirror" {
   role   = "roles/storage.objectViewer"
   member = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # The bundler image and the release image a bundle builds FROM, both this
@@ -193,7 +194,7 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_releas
   role       = "roles/artifactregistry.reader"
   member     = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 resource "google_artifact_registry_repository_iam_member" "plugin_bundler_npm" {
@@ -205,7 +206,7 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_npm" {
   role       = "roles/artifactregistry.reader"
   member     = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # The bundle Dockerfile's `# syntax=` frontend, by its pinned digest, as every
@@ -219,7 +220,7 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_docker
   role       = "roles/artifactregistry.reader"
   member     = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # The one repository it writes: push, never delete (writer holds no delete).
@@ -232,7 +233,7 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_push" 
   role       = "roles/artifactregistry.writer"
   member     = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # Its own build log, write only: a build as a user-specified account must
@@ -245,7 +246,7 @@ resource "google_project_iam_member" "plugin_bundler_logs" {
   role    = "roles/logging.logWriter"
   member  = local.plugin_bundler_member
 
-  depends_on = [google_service_account.plugin_bundler]
+  depends_on = [data.google_service_account.plugin_bundler]
 }
 
 # ---------------------------------------------------------------------------

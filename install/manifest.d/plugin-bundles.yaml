@@ -1,6 +1,7 @@
 # Lane 15 of the managed plugins plan (docs/design/managed-plugins.md section 17.1,
 # "Infrastructure and installer"; sections 1.4.2 and 15.2): terraform/infra/plugin-bundles.tf
-# makes the bundle build's account, its grants, the swarm-plugin-bundles repository and
+# grants the bundle build's account (terraform/bootstrap/plugin_bundler.tf
+# makes it) its rights, and makes the swarm-plugin-bundles repository and
 # the npm mirror the build installs gstack's dependencies through (Q19), all only with
 # builtins_managed "on", which swarm install renders for a fresh deployment
 # (swarm_install.tfvars.BUILTINS_MANAGED). The infra passes apply them with no prompt
@@ -11,11 +12,11 @@ entries:
 - id: sa.swarm-plugin-bundler
   kind: service-account
   scope: core
-  stage: 7
+  stage: 3
   provider: engine
   check: gcloud iam service-accounts describe swarm-plugin-bundler@$P.iam.gserviceaccount.com
-  apply: terraform/infra/plugin-bundles.tf google_service_account.plugin_bundler, once builtins_managed
-    is on
+  apply: terraform/bootstrap/plugin_bundler.tf google_service_account.plugin_bundler (terraform/infra/plugin-bundles.tf
+    reads it once builtins_managed is on)
   verify: the account exists; its only project role is logging.logWriter
   explain: 'the bundle build of gstack and security-audit runs as it (section 1.4.2): no Firestore, no
     Secret Manager, no GitHub, no tenants/ prefix'
@@ -24,12 +25,14 @@ entries:
   depends_on:
   - api.iam
   evidence:
+  - terraform/bootstrap/plugin_bundler.tf
   - terraform/infra/plugin-bundles.tf
   notes: null
-  step: infra.pass-1
+  step: bootstrap.pass-1
   refs:
     terraform:
-    - infra/google_service_account.plugin_bundler
+    - bootstrap/google_service_account.plugin_bundler
+    - infra/data.google_service_account.plugin_bundler
 - id: registry.plugin-bundles
   kind: registry
   scope: core

@@ -686,3 +686,19 @@ run "the_plugin_intake_account_is_made_here_with_no_project_role" {
     error_message = "terraform/bootstrap makes swarm-plugin-intake, labelled managed-by=swarm-terraform in its description"
   }
 }
+
+# The managed plugins' bundle build account (bootstrap/plugin_bundler.tf) is a
+# platform account too: this root makes it, with no grant, and
+# terraform/infra/plugin-bundles.tf reads it and grants it what it may do.
+run "the_plugin_bundler_account_is_made_here" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = google_service_account.plugin_bundler.account_id == "swarm-plugin-bundler" && startswith(google_service_account.plugin_bundler.description, "managed-by=swarm-terraform;")
+    error_message = "terraform/bootstrap makes swarm-plugin-bundler, labelled managed-by=swarm-terraform in its description"
+  }
+}
