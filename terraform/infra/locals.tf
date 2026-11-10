@@ -873,6 +873,12 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
+      # uvicorn workers an instance (var.api_workers, default 1; dev sets 2,
+      # the owner's choice of 2026-11-10). The image passes it to
+      # `uvicorn --workers`, and swarm_api.workers divides each per-instance
+      # cap by it, so the instance's caps stay what they were.
+      SWARM_API_WORKERS = tostring(var.api_workers)
+
       # Where a cancel asks for its task's execution to be stopped now rather
       # than at the worker's next poll or the reconciler's next pass (#627).
       # The reconciler stops it: swarm-api holds no compute permission, by
