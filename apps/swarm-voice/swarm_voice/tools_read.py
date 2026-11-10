@@ -185,7 +185,8 @@ READ_TOOLS: tuple[ReadTool, ...] = (
              "/v1/tasks/{task_id}/events", ("task_id",)),
     ReadTool("agent_questions", "Read the questions one agent is waiting on.",
              "/v1/tasks/{task_id}/questions", ("task_id",)),
-    ReadTool("open_questions", "List the questions agents are waiting on in the workspace.",
+    ReadTool("open_questions", "List the person's own finished agents whose questions to them are "
+             "still unanswered (the last 7 days, newest first).",
              "/v1/tasks/open-questions"),
     ReadTool("list_workflows", "List workflows, newest first. state filters by state; repository "
              "by owner/name.", "/v1/workflows", query_params=("state", "repository"), fixed=_SUMMARY),

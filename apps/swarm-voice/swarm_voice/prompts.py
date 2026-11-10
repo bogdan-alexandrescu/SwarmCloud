@@ -42,6 +42,8 @@ SPOKEN_MAX = 400
 #: Longest transcript window put in one turn, and longest tool result.
 TRANSCRIPT_MAX = 12_000
 RESULT_MAX = 16_000
+#: The most of a delegation's own request (live.py) one turn message carries.
+REQUEST_MAX = 4_000
 
 MASK = "[redacted]"
 
@@ -113,8 +115,10 @@ def as_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def turn_message(transcript: list[tuple[str, str]], *, secrets_: Iterable[str] = ()) -> str:
-    """The user message of one planner turn: the transcript window, fenced.
+def turn_message(transcript: list[tuple[str, str]], *, request: str | None = None,
+                 secrets_: Iterable[str] = ()) -> str:
+    """The user message of one planner turn: the transcript window, fenced, and
+    the delegation's own request, fenced apart, when the voice gave one.
 
     `transcript` is (speaker, text) in order, speaker "person" or "voice"; the
     newest lines are kept when it is longer than `TRANSCRIPT_MAX`."""
@@ -123,8 +127,13 @@ def turn_message(transcript: list[tuple[str, str]], *, secrets_: Iterable[str] =
     window = "\n".join(lines)
     if len(window) > TRANSCRIPT_MAX:
         window = "[... earlier lines cut]\n" + window[-TRANSCRIPT_MAX:]
+    asked = ""
+    if request and request.strip():
+        asked = ("\nThe voice's delegation asked for:\n"
+                 + fence("delegation", scrub(request.strip(), known), limit=REQUEST_MAX))
     return ("The voice delegated to you. The conversation so far, newest last:\n"
             + fence("transcript", window or "(nothing said yet)", limit=TRANSCRIPT_MAX + 64)
+            + asked
             + "\nDraw what this needs, then call `speak`.")
 
 
