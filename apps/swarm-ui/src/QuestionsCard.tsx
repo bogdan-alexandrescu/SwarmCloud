@@ -48,7 +48,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, type TaskQuestions } from './api'
-import { Button, Chip } from './components'
+import { Button, buttonClass, Chip, Tooltip } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
@@ -592,6 +592,13 @@ function AskedBy({ taskId, rows, roleGate }: { taskId: string; rows: HeldQuestio
   )
 }
 
+/** What the re-run below does, behind the (i) (10 November 2026): the ready is recorded, and the merge goes on. */
+const UNREADABLE_READY_TIP =
+  'No answer can clear an entry the merge cannot read, so the re-run is the way on. It is recorded as your ready for ' +
+  "this review's verdict at this head, and the merge goes on past those entries. It still waits for every question it " +
+  "can read, checks the owner's picks were built, and waits for the checks. A newer review or a new head holds it " +
+  'again until someone says ready again.'
+
 /** The one case a person's re-run is the way back: a hold the answer route cannot read whole. */
 function UnreadableHold({ task, unreadable }: { task: Task; unreadable: number }) {
   const [busy, setBusy] = useState(false)
@@ -608,8 +615,16 @@ function UnreadableHold({ task, unreadable }: { task: Task; unreadable: number }
   return (
     <div className="dt-note qc-unreadable">
       <p>
-        {unreadable === 1 ? 'One entry' : `${unreadable} entries`} the review named could not be read, so no answer can
-        resume this merge by itself. Once the questions are answered, re-run it: it reads every answer again.
+        {unreadable === 1 ? 'One entry' : `${unreadable} entries`} the review named could not be read: a ready from a member
+        lets the merge go on past {unreadable === 1 ? 'it' : 'them'}.{' '}
+        <Tooltip tip={UNREADABLE_READY_TIP}>
+          <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="About going on past entries the merge cannot read">
+            <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="M12 11v5.5M12 7.75v.01" />
+            </svg>
+          </button>
+        </Tooltip>
       </p>
       {done ? (
         <p>Re-run asked for: the merge reads the answers again when it next starts.</p>

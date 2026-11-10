@@ -695,10 +695,15 @@ def _owner_questions(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
         summary = "Waiting for the owner questions the review named before merging"
     if unreadable:
         detail["answer_route"] = f"POST /v1/tasks/{task.id}/human-ready"
+        # 10 November 2026: the ready is recorded with the verdict and head
+        # (`handoff.unreadable_acknowledgement`), and the merge goes on past
+        # these entries; readable questions still hold it.
         summary += (f"; {unreadable} entr{'y' if unreadable == 1 else 'ies'} the merge cannot "
-                    f"read: say it is ready once {'it is' if n <= 1 else 'they are'} answered")
-        resumes = ("a member of the workspace calls human-ready once the questions are answered: "
-                   "the hold names an entry an answer cannot clear on its own")
+                    "read: a ready from a member lets the merge go on past "
+                    f"{'it' if unreadable == 1 else 'them'}")
+        resumes = ("a member of the workspace calls human-ready: the merge goes on past the "
+                   "entries it cannot read for this review and head, and still waits for every "
+                   "question it can read")
     else:
         resumes = "the last named question is answered (it resumes on its own)"
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": None}

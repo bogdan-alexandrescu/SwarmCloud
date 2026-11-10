@@ -333,6 +333,12 @@ describe('the questions are drawn inline, with the answer control', () => {
     // MUTATION: drop `UnreadableHold` -- an unreadable hold has no way back but this.
     expect(within(held).getByRole('button', { name: 'Re-run the merge' })).toBeTruthy()
     expect(held.textContent).toContain('could not be read')
+    // 10 November 2026: a member's ready is recorded and the merge goes on past
+    // the entries. MUTATION: keep "no answer can resume this merge by itself"
+    // and the person is not told the ready lets it go on.
+    expect(held.textContent).toContain('a ready from a member lets the merge go on past it.')
+    const about = within(held).getByRole('button', { name: 'About going on past entries the merge cannot read' })
+    expect(about.closest('.c-tip-host')?.querySelector('[role="tooltip"]')?.textContent).toContain('A newer review or a new head')
   })
 
   it("keeps the agent page's held-questions id, and takes a page's own id for each mount", async () => {

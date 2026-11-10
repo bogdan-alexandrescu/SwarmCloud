@@ -557,12 +557,14 @@ def test_an_owner_question_hold_the_answer_route_cannot_read_still_says_ready():
     w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
     assert w["summary"] == (
         "Waiting for answers to 1 owner question before merging (implement: 1); 1 entry the "
-        "merge cannot read: say it is ready once it is answered")
+        "merge cannot read: a ready from a member lets the merge go on past it")
     assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
     assert w["detail"]["unreadable"] == 1
+    # 10 November 2026: the ready is recorded and the merge goes on past the
+    # entries; before, it re-ran into the same park on every ready.
     assert w["resumes_when"] == (
-        "a member of the workspace calls human-ready once the questions are answered: "
-        "the hold names an entry an answer cannot clear on its own")
+        "a member of the workspace calls human-ready: the merge goes on past the entries it "
+        "cannot read for this review and head, and still waits for every question it can read")
 
 
 def test_a_malformed_owner_question_record_serves_no_invented_question():
