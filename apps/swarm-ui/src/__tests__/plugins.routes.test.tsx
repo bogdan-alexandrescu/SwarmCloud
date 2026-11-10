@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { canonical, fromAddress, pluginPageOf, SECTIONS, type Route } from '../App'
 import { ADMIN_PLUGIN_ADD_PATH, ADMIN_PLUGINS_PATH, adminPluginPath } from '../AdminPlugins'
-import { pluginLinkOf } from '../ConfigPlugins'
+import { configPluginPath, pluginLinkOf } from '../ConfigPlugins'
 import { addressToPath, pathToAddress } from '../paths'
 import { adminPagesFor, PANEL_PAGES } from '../Spine'
 
@@ -94,6 +94,14 @@ describe('every link the plugin screens render reaches a routed page', () => {
     // MUTATION: drop the plugin page's branch from paths.ts -> the cards' hrefs are no route.
     expect(found).toEqual(expect.arrayContaining([ADMIN_PLUGIN_ADD_PATH, adminPluginPath(PLATFORM_INSTALL), adminPluginPath(WORKSPACE_INSTALL)]))
     for (const href of found) routed(href)
+  })
+
+  it("Config › Plugins: an install's card opens that plugin's page under Config", () => {
+    for (const id of [PLATFORM_INSTALL, WORKSPACE_INSTALL]) {
+      // MUTATION: link Config's card to Admin's page, or to the bare catalogue -> fails.
+      expect(pluginPageOf(routed(configPluginPath(id)))).toEqual({ kind: 'plugin', installId: id })
+      expect(routed(configPluginPath(id)).sectionId).toBe('config')
+    }
   })
 
   it('Add plugin: its breadcrumb and its back link', async () => {
