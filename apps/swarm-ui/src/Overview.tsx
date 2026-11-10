@@ -1937,8 +1937,10 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
-      <ButtonLink size="sm" className="ov-link" href="/capacity/accounts">
-        Accounts
+      {/* Accounts became Capacity › LLM Providers (llm-providers.md §6.1): the
+          word names the tab it opens, and the path is Plans' own. */}
+      <ButtonLink size="sm" className="ov-link" href="/capacity/llm-providers/plans">
+        LLM Providers
       </ButtonLink>
     </div>
   )
