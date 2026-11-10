@@ -8,12 +8,13 @@
 //     purpose, why, the change map, Risk, Validation and the steps;
 //   * the small plan is one low-risk step over a handful of files;
 //   * the high-risk plan names its invariants and the frozen contract;
-//   * the three-step plan draws its steps in their stages and its graph's edges.
+//   * the three-step plan draws its steps in their stages and its graph's edges;
+//   * Approve and Reject decide the example's run, which leaves the inbox.
 //
 // Runs on the fixtures: no VITE_LIVE, no served routes.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -40,9 +41,9 @@ async function run(id: string) {
 async function open(id: string) {
   await mount(`approval=run:${id}`)
   const h = await screen.findByTestId('ab-head', undefined, WAIT)
-  const plan = (await run(id)).plan as unknown as { purpose: string; why: { line: string } }
+  const plan = (await run(id)).plan as unknown as { purpose: string; why: string }
   await waitFor(() => expect(visible(within(h).getByTestId('ab-purpose'))).toBe(plan.purpose), WAIT)
-  expect(visible(within(h).getByTestId('ab-why'))).toContain(plan.why.line)
+  expect(visible(within(h).getByTestId('ab-why'))).toContain(plan.why)
   for (const name of ['Where it changes', 'Risk', 'Validation', 'Steps']) expect(screen.getByRole('region', { name })).toBeTruthy()
   return h
 }
@@ -99,5 +100,27 @@ describe('each example plan opens on its brief', () => {
     expect(visible(steps)).toContain('after step 2')
     const graph = (await run(STEPS)).plan as unknown as { graph: { edges: unknown[] } }
     expect(document.querySelectorAll('.ab-edge').length).toBe(graph.graph.edges.length)
+  })
+})
+
+describe('a decision on an example plan', () => {
+  it('Approve starts its run and takes it out of the inbox', async () => {
+    const h = await open(SMALL)
+    fireEvent.click(within(h).getByRole('button', { name: 'Approve' }))
+    // MUTATION: leave the fixture approve unserved, and the run stays PLANNED.
+    await waitFor(async () => expect((await run(SMALL)).state).toBe('RUNNING'), WAIT)
+    const { loadApprovals } = await import('../api')
+    const inbox = await loadApprovals()
+    const ids = inbox.status === 'ok' ? inbox.data.approvals.map((i) => i.approval_id) : []
+    expect(ids).not.toContain(`run:${SMALL}`)
+    expect(ids).toContain(`run:${HIGH}`)
+  })
+
+  it('Reject turns its run down with the reason typed', async () => {
+    const h = await open(HIGH)
+    fireEvent.change(within(h).getByRole('textbox', { name: /Reason/ }), { target: { value: 'split the contract change out first' } })
+    fireEvent.click(within(h).getByRole('button', { name: 'Reject' }))
+    await waitFor(async () => expect((await run(HIGH)).state).toBe('REJECTED'), WAIT)
+    expect((await run(HIGH)).rejection_reason).toBe('split the contract change out first')
   })
 })
