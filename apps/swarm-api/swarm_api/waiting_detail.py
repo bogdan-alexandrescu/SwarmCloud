@@ -246,6 +246,41 @@ def _blocker_words(entry: Mapping[str, Any]) -> str:
     return f"the last scheduler pass recorded {reason}"
 
 
+#: How long the wake tick's reading of a CI park stays fresh, so long the
+#: scheduler holds the park past its fallback instant: `scheduler.loop.
+#: MERGE_CI_FALLBACK_SECONDS` (900 s, the worker's fallback), restated because
+#: swarm-api does not import the scheduler; held equal by
+#: tests/unit/control_plane/test_waiting_held_merge_wait.py.
+CI_READING_FRESH_SECONDS = 900
+
+
+def _held_check(task: Task, as_of: datetime) -> datetime | None:
+    """The tick's last CI check while the scheduler holds this park; else None.
+
+    A HELD WAIT HAS NO NEXT CHECK (the owner, 2026-11-10). While the wake
+    tick's reading (`mergewake.READING_KEY`) is at the park's head, taken
+    since it parked, not in the future and younger than
+    CI_READING_FRESH_SECONDS, `scheduler.loop.merge_wait_due` does not wake
+    the park at `next_eligible_at`: that instant is the worker's fallback,
+    held, and often already past. The line then serves this time instead.
+    The same conditions as the scheduler's, so the line holds exactly where
+    the scheduler does; any other reading leaves today's line.
+    """
+    if task.park_reason is not ParkReason.CI_PENDING:
+        return None
+    wait = _mapping(_mapping(task.metadata).get("merge_wait"))
+    reading = _mapping(wait.get("reading"))
+    if not reading.get("head") or reading.get("head") != wait.get("head"):
+        return None
+    parked_at = _as_dt(wait.get("parked_at"))
+    read_at = _as_dt(reading.get("read_at"))
+    if parked_at is None or read_at is None or not parked_at <= read_at <= as_of:
+        return None
+    if (as_of - read_at).total_seconds() >= CI_READING_FRESH_SECONDS:
+        return None
+    return read_at
+
+
 def pull_request_url(repository_url: str | None, number: int | None) -> str | None:
     """`https://host/owner/repo/pull/N` off the task's https repository URL.
 
@@ -295,6 +330,7 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
         bool(reading) and head_at is not None and reading.get("head") == head_at
         and read_at is not None and (last_checked is None or read_at > last_checked)
     )
+    held = _held_check(task, as_of)
     fix_round = _mapping(reading.get("fix_round")) if newer else {}
     if newer:
         pending = _names(reading.get("pending"))
@@ -312,6 +348,9 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
         "wakes": wakes,
         "attempts_counted": (not refunded) if isinstance(refunded, bool) else None,
         "last_checked_at": last_checked,
+        # The tick's last check while the scheduler holds the wait, which
+        # then has no next check (`_held_check`); null for any other wait.
+        "held_last_check_at": held,
         "wake_requested_at": _as_dt(wait.get("wake_requested_at")),
         # A merge-train wait's start (part of #2688): the first train park of
         # its unbroken run, which every park writes and any other park
@@ -343,10 +382,10 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
         head += f"; read {_hhmm(read_at, as_of)}"
     if wakes is not None:
         head += f"; re-checked {wakes} times"
-    if task.next_eligible_at is not None:
+    if task.next_eligible_at is not None and held is None:
         head += f"; next check {_hhmm(task.next_eligible_at, as_of)}"
     resumes = "its pull request's checks settle (swarm-api's wake tick marks the step)"
-    if task.next_eligible_at is not None:
+    if task.next_eligible_at is not None and held is None:
         resumes += f", or the fallback re-check at {_hhmm(task.next_eligible_at, as_of)}"
     since = _as_dt(wait.get("first_parked_at"))
     return {"detail": detail, "summary": head, "resumes_when": resumes, "since": since}
@@ -972,6 +1011,8 @@ def _still_parked(task: Task, reason: str, as_of: datetime) -> str | None:
         return None
     if task.next_eligible_at is None or task.next_eligible_at > as_of:
         return None
+    if _held_check(task, as_of) is not None:
+        return None
     other = _other_blocker(task)
     if other is not None:
         return _blocker_words(other)
@@ -1059,7 +1100,7 @@ def _finish(task: Task, reason: str, events: Sequence[TaskEvent] | None, as_of: 
         "reason": reason,
         "summary": part["summary"],
         "since": part["since"],
-        "next_check_at": task.next_eligible_at if timed else None,
+        "next_check_at": task.next_eligible_at if timed and _held_check(task, as_of) is None else None,
         "resumes_when": part["resumes_when"],
         "detail": part["detail"],
         "history": _history(task, events, reason, as_of),
