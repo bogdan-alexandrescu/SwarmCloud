@@ -76,13 +76,14 @@ source "${REPO_ROOT}/scripts/lib/image-switches.sh"
 # LIGHTPANDA-BUILD-SCRIPTS, the runner image a claude-code-lightpanda profile will name, swarm-voice since VOICE-STATEFULSET, for
 # voice.tf's swarm_voice_manifest, swarm-speech since own speech's L3, for the SWARM_SPEECH_IMAGE the speech machine pulls at its next
 # start, docs/design/voice-it-own-speech.md §5.3, swarm-plugin-intake since 2026-11-09, for plugins.tf's intake job, which is
-# planned only once image_refs carries its digest). This list had six -- no swarm-ui, no
+# planned only once image_refs carries its digest, swarm-plugin-bundler since managed plugins lane 14, the bundle builds'
+# image a Day One install copies, docs/design/managed-plugins.md §1.4.2). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech swarm-plugin-intake workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech swarm-plugin-intake swarm-plugin-bundler workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"
