@@ -1479,7 +1479,9 @@ class SwarmClient:
             from . import discovery as _discovery
 
             self.skew = _discovery.Checker(
-                deployment.url, required=deployment.skew == _config.SKEW_REQUIRED
+                deployment.url,
+                required=deployment.skew == _config.SKEW_REQUIRED,
+                user_agent=lambda: self.user_agent,
             )
 
         #: The tenant every request names in `X-Swarm-Tenant`, or None to send

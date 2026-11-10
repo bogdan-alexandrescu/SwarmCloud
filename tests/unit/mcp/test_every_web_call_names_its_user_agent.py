@@ -10,13 +10,14 @@ Offline: each module's own opener is replaced; nothing reaches a network.
 from __future__ import annotations
 
 import io
+import json
 import secrets
 import urllib.request
 from types import SimpleNamespace
 
 import pytest
 
-from swarm_mcp import auth, awaitinput, discovery, patches, signin
+from swarm_mcp import auth, awaitinput, config, discovery, patches, signin
 from swarm_mcp import client as mcp_client
 
 #: The real `http_get`, taken at import: conftest's autouse fixture replaces it
@@ -102,3 +103,37 @@ def test_the_header_carries_nothing_but_the_name_and_version(sent):
     (request,) = sent
     assert request.get_header("User-agent") == (
         f"{mcp_client.USER_AGENT_PRODUCT}/{mcp_client.client_version()} (cli)")
+
+
+def test_the_bridges_skew_check_names_the_bridge(tmp_path, monkeypatch):
+    """The discovery read a client's skew check makes before each API call is
+    the one of these that reaches the API: a client the bridge paces after
+    building it sends the bridge's agent there too, not the CLI's."""
+    url = "https://swarm.example.test"
+    document = json.dumps({
+        "schema": discovery.SCHEMA,
+        "version": "1.0.0",
+        "oauth_client_id": f"{secrets.randbelow(10**9)}-{secrets.token_hex(6)}.apps.googleusercontent.com",
+    }).encode()
+    environ = {"SWARM_CONFIG_DIR": str(tmp_path), config.plugin_env(config.PLUGIN_URL): url}
+    monkeypatch.setattr(discovery, "CACHE", discovery.Cache(get=lambda u, t: (200, document)))
+    deployment = config.resolve(environ)
+    assert deployment.skew == config.SKEW_REQUIRED
+
+    sent: list[urllib.request.Request] = []
+
+    def _open(request, timeout=None, **_):  # noqa: ARG001
+        sent.append(request)
+        return _Response(document)
+
+    monkeypatch.setattr(discovery, "CACHE", discovery.Cache())
+    monkeypatch.setattr(discovery, "http_get", _HTTP_GET)
+    monkeypatch.setattr(discovery, "_OPENER", SimpleNamespace(open=_open))
+    client = mcp_client.SwarmClient(deployment=deployment, connect=False, tier=auth.Tier.EXPLICIT)
+    client.pace_for_bridge(environ={})
+    client.base_url = url
+    client._send = lambda method, path, **kwargs: {}  # noqa: ARG005
+
+    client.request("GET", "/v1/tasks")
+
+    assert [r.get_header("User-agent") for r in sent] == [mcp_client.user_agent("bridge")]
