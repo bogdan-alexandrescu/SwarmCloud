@@ -156,7 +156,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
 | 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10 by the pull request that adds this text: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. Not applied; the profile is unavailable until the cause is found and the owner re-applies it |
-| 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09; not applied: lane LP-C1 applies it, before its readers |
+| 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 
 ---
@@ -17626,10 +17626,18 @@ The owner: a frozen-contract change, applied after the check is green.
 **Status:** ACCEPTED by the owner on 2026-11-09, as the answer to question Q8
 of [`docs/design/llm-providers.md`](design/llm-providers.md): "yes, take up the
 open contract change request so an Attempt records the credential tier and the
-account it ran on". Not applied: nothing under `apps/common/swarm_common/` is
-edited by the pull request that adds this entry. Lane LP-C1 of that design
-applies it first; its writer (LP-W1, the worker) and its reader (LP-U5, the
-console) wait on it.
+account it ran on". APPLIED 2026-11-10 by the pull request that adds this
+paragraph (lane LP-C1 of that design), exactly as drawn under "The change"
+below and nothing else under `apps/common/swarm_common/`: the three fields at
+the end of `Attempt`, and `CREDENTIAL_TIERS = ("plan", "api_key")`, which
+`Attempt.__post_init__` holds `credential_tier` to (None, every older
+document, passes; any other value is refused, so no reader meets a tier it
+cannot name). `apps/swarm-ui/src/types.ts` restates them on `AttemptRow` and
+the tiers as `CredentialTier`, and `scripts/lib/check-contract-parity.sh`
+section 5 holds both to the frozen module. Nothing writes or reads the fields
+yet: its writer (LP-W1, the worker) and its reader (LP-U5, the console) come
+next. The pull request that added this entry edited nothing under
+`apps/common/swarm_common/`.
 
 ### Why now, when request 13 waited
 
