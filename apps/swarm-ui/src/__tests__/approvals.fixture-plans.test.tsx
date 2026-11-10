@@ -11,9 +11,12 @@
 //   * the three-step plan draws its steps in their stages and its graph's edges;
 //   * Approve and Reject decide the example's run, which leaves the inbox.
 //
-// Runs on the fixtures: no VITE_LIVE, no served routes.
+// Runs on the fixtures, with the example plans' switch on (api.ts
+// `FIXTURE_EXAMPLE_PLANS`, the `swarm_fixture_example_plans=on` cookie, read
+// when api.ts is imported): no VITE_LIVE, no served routes. Off it the
+// fixture inbox is empty, as the default fixtures' always was.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { visible } from './repofixture'
 
@@ -48,6 +51,16 @@ async function open(id: string) {
   return h
 }
 
+const SWITCH = 'swarm_fixture_example_plans'
+
+beforeAll(() => {
+  document.cookie = `${SWITCH}=on; path=/`
+})
+
+afterAll(() => {
+  document.cookie = `${SWITCH}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
+})
+
 afterEach(() => {
   vi.unstubAllEnvs()
 })
@@ -63,6 +76,22 @@ describe('the fixture inbox', () => {
       expect(r.state).toBe('PLANNED')
       const link = await screen.findByRole('link', { name: `${r.issue.ref}: ${r.plan!.summary}` }, WAIT)
       expect(link.getAttribute('href')).toContain(encodeURIComponent(`run:${id}`))
+    }
+  })
+})
+
+describe('the switch', () => {
+  it('off, the fixture inbox is empty and no example run is served', async () => {
+    document.cookie = `${SWITCH}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
+    try {
+      vi.resetModules()
+      const { loadApprovals, loadRun } = await import('../api')
+      // MUTATION: load the example plans without the switch, and the default
+      // fixtures' inbox and Runs list are no longer main's.
+      expect((await loadApprovals()).status).toBe('empty')
+      for (const id of [SMALL, HIGH, STEPS]) expect((await loadRun(id)).status).not.toBe('ok')
+    } finally {
+      document.cookie = `${SWITCH}=on; path=/`
     }
   })
 })

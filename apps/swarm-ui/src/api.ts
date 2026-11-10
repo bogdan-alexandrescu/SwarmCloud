@@ -108,19 +108,40 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
 export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
-function readFixturePersona(): FixturePersona {
-  if (typeof document === 'undefined') return 'member'
+/** One fixture switch's cookie value, or null when the page has no such cookie. */
+function readFixtureCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
-    if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      const value = part.slice(at + 1).trim()
-      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
-    }
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim()
   }
-  return 'member'
+  return null
+}
+
+function readFixturePersona(): FixturePersona {
+  const value = readFixtureCookie(PERSONA_COOKIE)
+  return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
 }
 
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
+
+/**
+ * THE EXAMPLE PLANS' SWITCH (owner, 6 November 2026: the approval page can be
+ * seen and tested on its fixtures). The approval page's three example plans
+ * (`fixtureExampleRuns`) and the fixture inbox that projects the PLANNED runs
+ * (`fixtureApprovalItems`) load only when the page carries this cookie as
+ * `on`, set by hand in a dev server's console or by a test before it imports
+ * this module:
+ *
+ *   document.cookie = 'swarm_fixture_example_plans=on'
+ *
+ * Off by default, so the default fixtures are what they always were: the
+ * Runs list, Home's waiting list, the Automate badge and the inbox draw the
+ * pages every prose ratchet measures. A cookie, as the persona is, and read
+ * ONCE, here, and only in the fixture build; any other value is off.
+ */
+const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
+const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
 /**
@@ -1945,6 +1966,7 @@ function fixtureExampleRun(id: string, plan: FixtureSectionedPlan, issue: { owne
 }
 
 function fixtureExampleRuns(): IssueRun[] {
+  if (!FIXTURE_EXAMPLE_PLANS) return []
   return [
     fixtureExampleRun('run_5a1d3e70', FIXTURE_PLAN_SMALL, {
       owner: 'example-org', repo: 'notes-service', number: 88, labels: ['bug'],
@@ -13327,8 +13349,10 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
 /**
  * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
  * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
- * The development fixtures' inbox is their PLANNED runs, projected as the
- * live API projects them (`fixtureApprovalItems`).
+ * The development fixtures serve no inbox, and say so by being empty rather
+ * than by inventing items; behind the example plans' switch
+ * (`FIXTURE_EXAMPLE_PLANS`) it is their PLANNED runs, projected as the live
+ * API projects them (`fixtureApprovalItems`).
  */
 export async function loadApprovals(
   options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
@@ -13410,10 +13434,14 @@ export async function loadApproval(itemId: string): Promise<Result<ApprovalDetai
  * projects one -- `run:<id>`, its digest the plan's, its summary the issue and
  * the plan's summary, pending until the run is approved or rejected. Among
  * them are the approval page's three example plans (`fixtureExampleRuns`).
+ * Only behind the example plans' switch (`FIXTURE_EXAMPLE_PLANS`): off it the
+ * inbox is empty and no `run:<id>` item is served or decided.
  */
 const FIXTURE_RUN_APPROVAL = 'run:'
 
 function fixtureApprovalItems(): (ApprovalItem & { digest: string | null; approvers: string; may_decide: unknown })[] {
+  // Off the switch the fixture inbox is empty, as it always was.
+  if (!FIXTURE_EXAMPLE_PLANS) return []
   return fixtureIssueRuns()
     .filter((r) => r.state === 'PLANNED' && r.plan_approval === 'required')
     .map((r) => ({
