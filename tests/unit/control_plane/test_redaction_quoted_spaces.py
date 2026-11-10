@@ -11,6 +11,10 @@ Inside a quoted value an escaped quote does not close it; text after the
 closing quote is untouched; an unquoted value still ends at whitespace. A value
 opened by an escaped quote (`\\"`, a stream-json line) still stops at its next
 backslash (#221), and now runs across spaces up to it.
+
+The owner's picks on PR #3775: a single-quoted value runs to its closing quote
+the same way ('single-quotes-too'), and a comma inside any quoted value does
+not end it ('span-commas'); an unquoted value still ends at a comma.
 Every word here is built at runtime, so nothing looks like a credential.
 """
 
@@ -82,7 +86,32 @@ CASES = {
         f'{{{{\\"Authorization\\": \\"{MASK}\\"}}}}',
         "",
     ),
-    "single-quotes-unchanged": ("password='{a} {b}'", f"password={MASK} {{b}}'", "b"),
+    # A single-quoted value runs to its closing quote the same way (the
+    # owner's pick 'single-quotes-too' on PR #3775).
+    "single-two-words": ("password='{a} {b}'", f"password='{MASK}'", ""),
+    "single-followed-by-another-key": ("password='{a} {b}' next={c}", f"password='{MASK}' next={{c}}", "c"),
+    "single-escaped-quote-inside": ("password='{a} \\'{b} {c}'", f"password='{MASK}'", ""),
+    "single-double-quote-inside": ("password='{a} \"{b}\" {c}'", f"password='{MASK}'", ""),
+    "single-string-prefix": ("token = f'{a} {b}'", f"token = f'{MASK}'", ""),
+    "single-plural": ("secrets: '{a} {b}'", f"secrets: '{MASK}'", ""),
+    "single-unclosed-to-the-end": ("password='{a} {b}", f"password='{MASK}", ""),
+    # A comma inside a quoted value does not end it (the owner's pick
+    # 'span-commas' on PR #3775); an unquoted value still ends at one.
+    "comma-inside-double": ('password="{a}, {b}" next={c}', f'password="{MASK}" next={{c}}', "c"),
+    "comma-glued-inside-double": ('password="{a},{b}"', f'password="{MASK}"', ""),
+    "comma-inside-single": ("password='{a}, {b}'", f"password='{MASK}'", ""),
+    "comma-first-inside-double": ('password=",{a}"', f'password="{MASK}"', ""),
+    "comma-inside-json": (
+        '{{"password": "{a}, {b}", "next": "{c}"}}',
+        f'{{{{"password": "{MASK}", "next": "{{c}}"}}}}',
+        "c",
+    ),
+    "comma-inside-stream-json-escaped": (
+        '{{"command": "export DB_PASSWORD=\\"{a}, {b}\\" && ./x"}}',
+        f'{{{{"command": "export DB_PASSWORD=\\"{MASK}\\" && ./x"}}}}',
+        "",
+    ),
+    "comma-ends-unquoted": ("password={a},{b}", f"password={MASK},{{b}}", "b"),
 }
 
 
@@ -127,6 +156,8 @@ CRAFTED = {
     "spaces-and-backslashes": ('password="' + ("a \\\\ " * 40_000) + '"', f'password="{MASK}"'),
     "unclosed-blanks": ('password="a' + (" " * 200_000), f'password="{MASK}'),
     "glued-runs": ('password="' + ('a;"b ' * 40_000) + '"', f'password="{MASK}"'),
+    "commas-and-glued-runs": ('password="' + ("a;,b, " * 40_000) + '"', f'password="{MASK}"'),
+    "single-spaces-and-backslashes": ("password='" + ("a \\\\ " * 40_000) + "'", f"password='{MASK}'"),
     "scheme-and-long-run": (
         'Authorization: "token ' + ("a" * 200_000) + '"',
         f'Authorization: "{MASK} {MASK}"',

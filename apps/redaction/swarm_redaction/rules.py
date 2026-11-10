@@ -848,7 +848,7 @@ _AUTH_PLACEHOLDER = (
 #: #3448), under every key word: `token = f"<v>"`, `api_key = b"<v>"`,
 #: `secret = rb"<v>"` had the prefix masked and the literal served. The
 #: prefix is skipped, and the string after it is masked as an unprefixed one.
-_STRING_PREFIX = r"(?:[bfru]{1,2}(?=\\*\"))?"
+_STRING_PREFIX = r"(?:[bfru]{1,2}(?=\\*\"|'))?"
 #: Not masked when the value starts with one of these (see above), and does
 #: not itself start a secret run.
 _NOT_A_LITERAL = (
@@ -867,7 +867,17 @@ _NOT_A_LITERAL = (
 #: the value. Text after the closing quote is untouched and an unquoted
 #: value still ends at whitespace. A value opened by an escaped quote (`esc`,
 #: a stream-json line) still stops at its next backslash (#221) and runs
-#: across blanks up to it. A comma still ends a quoted value, as before.
+#: across blanks up to it.
+#: A SINGLE-QUOTED VALUE IS MASKED THE SAME WAY (the owner's pick
+#: 'single-quotes-too' on PR #3775): a value that opens with `'` (`sq`)
+#: runs across blanks to the `'` that closes it, a backslash escaping the
+#: character after it as above, and a double quote inside it is a character
+#: of the value; `password='correct horse <v>'` served `horse <v>'`.
+#: A COMMA INSIDE A QUOTED VALUE DOES NOT END IT (the owner's pick
+#: 'span-commas' on PR #3775): `password="<a>, <b>"` served `, <b>"`. A
+#: comma ends only an unquoted value now; a value opened by any quote,
+#: escaped or not, runs past commas to where it closes, so a JSON
+#: `"password": "<v>", "next": "x"` still ends at the quote before the comma.
 #: One exception keeps the house style of `Authorization: "Bearer ********"`
 #: (#260): under a name that is exactly `authorization`, with no `[` before
 #: the quote, a value that is a scheme word, blanks and ONE run already
@@ -876,7 +886,8 @@ _NOT_A_LITERAL = (
 #: provider prefix; any other word in the quotes masks the value whole.
 #: Every repetition is a single character or a fixed-length step, so the run
 #: is linear; the shell filter writes the same run in `redact`.
-_QUOTED_TAIL = r"(?:" + _GLUED_RUN + r"|\\.|[^\",\s\\]|[ \t])*"
+_QUOTED_TAIL = r"(?:" + _GLUED_RUN + r"|\\.|[^\"\s\\]|[ \t])*"
+_SINGLE_QUOTED_TAIL = r"(?:\\.|[^'\s\\]|[ \t])*"
 
 
 def _scheme_marked(group: str) -> str:
@@ -896,20 +907,22 @@ KEY_VALUE = _rule(
     r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|(?P<auth>authorization))"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
     r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
-    r"(?P<br>\[[ \t]*)?" + _STRING_PREFIX + r"(?:(?P<esc>\\+\")|(?P<q>\")?))"
+    r"(?P<br>\[[ \t]*)?" + _STRING_PREFIX + r"(?:(?P<esc>\\+\")|(?P<q>\")|(?P<sq>')|))"
     r"(?(esc)"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
     + _scheme_marked("marked_esc") + r"[ \t]*+"
-    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s]|[^\"\\,\s])(?:[^\"\\,\s]|[ \t])*)"
+    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\\s]|[^\"\\\s])(?:[^\"\\\s]|[ \t])*)"
     r"|"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
     r"(?(q)" + _scheme_marked("marked_q") + r"[ \t]*+"
-    r"(?:" + _CLOSED_CONSTRUCT + r"|\\.|(?(plural)[0-9.)\]}]*[^0-9.)\]}\",\s\\]|[^\",\s\\]))"
+    r"(?:" + _CLOSED_CONSTRUCT + r"|\\.|(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\s\\]|[^\"\s\\]))"
     + _QUOTED_TAIL + r")|"
+    r"(?(sq)[ \t]*+(?:\\.|(?(plural)[0-9.)\]}]*[^0-9.)\]}'\s\\]|[^'\s\\]))"
+    + _SINGLE_QUOTED_TAIL + r"|"
     r"(?:" + _CLOSED_CONSTRUCT + r"|(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\])))"
-    r"(?:" + _GLUED_RUN + r"|[^\",\s])*))",
+    r"(?:" + _GLUED_RUN + r"|[^\",\s])*)))",
     re.IGNORECASE,
 )
 
