@@ -19,6 +19,11 @@
  * first team is done once its workspace is ready. The hand-over is still
  * offered only once the smoke has succeeded (`consoleDone`, the verify row's).
  *
+ * AND AN OPTIONAL NINTH (managed-plugins.md §15.1, the owner's pick of
+ * 2026-11-10): Add a plugin, last, after Send, from the route's
+ * `steps.plugins`. It is never needed: the count stays N of 8, the panel
+ * says "Step 9 · optional", and `nextLineKey` never moves the panel there.
+ *
  * NOTHING HERE IS MARKED BY HAND: every mark, actor and time is derived from
  * `GET /v1/admin/setup`, read every 5 s. A time the record does not hold is
  * drawn as "not recorded", never as now or zero; how long a wait usually
@@ -46,13 +51,17 @@ import {
   useAction,
   useAutoSelfCheck,
   useNow,
+  usePluginsStep,
   verifyRow,
+  PLUGINS_TIP,
+  PluginsBody,
+  pluginsNow,
   type Row,
   type StepState,
 } from '../AdminSetupSteps'
-import { restartSetupSmoke, type SetupState } from '../api'
+import { restartSetupSmoke, type SetupPluginsStep, type SetupState } from '../api'
 import { About, Explained } from '../AdminSetupHealth'
-import { Button, Chip, CodeBlock } from '../components'
+import { Button, Chip, CodeBlock, Tag } from '../components'
 import '../styles/admin-setup.css'
 import '../styles/console-finish.css'
 
@@ -77,7 +86,7 @@ interface Wait {
   usual: string | null
 }
 
-export type LineKey = 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'smoke' | 'verify' | 'send'
+export type LineKey = 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'smoke' | 'verify' | 'send' | 'plugins'
 
 /** One line of the compact checklist. */
 export interface Line {
@@ -93,6 +102,15 @@ export interface Line {
   waits: Wait[]
   /** How long the actor's part usually takes, from the route's `typical_s`. */
   usual?: string
+  /** Never needed: not counted, never followed, never a gate (the plugin line, §15.1). */
+  optional?: boolean
+  /** A platform admin skipped it (`console/plugins_step`). */
+  skipped?: boolean
+}
+
+/** The optional plugin line, last, from `steps.plugins`: done once a person added one, else to do (skipped is a to do they declined). */
+export function pluginsLine(step: SetupPluginsStep): Line {
+  return { key: 'plugins', name: 'Add a plugin', state: step.state === 'done' ? 'done' : 'todo', actor: null, since: null, now: pluginsNow(step), waits: [], optional: true, skipped: step.state === 'skipped' }
 }
 
 const ms = (iso: string | null | undefined): number | null => {
@@ -132,7 +150,7 @@ const checkWords = (id: string | null): string => (id === null ? 'starting' : CH
 const CLI_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13]
 
 /** The record, as the checklist's eight lines. A line is done exactly when the record says so. */
-export function finishLines(state: SetupState, nowMs: number): Line[] {
+export function finishLines(state: SetupState, nowMs: number, plugins: SetupPluginsStep | null = state.steps?.plugins ?? null): Line[] {
   const e = state.engine
   const handOff = ms(e?.hand_off_at)
   const stages = e?.stages ?? []
@@ -283,11 +301,16 @@ export function finishLines(state: SetupState, nowMs: number): Line[] {
 
   const passed = v?.result === 'passed'
   out.push({ key: 'send', name: 'Send to your team', state: passed ? 'done' : 'todo', actor: passed ? 'you' : null, since: ms(e?.ready_at), now: passed ? 'the plugin line is ready' : 'locked until verify passes', waits: [] })
+  if (plugins !== null) out.push(pluginsLine(plugins))
   return out
 }
 
-/** The line the panel follows by itself: the first one the person can act on, else the first not done, else Send. */
-export function nextLineKey(ls: Line[]): LineKey {
+/** The lines a deployment needs: every line but an optional one. */
+const needed = (ls: Line[]): Line[] => ls.filter((l) => l.optional !== true)
+
+/** The line the panel follows by itself: the first needed one the person can act on, else the first not done, else Send; never an optional line. */
+export function nextLineKey(all: Line[]): LineKey {
+  const ls = needed(all)
   const mine = ls.find((l) => l.state !== 'done' && l.actor === 'you')
   if (mine !== undefined) return mine.key
   return ls.find((l) => l.state !== 'done')?.key ?? 'send'
@@ -307,7 +330,9 @@ function StepMark({ state }: { state: StepState }) {
 // the status line: what swarm install is doing now
 // ---------------------------------------------------------------------------
 
-function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; nowMs: number }) {
+function TerminalLine({ state, ls: all, nowMs }: { state: SetupState; ls: Line[]; nowMs: number }) {
+  // The count is the needed lines only: the optional plugin line never makes it 9.
+  const ls = needed(all)
   const e = state.engine
   const beat = ms(e?.lease?.heartbeat)
   const seen = beat === null ? 'not recorded' : `${spanWords((nowMs - beat) / 1000)} ago`
@@ -407,7 +432,7 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
         {ls.map((l, i) => {
           const others = l.waits.filter((w) => w.who === 'teammate' || w.who === 'google')
           return (
-            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}`}>
+            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}${l.optional === true ? ' is-optional' : ''}${l.skipped === true ? ' is-skipped' : ''}`}>
               <button type="button" className="cfc-pick" aria-current={l.key === selected ? 'step' : undefined} onClick={() => onPick(l.key)}>
                 <StepMark state={l.state} />
                 <span className="cfc-item-main">
@@ -416,8 +441,11 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
                       {i + 1}. {l.name}
                     </b>
                     {l.state === 'failed' && <Chip tone="bad">failed</Chip>}
+                    {l.optional === true && <Tag>Optional</Tag>}
                   </span>
-                  {l.state === 'done' ? (
+                  {l.optional === true ? (
+                    l.now !== '' && <span className={`cfc-item-now${l.skipped === true ? ' cfc-later' : ''}`}>{l.state === 'done' ? <><span className="cfc-done">done</span> · {l.now}</> : l.now}</span>
+                  ) : l.state === 'done' ? (
                     <span className="cfc-item-now">
                       <span className="cfc-done">{l.since === null ? 'done' : `done ${clock(l.since)}`}</span> · {l.now}
                     </span>
@@ -434,6 +462,7 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
                   )}
                 </span>
               </button>
+              {l.optional === true && <About label={l.name} tip={PLUGINS_TIP} />}
               {others.length > 0 && (
                 <ul className="cfc-subs" aria-label={`${l.name}: waiting on others`}>
                   {others.map((w, j) => (
@@ -628,11 +657,12 @@ function PanelHead({ kicker, tip, line, children }: { kicker: string; tip?: stri
   )
 }
 
-function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { line: Line; n: number; total: number; state: SetupState; rows: Partial<Record<LineKey, Row>>; nowMs: number; onChanged: () => void; following: boolean }) {
+function Panel({ line, n, total, state, rows, nowMs, onChanged, following, plugins }: { line: Line; n: number; total: number; state: SetupState; rows: Partial<Record<LineKey, Row>>; nowMs: number; onChanged: () => void; following: boolean; plugins: ReactNode }) {
   const row = rows[line.key]
   const closed = !state.cli_running && state.engine?.ready_at == null
   let body: ReactNode = null
-  if (line.key === 'cloud') body = <CloudBody state={state} nowMs={nowMs} />
+  if (line.key === 'plugins') body = plugins
+  else if (line.key === 'cloud') body = <CloudBody state={state} nowMs={nowMs} />
   else if (line.key === 'smoke') body = <SmokeBody state={state} onChanged={onChanged} />
   else if (line.key === 'send') body = <SendBody state={state} />
   else if (line.key === 'verify' && state.engine?.verify != null) body = <VerifyBody state={state} onChanged={onChanged} />
@@ -650,7 +680,12 @@ function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { l
   }
   return (
     <section className="cfc-panel" aria-label={`Step ${n}: ${line.name}`}>
-      <PanelHead kicker={`Step ${n} of ${total}${following ? '' : ' · picked by you'}`} tip={following ? 'The panel follows the next step you can act on.' : 'Follow the next step again, under the list, returns the panel to the next step you can act on.'} line={line}>
+      <PanelHead
+        kicker={line.optional === true ? `Step ${n} · optional` : `Step ${n} of ${total}${following ? '' : ' · picked by you'}`}
+        tip={line.optional === true ? 'Never a gate: Send to your team unlocks on verify alone, and the panel never moves here by itself.' : following ? 'The panel follows the next step you can act on.' : 'Follow the next step again, under the list, returns the panel to the next step you can act on.'}
+        line={line}
+      >
+        {line.optional !== true && (
         <p className="cfc-panel-who">
           {line.state === 'done' ? (
             <span className="cfc-done">Done{line.since === null ? '' : ` at ${clock(line.since)}`}, from the install record</span>
@@ -663,6 +698,7 @@ function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { l
             </>
           )}
         </p>
+        )}
       </PanelHead>
       <WaitTable waits={line.waits} nowMs={nowMs} closed={closed} />
       <div className="cfc-panel-body">{body}</div>
@@ -705,7 +741,7 @@ function ThisInstall({ state }: { state: SetupState }) {
         </div>
       </dl>
       <details className="cfc-more">
-        <summary>Capacity in full, and the add-ons</summary>
+        <summary>Capacity and add-ons</summary>
         <CapacityCard sizing={s} />
         <p className="ur-hint">{addons.line}</p>
         {addons.body ?? null}
@@ -713,6 +749,9 @@ function ThisInstall({ state }: { state: SetupState }) {
     </section>
   )
 }
+
+/** The width at which the panel stacks above the list (console-finish.css's `@media (max-width: 900px)`). */
+const NARROW = '(max-width: 900px)'
 
 /**
  * The one screen for one read of the record: the status line, the checklist
@@ -727,9 +766,20 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
   const githubAct = useAction(reread)
   useAutoSelfCheck(state, githubAct)
   const [picked, setPicked] = useState<LineKey | null>(null)
-  const ls = finishLines(state, nowMs)
+  const plug = usePluginsStep(state.steps?.plugins ?? null, reread)
+  const ls = finishLines(state, nowMs, plug.step)
+  const total = needed(ls).length
+  // On a narrow screen the panel sits above the list: a line picked there scrolls its panel into view.
+  const right = useRef<HTMLDivElement>(null)
+  const pick = useCallback((k: LineKey | null) => {
+    setPicked(k)
+    if (k === null || typeof window.matchMedia !== 'function' || !window.matchMedia(NARROW).matches) return
+    const el = right.current
+    if (el !== null && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [])
   const following = picked === null && callback === undefined
-  const selected: LineKey = callback !== undefined ? 'github' : picked ?? nextLineKey(ls)
+  // A picked line a later read no longer draws (a route that stopped serving the plugin step) is followed past.
+  const selected: LineKey = callback !== undefined ? 'github' : picked !== null && ls.some((l) => l.key === picked) ? picked : nextLineKey(ls)
   const rows: Partial<Record<LineKey, Row>> = {
     'sign-in-client': signInRow(state, reread, nowMs),
     github: githubRow(state, reread, githubAct),
@@ -744,16 +794,26 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
       <TerminalLine state={state} ls={ls} nowMs={nowMs} />
       <div className="cfc-grid">
         <div className="cfc-left">
-          <CompactList ls={ls} selected={selected} following={following} onPick={setPicked} nowMs={nowMs} onePerson={isOnePerson(state)} />
+          <CompactList ls={ls} selected={selected} following={following} onPick={pick} nowMs={nowMs} onePerson={isOnePerson(state)} />
         </div>
-        <div className="cfc-right">
+        <div className="cfc-right" ref={right}>
           {callback !== undefined ? (
             <section className="cfc-panel" aria-label="Back from GitHub">
-              <PanelHead kicker={`Step ${i + 1} of ${ls.length} · back from GitHub`} line={line} />
+              <PanelHead kicker={`Step ${i + 1} of ${total} · back from GitHub`} line={line} />
               <div className="cfc-panel-body">{callback}</div>
             </section>
           ) : (
-            <Panel line={line} n={i + 1} total={ls.length} state={state} rows={rows} nowMs={nowMs} onChanged={reread} following={following} />
+            <Panel
+              line={line}
+              n={i + 1}
+              total={total}
+              state={state}
+              rows={rows}
+              nowMs={nowMs}
+              onChanged={reread}
+              following={following}
+              plugins={plug.step === null ? null : <PluginsBody step={plug.step} act={plug.act} undone={plug.undone} onSkip={plug.skip} onUndo={plug.undo} />}
+            />
           )}
           <ThisInstall state={state} />
         </div>

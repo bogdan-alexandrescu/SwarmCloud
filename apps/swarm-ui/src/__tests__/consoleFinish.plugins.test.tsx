@@ -91,7 +91,8 @@ describe('the plugin step: its line', () => {
     expect(item('plugins').className).toContain('is-optional')
     expect(shown(item('plugins'))).toContain('9. Add a plugin')
     expect(within(item('plugins')).getByText('Optional').className).toContain('c-tag')
-    expect(shown(item('plugins'))).toContain('0 added')
+    // No words while to do: the panel holds the count (the console's prose ratchet).
+    expect(shown(item('plugins'))).toBe('9. Add a pluginOptional')
     // MUTATION: print what a plugin is on the surface -> fails.
     expect(shown(document.body)).not.toContain('A plugin adds skills')
     expect(tipOf(screen.getByRole('button', { name: 'About Add a plugin' }))).toBe(TIP)

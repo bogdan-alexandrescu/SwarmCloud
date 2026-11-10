@@ -81,9 +81,11 @@ import {
   retryWorkspace,
   runGitHubAppSelfCheck,
   saveSignInClient,
+  skipSetupPlugins,
   SMOKE_SUCCEEDED,
   startGitHubApp,
   startSetupVerifyRuns,
+  undoSetupPluginsSkip,
   type ApiError,
   type Result,
   type SetupAccount,
@@ -91,6 +93,7 @@ import {
   type SetupInvite,
   type SetupLink,
   type SetupMember,
+  type SetupPluginsStep,
   type SetupSignInClient,
   type SetupSizing,
   type SetupSmoke,
@@ -101,6 +104,7 @@ import {
   VERIFY_RUN_RETRIES,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
+import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath } from './AdminPlugins'
 import { agentPath } from './OverviewRegions'
 import { OWN_SIGN_IN_WINDOW } from './SetupLink'
 import type { TaskState } from './types'
@@ -1341,6 +1345,114 @@ export function addonsRow(state: SetupState): Row {
         <Facts items={state.addons.map((a) => ({ state: 'todo', name: a.name, text: <code>{a.enable}</code> }))} label="Add-ons" />
       ),
   }
+}
+
+/**
+ * The two bundled installs (managed-plugins §1.4): there without anyone
+ * adding them, so the plugin step never counts them. `steps.plugins` does
+ * not serve their names, so the panel names them from the design.
+ */
+export const BUNDLED_PLUGINS = ['gstack', 'security-audit'] as const
+
+/** What a plugin is and where it is done later: behind the plugin line's (i), never on the surface (§15.1). */
+export const PLUGINS_TIP =
+  'A plugin adds skills, commands or hooks to agent steps. One added to the platform catalogue serves only the workspaces that allow it. Optional: nothing waits on it, and you can add one any time from Admin › Plugins.'
+
+/** The plugin line's few words: what is added, or that it was skipped; none while to do, whose count the panel holds. */
+export function pluginsNow(step: SetupPluginsStep): string {
+  if (step.state === 'done') return `${step.count} added: ${step.added.map((p) => p.display_name).join(', ')}`
+  return step.state === 'skipped' ? 'skipped' : ''
+}
+
+/**
+ * The plugin step as it reads now: what Skip or Add one anyway answered,
+ * until the next read of `GET /v1/admin/setup` replaces it.
+ */
+export function usePluginsStep(served: SetupPluginsStep | null, onChanged: () => void): { step: SetupPluginsStep | null; act: ReturnType<typeof useAction>; undone: boolean; skip: () => void; undo: () => void } {
+  const act = useAction(onChanged)
+  const [answer, setAnswer] = useState<{ from: SetupPluginsStep | null; step: SetupPluginsStep; undone: boolean } | null>(null)
+  const held = answer !== null && answer.from === served ? answer : null
+  return {
+    step: held?.step ?? served,
+    act,
+    undone: held?.undone ?? false,
+    skip: () =>
+      act.run('skip', skipSetupPlugins, (next) => {
+        if (next !== null) setAnswer({ from: served, step: next, undone: false })
+      }),
+    undo: () =>
+      act.run('undo', undoSetupPluginsSkip, (next) => {
+        if (next !== null) setAnswer({ from: served, step: next, undone: true })
+      }),
+  }
+}
+
+/**
+ * The plugin step's panel: the bundled installs and the count added, the
+ * plugins added as links once done, and this state's actions: Add a plugin
+ * and Skip, or Add one anyway once skipped.
+ */
+export function PluginsBody({ step, act, undone, onSkip, onUndo }: { step: SetupPluginsStep; act: ReturnType<typeof useAction>; undone: boolean; onSkip: () => void; onUndo: () => void }) {
+  // Add one anyway is gone once pressed: focus lands on Add a plugin, where it was.
+  const acts = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (undone) acts.current?.querySelector<HTMLElement>('a, button')?.focus()
+  }, [undone])
+  return (
+    <>
+      <dl className="cfc-facts">
+        <div>
+          <dt>Installed</dt>
+          <dd>
+            {BUNDLED_PLUGINS.map((b) => (
+              <Chip key={b}>{b}</Chip>
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>Added</dt>
+          <dd>{step.count}</dd>
+        </div>
+      </dl>
+      {step.state === 'done' && (
+        <ul className="ob-list" aria-label="Plugins added">
+          {step.added.map((p) => (
+            <li key={p.install_id} className="ob-step is-done">
+              <ToneMark tone="ok" hidden />
+              <p className="ob-line ur-hint">
+                <a href={adminPluginPath(p.install_id)}>{p.display_name}</a> {p.scope === 'platform' ? 'platform' : p.tenant_id ?? 'workspace'}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {step.state === 'skipped' && step.skipped !== null && (
+        <p className="ur-hint">
+          Skipped{step.skipped.skipped_at === null ? '' : ` ${new Date(step.skipped.skipped_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}`}
+          {step.skipped.skipped_by === null ? '' : ` by ${step.skipped.skipped_by}`}
+        </p>
+      )}
+      <div className="cfc-act" ref={acts}>
+        {step.state === 'skipped' ? (
+          <Button size="sm" kind="secondary" busy={act.busy === 'undo'} onClick={onUndo}>
+            Add one anyway
+          </Button>
+        ) : (
+          <>
+            <ButtonLink size="sm" kind={step.state === 'done' ? 'secondary' : 'primary'} href={ADMIN_PLUGIN_ADD_PATH}>
+              {step.state === 'done' ? 'Add another' : 'Add a plugin'}
+            </ButtonLink>
+            {step.state === 'todo' && (
+              <Button size="sm" kind="secondary" busy={act.busy === 'skip'} onClick={onSkip}>
+                Skip
+              </Button>
+            )}
+          </>
+        )}
+      </div>
+      <ErrorLine error={act.error} />
+    </>
+  )
 }
 
 /**
