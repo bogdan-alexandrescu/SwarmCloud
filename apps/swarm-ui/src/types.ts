@@ -2090,6 +2090,12 @@ export interface SizedContainer {
   memory_gib: number
 }
 
+/**
+ * The kind of credential `AttemptRow.account_id` is (`CREDENTIAL_TIERS`,
+ * contract request 152): a plan the broker refreshes or a metered API key.
+ */
+export type CredentialTier = 'plan' | 'api_key'
+
 /** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
 export interface AttemptRow {
   attempt_id: string
@@ -2175,6 +2181,17 @@ export interface AttemptRow {
   sized_memory_gib?: number | null
   sized_disk_gib?: number | null
   sized_live_split?: Record<string, SizedContainer> | null
+  /**
+   * Contract request 152 (docs/design/llm-providers.md section 8.2): the
+   * account and the credential tier this attempt RAN on, the one it kept
+   * last, written by the worker. `credential_source` is `account_pool` or
+   * `tenant_secret`; `credential_tier` is null when the source is not the
+   * pool. Null: not recorded, never "tenant secret" or "plan". Absent: an
+   * older API.
+   */
+  account_id?: string | null
+  credential_source?: string | null
+  credential_tier?: CredentialTier | null
   /**
    * #379. THIS attempt's account and the accounts it gave back. Served beside
    * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
