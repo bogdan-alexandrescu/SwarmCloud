@@ -68,7 +68,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
 from . import credentials
-from .client import SwarmError
+from .client import SwarmError, send_user_agent
 from .config import Deployment
 from .invocation import terminal_command
 
@@ -151,12 +151,12 @@ def _post(url: str, form: dict[str, str], *, timeout: float = 30.0) -> dict[str,
     The error body's `error` and `error_description` are quoted; the request
     body never is, because it carries the secret, the code or the token.
     """
-    request = urllib.request.Request(
+    request = send_user_agent(urllib.request.Request(
         url,
         data=urllib.parse.urlencode(form).encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         method="POST",
-    )
+    ))
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
