@@ -1370,19 +1370,25 @@ export function pluginsNow(step: SetupPluginsStep): string {
  */
 export function usePluginsStep(served: SetupPluginsStep | null, onChanged: () => void): { step: SetupPluginsStep | null; act: ReturnType<typeof useAction>; undone: boolean; skip: () => void; undo: () => void } {
   const act = useAction(onChanged)
-  const [answer, setAnswer] = useState<{ from: SetupPluginsStep | null; step: SetupPluginsStep; undone: boolean } | null>(null)
-  const held = answer !== null && answer.from === served ? answer : null
+  // A write's answer holds until a read agrees with it. One read that
+  // disagrees is let pass: a poll sent before the write can land after it.
+  const [answer, setAnswer] = useState<{ from: SetupPluginsStep | null; step: SetupPluginsStep; undone: boolean; passed: boolean } | null>(null)
+  let held = answer
+  if (answer !== null && served !== answer.from) {
+    held = (served !== null && served.state === answer.step.state) || answer.passed ? null : { ...answer, from: served, passed: true }
+    setAnswer(held)
+  }
   return {
     step: held?.step ?? served,
     act,
     undone: held?.undone ?? false,
     skip: () =>
       act.run('skip', skipSetupPlugins, (next) => {
-        if (next !== null) setAnswer({ from: served, step: next, undone: false })
+        if (next !== null) setAnswer({ from: served, step: next, undone: false, passed: false })
       }),
     undo: () =>
       act.run('undo', undoSetupPluginsSkip, (next) => {
-        if (next !== null) setAnswer({ from: served, step: next, undone: true })
+        if (next !== null) setAnswer({ from: served, step: next, undone: true, passed: false })
       }),
   }
 }

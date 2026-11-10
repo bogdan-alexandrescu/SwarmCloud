@@ -169,6 +169,56 @@ describe('the plugin step: Skip and Add one anyway', () => {
   })
 })
 
+describe('the plugin step: Skip holds across the re-read', () => {
+  it('stays skipped past a poll sent before the write, and once the re-read agrees', async () => {
+    let rerender: (state: unknown) => void = () => {}
+    let reads = 0
+    const { calls, ...r } = await draw('verify-running', 'todo', (m, url) =>
+      m === 'POST' && url === '/v1/admin/setup/plugins/skip' ? { status: 200, body: { plugins: pluginsStep('skipped') } } : null,
+    )
+    const { AdminSetupPage } = await import('../AdminSetup')
+    const moments = await import('../consolefinish/moments')
+    const { normSetupState } = await import('../api')
+    const read = (plug: 'todo' | 'skipped') => normSetupState(withPlugins(plug)(moments.momentSetupState('verify-running', NOW)))
+    rerender = (state) => r.rerender(<AdminSetupPage state={state as ReturnType<typeof read>} now={NOW} onChanged={() => (reads += 1)} />)
+    rerender(read('todo'))
+    pickPlugins()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Skip' }))
+    await waitFor(() => expect(item('plugins').className).toContain('is-skipped'))
+    expect(reads).toBe(1)
+    // A poll sent before the POST lands after it, still to do.
+    // MUTATION: drop the held answer whenever the read changes -> the line is to do again, and this fails.
+    rerender(read('todo'))
+    expect(item('plugins').className).toContain('is-skipped')
+    // The re-read sent after the POST agrees, and the read takes over.
+    rerender(read('skipped'))
+    expect(item('plugins').className).toContain('is-skipped')
+    expect(within(panel()).getByRole('button', { name: 'Add one anyway' })).toBeTruthy()
+    expect(calls.filter((c) => c.method === 'POST').length).toBe(1)
+  })
+
+  it('in the fixture build, the setup read serves the skip and the undo', async () => {
+    document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+    try {
+      vi.resetModules()
+      const api = await import('../api')
+      expect(api.USE_FIXTURES).toBe(true)
+      const state = async () => {
+        const got = await api.loadSetup()
+        return got.status === 'ok' ? got.data.steps?.plugins?.state : got.status
+      }
+      expect(await state()).toBe('todo')
+      // MUTATION: answer the skip without the fixture holding it -> the re-read serves to do, and this fails.
+      expect((await api.skipSetupPlugins()).status).toBe('ok')
+      expect(await state()).toBe('skipped')
+      expect((await api.undoSetupPluginsSkip()).status).toBe('ok')
+      expect(await state()).toBe('todo')
+    } finally {
+      document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    }
+  })
+})
+
 describe('the plugin step never counts and is never followed', () => {
   for (const plug of ['todo', 'skipped', 'done'] as const) {
     it(`keeps the count at 8 of 8 with the plugin step ${plug}`, async () => {

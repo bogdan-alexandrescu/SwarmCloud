@@ -14911,7 +14911,10 @@ export function skipSetupPlugins(): Promise<Result<SetupPluginsStep | null>> {
     'POST',
     undefined,
     (raw) => normPluginsStep(objOf(raw)?.plugins),
-    () => normPluginsStep({ state: 'skipped', count: 0, added: [], skipped: { skipped_at: new Date(FIXTURE_NOW).toISOString(), skipped_by: 'ana@example.com' } }),
+    () => {
+      fixturePluginsSkipped = fixturePluginsSkipped ?? { skipped_at: new Date(FIXTURE_NOW).toISOString(), skipped_by: 'ana@example.com' }
+      return normPluginsStep(fixturePluginsStep())
+    },
   )
 }
 
@@ -14925,7 +14928,10 @@ export function undoSetupPluginsSkip(): Promise<Result<SetupPluginsStep | null>>
     'DELETE',
     undefined,
     (raw) => normPluginsStep(objOf(raw)?.plugins),
-    () => normPluginsStep({ state: 'todo', count: 0, added: [], skipped: null }),
+    () => {
+      fixturePluginsSkipped = null
+      return normPluginsStep(fixturePluginsStep())
+    },
   )
 }
 
@@ -15047,6 +15053,18 @@ function fixtureSignInClient(): Record<string, unknown> {
 }
 
 /** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+/**
+ * The fixture build's skip of the optional plugin step: the skip and undo
+ * fixtures set and clear it, and every fixture read of GET /v1/admin/setup
+ * serves it, so a skip holds across the re-read that follows it.
+ */
+let fixturePluginsSkipped: { skipped_at: string; skipped_by: string } | null = null
+
+/** The fixture's `steps.plugins` (managed-plugins §15.1): nothing added yet; skipped once the skip fixture ran. */
+function fixturePluginsStep(): Record<string, unknown> {
+  return { needed: false, optional: true, state: fixturePluginsSkipped === null ? 'todo' : 'skipped', count: 0, added: [], skipped: fixturePluginsSkipped }
+}
+
 function fixtureSetupState(): Record<string, unknown> {
   const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
   const t0 = FIXTURE_NOW / 1000 - 240
@@ -15100,8 +15118,7 @@ function fixtureSetupState(): Record<string, unknown> {
       pool_accounts: 3,
       budget_usd: 900,
     },
-    // The optional plugin step (managed-plugins §15.1): nothing added yet, not skipped.
-    steps: { plugins: { needed: false, optional: true, state: 'todo', count: 0, added: [], skipped: null } },
+    steps: { plugins: fixturePluginsStep() },
   }
 }
 
