@@ -115,8 +115,7 @@ TEXT_INSTRUCTIONS = INSTRUCTIONS + (
 )
 #: Added when a planner is configured: the text path's way to delegate.
 TEXT_DELEGATE_INSTRUCTIONS = DELEGATE_INSTRUCTIONS.replace(
-    "delegate it, say a few words while you wait, then speak the result you are given and "
-    "point at the card on screen",
+    "delegate it, say a few words while you wait, then speak the result you are given",
     "call the delegate tool with what they asked for, and nothing else; the planner's "
     "answer is given to the person for you",
 )
