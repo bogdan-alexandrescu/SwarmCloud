@@ -15,7 +15,10 @@
  * WHAT A PLUGIN'S PAGE SHOWS. Overview: what the pinned copy ships (skills,
  * hooks, servers), its source and digest and what it needs. Settings: the
  * form generated from its fields (PluginSettingsForm.tsx), secrets by status
- * only. Versions and Usage are lane 10b's page (PluginDetail.tsx).
+ * only. Versions and Usage are lane 10b's page (PluginDetail.tsx). A
+ * platform or workspace install's card links that routed page,
+ * `/config/plugins/<install_id>`, whose Settings tab is the same form; the
+ * page here is a built-in's, a one-time link's and a fresh install's.
  *
  * A WORKSPACE INSTALL (its owner's or admin's): GitHub, a marketplace entry or
  * an uploaded archive; swarm-api fetches it into quarantine and a
@@ -77,6 +80,17 @@ export function notAllowedWords(name: string): string {
 /** The name a plugin goes by in the Allowed and Every step lists: a built-in's name, an install's id. */
 export function listKey(e: Pick<PluginEntry, 'scope' | 'name' | 'install_id'>): string {
   return e.scope === 'built_in' ? e.name : e.install_id
+}
+
+/**
+ * A PLUGIN'S ROUTED PAGE UNDER CONFIG › PLUGINS (`/config/plugins/<install_id>`;
+ * App.tsx `WorkspacePluginRoute`), which a platform or workspace install's card
+ * links, as Admin › Plugins' cards link theirs (owner pick, PR #3750). A
+ * built-in has no install to read there, so its card still opens this
+ * screen's own Overview.
+ */
+export function configPluginPath(installId: string): string {
+  return `/config/plugins/${encodeURIComponent(installId)}`
 }
 
 /** The one-time link's address (`pluginconfig.mint_link`): `/config/plugins/<install_id>?field=<key>&t=<token>`. */
@@ -223,6 +237,20 @@ function Badges({ e }: { e: PluginEntry }) {
   )
 }
 
+/** A card's head: its monogram, name, pinned version and scope; a link or a button around it. */
+function cardTop(e: PluginEntry): ReactNode {
+  return (
+    <>
+      <Mono e={e} />
+      <span className="plg-card-id">
+        <b>{e.name}</b>
+        <code title={e.version ?? undefined}>{e.version ?? 'version not known'}</code>
+      </span>
+      <ScopeChip scope={e.scope} />
+    </>
+  )
+}
+
 function Facts({ rows }: { rows: [string, ReactNode][] }) {
   return (
     <dl className="plg-facts">
@@ -360,14 +388,9 @@ function Catalogue({ data, onSaved, onOpen }: { data: PageData; onSaved: () => v
             const ev = every.includes(listKey(e))
             return (
               <li key={e.install_id} className={`plg-card${on ? '' : ' is-off'}`}>
-                <button type="button" className="plg-card-top" onClick={() => onOpen(e.install_id)} aria-label={`Open ${e.name}`}>
-                  <Mono e={e} />
-                  <span className="plg-card-id">
-                    <b>{e.name}</b>
-                    <code title={e.version ?? undefined}>{e.version ?? 'version not known'}</code>
-                  </span>
-                  <ScopeChip scope={e.scope} />
-                </button>
+                {e.scope === 'built_in'
+                  ? <button type="button" className="plg-card-top" onClick={() => onOpen(e.install_id)} aria-label={`Open ${e.name}`}>{cardTop(e)}</button>
+                  : <a className="plg-card-top" href={configPluginPath(e.install_id)} aria-label={`Open ${e.name}`}>{cardTop(e)}</a>}
                 <div className="plg-card-mid">
                   {e.description !== null && <span className="plg-card-desc">{e.description}</span>}
                   <Badges e={e} />

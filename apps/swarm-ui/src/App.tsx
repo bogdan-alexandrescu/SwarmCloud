@@ -47,6 +47,7 @@ import { ConfigPluginsScreen, pluginLinkOf, type PluginLinkAt } from './ConfigPl
 import { ADMIN_PLUGINS_PATH, AdminPluginsScreen, catalogueCards } from './AdminPlugins'
 import { AdminPluginInstallScreen } from './AdminPluginInstall'
 import { PluginDetailScreen } from './PluginDetail'
+import { PluginSettingsForm } from './PluginSettingsForm'
 import { loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
 import { UrRegion, useUrRead } from './RepositoriesParts'
 import { SecretsScreen } from './Secrets'
@@ -2716,13 +2717,18 @@ function AdminWorkspacePluginRoute({ installId }: { installId: string }) {
 /**
  * ONE PLUGIN'S PAGE UNDER CONFIG › PLUGINS (`/config/plugins/<install_id>`):
  * read in the selected workspace, which `GET /v1/plugins` names, as Config ›
- * Plugins reads it. A removal is said on the page, which stays open.
+ * Plugins reads it. A removal is said on the page, which stays open. Config's
+ * cards link here (owner pick, PR #3750), so its Settings tab is Config's
+ * editable form (PluginSettingsForm.tsx), not the read-only rows.
  */
 export function WorkspacePluginRoute({ installId }: { installId: string }) {
   const read = useUrRead(loadWorkspacePlugins, 'plugin-page-workspace')
   return (
     <UrRegion state={read.state} route="GET /v1/plugins" what="The workspace's plugins" plural onRetry={read.reload}>
-      {(d) => <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)} />}
+      {(d) => (
+        <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)}
+          settings={(name) => <PluginSettingsForm tenantId={d.tenant_id} installId={installId} name={name} />} />
+      )}
     </UrRegion>
   )
 }

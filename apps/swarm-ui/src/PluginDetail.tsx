@@ -93,6 +93,7 @@ export function PluginDetailScreen({
   backHref = null,
   initialTab = 'overview',
   onRemoved,
+  settings,
 }: {
   installId: string
   /** The workspace the page is read in; null on Admin › Plugins. */
@@ -101,6 +102,12 @@ export function PluginDetailScreen({
   backHref?: string | null
   initialTab?: PluginTab
   onRemoved?: (install: ManagedInstall) => void
+  /**
+   * The Settings tab's body, given the plugin's name, in place of the
+   * read-only rows: Config › Plugins' routed page hands its editable form
+   * (App.tsx `WorkspacePluginRoute`), so a card that links here loses nothing.
+   */
+  settings?: (name: string) => ReactNode
 }) {
   const place: PluginPlace = { installId, tenantId }
   const versions = useUrRead(() => loadPluginVersions(place), `plugin-versions:${tenantId ?? ''}:${installId}`)
@@ -150,7 +157,7 @@ export function PluginDetailScreen({
       />
       <div role="tabpanel" aria-label={TAB_WORDS[shown]} className="pd-panel">
         {shown === 'overview' && <Overview versions={versions} fallback={w?.entry ?? null} />}
-        {shown === 'settings' && tenantId !== null && <SettingsTab tenantId={tenantId} installId={installId} />}
+        {shown === 'settings' && tenantId !== null && (settings !== undefined ? settings(name) : <SettingsTab tenantId={tenantId} installId={installId} />)}
         {shown === 'versions' && <VersionsTab versions={versions} place={place} canChange={canChange} />}
         {shown === 'usage' && <UsageTab place={place} workspace={w} />}
       </div>

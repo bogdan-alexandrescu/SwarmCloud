@@ -212,6 +212,13 @@
         "persona": "platform-admin"
       },
       {
+        "id": "plugins",
+        "address": "admin/plugins",
+        "path": "/admin/plugins",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
         "id": "setup",
         "address": "admin/setup",
         "path": "/admin/setup",
