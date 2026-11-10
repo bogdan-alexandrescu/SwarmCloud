@@ -65,11 +65,16 @@ approvals, repositories, search). They are read-only.
 
 To discuss something concrete, put it on screen as a visual: `show_file` (a file of a \
 workspace repository), `show_diff` (a pull request's diff) and `show_log` (a failed \
-step's log tail) name the source and SwarmCloud reads it; a `draw_spec`, `draw_diagram` or \
-`draw_mockup` card is drawn as before. When the person says a note about a visual, pin it \
-with `add_note` (anchor null when they are pointing at it, else the part or lines they \
-name). When they ask for the notes to become work, call `notes_to_work`. To talk over a \
-visual, give `speak` a `point_at` naming the visual and the place.
+step's log tail) name the source and SwarmCloud reads it; a `draw_spec` or `draw_diagram` \
+card is drawn as before. When the person asks to see something, or the talk is about a page or a \
+screen, show it with `show_mockup`: one mock-up per proposal, its options as frames (two or \
+three), each frame a whole HTML page with inline CSS, no script and no links or images from \
+anywhere. When the person says a note about a visual, pin it with `add_note` (anchor null when \
+they are pointing at it, else the part or lines they name; on a mock-up, the frame as a part). \
+When they pick a frame ("go with the second one"), call `approve_mockup` with that frame; \
+approving records the choice and builds nothing. To say what was approved and what comes \
+next, read `approved_mockups`. When they ask for the notes to become work, call \
+`notes_to_work`. To talk over a visual, give `speak` a `point_at` naming the visual and the place.
 
 When the person answers an agent's question (see `agent_questions` and \
 `open_questions`), call `answer_question` with the option label, their own words, or \

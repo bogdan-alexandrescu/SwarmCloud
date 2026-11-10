@@ -3,8 +3,9 @@ swarm_api/voice/visuals.py).
 
     GET   /v1/voice/projects/{project_id}/visuals              -> {visuals}
     GET   /v1/voice/projects/{project_id}/visuals/{visual_id}  -> {visual, body, notes}
-    POST  /v1/voice/sessions/{session_id}/visuals    {visual} | {focus}
-        -> {visual} | {focus}
+    POST  /v1/voice/sessions/{session_id}/visuals
+          {visual} | {focus} | {approve} | {approved: true}
+        -> {visual} | {focus} | {visual} | {approved}
     POST  /v1/voice/sessions/{session_id}/pointer    {visual_id, anchor} -> {pointer}
     POST  /v1/voice/projects/{project_id}/visuals/{visual_id}/notes
           {note, session_id?} | {to_work, session_id?}    -> {note} | {work, notes}
@@ -12,6 +13,8 @@ swarm_api/voice/visuals.py).
           {text?, state?, session_id?}                     -> {note}
     POST  /v1/voice/projects/{project_id}/visuals/{visual_id}/notes/work
           {note_ids, kind, title?, session_id?}            -> {work, notes}
+    POST  /v1/voice/projects/{project_id}/visuals/{visual_id}/approval
+          {frame, session_id?}                             -> {visual}
 
 WHO. The same guards as every Voice it route: the caller on the Voice it list
 (403), and the session or project the caller's own in the console's selected
@@ -27,6 +30,15 @@ grant's own session's project (else 403). So the planner's draws and reads
 and its `notes_to_work` (`to_work`, §8.4) all ride on those two routes, and no
 other write is open to a grant. The pointer, the note edit and the notes-to-
 work route are the page's: a grant reaching them is 403 before anything runs.
+
+A MOCK-UP'S APPROVAL (`visuals.Visuals.approve`). The person's spoken pick
+("go with the second one") rides on the visual write the grant already
+reaches, as `{approve: {visual_id, frame}}`, and the planner reads what was
+approved there too, as `{approved: true}`: no route joins the grant's lists.
+On the Stage the person approves through the approval route, the page's
+alone like the note edit. Either way the visual is looked up in the caller's
+own project and tenant, so another workspace's visual is the same 404 as a
+missing one. An approval records a choice; it deploys and starts nothing.
 
 A `code` OR `log` VISUAL IS READ HERE, never sent: the planner names the source
 (`{repo, ref, path, from, to}`, `{repo, pull}` or `{task_id, step}`) and the
@@ -82,11 +94,29 @@ class FocusBody(BaseModel):
     caption: str | None = Field(default=None, max_length=500)
 
 
+class ApproveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    visual_id: str
+    #: The frame, by its id or its label.
+    frame: str = Field(min_length=1, max_length=120)
+
+
 class WriteVisual(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     visual: VisualBody | None = None
     focus: FocusBody | None = None
+    approve: ApproveBody | None = None
+    #: True: answer the project's approved mock-ups, for the planner.
+    approved: Literal[True] | None = None
+
+
+class Approval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame: str = Field(min_length=1, max_length=120)
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 class Pointer(BaseModel):
@@ -197,6 +227,9 @@ def _read(ctx: AppContext, reader: vvis.RepoReader, where: vvis.Where, body: Vis
             raise ValidationFailed(f"body is required for a {body.kind}", detail={"field": "body"})
         if body.kind == "spec":
             parts = vvis.spec_parts(body.body)
+        elif body.kind == "mockup":
+            text, parts = vvis.check_frames(body.body)
+            return text, parts, None, None
         else:
             parts = vvis.check_parts(body.parts)
         lines = vvis._count_lines(body.body) if body.kind == "spec" else None
@@ -258,10 +291,19 @@ async def write_visual(
     reader: vvis.RepoReader = Depends(repo_reader),
     submitted_by: str | None = Depends(submission_scope),
 ) -> dict:
-    if (body.visual is None) == (body.focus is None):
-        raise ValidationFailed("the body is {visual} or {focus}", detail={"field": "visual"})
+    given = [body.visual, body.focus, body.approve, body.approved]
+    if sum(v is not None for v in given) != 1:
+        raise ValidationFailed("the body is {visual}, {focus}, {approve} or {approved}",
+                               detail={"field": "visual"})
     where = await run_in_threadpool(_live, ctx, auth, person, session_id)
     visuals = _visuals(ctx, blobs)
+    if body.approve is not None:
+        view = await run_in_threadpool(
+            visuals.approve, where, visual_id=body.approve.visual_id, frame=body.approve.frame,
+            via="voice" if auth.via == vgrant.VIA else "stage")
+        return {"visual": view}
+    if body.approved is not None:
+        return {"approved": await run_in_threadpool(visuals.approved, where)}
     if body.focus is not None:
         focus = await run_in_threadpool(
             visuals.focus, where, visual_id=body.focus.visual_id, anchor=body.focus.anchor,
@@ -358,3 +400,20 @@ async def notes_to_work(
     return await run_in_threadpool(
         _visuals(ctx, blobs).notes_to_work, where, visual_id=visual_id, note_ids=body.note_ids,
         kind=body.kind, title=body.title)
+
+
+@router.post("/projects/{project_id}/visuals/{visual_id}/approval")
+async def approve_visual(
+    project_id: str,
+    visual_id: str,
+    body: Approval,
+    person: str = Depends(allowed_person),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    blobs: Any = Depends(voice_blobs),
+) -> dict:
+    _person_only(auth)
+    where = await run_in_threadpool(_project, ctx, auth, person, project_id, body.session_id)
+    view = await run_in_threadpool(
+        _visuals(ctx, blobs).approve, where, visual_id=visual_id, frame=body.frame, via="stage")
+    return {"visual": view}
