@@ -172,7 +172,7 @@ INSTRUCTIONS = (
 
 #: Added to the instructions when a planner is configured (§3.3 step 1).
 DELEGATE_INSTRUCTIONS = (
-    " When the person asks for something to be planned, drawn, looked up or explained from "
+    " When the person asks for something to be planned, drawn, shown, looked up or explained from "
     "SwarmCloud, delegate it, say a few words while you wait, then speak the result you are "
     "given and point at the card on screen. Never invent a plan or a status yourself."
 )

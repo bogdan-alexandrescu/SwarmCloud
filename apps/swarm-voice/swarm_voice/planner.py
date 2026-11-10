@@ -10,7 +10,8 @@ ONE TURN, as §3.3 lays it out. When the live voice delegates (live.py sees
   2. reads the card catalogue from swarm-api's schema route WITH THE GRANT, and
      offers the model exactly its `draw_<kind>` tools, the read tools
      (tools_read.py), the visual tools (tools_visual.py: `show_file`,
-     `show_diff`, `show_log`, `add_note`, `notes_to_work`) and `speak`, whose
+     `show_diff`, `show_log`, `show_mockup`, `approve_mockup`,
+     `approved_mockups`, `add_note`, `notes_to_work`) and `speak`, whose
      `point_at` reaches the page as a `focus` (voice-it-own-speech.md §8.5);
   3. leases ONE Claude subscription account from the quota broker for the
      person's own workspace (plannerlease.py), released in a finally whatever

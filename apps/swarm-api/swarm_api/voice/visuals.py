@@ -4,7 +4,8 @@
 A VISUAL is what the Talk page shows large in the centre of the Presence
 layout (§8.1), one of `KINDS`:
 
-  mockup   HTML frames the planner drew, shown only in a sandboxed frame
+  mockup   HTML frames the planner drew (`show_mockup`), shown only in a
+           sandboxed frame; one visual per proposal, each frame a part
   diagram  Mermaid text or architecture JSON the planner drew
   spec     Markdown the planner wrote; each heading is an addressable part
   code     a file slice (`show_file`) or a pull request's diff (`show_diff`),
@@ -70,6 +71,25 @@ with `work: {kind, ref}`:
               the act path files as heard; the card is the reference
   lane_brief  a Plan card whose lane's territory is the visual's source files
 
+A MOCK-UP IS FRAMES THAT RUN NOTHING AND FETCH NOTHING (voice-it.md §4). Its
+body is `{"frames": [{id, label, html}]}`, 1 to `MOCKUP_FRAMES_MAX` frames,
+each a self-contained HTML document; its parts are the frames' `{id, label}`,
+so a comment on a frame is a note with a part anchor. A frame with a script,
+an event handler, a `javascript:` link, a nested frame, a form, a `<link>`,
+`<base>` or `<meta>`, or any address that is not `data:` or `#` (an absolute
+address, a relative one, `url()`, `@import`) is refused (`check_frames`): the
+page's `sandbox=""` already runs no script, and this keeps a frame from
+fetching anything. Every frame's HTML is masked with the shared redaction
+rules before it is stored, as a read body is.
+
+AN APPROVAL IS A PICK OF ONE FRAME (`approve`): `approved: {frame_id, label,
+by, via, at}` on the visual, `by` the person the route resolved, `via`
+`voice` (the planner, on the visual write the grant reaches) or `stage` (the
+page's approval route). It deploys nothing and starts nothing; drawing the
+mock-up again drops it, since the frames it named are gone.
+`approved` answers the project's approved mock-ups, for the planner to say
+what was approved and what comes next.
+
 THE STREAM. Each write appends its event to the session's stream through
 `VoiceStore.append_event`: `visual.upsert` (the visual's view, no body),
 `note.upsert` (the note) and `focus` (`speak`'s `point_at`, §8.5: the visual,
@@ -78,6 +98,7 @@ the anchor and the caption the page rings while the speech plays).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -115,6 +136,8 @@ CREATORS: tuple[str, ...] = ("planner", "person")
 
 ANCHOR_TYPES: tuple[str, ...] = ("point", "region", "part", "lines")
 VIAS: tuple[str, ...] = ("voice", "typed", "tap")
+#: How an approval was given: spoken (through the planner) or on the Stage.
+APPROVAL_VIAS: tuple[str, ...] = ("voice", "stage")
 OPEN, RESOLVED, WORK = "open", "resolved", "work"
 NOTE_STATES: tuple[str, ...] = (OPEN, RESOLVED, WORK)
 FOLLOW_UP, ISSUE, LANE_BRIEF = "follow_up", "issue", "lane_brief"
@@ -134,6 +157,8 @@ FILE_LINES_MAX = 400
 LOG_EVENTS_SCAN = 200
 LOG_LINES_MAX = 400
 PARTS_MAX = 200
+#: A mock-up's frames: as many as the catalogue's mockup card holds.
+MOCKUP_FRAMES_MAX = 12
 NOTE_MAX = vcards.LINE_MAX * 4
 NOTES_TO_WORK_MAX = 50
 #: The brief's open list keeps this many items.
@@ -149,6 +174,15 @@ _REPO_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100})
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 _PATH_SEGMENT_RE = re.compile(r"^[^\x00-\x1f\\]{1,255}$")
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+#: What makes a frame run code or reach outside itself; see the module docstring.
+_FRAME_REFUSED_RE = re.compile(
+    r"<\s*/?\s*(?:script|iframe|frame|frameset|object|embed|applet|portal|form|link|base|meta)\b"
+    r"|\bon[a-z]+\s*=|(?:java|vb)script\s*:|@import\b", re.IGNORECASE)
+#: An attribute or `url()` that names an address; its value must be `data:` or `#`.
+_FRAME_ADDRESS_RE = re.compile(
+    r"""\b(?:src|srcset|href|xlink:href|action|formaction|poster|background|ping|cite|"""
+    r"""longdesc|manifest|codebase|data)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"""
+    r"""|url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)""", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 
 
@@ -239,6 +273,45 @@ def check_parts(value: Any) -> list[dict[str, str]]:
         ids.add(pid)
         out.append({"id": pid, "label": _line(part["label"], f"parts[{i}].label")})
     return out
+
+
+def _frame_refusal(html: str) -> str | None:
+    """Why a frame's HTML would run code or fetch something, or None."""
+    if _FRAME_REFUSED_RE.search(html):
+        return "runs code or loads another document; a frame is plain HTML and CSS"
+    for match in _FRAME_ADDRESS_RE.finditer(html):
+        value = next((g for g in match.groups() if g is not None), "").strip().lower()
+        if not (value.startswith("data:") or value.startswith("#")):
+            return "names an address; a frame fetches nothing (only data: and # are kept)"
+    return None
+
+
+def check_frames(body: str) -> tuple[str, list[dict[str, str]]]:
+    """A mock-up's body as it is stored, its frames' HTML masked, and its
+    frames as parts. Refused unless it is `{"frames": [{id, label, html}]}`
+    whose every frame runs nothing and fetches nothing."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    frames = data.get("frames") if isinstance(data, dict) and set(data) == {"frames"} else None
+    if not isinstance(frames, list) or not 1 <= len(frames) <= MOCKUP_FRAMES_MAX:
+        raise _refuse("body", f'is {{"frames": [{{id, label, html}}]}}, 1 to {MOCKUP_FRAMES_MAX} frames')
+    stored: list[dict[str, str]] = []
+    for i, frame in enumerate(frames):
+        if not isinstance(frame, dict) or set(frame) != {"id", "label", "html"}:
+            raise _refuse(f"frames[{i}]", "is {id, label, html}")
+        html = frame["html"]
+        if not isinstance(html, str) or not html.strip():
+            raise _refuse(f"frames[{i}].html", "is a self-contained HTML document")
+        why = _frame_refusal(html)
+        if why is not None:
+            raise _refuse(f"frames[{i}].html", why)
+        stored.append({"id": frame["id"], "label": frame["label"], "html": redact(html).text})
+    parts = check_parts([{"id": f["id"], "label": f["label"]} for f in stored])
+    for part in parts:
+        _clean(part["label"], "frames.label")
+    return json.dumps({"frames": stored}, ensure_ascii=False), parts
 
 
 def _unit(value: Any, field: str) -> float:
@@ -527,9 +600,14 @@ def visual_view(doc: Mapping[str, Any]) -> dict[str, Any]:
         "version": doc.get("version"), "source": doc.get("source"),
         "parts": doc.get("parts") or [], "lines": doc.get("lines"),
         "body_ref": doc.get("body_ref"), "created_by": doc.get("created_by"),
+        "approved": _approved_view(doc.get("approved")),
         "session_id": doc.get("session_id"), "project_id": doc.get("project_id"),
         "created_at": _iso(doc.get("created_at")), "updated_at": _iso(doc.get("updated_at")),
     }
+
+
+def _approved_view(mark: Any) -> dict[str, Any] | None:
+    return {k: _iso(v) for k, v in mark.items()} if isinstance(mark, dict) else None
 
 
 def note_view(doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -671,6 +749,40 @@ class Visuals:
                      _line(caption, "caption", max=vcards.LINE_MAX), "caption")}
         self._event(where, event)
         return {k: v for k, v in event.items() if k != "type"}
+
+    # ---- a mock-up's approval --------------------------------------------
+
+    def approve(self, where: Where, *, visual_id: str, frame: str, via: str) -> dict[str, Any]:
+        """The person's pick of one of a mock-up's frames, stored on the
+        visual and sent on the session's stream as the visual's view."""
+        doc = self._visual(where, visual_id)
+        if doc.get("kind") != "mockup":
+            raise _refuse("visual_id", "is a mock-up; only a mock-up's frame is approved")
+        if via not in APPROVAL_VIAS:
+            raise _refuse("via", f"is one of {', '.join(APPROVAL_VIAS)}")
+        if not isinstance(frame, str) or not frame.strip():
+            raise _refuse("frame", "is one of this mock-up's frames")
+        try:
+            frame_id = self._part(doc, frame)
+        except ValidationFailed:
+            raise _refuse("frame", "is not one of this mock-up's frames") from None
+        label = next((str(p.get("label") or frame_id) for p in doc.get("parts") or []
+                      if p.get("id") == frame_id), frame_id)
+        mark = {"frame_id": frame_id, "label": label, "by": where.person, "via": via,
+                "at": self._now()}
+        self._visual_ref(where.project_id, visual_id).update({"approved": mark})
+        view = visual_view({**doc, "approved": mark})
+        self._event(where, {"type": VISUAL_UPSERT, "visual": view})
+        log.info("voice mock-up approved tenant=%s project=%s visual=%s via=%s",
+                 where.tenant_id, where.project_id, visual_id, via)
+        return view
+
+    def approved(self, where: Where) -> list[dict[str, Any]]:
+        """The project's approved mock-ups, the latest approval first."""
+        rows = [v for v in self.list(where) if v.get("kind") == "mockup" and v.get("approved")]
+        rows.sort(key=lambda v: str(v["approved"].get("at") or ""), reverse=True)
+        return [{"visual_id": v["visual_id"], "title": v["title"], "version": v["version"],
+                 **v["approved"]} for v in rows]
 
     # ---- the pointer -----------------------------------------------------
 
