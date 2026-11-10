@@ -381,7 +381,7 @@ describe('the questions are drawn inline, with the answer control', () => {
     /** A length the tip's rules use: px, a percentage of the containing block, or min() of those. */
     function length(v: string, of: number): number {
       const min = /^min\((.*)\)$/.exec(v)
-      if (min) return Math.min(...splitTop(min[1]).map((part) => length(part.trim(), of)))
+      if (min) return Math.min(...splitTop(min[1] ?? '').map((part) => length(part.trim(), of)))
       const px = /^(-?[\d.]+)px$/.exec(v)
       if (px) return Number(px[1])
       const pct = /^(-?[\d.]+)%$/.exec(v)
