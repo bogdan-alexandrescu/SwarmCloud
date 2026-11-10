@@ -954,7 +954,9 @@ with a filename. Before **any** write, in this order:
    because `Content-Length` is a claim (the same reasoning as `stage_inputs`'
    pass 4).
 3. A per-instance semaphore admits **four** multipart answers at once; a
-   fifth gets 429 `answer_busy` with `Retry-After`. swarm-api runs 1 GiB at
+   fifth gets 429 `answer_busy` with `Retry-After`. (Built as one semaphore
+   per uvicorn worker holding the instance's four divided by the worker
+   count, `swarm_api.workers`: two each on dev's two workers.) swarm-api runs 1 GiB at
    concurrency 80 (`terraform/infra/main.tf`, `services["swarm-api"]`), and
    eighty 16 MiB bodies, each held while it is parsed and written, would
    pass that; four hold at most 128 MiB with the copy each part makes. The

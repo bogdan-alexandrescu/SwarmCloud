@@ -1177,7 +1177,9 @@ The size is gated before the body is read: a multipart answer must send
 `Content-Length` (411 without it), and more than 16 MiB plus 64 KiB of
 framing is 413 before a byte is read; the body is then read through a counting
 reader, because a length is a claim. One instance holds at most 4 multipart
-answers at once, which keeps them inside swarm-api's memory at concurrency 80.
+answers at once, which keeps them inside swarm-api's memory at concurrency 80;
+each of its uvicorn workers holds its share (2 each on dev, which runs two),
+because a semaphore lives in one process (`swarm_api.workers`).
 Then the step, the caller and the membership are checked, so an outsider's
 upload never reaches GCS.
 

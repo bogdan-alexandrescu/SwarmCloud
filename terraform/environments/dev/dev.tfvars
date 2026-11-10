@@ -346,6 +346,17 @@ pool_limits = {
   }
 }
 
+# TWO uvicorn WORKERS PER swarm-api INSTANCE, NOT 1 (the owner's choice,
+# 2026-11-10). Measured offline on 2 CPUs (scripts/measure-api-workers.sh):
+# 82 -> 172 requests per second at 8 in flight, p95 206 -> 96 ms; one
+# process holds one core under the GIL and left the instance's second idle.
+# Made only once each per-process cap holds per instance
+# (apps/swarm-api/swarm_api/workers.py divides them by this). Memory: two
+# workers at ~150 MB idle are ~300 MB of the 2 GiB, and the divided caps'
+# worst case stays inside it (the PR that set this says the numbers).
+# prod keeps infra's default, 1.
+api_workers = 2
+
 service_max_instances = {
   # 5 -> 8 (BGD's pick, 2026-11-06, part of #2688), with each instance doubled
   # to 2 vCPU and 2 GiB in terraform/infra/main.tf: swarm-api sat at 5 of 5
