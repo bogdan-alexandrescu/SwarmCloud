@@ -47,6 +47,11 @@ from . import forge_fakes
 from .conftest import api_settings, auth_header
 from .test_issue_runs import _approve, _docs, _planned, _run
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SHA_A, SHA_B, SHA_C, SHA_D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
 PR = 57
 

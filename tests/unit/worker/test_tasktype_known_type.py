@@ -33,6 +33,11 @@ from swarm_api import issueci, issueruns, jevusage, mergewake, qaspec, validatio
 from swarm_api.issueruns import IssueRef, IssueRun, RunState
 from swarm_api.schedtypes import pr_shepherd
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 _PLAN = {
     "summary": "Make the widget list sortable by name.",
     "mode": "workflow",

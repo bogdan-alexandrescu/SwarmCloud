@@ -40,6 +40,11 @@ from .test_issue_runs import FULL_PLAN
 from .test_issue_writeback import _bare_run
 from .test_merge_verdict_workflows import _by_id, _post, _review_shape, _task
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 def _compiled(plan: dict):
     return compile_plan(_bare_run(plan=plan, plan_digest=issueruns.plan_digest(plan)))
