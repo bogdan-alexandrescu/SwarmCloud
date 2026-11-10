@@ -207,6 +207,25 @@ def test_builtins_managed_renders_on_on_every_infra_pass() -> None:
         assert _infra(pass_name, EVERY_VERSION)["builtins_managed"] == "on", pass_name
 
 
+def test_builtins_managed_keeps_what_infra_last_applied() -> None:
+    # Section 1.4.5: an existing deployment keeps off until a platform admin
+    # turns it on. A deployment that reached READY before the switch existed
+    # records no value and renders off, so an upgrade or a re-run never turns
+    # it on (or destroys a live bundle repository by turning it off); the
+    # recorded value always wins.
+    ready = install_state()
+    ready.ready_at = 1.0
+    assert tfvars.infra_inputs(ready, pass_name="infra-4", installer="admin@example.com",
+                               versions=EVERY_VERSION)["builtins_managed"] == "off"
+    for recorded in ("on", "off"):
+        state = install_state(builtins_managed=recorded)
+        state.ready_at = 1.0
+        assert tfvars.infra_inputs(state, pass_name="infra-4", installer="admin@example.com",
+                                   versions=EVERY_VERSION)["builtins_managed"] == recorded
+    assert _infra("infra-2", EVERY_VERSION, builtins_managed="off")["builtins_managed"] == "off"
+    assert _infra("infra-2", EVERY_VERSION, builtins_managed="On")["builtins_managed"] == "on"
+
+
 def test_tenant_job_vpc_egress_true() -> None:
     state = install_state()
     for pass_name in ("infra-2", "infra-3", "infra-4"):

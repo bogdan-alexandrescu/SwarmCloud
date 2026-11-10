@@ -188,6 +188,23 @@ WORK_CONTRACTS = "on"
 #: (managed-plugins.md sections 1.4.5 and 15.2). It has no queued step to carry
 #: across, which is why infra's default stays off for an existing deployment.
 BUILTINS_MANAGED = "on"
+#: The install state's record of the value infra last applied (written by
+#: steps/bootstrap.py after an infra pass), so a re-run or an upgrade renders
+#: what is live rather than what a fresh deployment would get.
+BUILTINS_MANAGED_KEY = "builtins_managed"
+
+
+def builtins_managed(state: Any) -> str:
+    """`builtins_managed` for `state`: the value infra last applied when the
+    state records one; else on for an install that has not reached READY (no
+    step was ever queued on it); else off, because a deployment installed
+    before the switch existed has queued steps that carry the code entries'
+    capabilities.plugins and is turned on by a platform admin
+    (managed-plugins.md section 1.4.5), never by an upgrade."""
+    recorded = (getattr(state, "outputs", None) or {}).get(BUILTINS_MANAGED_KEY)
+    if recorded in ("on", "off"):
+        return str(recorded)
+    return BUILTINS_MANAGED if getattr(state, "ready_at", None) is None else "off"
 
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
@@ -600,7 +617,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "groups_auth": groups_auth(outputs),
         "contract_review_mode": CONTRACT_REVIEW_MODE,
         "work_contracts": WORK_CONTRACTS,
-        "builtins_managed": BUILTINS_MANAGED,
+        "builtins_managed": builtins_managed(state),
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
