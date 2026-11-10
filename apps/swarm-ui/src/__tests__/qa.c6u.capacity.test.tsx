@@ -518,8 +518,9 @@ describe('G5-23: format and wording', () => {
   it('keeps tenant and account on their addresses through the router', () => {
     window.location.hash = '#capacity/holders?pool=global&tenant=eng&x=1'
     expect(canonical(fromHash())).toBe('capacity/holders?pool=global&tenant=eng')
+    // Accounts is LLM Providers › Plans now (LP-U1): the account rides there.
     window.location.hash = '#capacity/accounts?account=eng%3Ab'
-    expect(canonical(fromHash())).toBe('capacity/accounts?account=eng%3Ab')
+    expect(canonical(fromHash())).toBe('capacity/llm-providers/plans?account=eng%3Ab')
     // Control: a key a pane does not read is still dropped.
     window.location.hash = '#capacity/pools?tenant=eng'
     expect(canonical(fromHash())).toBe('capacity/pools')

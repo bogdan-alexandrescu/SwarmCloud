@@ -166,8 +166,9 @@ describe('which view the page opens on', () => {
   })
 
   it('keeps ?view= on the accounts address through the router, and drops it elsewhere', () => {
+    // Accounts is LLM Providers › Plans now (LP-U1): the view and the account ride there.
     window.location.hash = '#capacity/accounts?account=eng%3Ab&view=timeline'
-    expect(canonical(fromHash())).toBe('capacity/accounts?account=eng%3Ab&view=timeline')
+    expect(canonical(fromHash())).toBe('capacity/llm-providers/plans?account=eng%3Ab&view=timeline')
     window.location.hash = '#capacity/pools?view=timeline'
     expect(canonical(fromHash())).toBe('capacity/pools')
     window.location.hash = ''

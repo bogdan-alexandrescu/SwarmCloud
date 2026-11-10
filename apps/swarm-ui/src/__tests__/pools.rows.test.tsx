@@ -160,7 +160,7 @@ describe('the router keeps ?pool= on Pools and Holders (#125, #128)', () => {
     expect(canonical(fromHash())).toBe('capacity/pools?pool=provider%3Aanthropic%3Atenant%3Aeng')
     // Control: a tab that reads no pool still drops it.
     window.location.hash = `#capacity/accounts?pool=x`
-    expect(canonical(fromHash())).toBe('capacity/accounts')
+    expect(canonical(fromHash())).toBe('capacity/llm-providers/plans')
     window.location.hash = ''
   })
 })

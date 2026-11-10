@@ -105,7 +105,7 @@ describe('Capacity › LLM Providers in the app', () => {
     await open('/capacity/llm-providers/api-keys')
     const nav = await screen.findByRole('navigation', { name: 'LLM Providers' })
     expect(within(nav).getByRole('link', { current: 'page' }).textContent).toBe('API Keys')
-    expect(screen.getByRole('heading', { name: 'No API keys' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^No API keys/ })).toBeTruthy()
     const add = screen.getByRole('button', { name: 'Add key' }) as HTMLButtonElement
     // MUTATION: enable it, and a button that calls nothing is on the page.
     expect(add.disabled).toBe(true)
@@ -118,7 +118,7 @@ describe('Capacity › LLM Providers in the app', () => {
     const nav = await screen.findByRole('navigation', { name: 'LLM Providers' })
     within(nav).getByRole('link', { name: 'API Keys' }).click()
     await waitFor(() => expect(window.location.pathname).toBe('/capacity/llm-providers/api-keys'))
-    expect(await screen.findByRole('heading', { name: 'No API keys' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^No API keys/ })).toBeTruthy()
   })
 })
 

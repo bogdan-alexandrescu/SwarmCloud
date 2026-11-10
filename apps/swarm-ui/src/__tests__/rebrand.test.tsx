@@ -40,7 +40,8 @@ const LEGACY_TO_PATH: readonly (readonly [string, string])[] = [
   ['#history/counts', '/admin/counts'],
   ['#activity/counts', '/admin/counts'],
   ['#settings/limits', '/admin/limits'],
-  ['#settings/accounts', '/capacity/accounts'],
+  // Accounts is LLM Providers › Plans now (LP-U1, llm-providers.md §6.1).
+  ['#settings/accounts', '/capacity/llm-providers/plans'],
   // SECTION_ALIASES: renamed section ids, tail intact.
   ['#agents', '/agents'],
   ['#agents/running/recent/failed', '/agents/recent?state=failed'],
@@ -66,7 +67,7 @@ const LEGACY_TO_PATH: readonly (readonly [string, string])[] = [
   ['#capacity/catalogue', '/capacity/runtimes'],
   ['#capacity/profiles', '/capacity/pools/profiles'],
   ['#capacity/holders', '/capacity/holders'],
-  ['#capacity/accounts', '/capacity/accounts'],
+  ['#capacity/accounts', '/capacity/llm-providers/plans'],
   ['#capacity/quota', '/capacity/accounts/quota'],
   ['#admin/limits', '/admin/limits'],
   ['#admin/limits?pool=tenant%3Aeng', '/admin/limits?pool=tenant%3Aeng'],
@@ -309,7 +310,7 @@ describe('the Sky spine shell', () => {
     const panel = document.querySelector('.sk-panel')!
     const pages = [...panel.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent)
     // MUTATION: drop API reads from PANEL_PAGES.capacity (NAV-FOOT, #1672).
-    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'Jev usage', 'API reads'])
+    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'LLM Providers', 'Jev usage', 'API reads'])
     const kids = [...panel.querySelectorAll('.sk-kid')].map((e) => e.textContent)
     expect(kids).toEqual(['Ceilings', 'By runner profile'])
     expect(panel.querySelector('.sk-kid.is-on')?.textContent).toBe('By runner profile')

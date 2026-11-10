@@ -498,14 +498,14 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
   })
 
   it("lists the open section's pages in the panel, and lights the open one", () => {
-    window.history.replaceState(null, '', '/capacity/accounts')
+    window.history.replaceState(null, '', '/capacity/llm-providers/plans')
     const { container } = render(<App />)
-    // THE PAGE ITSELF IS LIT (#503): Accounts is the open GROUP, and its page
-    // -- Subscription accounts -- is the one lit and `aria-current`.
-    expect(container.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe('Accounts')
+    // THE PAGE ITSELF IS LIT (#503): LLM Providers is the open GROUP, and its
+    // page -- Plans -- is the one lit and `aria-current` (LP-U1).
+    expect(container.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe('LLM Providers')
     expect(container.querySelector('.sk-panel .sk-pk.is-on'), 'the group is lit, not the page').toBeNull()
     const kid = container.querySelector('.sk-panel .sk-kid.is-on')
-    expect(kid?.textContent).toBe('Subscription accounts')
+    expect(kid?.textContent).toBe('Plans')
     expect(kid?.getAttribute('aria-current')).toBe('page')
   })
 
