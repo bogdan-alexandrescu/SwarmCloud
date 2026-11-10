@@ -29,7 +29,7 @@ type Handler = Parameters<typeof serve>[0]
 const NOW = Date.parse('2026-10-19T12:00:00Z')
 
 /** `steps.plugins` as swarm-api's `plugins_step_view` answers it, in each state. */
-function pluginsStep(state: 'todo' | 'skipped' | 'done'): Json {
+function pluginsStep(state: 'todo' | 'skipped' | 'done', bundled: string[] = ['lint-base', 'review-kit']): Json {
   const added =
     state === 'done'
       ? [
@@ -38,13 +38,13 @@ function pluginsStep(state: 'todo' | 'skipped' | 'done'): Json {
         ]
       : []
   const skipped = state === 'skipped' ? { skipped_at: '2026-10-19T11:57:00Z', skipped_by: 'ana@example.com' } : null
-  return { needed: false, optional: true, state, count: added.length, added, skipped }
+  return { needed: false, optional: true, state, count: added.length, added, skipped, bundled }
 }
 
 /** The moment's record with `steps.plugins` served, the way the live route serves it beside the other steps. */
-const withPlugins = (state: 'todo' | 'skipped' | 'done') => (raw: Json): Json => ({ ...raw, steps: { ...((raw.steps as Json | null) ?? {}), plugins: pluginsStep(state) } })
+const withPlugins = (state: 'todo' | 'skipped' | 'done', bundled?: string[]) => (raw: Json): Json => ({ ...raw, steps: { ...((raw.steps as Json | null) ?? {}), plugins: pluginsStep(state, bundled) } })
 
-async function draw(m: string, plug: 'todo' | 'skipped' | 'done' | null, handler: Handler = () => null) {
+async function draw(m: string, plug: 'todo' | 'skipped' | 'done' | null, handler: Handler = () => null, bundled?: string[]) {
   const calls = serve(handler)
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
@@ -52,7 +52,7 @@ async function draw(m: string, plug: 'todo' | 'skipped' | 'done' | null, handler
   const moments = await import('../consolefinish/moments')
   const { normSetupState } = await import('../api')
   const raw = moments.momentSetupState(m as Parameters<typeof moments.momentSetupState>[0], NOW)
-  const state = normSetupState(plug === null ? raw : withPlugins(plug)(raw))
+  const state = normSetupState(plug === null ? raw : withPlugins(plug, bundled)(raw))
   const r = render(<AdminSetupPage state={state} now={NOW} />)
   return { ...r, calls }
 }
@@ -115,8 +115,8 @@ describe('the plugin step: each state’s panel', () => {
     expect(add.getAttribute('href')).toBe('/admin/plugins/add')
     expect(add.className).toContain('c-btn')
     expect(within(panel()).getByRole('button', { name: 'Skip' }).className).toContain('c-btn')
-    expect(shown(panel())).toContain('gstack')
-    expect(shown(panel())).toContain('security-audit')
+    expect(shown(panel())).toContain('lint-base')
+    expect(shown(panel())).toContain('review-kit')
     expect(within(panel()).queryByRole('button', { name: 'Add one anyway' })).toBeNull()
   })
 
@@ -126,6 +126,8 @@ describe('the plugin step: each state’s panel', () => {
     expect(shown(item('plugins'))).toContain('skipped')
     pickPlugins()
     expect(kicker()).toBe('Step 9 · optional')
+    // MUTATION: leave the panel's heading without is-skipped -> its mark stays the to-do dash, and this fails.
+    expect(panel().querySelector('.cfc-panel-h')?.className).toContain('is-skipped')
     expect(within(panel()).getByRole('button', { name: 'Add one anyway' }).className).toContain('c-btn')
     expect(within(panel()).queryByRole('button', { name: 'Skip' })).toBeNull()
     expect(shown(panel())).toContain('Skipped 11:57 by ana@example.com')
@@ -219,6 +221,59 @@ describe('the plugin step: Skip holds across the re-read', () => {
   })
 })
 
+describe('the plugin step: Installed comes from the route', () => {
+  const installed = () => [...panel().querySelectorAll('.cfc-facts > div')].find((d) => d.querySelector('dt')?.textContent === 'Installed') ?? null
+
+  it('names the bundled installs the route serves, not a list of its own', async () => {
+    await draw('verify-running', 'todo', () => null, ['only-served'])
+    pickPlugins()
+    // MUTATION: name the bundled installs from a constant -> gstack shows and only-served does not, and this fails.
+    expect(shown(installed())).toBe('Installedonly-served')
+    expect(shown(panel())).not.toContain('gstack')
+  })
+
+  it('draws no Installed fact when the route serves none', async () => {
+    await draw('verify-running', 'todo', () => null, [])
+    pickPlugins()
+    expect(installed()).toBeNull()
+    expect(shown(panel())).toContain('Added')
+  })
+
+  it('reads bundled through the live normaliser, empty when the route serves none', async () => {
+    vi.resetModules()
+    const { normPluginsStep } = await import('../api')
+    expect(normPluginsStep(pluginsStep('todo', ['a', 'b']))?.bundled).toEqual(['a', 'b'])
+    expect(normPluginsStep({ state: 'todo', count: 0, added: [], skipped: null })?.bundled).toEqual([])
+  })
+})
+
+describe('the plugin step: the highlight after Add one anyway', () => {
+  const undo = async (reduce: boolean) => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((q: string) => ({ matches: reduce && q === '(prefers-reduced-motion: reduce)', media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false }) as MediaQueryList)
+    await draw('verify-running', 'skipped', (m, url) => (m === 'DELETE' && url === '/v1/admin/setup/plugins/skip' ? { status: 200, body: { plugins: pluginsStep('todo'), removed: true } } : null))
+    expect(item('plugins').className).not.toContain('is-undone')
+    pickPlugins()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Add one anyway' }))
+    await waitFor(() => expect(item('plugins').className).not.toContain('is-skipped'))
+  }
+
+  it('flashes the line once, about 2.4 s, then drops the class', async () => {
+    await undo(false)
+    // MUTATION: never set the class -> the line does not flash, and this fails.
+    expect(item('plugins').className).toContain('is-undone')
+    await act(() => new Promise((done) => setTimeout(done, 2500)))
+    // MUTATION: keep the class -> a later re-render would flash again, and this fails.
+    expect(item('plugins').className).not.toContain('is-undone')
+  })
+
+  it('under reduced motion, never puts the animation class on the line', async () => {
+    await undo(true)
+    // MUTATION: ignore prefers-reduced-motion -> the line animates, and this fails.
+    expect(item('plugins').className).not.toContain('is-undone')
+    expect(item('plugins').className).toContain('is-todo')
+  })
+})
+
 describe('the plugin step never counts and is never followed', () => {
   for (const plug of ['todo', 'skipped', 'done'] as const) {
     it(`keeps the count at 8 of 8 with the plugin step ${plug}`, async () => {
@@ -244,7 +299,7 @@ describe('the plugin step never counts and is never followed', () => {
     expect(ls.map((l) => l.key).at(-1)).toBe('plugins')
     // MUTATION: drop the optional filter -> the plugin line is the first not done, and this fails.
     expect(nextLineKey(ls)).toBe('send')
-    const only = [{ ...pluginsLine({ state: 'todo', count: 0, added: [], skipped: null }), actor: 'you' as const }]
+    const only = [{ ...pluginsLine({ state: 'todo', count: 0, added: [], skipped: null, bundled: [] }), actor: 'you' as const }]
     expect(nextLineKey(only)).toBe('send')
   })
 
