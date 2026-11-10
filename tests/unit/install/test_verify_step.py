@@ -1587,6 +1587,11 @@ _PLATFORM_READ = {
 }
 
 
+_BUNDLER_ACCOUNT = ("https://iam.googleapis.com/v1/projects/-/serviceAccounts/"
+                    f"swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com")
+_REPOSITORIES = f"https://artifactregistry.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/repositories"
+
+
 class PluginsFakeGcp(VerifyFakeGcp):
     """Answers the plugins check's three reads by URL; None is a 404."""
 
@@ -1598,6 +1603,13 @@ class PluginsFakeGcp(VerifyFakeGcp):
             self.found[f"{_STORAGE_B}/{PLUGINS_BUCKET}"] = {"name": PLUGINS_BUCKET}
         if job:
             self.found[_INTAKE_JOB] = {"name": "swarm-plugin-intake"}
+        bundler = f"serviceAccount:swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com"
+        self.found[_BUNDLER_ACCOUNT] = {"email": bundler.removeprefix("serviceAccount:")}
+        self.found[f"{_REPOSITORIES}/swarm-plugin-bundles:getIamPolicy"] = {
+            "bindings": [{"role": "roles/artifactregistry.writer", "members": [bundler]}]}
+        for name in ("swarm-images", "swarm-mirror-dockerhub", "swarm-mirror-npm"):
+            self.found[f"{_REPOSITORIES}/{name}:getIamPolicy"] = {
+                "bindings": [{"role": "roles/artifactregistry.reader", "members": [bundler]}]}
 
     def get_or_none(self, url: str) -> dict[str, Any] | None:
         self._call("get_or_none", url)
@@ -1655,3 +1667,31 @@ def test_plugins_check_runs_in_stage_14_before_the_runs() -> None:
     ids = [s.id for s in verify.STEPS]
     assert "verify.plugins" in ids
     assert ids.index("verify.plugins") < ids.index("verify.end-to-end")
+
+
+def test_plugins_check_holds_the_bundle_build_once_infra_applied_the_switch_on() -> None:
+    # managed-plugins.md section 15.2: the builder account can push only to
+    # swarm-plugin-bundles. Off (or not yet applied), plugin-bundles.tf plans
+    # nothing, so nothing is read for it.
+    off = PluginsFakeGcp()
+    observed = verify.PluginsStep(lambda: off, Answers()).check(_plugins_ctx())
+    assert observed.status == MET and "builtins_managed is off" in observed.detail
+    assert not [c for c in off.calls if _BUNDLER_ACCOUNT in str(c)]
+
+    ctx = _plugins_ctx()
+    ctx.outputs["builtins_managed"] = "on"
+    observed = verify.PluginsStep(lambda: PluginsFakeGcp(), Answers()).check(ctx)
+    assert observed.status == MET, observed.detail
+    assert "may push to swarm-plugin-bundles only" in observed.detail
+
+    pushes_to_images = PluginsFakeGcp()
+    pushes_to_images.found[f"{_REPOSITORIES}/swarm-images:getIamPolicy"] = {"bindings": [{
+        "role": "roles/artifactregistry.writer",
+        "members": [f"serviceAccount:swarm-plugin-bundler@{PROJECT}.iam.gserviceaccount.com"]}]}
+    observed = verify.PluginsStep(lambda: pushes_to_images, Answers()).check(ctx)
+    assert observed.status == UNMET and "may also push to swarm-images" in observed.detail
+
+    missing = PluginsFakeGcp()
+    missing.found.pop(_BUNDLER_ACCOUNT)
+    observed = verify.PluginsStep(lambda: missing, Answers()).check(ctx)
+    assert observed.status == UNMET and "swarm-plugin-bundler" in observed.detail and "swarm install" in observed.detail

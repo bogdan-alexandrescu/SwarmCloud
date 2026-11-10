@@ -1077,6 +1077,12 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) and
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository) are set here
+      # by lane 17 of managed-plugins.md section 17.1, with the swarm-api code
+      # that reads them: scripts/lib/check-env-parity.sh refuses a variable
+      # terraform sets and nothing reads.
+
       # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
       # var.plugins_switch says what each value does): "off" refuses every
       # step that names a plugin. "on" unless the environment's tfvars sets
@@ -1351,6 +1357,12 @@ locals {
       # failed with `404 Image '...agent-runtime-base:latest' not found`. A
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
+
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository, the one
+      # image path a bundle record's digest may name; managed-plugins.md
+      # section 1.4.4) is set here by lane 18 of section 17.1, with the
+      # scheduler code that reads it: scripts/lib/check-env-parity.sh refuses
+      # a variable terraform sets and nothing reads.
 
       # The model each profile's agent runs when a step names no class, for
       # the Jobs this scheduler creates (tenants this root does not list). The

@@ -190,6 +190,42 @@ def test_work_contracts_render_on_on_every_infra_pass() -> None:
         assert _infra(pass_name, EVERY_VERSION)["work_contracts"] == "on", pass_name
 
 
+def test_builtins_managed_renders_on_on_every_infra_pass() -> None:
+    # managed-plugins.md sections 1.4.5 and 15.2: a fresh deployment has no
+    # queued step to carry across, so it renders SWARM_BUILTINS_MANAGED on
+    # (gstack and security-audit managed from the start, and the bundle
+    # build's resources made), where infra's own default stays off so an
+    # existing deployment changes nothing at merge.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "builtins_managed" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares builtins_managed"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.BUILTINS_MANAGED == "on"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["builtins_managed"] == "on", pass_name
+
+
+def test_builtins_managed_keeps_what_infra_last_applied() -> None:
+    # Section 1.4.5: an existing deployment keeps off until a platform admin
+    # turns it on. A deployment that reached READY before the switch existed
+    # records no value and renders off, so an upgrade or a re-run never turns
+    # it on (or destroys a live bundle repository by turning it off); the
+    # recorded value always wins.
+    ready = install_state()
+    ready.ready_at = 1.0
+    assert tfvars.infra_inputs(ready, pass_name="infra-4", installer="admin@example.com",
+                               versions=EVERY_VERSION)["builtins_managed"] == "off"
+    for recorded in ("on", "off"):
+        state = install_state(builtins_managed=recorded)
+        state.ready_at = 1.0
+        assert tfvars.infra_inputs(state, pass_name="infra-4", installer="admin@example.com",
+                                   versions=EVERY_VERSION)["builtins_managed"] == recorded
+    assert _infra("infra-2", EVERY_VERSION, builtins_managed="off")["builtins_managed"] == "off"
+    assert _infra("infra-2", EVERY_VERSION, builtins_managed="On")["builtins_managed"] == "on"
+
+
 def test_tenant_job_vpc_egress_true() -> None:
     state = install_state()
     for pass_name in ("infra-2", "infra-3", "infra-4"):
@@ -662,3 +698,20 @@ def test_swarm_api_always_gets_an_allowed_caller() -> None:
             assert inputs["admin_users"] == ["admin@example.com"], (pass_name, sized)
     with pytest.raises((LookupError, ValueError)):
         _infra("infra-2", org_domain="")
+
+
+@pytest.mark.parametrize("pass_name, value", [("infra-1", "on"), ("infra-4", "off"), ("bootstrap-1", None)])
+def test_an_infra_pass_records_the_builtins_switch_it_applied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                              pass_name: str, value: str | None) -> None:
+    # What tfvars.builtins_managed reads back on the next pass or upgrade.
+    from swarm_install.steps import bootstrap
+
+    from .test_terraform_runner import FakeCtx
+
+    inputs = {"project_id": "p"} if value is None else {"project_id": "p", "builtins_managed": value}
+    monkeypatch.setattr(bootstrap, "generate", lambda ctx, name, gcp: dict(inputs))
+    monkeypatch.setattr(bootstrap, "guards_for", lambda gcp, as_deployer, project: None)
+    monkeypatch.setattr(bootstrap, "run_pass", lambda tf, name, inputs, **kw: {})
+    ctx = FakeCtx()
+    bootstrap.apply_pass(ctx, bootstrap.Deps(gcp=lambda: None, root_dir=lambda ctx, root: tmp_path / root), pass_name)
+    assert ctx.outputs.get(tfvars.BUILTINS_MANAGED_KEY) == value
