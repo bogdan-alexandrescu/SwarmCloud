@@ -57,11 +57,6 @@ from .test_issue_run_keyword import _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, PLAN, _approve, _create, _docs, _finish_planner, _run
 from .test_schedule_tick import seed_schedule
 
-# Written against the re-review a workflow merging on its review's verdict
-# got while `fix-loop` shipped unavailable; available since contract
-# request 151, so this module holds that path with the profile off.
-pytestmark = pytest.mark.usefixtures("fix_loop_off")
-
 OWNER = "root@example.com"
 SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWITCH = refusals.env_name("hold_approver_required")

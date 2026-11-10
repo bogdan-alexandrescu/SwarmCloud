@@ -3,8 +3,8 @@
 docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-27
 (Q1, Q2 and Q10 of §9). What is held here:
 
-  * the `fix-loop` entry is `control_plane`, is available since request 151
-    (applied 2026-11-09, after FL-ISSUE, FL-UI and FL-DOCS merged), and Terraform makes no Job for it (`profiles_without_a_job`), and its
+  * the `fix-loop` entry is `control_plane`, ships unavailable with a reason,
+    and Terraform makes no Job for it (`profiles_without_a_job`), and its
     Terraform mirror states what the Python entry does;
   * `ParkReason.FIX_ROUNDS_RUNNING` exists, rides on PARKED and so holds no
     capacity (invariant 1), and no scheduler sweep promotes it: the scheduler
@@ -16,8 +16,8 @@ docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-2
     `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
     it as its own failure class, and the console's `EndCause` list carries it.
 
-MUTATION: set `available=False` on `fix-loop` (or leave request 151's row
-pending) and `test_fix_loop_is_available_since_request_151` fails; drop "fix-loop" from
+MUTATION: set `available=True` on `fix-loop` and
+`test_fix_loop_ships_unavailable_with_a_reason` fails; drop "fix-loop" from
 `profiles_without_a_job` in locals.tf and
 `test_terraform_makes_no_job_for_fix_loop` fails; add
 `ParkReason.FIX_ROUNDS_RUNNING` to PREWARM_REASONS and
@@ -73,21 +73,11 @@ def test_fix_loop_is_a_control_plane_profile_that_runs_nothing():
     assert profile.backend is Backend.CLOUD_RUN_JOB
 
 
-def test_fix_loop_is_available_since_request_151():
-    """Request 151 (FL-ENABLE, design §7 request A's second half): `available=True`,
-    `disabled_reason` removed, and nothing else about the entry changed. It
-    shipped unavailable, as await-input did, until FL-ISSUE, FL-UI and FL-DOCS
-    merged; the owner's pre-approval is recorded on the request's row."""
+def test_fix_loop_ships_unavailable_with_a_reason():
+    """As await-input did, until FL-ACCEPT passes (design §7 request A)."""
     profile = RUNNER_PROFILES["fix-loop"]
-    assert profile.available is True
-    assert profile.disabled_reason == ""
-    assert profile.control_plane is True
-    row = _row("151")
-    assert "FL-ENABLE" in row and "APPLIED" in row
-    assert "accepted by the owner" in row.lower()   # check-frozen-contract.sh greps -i
-    text = REQUESTS.read_text(encoding="utf-8")
-    section = text.split("## 151. ", 1)[1].split("\n## ", 1)[0]
-    assert "**Status:** APPLIED 2026-11-09" in section
+    assert profile.available is False
+    assert profile.disabled_reason.strip()
 
 
 def _profiles_without_a_job() -> set[str]:

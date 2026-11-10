@@ -59,11 +59,6 @@ from .test_issue_run_ci import PR, SHA_A, _read
 from .test_roles_store import grant
 from .test_schedule_tick import seed_schedule
 
-# Written against the re-review a workflow merging on its review's verdict
-# got while `fix-loop` shipped unavailable; available since contract
-# request 151, so this module holds that path with the profile off.
-pytestmark = pytest.mark.usefixtures("fix_loop_off")
-
 SCHEDULE = "sch_000000000001"
 DAVE = "dave@example.com"
 #: The people a platform-scope schedule's items refuse, and the ones they do not.
