@@ -85,6 +85,7 @@ import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
+import { LP_CARDS, LlmProvidersCards, LpAttemptTier, LpVoiceTierHeader } from './LlmProvidersCards' // MOCK-HOOK
 import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceSettingsSectionScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 import { HomeScreen } from './Home'
@@ -473,6 +474,7 @@ export const SECTIONS: SectionDef[] = [
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
+      ...(LP_CARDS ? [{ id: 'llm-providers', label: 'LLM Providers' }] : []), // MOCK-HOOK
       // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; the owner's pick of
       // proposal B, 2026-10-25): what has been going wrong on each
       // subscription account, where and when -- rate-limit hits, provider
@@ -1325,6 +1327,7 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
   // And its Table / Timeline view (#2222, ACCOUNTS-TIMELINE): linkable.
+  if (LP_CARDS && (tab === 'llm-providers' || tab === 'accounts')) return ['lp', 'tab', 'open', 'do', 'fx', 'vendor'] // MOCK-HOOK
   if (tab === 'accounts') return ['account', 'view']
   // And API reads' failures-only filter (QA1 capacity-10): `?failed=1`.
   if (tab === API_READS_TAB) return [API_FAILED_KEY]
@@ -2552,7 +2555,10 @@ function SectionBody({
     case 'capacity/holders':
       return <HoldersScreen />
     case 'capacity/accounts':
+      if (LP_CARDS) return <LpRedirect go={go} /> // MOCK-HOOK
       return <AccountsScreen />
+    case 'capacity/llm-providers': // MOCK-HOOK
+      return <LlmProvidersCards key={view ?? ''} go={go} /> // MOCK-HOOK
     case 'capacity/account-health':
       return <AccountHealthScreen />
     case 'capacity/jev-usage':
@@ -2960,3 +2966,13 @@ function referenceOrder(probes: readonly ProbeRecord[]): ProbeRecord[] {
     (a, b) => rank(a) - rank(b) || success(a) - success(b) || a.path.localeCompare(b.path),
   )
 }
+
+// MOCK-HOOK: /capacity/accounts opens LLM Providers › Plans, keeping ?account=.
+function LpRedirect({ go }: { go: (to: string) => void }) { // MOCK-HOOK
+  useEffect(() => { // MOCK-HOOK
+    const q = new URLSearchParams(window.location.search) // MOCK-HOOK
+    q.set('tab', 'plans') // MOCK-HOOK
+    go(`capacity/llm-providers?${q.toString()}`) // MOCK-HOOK
+  }, [go]) // MOCK-HOOK
+  return null // MOCK-HOOK
+} // MOCK-HOOK

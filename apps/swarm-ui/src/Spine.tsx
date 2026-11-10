@@ -40,6 +40,7 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
+import { LP_CARDS } from './LlmProvidersCards' // MOCK-HOOK
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
@@ -152,6 +153,17 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     },
     { key: 'catalogue', label: 'Runtimes', icon: 'runtimes', to: 'capacity/catalogue' },
     { key: 'holders', label: 'Holders', icon: 'holders', to: 'capacity/holders' },
+    ...(LP_CARDS // MOCK-HOOK
+      ? [{ // MOCK-HOOK
+          key: 'llm-providers', label: 'LLM Providers', icon: 'accounts', to: 'capacity/llm-providers?lp=cards&tab=plans', // MOCK-HOOK
+          kids: [ // MOCK-HOOK
+            { key: 'plans', label: 'Plans', to: 'capacity/llm-providers?lp=cards&tab=plans' }, // MOCK-HOOK
+            { key: 'api-keys', label: 'API Keys', to: 'capacity/llm-providers?lp=cards&tab=api-keys' }, // MOCK-HOOK
+            { key: 'account-health', label: 'Account health', to: 'capacity/account-health' }, // MOCK-HOOK
+            { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true }, // MOCK-HOOK
+          ], // MOCK-HOOK
+        } as PanelPage] // MOCK-HOOK
+      : [ // MOCK-HOOK
     {
       key: 'accounts',
       label: 'Accounts',
@@ -164,6 +176,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
+    ]), // MOCK-HOOK
     // JEV-USAGE-PAGE (part of #2688): Jev's calls, tokens and dollars per day.
     { key: 'jev-usage', label: 'Jev usage', icon: 'counts', to: 'capacity/jev-usage' },
     // NAV-FOOT (#1672, owner 2026-10-20): API reads left the spine's foot to
@@ -354,6 +367,7 @@ export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'P
 function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
+  if (LP_CARDS && section === 'capacity' && (tab === 'quota' || tab === 'account-health' || tab === 'llm-providers')) return 'llm-providers' // MOCK-HOOK
   if (section === 'capacity' && tab === 'quota') return 'accounts'
   if (section === 'capacity' && tab === 'account-health') return 'accounts'
   // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
@@ -372,6 +386,7 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
   if (section === 'work' && row === 'agents') return { row, kid: agentTab }
+  if (LP_CARDS && row === 'llm-providers' && tab === 'llm-providers') return { row, kid: new URLSearchParams(window.location.search).get('tab') === 'api-keys' ? 'api-keys' : 'plans' } // MOCK-HOOK
   return { row, kid: tab === '' ? page.kids[0]!.key : tab }
 }
 

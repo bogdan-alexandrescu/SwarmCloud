@@ -1,3 +1,4 @@
+import { LP_CARDS, LpMovedLine, LpTierChip } from './LlmProvidersCards' // MOCK-HOOK
 import { useCallback } from 'react'
 import { AttemptModel, Em, GEN_TITLE, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { ToneMark } from './components'
@@ -458,6 +459,7 @@ function AttemptCard({
             {g.label}
           </span>
           {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
+          {LP_CARDS && a && <LpTierChip latest={out?.label === 'running'} />} {/* MOCK-HOOK */}
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         <span className="ctl-card-note">
@@ -483,6 +485,7 @@ function AttemptCard({
       </div>
 
       <div className="ctl-card-body">
+        {LP_CARDS && a && out?.label === 'running' && <LpMovedLine />} {/* MOCK-HOOK */}
         {a && (
           // FIVE `<dt>/<dd>` PAIRS BECAME ONE STRIP, and every absence keeps
           // its key and its slot. A row that disappears when its value is null

@@ -1,0 +1,215 @@
+[
+ {
+  "name": "cards-plans",
+  "screen": "Capacity › LLM Providers › Plans",
+  "state": "at rest",
+  "caption": "Plans, both vendors: Anthropic cards then OpenAI cards. Each card shows its state dot, agents against max, the 5-hour and 7-day bars with their reset times, today's attempts, the Voice it mark, and one line per lend (workspace, agents against the lend's cap). Opened from /capacity/accounts, which now lands here.",
+  "viewport": "1440x900",
+  "file": "frames/cards-plans.png",
+  "dark": "frames/dark/cards-plans.png",
+  "html": "frames/cards-plans.html"
+ },
+ {
+  "name": "cards-plan-caps",
+  "screen": "Capacity › LLM Providers › Plans",
+  "state": "a plan open, Limits being edited",
+  "caption": "The ops-desk plan expanded in place: Pause, Drain, Limits, Lend, Rename, Refresh, the Voice it switch (on) and Remove, with Limits open: max agents, model classes as toggles and a per-workspace cap for the owner and harbor-lab.",
+  "viewport": "1440x900",
+  "file": "frames/cards-plan-caps.png",
+  "dark": "frames/dark/cards-plan-caps.png",
+  "html": "frames/cards-plan-caps.html"
+ },
+ {
+  "name": "cards-plan-lend",
+  "screen": "Capacity › LLM Providers › Plans",
+  "state": "a paused plan open, Lend",
+  "caption": "The paused spare-seat plan expanded: Resume leads its actions, and Lend is open with a workspace and agents at once, the one cap a plan lend carries.",
+  "viewport": "1440x900",
+  "file": "frames/cards-plan-lend.png",
+  "dark": "frames/dark/cards-plan-lend.png",
+  "html": "frames/cards-plan-lend.html"
+ },
+ {
+  "name": "cards-keys",
+  "screen": "Capacity › LLM Providers › API Keys",
+  "state": "at rest, every state once",
+  "caption": "API Keys: available (dot only), draining, credit gone (with its probe and Resume), limited until 02:14, and paused. Each card shows agents against max, this month's estimated spend against its cap (red when over), today's attempts on the key, and its lends with agents and spend against each cap.",
+  "viewport": "1440x900",
+  "file": "frames/cards-keys.png",
+  "dark": "frames/dark/cards-keys.png",
+  "html": "frames/cards-keys.html"
+ },
+ {
+  "name": "cards-add-plan",
+  "screen": "Plans",
+  "state": "Add plan, Anthropic chosen, sign-in step",
+  "caption": "Add plan opens as a card at the top of the list. Anthropic is picked, the Claude sign-in has opened in a new tab, and the code from that page is pasted into step 2. 'Send a link' is the other choice, for the plan's owner.",
+  "viewport": "1440x900",
+  "file": "frames/cards-add-plan.png",
+  "dark": "frames/dark/cards-add-plan.png",
+  "html": "frames/cards-add-plan.html"
+ },
+ {
+  "name": "cards-add-key",
+  "screen": "API Keys",
+  "state": "Add key, vendor and label filled",
+  "caption": "Add key, also a card in place: Anthropic picked, label eval-runs, and the key typed into a one-step password field. 'Send a link' is the other choice.",
+  "viewport": "1440x900",
+  "file": "frames/cards-add-key.png",
+  "dark": "frames/dark/cards-add-key.png",
+  "html": "frames/cards-add-key.html"
+ },
+ {
+  "name": "cards-add-key-done",
+  "screen": "API Keys",
+  "state": "the key just added",
+  "caption": "After Add key, the new eval-runs card sits first under Anthropic with a green edge, no agents and no spend yet. The key is not shown anywhere, not even masked.",
+  "viewport": "1440x900",
+  "file": "frames/cards-add-key-done.png",
+  "dark": "frames/dark/cards-add-key-done.png",
+  "html": "frames/cards-add-key-done.html"
+ },
+ {
+  "name": "cards-lend",
+  "screen": "API Keys › ci-overflow",
+  "state": "Lend open",
+  "caption": "The ci-overflow card expanded in place with Lend open: pick a workspace, agents at once and a monthly spend cap (required on a key). The lends it already has are listed once, in the panel, with Edit caps and End lend.",
+  "viewport": "1440x900",
+  "file": "frames/cards-lend.png",
+  "dark": "frames/dark/cards-lend.png",
+  "html": "frames/cards-lend.html"
+ },
+ {
+  "name": "cards-caps",
+  "screen": "API Keys › ci-overflow",
+  "state": "Limits being edited",
+  "caption": "Limits inside the expanded card: max agents, monthly spend cap, model classes as toggles, and a per-workspace cap for the owner and each borrower. north-wing is over its cap (3 now, cap 2).",
+  "viewport": "1440x900",
+  "file": "frames/cards-caps.png",
+  "dark": "frames/dark/cards-caps.png",
+  "html": "frames/cards-caps.html"
+ },
+ {
+  "name": "cards-replace",
+  "screen": "API Keys › ci-overflow",
+  "state": "Replace key",
+  "caption": "Replace key inside the card: paste the new key into a one-step field, or send a link instead. Label, caps, lends and spend stay as they are.",
+  "viewport": "1440x900",
+  "file": "frames/cards-replace.png",
+  "dark": "frames/dark/cards-replace.png",
+  "html": "frames/cards-replace.html"
+ },
+ {
+  "name": "cards-delete",
+  "screen": "API Keys › ci-overflow",
+  "state": "typed delete",
+  "caption": "Delete inside the card: a field to type the label; the button stays off until it matches. The (i) on the heading says the stored key is destroyed at once and that the key is not revoked at Anthropic.",
+  "viewport": "1440x900",
+  "file": "frames/cards-delete.png",
+  "dark": "frames/dark/cards-delete.png",
+  "html": "frames/cards-delete.html"
+ },
+ {
+  "name": "cards-exhausted",
+  "screen": "API Keys › research-backup",
+  "state": "credit gone",
+  "caption": "A key whose credit is gone: red edge, 'Credit gone', the last hourly probe (01:06, 402), the next at 02:06, and Resume, each drawn once. Expanded, it adds only the earlier probes; its (i) holds since when.",
+  "viewport": "1440x900",
+  "file": "frames/cards-exhausted.png",
+  "dark": "frames/dark/cards-exhausted.png",
+  "html": "frames/cards-exhausted.html"
+ },
+ {
+  "name": "cards-voice-settings",
+  "screen": "Voice it › Settings",
+  "state": "dedicated key block",
+  "caption": "Voice it › Settings with a 'Dedicated OpenAI key' card. The order runs Plans (1 free), then Shared keys (limited until 02:14), then This key (ready). Below that: set by, when, this month's spend, Replace and Delete.",
+  "viewport": "1440x900",
+  "file": "frames/cards-voice-settings.png",
+  "dark": "frames/dark/cards-voice-settings.png",
+  "html": "frames/cards-voice-settings.html"
+ },
+ {
+  "name": "cards-voice-tier",
+  "screen": "Voice it › Talk",
+  "state": "live session on the shared key",
+  "caption": "A live Voice it session. The header carries a 'Shared key' mark; the caption under it says that at 01:51 the session moved from Plan to Shared key.",
+  "viewport": "1440x900",
+  "file": "frames/cards-voice-tier.png",
+  "dark": "frames/dark/cards-voice-tier.png",
+  "html": "frames/cards-voice-tier.html"
+ },
+ {
+  "name": "cards-attempt-tier",
+  "screen": "Work › Agents › attempts",
+  "state": "attempt on an API key",
+  "caption": "An agent's newest attempt shows an 'API key' chip beside its state, and one line: 00:53 Moved to API key, ci-overflow; the (i) beside it gives the reason.",
+  "viewport": "1440x900",
+  "file": "frames/cards-attempt-tier.png",
+  "dark": "frames/dark/cards-attempt-tier.png",
+  "html": "frames/cards-attempt-tier.html"
+ },
+ {
+  "name": "cards-many",
+  "screen": "API Keys",
+  "state": "the hard case",
+  "caption": "API Keys, the hard case: 14 keys with long labels. The first key is lent to five workspaces, one line each; lantern-research is over both its agents cap and its spend cap, and both read red.",
+  "viewport": "1440x900",
+  "file": "frames/cards-many.png",
+  "dark": "frames/dark/cards-many.png",
+  "html": "frames/cards-many.html"
+ },
+ {
+  "name": "cards-many-plans",
+  "screen": "Capacity › LLM Providers › Plans",
+  "state": "the hard case",
+  "caption": "Plans, the hard case: 9 plans with long labels; the first is lent to five workspaces, one line each, and quarry-ops is over its agents cap.",
+  "viewport": "1440x900",
+  "file": "frames/cards-many-plans.png",
+  "dark": "frames/dark/cards-many-plans.png",
+  "html": "frames/cards-many-plans.html"
+ },
+ {
+  "name": "cards-empty-keys",
+  "screen": "API Keys",
+  "state": "no keys",
+  "caption": "No API keys: one line with an (i) and the Add key button. Nothing else is drawn.",
+  "viewport": "1440x900",
+  "file": "frames/cards-empty-keys.png",
+  "dark": "frames/dark/cards-empty-keys.png",
+  "html": "frames/cards-empty-keys.html"
+ },
+ {
+  "name": "cards-keys-390",
+  "screen": "API Keys (phone)",
+  "state": "at rest",
+  "caption": "API Keys on a phone: Plans and API Keys as a full-width switch, filter chips, a full-width Add key, and one column of cards. Each card puts agents and today side by side and spend on its own row.",
+  "viewport": "390x844",
+  "file": "frames/cards-keys-390.png",
+  "dark": "frames/dark/cards-keys-390.png",
+  "html": "frames/cards-keys-390.html",
+  "note": "rendered by the gate's phone-390 preset, which yields a 392x849 page"
+ },
+ {
+  "name": "cards-add-key-390",
+  "screen": "API Keys (phone)",
+  "state": "Add key",
+  "caption": "Add key on a phone: vendor tiles side by side, label, Paste key or Send a link, and the password field across the full width.",
+  "viewport": "390x844",
+  "file": "frames/cards-add-key-390.png",
+  "dark": "frames/dark/cards-add-key-390.png",
+  "html": "frames/cards-add-key-390.html",
+  "note": "rendered by the gate's phone-390 preset, which yields a 392x849 page"
+ },
+ {
+  "name": "cards-lend-390",
+  "screen": "API Keys (phone)",
+  "state": "Lend",
+  "caption": "Lend inside the expanded card on a phone, scrolled to the panel: the fields stack, and each existing lend shows its Edit caps and End lend buttons under it.",
+  "viewport": "390x844",
+  "file": "frames/cards-lend-390.png",
+  "dark": "frames/dark/cards-lend-390.png",
+  "html": "frames/cards-lend-390.html",
+  "note": "rendered by the gate's phone-390 preset, which yields a 392x849 page"
+ }
+]

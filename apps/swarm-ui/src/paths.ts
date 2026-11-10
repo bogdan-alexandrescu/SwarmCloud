@@ -274,6 +274,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
+  'capacity/llm-providers': '/capacity/llm-providers', // MOCK-HOOK
   // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
   'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',

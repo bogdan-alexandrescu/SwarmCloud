@@ -1,4 +1,5 @@
 import { Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
+import { LP_CARDS, LpMovedLine, LpTierChip } from './LlmProvidersCards' // MOCK-HOOK
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -3429,6 +3430,7 @@ function AttemptCard({
         <h2 className="ctl-card-title">
           <span title={GEN_TITLE}>{attemptLabel(ordinal, a.generation)}</span>
           <ToneMark tone={chip.tone}>{chip.label}</ToneMark>
+          {LP_CARDS && <LpTierChip latest={isLatest} />} {/* MOCK-HOOK */}
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
               Koyeb's rule, quoted in §6.6: their one pill-shaped element is
@@ -3452,6 +3454,7 @@ function AttemptCard({
       </div>
 
       <div className="ctl-card-body">
+        {LP_CARDS && isLatest && <LpMovedLine />} {/* MOCK-HOOK */}
         {/* EIGHT `<dt>/<dd>` PAIRS BECAME ONE STRIP. The values are short and
             the keys are shorter; a 96px label column down the side of eight
             single-line values is chrome outweighing content, three cards

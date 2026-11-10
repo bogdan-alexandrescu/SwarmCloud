@@ -28,6 +28,7 @@
  * Telemetry's timeline joins this section when its server lands (build plan
  * row L10); this page draws nothing for it.
  */
+import { LP_CARDS, LpVoiceKeyCard } from '../LlmProvidersCards' // MOCK-HOOK
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import {
@@ -378,6 +379,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
       </PageHead>
 
       <div className="vset-grid">
+        {LP_CARDS && <LpVoiceKeyCard />} {/* MOCK-HOOK */}
         <Card title="Engine" id="engine" aside={<Why say="The engine every Start uses. When it cannot start, the session runs in text mode." />} band={bandFor('engine')}>
           <Row label="Speech">
             <Seg ro={ro} label="Engine" value={value('engine')} onPick={pick('engine')} options={catalogue.engines.map((e) => ({ key: e.name, label: e.label }))} />
@@ -396,7 +398,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
               options={catalogue.planner_models.map((m) => ({ key: m.name, label: m.model ? `${m.label} · ${m.model}` : m.label }))}
             />
           </Row>
-          <KeyStatus view={view} />
+          {!LP_CARDS && <KeyStatus view={view} />} {/* MOCK-HOOK */}
         </Card>
 
         <Card

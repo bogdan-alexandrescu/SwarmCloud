@@ -80,6 +80,7 @@
  * route first, and sends it as a turn only when it answered nothing.
  */
 
+import { LP_CARDS, LpVoiceTierHud } from '../LlmProvidersCards' // MOCK-HOOK
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { normVoiceSettings, USE_FIXTURES, VOICE_SETTINGS } from '../api'
@@ -764,10 +765,11 @@ export function TalkPane() {
   const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
 
   return (
-    <div className="vt has-stage" data-state={state}>
+    <div className={`vt has-stage${LP_CARDS ? ' lp-mock' : ''}`} data-state={LP_CARDS ? 'listening' : state}> {/* MOCK-HOOK */}
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
+        {LP_CARDS && <LpVoiceTierHud />} {/* MOCK-HOOK */}
         <p className="vt-status" role="status">
           <ToneMark tone={live ? 'live' : 'unknown'} />
           {phase === 'idle' && 'Not connected'}
@@ -841,7 +843,7 @@ export function TalkPane() {
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
-          <Ring state={state} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} />
+          <Ring state={LP_CARDS ? 'listening' : state} {...{} /* MOCK-HOOK */} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} />
         </div>
         <div className="vt-subs-band">
           <Captions lines={lines} />
