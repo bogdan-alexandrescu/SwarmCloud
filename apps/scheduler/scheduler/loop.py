@@ -183,6 +183,29 @@ MERGE_WAKE_MARKER = "wake_requested_at"
 #: outside the workflow, the marker. `swarm_api.mergewake.OWNER_HOLD_KEY`,
 #: held equal by tests/unit/control_plane/test_merge_outside_ends.py.
 OWNER_HOLD_KEY = "owner_hold"
+#: The wake tick's own reading of a CI park's checks, inside `merge_wait`
+#: (`swarm_api.mergewake.READING_KEY`): `{head, read_at, pending, failed}`,
+#: written on every read that reached the checks and found them still
+#: without an answer, a repair round running at a red head included.
+MERGE_READING_KEY = "reading"
+#: The worker's bounds on a CI wait (`agent_worker.merge`), restated because
+#: the scheduler image does not carry it; held equal by
+#: tests/unit/control_plane/test_merge_wait_no_lease.py. The fallback is the
+#: park instant plus MERGE_CI_FALLBACK_SECONDS (the worker's
+#: `next_eligible_at`), and here also how long a tick's reading stays fresh:
+#: 900 s is 30 of its CI_READ_SECONDS reads, so a reading that old means the
+#: tick is not reading this park.
+MERGE_CI_FALLBACK_SECONDS = 900
+MERGE_CI_STUCK_SECONDS = 90 * 60
+MERGE_CI_MAX_SECONDS = 6 * 3600
+#: While the tick reads a park and finds no answer, the longest it stays
+#: parked before its worker reads every fact itself once: CI_STUCK_SECONDS,
+#: the window `/sc check` flags a wait at. Not the 900 s fallback: on
+#: 2026-11-06 that fallback woke merge steps about every 16 minutes -- 5,303
+#: attempts for 439 merges in 7 days, a third of all attempts -- to re-read
+#: checks the tick had read a minute before. The bound only guards a tick
+#: that reads but never marks.
+MERGE_CI_RECHECK_SECONDS = MERGE_CI_STUCK_SECONDS
 
 #: A MERGE verdict's integrator, published by swarm-api without a worker
 #: (#748, `swarm_api.verdictpublish`): the marker it writes on the step, its
@@ -424,6 +447,53 @@ def owner_hold_marked(task: Task) -> str | None:
     if parked_at is None or parked_at != _instant(task.next_eligible_at):
         return None
     return str(hold.get("wake_reason") or "wake_requested")
+
+
+def merge_wait_due(wait: Any, eligible_at: datetime | None, now: datetime) -> str | None:
+    """Why an unmarked CI_PENDING park is due now, or None while it waits.
+
+    CI HAS NO ANSWER WHILE THE TICK SAYS SO. When swarm-api's wake tick has
+    read this park's checks at its head, since it parked and within the last
+    MERGE_CI_FALLBACK_SECONDS, and not marked it, the control plane already
+    knows CI is still running (or a repair round is): a worker woken now
+    would lease capacity to read the same and park again. So the park waits
+    for the tick's mark, and wakes on its own (`wait_deadline`) only at the
+    earliest of the bounds the worker reads on a wake -- MERGE_CI_RECHECK_
+    SECONDS from this park, CI_STUCK_SECONDS from the wait's start
+    (`merge.ci_stuck`), MERGE_CI_MAX_SECONDS from `first_parked_at`
+    (`merge._ci_wait_age`) -- those still ahead of this park, and never before
+    the worker's own fallback instant.
+
+    Otherwise -- no reading of this park, one at another head, one older than
+    the park or from the future (the document is tenant-writable), or a tick
+    silent for MERGE_CI_FALLBACK_SECONDS -- the worker's `next_eligible_at`
+    decides, as it always did (`fallback_due`). A forged reading can at most
+    hold a park until MERGE_CI_RECHECK_SECONDS, and costs no capacity while
+    it does (invariant 1).
+    """
+    wait = wait if isinstance(wait, dict) else {}
+    fallback = "fallback_due" if eligible_at is None or eligible_at <= now else None
+    reading = wait.get(MERGE_READING_KEY)
+    if not isinstance(reading, dict) or not reading.get("head") or reading.get("head") != wait.get("head"):
+        return fallback
+    parked_at = _instant(wait.get("parked_at"))
+    read_at = _instant(reading.get("read_at"))
+    if parked_at is None or read_at is None or not parked_at <= read_at <= now:
+        return fallback
+    if (now - read_at).total_seconds() >= MERGE_CI_FALLBACK_SECONDS:
+        return fallback
+    deadlines = [parked_at + timedelta(seconds=MERGE_CI_RECHECK_SECONDS)]
+    started = _instant(wait.get("wait_started_at")) or _instant(wait.get("first_parked_at"))
+    if started is not None:
+        deadlines.append(started + timedelta(seconds=MERGE_CI_STUCK_SECONDS))
+    first = _instant(wait.get("first_parked_at"))
+    if first is not None and wait.get("ci_paused_at") is None:
+        deadlines.append(first + timedelta(seconds=MERGE_CI_MAX_SECONDS))
+    ahead = [d for d in deadlines if d > parked_at]
+    due = min(ahead) if ahead else deadlines[0]
+    if eligible_at is not None and eligible_at > due:
+        due = eligible_at
+    return "wait_deadline" if due <= now else None
 
 
 def account_park_provider(task: Task) -> str | None:
@@ -835,6 +905,10 @@ class DrainReport:
     #: CI_PENDING parks returned to READY: swarm-api's wake tick marked their
     #: checks settled, or their fallback instant passed (lane MS2).
     promoted_ci_waits: int = 0
+    #: CI_PENDING parks past their fallback instant left PARKED because the
+    #: wake tick read their checks recently and found no answer yet
+    #: (`merge_wait_due`): each one a lease and a worker start not spent.
+    held_ci_waits: int = 0
     #: PROVIDER_QUOTA_EXHAUSTED parks at `account_assign` returned to READY
     #: because an account was released -- by the finished task (#1885), or by
     #: any attempt since the last pass (#3042) -- that serves their tenant, and
@@ -2862,7 +2936,11 @@ class Scheduler:
           * `next_eligible_at` has passed: the worker set it to the park
             instant plus `MERGE_CI_FALLBACK_SECONDS`, so a dead tick or a
             broken token never strands a merge. A park with no instant at all
-            is due, as `_promote_scheduled_retries` reads one.
+            is due, as `_promote_scheduled_retries` reads one. Not while the
+            tick's own reading of the park is fresh and says CI has no answer
+            (`merge_wait_due`, the owner 2026-11-06): the park then waits for
+            the mark, or for the wait's own deadlines, so a merge step makes
+            no attempt per check.
 
         A park on a task that has used its last attempt -- past the worker's
         `MERGE_CI_MAX_WAKES` a park is not refunded -- is ended at once,
@@ -2894,13 +2972,16 @@ class Scheduler:
             wait = (task.metadata or {}).get(MERGE_WAIT_METADATA_KEY)
             marked = isinstance(wait, dict) and bool(wait.get(MERGE_WAKE_MARKER))
             eligible_at = task.next_eligible_at
-            if not marked and eligible_at is not None and eligible_at > now:
+            due = "wake_requested" if marked else merge_wait_due(wait, eligible_at, now)
+            if due is None:
+                if eligible_at is not None and eligible_at <= now:
+                    report.held_ci_waits += 1
                 continue
             if self._promote(
                 task,
                 kind="ci_wait",
                 detail={
-                    "reason": "wake_requested" if marked else "fallback_due",
+                    "reason": due,
                     "park_reason": ParkReason.CI_PENDING.value,
                     "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
                 },
