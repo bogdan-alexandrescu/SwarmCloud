@@ -182,6 +182,13 @@ CONTRACT_REVIEW_MODE = "off"
 #: stays off: a fresh deployment may have no TypeSafe key or internal route.
 WORK_CONTRACTS = "on"
 
+#: swarm-api's SWARM_BUILTINS_MANAGED (infra's `builtins_managed`): on, so a
+#: fresh deployment runs gstack and security-audit as managed plugins from the
+#: start and gets the bundle build's account and repositories
+#: (managed-plugins.md sections 1.4.5 and 15.2). It has no queued step to carry
+#: across, which is why infra's default stays off for an existing deployment.
+BUILTINS_MANAGED = "on"
+
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
 TEAM = "team"
@@ -593,6 +600,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "groups_auth": groups_auth(outputs),
         "contract_review_mode": CONTRACT_REVIEW_MODE,
         "work_contracts": WORK_CONTRACTS,
+        "builtins_managed": BUILTINS_MANAGED,
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }

@@ -1,0 +1,159 @@
+# Lane 15 of the managed plugins plan (docs/design/managed-plugins.md section 17.1,
+# "Infrastructure and installer"; sections 1.4.2 and 15.2): terraform/infra/plugin-bundles.tf
+# makes the bundle build's account, its grants, the swarm-plugin-bundles repository and
+# the npm mirror the build installs gstack's dependencies through (Q19), all only with
+# builtins_managed "on", which swarm install renders for a fresh deployment
+# (swarm_install.tfvars.BUILTINS_MANAGED). The infra passes apply them with no prompt
+# and no step of their own; verify.plugins and swarm doctor's plugins.infrastructure
+# check that the builder may push only to swarm-plugin-bundles.
+version: 1
+entries:
+- id: sa.swarm-plugin-bundler
+  kind: service-account
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-plugin-bundler@$P.iam.gserviceaccount.com
+  apply: terraform/infra/plugin-bundles.tf google_service_account.plugin_bundler, once builtins_managed
+    is on
+  verify: the account exists; its only project role is logging.logWriter
+  explain: 'the bundle build of gstack and security-audit runs as it (section 1.4.2): no Firestore, no
+    Secret Manager, no GitHub, no tenants/ prefix'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_service_account.plugin_bundler
+- id: registry.plugin-bundles
+  kind: registry
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories describe ${name_prefix}-plugin-bundles --project=$P --location=$R
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.plugin_bundles, once builtins_managed
+    is on
+  verify: a Docker repository with immutable tags and no age cleanup
+  explain: every bundle image, <runner image name>:<bundle_id>, run by digest only (section 1.4.3); its
+    images are deleted only by the retention sweep
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.artifactregistry
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository.plugin_bundles
+- id: registry.mirror-npm
+  kind: registry
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories describe ${name_prefix}-mirror-npm --project=$P --location=$R
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.mirror_npm, mode=REMOTE_REPOSITORY,
+    once builtins_managed is on
+  verify: a remote repository of the npm registry
+  explain: the bundle build installs gstack's npm dependencies through it at the frozen bun.lock, never
+    straight from the public registry (owner, 9 November 2026, Q19)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.artifactregistry
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository.mirror_npm
+- id: iam-binding.plugin-bundler-reads
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P; gcloud artifacts repositories
+    get-iam-policy ${name_prefix}-mirror-npm --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_storage_bucket_iam_member.plugin_bundler_sources and
+    .plugin_bundler_tool_mirror, google_artifact_registry_repository_iam_member.plugin_bundler_release_images,
+    .plugin_bundler_npm and .plugin_bundler_dockerhub
+  verify: the builder reads platform/sources/ only (get, conditioned), the build mirror bucket, the platform
+    repository and the npm and Docker Hub mirrors, read only
+  explain: the build reads the pinned source archive, Bun's pinned zip, the deployment's copies of the
+    release images and its dependencies through the mirrors alone (sections 1.4.2 and 15.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - bucket.plugins
+  - bucket.build-mirror
+  - registry.swarm
+  - registry.mirror-npm
+  - registry.mirror-dockerhub
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_storage_bucket_iam_member.plugin_bundler_sources
+    - infra/google_storage_bucket_iam_member.plugin_bundler_tool_mirror
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_release_images
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_npm
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_dockerhub
+- id: iam-binding.plugin-bundler-push
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundler_push
+    and google_project_iam_member.plugin_bundler_logs
+  verify: the builder holds artifactregistry.writer on swarm-plugin-bundles and on no other repository,
+    and logging.logWriter for its own build log
+  explain: push to one repository only (section 15.2); a build as a user-specified account must write
+    its own log
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - registry.plugin-bundles
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_push
+    - infra/google_project_iam_member.plugin_bundler_logs
+- id: iam-binding.plugin-bundles-pull
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundles_readers
+    and .plugin_bundles_pullers
+  verify: the control plane reads the bundle repository; each Terraform tenant's worker pulls without
+    enumerating (swarmImagePuller)
+  explain: a step whose bundle key names a ready bundle runs that bundle's image by digest (section 1.4.4);
+    the same two sides as the platform repository
+  guards: null
+  secret_entry: null
+  depends_on:
+  - registry.plugin-bundles
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundles_readers
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundles_pullers

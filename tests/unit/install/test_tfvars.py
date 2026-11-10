@@ -190,6 +190,23 @@ def test_work_contracts_render_on_on_every_infra_pass() -> None:
         assert _infra(pass_name, EVERY_VERSION)["work_contracts"] == "on", pass_name
 
 
+def test_builtins_managed_renders_on_on_every_infra_pass() -> None:
+    # managed-plugins.md sections 1.4.5 and 15.2: a fresh deployment has no
+    # queued step to carry across, so it renders SWARM_BUILTINS_MANAGED on
+    # (gstack and security-audit managed from the start, and the bundle
+    # build's resources made), where infra's own default stays off so an
+    # existing deployment changes nothing at merge.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "builtins_managed" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares builtins_managed"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.BUILTINS_MANAGED == "on"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["builtins_managed"] == "on", pass_name
+
+
 def test_tenant_job_vpc_egress_true() -> None:
     state = install_state()
     for pass_name in ("infra-2", "infra-3", "infra-4"):
