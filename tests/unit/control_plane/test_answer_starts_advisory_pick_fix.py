@@ -30,6 +30,11 @@ import pytest
 
 from .conftest import auth_header, seed_task, seed_tenant
 
+# Written against the re-review a workflow merging on its review's verdict
+# got while `fix-loop` shipped unavailable; available since contract
+# request 151, so this module holds that path with the profile off.
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 BUCKET = "swarm-artifacts-example-project"
 OWNER = "alice@example.com"
 WORKFLOW = "wf_lane"

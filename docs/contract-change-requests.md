@@ -155,7 +155,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
-| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE: requested by lane FL-ACCEPT on 2026-11-09, not applied. The owner picked 'Wait for FL-ISSUE, FL-UI and FL-DOCS first' (PR 3691, question 0; rejected: enabling on dev first, as await-input): the profile stays unavailable everywhere until those lanes are on main (they are not, read 2026-11-09); then the owner applies this on dev and the acceptance check that proves it (`scripts/acceptance/groups/workflow.sh`, "workflow: fix-loop"), which SKIPs until then, must pass for it to stay |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 (pre-approved for once FL-ISSUE, FL-UI and FL-DOCS had merged; all three merged on 2026-11-09) and APPLIED 2026-11-09 (PR 3717). Reverted the same day (PR 3723), as the owner's condition required, when the acceptance check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) could not reach the loop on dev: the acceptance caller had not chosen the sandbox repository under Access. The sandbox repository is now granted and the two loop bugs found live are fixed on main (PR 3733: a loop whose first review says MERGE merges; PR 3743: the merge step may read the loop's re-review), so the pull request that adds this line APPLIES it again under the same acceptance; the check runs on dev right after its release, and the change stays only while that check is green |
 | 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09; not applied: lane LP-C1 applies it, before its readers |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 
@@ -17523,17 +17523,16 @@ Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
 
 ## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
 
-**Status:** PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE.
-Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
-section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
+**Status:** APPLIED 2026-11-09, accepted by the owner 2026-11-09: pre-approved
+for once FL-ISSUE, FL-UI and FL-DOCS had merged, and all three merged the same
+day. Applied by the pull request that changes this status line (FL-ENABLE):
+`RUNNER_PROFILES["fix-loop"]` is `available=True` with no `disabled_reason`,
+and nothing else in `apps/common/swarm_common/` changed. The console's fixture
+catalogue (`FIXTURE_AVAILABILITY` in `apps/swarm-ui/src/api.ts`) follows it.
+Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that added this
+section.
 
-**Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
-day: the revert was accepted by the owner (BGD) in advance, as the switch-on's own condition (revert at
-once if the live acceptance check fails). The check could not run, because every claude-code submission
-of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
-unproven. The profile is unavailable again until that check can run and passes.
-
-### What is true today
+### What was true when it was requested
 
 `RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
 `disabled_reason` that points at docs/design/fix-loop.md. While it is,

@@ -116,10 +116,10 @@ latest verdict, the one `auto_merge` merges on (`issueci._review_verdict`);
 without it a fix that resolved every finding still failed the merge on the
 first review's NOT_YET. The run's `fix_rounds` (1-5, default 3) is the cap
 on review-then-fix rounds and travels in the workflow's metadata. While the
-`fix-loop` runner type is unavailable (contract request 124) ONE fix round is
-what compiles: under `integrate` only the integrator and that one re-review
-may be gated, and a re-review that still says NOT_YET leaves the pull request
-to a person. Once it is available, the plan compiles a `fix-loop` step in
+`fix-loop` runner type is unavailable (available since contract request 151)
+ONE fix round is what compiles: under `integrate` only the integrator and
+that one re-review may be gated, and a re-review that still says NOT_YET
+leaves the pull request to a person. Once it is available, the plan compiles a `fix-loop` step in
 place of the re-review (docs/design/fix-loop.md §5.3, `_with_review_rounds`):
 `{review, fix, max_rounds: fix_rounds}` depending on the fix, the step
 `validation.verdict_fix_loop_step` builds for a workflow that merges on its
@@ -2690,7 +2690,8 @@ def _with_review_rounds(run: "IssueRun", steps: list[dict[str, Any]]) -> list[di
     run's `fix_rounds` (1-5, the loop's own range), so submission checks it
     with `resolve_fix_loop` and signs its block as it does a declared loop's.
     `verdict_fix_loop_step` returns None while the `fix-loop` profile is
-    unavailable (contract request 124), and the plan then compiles as before.
+    unavailable (available since contract request 151), and the plan then
+    compiles as before.
 
     A run that asked for a security review keeps the re-review: that review
     builds on the fix's head, and a loop's fix must be the integrator nothing
