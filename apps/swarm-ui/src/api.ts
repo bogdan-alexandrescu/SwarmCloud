@@ -13432,10 +13432,9 @@ function fixtureApprovalItems(): (ApprovalItem & { digest: string | null; approv
 }
 
 async function fixtureApprovals(options: { kind?: string; state?: string }): Promise<Result<{ approvals: ApprovalItem[] }>> {
-  const query = new URLSearchParams()
-  if (options.kind !== undefined && options.kind !== '') query.set('kind', options.kind)
-  if (options.state !== undefined && options.state !== 'pending') query.set('state', options.state)
-  noteFixtureProbe(route('/v1/approvals', {}, query.toString() === '' ? undefined : query), 0, true)
+  // No fixture probe, as before the example plans: the inbox is read by the
+  // frame on every page, and a probe here would add a `/v1/approvals` row to
+  // Capacity > API reads that the fixture build never showed.
   // Every projected item is pending: a decided plan's run is no longer PLANNED.
   const approvals = options.state === 'decided' || options.state === 'expired'
     ? []
