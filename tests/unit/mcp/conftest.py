@@ -178,7 +178,7 @@ def _no_discovery_reads(monkeypatch):
     their own document through `discovery.CACHE`."""
     from swarm_mcp import discovery
 
-    def offline(url, timeout):
+    def offline(url, timeout, agent=None):  # noqa: ARG001
         raise discovery.DiscoveryUnreachable(f"cannot read {url} (unit tests read no network)")
 
     monkeypatch.setattr(discovery, "http_get", offline)

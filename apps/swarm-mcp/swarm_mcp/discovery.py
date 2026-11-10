@@ -43,9 +43,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
-from .client import SwarmError
+from .client import SwarmError, send_user_agent
 
 PATH = "/.well-known/swarmcloud"
 
@@ -120,9 +120,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect())
 
 
-def http_get(url: str, timeout: float) -> tuple[int, bytes]:
-    """GET `url` with no credential; (status, body). Never follows a redirect."""
+def http_get(url: str, timeout: float, agent: Any = None) -> tuple[int, bytes]:
+    """GET `url` with no credential; (status, body). Never follows a redirect.
+    `agent` is the asking client's `user_agent` (`send_user_agent`)."""
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    send_user_agent(request, agent)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             return int(response.status), response.read(65536)
@@ -136,10 +138,14 @@ def http_get(url: str, timeout: float) -> tuple[int, bytes]:
 Getter = Callable[[str, float], "tuple[int, bytes]"]
 
 
-def fetch(deployment_url: str, *, get: Getter | None = None, timeout: float = 10.0) -> Document:
-    """The deployment's document, or `DiscoveryUnreachable` naming why."""
+def fetch(
+    deployment_url: str, *, get: Getter | None = None, timeout: float = 10.0, agent: Any = None
+) -> Document:
+    """The deployment's document, or `DiscoveryUnreachable` naming why.
+    `agent` names the asking client to `http_get`; a `get` of its own sends
+    what it sends."""
     url = document_url(deployment_url)
-    status, body = (get or http_get)(url, timeout)
+    status, body = get(url, timeout) if get is not None else http_get(url, timeout, agent)
     if status != 200:
         raise DiscoveryUnreachable(f"cannot read {url} ({status})", status=status)
     try:
@@ -187,20 +193,20 @@ class Cache:
         self._lock = threading.Lock()
         self._held: dict[str, tuple[float, Document]] = {}
 
-    def get(self, deployment_url: str) -> Document:
+    def get(self, deployment_url: str, agent: Any = None) -> Document:
         key = document_url(deployment_url)
         with self._lock:
             held = self._held.get(key)
             if held is not None and self.clock() - held[0] < self.ttl:
                 return held[1]
-        document = fetch(deployment_url, get=self.get_url)
+        document = fetch(deployment_url, get=self.get_url, agent=agent)
         with self._lock:
             self._held[key] = (self.clock(), document)
         return document
 
-    def refetch(self, deployment_url: str) -> Document:
+    def refetch(self, deployment_url: str, agent: Any = None) -> Document:
         self.invalidate(deployment_url)
-        return self.get(deployment_url)
+        return self.get(deployment_url, agent)
 
     def invalidate(self, deployment_url: str) -> None:
         with self._lock:
@@ -324,8 +330,12 @@ class Checker:
         required: bool,
         cache: Cache | None = None,
         environ: Mapping[str, str] | None = None,
+        user_agent: Callable[[], Any] | None = None,
     ) -> None:
         self.deployment_url = deployment_url
+        #: The owning client's `user_agent`, read when the document is, so a
+        #: client the bridge paces after building names itself the bridge.
+        self.user_agent = user_agent
         self.required = required
         self.cache = cache if cache is not None else CACHE
         self.plugin = plugin_version(environ)
@@ -345,8 +355,11 @@ class Checker:
         ):
             return None
         try:
+            agent = self.user_agent() if self.user_agent is not None else None
             document = (
-                self.cache.refetch(self.deployment_url) if refetch else self.cache.get(self.deployment_url)
+                self.cache.refetch(self.deployment_url, agent)
+                if refetch
+                else self.cache.get(self.deployment_url, agent)
             )
         except DiscoveryUnreachable as exc:
             if self.required:

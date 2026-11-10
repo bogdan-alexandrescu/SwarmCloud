@@ -703,6 +703,15 @@ def user_agent(kind: str) -> str:
     return f"{USER_AGENT_PRODUCT}/{client_version()} ({kind})"
 
 
+def send_user_agent(request: urllib.request.Request, agent: Any = None) -> urllib.request.Request:
+    """Put `User-Agent` on `request`: `agent` (a client's own `user_agent`), or
+    the `cli` one for a call made without a client -- the metadata server, the
+    discovery read, the OAuth posts. The one place every module's urllib
+    request is named (the owner's pick, 2026-11-06); it adds nothing else."""
+    request.add_header("User-Agent", agent if isinstance(agent, str) and agent else user_agent("cli"))
+    return request
+
+
 @dataclass
 class _Token:
     value: str
@@ -1470,7 +1479,9 @@ class SwarmClient:
             from . import discovery as _discovery
 
             self.skew = _discovery.Checker(
-                deployment.url, required=deployment.skew == _config.SKEW_REQUIRED
+                deployment.url,
+                required=deployment.skew == _config.SKEW_REQUIRED,
+                user_agent=lambda: self.user_agent,
             )
 
         #: The tenant every request names in `X-Swarm-Tenant`, or None to send
@@ -1914,7 +1925,7 @@ class SwarmClient:
         if self.tenant:
             req.add_header(TENANT_HEADER, self.tenant)
         req.add_header("Accept", "application/json" if raw_limit is None else "*/*")
-        req.add_header("User-Agent", self.user_agent)
+        send_user_agent(req, self.user_agent)
         # swarm-api gzips a whole answer of 1 KB or more for a caller that asks
         # (#1822): a board page is 1.43 MB plain, and this client is most of the
         # API's requests. An older API ignores it and answers plain, which
