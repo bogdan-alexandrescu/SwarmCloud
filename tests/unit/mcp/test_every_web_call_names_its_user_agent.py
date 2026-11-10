@@ -19,6 +19,10 @@ import pytest
 from swarm_mcp import auth, awaitinput, discovery, patches, signin
 from swarm_mcp import client as mcp_client
 
+#: The real `http_get`, taken at import: conftest's autouse fixture replaces it
+#: with an offline stand-in, and this test's opener is offline already.
+_HTTP_GET = discovery.http_get
+
 
 class _Response:
     status = 200
@@ -70,7 +74,7 @@ def _fake_client(agent: str | None) -> SimpleNamespace:
 CALLS = {
     "auth metadata probe": lambda: auth._metadata_available(timeout=0.1),
     "auth metadata token": lambda: auth.id_token_for("http://api.invalid", tier=auth.Tier.METADATA),
-    "discovery": lambda: discovery.http_get("http://api.invalid/.well-known/x", 1.0),
+    "discovery": lambda: _HTTP_GET("http://api.invalid/.well-known/x", 1.0),
     "patches": lambda: patches._get(_fake_client(None), "gs://b/o", "http://gcs.invalid/o", timeout=1),
     "awaitinput": lambda: awaitinput.post_multipart(
         _fake_client(None), "/v1/x", "multipart/form-data; boundary=b", b"--b--"),
