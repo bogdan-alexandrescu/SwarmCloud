@@ -93,6 +93,21 @@ turn with neither does not run: the voice asks the person to say it again
 (SAY_ASK_AGAIN). A turn that starts with an empty transcript logs the counts
 of the sideband event TYPES the session has seen -- types only, never content
 -- so the next live run shows what arrives.
+
+THE SIDEBAND SENDS ONLY DELTAS (dev, 10 November 2026). That log line then
+showed `session.input_transcript.delta` and `session.output_transcript.delta`
+and never a final, so every planner turn still started empty and no card or
+mock-up was drawn. So deltas are read too (`delta_speaker`: a type ending in
+`transcript.delta` or `transcription.delta`, by side as for finals; the text is
+the event's `delta`, then `text`, then `transcript`). They are grouped into one
+segment per item (`item_id`, then `response_id`; without either, a change of
+speaker starts a new one), and the planner reads every segment, the ones still
+open included, as one line per speaker turn in the order they began: a
+delegation usually arrives while the person's request is still mid-segment. A
+final for a segment replaces its accumulated text rather than adding a line,
+and a late delta of a finished segment adds nothing. `session.commentary.appended`
+is the model's own commentary and never becomes a line. A delta's text is never
+logged; when one carries no text field its keys are logged once, at debug.
 """
 
 from __future__ import annotations
@@ -191,6 +206,14 @@ TRANSCRIPT_FINAL = {
 #: The families a final of another name is recognised by (`final_speaker`), and
 #: the words of its type that say whose it is.
 TRANSCRIPT_FINAL_SUFFIXES = ("transcript.done", "transcription.completed", "transcript.completed")
+#: The families of transcript deltas (`delta_speaker`), by side as for finals:
+#: the Live sideband sends `session.input_transcript.delta` (the person) and
+#: `session.output_transcript.delta` (the voice) and no final (10 November 2026).
+TRANSCRIPT_DELTA_SUFFIXES = ("transcript.delta", "transcription.delta")
+#: Where a delta's text is, in order.
+DELTA_TEXT_FIELDS = ("delta", "text", "transcript")
+#: The model's own commentary on the sideband: never a line of the transcript.
+COMMENTARY_APPENDED = "session.commentary.appended"
 PERSON_WORDS = frozenset({"input", "user"})
 VOICE_WORDS = frozenset({"output", "response"})
 #: Fields of a delegation event (or of its `delegation`) that may carry the
@@ -206,6 +229,10 @@ SAY_ASK_AGAIN = "I didn't catch what you asked for. Could you say it again?"
 EVENT_TYPES_COUNTED = 64
 #: Segments of transcript kept for the planner.
 TRANSCRIPT_LINES = 200
+#: The most characters one segment keeps (a final's or its deltas'): an item
+#: whose deltas never end cannot grow the window without bound. A minute of
+#: speech is about 1,000 characters.
+TRANSCRIPT_SEGMENT_MAX = 8000
 
 
 class LiveError(RuntimeError):
@@ -409,7 +436,18 @@ def final_speaker(kind: str) -> str | None:
     a side, the person's first."""
     if kind in TRANSCRIPT_FINAL:
         return TRANSCRIPT_FINAL[kind]
-    if not kind.endswith(TRANSCRIPT_FINAL_SUFFIXES):
+    return _side(kind, TRANSCRIPT_FINAL_SUFFIXES)
+
+
+def delta_speaker(kind: str) -> str | None:
+    """Whose transcript delta an event of type `kind` is -- "person" or "voice" --
+    or None when it is not one: a type of a delta's family
+    (TRANSCRIPT_DELTA_SUFFIXES) whose words name a side, the person's first."""
+    return _side(kind, TRANSCRIPT_DELTA_SUFFIXES)
+
+
+def _side(kind: str, suffixes: tuple[str, ...]) -> str | None:
+    if not kind.endswith(suffixes):
         return None
     words = set(re.split(r"[._]", kind))
     if words & PERSON_WORDS:
@@ -424,6 +462,37 @@ def _final_text(event: dict) -> str:
     if not isinstance(text, str):
         text = event.get("text")
     return text.strip() if isinstance(text, str) else ""
+
+
+def _delta_text(event: dict) -> str | None:
+    """A delta's text, unstripped (its spaces join it to the next); None when no
+    DELTA_TEXT_FIELDS holds a string."""
+    for field in DELTA_TEXT_FIELDS:
+        text = event.get(field)
+        if isinstance(text, str):
+            return text
+    return None
+
+
+def _segment_key(event: dict) -> str | None:
+    """The item or response a transcript event belongs to, if it names one."""
+    for field in ("item_id", "response_id"):
+        value = event.get(field)
+        if isinstance(value, str) and value:
+            return f"{field}:{value}"
+    return None
+
+
+class _Segment:
+    """One speaker turn of the transcript: its deltas, or its final."""
+
+    __slots__ = ("speaker", "key", "text", "final")
+
+    def __init__(self, speaker: str, key: str | None, text: str = "", final: bool = False) -> None:
+        self.speaker = speaker
+        self.key = key
+        self.text = text
+        self.final = final
 
 
 def _texts(value: Any, out: list[str], depth: int = 0) -> None:
@@ -486,13 +555,26 @@ class LiveSession:
         self._planner = planner
         #: Posts the person's finals to swarm-api's read-back gate (readback.py).
         self._finals = finals
-        #: (speaker, text) of the final transcript segments, newest last.
-        self.transcript: list[tuple[str, str]] = []
+        #: The transcript's segments in the order they began, open ones (deltas
+        #: still arriving) included, at most TRANSCRIPT_LINES; `transcript` reads them.
+        self._segments: list[_Segment] = []
+        #: Whether a delta without text has had its keys logged (once a session).
+        self._textless_logged = False
         #: How many sideband events of each type arrived (`_event_type`, never content).
         self.event_types: dict[str, int] = {}
         self._turns: set[asyncio.Task] = set()
         #: The planner model read at this session's start; None keeps the pin.
         self.planner_model: str | None = None
+
+    @property
+    def transcript(self) -> list[tuple[str, str]]:
+        """(speaker, text) of each segment with text, newest last: what the planner reads."""
+        lines = []
+        for segment in self._segments:
+            text = segment.text.strip()
+            if text:
+                lines.append((segment.speaker, text))
+        return lines
 
     @property
     def attached(self) -> bool:
@@ -567,10 +649,16 @@ class LiveSession:
                         self._note_closed(event)
                         break
                     speaker = final_speaker(kind)
+                    delta = delta_speaker(kind) if speaker is None else None
                     if speaker is not None:
                         self._note_transcript(speaker, event)
                         if speaker == "person":
                             self._answer(event)
+                    elif delta is not None:
+                        self._note_delta(delta, event)
+                    elif kind == COMMENTARY_APPENDED:
+                        # The model's own commentary: never a line of the person's.
+                        pass
                     elif kind == DELEGATION_CREATED and self._planner is not None:
                         self._delegated(event)
                     if kind == "error":
@@ -606,10 +694,59 @@ class LiveSession:
         return ", ".join(f"{kind} x{count}" for kind, count in ranked)
 
     def _note_transcript(self, speaker: str, event: dict) -> None:
-        text = _final_text(event)
-        if text:
-            self.transcript.append((speaker, text))
-            del self.transcript[:-TRANSCRIPT_LINES]
+        """A final: it replaces the text of its segment's deltas, else adds a segment."""
+        text = _final_text(event)[:TRANSCRIPT_SEGMENT_MAX]
+        if not text:
+            return
+        key = _segment_key(event)
+        segment = self._open_segment(speaker, key)
+        if segment is None:
+            self._add(_Segment(speaker, key, text, final=True))
+            return
+        segment.text = text
+        segment.final = True
+
+    def _note_delta(self, speaker: str, event: dict) -> None:
+        """A delta: added to its segment, or the start of a new one."""
+        text = _delta_text(event)
+        if text is None:
+            if not self._textless_logged:
+                self._textless_logged = True
+                keys = sorted(k for k in event if isinstance(k, str) and _EVENT_TYPE.fullmatch(k))
+                log.debug("voice session %s: a transcript delta had no text field; its keys: %s",
+                          self.voice_id, ", ".join(keys) or "none")
+            return
+        key = _segment_key(event)
+        if key is not None and any(s.final and s.key == key and s.speaker == speaker
+                                   for s in self._segments):
+            # A late delta of a segment its final has already replaced.
+            return
+        segment = self._open_segment(speaker, key)
+        if segment is None:
+            segment = self._add(_Segment(speaker, key))
+        elif segment.key is None:
+            segment.key = key
+        segment.text = (segment.text + text)[:TRANSCRIPT_SEGMENT_MAX]
+
+    def _open_segment(self, speaker: str, key: str | None) -> _Segment | None:
+        """The open segment `speaker`'s event of `key` belongs to: the one of the
+        same item or response; for an event naming neither, or a segment that
+        named neither, the newest segment if it is still open and the speaker's
+        (a change of speaker starts a new one)."""
+        if key is not None:
+            for segment in reversed(self._segments):
+                if not segment.final and segment.speaker == speaker and segment.key == key:
+                    return segment
+        if self._segments:
+            newest = self._segments[-1]
+            if not newest.final and newest.speaker == speaker and (key is None or newest.key is None):
+                return newest
+        return None
+
+    def _add(self, segment: _Segment) -> _Segment:
+        self._segments.append(segment)
+        del self._segments[:-TRANSCRIPT_LINES]
+        return segment
 
     def _answer(self, event: dict) -> None:
         """Post the person's final to swarm-api's read-back gate before the

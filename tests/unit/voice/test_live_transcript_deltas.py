@@ -197,7 +197,7 @@ def test_the_models_commentary_is_not_a_line_of_the_persons():
         *_deltas(PERSON, "Show me the plan", item_id="item_a"),
         {"type": "session.commentary.appended", "text": words, "item_id": "item_a"},
         {"type": "session.commentary.appended", "delta": words},
-        *_deltas(PERSON, "for the bakery.", item_id="item_a"),
+        *_deltas(PERSON, " for the bakery.", item_id="item_a"),
         delegated,
     ])
     transcript = planner.calls[0]["transcript"]
