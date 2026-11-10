@@ -613,7 +613,8 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
-  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow it, as in the rail.
+  // Plugins (MANAGED PLUGINS; part of #2688) follows it, as in the rail.
+  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow Plugins, as in the rail.
   // THE FALLBACK TOKEN CARD'S `?` (QAFIX4-ADMIN, visual QA run 4 admin-009).
   // Pool limits' GitHub fallback token card draws HelpCard's 14px disc after
   // its <h2> in the card head, where a ghost Button with a bordered box used
@@ -635,7 +636,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // card is on Pool limits and the People rows on People, so each disc's
   // centring is kept by the slice that renders it.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets'], floor: 70,
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/plugins'], floor: 70,
     centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
     persona: 'platform-admin',
   },

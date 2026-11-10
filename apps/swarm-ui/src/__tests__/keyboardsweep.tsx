@@ -281,7 +281,7 @@ export const KEYBOARD_GROUPS: readonly KeyboardGroup[] = [
   {
     name: 'admin',
     routes: [
-      'admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets',
+      'admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/plugins',
       'admin/setup', 'admin/health', 'admin/people', 'admin/workspaces',
       'voice/talk', 'voice/projects', 'voice/preferences', 'voice/settings', 'voice/telemetry',
     ],
