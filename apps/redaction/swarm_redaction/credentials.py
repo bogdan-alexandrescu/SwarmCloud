@@ -478,6 +478,21 @@ def _odd_backslashes(text: str) -> bool:
     return (len(text) - len(text.rstrip("\\"))) % 2 == 1
 
 
+def _value_split(match: re.Match[str]) -> tuple[str, str]:
+    """A generic match's group 1 and the value after it, as these checks read them.
+
+    The key/value rule's group 1 now ends with a single quote that opens the
+    value (`sq`, the owner's pick 'single-quotes-too' on PR #3775), so its
+    value runs across blanks to the closing `'`. Every check here reads a
+    single-quoted value as one that STARTS with its quote, as the rule's
+    value class served it before, so the quote is handed back to the value.
+    """
+    prefix = match.group(1)
+    if "sq" in match.re.groupindex and match.group("sq"):
+        prefix = prefix[:-1]
+    return prefix, match.group(0)[len(prefix):]
+
+
 def _ends_the_value(match: re.Match[str]) -> bool:
     """True when a generic match's value is the WHOLE value, not its first word.
 
@@ -490,8 +505,7 @@ def _ends_the_value(match: re.Match[str]) -> bool:
     and an unquoted one must end the line or meet a separator, a closing
     bracket or the quote of an enclosing string.
     """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
+    prefix, value = _value_split(match)
     rest = match.string[match.end():].split("\n", 1)[0]
     opened = prefix.rstrip()
     if opened.endswith('"'):
@@ -726,8 +740,8 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
             return False
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
-        value = match.group(0)[len(match.group(1)):]
-        value_at = match.start() + len(match.group(1))
+        prefix, value = _value_split(match)
+        value_at = match.start() + len(prefix)
         if value.startswith("`") and _runtime_template(match.string, value_at):
             return False
         if not in_tests:  # tier 2
@@ -1083,8 +1097,7 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     plausible password. The specific families (AWS keys, private keys, JWTs, provider tokens) and the
     registered literals count wherever they appear.
     """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
+    prefix, value = _value_split(match)
     # A backtick opens a literal too (`_ends_the_value` already reads one as a
     # quoted value); without it `` secret = `x\` <token>` `` was never counted.
     if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
