@@ -73,6 +73,15 @@ CASES = {
         f'{{{{"command": "export DB_PASSWORD=\\"{MASK}\\" && ./x"}}}}',
         "",
     ),
+    # The house style of #260 holds: a scheme word and one already-masked
+    # run up to the closing quote keep their two masks; another word does not.
+    "authorization-scheme-and-one-run": ('Authorization: "token {a}"', f'Authorization: "{MASK} {MASK}"', ""),
+    "authorization-scheme-and-two-words": ('Authorization: "token {a} {b}"', f'Authorization: "{MASK}"', ""),
+    "authorization-escaped-scheme-and-two-words": (
+        '{{\\"Authorization\\": \\"token {a} {b}\\"}}',
+        f'{{{{\\"Authorization\\": \\"{MASK}\\"}}}}',
+        "",
+    ),
     "single-quotes-unchanged": ("password='{a} {b}'", f"password={MASK} {{b}}'", "b"),
 }
 
@@ -114,14 +123,26 @@ def test_an_empty_or_exempt_quoted_value_is_still_kept_by_both(line: str) -> Non
     assert _shell_redact([line]) == [line]
 
 
-def test_a_long_quoted_value_of_spaces_and_backslashes_is_linear() -> None:
+CRAFTED = {
+    "spaces-and-backslashes": ('password="' + ("a \\\\ " * 40_000) + '"', f'password="{MASK}"'),
+    "unclosed-blanks": ('password="a' + (" " * 200_000), f'password="{MASK}'),
+    "glued-runs": ('password="' + ('a;"b ' * 40_000) + '"', f'password="{MASK}"'),
+    "scheme-and-long-run": (
+        'Authorization: "token ' + ("a" * 200_000) + '"',
+        f'Authorization: "{MASK} {MASK}"',
+    ),
+}
+
+
+@pytest.mark.parametrize("case", CRAFTED.values(), ids=CRAFTED.keys())
+def test_a_crafted_quoted_value_is_masked_in_linear_time(case: tuple[str, str]) -> None:
     """Bounded: a crafted value cannot make either filter hang."""
     import time
 
-    line = 'password="' + ("a \\\\ " * 40_000) + '"'
+    line, want = case
     start = time.monotonic()
     python = redact(line).text
     (shell,) = _shell_redact([line])
-    assert python == f'password="{MASK}"', "the API filter left part of the value"
-    assert shell == f'password="{MASK}"', "the shell filter left part of the value"
+    assert python == want, "the API filter left part of the value"
+    assert shell == want, "the shell filter left part of the value"
     assert time.monotonic() - start < 20

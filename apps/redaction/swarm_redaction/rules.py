@@ -857,6 +857,37 @@ _NOT_A_LITERAL = (
     + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
     r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!)))))"
 )
+#: A SECRET WITH SPACES INSIDE ONE QUOTED VALUE IS MASKED WHOLE (the owner,
+#: 6 November 2026, question 2 of the glued-literal pull request). The value
+#: ended at whitespace under every key, so `password="correct horse <v>"`
+#: served `horse <v>`. A value that opens with a double quote (`q`) now runs
+#: across blanks to the quote that closes it: a backslash escapes the
+#: character after it (`\\"` does not close the value, `\\\\` does not escape
+#: the quote after it), and blanks before the first character are part of
+#: the value. Text after the closing quote is untouched and an unquoted
+#: value still ends at whitespace. A value opened by an escaped quote (`esc`,
+#: a stream-json line) still stops at its next backslash (#221) and runs
+#: across blanks up to it. A comma still ends a quoted value, as before.
+#: One exception keeps the house style of `Authorization: "Bearer ********"`
+#: (#260): under a name that is exactly `authorization`, with no `[` before
+#: the quote, a value that is a scheme word, blanks and ONE run already
+#: holding `********` up to the closing quote (`marked`) has only its scheme
+#: word masked here, as before, so `"******** ya29.********"` keeps its
+#: provider prefix; any other word in the quotes masks the value whole.
+#: Every repetition is a single character or a fixed-length step, so the run
+#: is linear; the shell filter writes the same run in `redact`.
+_QUOTED_TAIL = r"(?:" + _GLUED_RUN + r"|\\.|[^\",\s\\]|[ \t])*"
+
+
+def _scheme_marked(group: str) -> str:
+    """Sets `group` when the value is the `marked` scheme case above."""
+    return (
+        r"(?(auth)(?(plural)|(?(keysuffix)|(?(br)|(?:(?=" + _AUTH_SCHEME
+        + r"[ \t]+[^\"\\,\s]*\*{8}[^\"\\,\s]*(?:\\*\"|\n|$))(?P<" + group + r">))?))))"
+        + r"(?(" + group + r")" + _AUTH_SCHEME + r"|"
+    )
+
+
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api[-_]?key",
@@ -865,16 +896,20 @@ KEY_VALUE = _rule(
     r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|(?P<auth>authorization))"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
     r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
-    r"(?:\[[ \t]*)?" + _STRING_PREFIX + r"(?:(?P<esc>\\+\")|\"?))"
+    r"(?P<br>\[[ \t]*)?" + _STRING_PREFIX + r"(?:(?P<esc>\\+\")|(?P<q>\")?))"
     r"(?(esc)"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
-    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s][^\"\\,\s]*|[^\"\\,\s]+)"
+    + _scheme_marked("marked_esc") + r"[ \t]*+"
+    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s]|[^\"\\,\s])(?:[^\"\\,\s]|[ \t])*)"
     r"|"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(q)" + _scheme_marked("marked_q") + r"[ \t]*+"
+    r"(?:" + _CLOSED_CONSTRUCT + r"|\\.|(?(plural)[0-9.)\]}]*[^0-9.)\]}\",\s\\]|[^\",\s\\]))"
+    + _QUOTED_TAIL + r")|"
     r"(?:" + _CLOSED_CONSTRUCT + r"|(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\])))"
-    r"(?:" + _GLUED_RUN + r"|[^\",\s])*)",
+    r"(?:" + _GLUED_RUN + r"|[^\",\s])*))",
     re.IGNORECASE,
 )
 
