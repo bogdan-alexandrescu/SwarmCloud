@@ -71,7 +71,8 @@ Q15 of 6 November 2026). `steps.plugins` is derived on every read from the
 plugin catalogue (`pluginstore`, read only): `done` once an active install
 that is not bundled exists, platform or any workspace's own; `skipped` when a
 platform admin skipped it and none exists; else `todo`. The two bundled
-installs (§1.4) never count. A skip is `console/plugins_step`, created and
+installs (§1.4) never count; `bundled` names the active ones, which the
+console's panel lists as installed (empty when none). A skip is `console/plugins_step`, created and
 removed with its `admin_audit` row in the same transaction. It is optional:
 `finish` and the engine's readiness never read it.
 
@@ -1063,27 +1064,38 @@ def _bundled(install: dict[str, Any]) -> bool:
             or str(install.get("install_id") or "").startswith("builtin:"))
 
 
-def added_plugins(ctx: AppContext) -> list[dict[str, Any]]:
-    """Every active install a person added, platform first then each
-    workspace's, as the step lists them. Only installs whose MAC verifies
-    are read (`PluginStore.installs`), so a hand-written document counts for
-    nothing; with no settings key, none does."""
+def _active_installs(ctx: AppContext) -> list[dict[str, Any]]:
+    """Every active install, platform first then each workspace's. Only
+    installs whose MAC verifies are read (`PluginStore.installs`), so a
+    hand-written document counts for nothing; with no settings key, none does."""
     store = ps.PluginStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
+    return [i for scope in (ps.PLATFORM, ps.WORKSPACE) for i in store.installs(scope)
+            if i.get("state") == ps.STATE_ACTIVE]
+
+
+def added_plugins(installs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every active install a person added, as the step lists them."""
     return [{"install_id": i["install_id"], "name": i.get("name"),
              "display_name": i.get("display_name") or i.get("name"),
              "scope": i.get("scope"), "tenant_id": i.get("tenant_id")}
-            for scope in (ps.PLATFORM, ps.WORKSPACE) for i in store.installs(scope)
-            if i.get("state") == ps.STATE_ACTIVE and not _bundled(i)]
+            for i in installs if not _bundled(i)]
+
+
+def bundled_plugins(installs: list[dict[str, Any]]) -> list[str]:
+    """The active bundled installs' names, once each, in the store's order."""
+    names = [str(i.get("name") or i["install_id"]) for i in installs if _bundled(i)]
+    return list(dict.fromkeys(names))
 
 
 def plugins_step_view(ctx: AppContext, record: ir.InstallRecord) -> dict[str, Any]:
     """The optional ninth line: never needed, its state derived on each read;
     an added plugin wins over a skip."""
-    added = added_plugins(ctx)
+    installs = _active_installs(ctx)
+    added = added_plugins(installs)
     skipped = record.read(record.console_path(ir.PLUGINS_STEP))
     state = PLUGINS_DONE if added else PLUGINS_SKIPPED if skipped is not None else PLUGINS_TODO
     return {"needed": False, "optional": True, "state": state, "count": len(added),
-            "added": added, "skipped": skipped}
+            "added": added, "skipped": skipped, "bundled": bundled_plugins(installs)}
 
 
 def _step_audit(action: str, record: ir.InstallRecord, by: str, at: datetime) -> dict[str, Any]:

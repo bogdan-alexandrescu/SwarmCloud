@@ -112,6 +112,24 @@ def test_a_removed_or_unsigned_install_does_not_count(setup_client, db) -> None:
     assert step(setup_client)["state"] == "todo"
 
 
+def test_the_step_serves_the_active_bundled_installs_names(setup_client, db) -> None:
+    seed_engine_document(db)
+    seed_bundled(db)
+    seed_install(db, "builtin:retired", name="retired", built_in=True, build="image",
+                 state=ps.STATE_REMOVED)
+    seed_install(db, "builtin:forged", name="forged", built_in=True, signed=False)
+    seed_install(db, new_install_id(), name="jev-belay")
+    plugins = step(setup_client)
+    assert plugins["bundled"] == ["gstack", "security-audit"]
+    assert [p["name"] for p in plugins["added"]] == ["jev-belay"]
+
+
+def test_the_step_serves_no_bundled_names_when_none_is_installed(setup_client, db) -> None:
+    seed_engine_document(db)
+    seed_install(db, new_install_id(), name="jev-belay")
+    assert step(setup_client)["bundled"] == []
+
+
 def test_skip_is_remembered_and_audited_once(setup_client, db) -> None:
     seed_engine_document(db)
     answer = setup_client.post(SKIP, headers=auth_header("root"))
