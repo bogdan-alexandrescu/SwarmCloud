@@ -513,8 +513,10 @@ function HeldCard({ task, questions, unreadable, id }: { task: Task; questions: 
       </div>
       <p className="dt-note qc-waiting" role="status">
         <b>This merge is waiting for your answers.</b> It is parked, holding no capacity, until{' '}
-        {n === 1 ? 'the question below is' : `the ${n} questions below are`} answered. It needs no browser and no Ready:
-        the last answer resumes it on its own, and it reads every answer again before it merges.
+        {n === 1 ? 'the question below is' : `the ${n} questions below are`} answered.{' '}
+        {unreadable > 0
+          ? 'It needs no browser, and it reads every answer again before it merges.'
+          : 'It needs no browser and no Ready: the last answer resumes it on its own, and it reads every answer again before it merges.'}
       </p>
       {roleGate !== null && (
         <p className="dt-note qc-why-not" data-role-gate="member">
