@@ -292,10 +292,10 @@ export function GuideArticle({ markdown }: { markdown: string }) {
 }
 
 /** A link to the guide from another console page, opened in place. */
-export function GuideLink({ slug = '', children, className = 'ctl-link' }: { slug?: string; children: ReactNode; className?: string }) {
+export function GuideLink({ slug = '', children, className = 'ctl-link', label }: { slug?: string; children: ReactNode; className?: string; label?: string }) {
   const href = guidePath(slug)
   return (
-    <a className={className} href={href} onClick={(e) => onGuideClick(e, href)}>
+    <a className={className} href={href} aria-label={label} onClick={(e) => onGuideClick(e, href)}>
       {children}
     </a>
   )

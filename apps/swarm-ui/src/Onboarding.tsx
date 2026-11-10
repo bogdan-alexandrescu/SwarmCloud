@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
-import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
+import { Button, ButtonLink, Card, Chip, Dash, ToneMark, Tooltip, buttonClass } from './components'
 import type { ApiError } from './fetch'
 import { connectionOf, Refusal } from './GitHubConnect'
 import { GuideLink } from './Guide'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
+import { Icon } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { WorkspaceTabWords } from './Profile'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
@@ -479,6 +480,13 @@ export function SetupCard() {
           <Chip>
             {countLabel(d)}
           </Chip>
+          {/* THE GUIDE, as the rail draws Help: an icon whose name and
+              sentence sit in the tooltip, so Overview shows no more words. */}
+          <Tooltip tip="Every step, explained in the user guide.">
+            <GuideLink slug="sign-in" label="User guide" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}>
+              <Icon name="help" className="c-ic" />
+            </GuideLink>
+          </Tooltip>
           <Button kind="ghost" size="sm" busy={hiding} onClick={() => void hide()}>
             Hide
           </Button>
@@ -493,8 +501,7 @@ export function SetupCard() {
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
         This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
-        browser; <WorkspaceTabWords tab="Setup" /> still shows them. Every step, explained:{' '}
-        <GuideLink slug="sign-in">the user guide</GuideLink>.
+        browser; <WorkspaceTabWords tab="Setup" /> still shows them.
       </p>
     </Card>
   )
