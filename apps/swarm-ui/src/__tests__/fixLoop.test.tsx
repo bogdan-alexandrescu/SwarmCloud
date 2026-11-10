@@ -9,13 +9,16 @@
 //     route (`POST /v1/workflows/{id}/fix-loop/rounds` with one round, `.../end`
 //     with `stop`);
 //   * each round row (`review-fix:k`, `re-review:k`) links its own agent, and
-//     no other row does.
+//     no other row does;
+//   * the loop's task is the one its row carries (the page's own read): the
+//     table reads no task of its own, and an answer asks the page to read again.
 //
 // BREAK IT: drop the `added` sum in `fixLoopRoundsOf` -- the added-round case
 // reads `of 3`. Offer the actions on any HUMAN_REQUIRED park -- the
 // other-phase case finds a button. Send the end route `{}` -- the stop case
 // fails on its body. Match round ids without the `:<n>` -- the bare
-// `re-review` row grows a link.
+// `re-review` row grows a link. Read the loop's task in the table -- the
+// no-read assertions fail.
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -53,7 +56,13 @@ const LOOKS: Readonly<Record<'parked' | 'running' | 'succeeded', StepLook>> = {
   succeeded: { tone: 'ok', word: 'succeeded', title: 'succeeded', mark: 'succeeded', hue: 'neu' },
 }
 
-function row(stepId: string, taskId: string | null, look: keyof typeof LOOKS, profile = 'claude-code'): StepRowModel {
+function row(
+  stepId: string,
+  taskId: string | null,
+  look: keyof typeof LOOKS,
+  profile = 'claude-code',
+  carried: Task | null = null,
+): StepRowModel {
   const step: WorkflowStep = {
     step_id: stepId,
     runner_profile: profile,
@@ -66,6 +75,7 @@ function row(stepId: string, taskId: string | null, look: keyof typeof LOOKS, pr
   return {
     step,
     taskId,
+    task: carried,
     look: LOOKS[look],
     times: stepTimes({ kind: 'unstarted' }, NOW),
     ran: absent,
@@ -107,12 +117,12 @@ const PERSON_PARK: Partial<Task> = {
   blocked_by: [{ park_phase: 'fix_loop_exhausted', fix_loop: { task_id: 'tsk_rr2', round: 2, max_rounds: 2 } }] as unknown as Task['blocked_by'],
 }
 
-function table(rows: StepRowModel[]) {
-  return render(<WorkflowTable rows={rows} picked={null} onPick={() => undefined} />)
+function table(rows: StepRowModel[], onChanged: () => void = () => undefined) {
+  return render(<WorkflowTable rows={rows} picked={null} onPick={() => undefined} onChanged={onChanged} />)
 }
 
-function loopRow(): StepRowModel {
-  return row('loop', 'tsk_loop', 'parked', 'fix-loop')
+function loopRow(carried: Task): StepRowModel {
+  return row('loop', 'tsk_loop', 'parked', 'fix-loop', carried)
 }
 
 beforeEach(() => {
@@ -155,19 +165,19 @@ describe('round k of N', () => {
     expect(fixLoopOf(task({ runner_profile: 'claude-code' }))).toBeNull()
   })
 
-  it('draws round k of N on the loop step row, and rounds running while they run', async () => {
-    api.loadTask.mockResolvedValue({ status: 'ok', data: loopTask(), fetchedAt: NOW })
-    table([loopRow()])
+  it('draws round k of N on the loop step row, and rounds running while they run', () => {
+    table([loopRow(loopTask())])
     const tr = document.querySelector('tr[data-step="loop"]') as HTMLElement
-    await waitFor(() => expect(within(tr).getByText('round 2 of 3')).toBeTruthy())
-    expect(api.loadTask).toHaveBeenCalledWith('tsk_loop')
+    expect(within(tr).getByText('round 2 of 3')).toBeTruthy()
+    // The row carries the loop's task: the table reads none of its own.
+    expect(api.loadTask).not.toHaveBeenCalled()
     expect(tr.querySelector('[data-loop="running"]')?.textContent).toContain('rounds running')
     expect(screen.queryByRole('button', { name: 'Add a round' })).toBeNull()
   })
 })
 
 describe('the two actions on a loop parked for a person', () => {
-  it('appear on each person phase and on nothing else', async () => {
+  it('appear on each person phase and on nothing else', () => {
     for (const phase of ['fix_loop_exhausted', 'fix_changed_nothing', 'round_failed', 'review_unreadable', 'round_refused']) {
       const parked = loopTask({ ...PERSON_PARK, blocked_by: [{ park_phase: phase, fix_loop: {} }] as unknown as Task['blocked_by'] })
       expect(fixLoopOf(parked)!.waiting, phase).toBe(true)
@@ -179,17 +189,16 @@ describe('the two actions on a loop parked for a person', () => {
     expect(fixLoopOf(loopTask())!.waiting).toBe(false)
     expect(fixLoopOf(loopTask({ ...PERSON_PARK, state: 'FAILED' }))!.waiting).toBe(false)
 
-    api.loadTask.mockResolvedValue({ status: 'ok', data: other, fetchedAt: NOW })
-    table([loopRow()])
-    await waitFor(() => expect(screen.getByText('round 2 of 3')).toBeTruthy())
+    table([loopRow(other)])
+    expect(screen.getByText('round 2 of 3')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Add a round' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
   })
 
   it('Add a round posts one round to the rounds route', async () => {
-    api.loadTask.mockResolvedValue({ status: 'ok', data: loopTask(PERSON_PARK), fetchedAt: NOW })
     api.write.mockResolvedValue({ status: 'ok', data: { fix_loop: { task_id: 'tsk_loop', max_rounds: 4 } }, fetchedAt: NOW })
-    table([loopRow()])
+    const reread = vi.fn()
+    table([loopRow(loopTask(PERSON_PARK))], reread)
     const add = await screen.findByRole('button', { name: 'Add a round' })
     expect(add.tagName).toBe('BUTTON')
     expect(document.querySelector('[data-loop="waiting"]')?.textContent).toContain('waiting for you')
@@ -199,14 +208,14 @@ describe('the two actions on a loop parked for a person', () => {
     expect(target.url).toBe(`/v1/workflows/${WF}/fix-loop/rounds`)
     expect(method).toBe('POST')
     expect(body).toEqual({ rounds: 1 })
-    // The answer reads the loop again.
-    await waitFor(() => expect(api.loadTask).toHaveBeenCalledTimes(2))
+    // The answer asks the page to read again; the table reads no task itself.
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1))
+    expect(api.loadTask).not.toHaveBeenCalled()
   })
 
   it('Stop asks once more, then posts stop to the end route', async () => {
-    api.loadTask.mockResolvedValue({ status: 'ok', data: loopTask(PERSON_PARK), fetchedAt: NOW })
     api.write.mockResolvedValue({ status: 'ok', data: { fix_loop: { task_id: 'tsk_loop', state: 'FAILED' } }, fetchedAt: NOW })
-    table([loopRow()])
+    table([loopRow(loopTask(PERSON_PARK))])
     const stop = await screen.findByRole('button', { name: 'Stop' })
     expect(stop.tagName).toBe('BUTTON')
     fireEvent.click(stop)
@@ -220,31 +229,38 @@ describe('the two actions on a loop parked for a person', () => {
   })
 
   it('a refused answer says so, and keeps the buttons', async () => {
-    api.loadTask.mockResolvedValue({ status: 'ok', data: loopTask(PERSON_PARK), fetchedAt: NOW })
+    const reread = vi.fn()
     api.write.mockResolvedValue({
       status: 'error',
       error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the fix loop is not parked for a person' },
     })
-    table([loopRow()])
+    table([loopRow(loopTask(PERSON_PARK))], reread)
     fireEvent.click(await screen.findByRole('button', { name: 'Add a round' }))
     const alert = await screen.findByRole('alert')
     expect(alert.getAttribute('title')).toBe('the fix loop is not parked for a person')
     expect(screen.getByRole('button', { name: 'Add a round' })).toBeTruthy()
+    expect(reread).not.toHaveBeenCalled()
+  })
+
+  it('a loop row whose task the page has not read draws no round and no buttons', () => {
+    table([row('loop', 'tsk_loop', 'parked', 'fix-loop')])
+    expect(document.querySelector('[data-loop]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add a round' })).toBeNull()
+    expect(api.loadTask).not.toHaveBeenCalled()
   })
 })
 
 describe('round rows link their agents', () => {
-  it('each review-fix:k and re-review:k row opens its own agent, and no other row links one', async () => {
-    api.loadTask.mockResolvedValue({ status: 'ok', data: loopTask(), fetchedAt: NOW })
+  it('each review-fix:k and re-review:k row opens its own agent, and no other row links one', () => {
     table([
       row('review', 'tsk_review', 'succeeded'),
       row('re-review', 'tsk_bare', 'succeeded'),
-      loopRow(),
+      loopRow(loopTask()),
       row('re-review:1', 'tsk_rr1', 'succeeded'),
       row('review-fix:2', 'tsk_rf2', 'running'),
       row('re-review:2', null, 'parked'),
     ])
-    await waitFor(() => expect(screen.getByText('round 2 of 3')).toBeTruthy())
+    expect(screen.getByText('round 2 of 3')).toBeTruthy()
     const rr1 = screen.getByRole('link', { name: 'Open the agent of re-review:1' })
     expect(rr1.getAttribute('href')).toBe(agentPath({ id: 'tsk_rr1', state: 'SUCCEEDED' }))
     const rf2 = screen.getByRole('link', { name: 'Open the agent of review-fix:2' })

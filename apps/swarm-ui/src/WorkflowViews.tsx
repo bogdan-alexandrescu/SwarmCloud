@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
-import { USE_FIXTURES, loadAttempts, loadTask } from './api'
+import { USE_FIXTURES, loadAttempts } from './api'
 import { DECLARED_WORDS, MONO_ADVANCE_EM, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import { route, write, type Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
@@ -122,6 +122,13 @@ export function tintClass(look: Pick<StepLook, 'hue'>): string {
 export interface StepRowModel {
   readonly step: WorkflowStep
   readonly taskId: string | null
+  /**
+   * The step's task as the page read it (`GET /v1/workflows/{id}` carries
+   * every step's full row), or null where it was not read. A fix loop's row
+   * reads round k of N and its person's park off it (`fixLoopOf`), so the
+   * table asks for no task of its own.
+   */
+  readonly task: Task | null
   readonly look: StepLook
   readonly times: StepTimes
   readonly ran: Cell
@@ -994,37 +1001,6 @@ function fixtureRefusal<T>(): Result<T> {
 }
 
 /**
- * THE LOOP STEPS' OWN TASKS, read here. A row carries its look but not its
- * task, and round k of N, the half running and the person's park are on the
- * loop's task alone (`fixLoopOf`). Read again whenever a loop or round row's
- * look changes -- a round appended, a park moved -- and after an answer.
- */
-function useFixLoopTasks(rows: readonly StepRowModel[]): { tasks: ReadonlyMap<string, Task>; reread: () => void } {
-  const [tasks, setTasks] = useState<ReadonlyMap<string, Task>>(() => new Map())
-  const [bump, setBump] = useState(0)
-  const ids = rows.filter((r) => r.step.runner_profile === FIX_LOOP_PROFILE && r.taskId !== null).map((r) => r.taskId!)
-  const key = rows
-    .filter((r) => r.step.runner_profile === FIX_LOOP_PROFILE || fixLoopRoundOf(r.step.step_id) !== null)
-    .map((r) => `${r.step.step_id}:${r.taskId ?? ''}:${r.look.mark}:${r.look.title}`)
-    .join('|')
-  useEffect(() => {
-    let live = true
-    for (const id of ids) {
-      void loadTask(id).then((r) => {
-        if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
-        setTasks((was) => new Map(was).set(id, r.data))
-      })
-    }
-    return () => {
-      live = false
-    }
-    // `ids` is derived from `key`, which names every loop row's task.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, bump])
-  return { tasks, reread: () => setBump((n) => n + 1) }
-}
-
-/**
  * ADD A ROUND, OR STOP (§4.5), as buttons on the loop's row while it waits for
  * a person. What each does is its tooltip; Stop asks once more, since a
  * stopped loop ends failed and does not come back. A member's controls: a
@@ -1160,10 +1136,16 @@ export function WorkflowTable({
   detail = null,
   head = null,
   title = null,
+  onChanged = () => undefined,
 }: {
   rows: readonly StepRowModel[]
   picked: string | null
   onPick: (stepId: string) => void
+  /**
+   * Read the page again: a person's answer to a fix loop moved its task, and
+   * the row shows the task the page read.
+   */
+  onChanged?: () => void
   /**
    * What the table says about its own figures -- the sampling mark -- drawn
    * in the table's head row, inside its card (walkthrough A: it floated in a
@@ -1190,7 +1172,6 @@ export function WorkflowTable({
   const stepWidth = stepColumnWidth(rows)
   const figureWidths = figureColumnWidths(tableRows(rows))
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
-  const loops = useFixLoopTasks(rows)
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
       const next = new Set(was)
@@ -1249,7 +1230,8 @@ export function WorkflowTable({
         </thead>
         <tbody>
           {sorted.map((r) => {
-            const loopTask = r.step.runner_profile === FIX_LOOP_PROFILE && r.taskId !== null ? loops.tasks.get(r.taskId) : undefined
+            // THE LOOP'S ROUND k OF N AND ITS PARK ARE ON ITS OWN TASK, which the row carries.
+            const loopTask = r.task !== null && r.step.runner_profile === FIX_LOOP_PROFILE ? r.task : undefined
             const loop = loopTask === undefined ? null : fixLoopOf(loopTask)
             return (
             <Fragment key={r.step.step_id}>
@@ -1310,7 +1292,7 @@ export function WorkflowTable({
             {loop !== null && loop.waiting && loopTask?.workflow_id != null && (
               <tr className="wf-xrow" data-loop-for={r.step.step_id}>
                 <td colSpan={columns.length}>
-                  <FixLoopActions workflowId={loopTask.workflow_id} onDone={loops.reread} />
+                  <FixLoopActions workflowId={loopTask.workflow_id} onDone={onChanged} />
                 </td>
               </tr>
             )}
