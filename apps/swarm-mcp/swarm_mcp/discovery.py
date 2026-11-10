@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .client import SwarmError
+from .client import SwarmError, send_user_agent
 
 PATH = "/.well-known/swarmcloud"
 
@@ -122,7 +122,7 @@ _OPENER = urllib.request.build_opener(_NoRedirect())
 
 def http_get(url: str, timeout: float) -> tuple[int, bytes]:
     """GET `url` with no credential; (status, body). Never follows a redirect."""
-    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    request = send_user_agent(urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET"))
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             return int(response.status), response.read(65536)
