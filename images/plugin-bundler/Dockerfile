@@ -39,10 +39,21 @@
 # lane 16 passes; until then this image ships the argument, not the
 # repository. Without --registry, as in the release build's stages, Bun reads
 # its default registry. Either way gstack installs only at the archive's
-# bun.lock, frozen, or the build fails. The recipes install at
-# /opt/swarm/plugins/<name> and Bun at /usr/local/bin/bun, which is why a build
-# step runs this image as root: it is a Cloud Build step, never a pod, and it
-# holds no credential (its service account's token is Cloud Build's own).
+# bun.lock, frozen, or the build fails.
+#
+# A build step runs as swarm-bundler (uid 10001), never root, although it is a
+# Cloud Build step and never a pod and holds no credential (its service
+# account's token is Cloud Build's own): the step runs an upstream's setup and
+# its dependencies' install scripts, which have no business owning the image.
+# That user owns exactly the folders a build writes: /opt/swarm/plugins, where
+# the recipes install at /opt/swarm/plugins/<name> (the install path the
+# release stages use, since gstack's compiled `browse` embeds it);
+# /opt/swarm-bundler/bun, where the gstack recipe installs Bun when the step
+# passes `--bun-path /opt/swarm-bundler/bun/bun` (the release stages, as root,
+# keep the recipe's /usr/local/bin/bun); and /workspace, the working folder
+# whose children are the --out folders. Each recipe's scratch folder is
+# mktemp's, under /tmp. The recipe digests are unchanged by the user: they hash
+# the recipe files, which are the release stages' bytes.
 #
 # Build from the REPOSITORY ROOT: the recipes' inputs live beside the agent
 # images.
@@ -73,6 +84,17 @@ RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get install --no-install-recommends -y ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/*
 
+# The python:3.11-slim base carries its own setuptools and wheel in
+# /usr/local/lib, and the release scan refuses both (jaraco.context, vendored
+# in setuptools, and wheel itself). A bundle build builds plugins, never a
+# Python package: the recipes' Python is swarm-bundle, gstack-layers, the
+# closure walker and `python3 -m zipfile`, standard library only. So they are
+# removed rather than upgraded, as in images/swarm-scheduler: an upgrade only
+# moves the next advisory further out.
+RUN /usr/local/bin/python3 -m pip uninstall --yes setuptools wheel \
+ && ! /usr/local/bin/python3 -c "import setuptools" 2>/dev/null \
+ && ! /usr/local/bin/python3 -c "import wheel" 2>/dev/null
+
 # Node runs security-audit's own validator tests on the staged copy.
 COPY --from=nodebin /usr/local/bin/node /usr/local/bin/node
 
@@ -89,4 +111,15 @@ RUN chmod -R go-w /opt/swarm-bundler \
  && python3 /opt/swarm-bundler/swarm-bundle pin --pins /opt/swarm-bundler/bundled-plugins.json \
       --plugin gstack source.commit
 
+# The unprivileged build user and the folders it owns (the header says why
+# each). Everything else, the recipes and their inputs included, stays root's
+# and not writable by it.
+RUN /usr/sbin/groupadd --gid 10001 swarm-bundler \
+ && /usr/sbin/useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
+      --shell /usr/sbin/nologin swarm-bundler \
+ && install -d -o 10001 -g 10001 -m 0755 /opt/swarm/plugins /opt/swarm-bundler/bun /workspace
+
+ENV PATH=/opt/swarm-bundler/bun:${PATH}
+
 WORKDIR /workspace
+USER 10001:10001

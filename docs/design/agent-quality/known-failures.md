@@ -258,6 +258,8 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_onboarding_docs_and_mockup.py` | `test_each_entry_variant_draws_the_checklist` | `skip_call` | {vid} not drawn |
 | `tests/unit/scripts/test_plan_guard_iam_classification.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_plan_guard_metric_replace.py` | `<module>` | `skipif` | jq is required |
+| `tests/unit/scripts/test_plugin_bundle_recipes.py` | `_require` | `skip_call` | {tool} is not installed here; CI runs this |
+| `tests/unit/scripts/test_plugin_bundle_recipes.py` | `test_each_recipe_starts_with_strict_mode_and_is_shellcheck_clean` | `skip_call` | shellcheck is not installed here; CI runs this |
 | `tests/unit/scripts/test_plugin_intake_image.py` | `test_a_change_to_the_job_rebuilds_the_image_and_nothing_else_does` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_plugin_intake_image.py` | `test_build_images_finds_the_intake_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_plugin_tag.py` | `<module>` | `skipif` | the steps read plugin.json with jq |

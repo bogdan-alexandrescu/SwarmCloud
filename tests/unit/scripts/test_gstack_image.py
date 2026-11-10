@@ -227,10 +227,13 @@ def test_the_recipe_installs_the_pinned_bun_after_its_sha256() -> None:
     assert '"file://${mirror}/${BUN_OBJECT}"' in code
     sha = code.index('echo "${BUN_SHA256}')
     assert sha < code.index("zipfile"), "Bun is unpacked before its sha256 is checked"
-    assert 'install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun' in code
+    # The release stages' Bun stays at /usr/local/bin/bun, root's because they
+    # run as root; the bundler image's unprivileged user passes --bun-path.
+    assert 'bun_path=/usr/local/bin/bun\n' in code
+    assert 'install -m 0755 "${scratch}/bun/bun-linux-x64/bun" "${bun_path}"' in code
     # Installed or already present, the Bun that runs setup is the pinned one.
-    assert 'test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"' in code
-    assert code.index("bun --version") < code.index("./setup")
+    assert 'test "$("${bun_path}" --version)" = "${BUN_VERSION}"' in code
+    assert code.index('"${bun_path}" --version') < code.index("./setup")
 
 
 def test_the_recipe_digests_the_browser_tree_over_the_base_list() -> None:

@@ -19,7 +19,10 @@ set -euo pipefail
 #     pinned sha256, Bun's version and the archive's commit (the pax header)
 #     before anything runs; --bun present instead requires the Bun already
 #     on PATH to be the pinned one (the browser image builds FROM the base,
-#     which has it);
+#     which has it); --bun-path is where that Bun is, /usr/local/bin/bun
+#     unless given (the release stages, which run as root; the bundler image
+#     runs as an unprivileged user and passes a path that user owns), and any
+#     other path's folder leads PATH while setup runs;
 #   * gstack is unpacked AT its install path, because the compiled `browse`
 #     embeds the path it was built at, and `./setup --host claude --no-browser`
 #     runs with HOME, gstack's state and Bun's cache in a throwaway folder;
@@ -42,12 +45,13 @@ set -euo pipefail
 # usage: build --pins FILE --mirror DIR --layers FILE --measure FILE
 #              --base-list FILE --browser-list FILE --list base|browser
 #              --bun install|present --out DIR [--registry URL]
+#              [--bun-path FILE]
 
 PLUGIN=gstack
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bundle="${here}/../../swarm-bundle"
 
-pins="" mirror="" layers="" measure="" base_list="" browser_list="" list="" bun="" out="" registry=""
+pins="" mirror="" layers="" measure="" base_list="" browser_list="" list="" bun="" out="" registry="" bun_path=/usr/local/bin/bun
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --pins) pins="$2"; shift 2 ;;
@@ -60,6 +64,7 @@ while [ "$#" -gt 0 ]; do
     --bun) bun="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --registry) registry="$2"; shift 2 ;;
+    --bun-path) bun_path="$2"; shift 2 ;;
     *) echo "gstack recipe: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -71,6 +76,7 @@ for required in pins mirror layers measure base_list browser_list list bun out; 
 done
 case "${list}" in base | browser) ;; *) echo "gstack recipe: --list is base or browser" >&2; exit 2 ;; esac
 case "${bun}" in install | present) ;; *) echo "gstack recipe: --bun is install or present" >&2; exit 2 ;; esac
+case "${bun_path}" in /*/bun) ;; *) echo "gstack recipe: --bun-path is an absolute path ending in /bun" >&2; exit 2 ;; esac
 # The registry lands in a TOML string and Bun's environment: an https URL of
 # plain characters only, or nothing.
 if [ -n "${registry}" ] && ! [[ "${registry}" =~ ^https://[A-Za-z0-9._~:/@%+-]+$ ]]; then
@@ -100,9 +106,15 @@ if [ "${bun}" = install ]; then
     "file://${mirror}/${BUN_OBJECT}"
   echo "${BUN_SHA256}  ${scratch}/bun.zip" | sha256sum -c -
   python3 -m zipfile -e "${scratch}/bun.zip" "${scratch}/bun"
-  install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun
+  # Owned by whoever runs the recipe: root in the release stages, the
+  # bundler's own user in a bundle build.
+  install -m 0755 "${scratch}/bun/bun-linux-x64/bun" "${bun_path}"
 fi
-test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}"
+test "$("${bun_path}" --version)" = "${BUN_VERSION}"
+bun_env=()
+if [ "${bun_path}" != /usr/local/bin/bun ]; then
+  bun_env=(PATH="$(dirname "${bun_path}"):${PATH}")
+fi
 
 curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${scratch}/gstack.tar.gz" \
   "file://${mirror}/${GSTACK_OBJECT}"
@@ -127,7 +139,7 @@ registry_env=()
   fi
 } >"${scratch}/home/.bunfig.toml"
 (cd "${GSTACK_INSTALL}" \
-  && env ${registry_env[@]+"${registry_env[@]}"} HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
+  && env ${bun_env[@]+"${bun_env[@]}"} ${registry_env[@]+"${registry_env[@]}"} HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
     GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
     ./setup --host claude --no-browser)
 if [ "$(sha256sum "${GSTACK_INSTALL}/bun.lock" | cut -d' ' -f1)" != "${LOCK_SHA256}" ]; then
