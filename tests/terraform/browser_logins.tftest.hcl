@@ -344,15 +344,28 @@ run "no_session_in_state_and_every_resource_labelled" {
   # Nothing CI applies grants on a browser session: terraform/infra and its
   # modules never spell the -browser- prefix, so no release can hand any
   # worker one. And in this root, browser_logins.tf alone does.
+  # broker_workspace_keys.tf spells it only to REFUSE browser logins in the
+  # quota broker's read of provider keys; it is held to that just below.
   assert {
     condition = var.enable_browser_logins && length(flatten([
       for f in concat(
         [for p in fileset("../../terraform/infra", "**/*.tf") : "../../terraform/infra/${p}"],
         [for p in fileset("../../terraform/modules", "**/*.tf") : "../../terraform/modules/${p}"],
-        [for p in fileset("../../terraform/bootstrap", "**/*.tf") : "../../terraform/bootstrap/${p}" if p != "browser_logins.tf"],
+        [for p in fileset("../../terraform/bootstrap", "**/*.tf") : "../../terraform/bootstrap/${p}" if !contains(["browser_logins.tf", "broker_workspace_keys.tf"], p)],
       ) : regexall("-browser-", file(f))
     ])) == 0
     error_message = "a -browser- secret prefix is spelled outside terraform/bootstrap/browser_logins.tf; every grant on a browser session must be made there, where this suite holds it"
+  }
+
+  # In broker_workspace_keys.tf, every -browser- outside a comment is an
+  # extract(...-browser-) == "" arm, which refuses a browser login and admits
+  # none; the file is read at all (its grant's resource is in it).
+  assert {
+    condition = var.enable_browser_logins && strcontains(file("../../terraform/bootstrap/broker_workspace_keys.tf"), "\"broker_workspace_key_reader\"") && alltrue([
+      for line in split("\n", file("../../terraform/bootstrap/broker_workspace_keys.tf")) :
+      startswith(trimspace(line), "#") || length(regexall("-browser-", line)) == length(regexall("-browser-\\\\\"\\) == \\\\\"\\\\\"", line))
+    ])
+    error_message = "terraform/bootstrap/broker_workspace_keys.tf spells -browser- outside a comment other than as an extract(...-browser-) == \"\" refusal; a grant on a browser session must be made in browser_logins.tf"
   }
 
   assert {
