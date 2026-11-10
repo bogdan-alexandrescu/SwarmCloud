@@ -93,6 +93,16 @@ module "custom_role_ids" {
 # (terraform/bootstrap/platform_roles.tf), made at least 7 minutes after this
 # grant is live -- which it already is.
 #
+# THE BROKER'S DELETE OF AN API KEY'S SECRET IS NOT GRANTED HERE (LLM
+# providers, docs/design/llm-providers.md §8.3, lane LP-T1). swarmAccountKeyDeleter
+# (secretmanager.secrets.delete alone) is defined AND granted to the broker,
+# conditioned to swarm-account-<t>--key-* names, by
+# terraform/bootstrap/account_key_secrets.tf. A project grant made here would
+# need the role on deployer_grantable_project_roles, whose hasOnly() cannot
+# bound the member or the condition, so CI could grant itself delete over every
+# secret in the shared project. tests/terraform/account_key_secrets.tftest.hcl
+# holds that this module grants it to nobody.
+#
 # NOT VERIFIED LIVE: that IAM evaluates this condition as documented for
 # versions.add. Release 1 proves nothing about it -- the project-wide grant is
 # still there -- so the proof is the first account refresh after step 2,
