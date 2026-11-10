@@ -537,6 +537,8 @@
 .qc-asker-head { margin: 4px 0 0; overflow-wrap: anywhere; }
 .qc-unreadable { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .qc-unreadable p { margin: 0; }
+/* Its (i) sits at the inspector's right edge, which clips: the tip opens leftwards from it, as InfoTip's `end`. */
+.qc-unreadable .c-tip { left: auto; right: 0; }
 
 /* --- "Why it's waiting" (WaitPanel.tsx, #1782) ----------------------------
    The card's own tokens and a 3px leading rule like the Now card's: warn

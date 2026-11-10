@@ -17,6 +17,9 @@
 // `held` guard on the Browser tab in AgentSplit; render `HeldQuestionsCard`
 // nowhere; answer on the merge task instead of the asking one.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -339,6 +342,9 @@ describe('the questions are drawn inline, with the answer control', () => {
     expect(held.textContent).toContain('a ready from a member lets the merge go on past it.')
     const about = within(held).getByRole('button', { name: 'About going on past entries the merge cannot read' })
     expect(about.closest('.c-tip-host')?.querySelector('[role="tooltip"]')?.textContent).toContain('A newer review or a new head')
+    // MUTATION: drop the end-aligned rule and the tip opens rightwards, past
+    // the inspector's clipped right edge, where it cannot be read.
+    expect(readFileSync(join(__dirname, '..', 'styles', 'details.css'), 'utf8')).toMatch(/\.qc-unreadable \.c-tip \{ left: auto; right: 0; \}/)
   })
 
   it("keeps the agent page's held-questions id, and takes a page's own id for each mount", async () => {

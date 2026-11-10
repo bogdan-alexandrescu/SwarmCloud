@@ -2757,7 +2757,9 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
     review's own task. Then every answer must accept the risk or mark a false
     positive; any other answer -- "Fix it now", or free text naming no option
     -- refuses `security_fix_requested`, so the finding is fixed and reviewed
-    before anything merges. A NOT_YET naming no question, or a verdict that
+    before anything merges. Entries it cannot read park too; once a member's
+    ready acknowledges them (`_unreadable_hold`) the merge refuses
+    `security_verdict_not_merge`, since no unreadable entry accepts a risk. A NOT_YET naming no question, or a verdict that
     does not read, refuses: an unreadable security review is not a pass.
     """
     staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
@@ -2788,6 +2790,17 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
     unreadable, basis = _unreadable_hold(run, OWNER_READY_SECURITY, None, verdict, target, opener)
     if held or unreadable:
         return run.wait_for_owner(held, unreadable=unreadable, acknowledges=basis)
+    if verdict.needs_owner_unreadable:
+        # A ready acknowledged entries no one can read: none of them is an
+        # answer that accepts a risk or marks a false positive, so the gate
+        # stays closed -- refused, not parked for ever and not merged.
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and "
+            f"{verdict.needs_owner_unreadable} of its needs_owner entries cannot be read, so no "
+            "answer accepts the risk or marks a false positive for them: re-run the security "
+            "review",
+        )
     answers = _security_answers(ctx, verdict.needs_owner)
     record["answers"] = answers
     fix = [row for row in answers

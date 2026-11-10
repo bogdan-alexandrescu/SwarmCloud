@@ -26,13 +26,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from agent_worker import merge, owner_questions, verdict
+from agent_worker import merge, owner_questions, security_review, verdict
 from swarm_api import handoff
 from swarm_common.states import TaskState
 
 from merge_world import OPENER, TASK, WORKFLOW, MergeWorld
 
 IMPLEMENT = "task_impl"
+SECURITY = "task_sec"
 NEW_HEAD = "0f" * 20
 #: The live review's shape: sentences, not references.
 SENTENCES = ["The owner must confirm the flag stays for one more release.",
@@ -181,3 +182,34 @@ def test_the_reviews_needs_owner_example_is_a_reference_the_merge_reads(tmp_path
     assert "note" in verdict.NEEDS_OWNER_EXAMPLE
     # Old free-text entries still read, as unreadable: nothing written breaks.
     assert verdict.owner_question_refs(list(SENTENCES)) == ((), 2)
+
+
+def test_a_ready_on_a_security_reviews_unreadable_entries_refuses_rather_than_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.docs[SECURITY] = {"tenant_id": "eng", "workflow_id": WORKFLOW,
+                            "step_id": "security-review", "state": "SUCCEEDED",
+                            "metadata": {"owner_answers": []}}
+    path = tmp_path / security_review.VERDICT_FILE
+    path.write_text(json.dumps({
+        "verdict": "NOT_YET",
+        "findings": [{"summary": "[high] SQL injection (apps/api/q.py:3)", "severity": "high"}],
+        "needs_owner": ["The owner must accept the injection risk."]}))
+
+    def context() -> Any:
+        ctx = world.context()
+        ctx.staged = {**ctx.staged, security_review.VERDICT_FILE: path}
+        return ctx
+
+    parked = merge.run_merge(context())
+    assert parked.state is TaskState.PARKED, parked.message
+    assert parked.owner_wait["acknowledges"]["source"] == merge.OWNER_READY_SECURITY
+    _ready(world, parked)
+
+    outcome = merge.run_merge(context())
+
+    # MUTATION: let the ready clear the security review's unreadable entries
+    # and go on, and a confirmed high merges with no answer accepting it.
+    assert outcome.state is not TaskState.SUCCEEDED, outcome.message
+    assert outcome.state is not TaskState.PARKED, outcome.message
+    assert outcome.summary["refusal"]["code"] == merge.SECURITY_VERDICT_NOT_MERGE
+    assert world.merge_calls() == []
