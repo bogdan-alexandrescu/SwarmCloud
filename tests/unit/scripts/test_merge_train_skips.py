@@ -116,7 +116,8 @@ class Train:
         env = dict(os.environ)
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "RUN_URL": RUN_URL, "FAKE_GH_LOG": str(self.log),
-                    "FAKE_COMMENTS": str(self.comments)})
+                    "FAKE_COMMENTS": str(self.comments),
+                    "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0"})
         env.pop("GITHUB_STEP_SUMMARY", None)
         proc = subprocess.run(["bash", str(SCRIPT), "tell", "--prs", str(path)],
                               capture_output=True, text=True, timeout=60, check=False, env=env)
