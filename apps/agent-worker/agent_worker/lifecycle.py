@@ -19627,11 +19627,26 @@ class _DiffLeakScanner:
     than that the carry starts mid-line, where a pattern starting the window
     counts as starting a token: a possible false hit, which folds or refuses
     -- the safe direction.
+
+    ONLY WHAT A SECOND DIFF ALSO ADDS (`within`, the merged-main floor). Given
+    a map of each file's added line ranges from another diff with the same
+    new side (`added` of a scan of `floor..HEAD`), an added line is scanned
+    only when its new-file line is in one of them: a line the other old side
+    already holds is never asked about. The lines kept are scanned exactly as
+    an unfiltered diff of them would be -- windows, overlap, and the line a
+    hit names -- and `added` records only them.
     """
 
     _HEADS = ("diff --git ", "+++ ", "@@")
 
-    def __init__(self, leaks: LeakPredicate, *, window: int, overlap: int) -> None:
+    def __init__(
+        self,
+        leaks: LeakPredicate,
+        *,
+        window: int,
+        overlap: int,
+        within: dict[str, list[tuple[int, int]]] | None = None,
+    ) -> None:
         import codecs
 
         self._leaks = leaks
@@ -19663,6 +19678,18 @@ class _DiffLeakScanner:
         # (`_added_inside_a_private_key`).
         self.added: dict[str, list[tuple[int, int]]] = {}
         self._added_key = ""
+        # The `within` filter: how the current hunk's added lines are taken
+        # ("all", "none" or "some"), and for "some" the new-file line of the
+        # next added line, the kept spans `(first, last)` still ahead, whether
+        # a line is open and kept, and the last kept line (a gap starts a new
+        # entry in `_hunks`, so a hit still names its own line).
+        self._within = within
+        self._take = "all"
+        self._line_no = 0
+        self._spans: list[tuple[int, int]] = []
+        self._line_open = False
+        self._line_kept = False
+        self._last_kept: int | None = None
 
     def feed(self, data: bytes) -> None:
         if self.hit is None:
@@ -19757,19 +19784,76 @@ class _DiffLeakScanner:
         elif self._mode == "hunk":
             start = _HUNK_NEW_START.match(self._header_line)
             if start is not None:
-                self._hunks.append((self._file_lines, int(start.group(1))))
                 count = 1 if start.group(2) is None else int(start.group(2))
-                if count and self._added_key and self._added_key != "/dev/null":
-                    self.added.setdefault(self._added_key, []).append(
-                        (int(start.group(1)), count)
-                    )
+                if self._within is None:
+                    self._hunks.append((self._file_lines, int(start.group(1))))
+                    if count and self._added_key and self._added_key != "/dev/null":
+                        self.added.setdefault(self._added_key, []).append(
+                            (int(start.group(1)), count)
+                        )
+                else:
+                    self._begin_filtered_hunk(int(start.group(1)), count)
         self._mode, self._head, self._header_line = None, "", ""
+
+    def _begin_filtered_hunk(self, first: int, count: int) -> None:
+        """Set how the hunk starting at new-file line `first`, adding `count`
+        lines, is taken under `within`: its lines the other diff also adds."""
+        last = first + count - 1
+        spans: list[tuple[int, int]] = []
+        if count and self._added_key and self._added_key != "/dev/null":
+            assert self._within is not None
+            for start, length in self._within.get(self._added_key, ()):
+                low, high = max(first, start), min(last, start + length - 1)
+                if low <= high:
+                    spans.append((low, high))
+        spans.sort()
+        for low, high in spans:
+            self.added.setdefault(self._added_key, []).append((low, high - low + 1))
+        if spans == [(first, last)]:
+            self._take = "all"
+            self._hunks.append((self._file_lines, first))
+        elif not spans:
+            self._take = "none"
+        else:
+            self._take = "some"
+            self._line_no, self._spans = first, spans
+            self._line_open, self._line_kept, self._last_kept = False, False, None
 
     # -- scanning ------------------------------------------------------------
 
     def _add(self, text: str) -> None:
-        if not text:
+        if not text or self._take == "none":
             return
+        if self._take == "some":
+            self._add_some(text)
+            return
+        self._add_kept(text)
+
+    def _add_some(self, text: str) -> None:
+        """`text` of a hunk only some of whose lines `within` keeps: each
+        line's pieces go to the scan when its new-file line is kept."""
+        pos, n = 0, len(text)
+        while pos < n and self.hit is None:
+            newline = text.find("\n", pos)
+            end = n if newline < 0 else newline + 1
+            if not self._line_open:
+                self._line_open = True
+                line = self._line_no
+                while self._spans and self._spans[0][1] < line:
+                    self._spans.pop(0)
+                self._line_kept = bool(self._spans) and self._spans[0][0] <= line
+                if self._line_kept:
+                    if self._last_kept != line - 1:
+                        self._hunks.append((self._file_lines, line))
+                    self._last_kept = line
+            if self._line_kept:
+                self._add_kept(text[pos:end])
+            if newline >= 0:
+                self._line_open = False
+                self._line_no += 1
+            pos = end
+
+    def _add_kept(self, text: str) -> None:
         self._file_lines += text.count("\n")
         self._buf.append(text)
         self._buf_len += len(text)
@@ -19811,6 +19895,7 @@ class _DiffLeakScanner:
         self._carry = ""
         self._file_lines, self._window_line, self._hunks = 0, 0, []
         self._added_key = ""
+        self._take = "all"
 
 
 def _config_seal(repo: Path) -> str | None:
@@ -19996,6 +20081,7 @@ def _scan_diff_stream(
     logger: Any,
     new_rev: str | None = None,
     git: list[str] | None = None,
+    within: dict[str, list[tuple[int, int]]] | None = None,
 ) -> tuple[int, ScanHit | None]:
     """Run a `git diff` and scan everything it adds; (exit code, the first hit or None).
 
@@ -20003,8 +20089,13 @@ def _scan_diff_stream(
     diff that added nothing credential-shaped is also asked whether an added
     line sits inside a private key of the new file
     (`_added_inside_a_private_key`, #361 box 79).
+
+    With `within`, only the added lines it also names are scanned
+    (`_DiffLeakScanner`), and only they are asked the private-key question.
     """
-    scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
+    scanner = _DiffLeakScanner(
+        leaks, window=SCAN_WINDOW_CHARS, overlap=overlap, within=within
+    )
     code = _git_stream(
         argv,
         repo=repo,
@@ -20281,10 +20372,20 @@ def final_tree_leak(
     of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
     `core.quotePath=false`, stay as a second belt.
 
-    `floor`, when given, is read from instead of `base`: a commit of the
-    repository's default branch the lane merged, proven on the forge
-    (`Worker._scan_floor`, #453). Every line its tree holds is published
-    already, so only what the branch adds over it is asked about.
+    `floor`, when given, is a commit of the repository's default branch the
+    lane merged, proven on the forge (`Worker._scan_floor`, #453). Every line
+    its tree holds is published already. So is every line of the clone base's
+    tree: `base` is the commit the worker recorded when it cloned from the
+    forge (`Worker._publish_base`), never a value the agent names. So only a
+    line the branch adds over BOTH is asked about (publish scan, merged-main
+    floor, 2026-11-10): `floor..HEAD` is read first for the line ranges it
+    adds, and `base..HEAD` is then scanned on those lines alone
+    (`_DiffLeakScanner`'s `within`). The floor used to REPLACE the base, so on
+    a stacked branch -- whose base is a parent branch already on the forge,
+    holding lines the default branch does not -- every such line was scanned
+    again as if the lane had added it, and the lane was refused for a
+    parent's line it never wrote. What is asked is never more than either
+    diff alone would ask.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -20314,19 +20415,37 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
-    if floor and _SHA_RE.match(floor.strip()):
-        before = floor.strip()
-    code, hit = _scan_diff_stream(
-        [
+
+    def diff(old: str) -> list[str]:
+        return [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
             "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
-            before, "HEAD", "--",
-        ],
+            old, "HEAD", "--",
+        ]
+
+    within: dict[str, list[tuple[int, int]]] | None = None
+    if floor and _SHA_RE.match(floor.strip()) and floor.strip() != before:
+        # What the branch adds over the floor, as line ranges only: the
+        # predicate asks nothing, and no added text is kept.
+        ranges = _DiffLeakScanner(
+            lambda _path, _text: None, window=SCAN_WINDOW_CHARS, overlap=overlap
+        )
+        code = _git_stream(
+            diff(floor.strip()), slug="publish-final-floor-diff", consume=ranges.feed,
+            **run_kwargs,
+        )
+        ranges.close()
+        if code != 0:
+            raise GitError("could not diff the branch against the merged default branch")
+        within = ranges.added
+    code, hit = _scan_diff_stream(
+        diff(before),
         leaks=leaks,
         overlap=overlap,
         new_rev="HEAD",
         git=g,
         slug="publish-final-diff",
+        within=within,
         **run_kwargs,
     )
     if code != 0:
