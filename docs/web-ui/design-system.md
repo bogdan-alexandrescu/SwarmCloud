@@ -1861,7 +1861,8 @@ columns, already a record in shape) carry neither class and keep the plain
 
 **The standing rule (owner, 2026-11-05, every console page): no explanatory prose on the surface; an explanation, definition, how-to or background goes behind a tooltip, an (i) or a status tick, a status shows its word only where it asks for something, and an action is a button, never an arrowed text link.**
 Only must-stay disclosures stay visible, one short line each (a write to a live system, production mode, who pays, could-not-check, nothing-auto-applies); an empty state is a short line plus its action.
-`src/__tests__/prose.ceilings.json` holds every nav page's visible words and arrowed links to ceilings that only go down (`proseapp.tsx` measures them, `prose.app.test.tsx` holds the ratchet).
+The ceiling is the console as it was on the change's base, not a table: the `prose.app.<group>.test.tsx` slices render every nav page twice, on the base commit and on the change, and fail a page whose visible words or arrowed links went up (`proseapp.tsx` measures them, `prosebase.ts` picks the base, `prose.app.test.tsx` holds the ratchet's own rules). So a ceiling can only go down: a change that removes words lowers it for every change after it, and nothing can raise it, because there is no file to raise it in.
+Why a base and not a table (owner, 2026-11-06): a hand-edited ceilings file let two green changes fail together, one lowering a page's ceiling while the other added words the old ceiling allowed; two changes that each add no words against their own base add none together. A base that cannot be read is an error, never a pass.
 
 ### 8.1 The invariant, unchanged
 
