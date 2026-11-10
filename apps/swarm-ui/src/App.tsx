@@ -1281,8 +1281,8 @@ export function fromAddress(full: string): Route {
     // CAPACITY › LLM PROVIDERS (LP-U1): `capacity/llm-providers/<sub>`, the
     // sub-page in `page`; Plans keeps the board's chosen account and view.
     // ACCOUNTS LANDS ON PLANS, its `?account=` and `?view=` kept (§6.1), so
-    // a saved link and the board's own `#capacity/accounts?account=` still
-    // open the account they named.
+    // a saved `#capacity/accounts?account=` link still opens the account it
+    // named. The console's own links name Plans directly.
     if (section.id === CAPACITY && (tail[0] === LLM_PROVIDERS_TAB || wanted === 'accounts')) {
       const page = tail[0] === LLM_PROVIDERS_TAB ? llmSubPage(tail[1]) : 'plans'
       const kept = page === 'plans' ? keptQuery(keptKeys(CAPACITY, LLM_PROVIDERS_TAB), query) : ''

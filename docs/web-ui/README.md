@@ -111,11 +111,11 @@ To translate a filename or a route in a report into today's address:
 |---|---|
 | `#agents`, `#agents/running`, `#agents/workflows` | `#work`, `#work/running`, `#work/workflows` |
 | `#agents/task/<id>` | `#work/task/<id>` |
-| `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/accounts` |
+| `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/llm-providers/plans` |
 | `#activity/timeline`, `#history/timeline` | `#work/timeline` |
 | `#counts`, `#history/counts`, `#activity/counts` | `#admin/counts` |
 | `#runtimes/catalogue` | `#capacity/catalogue` |
-| `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/accounts` |
+| `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/llm-providers/plans` |
 | the "Agents" section | the **Work** section |
 | the "Pools" section | the **Capacity** section |
 | the "Runtimes" section | the **Runtimes** tab of **Capacity** |

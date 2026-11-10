@@ -390,7 +390,7 @@ function Body({
     }
   })
   const pageView = viewOf(linkedView, storedView)
-  const viewHref = (v: AccountsView) => paneHref('capacity/accounts', { account: linked, view: v })
+  const viewHref = (v: AccountsView) => paneHref('capacity/llm-providers/plans', { account: linked, view: v })
   const chooseView = (v: AccountsView) => {
     try {
       safeStorage()?.setItem(VIEW_KEY, v)
@@ -408,11 +408,11 @@ function Body({
   // A Table address stays bare, as it always was.
   useEffect(() => {
     if (typeof window === 'undefined' || linkedView !== null || pageView !== 'timeline') return
-    replaceHash(paneHref('capacity/accounts', { account: linked, view: 'timeline' }))
+    replaceHash(paneHref('capacity/llm-providers/plans', { account: linked, view: 'timeline' }))
   }, [linkedView, pageView, linked])
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/llm-providers/plans', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,

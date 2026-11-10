@@ -429,7 +429,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
       detail: reauth.map((a) => accountName(a)).join(', '),
       why: 'The broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.',
-      href: '#capacity/accounts',
+      href: '#capacity/llm-providers/plans',
     })
   }
   if (never.length > 0) {
@@ -439,7 +439,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
       detail: never.map((a) => accountName(a)).join(', '),
       why: 'No reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.',
-      href: '#capacity/accounts',
+      href: '#capacity/llm-providers/plans',
     })
   }
   if (stale.length > 0) {
@@ -449,7 +449,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
       detail: stale.map((a) => accountName(a)).join(', '),
       why: "The last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.",
-      href: '#capacity/accounts',
+      href: '#capacity/llm-providers/plans',
     })
   }
 

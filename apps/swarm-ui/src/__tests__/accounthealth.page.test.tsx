@@ -199,7 +199,7 @@ describe('F1: the tiles and the list', () => {
     const tile = container.querySelector<HTMLElement>('[data-tile="verdict"]')!
     expect(tile.textContent).toContain('Can the pool take work now?')
     expect(tile.textContent).toMatch(/Yes · 4 accounts/)
-    expect(within(tile).getByRole('link', { name: 'Accounts' }).getAttribute('href')).toBe('#capacity/accounts')
+    expect(within(tile).getByRole('link', { name: 'Accounts' }).getAttribute('href')).toBe('#capacity/llm-providers/plans')
   })
 
   it('opens a row on the account’s side sheet on Accounts, and shows its last event', () => {
@@ -207,7 +207,7 @@ describe('F1: the tiles and the list', () => {
     const { container } = desktop(board(accounts, events))
 
     const row = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-2"]')!
-    expect(within(row).getByRole('link', { name: 'ai-eng-2' }).getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aai-eng-2')
+    expect(within(row).getByRole('link', { name: 'ai-eng-2' }).getAttribute('href')).toBe('#capacity/llm-providers/plans?account=eng%3Aai-eng-2')
     expect(row.textContent).toContain('Overloaded (529)')
     expect(row.textContent).toContain('15 min ago')
   })
@@ -293,7 +293,7 @@ describe('F4: the honest states', () => {
     const callout = container.querySelector<HTMLElement>('[data-state="reauth"]')!
     expect(callout.dataset.account).toBe('eng:acct-3')
     expect(within(callout).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toBe(
-      '#capacity/accounts?account=eng%3Aacct-3',
+      '#capacity/llm-providers/plans?account=eng%3Aacct-3',
     )
   })
 
@@ -586,7 +586,7 @@ describe('fourth review: the marks in their lanes, the phone’s switch and the 
     const card = container.querySelector<HTMLElement>('[data-state="reauth"]')!
     expect(card.dataset.account).toBe('eng:acct-3')
     expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toBe(
-      '#capacity/accounts?account=eng%3Aacct-3',
+      '#capacity/llm-providers/plans?account=eng%3Aacct-3',
     )
   })
 
@@ -696,19 +696,19 @@ describe('the page carries its explanations behind its labels, not on its surfac
     expect(container.textContent).not.toContain('›')
     const verdict = container.querySelector<HTMLElement>('[data-tile="verdict"]')!
     const acc = within(verdict).getByRole('link', { name: 'Accounts' })
-    expect(acc.getAttribute('href')).toBe('#capacity/accounts')
+    expect(acc.getAttribute('href')).toBe('#capacity/llm-providers/plans')
     expect(acc.classList.contains('c-btn')).toBe(true)
 
     const dead = container.querySelector<HTMLElement>('tr[data-account="eng:acct-3"]')!
     const sign = within(dead).getAllByRole('link', { name: 'Sign in again' })
     expect(sign).toHaveLength(1)
     expect(sign[0]!.classList.contains('c-btn')).toBe(true)
-    expect(sign[0]!.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aacct-3')
+    expect(sign[0]!.getAttribute('href')).toBe('#capacity/llm-providers/plans?account=eng%3Aacct-3')
 
     const ok = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-2"]')!
     const open = within(ok).getByRole('link', { name: 'Open' })
     expect(open.classList.contains('c-btn')).toBe(true)
-    expect(open.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aai-eng-2')
+    expect(open.getAttribute('href')).toBe('#capacity/llm-providers/plans?account=eng%3Aai-eng-2')
   })
 
   it('puts the re-auth reason on a status tick, not in a paragraph', () => {

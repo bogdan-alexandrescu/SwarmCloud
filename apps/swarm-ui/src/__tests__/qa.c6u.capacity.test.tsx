@@ -496,7 +496,7 @@ describe('G5-23: format and wording', () => {
   it('puts the chosen account in the address, and opens the account the address names', async () => {
     await accountsScreen([account('eng:a', 'alpha'), account('eng:b', 'bravo')])
     fireEvent.click(listItem('bravo').querySelector('.acct-open')!)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Ab')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?account=eng%3Ab')
     document.body.innerHTML = ''
     window.history.replaceState(null, '', '/capacity/accounts?account=eng%3Ab')
     await accountsScreen([account('eng:a', 'alpha'), account('eng:b', 'bravo')])
