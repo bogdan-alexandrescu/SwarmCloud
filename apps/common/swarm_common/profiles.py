@@ -2320,9 +2320,9 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     # runs review-fix rounds until the review says MERGE or `max_rounds`.
     # control_plane (request 93): no container runs it, swarm-api drives its
     # rounds as steps of their own and ends it, and Terraform makes no Job for
-    # it (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build
-    # lane of the design's §8 has merged and FL-ACCEPT is green on dev, as
-    # await-input was; enabling it is `available=True` and nothing else.
+    # it (`profiles_without_a_job`). Shipped unavailable until FL-ISSUE, FL-UI
+    # and FL-DOCS had merged; made available by contract request 151, applied
+    # 2026-11-09 on the owner's pre-approval: `available=True` and nothing else.
     "fix-loop": RunnerProfile(
         name="fix-loop",
         image="agent-runtime-base",   # never pulled: control_plane
@@ -2334,11 +2334,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=(),
         timeout_seconds=300,          # unused; the rounds are steps with their own
         inputs={},
-        available=False,
-        disabled_reason=(
-            "fix-loop is not available yet: it ships unavailable until its "
-            "acceptance run passes, as docs/design/fix-loop.md says."
-        ),
+        available=True,
         runtime_capabilities=(),
     ),
 }

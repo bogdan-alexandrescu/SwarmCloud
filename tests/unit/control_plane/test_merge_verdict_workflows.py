@@ -22,7 +22,8 @@ fix workflows ended at the pull request. What these tests hold:
      sent for its review (invariant 10).
 
 These hold the re-review shape, which "on_merge_verdict" still appends while
-the `fix-loop` profile ships unavailable (contract request 124). With it
+the `fix-loop` profile is unavailable, as it shipped (contract request 124)
+until request 151: every test here patches it off (`_fix_loop_off`). With it
 available, a NOT_YET-gated fix gets the fix loop, 3 rounds, and a merge that
 reads the loop instead (the owner 2026-11-09, docs/design/fix-loop.md §9 Q8
 (b)): tests/unit/control_plane/test_fix_loop_by_default.py.
@@ -34,20 +35,33 @@ network, no emulator: every agent step is `mock`.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from swarm_api import repositories
 from swarm_api.validation import (
+    FIX_LOOP_PROFILE,
     INPUT_LAYOUT_BY_PARENT,
     MERGE_POLICIES,
     REREVIEW_PREAMBLE,
     REREVIEW_ROUNDS,
 )
+from swarm_common.profiles import RUNNER_PROFILES
 
 from .conftest import auth_header
 
 REPO = "https://github.com/octo-org/widget-shop.git"
 REVIEW_PROMPT = "review; write verdict.json"
+
+
+@pytest.fixture(autouse=True)
+def _fix_loop_off(monkeypatch):
+    """`fix-loop` unavailable, as it shipped until contract request 151, so
+    "on_merge_verdict" appends the re-review these tests hold."""
+    monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
+                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=False,
+                                disabled_reason="fix-loop is not available (patched off for this test)"))
 
 
 def _review_shape(**overrides) -> dict:
