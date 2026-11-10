@@ -97,6 +97,9 @@ IMAGES = [
     # apps/plugin-intake/Dockerfile: plugins.tf plans the job only once
     # image_refs carries this digest.
     "swarm-plugin-intake",
+    # The bundle builds' image (managed plugins lane 14),
+    # images/plugin-bundler/Dockerfile.
+    "swarm-plugin-bundler",
     "workspace-apply",
 ]
 

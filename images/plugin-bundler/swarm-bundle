@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""swarm-bundle: the bundled plugins' pins and their .swarm-bundle.json.
+
+docs/design/managed-plugins.md, section 1.4. gstack and security-audit are
+managed plugins whose versions are BUILT into an image version rather than
+unpacked per attempt, so every image that carries them carries, per plugin,
+/opt/swarm/plugins/<name>/.swarm-bundle.json: the install id, the version, the
+source archive's object, sha256 and commit, the recipe digest and the sha256
+of the built tree. The worker (lane 19) and the security review hold a signed
+entry against that file before a step runs, so the two digests below are a
+format other code compares byte for byte. Stdlib only: this runs in the
+agent-runtime-base build stages and in the bundler image alike.
+
+  pin     print one value of one plugin's pins (`source.sha256`), after the
+          WHOLE pins file passed the checks below, so a recipe never reads a
+          value from a file that is wrong anywhere
+  digest  print the sha256 of a built tree (or of several trees laid over each
+          other, as the browser image lays its list over the base's)
+  write   write the manifest
+
+The pins file is images/agent-runtime-base/bundled-plugins.json in a release
+build (the one place a release's default pins are written) and a file of the
+same shape in a deployment's bundle build. Every value a recipe passes to a
+shell or a path is checked here against a closed pattern first: an upstream
+pin chosen in the console reaches this file, and nothing in it may name a path
+outside the mirror or carry a shell metacharacter.
+
+The tree digest. One line per entry below the root, sorted by path:
+
+    d <mode> <path>/
+    f <mode> <sha256 of the content> <path>
+
+mode is the four-digit octal permission (owner is not part of it: COPY writes
+root). The root's own .swarm-bundle.json is left out, so the manifest can name
+the tree it sits in. A symlink, device or fifo is refused: the staged trees
+hold none today (gstack-layers stage and the security-audit recipe both refuse
+them), and a digest that followed one would hash bytes outside the tree.
+
+The recipe digest. One line per named input, sorted by name,
+`<sha256 of the content>  <name>`; the recipe names its own inputs (its build
+script, and for gstack the layers tool, the closure walker and both lists),
+by a name that does not depend on where the file sits, so the base image's
+build stage and the bundler image compute the same digest from the same bytes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+MANIFEST_NAME = ".swarm-bundle.json"
+SCHEMA = 1
+PLUGIN_ROOT = "/opt/swarm/plugins"
+
+NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+# A mirror object: host and path, as tool-mirror.sha256 writes them.
+OBJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+$")
+INPUT_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+
+PLUGIN_KEYS = {"install_id", "install_path", "version", "source", "toolchain"}
+SOURCE_KEYS = {"object", "sha256", "commit"}
+TOOL_KEYS = {"version", "object", "sha256"}
+
+
+class PinsError(ValueError):
+    """The pins file is not one this tool will build from."""
+
+
+def _object(value: object, where: str) -> str:
+    if not isinstance(value, str) or not OBJECT.match(value):
+        raise PinsError(f"{where} is not a mirror object path")
+    if any(part in (".", "..") for part in value.split("/")):
+        raise PinsError(f"{where} leaves the mirror")
+    return value
+
+
+def _match(pattern: re.Pattern[str], value: object, where: str, what: str) -> str:
+    if not isinstance(value, str) or not pattern.match(value):
+        raise PinsError(f"{where} is not {what}")
+    return value
+
+
+def _keys(value: object, allowed: set[str], required: set[str], where: str) -> dict:
+    if not isinstance(value, dict):
+        raise PinsError(f"{where} is not an object")
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise PinsError(f"{where} has unknown keys {unknown}")
+    missing = sorted(required - set(value))
+    if missing:
+        raise PinsError(f"{where} lacks {missing}")
+    return value
+
+
+def check_plugin(name: str, pins: object) -> dict:
+    """One plugin's pins, checked; the same dict back."""
+    where = f"plugins.{name}"
+    if not NAME.match(name):
+        raise PinsError(f"{where}: the name is not a plugin name")
+    entry = _keys(pins, PLUGIN_KEYS, PLUGIN_KEYS - {"toolchain"}, where)
+    # The two bundled installs have reserved ids (section 1.4.1), and the path
+    # is fixed because gstack's compiled `browse` embeds it and the security
+    # review reads security-audit's validators from it (section 1.4.6).
+    if entry["install_id"] != f"builtin:{name}":
+        raise PinsError(f"{where}.install_id is not builtin:{name}")
+    if entry["install_path"] != f"{PLUGIN_ROOT}/{name}":
+        raise PinsError(f"{where}.install_path is not {PLUGIN_ROOT}/{name}")
+    _match(VERSION, entry["version"], f"{where}.version", "a version")
+    source = _keys(entry["source"], SOURCE_KEYS, SOURCE_KEYS, f"{where}.source")
+    _object(source["object"], f"{where}.source.object")
+    _match(SHA256, source["sha256"], f"{where}.source.sha256", "a lowercase sha256")
+    _match(COMMIT, source["commit"], f"{where}.source.commit", "a 40-hex commit")
+    toolchain = entry.get("toolchain", {})
+    if not isinstance(toolchain, dict):
+        raise PinsError(f"{where}.toolchain is not an object")
+    for tool, tool_pins in toolchain.items():
+        at = f"{where}.toolchain.{tool}"
+        if not isinstance(tool, str) or not NAME.match(tool):
+            raise PinsError(f"{at}: the name is not a tool name")
+        _keys(tool_pins, TOOL_KEYS, TOOL_KEYS, at)
+        _match(VERSION, tool_pins["version"], f"{at}.version", "a version")
+        _object(tool_pins["object"], f"{at}.object")
+        _match(SHA256, tool_pins["sha256"], f"{at}.sha256", "a lowercase sha256")
+    return entry
+
+
+def load_pins(path: Path) -> dict[str, dict]:
+    """Every plugin's pins from `path`, all checked, or PinsError."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PinsError(f"{path} is not readable JSON ({exc.__class__.__name__})") from None
+    doc = _keys(data, {"schema", "plugins"}, {"schema", "plugins"}, "the pins file")
+    if doc["schema"] != SCHEMA:
+        raise PinsError(f"the pins file's schema is not {SCHEMA}")
+    plugins = doc["plugins"]
+    if not isinstance(plugins, dict) or not plugins:
+        raise PinsError("the pins file names no plugin")
+    return {name: check_plugin(name, pins) for name, pins in plugins.items()}
+
+
+def plugin_pins(path: Path, name: str) -> dict:
+    pins = load_pins(path)
+    if name not in pins:
+        raise PinsError(f"the pins file has no plugin {name}")
+    return pins[name]
+
+
+def pin_value(pins: dict, key: str) -> str:
+    value: object = pins
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            raise PinsError(f"no pin {key}")
+        value = value[part]
+    if not isinstance(value, str):
+        raise PinsError(f"{key} is not one value")
+    return value
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def tree_entries(roots: list[Path]) -> dict[str, tuple[str, str, str]]:
+    """path -> (kind, mode, sha256) over `roots` laid over each other."""
+    entries: dict[str, tuple[str, str, str]] = {}
+    for root in roots:
+        if root.is_symlink() or not root.is_dir():
+            raise SystemExit(f"swarm-bundle: {root} is not a folder")
+        for folder, dirs, files in os.walk(root):
+            dirs.sort()
+            for name in sorted(dirs + files):
+                path = Path(folder) / name
+                rel = path.relative_to(root).as_posix()
+                if rel == MANIFEST_NAME:
+                    continue
+                if "\n" in rel or "\r" in rel:
+                    raise SystemExit(f"swarm-bundle: {rel!r} has a line break in its name")
+                info = os.lstat(path)
+                mode = f"{stat.S_IMODE(info.st_mode):04o}"
+                if stat.S_ISDIR(info.st_mode):
+                    entry = ("d", mode, "")
+                elif stat.S_ISREG(info.st_mode):
+                    entry = ("f", mode, _file_sha256(path))
+                else:
+                    raise SystemExit(f"swarm-bundle: {rel} is not a regular file or a folder")
+                seen = entries.get(rel)
+                if seen is not None and (seen[0] == "f" or entry[0] == "f"):
+                    raise SystemExit(f"swarm-bundle: {rel} is in more than one tree")
+                if seen is not None and seen != entry:
+                    raise SystemExit(f"swarm-bundle: {rel} has two modes")
+                entries[rel] = entry
+    return entries
+
+
+def tree_digest(roots: list[Path]) -> tuple[str, int, int]:
+    """(sha256, files, folders) of the trees, as the module docstring defines it."""
+    digest = hashlib.sha256()
+    files = folders = 0
+    entries = tree_entries(roots)
+    for rel in sorted(entries):
+        kind, mode, sha = entries[rel]
+        if kind == "d":
+            folders += 1
+            digest.update(f"d {mode} {rel}/\n".encode())
+        else:
+            files += 1
+            digest.update(f"f {mode} {sha} {rel}\n".encode())
+    return digest.hexdigest(), files, folders
+
+
+def recipe_digest(inputs: dict[str, Path]) -> tuple[str, dict[str, str]]:
+    """(sha256, name -> content sha256) of the recipe's named inputs."""
+    if not inputs:
+        raise SystemExit("swarm-bundle: a recipe names at least its own build script")
+    shas = {name: _file_sha256(path) for name, path in inputs.items()}
+    lines = "".join(f"{shas[name]}  {name}\n" for name in sorted(shas))
+    return hashlib.sha256(lines.encode()).hexdigest(), shas
+
+
+def manifest(name: str, pins: dict, roots: list[Path], inputs: dict[str, Path]) -> dict:
+    tree_sha, files, folders = tree_digest(roots)
+    recipe_sha, input_shas = recipe_digest(inputs)
+    doc = {
+        "schema": SCHEMA,
+        "plugin": name,
+        "install_id": pins["install_id"],
+        "install_path": pins["install_path"],
+        "version": pins["version"],
+        "source": dict(pins["source"]),
+        "recipe": {"digest": recipe_sha, "inputs": input_shas},
+        "tree": {"sha256": tree_sha, "files": files, "folders": folders},
+    }
+    if pins.get("toolchain"):
+        doc["toolchain"] = {tool: dict(value) for tool, value in pins["toolchain"].items()}
+    return doc
+
+
+def _inputs(pairs: list[str]) -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    for pair in pairs:
+        name, sep, path = pair.partition("=")
+        if not sep or not INPUT_NAME.match(name) or not path:
+            raise SystemExit(f"swarm-bundle: --input {pair!r} is not NAME=PATH")
+        if name in out:
+            raise SystemExit(f"swarm-bundle: --input {name} is named twice")
+        if not Path(path).is_file():
+            raise SystemExit(f"swarm-bundle: --input {name}: {path} is not a file")
+        out[name] = Path(path)
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="swarm-bundle", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    pin = sub.add_parser("pin", help="print one checked pin")
+    pin.add_argument("--pins", type=Path, required=True)
+    pin.add_argument("--plugin", required=True)
+    pin.add_argument("key", help="a dotted key, e.g. source.sha256 or toolchain.bun.version")
+    dig = sub.add_parser("digest", help="print a tree's sha256")
+    dig.add_argument("--tree", type=Path, action="append", required=True)
+    write = sub.add_parser("write", help="write .swarm-bundle.json")
+    write.add_argument("--pins", type=Path, required=True)
+    write.add_argument("--plugin", required=True)
+    write.add_argument("--tree", type=Path, action="append", required=True,
+                       help="the built tree; given twice, the second is laid over the first")
+    write.add_argument("--input", action="append", default=[], help="NAME=PATH, a recipe input")
+    write.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "pin":
+            print(pin_value(plugin_pins(args.pins, args.plugin), args.key))
+        elif args.command == "digest":
+            print(tree_digest(args.tree)[0])
+        else:
+            pins = plugin_pins(args.pins, args.plugin)
+            doc = manifest(args.plugin, pins, args.tree, _inputs(args.input))
+            args.out.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+            os.chmod(args.out, 0o644)
+            print(f"swarm-bundle: {args.plugin} {doc['version']} tree {doc['tree']['sha256']} "
+                  f"recipe {doc['recipe']['digest']}")
+    except PinsError as exc:
+        print(f"swarm-bundle: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

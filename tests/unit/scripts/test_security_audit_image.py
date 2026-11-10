@@ -8,11 +8,15 @@ profile, no new image, nothing installed at runtime
 holds the image to it:
 
   * the commit's source archive is a row of
-    images/agent-runtime-base/tool-mirror.sha256, and the base Dockerfile's
-    ARGs, the row and both catalogues name the same commit;
-  * the security-audit-build stage reads the archive only from the tool
-    mirror, checks its sha256 and the commit in its pax header, and stages
-    ONLY skills/security-audit/ and LICENSE, read-only;
+    images/agent-runtime-base/tool-mirror.sha256, and bundled-plugins.json
+    (the one place a release's default pins are written,
+    docs/design/managed-plugins.md section 1.4.1), the row and both catalogues
+    name the same commit; no Dockerfile restates it;
+  * the security-audit-build stage runs the bundler's security-audit recipe
+    at those pins, which reads the archive only from the tool mirror, checks
+    its sha256 and the commit in its pax header, stages ONLY
+    skills/security-audit/ and LICENSE, read-only, and runs the skill's
+    validator tests on the staged copy;
   * the runtime copies that to the catalogue's install path, root-owned;
   * the skill's own two validator test files pass under node on the pinned
     archive, so a bump that breaks them goes red here.
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -38,6 +43,8 @@ BASE_DIR = REPO / "images" / "agent-runtime-base"
 BASE_DOCKERFILE = BASE_DIR / "Dockerfile"
 MANIFEST = BASE_DIR / "tool-mirror.sha256"
 STAGED_MIRROR = REPO / "build" / "tool-mirror"
+PINS = BASE_DIR / "bundled-plugins.json"
+RECIPE = REPO / "images" / "plugin-bundler" / "recipes" / "security-audit" / "build"
 
 COMMIT = "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
 ROW = (
@@ -80,15 +87,6 @@ def _stages(path: Path) -> dict[str, list[str]]:
     return stages
 
 
-def _args(lines: list[str]) -> dict[str, str]:
-    args: dict[str, str] = {}
-    for line in lines:
-        m = re.match(r"ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line)
-        if m:
-            args[m.group(1)] = m.group(2)
-    return args
-
-
 def _manifest_rows() -> set[tuple[str, str]]:
     rows = set()
     for line in MANIFEST.read_text().splitlines():
@@ -107,63 +105,101 @@ def test_the_mirror_lists_the_skills_archive_at_its_commit() -> None:
     assert ROW in _manifest_rows(), f"{MANIFEST.name} has no row {ROW}"
 
 
-def test_the_build_stage_args_equal_the_mirror_row_and_the_catalogues() -> None:
+def _pins() -> dict:
+    return json.loads(PINS.read_text())["plugins"]["security-audit"]
+
+
+def test_the_bundled_pins_equal_the_mirror_row_and_the_catalogues() -> None:
     from agent_worker import plugins
     from swarm_api import plugincatalogue
 
-    args = _args(_stages(BASE_DOCKERFILE)["security-audit-build"])
+    pins = _pins()
+    source = pins["source"]
     rows = {obj: sha for sha, obj in _manifest_rows()}
-    obj = f"github.com/cloudflare/security-audit-skill/archive/{args['SECURITY_AUDIT_COMMIT']}.tar.gz"
-    # MUTATION: bump the ARG and forget the row, or the reverse.
-    assert rows.get(obj) == args["SECURITY_AUDIT_SHA256"]
-    assert args["SECURITY_AUDIT_COMMIT"] == COMMIT
+    assert source["object"] == f"github.com/cloudflare/security-audit-skill/archive/{source['commit']}.tar.gz"
+    # MUTATION: bump the pin and forget the row, or the reverse.
+    assert rows.get(source["object"]) == source["sha256"]
+    assert source["commit"] == pins["version"] == COMMIT
+    assert (pins["install_id"], pins["install_path"]) == ("builtin:security-audit", PLUGIN_ROOT)
     for catalogue in (plugincatalogue.CATALOGUE, plugins.CATALOGUE):
         entry = catalogue["security-audit"]
         assert (entry.version, entry.install_path, entry.skill_folders) == (
             COMMIT, PLUGIN_ROOT, "skills")
 
 
+def test_no_dockerfile_restates_the_pin() -> None:
+    code = "\n".join(_code_lines(BASE_DOCKERFILE.read_text()))
+    # MUTATION: put ARG SECURITY_AUDIT_COMMIT back; two places then hold a pin.
+    assert "ARG SECURITY_AUDIT_" not in code
+    assert COMMIT not in code and ROW[0] not in code
+
+
 # --------------------------------------------------------------------------- #
-# The build stage and the runtime copy.
+# The build stage, the recipe it runs, and the runtime copy.
 # --------------------------------------------------------------------------- #
 
 
 def _stage_run() -> str:
     stage = _stages(BASE_DOCKERFILE)["security-audit-build"]
-    runs = [line for line in stage if "/tmp/tool-mirror/" in line]
+    runs = [line for line in stage if "/tmp/tool-mirror" in line]
     assert len(runs) == 1, runs
     return runs[0]
 
 
-def test_the_build_stage_reads_only_the_mirror_and_checks_the_archive() -> None:
+def _recipe_code() -> str:
+    return "\n".join(_code_lines(RECIPE.read_text()))
+
+
+def test_the_build_stage_runs_the_recipe_at_the_bundled_pin_with_node() -> None:
     stage = _stages(BASE_DOCKERFILE)["security-audit-build"]
     run = _stage_run()
     assert run.startswith("RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror")
-    assert ('"file:///tmp/tool-mirror/github.com/cloudflare/security-audit-skill/archive/'
-            '${SECURITY_AUDIT_COMMIT}.tar.gz"') in run
-    # MUTATION: drop either check and a different archive is baked in.
-    assert 'echo "${SECURITY_AUDIT_SHA256}  /tmp/security-audit.tar.gz" | sha256sum -c -' in run
-    assert ('test "$(gzip -dc /tmp/security-audit.tar.gz | git get-tar-commit-id)" = '
-            '"${SECURITY_AUDIT_COMMIT}"') in run
-    assert run.index("sha256sum -c") < run.index("tar -xzf")
-    assert run.index("git get-tar-commit-id") < run.index("tar -xzf")
+    assert "--mount=type=bind,source=images/plugin-bundler,target=/tmp/plugin-bundler" in run
+    assert ("--mount=type=bind,source=images/agent-runtime-base/bundled-plugins.json,"
+            "target=/tmp/bundled-plugins.json") in run
+    assert ("/tmp/plugin-bundler/recipes/security-audit/build --pins /tmp/bundled-plugins.json "
+            "--mirror /tmp/tool-mirror") in run
+    # MUTATION: drop the validator run from the release build.
+    assert "--validate-with /usr/local/bin/node --out /out/security-audit" in run
+    assert "COPY --from=nodebin /usr/local/bin/node /usr/local/bin/node" in stage
     # The Dockerfiles may not fetch from GitHub directly.
     for line in stage:
         assert "https://" not in line and "http://" not in line, line
 
 
-def test_the_build_stage_stages_only_the_skill_folder_and_the_licence_read_only() -> None:
-    run = _stage_run()
-    copies = re.findall(r"\bcp\s+(?:-R\s+)?(\S+)\s+(\S+)", run)
+def test_the_recipe_reads_only_the_mirror_and_checks_the_archive() -> None:
+    code = _recipe_code()
+    assert code.splitlines()[0] == "set -euo pipefail"
+    for var, key in (("SECURITY_AUDIT_OBJECT", "source.object"), ("SECURITY_AUDIT_SHA256", "source.sha256"),
+                     ("SECURITY_AUDIT_COMMIT", "source.commit")):
+        assert f'{var}="$(pin {key})"' in code, var
+    assert '"file://${mirror}/${SECURITY_AUDIT_OBJECT}"' in code
+    # MUTATION: drop either check and a different archive is baked in.
+    assert 'echo "${SECURITY_AUDIT_SHA256}  ${archive}" | sha256sum -c -' in code
+    assert 'test "$(gzip -dc "${archive}" | git get-tar-commit-id)" = "${SECURITY_AUDIT_COMMIT}"' in code
+    assert code.index("sha256sum -c") < code.index("tar -xzf")
+    assert code.index("git get-tar-commit-id") < code.index("tar -xzf")
+    assert "https://" not in code and "http://" not in code
+
+
+def test_the_recipe_stages_only_the_skill_folder_and_the_licence_read_only() -> None:
+    code = _recipe_code()
+    copies = re.findall(r"\bcp\s+(?:-R\s+)?(\S+)\s+(\S+)", code)
     # MUTATION: copy the whole archive (README.md, anything a bump adds).
-    assert copies == [
-        ('"${scratch}/skills/security-audit"', "/out/security-audit/skills/security-audit"),
-        ('"${scratch}/LICENSE"', "/out/security-audit/LICENSE"),
+    assert copies[:2] == [
+        ('"${scratch}/src/skills/security-audit"', '"${out}/skills/security-audit"'),
+        ('"${scratch}/src/LICENSE"', '"${out}/LICENSE"'),
     ]
-    assert "find /out/security-audit -type d -exec chmod 0755 {} +" in run
-    assert "find /out/security-audit -type f -exec chmod 0644 {} +" in run
+    # The one other copy is the validators' scratch copy, outside the tree.
+    assert copies[2:] == [('"${out}/skills/security-audit"', '"${scratch}/validate"')]
+    assert 'find "${out}" -type d -exec chmod 0755 {} +' in code
+    assert 'find "${out}" -type f -exec chmod 0644 {} +' in code
     # No symlink, device or fifo reaches the image.
-    assert 'test -z "$(find /out/security-audit ! -type f ! -type d)"' in run
+    assert 'test -z "$(find "${out}" ! -type f ! -type d)"' in code
+    # The validators run before the manifest is written, on the copy.
+    assert ('"${node}" --test validate-findings.test.cjs validate-coverage-ledger.test.cjs' in code)
+    assert code.index("--test validate-findings") < code.index('"${bundle}" write')
+    assert '--out "${out}/.swarm-bundle.json"' in code
 
 
 def test_the_base_image_ships_it_at_the_catalogues_path_root_owned() -> None:
