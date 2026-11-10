@@ -17,9 +17,6 @@
 // `held` guard on the Browser tab in AgentSplit; render `HeldQuestionsCard`
 // nowhere; answer on the merge task instead of the asking one.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +24,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRun, TaskQuestions } from '../api'
 import type { Result } from '../fetch'
 import type { Task, Waiting } from '../types'
+import { cascade, splitTop, type CascadeEnv } from './cssgate'
 import { at, ev, task as runTask } from './runfixture'
+import { ALL_CSS } from './sheets'
 
 const api = vi.hoisted(() => ({
   loadTask: vi.fn(),
@@ -342,9 +341,103 @@ describe('the questions are drawn inline, with the answer control', () => {
     expect(held.textContent).toContain('a ready from a member lets the merge go on past it.')
     const about = within(held).getByRole('button', { name: 'About going on past entries the merge cannot read' })
     expect(about.closest('.c-tip-host')?.querySelector('[role="tooltip"]')?.textContent).toContain('A newer review or a new head')
-    // MUTATION: drop the end-aligned rule and the tip opens rightwards, past
-    // the inspector's clipped right edge, where it cannot be read.
-    expect(readFileSync(join(__dirname, '..', 'styles', 'details.css'), 'utf8')).toMatch(/\.qc-unreadable \.c-tip \{ left: auto; right: 0; \}/)
+    // The status line agrees with the ready: no answer resumes it on its own.
+    // MUTATION: keep "the last answer resumes it on its own" for every hold.
+    const status = within(held).getByRole('status')
+    expect(status.textContent).not.toContain('resumes it on its own')
+    expect(status.textContent).not.toContain('no Ready')
+    const readable = within(card).getByRole('status')
+    expect(readable.textContent).toContain('the last answer resumes it on its own')
+  })
+
+  // THE (i)'S TIP STAYS INSIDE THE INSPECTOR WHEREVER THE SENTENCE WRAPS IT
+  // (re-review, 10 November 2026). The inspector (.drawer.ag-split) clips
+  // sideways, and a tip pinned right of its icon lost 160 of its 240px past
+  // the inspector's LEFT edge at 1440x900, because the sentence wrapped the (i)
+  // to the start of a line. A check that the CSS rule exists passed meanwhile.
+  //
+  // jsdom lays nothing out, so the boxes below are the ones the shipped page
+  // measured in Chromium on the agent page (fixture merge park, 2 unreadable
+  // entries): the inspector and the sentence. What is NOT assumed is how the
+  // tip hangs: the element it is positioned from, its left/right and its
+  // max-width come from the cascade of the shipped sheets over the rendered
+  // card, at that width. The tip's box is then laid out as a browser does an
+  // absolutely positioned box, with the (i) at either end of a line.
+  // MUTATIONS: `.qc-unreadable .c-tip { left: auto; right: 0 }` alone (out at
+  // the left), no rule at all (out at the right), the host left positioned.
+  describe('the tip behind the (i)', () => {
+    const GEOMETRY = [
+      { name: 'desktop 1440x900', width: 1440, height: 900, inspector: { left: 1061, right: 1393 }, sentence: { left: 1078, right: 1363 } },
+      { name: 'phone 390x844', width: 390, height: 844, inspector: { left: 8, right: 382 }, sentence: { left: 25, right: 367 } },
+    ]
+    const ICON = 28
+
+    function value(el: Element, prop: string, env: CascadeEnv): string | null {
+      const r = cascade(ALL_CSS, el, prop, env)
+      expect(r.unsupported).toEqual([])
+      return r.winner?.value ?? null
+    }
+
+    /** A length the tip's rules use: px, a percentage of the containing block, or min() of those. */
+    function length(v: string, of: number): number {
+      const min = /^min\((.*)\)$/.exec(v)
+      if (min) return Math.min(...splitTop(min[1]).map((part) => length(part.trim(), of)))
+      const px = /^(-?[\d.]+)px$/.exec(v)
+      if (px) return Number(px[1])
+      const pct = /^(-?[\d.]+)%$/.exec(v)
+      if (pct) return (Number(pct[1]) / 100) * of
+      if (v === '0') return 0
+      throw new Error(`a length this test does not read: ${v}`)
+    }
+
+    for (const g of GEOMETRY) {
+      it(`opens fully inside the inspector at ${g.name}, with the (i) at either end of a line`, async () => {
+        const blocked = [
+          {
+            reason: 'HUMAN_REQUIRED',
+            park_phase: 'owner_questions',
+            owner_questions: { code: 'owner_questions_open', questions: HELD.slice(0, 1), unreadable: 2 },
+          } as unknown as NonNullable<Task['blocked_by']>[number],
+        ]
+        const c = await draw(mergeHeld({ id: 'task_unreadable0000000002', blocked_by: blocked }))
+        const block = c.querySelector<HTMLElement>('.qc-unreadable')!
+        const about = within(block).getByRole('button', { name: 'About going on past entries the merge cannot read' })
+        const tip = about.closest('.c-tip-host')!.querySelector<HTMLElement>('[role="tooltip"]')!
+        const env: CascadeEnv = { width: g.width, height: g.height, states: ['hover', 'focus-visible'] }
+
+        // The containing block: the nearest ancestor the cascade positions.
+        let from: Element | null = tip.parentElement
+        while (from !== null && (value(from, 'position', env) ?? 'static') === 'static') from = from.parentElement
+        expect(from, 'the tip is positioned from nothing the card draws').not.toBeNull()
+        expect(value(tip, 'position', env)).toBe('absolute')
+        const left = value(tip, 'left', env) ?? 'auto'
+        const right = value(tip, 'right', env) ?? 'auto'
+        const maxWidth = value(tip, 'max-width', env) ?? 'none'
+
+        for (const at of ['start', 'end'] as const) {
+          const icon =
+            at === 'start'
+              ? { left: g.sentence.left, right: g.sentence.left + ICON }
+              : { left: g.sentence.right - ICON, right: g.sentence.right }
+          // The host wraps the icon alone; the sentence and its block span the line.
+          const cb = from!.classList.contains('c-tip-host') ? icon : g.sentence
+          expect(
+            from === about.closest('.c-tip-host') || from === block || from === block.querySelector(':scope > p'),
+            `the tip hangs from <${from!.tagName.toLowerCase()} class="${from!.className}">, which this test has no box for`,
+          ).toBe(true)
+          const cbWidth = cb.right - cb.left
+          // The tip's text is far longer than one line, so it is as wide as it may be.
+          expect(maxWidth, 'an unbounded tip is as wide as its text').not.toBe('none')
+          const w = length(maxWidth, cbWidth)
+          const x = left !== 'auto' ? cb.left + length(left, cbWidth) : right !== 'auto' ? cb.right - length(right, cbWidth) - w : icon.left
+          const box = { left: Math.round(x), right: Math.round(x + w) }
+          expect(box.left, `${g.name}, (i) at the ${at} of a line: tip ${box.left}..${box.right}, inspector ${g.inspector.left}..${g.inspector.right}`).toBeGreaterThanOrEqual(g.inspector.left)
+          expect(box.right, `${g.name}, (i) at the ${at} of a line: tip ${box.left}..${box.right}, inspector ${g.inspector.left}..${g.inspector.right}`).toBeLessThanOrEqual(g.inspector.right)
+          // Wide enough to read: the full 240px wherever the sentence allows it.
+          expect(w).toBe(Math.min(240, cbWidth))
+        }
+      })
+    }
   })
 
   it("keeps the agent page's held-questions id, and takes a page's own id for each mount", async () => {
