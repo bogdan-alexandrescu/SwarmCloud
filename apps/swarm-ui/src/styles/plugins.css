@@ -60,7 +60,7 @@
 .plg-card { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
 .plg-card:hover { border-color: var(--ctl-bd); }
 .plg-card.is-off .plg-card-top, .plg-card.is-off .plg-card-mid { opacity: .62; }
-.plg-card-top { display: flex; align-items: center; gap: 10px; padding: 14px 14px 6px; color: inherit; background: none; border: 0; border-radius: var(--r-card) var(--r-card) 0 0; text-align: left; font: inherit; cursor: pointer; min-width: 0; width: 100%; }
+.plg-card-top { display: flex; align-items: center; gap: 10px; padding: 14px 14px 6px; color: inherit; background: none; border: 0; border-radius: var(--r-card) var(--r-card) 0 0; text-align: left; font: inherit; text-decoration: none; cursor: pointer; min-width: 0; width: 100%; }
 .plg-card-top:hover b { text-decoration: underline; }
 .plg-card-top:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 .plg-card-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }

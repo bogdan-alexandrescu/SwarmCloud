@@ -1982,6 +1982,7 @@ export const HELP_PLACES = {
   'admin/runner-sizes': 'Runner sizes',
   'admin/platform-secrets': 'Platform secrets',
   'admin/workspaces': 'Workspaces',
+  'admin/plugins': 'Plugins',
   'config/github': 'GitHub access',
   'config/repositories': 'Repositories',
   'config/secrets': 'Secrets',
@@ -2547,6 +2548,8 @@ export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'admin/counts': 'platform-counts',
   'admin/platform-secrets': 'platform-secrets',
   'admin/workspaces': 'workspaces-you-admin',
+  // Admin › Plugins says Config › Plugins' topic: one plugin, allowed per workspace.
+  'admin/plugins': 'agent-plugins',
 }
 
 /** The page's own topic, or null when its `?` is the section's alone. */

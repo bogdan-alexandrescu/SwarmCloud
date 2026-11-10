@@ -195,6 +195,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // status only, a platform admin's alone, so under Platform and never in
     // a workspace admin's `adminPagesFor`.
     { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
+    // MANAGED PLUGINS (part of #2688): the platform catalogue, a platform
+    // admin's alone, so under Platform and never in `adminPagesFor`'s
+    // workspace admin list (WORKSPACE_ADMIN_PAGE_KEYS).
+    { key: 'plugins', label: 'Plugins', icon: 'runtimes', to: 'admin/plugins' },
     // DAYONE-SETUP-UI-3 (part of #2688; day-one-plan §5.2): Setup and its
     // Health page, a platform admin's alone, so never in a workspace admin's
     // `adminPagesFor` and under Platform in the panel.

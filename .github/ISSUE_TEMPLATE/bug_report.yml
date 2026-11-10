@@ -97,6 +97,7 @@ body:
         - "Web UI · Admin › Tenants (/admin/tenants)"
         - "Web UI · Admin › Platform counts (/admin/counts)"
         - "Web UI · Admin › Platform secrets (/admin/platform-secrets)"
+        - "Web UI · Admin › Plugins (/admin/plugins)"
         - "Web UI · Admin › Setup (/admin/setup)"
         - "Web UI · Admin › Health (/admin/setup/health)"
         - "Web UI · Admin › Platform people (/admin/people)"

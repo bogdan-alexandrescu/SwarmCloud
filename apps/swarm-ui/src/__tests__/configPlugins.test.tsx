@@ -19,7 +19,7 @@
 // Fixtures only; no network. Every token-shaped value is built at runtime.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
 
 type Json = Record<string, unknown>
@@ -155,10 +155,20 @@ async function load() {
   return import('../ConfigPlugins')
 }
 
-async function openSettings(name = 'docs-helper') {
-  fireEvent.click(await screen.findByRole('button', { name: `Open ${name}` }))
-  fireEvent.click(screen.getByRole('tab', { name: 'Settings' }))
-  return screen.findByRole('list', { name: `${name}'s settings` })
+/**
+ * A card's plugin page, as its link opens it: the card links
+ * `/config/plugins/<install_id>`, App's `WorkspacePluginRoute`, and that
+ * page's Settings tab is the editable form.
+ */
+async function openSettings(name = 'docs-helper', installId = OWN_ID) {
+  const card = await screen.findByRole('link', { name: `Open ${name}` })
+  // MUTATION: open the screen's own page from the card again -> no link, and this fails.
+  expect(card.getAttribute('href')).toBe(`/config/plugins/${installId}`)
+  cleanup()
+  const { WorkspacePluginRoute } = await import('../App')
+  render(<WorkspacePluginRoute installId={installId} />)
+  fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }))
+  return screen.findByRole('list', { name: `${name}'s settings` }, { timeout: 5000 })
 }
 
 function row(form: HTMLElement, title: string): HTMLElement {
@@ -177,7 +187,10 @@ describe('Config › Plugins: the catalogue', () => {
     render(<ConfigPluginsScreen />)
     const grid = await screen.findByRole('list', { name: 'The plugin catalogue' })
     const cards = within(grid).getAllByRole('listitem')
-    expect(cards.map((c) => within(c).getByRole('button', { name: /^Open / }).getAttribute('aria-label'))).toEqual(['Open gstack', 'Open lint-kit', 'Open docs-helper'])
+    // A built-in opens this screen's Overview; an install's card links its routed page.
+    // MUTATION: draw every card a button again -> lint-kit and docs-helper have no link and this fails.
+    expect(within(cards[0]!).getByRole('button', { name: 'Open gstack' })).toBeTruthy()
+    expect(cards.slice(1).map((c) => within(c).getByRole('link', { name: /^Open / }).getAttribute('href'))).toEqual([`/config/plugins/${PLATFORM_ID}`, `/config/plugins/${OWN_ID}`])
     expect(visible(cards[0]!)).toMatch(/gstack\s*1\.92\.55\.0\s*Built in/)
     expect(visible(cards[1]!)).toMatch(/lint-kit\s*2\.4\.0\s*Platform/)
     expect(visible(cards[1]!)).toContain('example-org/lint-kit')
@@ -211,7 +224,7 @@ describe('Config › Plugins: the catalogue', () => {
     expect(seen[0]).toEqual({ m: 'PUT', url: `${BASE}/plugins`, body: { allowed: ['gstack', PLATFORM_ID].sort() } })
     await screen.findByText('Saved and signed')
     // The id names one install, so the list allows its pinned copy: the card says which.
-    const card = screen.getByRole('button', { name: 'Open lint-kit' }).closest('li')!
+    const card = screen.getByRole('link', { name: 'Open lint-kit' }).closest('li')!
     expect(visible(card)).toMatch(/lint-kit\s*2\.4\.0/)
     expect((within(card).getByRole('switch', { name: 'lint-kit: allowed in this workspace' }) as HTMLInputElement).checked).toBe(true)
   })
