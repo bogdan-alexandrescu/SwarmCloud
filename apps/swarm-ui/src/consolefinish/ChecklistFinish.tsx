@@ -30,7 +30,7 @@
  * takes is the route's `typical_s`, and without it the page says so rather
  * than guess.
  */
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CapacityCard,
   ConsoleChecks,
@@ -106,6 +106,8 @@ export interface Line {
   optional?: boolean
   /** A platform admin skipped it (`console/plugins_step`). */
   skipped?: boolean
+  /** Add one anyway was just pressed: the line is highlighted once (`useUndoneFlash`). */
+  undone?: boolean
 }
 
 /** The optional plugin line, last, from `steps.plugins`: done once a person added one, else to do (skipped is a to do they declined). */
@@ -432,7 +434,7 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
         {ls.map((l, i) => {
           const others = l.waits.filter((w) => w.who === 'teammate' || w.who === 'google')
           return (
-            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}${l.optional === true ? ' is-optional' : ''}${l.skipped === true ? ' is-skipped' : ''}`}>
+            <li key={l.key} data-step={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}${l.optional === true ? ' is-optional' : ''}${l.skipped === true ? ' is-skipped' : ''}${l.undone === true ? ' is-undone' : ''}`}>
               <button type="button" className="cfc-pick" aria-current={l.key === selected ? 'step' : undefined} onClick={() => onPick(l.key)}>
                 <StepMark state={l.state} />
                 <span className="cfc-item-main">
@@ -462,7 +464,11 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
                   )}
                 </span>
               </button>
-              {l.optional === true && <About label={l.name} tip={PLUGINS_TIP} />}
+              {l.optional === true && (
+                <span className="cfc-item-about">
+                  <About label={l.name} tip={PLUGINS_TIP} />
+                </span>
+              )}
               {others.length > 0 && (
                 <ul className="cfc-subs" aria-label={`${l.name}: waiting on others`}>
                   {others.map((w, j) => (
@@ -648,7 +654,7 @@ function PanelHead({ kicker, tip, line, children }: { kicker: string; tip?: stri
   return (
     <header className="cfc-panel-head">
       <p className="cfc-kicker">{tip === undefined ? kicker : <Explained tip={tip}>{kicker}</Explained>}</p>
-      <h2 className={`cfc-panel-h is-${line.state}`}>
+      <h2 className={`cfc-panel-h is-${line.state}${line.skipped === true ? ' is-skipped' : ''}`}>
         <StepMark state={line.state} />
         {line.name}
       </h2>
@@ -753,6 +759,28 @@ function ThisInstall({ state }: { state: SetupState }) {
 /** The width at which the panel stacks above the list (console-finish.css's `@media (max-width: 900px)`). */
 const NARROW = '(max-width: 900px)'
 
+/** How long the plugin line's highlight after Add one anyway lasts; console-finish.css's `cfc-undone` keyframes run as long. */
+export const UNDONE_MS = 2400
+
+/**
+ * True for UNDONE_MS once `undone` turns true, so the line flashes once where
+ * the change back to to do happened. Under prefers-reduced-motion it stays
+ * false: no animation class is ever put on the line.
+ */
+function useUndoneFlash(undone: boolean): boolean {
+  const [flash, setFlash] = useState(false)
+  useEffect(() => {
+    if (!undone || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return
+    setFlash(true)
+    const t = window.setTimeout(() => setFlash(false), UNDONE_MS)
+    return () => {
+      window.clearTimeout(t)
+      setFlash(false)
+    }
+  }, [undone])
+  return flash
+}
+
 /**
  * The one screen for one read of the record: the status line, the checklist
  * and the panel. `callback` is GitHub's callback page, drawn as the GitHub
@@ -767,7 +795,8 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
   useAutoSelfCheck(state, githubAct)
   const [picked, setPicked] = useState<LineKey | null>(null)
   const plug = usePluginsStep(state.steps?.plugins ?? null, reread)
-  const ls = finishLines(state, nowMs, plug.step)
+  const flash = useUndoneFlash(plug.undone)
+  const ls = finishLines(state, nowMs, plug.step).map((l) => (flash && l.key === 'plugins' ? { ...l, undone: true } : l))
   const total = needed(ls).length
   // On a narrow screen the panel sits above the list: a line picked there scrolls its panel into view.
   const right = useRef<HTMLDivElement>(null)

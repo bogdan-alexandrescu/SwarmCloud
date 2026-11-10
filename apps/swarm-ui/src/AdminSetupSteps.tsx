@@ -1347,13 +1347,6 @@ export function addonsRow(state: SetupState): Row {
   }
 }
 
-/**
- * The two bundled installs (managed-plugins §1.4): there without anyone
- * adding them, so the plugin step never counts them. `steps.plugins` does
- * not serve their names, so the panel names them from the design.
- */
-export const BUNDLED_PLUGINS = ['gstack', 'security-audit'] as const
-
 /** What a plugin is and where it is done later: behind the plugin line's (i), never on the surface (§15.1). */
 export const PLUGINS_TIP =
   'A plugin adds skills, commands or hooks to agent steps. One added to the platform catalogue serves only the workspaces that allow it. Optional: nothing waits on it, and you can add one any time from Admin › Plugins.'
@@ -1394,7 +1387,9 @@ export function usePluginsStep(served: SetupPluginsStep | null, onChanged: () =>
 }
 
 /**
- * The plugin step's panel: the bundled installs and the count added, the
+ * The plugin step's panel: the bundled installs the route names in
+ * `steps.plugins.bundled` (§1.4: there without anyone adding them, never
+ * counted; no Installed fact when it names none) and the count added, the
  * plugins added as links once done, and this state's actions: Add a plugin
  * and Skip, or Add one anyway once skipped.
  */
@@ -1407,14 +1402,16 @@ export function PluginsBody({ step, act, undone, onSkip, onUndo }: { step: Setup
   return (
     <>
       <dl className="cfc-facts">
-        <div>
-          <dt>Installed</dt>
-          <dd>
-            {BUNDLED_PLUGINS.map((b) => (
-              <Chip key={b}>{b}</Chip>
-            ))}
-          </dd>
-        </div>
+        {step.bundled.length > 0 && (
+          <div>
+            <dt>Installed</dt>
+            <dd>
+              {step.bundled.map((b) => (
+                <Chip key={b}>{b}</Chip>
+              ))}
+            </dd>
+          </div>
+        )}
         <div>
           <dt>Added</dt>
           <dd>{step.count}</dd>

@@ -14334,6 +14334,8 @@ export interface SetupPluginsStep {
   added: SetupAddedPlugin[]
   /** `console/plugins_step`: who skipped it and when; null when it is not skipped. */
   skipped: { skipped_at: string | null; skipped_by: string | null } | null
+  /** The active bundled installs' names (§1.4), never counted; empty when the route serves none. */
+  bundled: string[]
 }
 
 /** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
@@ -14571,6 +14573,7 @@ export function normPluginsStep(raw: unknown): SetupPluginsStep | null {
     count: typeof s.count === 'number' && Number.isFinite(s.count) && s.count >= 0 ? s.count : added.length,
     added,
     skipped: skipped === null ? null : { skipped_at: timeOf(skipped.skipped_at), skipped_by: strOf(skipped.skipped_by) },
+    bundled: labelsOf(s.bundled),
   }
 }
 
@@ -15062,7 +15065,7 @@ let fixturePluginsSkipped: { skipped_at: string; skipped_by: string } | null = n
 
 /** The fixture's `steps.plugins` (managed-plugins §15.1): nothing added yet; skipped once the skip fixture ran. */
 function fixturePluginsStep(): Record<string, unknown> {
-  return { needed: false, optional: true, state: fixturePluginsSkipped === null ? 'todo' : 'skipped', count: 0, added: [], skipped: fixturePluginsSkipped }
+  return { needed: false, optional: true, state: fixturePluginsSkipped === null ? 'todo' : 'skipped', count: 0, added: [], skipped: fixturePluginsSkipped, bundled: ['gstack', 'security-audit'] }
 }
 
 function fixtureSetupState(): Record<string, unknown> {
