@@ -21,7 +21,15 @@ ONE TURN, as §3.3 lays it out. When the live voice delegates (live.py sees
      server, executing each read through swarm-api with the grant and writing
      each card through swarm-api's card write path, which validates it against
      the catalogue and appends it to the session's stream;
-  5. hands the live voice at most two sentences to say (prompts.spoken).
+  5. hands the live voice at most two sentences to say (prompts.spoken),
+     followed by one that says what the turn put on screen (`drew`).
+
+WHAT IT DREW IS SAID, NONE INCLUDED (owner, 10 November 2026: the voice said
+"there is a card on screen" when the planner drew none). Every spoken result
+ends by saying how many cards and mock-ups the turn put on screen, counted from
+what swarm-api accepted rather than from what the model said, or that nothing
+was drawn (NOTHING_DRAWN) and why: the voice's instructions (live.py) let it
+point at a card only when the result says one was drawn.
 
 AN UNKNOWN KIND IS REFUSED. A tool the model calls that is not a read tool,
 not `speak` and not one of the catalogue's `draw_<kind>` tools as served this
@@ -90,6 +98,15 @@ SAY_NO_POOL = "Your workspace has no Claude account in its pool, so I can't draw
 SAY_NO_LEASE = "I couldn't get a Claude account for the planner, so nothing new is on screen."
 SAY_FAILED = "The planner couldn't finish that one, so nothing new is on screen."
 SAY_REFUSED = "I can't plan that one."
+#: Said after a turn's own words when it put nothing on screen: the voice reads
+#: it as "no card" (live.DELEGATE_INSTRUCTIONS).
+NOTHING_DRAWN = "I drew nothing, so nothing new is on screen."
+#: What `drew` calls each kind of visual it counts; other visual tools (an
+#: approval, a note) put nothing new on screen.
+DRAWN_VISUALS = {tools_visual.SHOW_MOCKUP: ("mock-up", "mock-ups"),
+                 tools_visual.SHOW_FILE: ("file view", "file views"),
+                 tools_visual.SHOW_DIFF: ("diff view", "diff views"),
+                 tools_visual.SHOW_LOG: ("log view", "log views")}
 
 
 @dataclass
@@ -114,6 +131,28 @@ class TurnResult:
     transcript: list[dict[str, Any]] = field(default_factory=list)
     #: Why the turn could not run or finish, for the log; None when it did.
     error: str | None = None
+
+
+def drew(result: "TurnResult") -> str:
+    """One sentence of what `result` put on screen: its cards and its mock-ups
+    (and file, diff or log views), each counted, or NOTHING_DRAWN."""
+    counts: list[tuple[int, tuple[str, str]]] = []
+    if result.cards:
+        counts.append((len(result.cards), ("card", "cards")))
+    for tool, names in DRAWN_VISUALS.items():
+        shown = sum(1 for v in result.visuals if v.get("tool") == tool and v.get("visual_id"))
+        if shown:
+            counts.append((shown, names))
+    if not counts:
+        return NOTHING_DRAWN
+    parts = [f"{n} {names[0] if n == 1 else names[1]}" for n, names in counts]
+    listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    return f"I drew {listed} on screen."
+
+
+def _failed(result: "TurnResult") -> str:
+    """SAY_FAILED, unless the turn had put something on screen before it failed."""
+    return SAY_FAILED if drew(result) == NOTHING_DRAWN else f"The planner couldn't finish that one. {drew(result)}"
 
 
 def _scrub_all(value: Any, known: tuple[str, ...]) -> Any:
@@ -185,7 +224,7 @@ class Planner:
                     self._turn_seconds)
             except asyncio.TimeoutError:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
-                result.spoken, result.error = SAY_FAILED, "the turn ran out of time"
+                result.spoken, result.error = _failed(result), "the turn ran out of time"
                 return result
 
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
@@ -248,11 +287,14 @@ class Planner:
             log.warning("voice session %s: Claude Code ended without speaking (exit %s)", api.session_id,
                         outcome.exit_code)
             result.error = f"Claude Code exited {outcome.exit_code} without speaking"
-            result.spoken = SAY_FAILED
+            result.spoken = _failed(result)
             return result
         text = said[-1] if said else outcome.result_text
-        result.spoken = prompts.spoken(text or "", secrets_=known) or (
-            "It's on screen." if result.cards else SAY_FAILED)
+        said_text = prompts.spoken(text or "", secrets_=known)
+        if not said_text and drew(result) == NOTHING_DRAWN:
+            result.spoken = SAY_FAILED
+        else:
+            result.spoken = f"{said_text} {drew(result)}".strip()
         log.info("voice session %s: planner turn drew %d card(s) [%s], refused %d, read %d",
                  api.session_id, len(result.cards), ",".join(c.get("kind", "?") for c in result.cards),
                  len(result.refused), len(result.reads))

@@ -321,7 +321,11 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert create["transport"] == {"type": "webrtc", "sdp": body["offer"]}
         assert create["session"]["model"] == "gpt-live-1"
         # The caller picks nothing about the session: the instructions are swarm-voice's own.
-        assert create["session"]["instructions"] == live.INSTRUCTIONS
+        # The turn-taking setting goes with them (live.TURN_INSTRUCTIONS): the Live API's
+        # create offers no end-of-turn field, so nothing undocumented is sent.
+        assert create["session"]["instructions"] == live.INSTRUCTIONS + live.TURN_INSTRUCTIONS
+        assert set(create["session"]) <= {"model", "audio", "client", "delegation", "input",
+                                          "instructions", "store", "triggers"}
         # Attached before the answer went back, and held; the lease is held too.
         assert h.openai.attaches == [live_id]
         held = h.sessions.get(body["voice_session_id"])
