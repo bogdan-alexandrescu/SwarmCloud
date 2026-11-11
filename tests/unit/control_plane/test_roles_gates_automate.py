@@ -213,6 +213,10 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account sign-in finish", "POST", "/v1/accounts/exchange", "EXCHANGE"),
     ("account refresh", "POST", f"/v1/accounts/{ACCOUNT}/refresh", None),
     ("account lending", "PUT", f"/v1/accounts/{ACCOUNT}/lending", {"lend_to": []}),
+    ("account lend caps", "PUT", f"/v1/accounts/{ACCOUNT}/lending",
+     {"lends": {"research": {"max_agents": 1}}}),
+    ("account per-workspace caps", "PUT", f"/v1/accounts/{ACCOUNT}/per-workspace-max",
+     {"per_workspace_max": {"eng": 1}}),
     ("account model classes", "PUT", f"/v1/accounts/{ACCOUNT}/model-classes",
      {"model_classes": []}),
     ("account max agents", "PUT", f"/v1/accounts/{ACCOUNT}/max-agents", {"max_agents": 3}),
@@ -388,6 +392,20 @@ def test_a_non_member_platform_admin_sets_an_accounts_cap_audited(client, db, se
     assert "set_max_agents" in services["pool"].calls
     acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
     assert [a["detail"]["route"] for a in acted] == ["/v1/accounts/{account_id}/max-agents"]
+
+
+def test_a_non_member_platform_admin_sets_a_plans_caps_audited(client, db, seeded, services):
+    """The lend caps and the per-workspace caps pass a platform admin acting
+    in the owner's workspace, audited before the broker is asked, as max
+    agents does."""
+    for path, body in ((f"/v1/accounts/{ACCOUNT}/lending", {"lends": {"research": {"max_agents": 1}}}),
+                       (f"/v1/accounts/{ACCOUNT}/per-workspace-max", {"per_workspace_max": {"eng": 2}})):
+        response = client.put(path, json=body, headers=h("ops", "eng"))
+        assert response.status_code == 200, response.text
+    assert {"set_lending", "set_per_workspace_max"} <= set(services["pool"].calls)
+    acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
+    assert sorted(a["detail"]["route"] for a in acted) == [
+        "/v1/accounts/{account_id}/lending", "/v1/accounts/{account_id}/per-workspace-max"]
 
 
 @pytest.mark.parametrize("field,value", [("platform", True), ("merge_policy", "on_merge_verdict")])
