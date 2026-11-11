@@ -126,6 +126,14 @@ _STEP_KEYS = frozenset(
         # signs (`workcontract.prepare`); checked for shape first by
         # `check_work_contract`. `metadata` itself stays refused.
         "work_contract",
+        # The step's plugins and the workspace defaults it turns off
+        # (docs/design/managed-plugins.md section 7): `{install_id:
+        # {overrides?}}` or `{name: {mode, skills}}`, and a list of names.
+        # Sent top-level as `WorkflowStepCreate.plugins` and `.plugins_off`;
+        # checked for shape only by `check_step_plugins` and
+        # `check_plugins_off`, and for everything else by swarm-api.
+        "plugins",
+        "plugins_off",
     }
 )
 
@@ -191,6 +199,42 @@ def check_review_gate(value: Any, *, where: str) -> bool | dict[str, Any]:
             )
         return {**value, "risk_paths": list(paths)}
     return dict(value)
+
+
+def check_step_plugins(value: Any, *, where: str) -> dict[str, dict[str, Any]]:
+    """A step's or task's `plugins`, as given: a map of plugin names (a
+    built-in's name or a managed install's id) to objects.
+
+    THE SHAPE ONLY. Which names exist, what a block may hold (`mode` and
+    `skills` for a built-in, `overrides` for a managed install), the caps and
+    whether the profile and workspace allow it are swarm-api's
+    (`schemas.StepPluginCreate`, `plugins.merge_step_plugins`), and its 422 is
+    reported in its own words. A plugin is named, never a path, an image, a
+    command or a URL (invariant 10): swarm-api resolves the name and nothing
+    here fetches or runs it."""
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str) and name.strip() and isinstance(block, dict)
+        for name, block in value.items()
+    ):
+        raise SwarmError(
+            f"{where}: plugins must map a plugin's name or install id to an object -- "
+            '{"<install_id>": {"overrides": {...}}} for a managed install, '
+            '{"<name>": {"mode": "...", "skills": [...]}} for a built-in. Nothing was sent'
+        )
+    return copy.deepcopy(value)
+
+
+def check_plugins_off(value: Any, *, where: str) -> list[str]:
+    """A step's or task's `plugins_off`, as given: a list of names (install
+    ids or built-in names) of workspace defaults it turns off. The shape only,
+    as for `check_step_plugins`; `[]` is sent as given."""
+    if not isinstance(value, list) or not all(isinstance(name, str) and name.strip() for name in value):
+        raise SwarmError(
+            f"{where}: plugins_off must be a list of names -- the install ids or built-in "
+            'names of workspace defaults this step does not load, e.g. ["<install_id>"]. '
+            "Nothing was sent"
+        )
+    return list(value)
 
 
 def _contract_skeleton() -> dict[str, Any]:
@@ -756,6 +800,11 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # with none, which leaving the key out would not (§7 Q6).
             step["additional_repositories"] = check_additional_repositories(
                 raw["additional_repositories"], where=where)
+        if "plugins" in raw:
+            # `None` is refused with the rest: a step naming none leaves the key out.
+            step["plugins"] = check_step_plugins(raw["plugins"], where=where)
+        if "plugins_off" in raw:
+            step["plugins_off"] = check_plugins_off(raw["plugins_off"], where=where)
         metadata: dict[str, Any] = {}
         if runtime is not None:
             metadata["runtime"] = {"policy": RUNTIME_BROWSER_IF_UI, **RUNTIME_PROFILES}

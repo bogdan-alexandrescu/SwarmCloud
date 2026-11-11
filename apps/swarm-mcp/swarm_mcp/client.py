@@ -859,6 +859,8 @@ def task_payload(
     model_class: str | None = None,
     publish_to_pr: int | str | None = None,
     description: str | None = None,
+    plugins: dict[str, dict[str, Any]] | None = None,
+    plugins_off: list[str] | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -906,6 +908,16 @@ def task_payload(
         # `TaskCreate.publish_to_pr`. Absent when not given, so a task naming
         # none sends what it always did.
         payload["publish_to_pr"] = publish_to_pr
+    if plugins is not None:
+        # The task's plugins BY NAME or install id (managed-plugins.md
+        # section 7), as checked by `workflows.check_step_plugins`, top-level
+        # as `TaskCreate.plugins`. Absent when not given, so a task naming
+        # none sends what it always did.
+        payload["plugins"] = plugins
+    if plugins_off is not None:
+        # The workspace defaults it turns off, as `TaskCreate.plugins_off`;
+        # sent as given, `[]` included, and absent when not given.
+        payload["plugins_off"] = plugins_off
     return payload
 
 
@@ -2012,6 +2024,8 @@ class SwarmClient:
         model_class: str | None = None,
         publish_to_pr: int | str | None = None,
         description: str | None = None,
+        plugins: dict[str, dict[str, Any]] | None = None,
+        plugins_off: list[str] | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -2058,6 +2072,11 @@ class SwarmClient:
         `strategy`, checked by `workflows.check_publish_to_pr` and sent only
         when given. swarm-api reads the pull request and refuses one it may
         not push onto.
+
+        `plugins` and `plugins_off` name the plugins the task loads and the
+        workspace defaults it turns off, by name or install id only, never a
+        path, an image, a command or a URL (invariant 10): swarm-api resolves
+        and signs them. Each is sent only when given.
         """
         payload = task_payload(
             prompt=prompt,
@@ -2073,6 +2092,8 @@ class SwarmClient:
             model_class=model_class,
             publish_to_pr=publish_to_pr,
             description=description,
+            plugins=plugins,
+            plugins_off=plugins_off,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
