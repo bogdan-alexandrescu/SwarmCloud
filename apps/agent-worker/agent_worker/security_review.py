@@ -10,13 +10,27 @@ diff, with a capped sub-agent budget, into an output directory under
 `$SWARM_ARTIFACTS_DIR` -- outside the checkout -- and is told that no
 OS-enforced sandbox is available, so it never runs the target's code.
 
-WHICH STEP. One whose SIGNED work contract names the plugin
-(`plugins.selected`, digest-checked against the signed dispatch block): the
-same signature that decides the plugin is loaded decides the step is a
-security review, so a tenant worker that can write the task document cannot
-turn a step into one, or out of one. Nothing else marks it.
+WHICH STEP. One whose SIGNED plugins load security-audit, on either route
+for one release (docs/design/managed-plugins.md section 1.4.6): its signed
+work contract's capabilities (`plugins.selected`, digest-checked against the
+signed dispatch block), or a signed managed entry `builtin:security-audit`
+with `build: "image"` (`pluginload.bundled`). The same signature that
+decides the plugin is loaded decides the step is a security review, so a
+tenant worker that can write the task document cannot turn a step into one,
+or out of one. Nothing else marks it.
+
+THE VALIDATORS' PATH (section 1.4.6). `INSTALL`, this module's own constant:
+the bundle recipe fixes that folder in the image's read-only root
+filesystem, so the agent cannot edit the validators, and a bundle image puts
+the pinned ones exactly there.
 
 AFTER THE AGENT, BEFORE THE UPLOAD (`finish`). The worker, not the agent:
+
+  * on the bundled route, checks the install's `.swarm-bundle.json` against
+    the signed entry again (`pluginload.check_bundle`) before any validator
+    runs, so the verdict is always from the pinned copy's own validators. A
+    manifest that does not match is `SecurityReviewInvalid` with its fixed
+    code: the step fails and no validator runs;
 
   * runs the skill's own `validate-findings.cjs` and
     `validate-coverage-ledger.cjs` on the output. A validator that fails, a
@@ -61,6 +75,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from . import pluginload
 from . import questions as questions_mod
 
 #: The catalogue name of the plugin, and the skill its unattended mode offers.
@@ -68,10 +83,11 @@ from . import questions as questions_mod
 #: module only reads the name.
 PLUGIN = "security-audit"
 SKILL = "security-audit"
-#: Where the image installs the plugin when the worker's catalogue does not say
-#: (`plugins.CATALOGUE[PLUGIN].install_path` wins once it does), and the skill
-#: folder inside the pinned checkout of the repository.
-DEFAULT_INSTALL = Path("/opt/swarm/plugins") / PLUGIN
+#: Where the image installs the plugin, on either route: the folder the bundle
+#: recipe fixes (`pluginload.BUNDLE_ROOT`), read-only (section 1.4.6). The
+#: review's own constant, so it outlives the code entry. And the skill folder
+#: inside the pinned checkout of the repository.
+INSTALL = Path("/opt/swarm/plugins") / PLUGIN
 SKILL_SUBDIR = Path("skills") / SKILL
 
 #: The skill's output directory, under `$SWARM_ARTIFACTS_DIR`: outside the
@@ -146,16 +162,31 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 def applies(started: Any) -> bool:
-    """Whether the step's started plugins (`plugins.Started`, or None) load security-audit."""
+    """Whether the step's started plugins (`plugins.Started`, or None) load
+    security-audit, through its work contract or as a bundled entry."""
     plugins = getattr(started, "plugins", None) or ()
-    return any(getattr(p, "name", None) == PLUGIN for p in plugins)
+    return any(getattr(p, "name", None) == PLUGIN for p in plugins) or signed_entry(started) is not None
 
 
-def install_dir(catalogue: Mapping[str, Any] | None = None) -> Path:
-    """The plugin's install: the worker catalogue's path when it names one."""
-    entry = (catalogue or {}).get(PLUGIN)
-    path = getattr(entry, "install_path", None)
-    return Path(path) if isinstance(path, str) and path else DEFAULT_INSTALL
+def signed_entry(started: Any) -> pluginload.Bundled | None:
+    """security-audit's signed bundled entry among the started plugins
+    (`plugins.Started.bundled`), or None on the code route."""
+    for entry in getattr(started, "bundled", None) or ():
+        if isinstance(entry, pluginload.Bundled) and entry.name == PLUGIN:
+            return entry
+    return None
+
+
+def install_dir() -> Path:
+    """The plugin's install: `INSTALL`, on either route."""
+    return INSTALL
+
+
+def install_of(skill: Path) -> Path:
+    """The install holding `skill` (`skill_dir`'s inverse): where its
+    `.swarm-bundle.json` sits."""
+    skill = Path(skill)
+    return skill.parents[1] if skill.parts[-2:] == SKILL_SUBDIR.parts else skill
 
 
 def skill_dir(install: Path) -> Path:
@@ -393,16 +424,35 @@ def verdict_document(findings: Sequence[Mapping[str, Any]], *, task_id: str, ste
     return document
 
 
+def check_manifest(started: Any, skill: Path) -> None:
+    """On the bundled route, the install's `.swarm-bundle.json` against the
+    signed entry (`pluginload.check_bundle`), or SecurityReviewInvalid with
+    its fixed code. Nothing on the code route, whose pin is the image's."""
+    entry = signed_entry(started)
+    if entry is None:
+        return
+    try:
+        pluginload.check_bundle(entry, install_of(skill))
+    except pluginload.PluginRefused as exc:
+        raise SecurityReviewInvalid(
+            f"{exc} ({exc.code}), so the security-audit validators were not run") from None
+
+
 def finish(artifacts: Path, *, task_id: str, step_id: str, skill: Path,
-           node: str | None = None, run: Runner = subprocess.run) -> dict[str, Any]:
+           node: str | None = None, run: Runner = subprocess.run, started: Any = None) -> dict[str, Any]:
     """Validate the audit, write the verdict and any owner questions; the record.
 
-    Raises SecurityReviewInvalid (after removing any verdict the agent wrote
-    itself, so none is uploaded) when the output does not validate.
+    `started` is the step's started plugins (`plugins.Started`): on the
+    bundled route the manifest is checked against its signed entry first
+    (`check_manifest`), before any validator runs. Raises
+    SecurityReviewInvalid (after removing any verdict the agent wrote
+    itself, so none is uploaded) when the manifest or the output does not
+    validate.
     """
     artifacts = Path(artifacts)
     for name in (REVIEW_VERDICT, VERDICT_FILE):
         (artifacts / name).unlink(missing_ok=True)
+    check_manifest(started, skill)
     out = output_dir(artifacts)
     run_validators(skill, out, node=node, run=run)
     findings = read_findings(out)
