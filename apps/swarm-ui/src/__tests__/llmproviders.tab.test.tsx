@@ -35,17 +35,11 @@ vi.mock('../LlmPlans', async (importOriginal) => ({
 }))
 
 // The key cards are LlmApiKeys.tsx's; llmapikeys.test.tsx holds them. The
-// stand-in draws the head, (i) and strip it is given, as Plans' does.
+// page's head and strip are LlmProviders' own `Screen`, so only the body is
+// stood in for.
 vi.mock('../LlmApiKeys', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../LlmApiKeys')>()),
-  LlmApiKeysScreen: ({ title, info, nav }: { title?: string; info?: ReactNode; nav?: ReactNode }) => (
-    <>
-      <h1>{title}</h1>
-      {info}
-      {nav}
-      <p data-testid="key-cards">key cards</p>
-    </>
-  ),
+  LlmApiKeysBody: () => <p data-testid="key-cards">key cards</p>,
 }))
 
 const { canonical, fromAddress } = await import('../App')
@@ -134,7 +128,7 @@ describe('Capacity › LLM Providers in the app', () => {
     const nav = await screen.findByRole('navigation', { name: 'LLM Providers' })
     expect(within(nav).getByRole('link', { current: 'page' }).textContent).toBe('API Keys')
     // MUTATION: keep the old empty placeholder and no cards are drawn.
-    expect(screen.getByTestId('key-cards')).toBeTruthy()
+    expect(await screen.findByTestId('key-cards')).toBeTruthy()
     expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['LLM Providers'])
     expect(screen.queryByTestId('plan-board')).toBeNull()
   })

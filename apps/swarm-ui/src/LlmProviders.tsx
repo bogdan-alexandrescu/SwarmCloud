@@ -26,9 +26,13 @@
  *
  * No visible prose (§6.5): each explanation is a tooltip behind an (i).
  */
+import type { ReactNode } from 'react'
+import { loadApiKeys } from './api'
 import { Info } from './AccountsVerdict'
-import { LlmApiKeysScreen } from './LlmApiKeys'
+import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
+import { LlmApiKeysBody } from './LlmApiKeys'
 import { LlmPlansScreen } from './LlmPlans'
+import { Screen } from './Shell'
 import { Segmented } from './components'
 
 /** Capacity's tab id (App.tsx SECTIONS). */
@@ -66,6 +70,20 @@ const INFO = (
   <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />
 )
 
+/**
+ * API Keys: `Screen` draws the one head, titled with the tab's words, its (i)
+ * and the strip under it in every read state; the body is the key cards
+ * (LlmApiKeys.tsx) once the list has been read.
+ */
+function ApiKeysPage({ nav }: { nav: ReactNode }) {
+  return (
+    // Re-read every 30 s (60 s on a phone), as Plans does, paused while the tab is hidden.
+    <Screen title="LLM Providers" info={INFO} nav={nav} load={loadApiKeys} pollMs={capacityPoll(ACCOUNTS_POLL_MS)}>
+      {(data) => <LlmApiKeysBody board={data} />}
+    </Screen>
+  )
+}
+
 export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
   // HEADED WITH THE TAB'S OWN WORDS (test_nav_headings_agree.py), the strip
   // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
@@ -80,5 +98,5 @@ export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
     </div>
   )
   if (sub === 'plans') return <LlmPlansScreen title="LLM Providers" info={INFO} nav={nav} />
-  return <LlmApiKeysScreen title="LLM Providers" info={INFO} nav={nav} />
+  return <ApiKeysPage nav={nav} />
 }

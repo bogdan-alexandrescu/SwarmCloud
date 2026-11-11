@@ -27,7 +27,7 @@
  *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useState, type FormEvent } from 'react'
 import {
   API_KEY_PROVIDERS,
   addApiKey,
@@ -43,10 +43,8 @@ import {
 } from './api'
 import { accountName } from './accountName'
 import { Info } from './AccountsVerdict'
-import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
 import { Button } from './components'
 import type { ApiError, Result } from './fetch'
-import { Screen } from './Shell'
 import './styles/lp-cards.css'
 
 /** The vendors in the page's order, each with the page its keys are revoked on (§4.4). */
@@ -485,21 +483,17 @@ function Keys({ board, reread }: { board: ApiKeysBoard; reread: () => Promise<vo
 }
 
 /**
- * The API Keys sub-page: `Screen` draws the one head (the tab's title and its
- * (i)) and the Plans | API Keys strip in every read state; the body is the
- * cards once the key list has been read.
+ * The API Keys sub-page's body, once the key list has been read: the page's
+ * `Screen` (its one head, the tab's (i) and the Plans | API Keys strip) is
+ * LlmProviders.tsx's, and hands each read in as `board`.
  */
-export function LlmApiKeysScreen({ title, info, nav }: { title: string; info?: ReactNode; nav?: ReactNode }) {
+export function LlmApiKeysBody({ board }: { board: ApiKeysBoard }) {
   // A WRITE RE-READS THE LIST, and the newer of the two reads is drawn: the
-  // screen's own (its first read and its head's refresh) or this one.
+  // screen's own (its first read, its poll and its head's refresh) or this one.
   const [fresh, setFresh] = useState<ApiKeysBoard | null>(null)
   const reread = async () => {
     const r = await loadApiKeys()
     if (r.status === 'ok' || r.status === 'stale') setFresh(r.data)
   }
-  return (
-    <Screen title={title} info={info} nav={nav} load={loadApiKeys} pollMs={capacityPoll(ACCOUNTS_POLL_MS)}>
-      {(data) => <Keys board={fresh !== null && fresh.readAt >= data.readAt ? fresh : data} reread={reread} />}
-    </Screen>
-  )
+  return <Keys board={fresh !== null && fresh.readAt >= board.readAt ? fresh : board} reread={reread} />
 }

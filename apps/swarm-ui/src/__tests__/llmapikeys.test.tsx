@@ -53,7 +53,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const realLoad = (await vi.importActual<typeof import('../api')>('../api')).loadApiKeys
-const { LlmApiKeysScreen } = await import('../LlmApiKeys')
+const { LlmProvidersScreen } = await import('../LlmProviders')
 
 const WAIT = { timeout: 5000 } as const
 const OWNER = 'owner@example.test'
@@ -75,7 +75,7 @@ afterEach(() => {
 })
 
 async function draw(): Promise<HTMLElement> {
-  render(<LlmApiKeysScreen title="LLM Providers" />)
+  render(<LlmProvidersScreen sub="api-keys" />)
   await screen.findByRole('region', { name: 'Anthropic' }, WAIT)
   return document.querySelector('.lpc-page') as HTMLElement
 }
@@ -237,7 +237,7 @@ describe('API Keys: a control that fails', () => {
 describe('API Keys: no keys', () => {
   it('is a short line plus Add key', async () => {
     spies.loadApiKeys.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { keys: [], tenant: 'u-owner', readAt: 0 } })
-    render(<LlmApiKeysScreen title="LLM Providers" />)
+    render(<LlmProvidersScreen sub="api-keys" />)
     const empty = await screen.findByRole('region', { name: 'No API keys' }, WAIT)
     const h = within(empty).getByRole('heading', { level: 2 })
     // The line is the heading's own text; its (i) carries the rest.
