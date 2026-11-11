@@ -153,6 +153,18 @@ describe('the cost pill', () => {
     expect(document.activeElement).toBe(pill())
   })
 
+  it('names no "Not counted" when the ledger leaves nothing out; the (i) still says what reserved is', async () => {
+    serveLedger({ ...LEDGER, not_counted: [] })
+    render(<CostPill sessionId={SESSION} live={false} />)
+    await settle(act)
+    fireEvent.click(pill())
+    const panel = screen.getByRole('region', { name: 'Cost' })
+    expect(panel.textContent).not.toContain('Not counted')
+    expect(within(panel).queryByRole('button', { name: 'What is not counted' })).toBeNull()
+    const info = within(panel).getByRole('button', { name: 'What reserved means' })
+    expect(info.closest('.c-tip-host')?.textContent).toContain('Reserved is running work, held at its step budgets.')
+  })
+
   it('takes the warning colour, ring and figure, near a cap and not before', async () => {
     serveLedger(NEAR)
     const { container, unmount } = render(<CostPill sessionId={SESSION} live={false} />)

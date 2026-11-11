@@ -384,12 +384,12 @@ export function CostPill({ sessionId, live }: { sessionId: string; live: boolean
                   <span className="vcp-key is-held" />
                   Reserved
                 </span>
-                <span>Not counted</span>
+                {shown.not_counted.length > 0 && <span>Not counted</span>}
                 <TalkTip
                   end
                   tip={`${shown.not_counted.length > 0 ? `Not counted: ${shown.not_counted.join(', ')}. ` : ''}Reserved is running work, held at its step budgets.`}
                 >
-                  <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="What is not counted">
+                  <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={shown.not_counted.length > 0 ? 'What is not counted' : 'What reserved means'}>
                     <InfoMark />
                   </button>
                 </TalkTip>
