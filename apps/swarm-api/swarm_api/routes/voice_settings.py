@@ -1,7 +1,8 @@
 """Voice it › Settings (docs/design/voice-it-own-speech.md §11.3; voice/settings.py).
 
     GET   /v1/voice/settings            -> {settings, version, updated_by, updated_at,
-                                            applied, pending, openai_key, zones}
+                                            applied, pending, openai_key, dedicated_key,
+                                            chain, zones}
     GET   /v1/voice/settings/catalogue  -> the catalogue: every name a setting may take
     PATCH /v1/voice/settings            {version, <field>: <name>, ...} -> the same as GET
                                         (`debug` takes true or false, not a name)
@@ -30,6 +31,14 @@ link that set it), and whether a link is open now. The key itself is never read 
 answers no route with it but the Voice it lease. It is set only through the
 existing `voice-api-key` link, minted by `POST /v1/admin/setup/links`.
 
+THE DEDICATED KEY AND THE CHAIN (docs/design/llm-providers.md §6.4).
+`dedicated_key` is `{set, label, display_name, by, at, state, link, replace}`
+for the broker's `voice_dedicated` account, and `chain` is `[{tier, state}]`
+for plans, shared keys and that key, both from the broker's platform-wide
+listing (`voice/settings.py`). `replace` (`{kind: "voice-api-key", label}`)
+is for a platform admin; anyone else reads it as None, the read-only view.
+A broker read that fails is logged by its class name and reads as None.
+
 This router is mounted beside the session routes in `main.create_app`; it
 imports nothing from routes/voice.py, so mounting it there makes no import
 cycle.
@@ -38,6 +47,7 @@ cycle.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -91,19 +101,26 @@ def _pool_person(person: str, ctx: AppContext) -> str:
     return person if person in people or not people else people[0]
 
 
-def _key_status(pool: AccountPool, person: str, ctx: AppContext) -> dict[str, Any]:
+def _broker_read(read: Callable[[], dict[str, Any]], what: str) -> dict[str, Any] | None:
+    """One broker read, or None (unknown, never "not set") when it fails."""
     try:
-        answer = pool.voice_pool(_pool_person(person, ctx))
-    except Exception as exc:  # noqa: BLE001 -- the class name only; set reads unknown
-        log.warning("the Voice it pool could not be read for the key's status (%s)",
-                    type(exc).__name__)
-        answer = None
-    return vsettings.key_status(answer, vsettings.key_links(ctx.db), now=ctx.now())
+        return read()
+    except Exception as exc:  # noqa: BLE001 -- the class name only; the status reads unknown
+        log.warning("the broker could not be read for %s (%s)", what, type(exc).__name__)
+        return None
 
 
 def _answer(service: vsettings.VoiceSettings, shown: dict[str, Any], pool: AccountPool,
-            person: str, ctx: AppContext) -> dict[str, Any]:
-    return {**shown, "openai_key": _key_status(pool, person, ctx),
+            person: str, ctx: AppContext, *, admin: bool) -> dict[str, Any]:
+    asked = _pool_person(person, ctx)
+    answer = _broker_read(lambda: pool.voice_pool(asked), "the Voice it key's status")
+    listing = _broker_read(lambda: pool.voice_it_accounts(), "the dedicated key and the chain")
+    links = vsettings.key_links(ctx.db)
+    now = ctx.now()
+    return {**shown, "openai_key": vsettings.key_status(answer, links, now=now),
+            "dedicated_key": vsettings.dedicated_key_status(listing, answer, links, now=now,
+                                                            admin=admin),
+            "chain": vsettings.chain_status(listing, asked),
             "zones": list(service.zones)}
 
 
@@ -113,9 +130,10 @@ async def read_settings(
     service: vsettings.VoiceSettings = Depends(settings_service),
     pool: AccountPool = Depends(account_pool),
     ctx: AppContext = Depends(get_context),
+    auth: AuthContext = Depends(current_auth),
 ) -> dict:
     def _read() -> dict:
-        return _answer(service, service.read(), pool, person, ctx)
+        return _answer(service, service.read(), pool, person, ctx, admin=auth.is_admin)
 
     return await run_in_threadpool(_read)
 
@@ -142,7 +160,7 @@ async def change_settings(
         shown = service.update(changes=changes, version=body.get("version"), by=person)
         log.info("audit: Voice it settings changed to version %s fields=%s",
                  shown["version"], ",".join(sorted(changes)))
-        return _answer(service, shown, pool, person, ctx)
+        return _answer(service, shown, pool, person, ctx, admin=True)
 
     return await run_in_threadpool(_write)
 
