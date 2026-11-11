@@ -195,18 +195,25 @@ BUILTINS_MANAGED = "on"
 #: steps/bootstrap.py after an infra pass), so a re-run or an upgrade renders
 #: what is live rather than what a fresh deployment would get.
 BUILTINS_MANAGED_KEY = "builtins_managed"
+#: The install state's record of a platform admin's choice
+#: (`swarm upgrade --builtins-managed on|off`, verbs/upgrade.py), kept apart
+#: from the applied value so `swarm doctor` and verify still read what infra
+#: runs with until the next infra pass applies the choice.
+BUILTINS_MANAGED_CHOICE_KEY = "builtins_managed_choice"
 
 
 def builtins_managed(state: Any) -> str:
-    """`builtins_managed` for `state`: the value infra last applied when the
-    state records one; else on for an install that has not reached READY (no
-    step was ever queued on it); else off, because a deployment installed
-    before the switch existed has queued steps that carry the code entries'
+    """`builtins_managed` for `state`: a platform admin's recorded choice
+    when there is one; else the value infra last applied when the state
+    records one; else on for an install that has not reached READY (no step
+    was ever queued on it); else off, because a deployment installed before
+    the switch existed has queued steps that carry the code entries'
     capabilities.plugins and is turned on by a platform admin
     (managed-plugins.md section 1.4.5), never by an upgrade."""
-    recorded = (getattr(state, "outputs", None) or {}).get(BUILTINS_MANAGED_KEY)
-    if recorded in ("on", "off"):
-        return str(recorded)
+    outputs = getattr(state, "outputs", None) or {}
+    for key in (BUILTINS_MANAGED_CHOICE_KEY, BUILTINS_MANAGED_KEY):
+        if outputs.get(key) in ("on", "off"):
+            return str(outputs[key])
     return BUILTINS_MANAGED if getattr(state, "ready_at", None) is None else "off"
 
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
