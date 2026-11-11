@@ -225,6 +225,10 @@ class AccountPool(Protocol):
         lends: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
+    def set_spend_cap(
+        self, account_id: str, *, monthly_spend_cap_usd: float | None
+    ) -> dict[str, Any]: ...
+
     def set_per_workspace_max(
         self, account_id: str, *, per_workspace_max: dict[str, int]
     ) -> dict[str, Any]: ...
@@ -638,6 +642,16 @@ class BrokerClient:
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/lending",
             payload=payload,
+        )
+
+    def set_spend_cap(
+        self, account_id: str, *, monthly_spend_cap_usd: float | None
+    ) -> dict[str, Any]:
+        # None is sent as null: it is how a key's cap is cleared.
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/spend-cap",
+            payload={"monthly_spend_cap_usd": monthly_spend_cap_usd},
         )
 
     def set_per_workspace_max(
