@@ -710,29 +710,27 @@ def test_a_layer_past_a_read_cap_is_refused_with_its_code_and_moves_nothing(worl
 
 
 def test_a_layer_at_the_read_caps_is_read(world, monkeypatch):
-    """The caps refuse only past them: the bundle above them passes with
-    each cap set to what its largest layer actually holds."""
+    """The caps refuse only past them: each layer is read with both caps set
+    to exactly what it holds, unpacked bytes and members, and passes."""
     w = world
     bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
     seen: list[tuple[int, int]] = []
     real = pb.read_layer
 
-    def measuring(handle, plugin, media_type, diff_id):
+    def at_the_caps(handle, plugin, media_type, diff_id):
         data = handle.read()
         raw = gzip.decompress(data)
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
-            seen.append((len(raw), len(tar.getmembers())))
+            count = len(tar.getmembers())
+        seen.append((len(raw), count))
+        monkeypatch.setattr(pb, "LAYER_UNPACKED_CAP", len(raw))
+        monkeypatch.setattr(pb, "LAYER_MEMBERS_CAP", count)
         return real(io.BytesIO(data), plugin, media_type, diff_id)
 
-    monkeypatch.setattr(pb, "read_layer", measuring)
+    monkeypatch.setattr(pb, "read_layer", at_the_caps)
     _push_bundle(w, bundle_id)
     assert _status(w, bundle_id).json()["state"] == "ready"
-    monkeypatch.setattr(pb, "read_layer", real)
-    monkeypatch.setattr(pb, "LAYER_UNPACKED_CAP", max(size for size, _ in seen))
-    monkeypatch.setattr(pb, "LAYER_MEMBERS_CAP", max(count for _, count in seen))
-    again = _apply(w, w["versions"][(GSTACK, "1.0")]["version_id"]).json()["bundle_id"]
-    _push_bundle(w, again)
-    assert _status(w, again).json()["state"] == "ready"
+    assert len(seen) == len(pb.RUNNER_IMAGES) * 2
 
 
 # --- Roll back --------------------------------------------------------------------------

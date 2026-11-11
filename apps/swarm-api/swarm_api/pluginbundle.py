@@ -144,6 +144,20 @@ BUILD_DEADLINE = timedelta(hours=1)
 #: config, and one layer (1.4.2: a cap of 512 MiB per layer).
 MANIFEST_CAP = 4 * 1024 * 1024
 LAYER_CAP = 512 * 1024 * 1024
+#: A pushed layer is written by the job, which runs upstream plugin code, so
+#: it is read as hostile: LAYER_CAP bounds its gzip transfer and each file,
+#: and these bound what unpacking it can cost. The total bytes gunzipped
+#: from one layer: a small gzip of one repeated byte unpacks about a
+#: thousandfold, so without it 512 MiB on the wire is hundreds of GiB to
+#: read and hash. 2 GiB is four times the transfer cap and several times a
+#: real plugin's tree (the largest, gstack with its runtime and browser, is
+#: some hundreds of MiB).
+LAYER_UNPACKED_CAP = 2 * 1024 * 1024 * 1024
+#: The tar members in one layer. tarfile keeps every member's header while
+#: it reads, and the check keeps a line per path, so this also bounds the
+#: memory one read holds; a real plugin's tree is some tens of thousands of
+#: paths at most.
+LAYER_MEMBERS_CAP = 100_000
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
 OCI_LAYER = "application/vnd.oci.image.layer.v1.tar"
@@ -492,10 +506,13 @@ def _diff_ids(registry: BundleRegistry, image: str, manifest: Mapping[str, Any])
 
 
 class _Hashing(io.RawIOBase):
-    """The uncompressed layer, hashed as tarfile reads it: its diff_id."""
+    """The uncompressed layer, hashed as tarfile reads it: its diff_id.
+    Refused `layer_too_large` once more than `cap` bytes have come out."""
 
-    def __init__(self, inner: BinaryIO) -> None:
+    def __init__(self, inner: BinaryIO, cap: int) -> None:
         self._inner = inner
+        self._cap = cap
+        self._read = 0
         self.hash = hashlib.sha256()
 
     def readable(self) -> bool:
@@ -503,6 +520,9 @@ class _Hashing(io.RawIOBase):
 
     def readinto(self, buffer: Any) -> int:
         data = self._inner.read(len(buffer))
+        self._read += len(data)
+        if self._read > self._cap:
+            raise CheckFailed("layer_too_large")
         self.hash.update(data)
         buffer[:len(data)] = data
         return len(data)
@@ -528,7 +548,9 @@ def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> 
     """One plugin's layer, read entry by entry: only paths under
     `/opt/swarm/plugins/<plugin>/`, no `..`, no link, no device, no whiteout
     but the opaque marker on that folder; its uncompressed sha256 is the
-    config's diff_id; the tree digest computed as swarm-bundle computes it."""
+    config's diff_id; the tree digest computed as swarm-bundle computes it.
+    Past LAYER_UNPACKED_CAP bytes unpacked or LAYER_MEMBERS_CAP members the
+    read stops, refused by that fixed check alone."""
     if media_type in (OCI_LAYER_GZIP, DOCKER_LAYER_GZIP):
         inner: BinaryIO = gzip.GzipFile(fileobj=handle, mode="rb")  # type: ignore[assignment]
     elif media_type == OCI_LAYER:
@@ -536,14 +558,16 @@ def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> 
     else:
         raise CheckFailed("layer_media_type")
     root = f"{PLUGIN_ROOT.lstrip('/')}/{plugin}"
-    hashing = _Hashing(inner)
+    hashing = _Hashing(inner, LAYER_UNPACKED_CAP)
     reader = io.BufferedReader(hashing, 1 << 20)
     entries: dict[str, tuple[str, str, str]] = {}
     files: dict[str, str] = {}
     manifest_raw: bytes | None = None
     try:
         with tarfile.open(fileobj=reader, mode="r|") as tar:
-            for member in tar:
+            for count, member in enumerate(tar, 1):
+                if count > LAYER_MEMBERS_CAP:
+                    raise CheckFailed("layer_too_many_members")
                 name = member.name
                 while name.startswith("./"):
                     name = name[2:]
