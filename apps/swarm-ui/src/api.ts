@@ -2881,6 +2881,23 @@ export interface AgentRun {
 }
 
 /**
+ * The attempt's credential fields (contract request 152), as the attempt card's
+ * Plan / API key chip reads them. A tier the contract does not name and an
+ * empty account id read as not recorded (null), never as a guess; a field the
+ * API did not serve stays absent (an older API).
+ */
+export function normaliseAttemptCredential(a: AttemptRow): AttemptRow {
+  const out = { ...a }
+  if ('credential_tier' in a) {
+    out.credential_tier = a.credential_tier === 'plan' || a.credential_tier === 'api_key' ? a.credential_tier : null
+  }
+  if ('account_id' in a) {
+    out.account_id = typeof a.account_id === 'string' && a.account_id.trim() !== '' ? a.account_id : null
+  }
+  return out
+}
+
+/**
  * THE MASKED INPUT IS NOT PART OF THIS READ (PR #210 re-review). It was a
  * fifth read in the `Promise.all` below, so the whole drawer -- the task's
  * state, its events, its attempts -- waited on `/v1/tasks/{id}/input`, and a
@@ -2911,8 +2928,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   // the attempt card reads it off its own row. Absent on an older API.
   const withAccounts = (d: { attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }) =>
     d.accounts_by_attempt === undefined
-      ? d.attempts
-      : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
+      ? d.attempts.map(normaliseAttemptCredential)
+      : d.attempts.map((a) => ({ ...normaliseAttemptCredential(a), account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading') return task
   // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.

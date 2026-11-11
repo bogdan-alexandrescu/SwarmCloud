@@ -2,6 +2,7 @@ import { Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
+  loadAccountPool,
   loadAgentRun,
   loadArtifactContent,
   loadTaskInputOnce,
@@ -38,6 +39,7 @@ import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
+import { accountName } from './accountName'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
@@ -79,6 +81,7 @@ import {
   type ArtifactContent,
   type ArtifactRef,
   type AttemptRow,
+  type CredentialTier,
   type DispatchRole,
   type DispatchStrategy,
   type EndCause,
@@ -3144,6 +3147,8 @@ function errorWriter(run: AgentRun): string {
 
 function Attempts({ run, now }: { run: AgentRun; now: number }) {
   const { task, attempts, attemptsDetail } = run
+  // The Names are read only when an attempt here carries a tier (§5.4).
+  const names = useAccountNames((attempts ?? []).some((a) => credentialTier(a.credential_tier) !== null))
 
   if (attempts === null) {
     return (
@@ -3255,6 +3260,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           several={ordered.length > 1}
           run={run}
           now={now}
+          names={names}
         />
       ))}
 
@@ -3360,6 +3366,119 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
   )
 }
 
+/** The words of a credential tier (§5.4): the chip's and the move line's. */
+function tierWord(tier: CredentialTier): string {
+  return tier === 'plan' ? 'Plan' : 'API key'
+}
+
+function credentialTier(value: unknown): CredentialTier | null {
+  return value === 'plan' || value === 'api_key' ? value : null
+}
+
+/**
+ * EACH ACCOUNT'S NAME, from the accounts read the console already makes
+ * (`GET /v1/accounts`, Overview's `loadAccountPool`): `accountName`, its Name
+ * or else its label, keyed by id. Read only when `wanted` -- an attempt on the
+ * page carries a tier -- so a page of attempts from before the fields costs no
+ * read. Null while it loads and when it fails: the chip's tooltip is then the
+ * id, never a guessed name.
+ */
+export function useAccountNames(wanted: boolean): ReadonlyMap<string, string> | null {
+  const [names, setNames] = useState<ReadonlyMap<string, string> | null>(null)
+  useEffect(() => {
+    if (!wanted) return
+    let live = true
+    loadAccountPool().then((r) => {
+      if (!live) return
+      if (r.status !== 'ok' && r.status !== 'stale') return
+      setNames(new Map(r.data.accounts.map((a) => [a.account_id, accountName(a)])))
+    })
+    return () => {
+      live = false
+    }
+  }, [wanted])
+  return wanted ? names : null
+}
+
+/**
+ * THE ATTEMPT'S `Plan` / `API key` CHIP (lane LP-U5, llm-providers.md §5.4),
+ * read from its own record (`credential_tier`, `account_id`, contract request
+ * 152). Its tooltip is the account's Name, the id when the Name was not read.
+ * Nothing for an attempt that carries neither field (one from before them) or
+ * that ran off the pool (a null tier).
+ */
+export function AttemptCredential({ a, names }: { a: AttemptRow; names: ReadonlyMap<string, string> | null }) {
+  const tier = credentialTier(a.credential_tier)
+  if (tier === null) return null
+  const id = typeof a.account_id === 'string' && a.account_id !== '' ? a.account_id : null
+  const title = id === null ? undefined : (names?.get(id) ?? id)
+  return (
+    <Chip className="att-tier" title={title}>
+      {tierWord(tier)}
+    </Chip>
+  )
+}
+
+/** What a swap's `swap_reason` code means, for the move line's tooltip. */
+const SWAP_REASON_WORD: Readonly<Record<string, string>> = {
+  exhausted: 'The account it was on ran out of quota.',
+  drain: 'The account it was on is being drained.',
+  unusable: 'The credential it was on could not be used.',
+  plan_available: 'A plan became free again, and a plan costs less than a key.',
+}
+
+export interface TierMove {
+  key: string
+  at: string
+  words: string
+  reason: string
+}
+
+/**
+ * A MOVE BETWEEN A PLAN AND A KEY, from this attempt's account-assigned events
+ * (the worker's `_emit_swapped`: `tier`, `from_tier`, `swap_reason`), oldest
+ * first. An event without `from_tier` is compared with the tier the attempt
+ * held before it on this page. A move within one kind, and an event with no
+ * tier (written before the fields), is no move.
+ */
+export function tierMoves(a: AttemptRow, events: readonly TaskEvent[] | null): TierMove[] {
+  const moves: TierMove[] = []
+  let held: CredentialTier | null = null
+  for (const e of events ?? []) {
+    if (e.attempt_id !== a.attempt_id || e.detail?.['cause'] !== 'account_assigned') continue
+    const tier = credentialTier(e.detail['tier'])
+    if (tier === null) continue
+    const from = credentialTier(e.detail['from_tier']) ?? held
+    held = tier
+    if (from === null || from === tier) continue
+    const code = e.detail['swap_reason']
+    const reason =
+      typeof code !== 'string' || code === ''
+        ? 'No reason was recorded.'
+        : (SWAP_REASON_WORD[code] ?? code.replace(/_/g, ' '))
+    moves.push({ key: e.event_id, at: e.at, words: tier === 'plan' ? 'moved to plan' : 'moved to API key', reason })
+  }
+  return moves
+}
+
+/** The attempt's plan ↔ key moves, one line each, the reason in its tooltip. */
+export function AttemptTierMoves({ a, events }: { a: AttemptRow; events: readonly TaskEvent[] | null }) {
+  const moves = tierMoves(a, events)
+  if (moves.length === 0) return null
+  return (
+    <ol className="timeline att-tier-moves">
+      {moves.map((m) => {
+        const when = clockTime(m.at)
+        return (
+          <li key={m.key} className="att-tier-move" title={m.reason}>
+            <span className="ev-type">{m.words}</span> · <time dateTime={m.at}>{when?.text ?? m.at}</time>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
 /**
  * An attempt's account fact (#379). The row's own `account`, joined on from
  * `accounts_by_attempt` by `loadAgentRun`; absent means not read. Whether an
@@ -3384,10 +3503,13 @@ function AttemptCard({
   several,
   run,
   now,
+  names,
 }: {
   a: AttemptRow
   ordinal: number
   isLatest: boolean
+  /** The accounts' Names for the chip's tooltip (`useAccountNames`); null is not read. */
+  names: ReadonlyMap<string, string> | null
   /** More than one attempt came back, so a per-attempt `ran` says something the Elapsed tile does not. */
   several: boolean
   run: AgentRun
@@ -3436,6 +3558,7 @@ function AttemptCard({
               meaning "status". It stays a `.tag`; what changed is that the two
               STATES beside it stopped being one. */}
           {isLatest && <span className="tag">latest</span>}
+          <AttemptCredential a={a} names={names} />
           {a.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         {/* THE BACKEND IS A STRING THE API CHOSE, SO IT IS BROUGHT INTO THIS
@@ -3507,6 +3630,9 @@ function AttemptCard({
         {a.error !== null && a.error !== run.task.last_error && !isParked(a) && (
           <pre className="err full">{a.error}</pre>
         )}
+
+        {/* PLAN ↔ KEY (§5.4): one line per move between the kinds. */}
+        <AttemptTierMoves a={a} events={run.events} />
 
         <AttemptResources a={a} run={run} isLatest={isLatest} />
         <AttemptSpend a={a} profile={run.task.runner_profile} />
