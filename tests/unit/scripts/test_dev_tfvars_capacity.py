@@ -115,7 +115,8 @@ NOT_DERIVED_BY_TERRAFORM = {"provider:mock-provider", "provider:mock-provider:te
 
 #: Live tenants that left dev.tfvars for a workspace record, and their pools.
 #: u-owner moved out of Terraform with lane W9 of #847 on 2026-10-09
-#: (terraform/infra/removed.tf forgets its documents; docs/workspaces.md
+#: (terraform/infra forgot its documents with `removed` blocks, deleted on
+#: 2026-11-11 once the state held none of their addresses; docs/workspaces.md
 #: §3.3): its tenant and pool documents stay live at the values above, but no
 #: tfvars key states them any more, so they are recorded and not compared.
 MOVED_TO_WORKSPACES = {"u-owner"}

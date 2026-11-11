@@ -26,8 +26,9 @@ module "service_account_ids" {
 # DAYONE-BOOT-2, design Q7): bootstrap grants roles to them, so it creates
 # them, and a fresh project's first bootstrap apply needs no "later" switch.
 # This module READS them. The live deployment's accounts were forgotten here,
-# never destroyed (terraform/infra/removed.tf), and adopted by bootstrap's
-# gated import blocks; no email or unique id changed, so no grant moved.
+# never destroyed (`removed` blocks in terraform/infra, deleted once the state
+# held none of their addresses), and adopted by bootstrap's gated import
+# blocks; no email or unique id changed, so no grant moved.
 #
 # A data source, not a string: a plan against a project whose bootstrap has
 # not created an account fails here, by name, instead of granting on an

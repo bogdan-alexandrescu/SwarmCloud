@@ -355,7 +355,7 @@ run "every_service_that_sets_no_threshold_keeps_twelve" {
 
 # The root sets 36 for swarm-api and for no other service. A test cannot
 # address a child module's resources from terraform/infra, so this reads the
-# root's text, the way u_pat_removed.tftest.hcl reads removed.tf.
+# root's text.
 run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
   command = plan
 

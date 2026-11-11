@@ -15,6 +15,9 @@
 # `workspace-delegation.groups-reader-admin-role`) and the two whose code is
 # already in the tree (`declared-value.monitoring-excluded-tenants`,
 # `switch.tenant_job_vpc_egress`).
+# `other.removed-tf-forgotten-grants-pattern` left on 2026-11-11 with
+# terraform/bootstrap/removed.tf, the file it described: both states had
+# applied its blocks and held none of their addresses.
 #
 # Fragments. A lane that adds, changes or removes a collectable item writes
 # install/manifest.d/<lane>.yaml with the same top-level keys (`entries`,
@@ -52,7 +55,7 @@ generated_from: docs/design/day-one/manifest.draft.yaml at main ee1fb3f, 2026-10
 counts:
   kind:
     iam-binding: 52
-    other: 46
+    other: 45
     switch: 40
     custom-role: 30
     gcp-api: 26
@@ -89,14 +92,14 @@ counts:
     oauth-brand: 1
     oauth-client: 1
   scope:
-    core: 377
+    core: 376
     addon:ci: 43
     addon:typesafe: 12
     addon:bright-data-egress: 9
     addon:tailscale: 4
     addon:brave-search: 3
   provider:
-    engine: 393
+    engine: 392
     human-in-terminal: 21
     org-admin: 18
     human-in-console: 13
@@ -109,7 +112,7 @@ counts:
     '4': 31
     '5': 59
     '6': 38
-    '7': 113
+    '7': 112
     '8': 10
     '9': 20
     '10': 17
@@ -119,7 +122,7 @@ counts:
     '14': 5
     '15': 10
   total:
-    entries: 448
+    entries: 447
 
 entries:
 - id: local-tool.checkov
@@ -6671,23 +6674,6 @@ entries:
   - terraform/infra/custom_roles_moved_to_bootstrap.tf:105-135
   notes: 'SURPRISE / HARDCODED LIVE VALUE: this moved block''s FROM address is LITERALLY "projects/example-shared-project/roles/..." -- the shared staging project''s name baked into a resource address string in terraform/infra/*.tf. On a from-scratch install into a NEW project this moved block''s source address never existed in the new project''s state, so terraform should simply no-op on it (moved blocks are harmless when the FROM resource never existed) -- but it is a clear sign this root''s history was written against one specific live project and never fully genericized. Confirm with `terraform plan` on the new project before trusting this is inert.'
   step: infra.pass-2
-- id: other.removed-tf-forgotten-grants-pattern
-  kind: other
-  scope: core
-  stage: 7
-  provider: engine
-  check: tf -chdir=terraform/bootstrap state list | grep example_tenant
-  apply: 'terraform/bootstrap/removed.tf: moved{} + removed{ lifecycle { destroy = false } } pairs for 5 resource instances tied to tenant example-tenant'
-  verify: the 5 live grants (deployer_admin on the worker SA, 3 forge-slot grants, 1 forge_slot_reader) are forgotten from Terraform state but untouched live
-  explain: Demonstrates the pattern this codebase uses to let a tenant's workspace leave Terraform management (because a person's workspace lives outside Terraform, WD3) WITHOUT destroying its live IAM grants. Specific to the live example-shared-project tenant example-tenant; irrelevant content for a new project but the PATTERN is reusable.
-  guards: 'docs/workspaces.md §3.3, lane W9 of #847; file states explicitly these blocks must NEVER be changed to destroy=true'
-  secret_entry: null
-  depends_on:
-  - declared-value.infra_tenants_tfvars
-  evidence:
-  - terraform/bootstrap/removed.tf:1-104
-  notes: On a fresh project this file's moved/removed blocks reference resource instances (keyed on "example-tenant") that will never have existed in the new state, so they are harmless no-ops there -- but they are dead, project-specific content worth deleting or templating out for a true day-one fork.
-  step: bootstrap.pass-2
 - id: other.url-map
   kind: other
   scope: core
