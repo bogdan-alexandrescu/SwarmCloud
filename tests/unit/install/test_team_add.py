@@ -67,8 +67,17 @@ class Api:
     def __init__(self, *, probe: Mapping[str, Any] | None = None, teams: Sequence[str] = (),
                  workspace_states: Sequence[str] = ("approved", "provisioning", "ready"),
                  accounts_after: int = 0, smoke_states: Sequence[str] = ("QUEUED", "RUNNING", "SUCCEEDED"),
-                 create_state: str = "approved", caller: str = ADMIN) -> None:
+                 create_state: str = "approved", caller: str = ADMIN,
+                 accounts: Sequence[Mapping[str, Any]] | None = None,
+                 voice: Mapping[str, Any] | None = None, tier: str | None = "plan") -> None:
         self.calls: list[str] = []
+        #: The team's rows of `GET /v1/accounts` once any is there: one
+        #: Anthropic plan the team owns, unless a test names others.
+        self._rows = list(accounts) if accounts is not None else [plan_row()]
+        #: `GET /v1/voice/pool`'s answer for the caller.
+        self._voice = voice if voice is not None else {"pool": "voice-it", "account": None,
+                                                        "reason": "no_voice_account_registered"}
+        self._tier = tier
         self._create_state = create_state
         self._caller = caller
         self._probe = probe if probe is not None else {"groups": [{"group": "admins@example.com", "state": "met"}],
@@ -124,7 +133,20 @@ class Api:
         if self._accounts_after > 0:
             self._accounts_after -= 1
             return []
-        return [{"id": "acct-1", "state": "AVAILABLE"}]
+        return list(self._rows)
+
+    def summary_accounts(self, team: str) -> Sequence[Mapping[str, Any]]:
+        self.calls.append("summary-accounts")
+        return list(self._rows)
+
+    def voice_pool(self) -> Mapping[str, Any]:
+        self.calls.append("voice-pool")
+        return self._voice
+
+    def smoke_attempts(self, team: str, task_id: str) -> Sequence[Mapping[str, Any]]:
+        self.calls.append("attempts")
+        return [{"attempt": 1, "credential_source": "account_pool" if self._tier else None,
+                 "credential_tier": self._tier}]
 
     def start_smoke(self, team: str) -> str:
         self.calls.append(f"smoke {team}")
@@ -133,6 +155,58 @@ class Api:
     def task_state(self, team: str, task_id: str) -> str:
         self.calls.append("task")
         return self._smoke.pop(0) if len(self._smoke) > 1 else self._smoke[0]
+
+
+def plan_row(*, provider: str = "anthropic", owner: str = TEAM, state: str = "AVAILABLE",
+             pools: Sequence[str] = ("workspace",), label: str = "plan-1") -> dict[str, Any]:
+    """A row of the broker's `GET /v1/accounts` (`account_to_api`) for a plan."""
+    vendor = "openai" if provider.startswith("openai") else "anthropic"
+    return {"account_id": f"{owner}:{label}", "owner_tenant": owner, "label": label, "provider": provider,
+            "vendor": vendor, "kind": "plan", "state": state, "lend_to": [], "lends": {}, "pools": list(pools),
+            "voice_dedicated": False}
+
+
+def key_row(*, provider: str = "anthropic-api", owner: str = TEAM, lent_to: Sequence[str] = (),
+            state: str = "AVAILABLE", pools: Sequence[str] = ("workspace",), label: str = "key-1",
+            dedicated: bool = False) -> dict[str, Any]:
+    """A row of the broker's `GET /v1/accounts` for an API key, lent with a cap (§4.6)."""
+    vendor = "openai" if provider.startswith("openai") else "anthropic"
+    return {"account_id": f"{owner}:{label}", "owner_tenant": owner, "label": label, "provider": provider,
+            "vendor": vendor, "kind": "api_key", "state": state, "lend_to": list(lent_to),
+            "lends": {t: {"max_agents": 2, "monthly_spend_cap_usd": 50, "cap_set": True} for t in lent_to},
+            "pools": list(pools), "voice_dedicated": dedicated}
+
+
+class Ctx:
+    """What `swarm team add` reads of the verb's context (`VerbContext`): the
+    install state, and a save that writes it, counted."""
+
+    def __init__(self, choice: str | None = "plans", *, voice: bool | None = None) -> None:
+        from swarm_install.state import InstallState
+
+        self.state = InstallState(project=PROJECT, environment="dev", region="us-central1",
+                                  hostname="swarm.example.com")
+        if choice is not None:
+            self.state.outputs[team_mod.LLM_PROVIDERS] = {"choice": choice}
+        if voice is not None:
+            self.state.outputs["voice_it"] = {"enabled": voice}
+        self.saves = 0
+
+    def save(self, change: Any) -> None:
+        change(self.state)
+        self.saves += 1
+
+
+class Asked:
+    """The installer's question, answered from a list; every question kept."""
+
+    def __init__(self, *answers: str) -> None:
+        self.answers = list(answers)
+        self.questions: list[str] = []
+
+    def __call__(self, question: str) -> str:
+        self.questions.append(question)
+        return self.answers.pop(0)
 
 
 class Cluster:
@@ -182,14 +256,16 @@ class Pages:
 
 
 def _flow(api: Api, cluster: Cluster | None = None, *, git: GitSecret | None = None,
-          pages: Pages | None = None) -> tuple[team_mod.TeamAdd, io.StringIO, Events]:
+          pages: Pages | None = None, ctx: Ctx | None = None,
+          ask: Asked | None = None) -> tuple[team_mod.TeamAdd, io.StringIO, Events]:
     out = io.StringIO()
     clock = Clock()
     events = Events(clock.now, out=out)
     the_cluster = cluster or Cluster()
     flow = team_mod.TeamAdd(api=api, cluster=lambda: the_cluster, spec_settings=_settings,
                             git_secret=git if git is not None else GitSecret(api), console=CONSOLE,
-                            clock=clock, events=events, out=out, open_page=pages or Pages())
+                            clock=clock, events=events, out=out, open_page=pages or Pages(),
+                            ctx=ctx if ctx is not None else Ctx(), ask=ask if ask is not None else Asked())
     return flow, out, events
 
 
@@ -325,7 +401,7 @@ def test_smoke_waits_for_a_pool_account() -> None:
 
 def test_an_account_that_is_not_available_does_not_start_the_smoke() -> None:
     api = Api()
-    api.pool_accounts = lambda team: [{"id": "acct-1", "state": "PAUSED"}]  # type: ignore[method-assign]
+    api.pool_accounts = lambda team: [plan_row(state="PAUSED")]  # type: ignore[method-assign]
     flow, _out, _ = _flow(api)
     from swarm_install.waits import WaitGaveUp
 
@@ -571,9 +647,12 @@ def test_the_verb_builds_its_resume_command_and_console(monkeypatch) -> None:
     verb = discover()["team"]
     state = InstallState(project=PROJECT, environment="dev", region="us-central1",
                          hostname="swarm.example.com")
-    flow = verb.build(_team_args(), state, Events(lambda: 0.0, out=io.StringIO()), ctx=object())
+    ctx = object()
+    flow = verb.build(_team_args(), state, Events(lambda: 0.0, out=io.StringIO()), ctx=ctx)
     assert flow.resume == f"swarm team add {GROUP} --project {PROJECT}"
     assert flow.console == "https://swarm.example.com"
+    # The install state the plans / keys / both answer is read from and recorded in (llm-providers.md §7).
+    assert flow.ctx is ctx
 
 
 def test_the_git_secret_is_read_from_secret_manager() -> None:

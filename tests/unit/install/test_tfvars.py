@@ -715,3 +715,18 @@ def test_an_infra_pass_records_the_builtins_switch_it_applied(monkeypatch: pytes
     ctx = FakeCtx()
     bootstrap.apply_pass(ctx, bootstrap.Deps(gcp=lambda: None, root_dir=lambda ctx, root: tmp_path / root), pass_name)
     assert ctx.outputs.get(tfvars.BUILTINS_MANAGED_KEY) == value
+
+
+# -- the Voice it line of `swarm team add`'s summary (llm-providers.md §7) ----
+
+
+def test_the_voice_it_summary_line_links_its_settings_and_says_live_needs_a_key() -> None:
+    line = tfvars.voice_it_summary(install_state(voice_it={"enabled": True}), "https://swarm.example.com")
+    assert line is not None
+    assert "https://swarm.example.com/voice/settings" in line, line
+    assert "Dedicated OpenAI key" in line and "Live needs a key" in line, line
+
+
+@pytest.mark.parametrize("outputs", [{"voice_it": {"enabled": False}}, {}])
+def test_no_voice_it_summary_line_when_voice_it_is_off_or_unanswered(outputs: dict) -> None:
+    assert tfvars.voice_it_summary(install_state(**outputs), "https://swarm.example.com") is None
