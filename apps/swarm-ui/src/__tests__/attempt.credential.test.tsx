@@ -131,11 +131,12 @@ describe('a move between a plan and a key, on the attempt\'s timeline', () => {
     const moves = tierMoves(a, [swap(3, 'plan', 'api_key', 'exhausted'), swap(6, 'api_key', 'plan', 'plan_available')])
     expect(moves.map((m) => m.words)).toEqual(['moved to API key', 'moved to plan'])
     const { container } = render(<AttemptTierMoves a={a} events={[swap(3, 'plan', 'api_key', 'exhausted')]} />)
-    const lines = container.querySelectorAll<HTMLElement>('.att-tier-move')
+    const lines = [...container.querySelectorAll<HTMLElement>('.att-tier-move')]
     expect(lines).toHaveLength(1)
-    expect(text(lines[0].querySelector('.ev-type'))).toBe('moved to API key')
-    expect(lines[0].title).toMatch(/quota/i)
-    expect(text(lines[0])).not.toMatch(/quota|exhausted/i)
+    const line = lines[0]!
+    expect(text(line.querySelector('.ev-type'))).toBe('moved to API key')
+    expect(line.title).toMatch(/quota/i)
+    expect(text(line)).not.toMatch(/quota|exhausted/i)
   })
 
   it('a swap within one kind draws no line, and nor does an event without a tier', () => {
@@ -203,8 +204,9 @@ describe('the attempt card on Details', () => {
       [swap(3, 'api_key', 'plan', 'plan_available')],
     )))
     const added = after.split(/\s+/).length - before.split(/\s+/).length
-    // `Plan`, `moved to plan` and the line's time: no sentence on the surface.
-    expect(added).toBeLessThanOrEqual(5)
+    // `Plan`, `moved to plan`, `·` and the line's clock (`10:03 UTC`): no
+    // sentence on the surface.
+    expect(added).toBeLessThanOrEqual(7)
     expect(after).not.toMatch(/plan available|free again/i)
   })
 
