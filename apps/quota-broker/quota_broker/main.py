@@ -66,6 +66,7 @@ from .accounts import (
     HOLD_LOG_RETENTION,
     MAX_AGENTS_BEFORE_READING,
     SWAP_DRAIN,
+    SWAP_EXHAUSTED,
     SWAP_PLAN_AVAILABLE,
     SWAP_REASONS,
     SWAP_UNUSABLE,
@@ -81,6 +82,7 @@ from .accounts import (
     lends_from_firestore,
     lend_spend_from_firestore,
     month_spend_from_firestore,
+    next_spend_month,
     soonest,
     spend_cap_from_firestore,
     spend_month,
@@ -532,6 +534,19 @@ class _AttemptHold(StrictModel):
     assignment_id: str = Field(min_length=1, max_length=128)
     task_id: str = Field(min_length=1, max_length=128)
     attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class AccountHoldStatus(_AttemptHold):
+    """A holder's per-turn status read: the proof, and on a KEY the running
+    spend (§4.6).
+
+    `cost_usd` is the attempt's estimate of what has run on this hold so far,
+    the same figure the hold's close will carry, bounded as a release's and a
+    swap's are. On a key it is recorded on the hold (`Hold.running_cost_usd`)
+    and counted toward the month cap and a borrower's lend cap before the
+    hold closes. Ignored on a plan's hold: a plan's price is flat."""
+
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class WindowIn(StrictModel):
@@ -1062,6 +1077,22 @@ def account_to_api(
             "limited_until": _iso(getattr(account, "limited_until", None)),
             "window": getattr(account, "limited_window", None),
         })
+    # A KEY'S OWN MARKS (§5.1, §5.2): credit gone, or the month's spend --
+    # closed and running (`Account.spent`) -- at its cap. `choose()` skips
+    # both (`Account.has_headroom`), so the verdict says so with its reason,
+    # for every reader, and no reader re-derives it.
+    if api_key.is_key(account.provider):
+        exhausted_at = getattr(account, "exhausted_at", None)
+        if isinstance(exhausted_at, datetime):
+            blocked_by.append({"reason": CAP_EXHAUSTED, "exhausted_at": exhausted_at.isoformat()})
+        over = getattr(account, "is_over_spend_cap", None)
+        if callable(over) and over(now):
+            blocked_by.append({
+                "reason": CAP_SPEND,
+                "monthly_spend_cap_usd": account.monthly_spend_cap_usd,
+                "spent_usd": round(account.spent(now), 6),
+                "clears_at": next_spend_month(now).isoformat(),
+            })
     max_agents = getattr(account, "max_agents", None)
     live_holds = getattr(account, "live_holds", None)
     if isinstance(max_agents, int) and callable(live_holds):
@@ -1225,7 +1256,10 @@ def account_to_api(
         and not [b for b in blocked_by if not b.get("advisory")],
         #: What refuses it: each window under its floor (`used`, the `floor`
         #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
-        #: every slot is taken. Empty when nothing does.
+        #: every slot is taken; on a key, `reason` `exhausted` (credit gone,
+        #: with `exhausted_at`) or `spend_cap` (the month's spend, closed and
+        #: running, at `monthly_spend_cap_usd`, with `spent_usd` and when it
+        #: `clears_at`). Empty when nothing does.
         "blocked_by": blocked_by,
         #: When a window that blocks it clears, or null when no window does --
         #: a full account frees when an agent on it finishes, which no clock
@@ -2490,6 +2524,93 @@ def renew_voice_hold(
     return _apply(transaction)
 
 
+def record_running_spend(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    cost_usd: float,
+    now: datetime,
+) -> tuple[dict[str, Any], Hold] | None:
+    """Record a KEY holder's running spend on its hold, in one transaction
+    (§4.6). (the account document as written, the hold), or None when the
+    caller holds no live hold there: proved again inside the transaction, so
+    a hold released or fenced since `_holder` read it is never written.
+
+    The stored figure only rises: two reads crossing in flight never lower
+    what the caps count. A plan's hold is answered unchanged; its price is
+    flat. Nothing else on the document moves, so `assigned` and every other
+    hold are written back as they were read."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[dict[str, Any], Hold] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        held = _attempt_hold(
+            data, now, assignment_id=assignment_id, tenant_id=tenant_id,
+            task_id=task_id, attempt_id=attempt_id,
+        )
+        if held is None:
+            return None
+        if not api_key.is_key(data.get("provider")):
+            return data, held
+        figure = max(held.running_cost_usd or 0.0, round(cost_usd, 6))
+        if figure == held.running_cost_usd:
+            return data, held
+        holds = list(holds_from_firestore(data.get("holds")))
+        updated = replace(held, running_cost_usd=figure)
+        holds = [updated if h == held else h for h in holds]
+        payload = _hold_payload(holds)
+        txn.update(ref, payload)
+        return {**data, **payload}, updated
+
+    return _apply(transaction)
+
+
+def _raw_spend_reached(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The spend cap a KEY holder has reached on a raw document, by name
+    (`CAP_SPEND` for the key's month cap, `CAP_LEND_SPEND` for a borrower's
+    lend), or None. The spend is `_raw_tenant_refusal`'s, closed and running,
+    so the holder that took it over is answered `move` at its next turn
+    boundary (§4.6), not when it ends. A figure nobody can read moves nobody:
+    the next grant is refused on it anyway."""
+    if not api_key.is_key(data.get("provider")):
+        return None
+    owner = data.get("owner_tenant")
+    month = spend_month(now)
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        lent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner), key=True)
+            if isinstance(owner, str) and owner
+            else {}
+        )
+    except ValueError:
+        return None
+    if cap is not None and spent + _running_spend(live) >= cap:
+        return CAP_SPEND
+    lend = lends.get(tenant_id) if tenant_id != owner else None
+    if lend is not None and lend.monthly_spend_cap_usd is not None and (
+        lent.get(tenant_id, 0.0) + _running_spend(live, tenant_id)
+        >= lend.monthly_spend_cap_usd
+    ):
+        return CAP_LEND_SPEND
+    return None
+
+
 class PoolInUse(Exception):
     """A pool cannot be removed while the account holds a lease of it."""
 
@@ -2584,6 +2705,10 @@ def _raw_tenant_refusal(
     `max_agents` and spend cap (Q7). A malformed cap or spend is a refusal,
     as a malformed `max_agents` is no room: a figure nobody can read must not
     read as no limit.
+
+    THE SPEND IS `Account.spent`'s: the closed holds' and the live holds'
+    running spend (`Hold.running_cost_usd`), so a long attempt reaches the
+    cap before it ends (§4.6).
     """
     owner = data.get("owner_tenant")
     is_key = api_key.is_key(data.get("provider"))
@@ -2593,7 +2718,12 @@ def _raw_tenant_refusal(
     try:
         cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
         spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
-        lend_spent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        spent += _running_spend(live)
+        lend_spent = dict(lend_spend_from_firestore(data.get("lend_spend")).get(month, {}))
+        if tenant_id != owner:
+            lend_spent[tenant_id] = lend_spent.get(tenant_id, 0.0) + _running_spend(
+                live, tenant_id
+            )
         lends = (
             lends_from_firestore(data.get("lends"), owner_tenant=str(owner or ""), key=is_key)
             if isinstance(owner, str) and owner
@@ -2616,6 +2746,16 @@ def _raw_tenant_refusal(
         ):
             return CAP_LEND_SPEND
     return None
+
+
+def _running_spend(live: list[Hold], tenant_id: str | None = None) -> float:
+    """The live holds' running spend (`Hold.running_cost_usd`), all of them
+    or one workspace's: what `Account.spent` adds to the closed spend."""
+    return sum(
+        h.running_cost_usd or 0.0
+        for h in live
+        if tenant_id is None or h.tenant_id == tenant_id
+    )
 
 
 def _spend_payload(
@@ -4078,6 +4218,9 @@ def create_app(
         body: RateLimitReport = Body(default_factory=RateLimitReport),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        key_provider = provider.strip().lower()
+        if key_provider in API_KEY_PROVIDERS:
+            return _key_credit_gone(request, authorization, key_provider, tenant_id, body)
         name = _known_provider(provider)
         _authorize(request, authorization, tenant_id)
         scope = _account_scope(request, name, tenant_id, body, HEALTH_EXHAUSTED)
@@ -4093,6 +4236,60 @@ def create_app(
         request.app.state.metrics.reports.labels(provider=name, kind="exhausted").inc()
         request.app.state.metrics.observe(state)
         return _scoped_answer(state, scope)
+
+    def _key_credit_gone(
+        request: Request,
+        authorization: str | None,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport,
+    ) -> dict[str, Any]:
+        """A key holder's credit-gone report under the key's OWN provider
+        (§5.2): `anthropic-api` or `openai-api`, for a held account of that
+        provider, and nothing else.
+
+        Marked `exhausted_at` by the health record's `exhausted` kind
+        (`AccountStore.record_health`), which a Resume or the hourly probe
+        clears -- and NOT a rate limit: no `limited_until`, because credit
+        gone does not reset by itself. The tenant's AIMD target is not
+        touched; the answer reads the key's vendor's, as it stands.
+
+        REFUSED (422), as every key provider was before: a report that names
+        no account, one whose account is not a key of this provider, and one
+        whose hold proof is stale -- a key provider has no tenant-level
+        reading to fall back on, so an unproven report counts for nothing.
+        """
+        _authorize(request, authorization, tenant_id)
+        ref = body.account
+        held = (
+            _held_report_account(request, tenant_id, provider, ref)
+            if ref is not None
+            else None
+        )
+        if held is None:
+            if ref is not None:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerValidationError(
+                f"a report under {provider} names a held account of that provider"
+            )
+        account, hold = held
+        request.app.state.account_store.record_health(
+            account.account_id,
+            HEALTH_EXHAUSTED,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        log.warning(
+            "a key's credit is gone; it is skipped until a Resume or the hourly probe",
+            extra={"account_id": account.account_id, "tenant_id": tenant_id,
+                   "provider": provider},
+        )
+        vendor = VENDOR_OF.get(provider, provider)
+        state = request.app.state.broker.current(vendor, tenant_id)
+        request.app.state.metrics.reports.labels(provider=provider, kind="exhausted").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, SCOPE_ACCOUNT)
 
     @app.post("/v1/quota/{provider}/{tenant_id}/account-error")
     def report_account_error(
@@ -6782,7 +6979,7 @@ def create_app(
     def account_hold_status(
         request: Request,
         account_id: str,
-        body: _AttemptHold,
+        body: AccountHoldStatus,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         """Whether the caller's hold must move (S14). One cheap read.
@@ -6791,10 +6988,41 @@ def create_app(
         the mark a drain wrote on the hold, or `drain` for an account that is
         DRAINING whatever its holds say. A POST, so the assignment id is in a
         body rather than in a URL an access log keeps.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`,
+        recorded on its hold in one transaction (`record_running_spend`), so
+        the key's month cap and a borrower's lend cap count a long attempt
+        before it ends. A key whose spend, closed and running, has reached
+        either cap answers `move` `exhausted`: the worker checkpoints and
+        swaps at this turn boundary, and the swap closes the hold with its
+        `cost_usd`, counted once.
         """
         tenant_id, data, hold = _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        if body.cost_usd is not None and api_key.is_key(data.get("provider")):
+            recorded = record_running_spend(
+                request.app.state.broker.db,
+                account_id,
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+                cost_usd=body.cost_usd,
+                now=now,
+            )
+            if recorded is None:
+                # Released or fenced between the proof and the write.
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                )
+            data, hold = recorded
         state = data.get("state")
         move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        if move is None and _raw_spend_reached(
+            data, _live_holds(data, now), tenant_id, now
+        ) is not None:
+            move = SWAP_EXHAUSTED
         if move is None:
             move = _plan_available(request, tenant_id, data, hold)
         return {"account_id": account_id, "held": True, "move": move, "state": state}
