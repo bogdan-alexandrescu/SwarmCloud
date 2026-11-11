@@ -212,7 +212,7 @@ describe('Settings › Profile', () => {
     const link = (name: string) => within(region(name)).getAllByRole('link').map((a) => a.getAttribute('href'))
     expect(link('You and your workspaces')).toContain('/admin/workspaces?tab=setup')
     expect(link('Your connections')).toEqual(expect.arrayContaining(['/config/github', '/config/secrets']))
-    expect(link('Claude accounts')).toContain('/capacity/accounts')
+    expect(link('Claude accounts')).toContain('/capacity/llm-providers/plans')
   })
 
   it('switches workspace before opening Access for a workspace that is not the acting one', async () => {
@@ -540,7 +540,7 @@ describe('Settings › Profile carries no explanatory prose on its surface', () 
       ['Admin › Workspaces › Your workspace › Setup', '/admin/workspaces?tab=setup'],
       ['Config › GitHub access', '/config/github'],
       ['Config › Secrets', '/config/secrets'],
-      ['Capacity › Accounts', '/capacity/accounts'],
+      ['LLM Providers', '/capacity/llm-providers/plans'],
     ]
     for (const [name, href] of outs) {
       const link = screen.getByRole('link', { name })

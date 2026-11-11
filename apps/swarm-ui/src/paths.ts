@@ -273,7 +273,15 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/profiles': '/capacity/pools/profiles',
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
+  // The old Accounts path: still served, and App's `fromAddress` lands it on
+  // LLM Providers › Plans with its `?account=` kept (LP-U1, llm-providers.md §6.1).
   'capacity/accounts': '/capacity/accounts',
+  // Capacity › LLM Providers' two sub-pages (LlmProviders.tsx); the tab's
+  // own address opens Plans, its first. Listed first so the path reads back
+  // as Plans' own address (FIXED_BACK keeps the last entry for a path).
+  'capacity/llm-providers': '/capacity/llm-providers/plans',
+  'capacity/llm-providers/plans': '/capacity/llm-providers/plans',
+  'capacity/llm-providers/api-keys': '/capacity/llm-providers/api-keys',
   // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
   'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
