@@ -1,60 +1,67 @@
 # ---------------------------------------------------------------------------
-# Managed plugins: the bundle build's account, its grants, the repository it
+# Managed plugins: the bundle job, its account's grants, the repository it
 # pushes to and the dependency mirror it installs through
-# (docs/design/managed-plugins.md §1.4.2, §1.4.3, §15.2; lane 15 of §17.1).
+# (docs/design/managed-plugins.md §1.4.2, §1.4.3, §1.4.7, §15.2).
 # ---------------------------------------------------------------------------
 #
 # gstack and security-audit are managed plugins whose versions are BUILT into
 # an image version rather than unpacked per attempt (§1.4, the owner's Q13 of
 # 6 November 2026). When a platform admin applies an update to one of them,
-# swarm-api starts one Cloud Build build in this project, as the account
-# below, running the swarm-plugin-bundler image (lane 14) FROM this
-# deployment's own copy of the live release image, by digest (the owner,
-# 9 November 2026: the build runs in the deployment). Its output is one image
-# per runner image a claude-code profile uses, pushed to
-# `<name_prefix>-plugin-bundles` and run by digest only.
+# swarm-api runs ONE EXECUTION of the Cloud Run job below,
+# `swarm-plugin-bundle`, whose identity is the builder account and whose image
+# is the bundler image by digest (the owner, 11 November 2026: one job
+# execution under the builder account). The job appends one layer per bundled plugin to
+# this deployment's copy of each live release image, with no container daemon
+# (images/plugin-bundler/swarm-bundle, `job`), and pushes the result to
+# `<name_prefix>-plugin-bundles`, run by digest only.
 #
-# THE BUILDER MAY DO EXACTLY FOUR THINGS (§15.2), each a grant below:
+# WHAT A CALLER REACHES. swarm-api holds swarmPluginBundleRunner
+# (run.jobs.run, run.jobs.runWithOverrides, run.executions.get; defined in
+# terraform/bootstrap/plugin_bundle_runner.tf) on THIS job's IAM policy and
+# nowhere else: it can start the job with arguments and read its executions,
+# and cannot change its image, command, identity or network, run any other
+# job, or act as the builder. Everything the job is configured with is in its
+# fixed command; an execution's arguments follow the command's `--` and are
+# checked by the entrypoint against closed patterns, which also discards the
+# whole environment an override can set (§1.4.2).
 #
-#   * read the pinned source archives under platform/sources/ in the plugins
-#     bucket (get only; a list names the bucket, so no condition admits one);
-#   * read the deployment's copies of the release images (the bundler image
-#     and the base it builds FROM) in the platform repository;
-#   * fetch dependencies, only through this deployment's mirrors (the owner,
-#     9 November 2026, Q19): gstack's npm packages through the npm remote
-#     repository below at its frozen bun.lock, Bun's pinned zip from the build
-#     mirror bucket (build_mirror.tf, the same object the release build reads),
-#     and the Dockerfile frontend through the Docker Hub mirror;
-#   * push to `<name_prefix>-plugin-bundles`, and to no other repository;
+# THE BUILDER MAY DO EXACTLY FIVE THINGS (§1.4.2, "The builder's grants"):
 #
-# plus write its own build log (Cloud Build refuses a build as a user-specified
-# account that cannot write one). No Firestore, no Secret Manager, no GitHub,
-# no tenants/ prefix, no other project role.
+#   1. read the pinned source archives under platform/sources/ in the plugins
+#      bucket (get only, by condition; a list names the bucket, so none);
+#   2. read the platform repository: the release images it appends to and
+#      mounts from (Cloud Run pulls the job's own image as its service agent);
+#   3. read the ONE pinned Bun object in the build mirror bucket, by condition
+#      on its name (images/agent-runtime-base/bundled-plugins.json);
+#   4. read the npm mirror repository, which `bun install --frozen-lockfile`
+#      fetches through (Q19);
+#   5. write to `<name_prefix>-plugin-bundles` alone: push, no delete,
+#      immutable tags.
+#
+# REMOVED with the job: the Docker Hub mirror read (no Dockerfile
+# frontend without a daemon) and roles/logging.logWriter on the project. The
+# job writes stdout and stderr, which Cloud Run collects for the job itself;
+# the sink below routes those entries to the platform's own log bucket.
 #
 # THE SWITCH. Every resource here is planned only with var.builtins_managed
 # "on": off, as an existing deployment keeps it until a platform admin turns
-# it on (§1.4.5), plans nothing at all, so nothing here costs money or grants
-# access before the switch.
+# it on (§1.4.5), plans nothing at all. The job and the rows that exist only
+# for it (swarm-api's binding, the log sink) also wait for the release to
+# carry the bundler image's digest, as the intake job waits for its own
+# (images.json lists it as a gated image).
 #
-# WHAT IS NOT HERE, AND WHY (asked for in this lane's pull request).
+# WHAT IS NOT HERE, AND WHY. The custom role swarmPluginBundleRunner and the
+# release deployer's actAs on the builder (deploying a job that runs as an
+# account needs it) are terraform/bootstrap rows the owner applies
+# (plugin_bundle_runner.tf): this root may define no custom role
+# (tests/terraform/custom_roles_out_of_ci.tftest.hcl) and the deployer holds
+# no right to set the builder's IAM policy. swarm-api holds no actAs on the
+# builder and no build-service permission anywhere.
 #
-#   * swarm-api's roles/iam.serviceAccountUser on the builder account. Setting
-#     an account's IAM policy needs serviceAccountAdmin on that account, which
-#     the release deployer holds only on the accounts terraform/bootstrap
-#     grants it on (deployer_service_accounts.tf, #334), and this root runs as
-#     the deployer in every release and every install pass. So the row is a
-#     terraform/bootstrap change the owner applies; until it is applied no
-#     bundle build can start, and nothing else here depends on it.
-#   * swarm-api's right to start a build (cloudbuild.builds.create and get).
-#     roles/cloudbuild.builds.editor is not on the deployer's grantable project
-#     roles, and the narrow role it should be is a custom role, which this root
-#     may not define (tests/terraform/custom_roles_out_of_ci.tftest.hcl).
-#
-# THE OTHER TEAM'S RESOURCES. Nothing here names one: one account, two
-# repositories, all spelled from name_prefix; the grants are on those two
-# repositories, the platform repository, the plugins bucket and the build
-# mirror bucket, and the one project-level row is roles/logging.logWriter,
-# which is on the deployer's grantable list.
+# THE OTHER TEAM'S RESOURCES. Nothing here names one: one job, one sink, two
+# repositories, all spelled from name_prefix or fixed platform names; the
+# grants are on those repositories, the platform repository, the plugins
+# bucket, the build mirror bucket and the job itself. No project-level row.
 
 locals {
   builtins_managed_on = var.builtins_managed == "on"
@@ -67,14 +74,54 @@ locals {
   plugin_mirror_npm_id         = "${var.name_prefix}-mirror-npm"
 
   # The image path every bundle image is under: what the scheduler accepts a
-  # bundle record's digest under (§1.4.4) and what swarm-api pushes to. ""
-  # with the switch off, so nothing accepts a bundle digest. Read only by
-  # tests/terraform until lanes 17 and 18 set it on swarm-api and the scheduler.
-  # tflint-ignore: terraform_unused_declarations
+  # bundle record's digest under (§1.4.4) and what the job pushes to (its
+  # command's --bundle-repository). "" with the switch off, so nothing
+  # accepts a bundle digest.
   plugin_bundle_repository = local.builtins_managed_on ? "${var.region}-docker.pkg.dev/${var.project_id}/${local.plugin_bundles_repository_id}" : ""
 
   # The pinned source archives a bundle builds from (§1.4.3): get only.
   plugins_sources_condition = "resource.name.startsWith(\"${local.plugins_objects}/platform/sources/\")"
+
+  # THE ONE Bun object the gstack recipe reads (its pinned zip, at its
+  # upstream URL without https://, as scripts/refresh-build-mirror.sh uploads
+  # it). Read from the release's default pins, the one place it is written, so
+  # a Bun bump moves the condition in the same commit as the pin.
+  plugin_bundle_bun_object    = jsondecode(file("${path.module}/../../images/agent-runtime-base/bundled-plugins.json")).plugins.gstack.toolchain.bun.object
+  plugin_bundle_bun_condition = "resource.name == \"projects/_/buckets/${google_storage_bucket.build_mirror.name}/objects/${local.plugin_bundle_bun_object}\""
+
+  # The job: switch on AND the release carries the bundler image's digest.
+  plugin_bundler_image   = lookup(var.image_refs, "swarm-plugin-bundler", "")
+  plugin_bundle_job_on   = local.builtins_managed_on && local.plugin_bundler_image != ""
+  plugin_bundle_job_name = "swarm-plugin-bundle"
+
+  # The runner images a bundle is built for, each with the gstack list its
+  # tree carries: the browser image lays the browser list over the base list
+  # (images/agent-runtime-browser/Dockerfile), every other image the base
+  # list. The entrypoint refuses a runner image this list does not name.
+  plugin_bundle_runner_images = [
+    for name in local.runner_images : "--runner-image=${name}:${name == "agent-runtime-browser" ? "browser" : "base"}"
+  ]
+
+  # The job's whole configuration, in its fixed command. An execution's
+  # override may replace the arguments (which follow the trailing `--`), the
+  # environment, the task count and the timeout; none of them moves this.
+  plugin_bundle_command = concat(
+    [
+      "python3",
+      "-I",
+      "/opt/swarm-bundler/swarm-bundle",
+      "job",
+      "--project=${var.project_id}",
+      "--region=${var.region}",
+      "--plugins-bucket=${google_storage_bucket.plugins.name}",
+      "--build-mirror-bucket=${google_storage_bucket.build_mirror.name}",
+      "--base-repository=${local.image_base}",
+      "--bundle-repository=${local.plugin_bundle_repository}",
+      "--npm-registry=https://${var.region}-npm.pkg.dev/${var.project_id}/${local.plugin_mirror_npm_id}/",
+    ],
+    local.plugin_bundle_runner_images,
+    ["--"],
+  )
 }
 
 # ---------------------------------------------------------------------------
@@ -157,6 +204,7 @@ resource "google_artifact_registry_repository" "mirror_npm" {
 # install/manifest.d/plugin-bundles.yaml.
 # ---------------------------------------------------------------------------
 
+# 1. The pinned source archives, get only.
 resource "google_storage_bucket_iam_member" "plugin_bundler_sources" {
   count = local.builtins_managed_on ? 1 : 0
 
@@ -173,8 +221,8 @@ resource "google_storage_bucket_iam_member" "plugin_bundler_sources" {
   depends_on = [data.google_service_account.plugin_bundler]
 }
 
-# Bun's pinned zip, at its upstream URL without https:// (tool-mirror.sha256),
-# the object the recipe checks against its pinned sha256 before it runs.
+# 3. The ONE pinned Bun object (its zip, which the recipe checks against its
+# pinned sha256 before it runs), no longer the whole bucket.
 resource "google_storage_bucket_iam_member" "plugin_bundler_tool_mirror" {
   count = local.builtins_managed_on ? 1 : 0
 
@@ -182,11 +230,18 @@ resource "google_storage_bucket_iam_member" "plugin_bundler_tool_mirror" {
   role   = "roles/storage.objectViewer"
   member = local.plugin_bundler_member
 
+  condition {
+    title       = "swarm-plugin-bundler-bun-read"
+    description = "managed-by=swarm-terraform; the bundle job reads the one pinned Bun zip of the build mirror and nothing else in it (managed-plugins.md section 1.4.2)."
+    expression  = local.plugin_bundle_bun_condition
+  }
+
   depends_on = [data.google_service_account.plugin_bundler]
 }
 
-# The bundler image and the release image a bundle builds FROM, both this
-# deployment's copies (stage 4 copied them by digest after cosign verify).
+# 2. The release images a bundle appends to and mounts its base layers from,
+# this deployment's copies (stage 4 copied them by digest after cosign
+# verify). Cloud Run pulls the job's own image as its service agent.
 resource "google_artifact_registry_repository_iam_member" "plugin_bundler_release_images" {
   count = local.builtins_managed_on ? 1 : 0
 
@@ -199,6 +254,7 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_releas
   depends_on = [data.google_service_account.plugin_bundler]
 }
 
+# 4. gstack's npm dependencies, through the mirror only (Q19).
 resource "google_artifact_registry_repository_iam_member" "plugin_bundler_npm" {
   count = local.builtins_managed_on ? 1 : 0
 
@@ -211,21 +267,8 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_npm" {
   depends_on = [data.google_service_account.plugin_bundler]
 }
 
-# The bundle Dockerfile's `# syntax=` frontend, by its pinned digest, as every
-# release build reads it (build_mirror.tf).
-resource "google_artifact_registry_repository_iam_member" "plugin_bundler_dockerhub" {
-  count = local.builtins_managed_on ? 1 : 0
-
-  project    = var.project_id
-  location   = var.region
-  repository = google_artifact_registry_repository.mirror_dockerhub.repository_id
-  role       = "roles/artifactregistry.reader"
-  member     = local.plugin_bundler_member
-
-  depends_on = [data.google_service_account.plugin_bundler]
-}
-
-# The one repository it writes: push, never delete (writer holds no delete).
+# 5. The one repository it writes: push, never delete (writer holds no
+# delete), and the repository refuses a moved tag.
 resource "google_artifact_registry_repository_iam_member" "plugin_bundler_push" {
   count = local.builtins_managed_on ? 1 : 0
 
@@ -238,17 +281,106 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_push" 
   depends_on = [data.google_service_account.plugin_bundler]
 }
 
-# Its own build log, write only: a build as a user-specified account must
-# name where its log goes, and swarm-api starts it with CLOUD_LOGGING_ONLY.
-# The page never shows the log (§1.4.3: a fixed code and the build id).
-resource "google_project_iam_member" "plugin_bundler_logs" {
-  count = local.builtins_managed_on ? 1 : 0
+# Nothing else: no project role, no Docker Hub mirror, no log writer (the
+# header says why each went).
 
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = local.plugin_bundler_member
+# ---------------------------------------------------------------------------
+# The job (§1.4.2, "The job").
+# ---------------------------------------------------------------------------
 
-  depends_on = [data.google_service_account.plugin_bundler]
+resource "google_cloud_run_v2_job" "plugin_bundle" {
+  count = local.plugin_bundle_job_on ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = local.plugin_bundle_job_name
+
+  labels = merge(local.labels, { component = "plugins" })
+
+  deletion_protection = var.deletion_protection
+
+  template {
+    # One execution per Apply, one task: the entrypoint refuses a count
+    # other than one whatever an override sets.
+    task_count  = 1
+    parallelism = 1
+
+    template {
+      service_account = local.plugin_bundler_email
+      # A failed build is reported; a retry is an admin's Apply again.
+      max_retries = 0
+      # The task's ceiling. The entrypoint keeps its own 3000-second
+      # deadline inside it, whatever timeout an execution is given.
+      timeout = "3600s"
+
+      # NO VPC ACCESS, ON PURPOSE: the job reaches Artifact Registry and Cloud
+      # Storage over Google's APIs and nothing else; the mirrors are Artifact
+      # Registry repositories.
+
+      containers {
+        image   = local.plugin_bundler_image
+        command = local.plugin_bundle_command
+
+        # Memory and disk are one (the in-memory filesystem): gstack's setup,
+        # its dependencies and two staged trees, each packed as a layer.
+        resources {
+          limits = {
+            cpu    = "4"
+            memory = "8Gi"
+          }
+        }
+
+        # No env block: the entrypoint discards every variable an execution
+        # carries and runs each recipe with its own fixed environment.
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+    ]
+  }
+
+  depends_on = [
+    module.project_services,
+    data.google_service_account.plugin_bundler,
+  ]
+}
+
+# swarm-api runs THIS job with arguments and reads its executions, through
+# the custom role terraform/bootstrap defines; on the job's own IAM policy,
+# never on the project, because Cloud Run exposes no resource name to IAM
+# Conditions and a project grant could not be narrowed to one job.
+resource "google_cloud_run_v2_job_iam_member" "plugin_bundle_api_runs" {
+  count = local.plugin_bundle_job_on ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.plugin_bundle[0].name
+  role     = module.plugins_role_ids.names.plugin_bundle_runner
+  member   = module.iam.service_account_members["swarm-api"]
+}
+
+# The executions' logs, upstream output included, to the platform's own log
+# bucket (log_bucket.tf), where only the platform's readers see them; the
+# page never shows them (§1.4.3: a fixed code and the execution's name). The
+# destination is a log bucket of this project, so the sink needs no writer
+# grant (log_bucket.tf says why). Planned only with that bucket.
+#
+# No labels: google_logging_project_sink has none
+# (scripts/lib/unlabelable-types.json).
+resource "google_logging_project_sink" "plugin_bundle_logs" {
+  count = local.plugin_bundle_job_on && local.swarm_worker_logs_on == 1 ? 1 : 0
+
+  project     = var.project_id
+  name        = "${var.name_prefix}-plugin-bundle-logs"
+  destination = "logging.googleapis.com/${local.swarm_worker_logs_bucket}"
+  filter      = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${local.plugin_bundle_job_name}\""
+  description = "managed-by=swarm-terraform; the plugin bundle job's executions only, to the platform's log bucket (terraform/infra/plugin-bundles.tf)."
+
+  depends_on = [google_logging_project_bucket_config.swarm_worker_logs]
 }
 
 # ---------------------------------------------------------------------------

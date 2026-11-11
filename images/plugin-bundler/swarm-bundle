@@ -9,7 +9,8 @@ source archive's object, sha256 and commit, the recipe digest and the sha256
 of the built tree. The worker (lane 19) and the security review hold a signed
 entry against that file before a step runs, so the two digests below are a
 format other code compares byte for byte. Stdlib only: this runs in the
-agent-runtime-base build stages and in the bundler image alike.
+agent-runtime-base build stages and in the bundler image alike, and the job's
+registry client below is its own, so the bundler image pins no library.
 
   pin     print one value of one plugin's pins (`source.sha256`), after the
           WHOLE pins file passed the checks below, so a recipe never reads a
@@ -17,6 +18,10 @@ agent-runtime-base build stages and in the bundler image alike.
   digest  print the sha256 of a built tree (or of several trees laid over each
           other, as the browser image lays its list over the base's)
   write   write the manifest
+  job     the entrypoint of the Cloud Run job swarm-plugin-bundle: build the
+          bundled plugins and append one layer per plugin to each release
+          image, with no container daemon (section 1.4.2; the block above
+          job_main says what it checks before anything runs)
 
 The pins file is images/agent-runtime-base/bundled-plugins.json in a release
 build (the one place a release's default pins are written) and a file of the
@@ -46,13 +51,25 @@ build stage and the bundler image compute the same digest from the same bytes.
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
 import stat
+import subprocess
 import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable, MutableMapping
 
 MANIFEST_NAME = ".swarm-bundle.json"
 SCHEMA = 1
@@ -263,7 +280,720 @@ def _inputs(pairs: list[str]) -> dict[str, Path]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# The job: `swarm-bundle job`, the entrypoint of the Cloud Run job
+# swarm-plugin-bundle (docs/design/managed-plugins.md, section 1.4.2; the
+# owner, 11 November 2026: one job execution under the builder account).
+#
+# The job's command is fixed by terraform/infra/plugin-bundles.tf and no
+# caller can move it:
+#
+#     python3 -I /opt/swarm-bundler/swarm-bundle job --project=P --region=R
+#       --plugins-bucket=B --build-mirror-bucket=M --base-repository=URL
+#       --bundle-repository=URL --npm-registry=URL
+#       --runner-image=NAME:base|browser ... --
+#
+# and an execution's arguments follow the `--`: the bundle id, then per
+# bundled plugin its name, source sha256 and recipe digest, then per runner
+# image its name and base digest. Whoever may run the job (swarm-api through
+# swarmPluginBundleRunner, and the accounts that hold run.jobs.runWithOverrides
+# project-wide) also chooses the environment, the task count and the timeout.
+# So, before anything runs:
+#
+#   * THE ARGUMENTS, CLOSED. Each is checked against a closed pattern (a name
+#     or id ^[a-z0-9-]{1,63}$, a sha256 ^[0-9a-f]{64}$, a digest
+#     ^sha256:[0-9a-f]{64}$); a plugin name must be a recipe this image holds,
+#     its recipe digest the digest of that recipe's own files here, and a
+#     runner image name one the command lists. Any other argument stops the
+#     execution before a byte is fetched.
+#   * THE ENVIRONMENT, NONE OF IT. As the workspace deployer's entrypoint does
+#     (docs/workspaces.md section 2.2, step 0): the task count, its index and
+#     the execution's name are read, then os.environ is emptied, and every
+#     recipe runs with JOB_ENV, written here, plus its own HOME and TMPDIR.
+#     `-I` keeps Python from reading PYTHON*.
+#   * THE TASK COUNT, ONE. A task with an index other than 0 exits 0 having
+#     done nothing; task 0 refuses unless the count is 1.
+#   * THE DEADLINE, OURS: JOB_DEADLINE_SECONDS from the start, whatever
+#     timeout the execution was given. Past it the job exits non-zero; a tag
+#     is pushed only as an image's last write, so nothing half done is named.
+#
+# THE BUILD, WITH NO DAEMON. Each recipe runs in a scratch folder of the
+# execution's in-memory filesystem. Each built tree is packed as ONE tar layer
+# (owner and group 0, time 0, sorted, gzip with no name or time, so the layer
+# is reproducible from the tree) holding only /opt/swarm/plugins/<name>/, its
+# opaque whiteout (which hides the release's older copy) and the tree, and is
+# APPENDED to the release image's manifest, read by digest from the platform
+# repository, through the registry API below: the base layers are mounted
+# into swarm-plugin-bundles by digest, never downloaded, unpacked or
+# rewritten; only the new layers, a new config and a new manifest are
+# written, and the manifest last, as <runner image name>:<bundle_id>. No
+# container daemon, Dockerfile or BuildKit is involved. The registry client is
+# this file's own, standard library only (the Docker Registry HTTP API V2 and
+# its token exchange), so the image carries no third-party library to pin.
+#
+# swarm-api trusts none of it: it reads every pushed manifest back and checks
+# its layers before a bundle is ready (section 1.4.2), and the worker checks
+# the .swarm-bundle.json each recipe wrote against the signed pins (1.4.4).
+# ---------------------------------------------------------------------------
+
+JOB_DEADLINE_SECONDS = 3000
+
+JOB_NAME = re.compile(r"^[a-z0-9-]{1,63}$")
+JOB_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+JOB_PROJECT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+JOB_REGION = re.compile(r"^[a-z]+-[a-z]+[0-9]{1,2}$")
+JOB_BUCKET = re.compile(r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
+JOB_REPOSITORY = re.compile(r"^([a-z0-9-]+-docker\.pkg\.dev)/([a-z][a-z0-9-]{4,28}[a-z0-9])/([a-z0-9-]{1,63})$")
+JOB_NPM = re.compile(r"^https://[a-z0-9-]+-npm\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}/$")
+JOB_EXECUTION = re.compile(r"^[a-z0-9-]{1,128}$")
+JOB_VARIANTS = ("base", "browser")
+
+#: The recipes' inputs, by the names their `write` calls give them, relative to
+#: the bundler image's root (/opt/swarm-bundler; the Dockerfile copies them).
+RECIPE_INPUTS = {
+    "gstack": {
+        "build": "recipes/gstack/build",
+        "gstack-layers": "inputs/gstack-layers",
+        "measure": "inputs/gstack_packaging_measure.py",
+        "base-list": "inputs/gstack-base-files.txt",
+        "browser-list": "inputs/gstack-browser-files.txt",
+    },
+    "security-audit": {
+        "build": "recipes/security-audit/build",
+    },
+}
+
+#: The ONE environment a recipe sees, beside its HOME and TMPDIR: the image's
+#: own PATH (the Dockerfile's ENV) and a fixed locale. Nothing from the
+#: execution.
+JOB_ENV = {
+    "PATH": "/opt/swarm-bundler/bun:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "LANG": "C.UTF-8",
+}
+
+BUN_PATH = "/opt/swarm-bundler/bun/bun"
+NODE_PATH = "/usr/local/bin/node"
+METADATA_SERVER = "http://metadata.google.internal/computeMetadata/v1"
+#: The job's own account's access token, from the metadata server.
+METADATA_ACCOUNT_TOKEN_URL = METADATA_SERVER + "/instance/service-accounts/default/" + "token"
+STORAGE_MEDIA = "https://storage.googleapis.com/storage/v1/b/{bucket}/o/{name}?alt=media"
+#: A pinned source archive or Bun's zip; the intake caps a source at less.
+FETCH_CAP_BYTES = 512 << 20
+#: A manifest or an image config is a few KiB.
+DOCUMENT_CAP_BYTES = 4 << 20
+
+DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
+DOCKER_LIST = "application/vnd.docker.distribution.manifest.list.v2+json"
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+OCI_INDEX = "application/vnd.oci.image.index.v1+json"
+LAYER_TYPES = {
+    DOCKER_MANIFEST: "application/vnd.docker.image.rootfs.diff.tar.gzip",
+    OCI_MANIFEST: "application/vnd.oci.image.layer.v1.tar+gzip",
+}
+CONFIG_TYPES = {
+    DOCKER_MANIFEST: "application/vnd.docker.container.image.v1+json",
+    OCI_MANIFEST: "application/vnd.oci.image.config.v1+json",
+}
+OPAQUE = ".wh..wh..opq"
+
+
+class Refused(Exception):
+    """The execution stops here; the message names no value a caller chose."""
+
+
+@dataclass(frozen=True)
+class BundledPlugin:
+    name: str
+    source_sha256: str
+    recipe_digest: str
+
+
+@dataclass(frozen=True)
+class RunnerImage:
+    name: str
+    base_digest: str
+    variant: str
+
+
+@dataclass(frozen=True)
+class Job:
+    project: str
+    region: str
+    plugins_bucket: str
+    build_mirror_bucket: str
+    base_repository: str
+    bundle_repository: str
+    npm_registry: str
+    execution: str
+    bundle_id: str
+    plugins: tuple[BundledPlugin, ...]
+    images: tuple[RunnerImage, ...]
+
+
+@dataclass
+class Response:
+    status: int
+    headers: dict[str, str] = field(default_factory=dict)
+    body: bytes = b""
+
+
+#: (method, url, headers, body) -> Response; headers lowercased on the way back.
+Transport = Callable[[str, str, dict, "bytes | None"], Response]
+
+
+def job_recipe_digest(root: Path, plugin: str) -> str:
+    return recipe_digest({name: root / rel for name, rel in RECIPE_INPUTS[plugin].items()})[0]
+
+
+def _flag(value: str, pattern: re.Pattern[str], what: str) -> str:
+    if not pattern.match(value):
+        raise Refused(f"the command's {what} is not one")
+    return value
+
+
+def parse_job(argv: list[str], environ: MutableMapping[str, str], *, root: Path) -> Job | None:
+    """The checked job, None for a task that must do nothing, or Refused.
+
+    `environ` is EMPTIED first, whatever follows: given os.environ, nothing
+    later in this process reads a value a caller set. `argv` is the command's
+    flags, `--`, then the execution's arguments.
+    """
+    task_count = environ.get("CLOUD_RUN_TASK_COUNT")
+    task_index = environ.get("CLOUD_RUN_TASK_INDEX")
+    execution = environ.get("CLOUD_RUN_EXECUTION", "")
+    environ.clear()
+
+    if "--" not in argv:
+        raise Refused("the command does not end its flags with --")
+    split = argv.index("--")
+    flags, args = argv[:split], argv[split + 1:]
+
+    # The command's flags: Terraform's, but checked as closely, so a job
+    # template edited by hand cannot point a build anywhere odd either.
+    config: dict[str, str] = {}
+    runner_images: dict[str, str] = {}
+    for item in flags:
+        key, sep, value = item.partition("=")
+        if not sep or not key.startswith("--"):
+            raise Refused("the command carries a flag that is not --name=value")
+        key = key[2:]
+        if key == "runner-image":
+            name, _, variant = value.partition(":")
+            _flag(name, JOB_NAME, "runner image")
+            if variant not in JOB_VARIANTS or name in runner_images:
+                raise Refused("the command's runner image list is not one")
+            runner_images[name] = variant
+        elif key in config:
+            raise Refused(f"the command names --{key} twice")
+        else:
+            config[key] = value
+    expected = {"project", "region", "plugins-bucket", "build-mirror-bucket",
+                "base-repository", "bundle-repository", "npm-registry"}
+    if set(config) != expected:
+        raise Refused("the command's flags are not exactly the job's")
+    project = _flag(config["project"], JOB_PROJECT, "project")
+    _flag(config["region"], JOB_REGION, "region")
+    _flag(config["plugins-bucket"], JOB_BUCKET, "plugins bucket")
+    _flag(config["build-mirror-bucket"], JOB_BUCKET, "build mirror bucket")
+    for key in ("base-repository", "bundle-repository"):
+        match = JOB_REPOSITORY.match(config[key])
+        if match is None or match.group(1) != f"{config['region']}-docker.pkg.dev" or match.group(2) != project:
+            raise Refused(f"the command's {key} is not a repository of this project and region")
+    _flag(config["npm-registry"], JOB_NPM, "npm registry")
+    if not runner_images:
+        raise Refused("the command lists no runner image")
+
+    # The execution's arguments, every one against a closed pattern.
+    if not args:
+        raise Refused("the execution names no bundle id")
+    bundle_id = args[0]
+    if not JOB_NAME.match(bundle_id):
+        raise Refused("the bundle id is not ^[a-z0-9-]{1,63}$")
+    rest = args[1:]
+    plugins: list[BundledPlugin] = []
+    while rest and rest[0] in RECIPE_INPUTS:
+        if len(rest) < 3:
+            raise Refused("a bundled plugin lacks its source sha256 or its recipe digest")
+        name, source_sha256, digest = rest[:3]
+        rest = rest[3:]
+        if not SHA256.match(source_sha256):
+            raise Refused(f"{name}'s source sha256 is not ^[0-9a-f]{{64}}$")
+        if not SHA256.match(digest):
+            raise Refused(f"{name}'s recipe digest is not ^[0-9a-f]{{64}}$")
+        if any(p.name == name for p in plugins):
+            raise Refused(f"{name} is named twice")
+        if digest != job_recipe_digest(root, name):
+            raise Refused(f"{name}'s recipe digest is not the one this image's recipe has")
+        plugins.append(BundledPlugin(name, source_sha256, digest))
+    if not plugins:
+        raise Refused("the execution names no bundled plugin this image has a recipe for")
+    images: list[RunnerImage] = []
+    if not rest or len(rest) % 2:
+        raise Refused("the runner images are not name and base digest pairs")
+    for index in range(0, len(rest), 2):
+        name, digest = rest[index], rest[index + 1]
+        if name not in runner_images:
+            raise Refused("a runner image is not one the job's command lists")
+        if not JOB_DIGEST.match(digest):
+            raise Refused(f"{name}'s base digest is not ^sha256:[0-9a-f]{{64}}$")
+        if any(i.name == name for i in images):
+            raise Refused(f"{name} is named twice")
+        images.append(RunnerImage(name, digest, runner_images[name]))
+
+    # The task count, after the arguments: a second task does nothing at all.
+    if task_index != "0":
+        return None
+    if task_count != "1":
+        raise Refused("the execution has a task count other than one")
+    if not JOB_EXECUTION.match(execution):
+        raise Refused("CLOUD_RUN_EXECUTION is missing or is not an execution name")
+
+    return Job(
+        project=project,
+        region=config["region"],
+        plugins_bucket=config["plugins-bucket"],
+        build_mirror_bucket=config["build-mirror-bucket"],
+        base_repository=config["base-repository"],
+        bundle_repository=config["bundle-repository"],
+        npm_registry=config["npm-registry"],
+        execution=execution,
+        bundle_id=bundle_id,
+        plugins=tuple(plugins),
+        images=tuple(images),
+    )
+
+
+# --- the layer ---------------------------------------------------------------
+
+
+def layer_tar(plugin: str, roots: list[Path]) -> bytes:
+    """One uncompressed layer: /opt/swarm/plugins/<plugin>/, its opaque
+    whiteout and the trees laid over each other, nothing else.
+
+    Owner 0:0, time 0, sorted, PAX: the same tree packs to the same bytes.
+    tree_entries refuses a link, a device or a fifo, so the layer holds
+    folders and regular files only.
+    """
+    if not NAME.match(plugin):
+        raise Refused("the plugin name is not one")
+    prefix = f"{PLUGIN_ROOT.lstrip('/')}/{plugin}"
+    entries = tree_entries(roots)
+    # tree_entries leaves .swarm-bundle.json out; the LAST root's is the one
+    # the recipe wrote over the whole tree.
+    manifest_path = roots[-1] / MANIFEST_NAME
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise Refused(f"{plugin}'s tree has no .swarm-bundle.json")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
+
+        def add(name: str, mode: int, data: bytes | None) -> None:
+            info = tarfile.TarInfo(name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = 0
+            info.mode = mode
+            if data is None:
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+
+        add(prefix + "/", 0o755, None)
+        add(f"{prefix}/{OPAQUE}", 0o644, b"")
+        files = dict(entries)
+        files[MANIFEST_NAME] = ("f", f"{stat.S_IMODE(manifest_path.stat().st_mode):04o}", "")
+        for rel in sorted(files):
+            kind, mode, _ = files[rel]
+            if kind == "d":
+                add(f"{prefix}/{rel}/", int(mode, 8), None)
+                continue
+            source = manifest_path if rel == MANIFEST_NAME else None
+            if source is None:
+                # The last root that holds it wins, as the trees are laid.
+                source = next(r / rel for r in reversed(roots) if (r / rel).is_file())
+            add(f"{prefix}/{rel}", int(mode, 8), source.read_bytes())
+    return buffer.getvalue()
+
+
+def gzip_layer(tar: bytes) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=out, mtime=0, compresslevel=6) as handle:
+        handle.write(tar)
+    return out.getvalue()
+
+
+def _sha(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+# --- the registry --------------------------------------------------------------
+
+
+def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -> Response:
+    """No proxy, whatever a caller set: the environment is gone anyway."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with opener.open(request, timeout=120) as response:
+            return Response(response.status, {k.lower(): v for k, v in response.headers.items()},
+                            response.read(FETCH_CAP_BYTES + 1))
+    except urllib.error.HTTPError as exc:
+        return Response(exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read(65536))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A blob read may redirect to storage; that read is followed WITHOUT the
+    Authorization header (Registry.get_blob), never by urllib with it."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return None
+
+
+def metadata_token(transport: Transport) -> str:
+    response = transport("GET", METADATA_ACCOUNT_TOKEN_URL, {"Metadata-Flavor": "Google"}, None)
+    if response.status != 200:
+        raise Refused(f"the metadata server gave no token (HTTP {response.status})")
+    try:
+        token = json.loads(response.body)["access_token"]
+    except (ValueError, KeyError, TypeError):
+        raise Refused("the metadata server's token answer is not one") from None
+    if not isinstance(token, str) or not token:
+        raise Refused("the metadata server's token answer is not one")
+    return token
+
+
+class Registry:
+    """The Docker Registry HTTP API V2, as Artifact Registry serves it."""
+
+    def __init__(self, transport: Transport, token: str) -> None:
+        self.transport = transport
+        self.token = token
+        self.bearer: dict[str, str] = {}
+
+    def _call(self, method: str, url: str, headers: dict | None = None, body: bytes | None = None) -> Response:
+        host = urllib.parse.urlsplit(url).netloc
+        sent = dict(headers or {})
+        if host in self.bearer:
+            sent["Authorization"] = f"Bearer {self.bearer[host]}"
+        else:
+            sent["Authorization"] = "Basic " + _basic(self.token)
+        response = self.transport(method, url, sent, body)
+        challenge = response.headers.get("www-authenticate", "")
+        if response.status == 401 and challenge.lower().startswith("bearer ") and host not in self.bearer:
+            self.bearer[host] = self._exchange(challenge)
+            sent["Authorization"] = f"Bearer {self.bearer[host]}"
+            response = self.transport(method, url, sent, body)
+        return response
+
+    def _exchange(self, challenge: str) -> str:
+        params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+        realm = params.pop("realm", "")
+        if not realm.startswith("https://"):
+            raise Refused("the registry's token realm is not https")
+        url = realm + "?" + urllib.parse.urlencode(params)
+        basic = _basic(self.token)
+        response = self.transport("GET", url, {"Authorization": f"Basic {basic}"}, None)
+        if response.status != 200:
+            raise Refused(f"the registry refused the token exchange (HTTP {response.status})")
+        try:
+            doc = json.loads(response.body)
+        except ValueError:
+            raise Refused("the registry's token answer is not JSON") from None
+        token = doc.get("token") or doc.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise Refused("the registry's token answer holds no token")
+        return token
+
+    @staticmethod
+    def _url(image: str, kind: str, ref: str = "") -> str:
+        host, _, path = image.partition("/")
+        return f"https://{host}/v2/{path}/{kind}/{ref}"
+
+    def get_manifest(self, image: str, digest: str) -> tuple[str, bytes]:
+        accept = ", ".join([DOCKER_MANIFEST, OCI_MANIFEST, DOCKER_LIST, OCI_INDEX])
+        response = self._call("GET", self._url(image, "manifests", digest), {"Accept": accept})
+        if response.status != 200:
+            raise Refused(f"the release image {image.rsplit('/', 1)[-1]} has no manifest {digest} (HTTP {response.status})")
+        if len(response.body) > DOCUMENT_CAP_BYTES or _sha(response.body) != digest:
+            raise Refused(f"the manifest read for {digest} is not the one its digest names")
+        try:
+            media = json.loads(response.body).get("mediaType") or response.headers.get("content-type", "")
+        except ValueError:
+            raise Refused("a release manifest is not JSON") from None
+        return media, response.body
+
+    def get_blob(self, image: str, digest: str) -> bytes:
+        response = self._call("GET", self._url(image, "blobs", digest))
+        if response.status in (302, 303, 307) and response.headers.get("location", "").startswith("https://"):
+            # Storage signs the redirect; the registry's credential stays here.
+            response = self.transport("GET", response.headers["location"], {}, None)
+        if response.status != 200 or len(response.body) > DOCUMENT_CAP_BYTES or _sha(response.body) != digest:
+            raise Refused(f"the blob {digest} could not be read as itself (HTTP {response.status})")
+        return response.body
+
+    def has_blob(self, image: str, digest: str) -> bool:
+        return self._call("HEAD", self._url(image, "blobs", digest)).status == 200
+
+    def mount(self, image: str, digest: str, source: str) -> None:
+        """Mount a base layer by digest; never download it."""
+        if self.has_blob(image, digest):
+            return
+        source_path = source.partition("/")[2]
+        query = urllib.parse.urlencode({"mount": digest, "from": source_path})
+        response = self._call("POST", self._url(image, "blobs", "uploads/") + "?" + query)
+        if response.status != 201:
+            # A 202 would be an upload the job would have to fill by
+            # downloading the layer: refused, never done.
+            raise Refused(f"the base layer {digest} could not be mounted (HTTP {response.status})")
+
+    def upload(self, image: str, data: bytes) -> str:
+        digest = _sha(data)
+        if self.has_blob(image, digest):
+            return digest
+        start = self._call("POST", self._url(image, "blobs", "uploads/"))
+        location = start.headers.get("location", "")
+        if start.status != 202 or not location:
+            raise Refused(f"the registry would not start an upload (HTTP {start.status})")
+        if location.startswith("/"):
+            host = image.partition("/")[0]
+            location = f"https://{host}{location}"
+        joiner = "&" if "?" in location else "?"
+        response = self._call("PUT", location + joiner + urllib.parse.urlencode({"digest": digest}),
+                              {"Content-Type": "application/octet-stream", "Content-Length": str(len(data))}, data)
+        if response.status != 201:
+            raise Refused(f"the registry refused the blob {digest} (HTTP {response.status})")
+        return digest
+
+    def put_manifest(self, image: str, tag: str, media: str, body: bytes) -> str:
+        response = self._call("PUT", self._url(image, "manifests", tag), {"Content-Type": media}, body)
+        if response.status != 201:
+            raise Refused(f"the registry refused the manifest {image.rsplit('/', 1)[-1]}:{tag} (HTTP {response.status})")
+        digest = _sha(body)
+        said = response.headers.get("docker-content-digest")
+        if said is not None and said != digest:
+            raise Refused("the registry stored a manifest other than the one sent")
+        return digest
+
+
+def _basic(token: str) -> str:
+    return base64.b64encode(f"oauth2accesstoken:{token}".encode()).decode()
+
+
+def _single_manifest(registry: Registry, image: str, digest: str) -> tuple[str, dict]:
+    media, body = registry.get_manifest(image, digest)
+    doc = json.loads(body)
+    if media in (DOCKER_LIST, OCI_INDEX):
+        # The runner images run on linux/amd64: that entry of a list, by its
+        # own digest, which get_manifest checks again.
+        chosen = [m for m in doc.get("manifests", [])
+                  if m.get("platform", {}).get("os") == "linux" and m.get("platform", {}).get("architecture") == "amd64"]
+        if len(chosen) != 1 or not JOB_DIGEST.match(str(chosen[0].get("digest", ""))):
+            raise Refused("the release image's list has no single linux/amd64 manifest")
+        media, body = registry.get_manifest(image, chosen[0]["digest"])
+        doc = json.loads(body)
+    if media not in LAYER_TYPES:
+        raise Refused("the release image's manifest is not an image manifest")
+    return media, doc
+
+
+def append_layers(registry: Registry, base_image: str, base_digest: str, target_image: str, tag: str,
+                  layers: list[tuple[str, bytes]]) -> str:
+    """Append one gzip layer per (plugin, tar) to the base manifest; push the
+    result as target_image:tag; return the pushed manifest's digest."""
+    media, base = _single_manifest(registry, base_image, base_digest)
+    config_digest = base["config"]["digest"]
+    config = json.loads(registry.get_blob(base_image, config_digest))
+    base_layers = list(base["layers"])
+    if len(config.get("rootfs", {}).get("diff_ids", [])) != len(base_layers):
+        raise Refused("the release image's config and manifest disagree on its layers")
+
+    for layer in base_layers:
+        registry.mount(target_image, layer["digest"], base_image)
+
+    new_layers = []
+    history = list(config.get("history", []))
+    for plugin, tar in layers:
+        blob = gzip_layer(tar)
+        digest = registry.upload(target_image, blob)
+        new_layers.append({"mediaType": LAYER_TYPES[media], "size": len(blob), "digest": digest})
+        config["rootfs"]["diff_ids"].append(_sha(tar))
+        history.append({"created": "1970-01-01T00:00:00Z",
+                        "created_by": f"swarm-bundle job: {PLUGIN_ROOT}/{plugin}/"})
+    config["history"] = history
+    config_body = json.dumps(config, separators=(",", ":"), sort_keys=True).encode()
+    new_config_digest = registry.upload(target_image, config_body)
+
+    manifest_doc = dict(base)
+    manifest_doc["mediaType"] = media
+    manifest_doc["config"] = {"mediaType": CONFIG_TYPES[media], "size": len(config_body), "digest": new_config_digest}
+    manifest_doc["layers"] = base_layers + new_layers
+    body = json.dumps(manifest_doc, separators=(",", ":"), sort_keys=True).encode()
+    return registry.put_manifest(target_image, tag, media, body)
+
+
+# --- the run -------------------------------------------------------------------
+
+
+def fetch_object(transport: Transport, token: str, bucket: str, name: str, dest: Path, sha256: str) -> None:
+    url = STORAGE_MEDIA.format(bucket=bucket, name=urllib.parse.quote(name, safe=""))
+    response = transport("GET", url, {"Authorization": f"Bearer {token}"}, None)
+    if response.status != 200 or len(response.body) > FETCH_CAP_BYTES:
+        raise Refused(f"gs://{bucket}/{name} could not be read (HTTP {response.status})")
+    if hashlib.sha256(response.body).hexdigest() != sha256:
+        raise Refused(f"gs://{bucket}/{name} is not the bytes its pin names")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(response.body)
+
+
+def _archive_facts(archive: Path, plugin: str) -> tuple[str, str]:
+    """(commit, version) of a pinned source archive, read without unpacking it."""
+    try:
+        with tarfile.open(archive, mode="r:gz") as tar:
+            commit = tar.pax_headers.get("comment", "")
+            version = ""
+            if plugin == "gstack":
+                for member in tar:
+                    parts = member.name.split("/")
+                    if len(parts) == 2 and parts[1] == "VERSION" and member.isfile():
+                        extracted = tar.extractfile(member)
+                        version = extracted.read(256).decode("ascii", "replace").strip() if extracted else ""
+                        break
+    except (OSError, tarfile.TarError, EOFError):
+        raise Refused(f"{plugin}'s source archive is not a gzip tar") from None
+    if not COMMIT.match(commit):
+        raise Refused(f"{plugin}'s source archive carries no commit")
+    return commit, version or commit
+
+
+def job_pins(root: Path, plugin: BundledPlugin, archive: Path, object_name: str) -> dict:
+    """The pins file a recipe reads: this image's own pins for the install id,
+    path and toolchain, the execution's source."""
+    own = load_pins(root / "bundled-plugins.json")[plugin.name]
+    commit, version = _archive_facts(archive, plugin.name)
+    entry = {
+        "install_id": own["install_id"],
+        "install_path": own["install_path"],
+        "version": version,
+        "source": {"object": object_name, "sha256": plugin.source_sha256, "commit": commit},
+    }
+    if own.get("toolchain"):
+        entry["toolchain"] = own["toolchain"]
+    doc = {"schema": SCHEMA, "plugins": {plugin.name: entry}}
+    check_plugin(plugin.name, entry)
+    return doc
+
+
+def run_job(job: Job, *, root: Path, transport: Transport, token: str,
+            run: Callable[..., subprocess.CompletedProcess], scratch_root: str,
+            deadline: float, clock: Callable[[], float]) -> dict[str, str]:
+    """Build every plugin, push every image; image name -> pushed digest."""
+
+    def remaining() -> float:
+        left = deadline - clock()
+        if left <= 0:
+            raise Refused(f"the job's own deadline of {JOB_DEADLINE_SECONDS} seconds passed")
+        return left
+
+    work = Path(tempfile.mkdtemp(prefix="swarm-bundle.", dir=scratch_root))
+    mirror = work / "mirror"
+    # The browser tree is laid over the base tree, so a browser image needs
+    # both built; base first, as the release stages run them.
+    variants = ["base"] + (["browser"] if any(i.variant == "browser" for i in job.images) else [])
+    trees: dict[tuple[str, str], list[Path]] = {}
+    for plugin in job.plugins:
+        object_name = f"platform/sources/{plugin.source_sha256}.tar"
+        archive = mirror / object_name
+        fetch_object(transport, token, job.plugins_bucket, object_name, archive, plugin.source_sha256)
+        pins_doc = job_pins(root, plugin, archive, object_name)
+        bun = pins_doc["plugins"][plugin.name].get("toolchain", {}).get("bun")
+        if bun is not None and not (mirror / bun["object"]).is_file():
+            # The ONE pinned Bun object of the build mirror (the builder's
+            # read is conditioned on it).
+            fetch_object(transport, token, job.build_mirror_bucket, bun["object"], mirror / bun["object"], bun["sha256"])
+        pins = work / f"pins-{plugin.name}.json"
+        pins.write_text(json.dumps(pins_doc, indent=2, sort_keys=True) + "\n")
+        recipe = root / RECIPE_INPUTS[plugin.name]["build"]
+        for variant in variants if plugin.name == "gstack" else ["base"]:
+            scratch = work / f"{plugin.name}-{variant}"
+            (scratch / "home").mkdir(parents=True)
+            (scratch / "tmp").mkdir()
+            out = scratch / "out"
+            command = ["/bin/bash", str(recipe), "--pins", str(pins), "--mirror", str(mirror), "--out", str(out)]
+            if plugin.name == "gstack":
+                inputs = RECIPE_INPUTS["gstack"]
+                registry = job.npm_registry.replace("https://", f"https://oauth2accesstoken:{token}@", 1)
+                command += ["--layers", str(root / inputs["gstack-layers"]), "--measure", str(root / inputs["measure"]),
+                            "--base-list", str(root / inputs["base-list"]),
+                            "--browser-list", str(root / inputs["browser-list"]),
+                            "--list", variant, "--bun", "install", "--bun-path", BUN_PATH, "--registry", registry]
+            else:
+                command += ["--validate-with", NODE_PATH]
+            env = dict(JOB_ENV, HOME=str(scratch / "home"), TMPDIR=str(scratch / "tmp"))
+            print(f"swarm-bundle job: {plugin.name} ({variant}) recipe", flush=True)
+            try:
+                result = run(command, env=env, cwd=str(scratch), timeout=remaining(), check=False,
+                             stdin=subprocess.DEVNULL)
+            except subprocess.TimeoutExpired:
+                raise Refused(f"the job's own deadline of {JOB_DEADLINE_SECONDS} seconds passed") from None
+            if result.returncode != 0:
+                raise Refused(f"the {plugin.name} recipe failed (exit {result.returncode})")
+            if variant == "browser":
+                # The browser image lays its list over the base image's; the
+                # layer replaces the whole folder, so it carries both.
+                trees[(plugin.name, variant)] = [work / f"{plugin.name}-base" / "out", out]
+            else:
+                trees[(plugin.name, variant)] = [out]
+
+    registry = Registry(transport, token)
+    pushed: dict[str, str] = {}
+    for image in job.images:
+        remaining()
+        layers = []
+        for plugin in job.plugins:
+            key = (plugin.name, image.variant if plugin.name == "gstack" else "base")
+            layers.append((plugin.name, layer_tar(plugin.name, trees[key])))
+        pushed[image.name] = append_layers(
+            registry,
+            f"{job.base_repository}/{image.name}",
+            image.base_digest,
+            f"{job.bundle_repository}/{image.name}",
+            job.bundle_id,
+            layers,
+        )
+        print(f"swarm-bundle job: pushed {image.name}:{job.bundle_id} {pushed[image.name]}", flush=True)
+    return pushed
+
+
+def job_main(argv: list[str], environ: MutableMapping[str, str] | None = None, *,
+             root: Path | None = None, transport: Transport = urllib_transport,
+             run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+             scratch_root: str = "/tmp", clock: Callable[[], float] = time.monotonic) -> int:
+    started = clock()
+    root = root or Path(__file__).resolve().parent
+    try:
+        job = parse_job(argv, os.environ if environ is None else environ, root=root)
+        if job is None:
+            print("swarm-bundle job: not the execution's first task; nothing to do", flush=True)
+            return 0
+        token = metadata_token(transport)
+        run_job(job, root=root, transport=transport, token=token, run=run, scratch_root=scratch_root,
+                deadline=started + JOB_DEADLINE_SECONDS, clock=clock)
+    except Refused as exc:
+        print(f"swarm-bundle job: refused: {exc}", file=sys.stderr, flush=True)
+        return 1
+    except PinsError as exc:
+        print(f"swarm-bundle job: refused: {exc}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["job"]:
+        # The job's entrypoint takes its own closed argument list (above),
+        # never argparse's, which would read a caller's `--flag` as an option.
+        return job_main(argv[1:])
     parser = argparse.ArgumentParser(prog="swarm-bundle", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     pin = sub.add_parser("pin", help="print one checked pin")
