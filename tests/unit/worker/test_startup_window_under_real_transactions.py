@@ -512,7 +512,10 @@ def test_the_tenant_and_quota_reads_before_the_runner_carry_the_budget_too(
     worker = _worker(db, store, tmp_path, log_stream, budgeted=True, runner_profile="claude-code")
     budget = worker.control.startup_call_options
 
+    stopped_at: list[int] = []
+
     def stop(*_args: Any, **_kwargs: Any) -> None:
+        stopped_at.append(len(db.calls))
         raise _StopAtTheRunner()
 
     monkeypatch.setattr(lifecycle, "ChildProcess", stop)
@@ -521,11 +524,15 @@ def test_the_tenant_and_quota_reads_before_the_runner_carry_the_budget_too(
     with pytest.raises(_StopAtTheRunner):
         worker.run()
 
-    reads = {(kind, path) for kind, path, _ in db.calls}
+    # Only what came before the runner: the teardown after the stop (the
+    # credential `_record_spend` writes on every exit) is mid-run budgeted.
+    assert stopped_at, "the runner was never reached"
+    before = db.calls[: stopped_at[0]]
+    reads = {(kind, path) for kind, path, _ in before}
     assert ("get", f"tenants/{TENANT}") in reads, sorted(reads)
     assert ("get", f"quota/anthropic:{TENANT}") in reads, sorted(reads)
     unbudgeted = [
-        (kind, path, kwargs) for kind, path, kwargs in db.calls
+        (kind, path, kwargs) for kind, path, kwargs in before
         if not kind.startswith(("txn.set", "txn.update")) and not _is_budget(kwargs, budget)
     ]
     assert not unbudgeted, f"called before the runner without the startup budget: {unbudgeted}"

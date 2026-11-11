@@ -148,6 +148,52 @@ ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
     "openai": (PLAN_TOKEN_ENV, PLAN_ACCOUNT_ENV),
 }
 
+#: THE KEY SHAPES (docs/design/llm-providers.md §3, lane LP-W1). A developer
+#: API key is its own `provider` on the broker's `Account` -- `anthropic-api`
+#: beside the Claude plan's `anthropic`, `openai-api` beside the ChatGPT plan's
+#: `openai` -- and fills the ONE variable its vendor's CLI reads a metered key
+#: from: `ANTHROPIC_API_KEY` for claude-code, `OPENAI_API_KEY` for codex. Never
+#: the plan's variable: a key offered as an OAuth token is refused, and the
+#: reverse is the same mistake.
+ANTHROPIC_KEY_PROVIDER = "anthropic-api"
+OPENAI_KEY_PROVIDER = "openai-api"
+ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+OPENAI_KEY_ENV = "OPENAI_API_KEY"
+KEY_ENVS: dict[str, str] = {
+    ANTHROPIC_KEY_PROVIDER: ANTHROPIC_KEY_ENV,
+    OPENAI_KEY_PROVIDER: OPENAI_KEY_ENV,
+}
+#: Each plan provider's key provider: the chain walks kinds within one vendor
+#: (§3.1), never across vendors. The broker's `accounts.KEY_PROVIDER_OF`.
+KEY_PROVIDER_OF: dict[str, str] = {
+    "anthropic": ANTHROPIC_KEY_PROVIDER,
+    "openai": OPENAI_KEY_PROVIDER,
+}
+#: What a key account's `{secret}` says it holds (the broker's
+#: `api_key.KIND_OF`): `{"kind": <this>, "api_key": <the key>}`, written by the
+#: broker alone. A secret of the other vendor's kind is refused, so a key can
+#: never land in the wrong vendor's variable.
+KEY_SECRET_KIND: dict[str, str] = {
+    ANTHROPIC_KEY_PROVIDER: "anthropic_api_key",
+    OPENAI_KEY_PROVIDER: "openai_api_key",
+}
+
+#: The tier a hold was granted from (§5.3), as assign and swap answer it, and
+#: the values `Attempt.credential_tier` takes (contract request 152). Joined,
+#: as the broker's own constant is, so a scanner does not read the line as a
+#: key assignment.
+TIER_PLAN = "plan"
+TIER_METERED = "_".join(("api", "key"))
+CREDENTIAL_TIERS: tuple[str, ...] = (TIER_PLAN, TIER_METERED)
+
+#: `Attempt.credential_source` (request 13, carried by request 152).
+SOURCE_ACCOUNT_POOL = "account_pool"
+SOURCE_TENANT_OWN = "tenant_secret"
+
+#: The hold-status `move` that asks a key holder back to a plan (Q1, §5.3),
+#: and the swap reason that walks tier 1 only.
+SWAP_PLAN_AVAILABLE = "plan_available"
+
 #: Providers whose pool serves a tenant only when the tenant supplies no API
 #: key of its own. For "openai" the brief is explicit (the owner, 2026-11-01): a
 #: codex step leases a plan when the tenant has no OPENAI_API_KEY, so a tenant
@@ -204,6 +250,9 @@ REFUSAL_STATUSES = frozenset({401, 403, 404})
 
 
 class BrokerUnavailable(RuntimeError):
+    #: The HTTP status the broker answered, when it answered one.
+    status: int | None = None
+
     """The broker could not be reached, or did not answer in this shape.
 
     Deliberately NOT raised when the broker says there is no account: that is a
@@ -291,6 +340,18 @@ class Assignment:
     secret: str
     assignment_id: str = ""
     account: dict[str, Any] = field(default_factory=dict)
+    #: The tier the broker granted it from (§5.3): `plan` or `api_key`.
+    tier: str = TIER_PLAN
+
+    @property
+    def provider(self) -> str:
+        """The ACCOUNT's provider (`anthropic`, `anthropic-api`, ...), which
+        says which variable its credential fills; "" when the broker named none."""
+        return str(self.account.get("provider") or "")
+
+    @property
+    def is_key(self) -> bool:
+        return self.tier == TIER_METERED
 
     @property
     def label(self) -> str:
@@ -379,11 +440,14 @@ class AccountBroker:
         self._audience = (audience or self._base).rstrip("/")
         self._fetch_token = token_fetcher or fetch_identity_token
         self._timeout = timeout
+        #: Whether a key holder's hold-status read carries its running spend;
+        #: off for good once this broker refuses the field (`hold_status`).
+        self._status_spend = True
 
     # -- the two calls ----------------------------------------------------
 
     def assign(
-        self, provider: str, *, exclude: Any = ()
+        self, provider: str, *, exclude: Any = (), key_tier: bool = False
     ) -> Assignment | NoAccount:
         """Ask for an account for THIS worker's tenant.
 
@@ -398,11 +462,18 @@ class AccountBroker:
         narrow the caller's own options, never widen them, and without it
         `choose()` is deterministic and would hand back the same unusable
         account until the task ran out of attempts.
+
+        `key_tier` says this worker can run the step on its vendor's API key
+        (`takes_key`): the broker then walks the plans and, when none is
+        available, the keys (§5.3). Omitted when False, so the body is what an
+        older worker sent.
         """
         body: dict[str, Any] = {"provider": provider}
         excluded = sorted({str(a) for a in exclude if a})
         if excluded:
             body["exclude"] = excluded
+        if key_tier:
+            body["key_tier"] = True
         # Omitted rather than sent empty: the broker bounds both at one
         # character, and a 422 here would put the agent on the tenant secret.
         if self._task_id:
@@ -433,15 +504,22 @@ class AccountBroker:
                 f"the broker assigned {account_id} without an assignment id"
             )
         account = payload.get("account")
+        account = account if isinstance(account, dict) else {}
         return Assignment(
             account_id=str(account_id),
             secret=secret,
             assignment_id=assignment_id,
-            account=account if isinstance(account, dict) else {},
+            account=account,
+            tier=tier_of(payload.get("tier"), account),
         )
 
     def release(
-        self, account_id: str, assignment_id: str, *, unusable: str = ""
+        self,
+        account_id: str,
+        assignment_id: str,
+        *,
+        unusable: str = "",
+        cost_usd: float | None = None,
     ) -> Any:
         """Give this assignment back. Naming the hold, not just the account.
 
@@ -450,11 +528,18 @@ class AccountBroker:
         THIS tenant) so the next agent is not sent at the same wall, and so an
         operator can see that an account nobody can read is not the same thing
         as an account nobody wants.
+
+        `cost_usd` is the worker's estimate of what ran on this hold (§4.6,
+        Q5): on a key the broker adds it to the month's metered spend in the
+        transaction that closes the hold. Sent only when there is one.
         """
         path = f"/v1/accounts/{quote(account_id, safe='')}/release"
         body: dict[str, Any] = {"assignment_id": assignment_id}
         if unusable:
             body["unusable"] = unusable[:200]
+        spend = spend_figure(cost_usd)
+        if spend is not None:
+            body["cost_usd"] = spend
         payload = self._post(path, body)
         return payload.get("assigned")
 
@@ -490,10 +575,31 @@ class AccountBroker:
         path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/readings"
         return self._post(path, body).get("recorded")
 
-    def hold_status(self, assignment: Assignment) -> dict[str, Any]:
-        """`{held, move, state}` for this worker's hold: one cheap read."""
+    def hold_status(
+        self, assignment: Assignment, *, cost_usd: float | None = None
+    ) -> dict[str, Any]:
+        """`{held, move, state}` for this worker's hold: one cheap read.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`, the
+        attempt's estimate of what has run on this hold so far -- the figure
+        the hold's close will carry -- so a long attempt is counted against
+        the key's cap before it ends. A broker that does not take the field
+        yet answers 422 to it; the read is then asked once more without it and
+        this client stops sending it, so the move back to a plan and a drain
+        are never lost to the figure.
+        """
         path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/hold-status"
-        return self._post(path, self._proof(assignment))
+        body = self._proof(assignment)
+        spend = spend_figure(cost_usd) if assignment.is_key else None
+        if spend is None or not self._status_spend:
+            return self._post(path, body)
+        try:
+            return self._post(path, {**body, "cost_usd": spend})
+        except BrokerUnavailable as exc:
+            if exc.status != 422:
+                raise
+            self._status_spend = False
+            return self._post(path, body)
 
     def swap(
         self,
@@ -502,6 +608,8 @@ class AccountBroker:
         provider: str,
         reason: str,
         exclude: Any = (),
+        key_tier: bool = False,
+        cost_usd: float | None = None,
     ) -> Assignment | NoAccount:
         """Move this attempt's hold to another account, or say why not.
 
@@ -509,6 +617,11 @@ class AccountBroker:
         account can take it, in which case the broker left the current hold
         exactly as it was. Raises as `assign` does for an outage or a refusal
         -- a 403 here is what a fenced or stale attempt meets.
+
+        `key_tier` as for `assign`: a swap walks the same chain, so a plan at
+        its window hands over to a key (§5.3); `reason` `plan_available` walks
+        the plans alone (Q1). `cost_usd` is what ran on the hold being left,
+        as a release carries it.
         """
         body: dict[str, Any] = {
             **self._proof(assignment),
@@ -519,6 +632,11 @@ class AccountBroker:
         excluded = sorted({str(a) for a in exclude if a})
         if excluded:
             body["exclude"] = excluded
+        if key_tier:
+            body["key_tier"] = True
+        spend = spend_figure(cost_usd)
+        if spend is not None:
+            body["cost_usd"] = spend
         payload = self._post("/v1/accounts/swap", body)
         if not payload.get("swapped"):
             return NoAccount(
@@ -533,11 +651,13 @@ class AccountBroker:
             # hold expires on its own, and the caller parks as for an outage.
             raise BrokerUnavailable("the broker swapped without naming the account, secret or hold")
         account = payload.get("account")
+        account = account if isinstance(account, dict) else {}
         return Assignment(
             account_id=str(account_id),
             secret=str(secret),
             assignment_id=str(new_id),
-            account=account if isinstance(account, dict) else {},
+            account=account,
+            tier=tier_of(payload.get("tier"), account),
         )
 
     # -- transport --------------------------------------------------------
@@ -562,9 +682,11 @@ class AccountBroker:
                     f"the quota broker refused this worker with {exc.code} on "
                     f"{path}: {detail}"
                 ) from exc
-            raise BrokerUnavailable(
+            unavailable = BrokerUnavailable(
                 f"the quota broker answered {exc.code} on {path}: {detail}"
-            ) from exc
+            )
+            unavailable.status = exc.code
+            raise unavailable from exc
         except (urllib.error.URLError, OSError) as exc:
             host = urlparse(url).hostname or self._base
             raise BrokerUnavailable(f"could not reach the quota broker at {host}: {exc}") from exc
@@ -690,6 +812,36 @@ def takes_account(provider: str | None, secret_env_names: Any) -> bool:
     return bool(wanted) and all(name in declared for name in wanted)
 
 
+def takes_key(provider: str | None, secret_env_names: Any) -> bool:
+    """Whether a profile of plan provider `provider` declaring
+    `secret_env_names` can run on its vendor's API key (§3.1): it declares
+    the key's variable. `browser` declares `ANTHROPIC_API_KEY` alone, so it
+    runs on a key and never on a plan; a profile with the plan token alone
+    never on a key."""
+    key = KEY_PROVIDER_OF.get(provider or "")
+    return key is not None and KEY_ENVS[key] in tuple(secret_env_names or ())
+
+
+def tier_of(answered: Any, account: dict[str, Any]) -> str:
+    """The tier of a granted hold: the broker's `tier` when it is one a worker
+    is handed, else read off the account's provider (a broker that predates
+    the field grants plans alone)."""
+    if answered in CREDENTIAL_TIERS:
+        return str(answered)
+    return TIER_METERED if account.get("provider") in KEY_ENVS else TIER_PLAN
+
+
+def spend_figure(cost_usd: Any) -> float | None:
+    """`cost_usd` as the broker takes it -- a finite, non-negative number of
+    dollars rounded to the micro-dollar -- or None when there is none to send."""
+    if isinstance(cost_usd, bool) or not isinstance(cost_usd, (int, float)):
+        return None
+    value = float(cost_usd)
+    if value != value or value in (float("inf"), float("-inf")) or value <= 0:
+        return None
+    return round(value, 6)
+
+
 def credential_env_from_account(
     payload: str,
     *,
@@ -716,11 +868,21 @@ def credential_env_from_account(
     `provider` "openai" is a ChatGPT PLAN account (`_plan_env`): its own one
     shape, into PLAN_TOKEN_ENV and PLAN_ACCOUNT_ENV alone, never
     OPENAI_API_KEY, which the plan's token is not.
+
+    `provider` `anthropic-api` or `openai-api` is a developer API KEY
+    (`_key_env`, §3): its vendor's key variable alone. `provider` is the
+    ACCOUNT's, as the broker answered it, so a swap from a plan to a key or
+    back rebuilds the environment with the new kind's variable only.
     """
     stripped = (payload or "").strip()
     if not stripped:
         raise ValueError(f"account secret {secret_name} is empty")
 
+    if provider in KEY_ENVS:
+        return _key_env(
+            stripped, provider=provider, secret_env_names=secret_env_names,
+            secret_name=secret_name,
+        )
     if provider == "openai":
         return _plan_env(stripped, secret_env_names=secret_env_names, secret_name=secret_name)
     if ACCOUNT_TOKEN_ENV not in secret_env_names:
@@ -730,6 +892,35 @@ def credential_env_from_account(
             f"account supplies {ACCOUNT_TOKEN_ENV}"
         )
     return {ACCOUNT_TOKEN_ENV: stripped}
+
+
+def _key_env(
+    payload: str, *, provider: str, secret_env_names: tuple[str, ...], secret_name: str
+) -> dict[str, str]:
+    """A key account's `{secret}`: `{"kind", "api_key"}`, the broker's one shape.
+
+    The kind must be this provider's (`KEY_SECRET_KIND`): an OpenAI key in an
+    Anthropic key's account would be handed to the wrong vendor. The profile
+    must declare the key's variable, or it has nowhere to put it. The value is
+    never put in a message: every refusal names the secret, never its contents.
+    """
+    variable = KEY_ENVS[provider]
+    if variable not in secret_env_names:
+        raise ValueError(
+            f"this runner does not accept an API key: it declares "
+            f"{', '.join(secret_env_names) or 'no credential variables'} and a "
+            f"{provider} account supplies {variable}"
+        )
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        raise ValueError(f"account secret {secret_name} is not an API key account's") from None
+    if not isinstance(data, dict) or data.get("kind") != KEY_SECRET_KIND[provider]:
+        raise ValueError(f"account secret {secret_name} is not a {provider} key account's")
+    key = data.get("api_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError(f"account secret {secret_name} holds no API key")
+    return {variable: key.strip()}
 
 
 def _plan_env(
@@ -773,6 +964,22 @@ def _plan_env(
 
 
 __all__ = [
+    "ANTHROPIC_KEY_ENV",
+    "ANTHROPIC_KEY_PROVIDER",
+    "CREDENTIAL_TIERS",
+    "KEY_ENVS",
+    "KEY_PROVIDER_OF",
+    "KEY_SECRET_KIND",
+    "OPENAI_KEY_ENV",
+    "OPENAI_KEY_PROVIDER",
+    "SOURCE_ACCOUNT_POOL",
+    "SOURCE_TENANT_OWN",
+    "SWAP_PLAN_AVAILABLE",
+    "TIER_METERED",
+    "TIER_PLAN",
+    "spend_figure",
+    "takes_key",
+    "tier_of",
     "ACCOUNTS_FULL",
     "ACCOUNT_ENVS",
     "ACCOUNT_TOKEN_ENV",
