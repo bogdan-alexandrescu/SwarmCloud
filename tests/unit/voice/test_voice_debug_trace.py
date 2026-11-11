@@ -40,6 +40,7 @@ if _UNIT not in sys.path:
     sys.path.insert(0, _UNIT)
 
 from control_plane.fakes import FakeFirestore  # noqa: E402
+from quota_broker import accounts  # noqa: E402
 from swarm_common.identity import Principal  # noqa: E402
 
 from swarm_api.auth import AuthContext  # noqa: E402
@@ -280,11 +281,6 @@ def test_each_tier_is_kept_and_served_on_the_read_and_the_event(client, db, tier
 
 def test_the_tiers_are_the_brokers():
     # quota_broker.accounts.TIERS, which swarm-api cannot import: the same names.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "apps" / "quota-broker"))
-    try:
-        from quota_broker import accounts
-    except ImportError as exc:  # pragma: no cover -- the broker's dependencies are absent
-        pytest.skip(f"quota_broker not importable here ({type(exc).__name__})")
     assert tuple(vtrace.TIERS) == tuple(accounts.TIERS)
 
 
