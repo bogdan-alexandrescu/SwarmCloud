@@ -83,7 +83,7 @@ def test_no_dockerfile_fetches_from_ghcr_docker_hub_or_github(dockerfile: Path) 
 def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Path) -> None:
     # `# syntax=docker/dockerfile:1.7` is a Docker Hub pull BuildKit makes
     # before reading a single instruction. The line names no project
-    # (DAYONE-DESAGA-1): the build passes the same reference through the
+    # (DAYONE-GENERIC-1): the build passes the same reference through the
     # project's Docker Hub mirror as BUILDKIT_SYNTAX
     # (test_build_mirror.py::test_the_build_passes_the_mirror_of_the_project_it_builds_for).
     syntax = _syntax(dockerfile.read_text())
@@ -99,7 +99,7 @@ def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Pat
 def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
     text = dockerfile.read_text()
     args = _global_args(text)
-    # The defaults are empty (DAYONE-DESAGA-1,
+    # The defaults are empty (DAYONE-GENERIC-1,
     # test_build_mirror.py::test_no_dockerfile_names_a_project); the build
     # passes the mirror of the project it builds for, which for the live
     # project is MIRRORS.

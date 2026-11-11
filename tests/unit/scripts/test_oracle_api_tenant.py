@@ -1,9 +1,9 @@
-"""oracle-api submits work as a tenant of its own, u-or-9a0792 (#1568).
+"""oracle-api submits work as a tenant of its own (#1568).
 
 OWNER DECISION 2026-10-18. The orchestrating client application runs as the
-service account `oracle-api@saga-agents-staging.iam.gserviceaccount.com` and is
+service account `oracle-api@<project>.iam.gserviceaccount.com` and is
 admitted as a tenant of its own, the way swarm-verify is (u-sw-c90291), and
-NEVER as a member of eng@saga.xyz: eng's tenant decides eng's worker account,
+NEVER as a member of the eng group (eng@<domain>): eng's tenant decides eng's worker account,
 provider keys, GCS prefix and namespace (invariant 9), and a client
 application's work has no business holding any of them.
 
@@ -12,7 +12,7 @@ Three places have to agree for that to hold, and each is checked here:
   * the front door: IAP admits the account (`frontend_iap_members` in
     terraform/bootstrap/terraform.tfvars, which the owner applies himself --
     the committed line is the record of that apply);
-  * swarm-api: ALLOWED_USERS admits the account past the saga.xyz domain
+  * swarm-api: ALLOWED_USERS admits the account past the org domain
     check (terraform/infra/locals.tf appends var.allowed_users, which
     dev.tfvars sets to the account since DAYONE-TF-1);
   * the tenant: dev.tfvars declares the id the frozen identity module gives
@@ -22,12 +22,17 @@ Three places have to agree for that to hold, and each is checked here:
 The id is COMPUTED, never chosen: swarm_common.identity appends a digest
 whenever the slug is lossy or too long, and this address is both. So the key
 is recomputed from the frozen module here rather than trusted from the file.
+The address and the org domain are read from the tfvars too, never spelled
+here: they are the deployment's values, and this repository names none.
 tests/terraform/oracle_api_tenant.tftest.hcl holds the plan to the same id.
 """
 
 from __future__ import annotations
 
 import re
+
+import importlib.util
+from pathlib import Path
 
 from swarm_common.identity import tenant_id_for_user
 
@@ -40,10 +45,36 @@ from .test_verify_identity_grants import (
     _verify_identity,
 )
 
-ORACLE_API = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
-#: What tenant_id_for_user gave the account on main, 2026-10-18. Asserted
-#: against the frozen module below, never used in place of it.
-ORACLE_TENANT = "u-or-9a0792"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location(
+    "placeholders", Path(__file__).resolve().parents[2] / "placeholders.py"
+)
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+
+#: The account's local part; its project is the deployment's, read below.
+ORACLE_LOCAL = "oracle-api"
+
+
+def _oracle_api() -> str:
+    """The oracle-api address dev.tfvars admits in allowed_users.
+
+    Read from the file rather than spelled here: the project in the address
+    is the deployment's. When dev.tfvars lists no such account, the
+    placeholder address stands in, so every assertion below fails naming it."""
+    pattern = re.compile(rf"{re.escape(ORACLE_LOCAL)}@[a-z0-9-]+\.iam\.gserviceaccount\.com")
+    found = [u for u in _string_list(DEV_TFVARS, "allowed_users") if pattern.fullmatch(u)]
+    return found[0] if found else _PLACEHOLDERS.service_account(ORACLE_LOCAL)
+
+
+ORACLE_API = _oracle_api()
+
+
+def _declared_tenant() -> str | None:
+    """The user tenant dev.tfvars declares for ORACLE_API, if any."""
+    for name, entry in _tenants().items():
+        if _unquote(entry.get("kind", "")) == "user" and _unquote(entry.get("principal", "")) == ORACLE_API:
+            return name
+    return None
 
 
 def _tenants() -> dict[str, dict[str, str]]:
@@ -77,10 +108,11 @@ def _allowed_users_expression() -> str:
 
 def test_dev_declares_the_tenant_the_frozen_identity_gives_the_account() -> None:
     derived = tenant_id_for_user(ORACLE_API)
-    assert derived == ORACLE_TENANT, (
-        f"swarm_common.identity now gives {ORACLE_API} {derived!r}, not "
-        f"{ORACLE_TENANT!r}: dev.tfvars, locals.tf's comment, the docs and the "
-        "operator steps all name the old id"
+    declared = _declared_tenant()
+    assert derived == declared, (
+        f"swarm_common.identity gives {ORACLE_API} {derived!r}, but dev.tfvars "
+        f"declares its user tenant as {declared!r}: dev.tfvars, locals.tf's "
+        "comment, the docs and the operator steps must name the computed id"
     )
     tenants = _tenants()
     assert derived in tenants, (
@@ -105,7 +137,7 @@ def test_the_tenant_follows_swarm_verify_s_providers_and_limits() -> None:
     oracle = tenants[tenant_id_for_user(ORACLE_API)]
     for field in ("providers", "max_active", "capacity_units"):
         assert oracle[field].replace(" ", "") == verify[field].replace(" ", ""), (
-            f"u-or-9a0792's {field} is {oracle[field]}, swarm-verify's is {verify[field]}"
+            f"{tenant_id_for_user(ORACLE_API)}'s {field} is {oracle[field]}, swarm-verify's is {verify[field]}"
         )
     assert _strings(oracle["providers"]) == []
     assert not _strings(oracle.get("service_accounts", "[]"))
@@ -126,10 +158,10 @@ def test_the_account_is_in_no_group_tenant_and_holds_no_admin_reach() -> None:
     }
     assert list(naming) == [tenant_id_for_user(ORACLE_API)], (
         f"the tenants naming {ORACLE_API} are {sorted(naming)}; it must be "
-        f"exactly its own, {ORACLE_TENANT}"
+        f"exactly its own, {tenant_id_for_user(ORACLE_API)}"
     )
     eng = _tenants()["eng"]
-    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]) == "eng@saga.xyz"
+    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]).startswith("eng@")
     for listing in ("admin_users", "admin_pool_users", "secret_admin_members"):
         members = {m.lower().split(":", 1)[-1] for m in _string_list(DEV_TFVARS, listing)}
         assert ORACLE_API not in members, f"{listing} names {ORACLE_API}"
@@ -141,8 +173,10 @@ def test_the_bootstrap_admits_the_account_at_the_front_door() -> None:
         f"frontend_iap_members is {members}; IAP answers 403 'Access denied. "
         f"For user {ORACLE_API}' before swarm-api ever sees the request"
     )
-    # Adding the client must not have replaced anybody already admitted.
-    assert "domain:saga.xyz" in members
+    # Adding the client must not have replaced anybody already admitted: the
+    # org domain (eng's group lives in it) and swarm-verify.
+    org_domain = _unquote(_tenants()["eng"]["principal"]).split("@", 1)[1]
+    assert f"domain:{org_domain}" in members
     assert f"serviceAccount:{_verify_identity()}" in members
 
 
@@ -159,7 +193,7 @@ def test_swarm_api_admits_the_account_beside_swarm_verify() -> None:
     allowed = _string_list(DEV_TFVARS, "allowed_users")
     assert ORACLE_API in allowed, (
         f"dev.tfvars allowed_users is {allowed}; swarm-api answers {ORACLE_API} "
-        "403 on the saga.xyz domain check until it is listed"
+        "403 on the org domain check until it is listed"
     )
     # The account alone: nothing else rides in with it.
     assert allowed == [ORACLE_API], allowed

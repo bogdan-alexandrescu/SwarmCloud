@@ -243,7 +243,7 @@ def test_ci_may_grant_no_container_role():
     never from terraform/infra (VERIFY-GKE-READ-2, part of #1754; owner
     decision 2026-10-21). hasOnly() limits which roles CI grants, never to whom
     or under what condition, so a container role on this list is one CI could
-    grant itself unconditioned, reaching the other team's agents-staging
+    grant itself unconditioned, reaching the other team's live
     cluster. The prose counts are therefore of a list without it: 15.
     MUTATION: put "roles/container.clusterViewer" back on
     deployer_grantable_project_roles and this is red."""

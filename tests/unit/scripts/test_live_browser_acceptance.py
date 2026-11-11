@@ -10,7 +10,7 @@ beyond loopback:
 * its websocket client upgrades, sends masked frames, reads a server's
   close code, and its frame reader joins fragments;
 * its frame judge passes a frame whose field box is the field as drawn (its
-  own magenta; BGD 2026-10-25: the live view paints nothing) and FAILS one
+  own magenta; owner, 2026-10-25: the live view paints nothing) and FAILS one
   where the field is painted over, even partly -- at device scale 1 and 2,
   exactly (RFB) and with VP8-like noise (the recording);
 * the fixture page's layout is the one the judge measures by, and the page
@@ -566,7 +566,7 @@ def test_the_qa_identity_case_skips_every_check_unless_both_settings_are_set(tmp
 
 def test_the_frames_and_recording_labels_say_the_field_is_as_drawn():
     """The checks pass a field shown as Chromium drew it and fail one painted
-    over (BGD, 2026-10-25: the live view paints nothing), so a label saying
+    over (owner, 2026-10-25: the live view paints nothing), so a label saying
     "painted" names the opposite of what is checked (LIVE-NOMASK-TIDY)."""
     text = GROUP.read_text()
     listed = re.search(r"live_browser_checks\(\) \{\n  cat <<'EOF'\n(.*?)\nEOF", text, re.S).group(1)

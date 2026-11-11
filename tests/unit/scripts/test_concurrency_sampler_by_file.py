@@ -68,7 +68,7 @@ def _fixture(tmp: Path) -> Path:
 # Firestore, answered from files. The stub reads its request from stdin-shaped
 # here-strings only, so the stub itself never puts a sample on a command line.
 FS_STUB = r'''
-fs_base() { printf 'https://firestore.fake/v1/projects/p/databases/d/documents'; }
+fs_base() { printf 'https://firestore.example.com/v1/projects/p/databases/d/documents'; }
 fs_request() {
   local method="$1" url="$2" body="${3:-}" c id first=1
   case "${url}" in

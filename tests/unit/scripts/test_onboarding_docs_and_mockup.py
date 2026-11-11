@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from .test_no_live_literals import _listed
 from .test_docs_spec_amendments import _assert_cites_resolve
 
 REPO = Path(__file__).resolve().parents[3]
@@ -386,7 +387,12 @@ def test_doc_and_mockup_carry_nothing_credential_shaped(doc: Path):
 
 @pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
 def test_doc_and_mockup_name_nothing_on_the_shared_project_deny_list(doc: Path):
-    assert "agents-staging" not in _text(doc)
+    # The live values (the shared project's resources among them) come from the
+    # deployment pattern list, read the way test_no_live_literals.py reads it;
+    # with no list this skips and says why. Reported by list line, never value.
+    text = _text(doc)
+    hits = [f"list:{e.line}" for e in _listed() if e.pattern.search(text)]
+    assert not hits, f"{doc.name} names listed values: {hits}"
 
 
 # --------------------------------------------------------------------------
@@ -482,7 +488,14 @@ def test_the_mockup_uses_placeholder_names_only():
     text = _text(MOCKUP)
     for needle in ("example-org", "example-user", "swarm.example.com", "Operator"):
         assert needle in text, needle
-    assert "saga" not in text.lower()
+
+
+def test_the_mockup_names_nothing_on_the_pattern_list():
+    # The company half of the placeholder check, from the deployment pattern
+    # list (case-insensitive); skips, saying why, with no list.
+    text = _text(MOCKUP)
+    hits = [f"list:{e.line}" for e in _listed() if e.pattern.search(text)]
+    assert not hits, f"{MOCKUP.name} names listed values: {hits}"
 
 
 @pytest.mark.parametrize("vid", ["entry-a", "entry-b", "entry-c"])

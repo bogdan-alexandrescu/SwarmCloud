@@ -42,8 +42,9 @@ placeholder_deployment = _PLACEHOLDERS.deployment()
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
-TENANT = "u-bogdan"
-PRINCIPAL = "bogdan@example.com"
+#: A person's workspace: the placeholder owner, and the tenant their address derives to.
+PRINCIPAL = _PLACEHOLDERS.OWNER
+TENANT = "u-" + PRINCIPAL.split("@")[0]
 KEPT_ID = "w-752763"
 REQUEST_ID = "6f1c2d3e-0000-4000-8000-000000000001"
 PROJECT = placeholder_deployment.PROJECT
@@ -80,11 +81,11 @@ FAKE_KUBECTL = """#!/bin/sh
 case "$*" in
   "version --client"*) echo "Client Version: v1.31.0" ;;
   "config current-context") echo "@CONTEXT@" ;;
-  "get resourcequota swarm-tenant-quota -n swarm-tenant-u-bogdan -o json")
+  "get resourcequota swarm-tenant-quota -n swarm-tenant-@TENANT@ -o json")
     echo '{"spec": {"hard": {"pods": "100", "requests.cpu": "400", "requests.memory": "800Gi"}}}' ;;
   *) echo "unexpected kubectl call: $*" >&2; exit 9 ;;
 esac
-""".replace("@CONTEXT@", CONTEXT)
+""".replace("@CONTEXT@", CONTEXT).replace("@TENANT@", TENANT)
 
 
 def _tenant_doc() -> dict:
@@ -216,7 +217,7 @@ def test_a_dry_run_prints_before_and_after_and_writes_nothing(pending) -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert pending.read() == before
-    assert "before (workspaces/u-bogdan)" in proc.stderr and "after:" in proc.stderr
+    assert f"before (workspaces/{TENANT})" in proc.stderr and "after:" in proc.stderr
     assert '"state": "requested"' in proc.stderr and '"state": "ready"' in proc.stderr
     assert f"keeping workspace id {KEPT_ID}" in proc.stderr
     assert "dry run: nothing was written" in proc.stderr
@@ -306,7 +307,7 @@ def test_without_quota_flags_the_live_resourcequota_is_read(pending) -> None:
     proc = pending.run(TENANT, "--apply", typed=TENANT)
 
     assert proc.returncode == 0, proc.stderr
-    assert "read from swarm-tenant-u-bogdan" in proc.stderr
+    assert f"read from swarm-tenant-{TENANT}" in proc.stderr
     limits = pending.read()[f"workspaces/{TENANT}"]["limits"]
     assert (limits["quota_pods"], limits["quota_cpu"]) == (100, 400)
 
@@ -324,9 +325,9 @@ def test_a_cluster_context_that_is_not_the_swarms_is_refused_before_any_read(pen
 
 @pytest.mark.parametrize("args", [
     ("eng",),
-    ("u-bogdan", "--quota-pods", "100"),
-    ("u-bogdan", "--quota-pods", "100", "--quota-cpu", "400m"),
-    ("u-bogdan", "--apply", "--dry-run"),
+    (TENANT, "--quota-pods", "100"),
+    (TENANT, "--quota-pods", "100", "--quota-cpu", "400m"),
+    (TENANT, "--apply", "--dry-run"),
 ])
 def test_bad_arguments_are_refused_before_anything_is_read(pending, args) -> None:
     before = pending.read()

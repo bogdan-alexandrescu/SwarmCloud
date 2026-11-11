@@ -35,9 +35,11 @@ assert _spec.loader is not None
 sys.modules["quality_metrics"] = qm
 _spec.loader.exec_module(qm)
 
-WORKER = "bogdan"
-OPERATOR = "bogdan-alexandrescu"
-MAIN_AUTHOR = "Bogdan Alexandrescu"
+#: Placeholder identities: the worker's commit author, an operator's, and the
+#: author commits brought in from main carry. Only their being distinct matters.
+WORKER = "swarm-worker"
+OPERATOR = "example-operator"
+MAIN_AUTHOR = "Example Author"
 
 
 # --------------------------------------------------------------------------

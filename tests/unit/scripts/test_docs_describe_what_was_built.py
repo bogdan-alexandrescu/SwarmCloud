@@ -1595,7 +1595,7 @@ def test_visual_qa_header_no_longer_says_nothing_is_built():
 # LIVE-NOMASK (part of #2298): the live gate paints nothing over the screen
 # --------------------------------------------------------------------------
 #
-# BGD decided on 2026-10-25 that no part of what the live browser shows is
+# The owner decided on 2026-10-25 that no part of what the live browser shows is
 # redacted on screen. live-browser.md §5.3 described a fail-closed mask that
 # painted boxes and blanked pages; it now records the decision, says what the
 # gate still does, and keeps the text redaction and the no-logging rule. The
@@ -1615,9 +1615,10 @@ def _lb_53() -> str:
     return text[start: text.index("### 5.4 ", start)]
 
 
-def test_live_browser_5_3_records_bgds_decision_and_why():
+def test_live_browser_5_3_records_the_owners_decision_and_why():
     body = _flat(_lb_53())
-    assert "BGD's decision, 2026-10-25" in body and LB_DECISION in body
+    # Who decided is named by role in the doc; the test holds the date and the words.
+    assert "decision, 2026-10-25" in body and LB_DECISION in body
     for issue in ("#1030", "#1340", "#1344"):
         assert issue in body, issue
     # What the gate still does with the page, as built.
@@ -1648,7 +1649,7 @@ def test_live_browser_no_longer_says_frames_are_masked():
         assert stale not in text, stale
     # The one remaining mention of LB-3's masking says it is superseded.
     lb3 = next(line for line in _text(LIVE_BROWSER).splitlines() if line.startswith("| **LB-3** |"))
-    assert "Superseded for pixels by BGD, 2026-10-25" in lb3
+    assert "Superseded for pixels by " in lb3 and ", 2026-10-25" in lb3, lb3
 
 
 def test_the_recorder_and_other_docs_no_longer_say_frames_are_masked():
@@ -1904,7 +1905,7 @@ TS_BUILT = "## 11. What was built"
 TS_NOT_BUILT = "### 11.8 Not built"
 TS_ROWS = "### 5.3 `skipped`, `failed`, `error` once a service is declared"
 TS_AGENT_OUTPUT = "**A service the tests need**"
-#: Lanes §10 and §11 added after §7's table was written (BGD, 2026-10-24).
+#: Lanes §10 and §11 added after §7's table was written (the owner, 2026-10-24).
 TS_ADDED_LANES = ("TS-CLOUDRUN-REFUSE",)
 #: A backticked citation into the tree, with or without `::qualname`.
 _TS_CITE = re.compile(rf"`({_ROOTS}[\w./-]*?)(?:::([\w.]+))?`")
@@ -2247,7 +2248,7 @@ def test_test_services_checks_fail_on_a_one_line_mutation(check, doc, old, new, 
 # --------------------------------------------------------------------------
 #
 # docs/design/secrets-scopes.md was written before any lane built it, and its
-# §11 (BGD's answers of 2026-10-23) overrode §3 on the App, the environments
+# §11 (the owner's answers of 2026-10-23) overrode §3 on the App, the environments
 # and the seal. Its status line and §9 say which lanes are built, with their
 # PRs; §12 records what each built and where the code departs from §2-§6.
 # workspace-secrets.md's status line points at the extension, security.md
@@ -2362,14 +2363,15 @@ def _check_ssc_code(text: str) -> None:
     for code in SSC_SWITCHES:
         assert refusals.SWITCHES[code].default is False, code
         assert f"| `{code}` |" in raw, f"§12 does not say {code} ships off"
-    # Platform secrets: off until BGD's bootstrap apply.
+    # Platform secrets: off until the owner's bootstrap apply.
     tf = _text(REPO / "terraform" / "bootstrap" / "platform_secret_status.tf")
     assert re.search(r'variable "enable_platform_secret_status" \{.*?default\s*=\s*false', tf, flags=re.S)
     if "enable_platform_secret_status" not in _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars"):
         assert "**It is off:**" in body
     # Q3's residual risk is open exactly while workers can read the slots.
     if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
-        assert "**The residual risk BGD accepted (Q3) is live.**" in body
+        # Who accepted it is the doc's to name; the test holds the risk and its state.
+        assert "**The residual risk " in body and " accepted (Q3) is live.**" in body
         assert f"`terraform/bootstrap/forge_user_slots.tf`\n(`{SSC_STEP5}`)" in raw
     assert "**The done check (§9) is not met yet.**" in body
 
@@ -2444,8 +2446,8 @@ _SSC_MUTATIONS = [
     ("code", "| `grant_key_required` | a repository grant is written unattested, and the release drops it, "
      "because a repository grant is released only when attested (§2.2) | every environment holds the grant key |",
      ""),
-    ("code", "**The residual risk BGD accepted (Q3) is live.** User-scoped-secrets step 5",
-     "**The residual risk BGD accepted (Q3) is closed.** User-scoped-secrets step 5"),
+    ("code", " accepted (Q3) is live.** User-scoped-secrets step 5",
+     " accepted (Q3) is closed.** User-scoped-secrets step 5"),
 ]
 
 
@@ -2466,7 +2468,7 @@ def test_secrets_scopes_checks_fail_on_a_one_line_mutation(check: str, old: str,
 # status said "DESIGN, not built", visual-qa-any-app.md still refused a
 # discovering target with nothing stored (`qa_target_no_screens`, "press Run
 # discovery"), and schedules.md §3.17 still gave the `visual-qa` caps as $80 a
-# day and one at a time, which BGD changed on 2026-10-23 (§10, Q9 (a)). Each
+# day and one at a time, which the owner changed on 2026-10-23 (§10, Q9 (a)). Each
 # figure below is read from the code that holds it.
 
 QAENV_DESIGN = DOCS / "design" / "qa-environments.md"

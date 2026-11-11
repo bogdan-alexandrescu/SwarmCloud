@@ -20,7 +20,10 @@ each edit where a symbol or an anchor fails only when it is gone.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -32,6 +35,38 @@ REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "repo-index.md"
 MOCKUPS = REPO / "docs" / "web-ui" / "mockups"
 MOCKUP = MOCKUPS / "repositories.html"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Registered first: a dataclass resolves its annotations through sys.modules.
+    sys.modules.setdefault(name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+guard = _load("swarm_guards_deployment_values", REPO / "scripts" / "guards" / "deployment_values.py")
+placeholders = _load("swarm_tests_placeholders", REPO / "tests" / "placeholders.py")
+
+
+def _listed() -> list:
+    """The deployment pattern list's entries, as tests/unit/scripts/test_no_live_literals.py
+    reads them; skips when no list is given (this repository holds none)."""
+    path = os.environ.get(guard.LIST_FILE_VARIABLE)
+    text = Path(path).read_text(encoding="utf-8") if path else os.environ.get(guard.LIST_VARIABLE)
+    if not text or not text.strip():
+        pytest.skip("no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): "
+                    "nothing says what is live")
+    return guard.parse_list(text).entries
+
+
+def _assert_names_no_shared_resource(text: str) -> None:
+    """Offline: not even the placeholder never-touch names (the shared project's
+    resources, placeholders.PEER) appear; the live names are the pattern list's."""
+    for name in placeholders.PEER.values():
+        assert name not in text, name
 
 _CITE = re.compile(
     r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin)/[\w./-]+\.\w+)`"
@@ -195,7 +230,7 @@ def test_doc_and_mockup_carry_nothing_credential_shaped(doc: Path):
 
 @pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
 def test_doc_and_mockup_name_nothing_on_the_shared_project_deny_list(doc: Path):
-    assert "agents-staging" not in _text(doc)
+    _assert_names_no_shared_resource(_text(doc))
 
 
 # --------------------------------------------------------------------------
@@ -279,7 +314,8 @@ def test_the_mockup_uses_placeholder_names_only():
     text = _text(MOCKUP)
     for needle in ("example-org/example-api", "swarm.example.com", "Operator"):
         assert needle in text, needle
-    assert "saga" not in text.lower()
+    # The company and the live deployment's names: test_docs_name_nothing_the_pattern_list_lists.
+    _assert_names_no_shared_resource(text)
 
 
 @pytest.mark.parametrize(
@@ -494,7 +530,7 @@ def test_the_git_tokens_doc_lists_its_contract_requests_and_links_its_mockups():
 def test_the_git_tokens_doc_cites_real_files_and_nothing_credential_shaped(doc: Path):
     text = _text(doc)
     assert not _CREDENTIAL_SHAPES.search(text)
-    assert "agents-staging" not in text
+    _assert_names_no_shared_resource(text)
     for path in _CITE.findall(text):
         assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
     _assert_cites_resolve(doc)
@@ -681,3 +717,13 @@ def test_the_probe_host_rule_is_not_claimed_to_exist_in_swarm_api():
     assert "apps/agent-worker/agent_worker/forge.py" in body
     assert "swarm-api equivalent" in body
     assert "the rule the issue fetch and the worker already use" not in body
+
+
+@pytest.mark.parametrize("doc", [DESIGN, MOCKUP, GIT_TOKENS], ids=lambda p: p.name)
+def test_docs_name_nothing_the_pattern_list_lists(doc: Path):
+    """The live deployment: its company, project and the shared project's
+    never-touch resources, read from the pattern list rather than spelled here."""
+    entries = _listed()
+    text = _text(doc)
+    named = sorted({entry.line for entry in entries if entry.pattern.search(text)})
+    assert not named, f"{doc.name} names the live deployment (pattern list lines {named})"

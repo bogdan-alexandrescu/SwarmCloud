@@ -722,7 +722,7 @@ def test_the_scripts_are_executable_and_shellcheck_clean(script):
     assert lines[0] == "set -euo pipefail"
     # Skipped, not crashed, where shellcheck is absent -- the same skip as
     # test_release_acceptance_job.py, test_register_tenant_forge_reader.py and
-    # test_build_mirror.py. A bogdan-ci VM booted from an image without it
+    # test_build_mirror.py. A self-hosted CI VM booted from an image without it
     # raised FileNotFoundError here (PR 1184, run 38552512519); the image now
     # installs it, so CI runs the check.
     if shutil.which("shellcheck") is None:

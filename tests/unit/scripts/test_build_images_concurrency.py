@@ -17,7 +17,7 @@ on PATH (the same seam `tests/integration/test_register_tenant_grants.py`
 uses), so what is tested is the scheduler that ships rather than a copy of it:
 
   * independent images are in flight at the same time, and never more of them
-    than the configured bound -- the bound matters because saga-agents-staging
+    than the configured bound -- the bound matters because the deployment's project
     is SHARED, and its concurrent-build quota is shared with it;
   * agent-runtime-browser is not submitted until agent-runtime-base has
     FINISHED, because its checked-in cloudbuild.yaml pulls
@@ -459,7 +459,7 @@ def test_independent_images_are_in_flight_together_up_to_the_bound(tmp_path, par
     peak = _max_in_flight(windows)
     assert peak <= parallel, (
         f"{peak} builds were in flight at once with a bound of {parallel}; the "
-        "bound exists because saga-agents-staging's build quota is shared"
+        "bound exists because the shared project's build quota is shared"
     )
     assert peak == parallel, (
         f"at most {peak} build(s) were ever in flight with a bound of {parallel}: "

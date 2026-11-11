@@ -202,7 +202,7 @@ def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     or let a fork's pull request look a record up."""
     jobs = _jobs()
     (step,) = [s for s in jobs["changes"]["steps"] if s.get("id") == "reuse"]
-    # Not when the `train` step already matched a green merge train (BGD's
+    # Not when the `train` step already matched a green merge train (the owner's
     # pick, 2026-11-06; test_ci_select.py holds that step).
     assert step["if"] == (
         "steps.train.outputs.train == '' && ("
@@ -561,7 +561,7 @@ def test_the_merge_step_reads_a_reused_green_as_green():
     """At a lane's head: the push run's ci-gate passed, and the pull request's
     ci-gate passed with the heavy jobs skipped by reuse. Each event's latest
     run of a required check is green there (merge.py REQUIRED_GREEN = success,
-    skipped; a check is decided by the latest run of each event, BGD
+    skipped; a check is decided by the latest run of each event, owner,
     2026-10-22, beside CI-EARLY's every-event rule). MUTATION (merge.py): drop
     `skipped` from REQUIRED_GREEN, or let one event's red latest run be
     outvoted by another event's green one."""

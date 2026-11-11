@@ -142,7 +142,16 @@ def profile_extra(profile: str) -> dict:
 #: The public repository the smoke clones for the fixture: this one. Public,
 #: so the clone needs no tenant credential (`Worker._git_token` returns None
 #: and the clone runs anonymously).
-FIXTURE_REPOSITORY = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+#: Read from scripts/lib/testlib.sh rather than spelled here: the default names
+#: the deployment's own repository, which this file does not.
+def _default_fixture_repository() -> str:
+    text = (ROOT / "scripts" / "lib" / "testlib.sh").read_text()
+    found = re.search(r'^SMOKE_FIXTURE_REPOSITORY_DEFAULT="([^"]+)"', text, flags=re.M)
+    assert found, "scripts/lib/testlib.sh no longer sets SMOKE_FIXTURE_REPOSITORY_DEFAULT"
+    return found.group(1)
+
+
+FIXTURE_REPOSITORY = _default_fixture_repository()
 
 
 def _fixture_dir() -> Path:
@@ -193,6 +202,10 @@ def test_the_fixture_has_a_test_that_passes():
 def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
     extra = profile_extra("generic")
     assert extra.get("repository_url") == FIXTURE_REPOSITORY, extra
+    # An anonymous HTTPS clone from GitHub, no userinfo: no tenant credential.
+    assert re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", FIXTURE_REPOSITORY), (
+        FIXTURE_REPOSITORY
+    )
     assert extra.get("repository_ref") == "main", extra
     from swarm_api.validation import check_repository_url
 

@@ -2,7 +2,7 @@
 a person, signed, and the stable channel moves only after the manual test
 (DAYONE-RELEASE-1; plan §7.2 steps 5-6, §7.3; D22; lesson 27).
 
-Since DAYONE-RELEASE-CI (BGD, 2026-10-30) the person may be the reviewer of a
+Since DAYONE-RELEASE-CI (the owner, 2026-10-30) the person may be the reviewer of a
 dispatched publish-release run instead of a terminal: `--ci` takes the
 version typed into the dispatch form (`SWARM_PUBLISH_VERSION`) as the typed
 confirmation, under GitHub Actions only, for a publish only. A promotion stays
@@ -35,12 +35,25 @@ from .test_release_assemble import (LIGHTPANDA_SOURCE, LIGHTPANDA_SOURCE_BODY, V
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release" / "publish.sh"
-BUCKET = "gs://swarmcloud"
+
+
+def _script_value(name: str) -> str:
+    """The release home's NAME="value" as publish.sh pins it (read, not restated here)."""
+    found = re.search(rf'^{name}="([^"]*)"$', SCRIPT.read_text(), re.MULTILINE)
+    assert found, f"{SCRIPT} no longer pins {name}"
+    return found.group(1)
+
+
+BUCKET = _script_value("BUCKET")
 RELEASE = f"{BUCKET}/releases/{VERSION}"
 #: Where the Lightpanda image's SOURCE notice says its Corresponding Source is.
 ROOT_SOURCE = f"{BUCKET}/{LIGHTPANDA_SOURCE}"
-HOME_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
-KMS = "gcpkms://projects/swarmcloud-prod/locations/us/keyRings/swarmcloud-release/cryptoKeys/cosign"
+_PROJECT, _LOCATION = _script_value("PROJECT"), _script_value("LOCATION")
+HOME_REGISTRY = f"{_LOCATION}-docker.pkg.dev/{_PROJECT}/{_script_value('REPOSITORY')}"
+KMS = (f"gcpkms://projects/{_PROJECT}/locations/{_LOCATION}/keyRings/{_script_value('KEYRING')}"
+       f"/cryptoKeys/{_script_value('KEY')}")
+#: The bucket's public URL, as marketplace.json points installs at it.
+PUBLIC_BUCKET = "https://storage.googleapis.com/" + BUCKET.removeprefix("gs://")
 #: The release key the engine pins; the assembled bundle's swarm_install wheel carries it.
 RELEASE_KEY = REPO / "apps" / "swarm-install" / "swarm_install" / "release_key.pub"
 
@@ -331,7 +344,7 @@ def test_promote_marketplace_names_the_plugin_zip_by_url(tmp_path: Path) -> None
     uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
     (sc,) = json.loads(uploaded[f"{BUCKET}/marketplace.json"])["plugins"]
     # MUTATION: promote with --source ./releases/V/plugin again and this fails.
-    assert sc["source"] == {"source": "archive", "url": f"https://storage.googleapis.com/swarmcloud/releases/{VERSION}/plugin.zip",
+    assert sc["source"] == {"source": "archive", "url": f"{PUBLIC_BUCKET}/releases/{VERSION}/plugin.zip",
                             "sha256": PLUGIN_ZIP_SHA256}
 
 
@@ -625,7 +638,7 @@ def test_candidate_publish_writes_the_rc_marketplace(tmp_path: Path, bundle: Pat
     uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
     (sc,) = json.loads(uploaded[f"{BUCKET}/channels/rc.marketplace.json"])["plugins"]
     assert sc["version"] == CANDIDATE
-    assert sc["source"]["url"] == f"https://storage.googleapis.com/swarmcloud/releases/{CANDIDATE}/plugin.zip"
+    assert sc["source"]["url"] == f"{PUBLIC_BUCKET}/releases/{CANDIDATE}/plugin.zip"
     assert sc["source"]["sha256"] == hashlib.sha256((bundle / "plugin.zip").read_bytes()).hexdigest()
 
 
@@ -681,7 +694,7 @@ def test_candidate_publish_writes_exactly_the_channel_objects(tmp_path: Path, bu
                     typed=CANDIDATE)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     channel_objects = [d for d in _objects(tmp_path) if d.startswith(f"{BUCKET}/channels/")]
-    # MUTATION: copy $WORK/rc to gs://swarmcloud/channels/rc again and the rc1-prefix case fails.
+    # MUTATION: copy $WORK/rc to $BUCKET/channels/rc again and the rc1-prefix case fails.
     assert channel_objects == [f"{BUCKET}/channels/rc.marketplace.json", f"{BUCKET}/channels/rc"], channel_objects
     objects = json.loads((tmp_path / "state.json").read_text())["objects"]
     assert objects[f"{BUCKET}/channels/rc"] == f"{CANDIDATE}\n"

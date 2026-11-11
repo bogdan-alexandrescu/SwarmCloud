@@ -21,28 +21,60 @@ and `terraform test` (the terraform workflow) hold the same files to a plan.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Registered first: a dataclass resolves its annotations through sys.modules.
+    sys.modules.setdefault(name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+guard = _load("swarm_guards_deployment_values", ROOT / "scripts" / "guards" / "deployment_values.py")
 INFRA = ROOT / "terraform" / "infra"
 BOOTSTRAP = ROOT / "terraform" / "bootstrap"
 MONITORING_VARS = ROOT / "terraform" / "modules" / "monitoring" / "variables.tf"
 PREREQUISITES = ROOT / "scripts" / "prerequisites.sh"
 
 # What only the live deployment is: its project, the project's number, its
-# hosted domain, its tailnet and its two project-derived service tenants. A
-# default holding any of them configures a new install as the live one.
+# hosted domain and its tailnet come from the deployment pattern list the guard
+# reads (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE; see
+# test_no_live_literals.py), never from this file. Its two project-derived
+# service tenants are checked always. A default holding any of them configures
+# a new install as the live one.
 LIVE_MARKERS = (
-    "saga-agents-staging",
-    "209012342332",
-    "saga.xyz",
-    "taile0bda9",
     "u-sw-c90291",
     "u-or-9a0792",
 )
+
+
+def _pattern_list_text() -> str | None:
+    path = os.environ.get(guard.LIST_FILE_VARIABLE)
+    if path:
+        return Path(path).read_text(encoding="utf-8")
+    text = os.environ.get(guard.LIST_VARIABLE)
+    return text if text and text.strip() else None
+
+
+def _listed() -> list:
+    """The pattern list's entries; skips the scan when no list is given."""
+    text = _pattern_list_text()
+    if text is None:
+        pytest.skip("no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): "
+                    "nothing says what is live")
+    return guard.parse_list(text).entries
 
 
 def _strip_comments(text: str) -> str:
@@ -147,6 +179,21 @@ def test_no_live_default():
         if default is None:
             continue
         hits = [m for m in LIVE_MARKERS if m in default]
+        if hits:
+            found.append(f"{path} variable {name}: {hits}")
+    assert not found, "defaults that configure a new install as the live one:\n" + "\n".join(found)
+
+
+def test_no_listed_live_value_in_a_default():
+    """The live project, its number, domain and tailnet, as the pattern list names them."""
+    entries = _listed()
+    assert entries, "the deployment pattern list has no entries"
+    found = []
+    for path, name, body in _roots_variables():
+        default = _default(body)
+        if default is None:
+            continue
+        hits = [f"list line {e.line}" for e in entries if e.pattern.search(default)]
         if hits:
             found.append(f"{path} variable {name}: {hits}")
     assert not found, "defaults that configure a new install as the live one:\n" + "\n".join(found)
