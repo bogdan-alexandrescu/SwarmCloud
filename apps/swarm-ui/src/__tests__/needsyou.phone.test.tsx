@@ -15,8 +15,10 @@
 // MUTATIONS: scope the rest rule back to `.wi[data-screen='agents']` (the
 // Workflows list and the workflow page come to three lines); drop
 // `.ny:not(.has-some)` from it, so a waiting row loses its box; drop the faint
-// chip's aria-label; let the body's own display win over `hidden`; let the
-// collapsed header wrap.
+// chip's aria-label; let the body's own display win over `hidden`; draw the
+// zero chips in the collapsed header, or spell out a faint chip's "not known";
+// let a chip shrink and cut its count (min-width 0, overflow hidden), or stop
+// the header wrapping when its chips do not fit.
 
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
@@ -172,7 +174,7 @@ describe('the Needs-you row on a phone, on every Work screen', () => {
         expect(h, `${at.name}'s row at rest is ${h}px`).toBe(22)
       })
 
-      it(`is one boxed line, collapsed, on ${at.name} at 390 when a question waits, and opens its list from the header (${theme})`, () => {
+      it(`is one boxed line, collapsed, every count whole, on ${at.name} at 390 when a question waits, and opens its list from the header (${theme})`, () => {
         const ny = draw([question], at)
         expect(ny.classList.contains('has-some')).toBe(true)
         const bar = ny.querySelector<HTMLElement>('.ny-bar')!
@@ -180,24 +182,37 @@ describe('the Needs-you row on a phone, on every Work screen', () => {
         expect(bar.getAttribute('aria-expanded')).toBe('false')
         const chips = [...ny.querySelectorAll('.ny-bar > .ny-chip')]
         expect(chips.length).toBe(NEED_KINDS.length)
-        for (const c of chips) expect(shown(c, theme), `${c.className} is hidden`).toBe(true)
+        // As WorkflowNeedsCard: a kind with nothing waiting is not drawn in the
+        // collapsed header, so the counts that are drawn fit whole.
+        for (const c of chips) {
+          expect(shown(c, theme), `${c.className} is ${c.classList.contains('is-zero') ? 'drawn at zero' : 'hidden'}`).toBe(!c.classList.contains('is-zero'))
+        }
         expect(within(bar).getByRole('img', { name: 'Question: 1' })).toBeTruthy()
+        // The faint "not known" mark is its glyph alone, its words in the tooltip.
+        const faint = bar.querySelector<HTMLElement>('.ny-chip.is-approval.is-faint')!
+        expect(shown(faint, theme), 'the faint mark is hidden').toBe(true)
+        expect(shown(faint.querySelector('.ny-glyph')!, theme), "the faint mark's glyph is hidden").toBe(true)
+        expect(shown(faint.querySelector('b')!, theme), '"not known" is spelled out in the header').toBe(false)
+        expect(faint.title).toMatch(/not known/)
         expect(shown(bar.querySelector('.ny-caret')!, theme), 'the caret is hidden').toBe(true)
         expect(borderY(ny, theme), 'the waiting row lost its box').toBeGreaterThan(0)
         expect(vertical(won(ny, 'padding', theme), 'padding')).toBeGreaterThan(0)
-        // One line, nothing wider than the viewport: the button neither wraps
-        // nor scrolls; "Needs you" and the caret keep their width, the chips cut.
-        expect(won(bar, 'flex-wrap', theme)).toBe('nowrap')
-        expect(won(bar, ['overflow', 'overflow-x'], theme), 'the toggle scrolls sideways').toBe('hidden')
+        // NO COUNT IS CLIPPED: the toggle neither scrolls nor cuts, a chip never
+        // shrinks below its content, and if the chips do not fit they wrap to a
+        // second line; "Needs you" and the caret keep their width.
+        expect(won(bar, 'flex-wrap', theme), 'the header cannot wrap, so a count is cut').toBe('wrap')
+        expect(won(bar, ['overflow', 'overflow-x'], theme) ?? 'visible', 'the toggle cuts or scrolls').toBe('visible')
         const all = bar.querySelector('.ny-all')!
         expect(won(all, 'white-space', theme), '"Needs you" wraps').toBe('nowrap')
         expect(won(all, ['flex', 'flex-shrink'], theme), '"Needs you" shrinks').toBe('none')
         const caret = bar.querySelector('.ny-caret')!
         expect(won(caret, ['flex', 'flex-shrink'], theme), 'the caret shrinks off the row').toBe('none')
         for (const c of chips) {
-          expect(won(c, ['flex', 'flex-shrink'], theme), `${c.className} keeps its width`).toBe('0 1 auto')
-          expect(won(c, 'min-width', theme)).toBe('0')
-          expect(won(c, ['overflow', 'overflow-x'], theme)).toBe('hidden')
+          expect(won(c, ['flex', 'flex-shrink'], theme), `${c.className} shrinks below its count`).toBe('none')
+          expect(won(c, 'white-space', theme), `${c.className} breaks inside its count`).toBe('nowrap')
+          const clips = won(c, 'min-width', theme) === '0' && won(c, ['overflow', 'overflow-x'], theme) === 'hidden'
+          expect(clips, `${c.className} is cut at its edge`).toBe(false)
+          expect(won(c, ['overflow', 'overflow-x'], theme) ?? 'visible', `${c.className} hides its overflow`).toBe('visible')
         }
         expect(won(ny, 'max-width', theme)).toBe('100%')
         const body = ny.querySelector<HTMLElement>('.ny-body')!
