@@ -382,6 +382,14 @@ def retained_bundles(documents: mig.Documents) -> list[str]:
                   if isinstance(data, Mapping) and data.get("state") in RETAINED_BUNDLE_STATES)
 
 
+def carries_bundle_manifests(images: Mapping[str, str]) -> bool:
+    """Whether a release's `images.json` ships the bundler image, and with it
+    the `.swarm-bundle.json` manifests the built-ins switch needs live
+    (managed-plugins.md section 1.4.7): the one check both an upgrade and
+    `swarm upgrade --builtins-managed on` refuse on."""
+    return BUNDLER_IMAGE in images
+
+
 def bundle_refusal(bundles: Sequence[str], target: str) -> str:
     return (f"{len(bundles)} plugin bundle(s) must be built again on {target}'s images before infra switches to them "
             "(managed-plugins.md section 1.4.4), and this installer cannot start a bundle build until swarm-api's "
@@ -445,7 +453,7 @@ class Upgrade:
             images_old = {}
         images = {name: (images_old.get(name), digest) for name, digest in sorted(images_new.items())
                   if images_old.get(name) != digest}
-        if tfvars.builtins_managed(self.store.load()) == "on" and BUNDLER_IMAGE not in images_new:
+        if tfvars.builtins_managed(self.store.load()) == "on" and not carries_bundle_manifests(images_new):
             raise UpgradeRefused(
                 f"{target} carries no plugin bundle manifests (its images have no {BUNDLER_IMAGE}) and the built-ins "
                 "switch is on: workers of that release could not run a step that names gstack or security-audit. "
@@ -730,6 +738,6 @@ class Upgrade:
 __all__ = [
     "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "BUNDLER_IMAGE", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
     "ROLLED_BACK", "Upgrade", "UpgradeFailed", "UpgradePlan", "UpgradeRefused", "UpgradeWorld",
-    "app_permissions_url", "bundle_refusal", "iam_rows", "installation_url", "missing_permissions", "policy_diff", "replaced_metrics",
-    "retained_bundles", "version_key",
+    "app_permissions_url", "bundle_refusal", "carries_bundle_manifests", "iam_rows", "installation_url",
+    "missing_permissions", "policy_diff", "replaced_metrics", "retained_bundles", "version_key",
 ]
