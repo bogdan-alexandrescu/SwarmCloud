@@ -1175,16 +1175,15 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
   }
 
   return (
-    <SheetFrame title="Add plan" sub={<span>{vendorOf(vendor)?.plan}</span>} onClose={close}>
+    <SheetFrame title="Add plan" onClose={close}>
       <Failure error={error} />
-      <Field label="Vendor">
-        <Radios
-          label="Vendor"
-          value={vendor}
-          onPick={pickVendor}
-          options={ADD_VENDORS.map((v) => ({ key: v, label: vendorOf(v)?.plan ?? v }))}
-        />
-      </Field>
+      {/* The choice names the vendor, so neither a field label nor the head's sub line repeats it. */}
+      <Radios
+        label="Vendor"
+        value={vendor}
+        onPick={pickVendor}
+        options={ADD_VENDORS.map((v) => ({ key: v, label: vendorOf(v)?.plan ?? v }))}
+      />
       {vendor === 'anthropic' && (
         <Field label="Signed in by">
           <Radios

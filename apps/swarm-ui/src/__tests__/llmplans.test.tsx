@@ -764,14 +764,15 @@ describe('Plans: Add plan chooses its vendor', () => {
 
   it('keeps the sheet to its words: no explanatory prose on either path', async () => {
     const add = await openAdd()
-    // Claude: the sheet's 20 words before this change, plus the vendor choice's three.
-    expect(words(add).join(' ')).toBe("Add plan Claude Vendor Claude ChatGPT Signed in by Me, here The plan's owner Label Max agents 1 Claude sign-in Start sign-in Cancel")
+    // Claude: the sheet's 20 words before this change; the choice's two names
+    // take the place of the head's sub line, which repeated the vendor.
+    expect(words(add).join(' ')).toBe("Add plan Claude ChatGPT Signed in by Me, here The plan's owner Label Max agents 1 Claude sign-in Start sign-in Cancel")
     fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
     fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
-    expect(words(add).join(' ')).toBe('Add plan ChatGPT Vendor Claude ChatGPT Label Max agents 1 ChatGPT sign-in Start sign-in Cancel')
+    expect(words(add).join(' ')).toBe('Add plan Claude ChatGPT Label Max agents 1 ChatGPT sign-in Start sign-in Cancel')
     fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
     await within(add).findByRole('textbox', { name: 'Device code' })
-    expect(words(add).join(' ')).toBe('Add plan ChatGPT Vendor Claude ChatGPT Label Max agents 1 ChatGPT sign-in Open sign-in 2 Code Cancel')
+    expect(words(add).join(' ')).toBe('Add plan Claude ChatGPT Label Max agents 1 ChatGPT sign-in Open sign-in 2 Code Cancel')
     for (const p of add.querySelectorAll('p')) expect(p.getAttribute('role')).toBe('alert')
   })
 
