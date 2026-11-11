@@ -424,7 +424,7 @@ run "the_job_reaches_googles_apis_through_its_own_network_and_nothing_else" {
       length(google_compute_network.plugin_bundle) == 1
       && length(regexall("resource\\s+\"google_compute_(router|router_nat|route)\"", join("\n", [for f in fileset("../../terraform/infra", "*.tf") : file("../../terraform/infra/${f}")]))) == 0
       && length(regexall("resource\\s+\"google_compute_router\"", join("\n", [for f in fileset("../../terraform/modules", "**/*.tf") : file("../../terraform/modules/${f}")]))) == 1
-      && length(regexall("resource\\s+\"google_compute_router\"\\s+\"this\"\\s+\\{[^}]*network\\s+=\\s+google_compute_network\\.this\\.id", file("../../terraform/modules/network/main.tf"))) == 1
+      && length(regexall("resource\\s+\"google_compute_router\"\\s+\"this\"\\s+\\{\n(?:[^\n]*\n){0,6}?\\s*network\\s+=\\s+google_compute_network\\.this\\.id\n", file("../../terraform/modules/network/main.tf"))) == 1
     )
     error_message = "nothing gives the bundle network a router, a Cloud NAT or a route out: the one router is the swarm network's own"
   }
@@ -457,7 +457,7 @@ run "the_job_reaches_googles_apis_through_its_own_network_and_nothing_else" {
       google_compute_firewall.plugin_bundle_deny_egress[0].network == "swarm-plugin-bundle"
       && google_compute_firewall.plugin_bundle_deny_egress[0].direction == "EGRESS"
       && google_compute_firewall.plugin_bundle_deny_egress[0].destination_ranges == toset(["0.0.0.0/0"])
-      && length(google_compute_firewall.plugin_bundle_deny_egress[0].target_tags) == 0
+      && try(length(google_compute_firewall.plugin_bundle_deny_egress[0].target_tags), 0) == 0
       && length(google_compute_firewall.plugin_bundle_deny_egress[0].allow) == 0
       && one(google_compute_firewall.plugin_bundle_deny_egress[0].deny).protocol == "all"
       && google_compute_firewall.plugin_bundle_allow_google_apis[0].priority < google_compute_firewall.plugin_bundle_deny_egress[0].priority

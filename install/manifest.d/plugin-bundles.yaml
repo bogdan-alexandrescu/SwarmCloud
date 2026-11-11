@@ -4,8 +4,9 @@
 # makes it) its five rights, makes the swarm-plugin-bundles repository and
 # the npm mirror the build installs gstack's dependencies through (Q19), and,
 # since the owner's change of 11 November 2026, the Cloud Run job
-# swarm-plugin-bundle, swarm-api's run of it and its log sink
-# (terraform/bootstrap/plugin_bundle_runner.tf defines the role and the
+# swarm-plugin-bundle, swarm-api's run of it and its log sink, and (the security
+# review of 11 November 2026) the job's own network, which reaches Google's APIs
+# and nothing else (terraform/bootstrap/plugin_bundle_runner.tf defines the role and the
 # deployer's actAs on the builder), all only with
 # builtins_managed "on", which swarm install renders for a fresh deployment
 # (swarm_install.tfvars.BUILTINS_MANAGED). The infra passes apply them with no prompt
@@ -200,6 +201,90 @@ entries:
   refs:
     terraform:
     - bootstrap/google_service_account_iam_member.deployer_acts_as_plugin_bundler
+- id: network.plugin-bundle
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_network.plugin_bundle, once builtins_managed is on
+  verify: the bundle network exists with no router and no NAT
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_network.plugin_bundle
+- id: network.plugin-bundle-subnet
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_subnetwork.plugin_bundle, once builtins_managed is on
+  verify: the bundle subnetwork has Private Google Access and flow logs
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_subnetwork.plugin_bundle
+- id: network.fw-plugin-bundle-deny-egress
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_deny_egress, once builtins_managed is on
+  verify: all egress from the bundle network is denied
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_firewall.plugin_bundle_deny_egress
+- id: network.fw-plugin-bundle-allow-apis
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_allow_google_apis, once builtins_managed is on
+  verify: HTTPS from the bundle job is admitted, reaching only Google APIs
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_firewall.plugin_bundle_allow_google_apis
 - id: job.swarm-plugin-bundle
   kind: cloud-run-job
   scope: core
@@ -218,6 +303,8 @@ entries:
   - iam-binding.deployer-acts-as-plugin-bundler
   - image.swarm-plugin-bundler
   - registry.plugin-bundles
+  - network.fw-plugin-bundle-deny-egress
+  - network.fw-plugin-bundle-allow-apis
   evidence:
   - terraform/infra/plugin-bundles.tf
   - images/plugin-bundler/swarm-bundle
@@ -257,8 +344,9 @@ entries:
   apply: terraform/infra/plugin-bundles.tf google_logging_project_sink.plugin_bundle_logs, with the job and the
     worker log bucket
   verify: the filter names the job swarm-plugin-bundle alone and the destination is the swarm-worker-logs bucket
-  explain: the executions' logs, upstream output included, reach only the platform's log bucket; the page shows a
-    fixed code and the execution's name, never the log (section 1.4.3)
+  explain: the executions' logs, upstream output included, are copied to the platform's log bucket (they also stay in
+    the project's _Default bucket, where project-level log readers see them); the page shows a fixed code and the
+    execution's name, never the log (section 1.4.3)
   guards: null
   secret_entry: null
   depends_on:
