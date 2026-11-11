@@ -30,7 +30,7 @@ import secrets
 import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import pytest
 
@@ -101,9 +101,17 @@ BLOBS: dict[str, bytes] = {}
 MANIFESTS: dict[tuple[str, str], bytes] = {}
 
 
+#: A release image's runtime config: what every step on it runs with.
+RELEASE_RUNTIME = {"User": "10001", "WorkingDir": "/workspace", "Entrypoint": ["/usr/local/bin/swarm-worker"],
+                   "Cmd": ["run"], "Env": ["PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/agent"],
+                   "Labels": {"org.opencontainers.image.title": "agent runtime"}, "StopSignal": "SIGTERM"}
+
+
 def _put_image(image: str, tag: str | None, layers: list[bytes], *, diff_ids: list[str] | None = None,
-               layer_digests: list[str] | None = None) -> str:
-    """Push an image of `layers` (raw tars, gzipped here); its digest."""
+               layer_digests: list[str] | None = None, config: Mapping[str, Any] | None = None) -> str:
+    """Push an image of `layers` (raw tars, gzipped here); its digest. With
+    no `config`, a release image's: its runtime config, one history entry per
+    layer, and the layers' diff ids."""
     entries = []
     for raw in layers:
         packed = gzip.compress(raw, mtime=0)
@@ -112,8 +120,13 @@ def _put_image(image: str, tag: str | None, layers: list[bytes], *, diff_ids: li
     if layer_digests is not None:
         for entry, digest in zip(entries, layer_digests):
             entry["digest"] = digest
-    config = json.dumps({"rootfs": {"type": "layers",
-                                    "diff_ids": diff_ids or [_sha(raw) for raw in layers]}}).encode()
+    if config is None:
+        config = {"architecture": "amd64", "os": "linux", "created": "2026-11-01T00:00:00Z",
+                  "config": RELEASE_RUNTIME,
+                  "rootfs": {"type": "layers", "diff_ids": diff_ids or [_sha(raw) for raw in layers]},
+                  "history": [{"created": "2026-11-01T00:00:00Z", "created_by": f"release step {n}"}
+                              for n in range(len(layers))]}
+    config = json.dumps(config, separators=(",", ":"), sort_keys=True).encode()
     BLOBS[_sha(config)] = config
     manifest = json.dumps({"schemaVersion": 2, "mediaType": pb.OCI_MANIFEST,
                            "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
@@ -241,9 +254,13 @@ def _plugin_layer(tmp: Path, name: str, install_id: str, source_sha256: str, rec
 
 def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, foreign_diff_ids: bool = False,
                  extra: list = (), tree: str | None = None,
-                 audit: Mapping[str, bytes] | None = None, source: Mapping[str, str] | None = None) -> None:
+                 audit: Mapping[str, bytes] | None = None, source: Mapping[str, str] | None = None,
+                 spoil_config: Callable[[dict[str, Any]], None] | None = None) -> None:
     """Do what the job does for `bundle_id` from its recorded arguments, then
-    end its execution well. Each keyword spoils one thing a check refuses."""
+    end its execution well. Each keyword spoils one thing a check refuses.
+    The pushed config is the base's as images/plugin-bundler/swarm-bundle's
+    `append_layers` writes it: each plugin layer's diff id appended to
+    `rootfs.diff_ids` and one fixed history entry per plugin, nothing else."""
     record = _built(w, bundle_id)
     job, args = next((j, a) for j, a in w["jobs"].runs if a[0] == bundle_id)
     tmp = w["tmp"] / bundle_id
@@ -253,6 +270,8 @@ def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, foreign_diff_
         base = json.loads(MANIFESTS[(base_image, base_digest)])
         base_raw = [gzip.decompress(BLOBS[layer["digest"]]) for layer in base["layers"]]
         layers = list(base_raw)
+        config = json.loads(BLOBS[base["config"]["digest"]])
+        history = list(config.get("history", []))
         for entry in sorted(record["key"], key=lambda e: pb.PLUGIN_OF[e["install_id"]]):
             install_id = entry["install_id"]
             name = pb.PLUGIN_OF[install_id]
@@ -262,17 +281,22 @@ def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, foreign_diff_
                                         (source or {}).get(install_id, entry["source_sha256"]),
                                         record["recipes"][install_id], files=files,
                                         extra=list(extra) if install_id == GSTACK else [], tree=tree))
+            config["rootfs"]["diff_ids"].append(_sha(layers[-1]))
+            history.append({"created": "1970-01-01T00:00:00Z",
+                            "created_by": f"swarm-bundle job: /opt/swarm/plugins/{name}/"})
+        config["history"] = history
         digests = None
         if foreign_base:
             other = gzip.compress(_tar([("etc", "d", None), ("etc/os-release", "f", b"not the release")]), mtime=0)
             BLOBS[_sha(other)] = other
             digests = [_sha(other)]
-        diff_ids = None
         if foreign_diff_ids:
             # The release's base layer blobs, but a config that says the
             # first of them unpacks to something else.
-            diff_ids = [_digest("not the release")] + [_sha(raw) for raw in layers[1:]]
-        _put_image(f"{REPOSITORY}/{image}", bundle_id, layers, diff_ids=diff_ids, layer_digests=digests)
+            config["rootfs"]["diff_ids"][0] = _digest("not the release")
+        if spoil_config is not None:
+            spoil_config(config)
+        _put_image(f"{REPOSITORY}/{image}", bundle_id, layers, layer_digests=digests, config=config)
     for name, execution in w["jobs"].executions.items():
         if name == record["execution"]:
             execution.update({"completionTime": "2026-11-11T00:00:00Z", "succeededCount": 1})
@@ -660,7 +684,6 @@ def test_a_passing_check_moves_current_version_and_records_the_digest_it_checked
 
 @pytest.mark.parametrize("spoil, check", [
     ({"foreign_base": True}, "base_layers"),
-    ({"foreign_diff_ids": True}, "base_diff_ids"),
     ({"extra": [("opt/swarm/plugins/security-audit/skills/x", "f", b"x")]}, "layer_path"),
     ({"extra": [("opt/swarm/elsewhere", "f", b"x")]}, "layer_path"),
     ({"extra": [("opt/swarm/plugins/gstack/../../../etc/passwd", "f", b"x")]}, "layer_path"),
@@ -684,6 +707,100 @@ def test_each_failed_layer_check_leaves_current_version_and_records_its_code(wor
     assert _built(w, bundle_id)["refusal"] == {"code": "bundle_check_failed", "check": check}
     assert _built(w, bundle_id)["outputs"] is None
     assert _current(w) == before
+
+
+def _set_runtime(name: str, value: Any) -> Callable[[dict[str, Any]], None]:
+    def spoil(config: dict[str, Any]) -> None:
+        config["config"] = {**config["config"], name: value}
+    return spoil
+
+
+def _add_env(config: dict[str, Any]) -> None:
+    config["config"] = {**config["config"], "Env": [*config["config"]["Env"], "LD_PRELOAD=/tmp/x.so"]}
+
+
+def _add_label(config: dict[str, Any]) -> None:
+    config["config"] = {**config["config"], "Labels": {**config["config"]["Labels"], "added": "yes"}}
+
+
+def _extra_diff_id(config: dict[str, Any]) -> None:
+    config["rootfs"]["diff_ids"].append(_digest("one more layer"))
+
+
+def _drop_history(config: dict[str, Any]) -> None:
+    config["history"].pop()
+
+
+def _swap_diff_ids(config: dict[str, Any]) -> None:
+    ids = config["rootfs"]["diff_ids"]
+    ids[-2], ids[-1] = ids[-1], ids[-2]
+
+
+@pytest.mark.parametrize("spoil, field", [
+    (_set_runtime("Entrypoint", ["/bin/sh", "-c"]), "config.Entrypoint"),
+    (_set_runtime("Cmd", ["sh"]), "config.Cmd"),
+    (_add_env, "config.Env"),
+    (_set_runtime("User", "0"), "config.User"),
+    (_set_runtime("WorkingDir", "/"), "config.WorkingDir"),
+    (_add_label, "config.Labels"),
+    (_extra_diff_id, "rootfs.diff_ids"),
+    (_drop_history, "history"),
+    (_swap_diff_ids, "rootfs.diff_ids"),
+])
+def test_a_pushed_config_other_than_the_bases_is_refused_and_moves_nothing(world, spoil, field):
+    """The pushed config is the release's plus the plugin layers' diff ids
+    and the job's history entries, nothing else (1.4: an Entrypoint or Env
+    the job changed would run in every step of every tenant)."""
+    w = world
+    before = _current(w)
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id, spoil_config=spoil)
+    answer = _status(w, bundle_id).json()
+    assert answer["state"] == "failed"
+    assert answer["refusal"]["code"] == "bundle_config_changed"
+    assert answer["refusal"]["check"] == field
+    assert answer["refusal"]["sentence"] == ps.REFUSALS["bundle_config_changed"]
+    assert _built(w, bundle_id)["refusal"] == {"code": "bundle_config_changed", "check": field}
+    assert _built(w, bundle_id)["outputs"] is None
+    assert _current(w) == before
+
+
+def test_a_config_whose_base_diff_id_differs_is_refused_as_changed(world):
+    w = world
+    before = _current(w)
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id, foreign_diff_ids=True)
+    assert _status(w, bundle_id).json()["state"] == "failed"
+    assert _built(w, bundle_id)["refusal"] == {"code": "bundle_config_changed", "check": "rootfs.diff_ids"}
+    assert _current(w) == before
+
+
+def test_a_refused_config_records_a_field_name_never_a_value(world):
+    """A field the job added under a name of its own is recorded `other`:
+    neither its name nor its value reaches the record or the answer."""
+    w = world
+    marker = "x" + secrets.token_hex(8)
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id, spoil_config=lambda config: config.update({marker: marker}))
+    answer = _status(w, bundle_id).json()
+    assert answer["refusal"] == {**answer["refusal"], "code": "bundle_config_changed", "check": "other"}
+    assert marker not in json.dumps(answer) and marker not in json.dumps(_built(w, bundle_id))
+
+
+def test_a_value_of_another_json_type_is_a_change():
+    base = {"rootfs": {"type": "layers", "diff_ids": []}, "config": {"Tty": False}}
+    pushed = {"rootfs": {"type": "layers", "diff_ids": []}, "config": {"Tty": 0}}
+    with pytest.raises(pb.CheckFailed) as failed:
+        pb.check_config(base, pushed, [])
+    assert (failed.value.code, failed.value.check) == ("bundle_config_changed", "config.Tty")
+
+
+def test_the_job_sets_no_config_created_so_the_releases_must_stay(world):
+    w = world
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id, spoil_config=lambda config: config.update({"created": "2026-11-11T00:00:00Z"}))
+    assert _status(w, bundle_id).json()["state"] == "failed"
+    assert _built(w, bundle_id)["refusal"] == {"code": "bundle_config_changed", "check": "created"}
 
 
 @pytest.mark.parametrize("cap, value, extra, check", [
@@ -717,7 +834,7 @@ def test_a_layer_at_the_read_caps_is_read(world, monkeypatch):
     seen: list[tuple[int, int]] = []
     real = pb.read_layer
 
-    def at_the_caps(handle, plugin, media_type, diff_id):
+    def at_the_caps(handle, plugin, media_type, *rest):
         data = handle.read()
         raw = gzip.decompress(data)
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
@@ -725,7 +842,7 @@ def test_a_layer_at_the_read_caps_is_read(world, monkeypatch):
         seen.append((len(raw), count))
         monkeypatch.setattr(pb, "LAYER_UNPACKED_CAP", len(raw))
         monkeypatch.setattr(pb, "LAYER_MEMBERS_CAP", count)
-        return real(io.BytesIO(data), plugin, media_type, diff_id)
+        return real(io.BytesIO(data), plugin, media_type, *rest)
 
     monkeypatch.setattr(pb, "read_layer", at_the_caps)
     _push_bundle(w, bundle_id)
