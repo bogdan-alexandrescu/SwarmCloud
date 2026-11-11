@@ -76,9 +76,8 @@ PROBE_URL: dict[str, str] = {
     ANTHROPIC_API: "https://api.anthropic.com/v1/messages",
     OPENAI_API: "https://api.openai.com/v1/chat/completions",
 }
-#: Each vendor's smallest model, the one the probe asks. Overridable per
-#: deployment (`ANTHROPIC_PROBE_MODEL`, `OPENAI_PROBE_MODEL`, read by
-#: `main.create_app`) for the day a vendor retires it.
+#: Each vendor's smallest model, the one the probe asks. Changed here (or
+#: through `HttpKeyValidator(probe_models=...)`) the day a vendor retires it.
 DEFAULT_PROBE_MODEL: dict[str, str] = {
     ANTHROPIC_API: "claude-haiku-4-5",
     OPENAI_API: "gpt-4o-mini",

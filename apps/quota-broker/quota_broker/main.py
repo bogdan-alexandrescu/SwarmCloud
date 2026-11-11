@@ -147,7 +147,7 @@ from . import api_key, openai_api_key, openai_plan
 from .api_key import VENDOR_OF
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
-from .secretstore import SecretManagerStore, SecretMissing, is_key_secret, version_number
+from .secretstore import SecretManagerStore, is_key_secret, version_number
 from .service import QuotaBroker, TargetResetRefused, quota_to_firestore
 from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
@@ -3669,14 +3669,7 @@ def create_app(
     # The one read-only call an API key must pass before it is stored
     # (docs/design/llm-providers.md §4.1); injected so tests never make a
     # network call.
-    app.state.key_validator = api_key.HttpKeyValidator(probe_models={
-        provider: model
-        for provider, model in (
-            (api_key.ANTHROPIC_API, os.environ.get("ANTHROPIC_PROBE_MODEL", "").strip()),
-            (api_key.OPENAI_API, os.environ.get("OPENAI_PROBE_MODEL", "").strip()),
-        )
-        if model
-    })
+    app.state.key_validator = api_key.HttpKeyValidator()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
