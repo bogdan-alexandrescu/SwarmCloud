@@ -1,7 +1,7 @@
 """Voice it's debug trace (voice/trace.py; the owner, 10 November 2026).
 
     POST /v1/voice/sessions/{session_id}/trace
-         {engine, session_events, turn}      -> {turn}      swarm-voice only
+         {engine, tier, session_events, turn} -> {turn}     swarm-voice only
     GET  /v1/voice/trace/sessions[?scope=]   -> {sessions, scope}
     GET  /v1/voice/trace/sessions/{session_id}[?scope=]
                                              -> {session_id, engine, started,
@@ -14,7 +14,8 @@ grant (`AuthContext.via`) and name its own session; a person's own sign-in is
 403, as is another session's id. The tenant, the person and the project come
 from the session document (`stream.find_session`). Each kept turn also goes to
 the session's card stream as one `trace.turn` event (voice/stream.py), so Talk
-shows the turn's line as it finishes. swarm-voice sends a trace only for a
+shows the turn's line as it finishes. `tier` is the tier the turn's planner
+ran on, beside the engine (absent: not recorded); voice/trace.py checks it. swarm-voice sends a trace only for a
 session that started with debug mode on; with it off nothing reaches here.
 
 THE READS follow Voice it › Telemetry's rule exactly (routes/voice_telemetry.py,
@@ -80,7 +81,7 @@ async def write_trace(
             tenant_id=found.tenant_id, person=person, project_id=found.project_id,
             session_id=found.session_id, engine=body.get("engine"),
             session_events=body.get("session_events", {}), turn=body.get("turn"),
-            started_at=_started(ctx.db, found))
+            started_at=_started(ctx.db, found), tier=body.get("tier"))
         vstore.VoiceStore(ctx.db, now=ctx.now).append_event(
             tenant_id=found.tenant_id, person=person, project_id=found.project_id,
             session_id=found.session_id, event=vtrace.stream_event(kept))

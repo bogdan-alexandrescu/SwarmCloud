@@ -40,6 +40,7 @@ if _UNIT not in sys.path:
     sys.path.insert(0, _UNIT)
 
 from control_plane.fakes import FakeFirestore  # noqa: E402
+from quota_broker import accounts  # noqa: E402
 from swarm_common.identity import Principal  # noqa: E402
 
 from swarm_api.auth import AuthContext  # noqa: E402
@@ -253,6 +254,63 @@ def test_only_a_grant_writes_and_only_to_its_own_session(client, db):
                     headers=_as(ALICE, grant=session))
     assert r.status_code == 403
     assert _post(client, session, _turn(none="nothing_much")).status_code == 422
+    assert not any(p.startswith(f"{vtrace.COLLECTION}/") for p in db.docs)
+
+
+def _post_tier(client: TestClient, session: str, turn: dict[str, Any], tier: Any):
+    body = {**_body(turn), "tier": tier}
+    return client.post(f"/v1/voice/sessions/{session}/trace", json=body,
+                       headers=_as(ALICE, grant=session))
+
+
+@pytest.mark.parametrize("tier", vsettings.CHAIN_TIERS)
+def test_each_tier_is_kept_and_served_on_the_read_and_the_event(client, db, tier):
+    project, session = _session(db)
+    r = _post_tier(client, session, _turn(), tier)
+    assert r.status_code == 200, r.text
+    # MUTATION: accept `tier` without keeping it and the turn, the read and the event lose it.
+    assert r.json()["turn"]["tier"] == tier
+    stored = [d for p, d in db.docs.items() if p.startswith(f"{vtrace.COLLECTION}/{session}/turns/")]
+    assert [d["tier"] for d in stored] == [tier]
+    answer = client.get(f"/v1/voice/trace/sessions/{session}", headers=_as(ALICE)).json()
+    assert [t["tier"] for t in answer["turns"]] == [tier]
+    events = [d for p, d in db.docs.items()
+              if p.startswith(f"{vs.PROJECTS}/{project}/{vs.SESSIONS}/{session}/events/")]
+    assert [e["tier"] for e in events] == [tier]
+
+
+def test_the_tiers_are_the_brokers():
+    # quota_broker.accounts.TIERS, which swarm-api cannot import: the same names.
+    assert tuple(vtrace.TIERS) == tuple(accounts.TIERS)
+
+
+def test_a_turn_without_a_tier_reads_as_not_recorded_never_as_a_plan(client, db):
+    project, session = _session(db)
+    # A turn sent before the field existed, and one that names none.
+    assert _post(client, session, _turn()).status_code == 200
+    assert _post_tier(client, session, _turn(n=2), None).status_code == 200
+    stored = [d for p, d in db.docs.items() if p.startswith(f"{vtrace.COLLECTION}/{session}/turns/")]
+    assert [d["tier"] for d in stored] == [None, None]
+    # A turn kept before swarm-api stored the field at all.
+    db.collection(vtrace.COLLECTION).document(session).collection(vtrace.TURNS).document("0003").set(
+        {**vtrace.check_turn(_turn(n=3)), "at": NOW, "tenant_id": TENANTS[ALICE]})
+    stored = db.docs[f"{vtrace.COLLECTION}/{session}/turns/0003"]
+    stored.pop("tier", None)
+    answer = client.get(f"/v1/voice/trace/sessions/{session}", headers=_as(ALICE)).json()
+    # MUTATION: default a missing tier to "plan" and these read as plan turns.
+    assert [t["tier"] for t in answer["turns"]] == [None, None, None]
+    events = [d for p, d in db.docs.items()
+              if p.startswith(f"{vs.PROJECTS}/{project}/{vs.SESSIONS}/{session}/events/")]
+    assert [e["tier"] for e in events] == [None, None]
+
+
+@pytest.mark.parametrize("tier", ["metered", "PLAN", "", 1, True, ["plan"], {"tier": "plan"}])
+def test_an_unknown_tier_is_refused_and_nothing_is_kept(client, db, tier):
+    _, session = _session(db)
+    r = _post_tier(client, session, _turn(), tier)
+    # MUTATION: store any string and "metered" is kept as a tier.
+    assert r.status_code == 422, r.text
+    assert "tier" in r.text
     assert not any(p.startswith(f"{vtrace.COLLECTION}/") for p in db.docs)
 
 

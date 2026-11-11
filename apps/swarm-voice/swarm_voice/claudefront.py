@@ -545,6 +545,9 @@ class FrontSessions:
         body = session.trace.turn(transcript=given, handoff=delegation.request or None, result=result,
                                   told=delegation.spoken, heard_at=delegation.heard_at,
                                   none=vtrace.NONE_ERROR if result is None else None)
+        # The tier the planner turn ran on, beside the engine as live.py sends it;
+        # None (not recorded) for a delegation that never finished.
+        body["tier"] = result.tier if result is not None else None
         vtrace.spawn(self._planner.write_trace(session.grant, body), session.trace_writes)
 
     @staticmethod
