@@ -65,6 +65,7 @@ cannot drive the owner's counter to zero with calls it never earned.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field, replace
@@ -904,6 +905,14 @@ class Hold:
     person: str | None = None
     voice_session_id: str | None = None
 
+    #: A KEY holder's running spend on this hold (§4.6): the `cost_usd` its
+    #: last hold-status read carried, the figure its close will count. Counted
+    #: with the key's closed spend (`Account.spent`) while the hold lives, so a
+    #: long attempt reaches the month cap before it ends; dropped with the
+    #: hold, whose close adds its own `cost_usd` once. None on a plan's hold
+    #: and on a hold whose worker has not sent one.
+    running_cost_usd: float | None = None
+
     def is_expired(self, now: datetime) -> bool:
         return now >= self.expires_at
 
@@ -1240,11 +1249,21 @@ class Account:
         return sum(1 for h in self.live_holds(now) if h.tenant_id == tenant_id) >= lend.max_agents
 
     def spent(self, now: datetime, tenant_id: str | None = None) -> float:
-        """This calendar month's metered spend: the key's, or one borrower's."""
+        """This calendar month's metered spend: the key's, or one borrower's.
+
+        The closed holds' `cost_usd` AND the live holds' running spend
+        (`Hold.running_cost_usd`, §4.6), so a long attempt is counted against
+        the caps before it ends. A hold's running figure leaves with the hold,
+        whose close adds its own `cost_usd`, so nothing is counted twice."""
         month = spend_month(now)
+        running = sum(
+            h.running_cost_usd or 0.0
+            for h in self.live_holds(now)
+            if tenant_id is None or h.tenant_id == tenant_id
+        )
         if tenant_id is None:
-            return self.month_spend.get(month, 0.0)
-        return self.lend_spend.get(month, {}).get(tenant_id, 0.0)
+            return self.month_spend.get(month, 0.0) + running
+        return self.lend_spend.get(month, {}).get(tenant_id, 0.0) + running
 
     def is_over_spend_cap(self, now: datetime) -> bool:
         """Whether a key's month's spend has reached `monthly_spend_cap_usd`
@@ -1930,6 +1949,8 @@ def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
             item["person"] = h.person
         if h.voice_session_id:
             item["voice_session_id"] = h.voice_session_id
+        if h.running_cost_usd is not None:
+            item["running_cost_usd"] = h.running_cost_usd
         out.append(item)
     return out
 
@@ -2037,9 +2058,21 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
                 pool=_optional_text(item.get("pool")) or POOL_WORKSPACE,
                 person=_optional_text(item.get("person")),
                 voice_session_id=_optional_text(item.get("voice_session_id")),
+                running_cost_usd=_running_cost(item.get("running_cost_usd")),
             )
         )
     return tuple(holds)
+
+
+def _running_cost(raw: Any) -> float | None:
+    """A hold's running spend, or None. A figure that is not a finite,
+    non-negative number reads as none rather than dropping the hold: a bad
+    figure must not cost the COUNT an agent, and the close counts the hold's
+    own `cost_usd` whatever this said."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def _aware(value: datetime) -> datetime:
