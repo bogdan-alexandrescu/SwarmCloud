@@ -55,7 +55,15 @@ from pydantic import AwareDatetime, Field
 
 from swarm_common.admission import AdmissionConfig, _snapshot, release_lease_in_transaction
 from swarm_common.config import Settings
-from swarm_common.models import Attempt, EndCause, Tenant, new_id, retries_exhausted, utcnow
+from swarm_common.models import (
+    Attempt,
+    EndCause,
+    Tenant,
+    check_additional_repositories,
+    new_id,
+    retries_exhausted,
+    utcnow,
+)
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -2123,8 +2131,9 @@ class AttemptState:
         }
 
     def context(self, attempt: AttemptTuple) -> dict[str, Any]:
-        """What the worker reads of its OWN tenant's settings, keys and grant
-        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`),
+        """What the worker reads of its OWN tenant's settings, keys and grants
+        (`secrets.load_tenant`, `secrets.grant_refusal`, `jevkey`,
+        `judge/attempt.py`, `graphstage.py`),
         and of the platform's settings only `PLATFORM_SETTINGS_SERVED`
         (`extrarepos.budget_bytes`). Every id is derived from the tuple and
         the task's signed fields."""
@@ -2151,10 +2160,7 @@ class AttemptState:
         grant = None
         repo = owner_repo(task.get("repository_url"))
         if repo is not None and isinstance(submitted_by, str) and "@" in submitted_by:
-            grant_id = grant_id_for(tenant_id, submitted_by, repo_id_for(tenant_id, *repo))
-            found = self._read(self._ref(GRANTS, grant_id))
-            if found is not None and found.get("tenant_id") in (None, tenant_id):
-                grant = {"id": grant_id, **found}
+            grant = self._grant(tenant_id, submitted_by, repo_id_for(tenant_id, *repo))
         return {
             "ok": True,
             "tenant": jsonable(tenant),
@@ -2163,8 +2169,64 @@ class AttemptState:
             "provider_keys": keys,
             "personal_tenant_id": personal,
             "forge_grant": jsonable(grant),
+            "additional_forge_grants": jsonable(
+                self._additional_grants(attempt, task, submitted_by)),
             "platform_settings": self._platform_settings(),
         }
+
+    def _grant(self, tenant_id: str, submitted_by: str, repo_id: str) -> dict[str, Any] | None:
+        """The submitter's grant on `repo_id`, with its `id`, when the
+        document exists and names no other tenant; else None."""
+        grant_id = grant_id_for(tenant_id, submitted_by, repo_id)
+        found = self._read(self._ref(GRANTS, grant_id))
+        if found is None or found.get("tenant_id") not in (None, tenant_id):
+            return None
+        return {"id": grant_id, **found}
+
+    def _additional_grants(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                           submitted_by: Any) -> dict[str, dict[str, Any]]:
+        """The submitter's grant on each of the task's SIGNED
+        `additional_repositories`, keyed by grant id: the worker re-reads it
+        before cloning the entry (`secrets.grant_refusal`), and `forge_grant`
+        is the primary's alone, so without these a switched workspace read
+        every additional grant as removed (live finding, 11 November 2026).
+
+        Each id is derived as the primary's is, from the tuple's tenant, the
+        signed `submitted_by` and the entry's `repo_id` RECOMPUTED from its
+        `repository` (a list naming one repository under another's id serves
+        nothing). The list is read only from a task whose spec verifies: the
+        worker checks a person's grant on an entry only then
+        (`_additional_suffix`), and the list is tenant-writable after signing.
+        An entry with no grant, or one naming another tenant, is absent, so
+        the worker still reads it as removed. A task with no list reads
+        nothing more."""
+        entries = task.get("additional_repositories")
+        if not entries or not isinstance(submitted_by, str) or "@" not in submitted_by:
+            return {}
+        try:
+            check_additional_repositories(entries)
+        except ValueError:
+            return {}
+        refusal = spec_refusal(self._settings, task, attempt.task_id)
+        if refusal is not None:
+            # The reason names the check, never a value from the document.
+            log.warning("state context unverified own task tenant=%s task=%s attempt=%s: %s; "
+                        "no additional repository's grant is served", attempt.tenant_id,
+                        attempt.task_id, attempt.attempt_id, refusal)
+            return {}
+        grants: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            try:
+                owner, name = parse_repository(entry["repository"])
+            except ValueError:
+                continue
+            repo_id = repo_id_for(attempt.tenant_id, owner, name)
+            if repo_id != entry["repo_id"]:
+                continue
+            found = self._grant(attempt.tenant_id, submitted_by, repo_id)
+            if found is not None:
+                grants[found["id"]] = found
+        return grants
 
     def _platform_settings(self) -> dict[str, Any]:
         """`control/settings`, cut to `PLATFORM_SETTINGS_SERVED`, each field as

@@ -55,6 +55,104 @@ def test_context_serves_the_grant_of_the_signed_submitter_and_repository(client,
     assert body["forge_grant"]["id"] == grant and body["forge_grant"]["mode"] == "write"
 
 
+def _extra_entry(repo: str, *, repo_id: str | None = None) -> dict:
+    """One `Task.additional_repositories` entry, in the contract's shape."""
+    return {"name": repo, "repo_id": repo_id or repo_id_for("eng", "acme", repo),
+            "repository": f"acme/{repo}", "repository_url": f"https://github.com/acme/{repo}",
+            "ref": "main", "commit": "7" * 40, "forge_credential": "git",
+            "forge_credential_source": "tenant", "size_kib": 10}
+
+
+def _grant_reads(db, monkeypatch) -> list[str]:
+    """Every `forge_grants/` document read from now on, by path."""
+    from .fakes import FakeDocumentRef
+
+    seen: list[str] = []
+    real = FakeDocumentRef.get
+
+    def get(self, *args, **kwargs):
+        if self.path.startswith("forge_grants/"):
+            seen.append(self.path)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeDocumentRef, "get", get)
+    return seen
+
+
+def test_context_serves_the_submitters_grant_on_each_signed_additional_repository(client, db):
+    """Live finding, 11 November 2026: `forge_grant` is the primary's alone, so
+    a switched workspace's worker read its additional repository's grant as
+    removed. Each is served beside it, keyed by its derived id; one with no
+    grant is absent."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker,
+           additional_repositories=[_extra_entry("gadgets"), _extra_entry("gizmos")])
+    granted = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "gadgets"))
+    db.docs[f"forge_grants/{granted}"] = {"tenant_id": "eng", "mode": "write"}
+    body = worker.get(client, "context").json()
+    assert body["additional_forge_grants"] == {granted: {"id": granted, "tenant_id": "eng",
+                                                         "mode": "write"}}
+
+
+def test_context_never_serves_another_tenants_or_persons_additional_grant(client, db):
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker, additional_repositories=[_extra_entry("gadgets")])
+    repo_id = repo_id_for("eng", "acme", "gadgets")
+    own = grant_id_for("eng", "alice@example.com", repo_id)
+    db.docs[f"forge_grants/{own}"] = {"tenant_id": "research", "mode": "write"}
+    other = grant_id_for("eng", "mallory@example.com", repo_id)
+    db.docs[f"forge_grants/{other}"] = {"tenant_id": "eng", "mode": "write"}
+    foreign = grant_id_for("research", "alice@example.com", repo_id_for("research", "acme",
+                                                                         "gadgets"))
+    db.docs[f"forge_grants/{foreign}"] = {"tenant_id": "research", "mode": "write"}
+    response = worker.get(client, "context")
+    assert response.json()["additional_forge_grants"] == {}
+    assert other not in response.text and foreign not in response.text
+
+
+def test_context_serves_no_grant_for_an_entry_whose_repo_id_is_not_its_repositorys(client, db):
+    """An entry naming one repository under another's id reaches nothing."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker, additional_repositories=[
+        _extra_entry("gadgets", repo_id=repo_id_for("eng", "acme", "secret-sauce"))])
+    for repo in ("gadgets", "secret-sauce"):
+        grant = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", repo))
+        db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
+    assert worker.get(client, "context").json()["additional_forge_grants"] == {}
+
+
+def test_context_serves_no_additional_grant_once_the_list_is_rewritten(client, db):
+    """The list is tenant-writable after signing: one that no longer verifies
+    serves no additional repository's grant."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    task = opened(client, db, worker, additional_repositories=[_extra_entry("gadgets")])
+    task["additional_repositories"] = [_extra_entry("gizmos")]
+    grant = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "gizmos"))
+    db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
+    assert worker.get(client, "context").json()["additional_forge_grants"] == {}
+
+
+def test_context_reads_no_extra_grant_for_a_task_without_additional_repositories(
+        client, db, monkeypatch):
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker)
+    reads = _grant_reads(db, monkeypatch)
+    body = worker.get(client, "context").json()
+    assert body["additional_forge_grants"] == {}
+    primary = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "widgets"))
+    assert reads == [f"forge_grants/{primary}"]
+
+
 def test_context_serves_the_platforms_extra_repository_budget_and_nothing_else(client, db):
     """A worker switched to the state routes builds no Firestore client, so the
     admin's `additional_repositories_budget_gib` reaches it only here (owner,
