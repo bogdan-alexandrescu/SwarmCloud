@@ -11800,6 +11800,9 @@ span.sk-ttile { cursor: default; }
 .wfg-table td[data-col="workflow"] > .tag { margin-left: 6px; }
 .wfg-bar { display: inline-flex; align-items: center; gap: 6px; }
 .wfg-bar > .c-bar { width: 120px; flex: none; }
+/* THE STEP COUNT AT THE TYPE FLOOR (Voice it tag-along review, 2026-11-11): a bare
+   `<small>` drew `4/6` at the browser's `smaller`, 10.8px, under the 12px floor. */
+.wfg-bar > small { font-size: var(--t-micro); line-height: var(--lh-micro); }
 .wfg-dim { color: var(--text-dim); }
 .wfg-absent { color: var(--text-dim); font-style: italic; }
 .wfg-need { display: inline-block; margin-right: 8px; font-weight: 600; }

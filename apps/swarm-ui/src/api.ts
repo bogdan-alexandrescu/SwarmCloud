@@ -25,6 +25,7 @@ import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
+import { BAKERY_VISUALS, bakeryTasks, bakeryWorkflows, tagAlongOn } from './voice/tagAlongFixtures' // MOCK-HOOK
 import {
   appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
@@ -6259,8 +6260,14 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
   }
 }
 
+// MOCK-HOOK: the Voice it tag-along mock-ups draw the bakery session's work (voice/tagAlongFixtures.ts).
+function fixtureTaskRows(): Task[] { // MOCK-HOOK
+  const rows = fixtureTaskRowsBase() // MOCK-HOOK
+  return tagAlongOn() ? bakeryTasks(rows) : rows // MOCK-HOOK
+} // MOCK-HOOK
+
 /** The fixture's task list, built at one instant: `fixtureTasks` serves it, and the stats and workflow rows count it. */
-function fixtureTaskRows(): Task[] {
+function fixtureTaskRowsBase(): Task[] {
   const now = FIXTURE_NOW
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
@@ -6776,7 +6783,12 @@ const FIXTURE_MAX_ARTIFACT_QUESTIONS = 20
  * exists -- which is precisely the class of defect the live UI audit kept
  * finding.
  */
-function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
+function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] { // MOCK-HOOK
+  const made = fixtureWorkflowRowsBase(rows) // MOCK-HOOK
+  return tagAlongOn() ? bakeryWorkflows(made) : made // MOCK-HOOK
+} // MOCK-HOOK
+
+function fixtureWorkflowRowsBase(rows: Task[]): Workflow[] {
   // A WORKFLOW SPANS ITS STEPS (QAFIX4-FIXTURE-B F14c, run 4
   // flow-workflow-graph-light-12): created when its first step task was,
   // last changed when its last one was. Typed apart, the fan-in's 3h 31m
@@ -17694,7 +17706,7 @@ function voiceFixtureOk<T>(target: ApiRoute, data: T): Result<T> {
 /** `GET /v1/voice/projects/{p}/visuals`: the project's visuals, the most recently drawn first. */
 export async function loadVoiceVisuals(projectId: string): Promise<Result<VoiceVisual[]>> {
   const target = route(VOICE_VISUALS, { project_id: projectId })
-  if (USE_FIXTURES) return voiceFixtureOk(target, FIXTURE_VISUALS.map((v) => v.visual))
+  if (USE_FIXTURES) return voiceFixtureOk(target, (tagAlongOn() ? BAKERY_VISUALS : FIXTURE_VISUALS).map((v) => v.visual)) // MOCK-HOOK
   const r = await read<unknown>(target, () => false)
   if (r.status !== 'ok' && r.status !== 'stale') return r
   const rows = (r.data as { visuals?: unknown } | null)?.visuals
@@ -17705,7 +17717,7 @@ export async function loadVoiceVisuals(projectId: string): Promise<Result<VoiceV
 export async function loadVoiceVisual(projectId: string, visualId: string): Promise<Result<VoiceVisualDetail>> {
   const target = route(VOICE_VISUAL, { project_id: projectId, visual_id: visualId })
   if (USE_FIXTURES) {
-    const found = FIXTURE_VISUALS.find((v) => v.visual.visual_id === visualId)
+    const found = [...FIXTURE_VISUALS, ...BAKERY_VISUALS].find((v) => v.visual.visual_id === visualId) // MOCK-HOOK
     if (found === undefined) return { status: 'empty', fetchedAt: Date.now() }
     return voiceFixtureOk(target, { ...found, notes: found.notes.map((n) => (fixtureNotesResolved.has(n.note_id) ? { ...n, state: 'resolved' as const } : n)) })
   }
@@ -17751,6 +17763,7 @@ export async function approveVoiceMockup(projectId: string, visualId: string, fr
 export async function loadPendingReadback(sessionId: string): Promise<Result<VoiceReadback | null>> {
   const target = route(VOICE_READBACK_PENDING, { session_id: sessionId })
   if (USE_FIXTURES) {
+    if (tagAlongOn()) return voiceFixtureOk(target, null) // MOCK-HOOK: the bakery session holds nothing
     fixtureReadback ??= {
       readback_id: 'rb_fixture',
       session_id: sessionId,

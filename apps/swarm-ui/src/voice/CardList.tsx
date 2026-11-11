@@ -36,6 +36,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
+import { tagAlongOn } from './tagAlongFixtures' // MOCK-HOOK
 import { Button } from '../components'
 import { route } from '../fetch'
 import { CARD_KINDS, type CardCreator, type CardKindSpec, type CardReference, type CardState } from './cards'
@@ -345,7 +346,7 @@ export function CardList({
   }, [sessionId, round])
 
   // Fixture mode (a development build with no live API) draws one card of each kind while no session is live.
-  const cards = fixtures ?? (sessionId === null && s.cards.length === 0 && USE_FIXTURES ? FIXTURE_CARDS : s.cards)
+  const cards = fixtures ?? (sessionId === null && s.cards.length === 0 && USE_FIXTURES ? (tagAlongOn() ? BAKERY_CARDS : FIXTURE_CARDS) : s.cards) // MOCK-HOOK
   return (
     <div className="vt-card-list">
       {link === 'closed' && sessionId !== null && (
@@ -421,3 +422,11 @@ export const FIXTURE_CARDS: readonly VoiceCard[] = [
     question: 'Which theme should the mock-ups use first?', options: ['Light', 'Dark'], free_text: true, answer: null, task_id: null,
   }),
 ]
+
+// MOCK-HOOK: the bakery session's cards, for the Voice it tag-along mock-ups (tagAlongFixtures.ts).
+const BAKERY_LANE = { name: 'menu page', territory: ['site/menu.html'], reservation_usd: 5, state: 'RUNNING' } // MOCK-HOOK
+const BAKERY_CARDS: readonly VoiceCard[] = [ // MOCK-HOOK
+  { ...fixture('work', 'waiting', 'Site build', 'Two of five pages done.', { target_kind: 'workflow', target_id: 'wf_audit_01', repository: 'example-org/corner-loaf-site', lanes: [BAKERY_LANE], live_state: 'RUNNING' }, { workflow: 'wf_audit_01' }), card_id: 'vc_bakery_site' }, // MOCK-HOOK
+  { ...fixture('work', 'waiting', 'Order form', 'Pickup slots are wired.', { target_kind: 'workflow', target_id: 'wf_order_form_01', repository: 'example-org/corner-loaf-site', lanes: [{ ...BAKERY_LANE, name: 'pickup slots', territory: ['site/order.html'] }], live_state: 'RUNNING' }, { workflow: 'wf_order_form_01' }), card_id: 'vc_bakery_order' }, // MOCK-HOOK
+  { ...fixture('plan', 'proposed', 'Opening-week launch plan', 'Two waves, three lanes, $14 reserved.', { goal: 'Have the site, the order form and the launch post ready for opening week.', size: 'feature', waves: [{ name: 'Wave 1', lanes: [BAKERY_LANE, { ...BAKERY_LANE, name: 'order form', reservation_usd: 5 }] }, { name: 'Wave 2', lanes: [{ ...BAKERY_LANE, name: 'launch post', reservation_usd: 4, state: null }] }], reserved_usd: 14, session_cap_usd: 60, day_cap_usd: 120 }), card_id: 'vc_bakery_plan' }, // MOCK-HOOK
+] // MOCK-HOOK

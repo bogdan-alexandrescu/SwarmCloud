@@ -66,6 +66,7 @@ import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
+import { TagAlongBubble, TagAlongMark } from './voice/TagAlongBubble' // MOCK-HOOK
 import { HOME_JUMPS } from './Home'
 import { aboutOf } from './WorkflowFacts'
 
@@ -2336,6 +2337,7 @@ export function SkyShell({
             {adminPending}
           </i>
         )}
+        {s.key === 'voice' && <TagAlongMark />}{/* MOCK-HOOK */}
       </a>
     )
   }
@@ -2750,6 +2752,7 @@ export function SkyShell({
             </>
           )}
         </div>
+        <TagAlongBubble />{/* MOCK-HOOK */}
         {dock}
       </div>
       <p className="sk-vh" role="status" aria-live="polite">

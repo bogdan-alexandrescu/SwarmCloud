@@ -133,9 +133,18 @@ import {
 } from './speechSocket'
 import { stageFeed, TalkStage, TalkTip } from './Stage'
 import { startVoiceDetection, type VoiceDetection } from './vad'
+import { TalkOffer } from './TagAlongBubble' // MOCK-HOOK
+import { tagAlong, useTagAlong } from './tagAlong' // MOCK-HOOK
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
+// MOCK-HOOK: the fixture session's last exchange, for the tag-along mock-ups.
+const MOCK_LINES: CaptionLine[] = [ // MOCK-HOOK
+  { id: 'm1', side: 'you', text: 'Let’s keep the menu page simple, three columns.', final: true }, // MOCK-HOOK
+  { id: 'm2', side: 'agent', text: 'Done, the menu page now has bread, pastries and cakes side by side.', final: true }, // MOCK-HOOK
+  { id: 'm3', side: 'you', text: 'What is the state of our running agents?', final: true }, // MOCK-HOOK
+  { id: 'm4', side: 'agent', text: 'Two workflows are running on the bakery site. Site build has two of five pages done; Order form is wiring the pickup slots. Both are on track. Want me to open Agents?', final: true }, // MOCK-HOOK
+] // MOCK-HOOK
 
 /** Why a turn drew nothing, by the server's code (swarm_api/voice/trace.py `NONE_CODES`), in the line's words. */
 const NONE_WORDS: Readonly<Record<string, string>> = {
@@ -934,16 +943,19 @@ export function TalkPane() {
 
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const booting = speechMode && boot.length > 0
-  const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
+  const ta = useTagAlong() // MOCK-HOOK
+  const mock = ta.on && !ta.ended // MOCK-HOOK: the fixture session that follows the person
+  const state: ScopeState = mock ? 'listening' : phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle' // MOCK-HOOK
 
   return (
-    <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}`} data-state={state}>
+    <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}${mock ? ' is-tagalong' : ''}`} data-state={state}>{/* MOCK-HOOK */}
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
         <p className="vt-status" role="status">
-          <ToneMark tone={live ? 'live' : 'unknown'} />
-          {phase === 'idle' && 'Not connected'}
+          <ToneMark tone={live || mock ? 'live' : 'unknown'} />{/* MOCK-HOOK */}
+          {mock && `Live · ${ta.project}`}{/* MOCK-HOOK */}
+          {!mock && phase === 'idle' && 'Not connected'}{/* MOCK-HOOK */}
           {phase === 'connecting' && 'Connecting to Voice it…'}
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
@@ -952,7 +964,11 @@ export function TalkPane() {
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
-          {live || phase === 'ending' ? (
+          {mock ? ( // MOCK-HOOK
+            <Button kind="secondary" size="sm" onClick={() => tagAlong.end()}>{/* MOCK-HOOK */}
+              End{/* MOCK-HOOK */}
+            </Button> // MOCK-HOOK
+          ) : live || phase === 'ending' ? ( // MOCK-HOOK
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
             </Button>
@@ -1023,7 +1039,8 @@ export function TalkPane() {
           <Ring state={state} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} />
         </div>
         <div className="vt-subs-band">
-          <Captions lines={lines} />
+          <Captions lines={mock ? MOCK_LINES : lines} />{/* MOCK-HOOK */}
+          {mock && <TalkOffer />}{/* MOCK-HOOK */}
           {textMode && (
             <form
               className="c-field"
@@ -1047,8 +1064,8 @@ export function TalkPane() {
         </div>
         <div className="vt-mic">
           <div className="vt-mic-group" role="group" aria-label="Microphone">
-            <Button kind="secondary" aria-pressed={mic.muted} icon={<MicGlyph off={mic.muted} />} onClick={() => setMuted(!mic.muted)} disabled={!live}>
-              {mic.muted ? 'Unmute' : 'Mute'}
+            <Button kind="secondary" aria-pressed={mock ? ta.muted : mic.muted} icon={<MicGlyph off={mock ? ta.muted : mic.muted} />} onClick={() => (mock ? tagAlong.setMuted(!ta.muted) : setMuted(!mic.muted))} disabled={!live && !mock}>{/* MOCK-HOOK */}
+              {(mock ? ta.muted : mic.muted) ? 'Unmute' : 'Mute'}{/* MOCK-HOOK */}
             </Button>
             <Segmented<MicMode>
               small
