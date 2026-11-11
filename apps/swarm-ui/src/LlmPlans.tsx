@@ -46,9 +46,10 @@ import { Info } from './AccountsVerdict'
 import { inVoiceItPool, poolsOf } from './AccountsTable'
 import { DEFAULT_MAX_AGENTS, utcAt, type PoolAccount } from './accountsPool'
 import { MAX_AGENTS_LIMIT } from './AccountSheet'
-import { paneHref, useLinkedParam } from './capacityPoll'
+import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
 import { Button } from './components'
 import type { ApiError, Result } from './fetch'
+import type { TopicId } from './help'
 import { Screen } from './Shell'
 import { FIVE_HOUR, SEVEN_DAY, type AccountWindow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -311,7 +312,7 @@ function Table({
                     </td>
                     <td className="llp-act">
                       {owned(a) && (
-                        <Button size="sm" kind="ghost" onClick={() => open({ kind: 'lend', id: a.account_id })}>
+                        <Button size="sm" onClick={() => open({ kind: 'lend', id: a.account_id })}>
                           Edit lend
                         </Button>
                       )}
@@ -946,6 +947,14 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
 
 /* ---------------- the page ---------------- */
 
+/**
+ * The head's `?`: the old board's topics that still describe this table --
+ * the window a percentage is of, the state a failed refresh leaves, and why
+ * the holder count is advisory. The others were about the old board's
+ * ranking, its colour bands and figures this table does not draw.
+ */
+const PLAN_TOPICS: readonly TopicId[] = ['binding-window', 'refresh-token-required', 'advisory-vs-lease']
+
 function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<void> }) {
   const linked = useLinkedParam('account')
   const [sheet, setSheet] = useState<Sheet | null>(null)
@@ -1044,7 +1053,8 @@ export function LlmPlansScreen({ title, info, nav }: { title: string; info?: Rea
     if (r.status === 'ok' || r.status === 'stale') setFresh(r.data)
   }
   return (
-    <Screen title={title} info={info} nav={nav} load={loadAccountsBoard} shape="table">
+    // Re-read every 30 s (60 s on a phone), as the old board did, paused while the tab is hidden.
+    <Screen title={title} help={PLAN_TOPICS} info={info} nav={nav} load={loadAccountsBoard} pollMs={capacityPoll(ACCOUNTS_POLL_MS)} shape="table">
       {(data) => <Plans board={fresh !== null && fresh.readAt >= data.readAt ? fresh : data} reread={reread} />}
     </Screen>
   )
