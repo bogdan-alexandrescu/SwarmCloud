@@ -8,8 +8,11 @@
 #       swarmPluginBundleRunner: run.jobs.run and run.jobs.runWithOverrides
 #       (the two checks a run carrying arguments passes) and
 #       run.executions.get (to read the execution it started), nothing else.
-#       Not roles/run.jobsExecutorWithOverrides, which carries more than these
-#       three. No run.jobs.update, so the holder can never change the job's
+#       Not roles/run.jobsExecutorWithOverrides: that predefined role holds
+#       run.executions.cancel, run.jobs.run and run.jobs.runWithOverrides, so
+#       it carries the cancel this role leaves out and lacks the
+#       run.executions.get swarm-api reads its execution with. No
+#       run.jobs.update, so the holder can never change the job's
 #       image, command, identity or network; no run.executions.cancel or
 #       delete; no logging permission. Custom roles
 #       are defined only here (tests/terraform/custom_roles_out_of_ci.tftest.hcl);

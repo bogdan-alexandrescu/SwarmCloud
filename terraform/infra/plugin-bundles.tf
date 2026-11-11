@@ -58,10 +58,33 @@
 # no right to set the builder's IAM policy. swarm-api holds no actAs on the
 # builder and no build-service permission anywhere.
 #
+# THE JOB'S NETWORK (the security review of 11 November 2026). The job
+# EXECUTES upstream code: gstack's ./setup, `bun install`, security-audit's
+# validator tests. A Cloud Run job with no VPC access has direct internet
+# egress, from which that code could send the builder's token (the metadata
+# server's, or the one the recipe hands bun) outside the deployment, or fetch
+# at build time code that was never in the archive the admin reviewed. So every
+# packet the job sends leaves through its own network,
+# `<name_prefix>-plugin-bundle`, built as the intake job's is (plugins.tf): no
+# router and no Cloud NAT, so nothing it sends reaches the internet; Private
+# Google Access on its subnetwork is its one way to Artifact Registry
+# (<region>-docker.pkg.dev, <region>-npm.pkg.dev) and Cloud Storage, over the
+# default domains, the network's own default route and the metadata server's
+# DNS (both made with the network, as the intake network's are). Its egress
+# firewall admits TCP 443 from the job's tag alone and denies the rest; flow
+# logs on the subnetwork show a refused connection. It is neither the swarm
+# network (`allow_internal` there would let the job reach the cluster and the
+# internal services) nor the intake network (a build must not reach a job that
+# is unpacking an untrusted archive, or the other way round). What it does NOT
+# close: Google's APIs answer for every project, so a request to another
+# project's resource over HTTPS is not stopped by this network; that is a VPC
+# Service Controls perimeter's work, and this deployment has none.
+#
 # THE OTHER TEAM'S RESOURCES. Nothing here names one: one job, one sink, two
-# repositories, all spelled from name_prefix or fixed platform names; the
-# grants are on those repositories, the platform repository, the plugins
-# bucket, the build mirror bucket and the job itself. No project-level row.
+# repositories, one network, its subnetwork and two firewalls, all spelled
+# from name_prefix or fixed platform names; the grants are on those
+# repositories, the platform repository, the plugins bucket, the build mirror
+# bucket and the job itself. No project-level row.
 
 locals {
   builtins_managed_on = var.builtins_managed == "on"
@@ -93,6 +116,12 @@ locals {
   plugin_bundler_image   = lookup(var.image_refs, "swarm-plugin-bundler", "")
   plugin_bundle_job_on   = local.builtins_managed_on && local.plugin_bundler_image != ""
   plugin_bundle_job_name = "swarm-plugin-bundle"
+
+  # The job's own subnetwork. Its network is peered with nothing, so the range
+  # could repeat the intake network's; the next /26 (Direct VPC egress's
+  # smallest) keeps the two apart in flow logs.
+  plugin_bundle_cidr = "10.250.0.64/26"
+  plugin_bundle_tag  = "swarm-plugin-bundle"
 
   # The runner images a bundle is built for, each with the gstack list its
   # tree carries: the browser image lays the browser list over the base list
@@ -285,6 +314,85 @@ resource "google_artifact_registry_repository_iam_member" "plugin_bundler_push" 
 # header says why each went).
 
 # ---------------------------------------------------------------------------
+# The job's network: Google's APIs and nothing else (the header says why).
+# Planned with the switch, before the bundler image, so it is in place for the
+# job's first deploy. The compute types take no labels
+# (scripts/lib/unlabelable-types.json): each description carries
+# managed-by=swarm-terraform.
+# ---------------------------------------------------------------------------
+
+resource "google_compute_network" "plugin_bundle" {
+  count = local.builtins_managed_on ? 1 : 0
+
+  project                 = var.project_id
+  name                    = "${var.name_prefix}-plugin-bundle"
+  auto_create_subnetworks = false
+  description             = "managed-by=swarm-terraform; the plugin bundle job's network: no router, no NAT, peered with nothing (managed-plugins.md section 1.4.2)."
+
+  depends_on = [module.project_services]
+}
+
+resource "google_compute_subnetwork" "plugin_bundle" {
+  count = local.builtins_managed_on ? 1 : 0
+
+  project       = var.project_id
+  name          = "${var.name_prefix}-plugin-bundle"
+  region        = var.region
+  network       = google_compute_network.plugin_bundle[0].id
+  ip_cidr_range = local.plugin_bundle_cidr
+
+  # Artifact Registry and Cloud Storage through Google's network; no other
+  # route leaves it.
+  private_ip_google_access = true
+  description              = "managed-by=swarm-terraform; the plugin bundle job's subnetwork, Private Google Access only."
+
+  # Upstream code that tries to leave shows up here as refused connections.
+  log_config {
+    aggregation_interval = "INTERVAL_10_MIN"
+    flow_sampling        = 1
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_compute_firewall" "plugin_bundle_deny_egress" {
+  count = local.builtins_managed_on ? 1 : 0
+
+  project   = var.project_id
+  name      = "${var.name_prefix}-fw-plugin-bundle-deny-egress"
+  network   = google_compute_network.plugin_bundle[0].name
+  direction = "EGRESS"
+  priority  = 65534
+
+  destination_ranges = ["0.0.0.0/0"]
+
+  deny {
+    protocol = "all"
+  }
+
+  description = "managed-by=swarm-terraform; the plugin bundle network sends nothing but HTTPS to Google's APIs."
+}
+
+resource "google_compute_firewall" "plugin_bundle_allow_google_apis" {
+  count = local.builtins_managed_on ? 1 : 0
+
+  project   = var.project_id
+  name      = "${var.name_prefix}-fw-plugin-bundle-allow-apis"
+  network   = google_compute_network.plugin_bundle[0].name
+  direction = "EGRESS"
+  priority  = 1000
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = [local.plugin_bundle_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  description = "managed-by=swarm-terraform; HTTPS from the bundle job, which with no NAT reaches only Google's APIs through Private Google Access."
+}
+
+# ---------------------------------------------------------------------------
 # The job (§1.4.2, "The job").
 # ---------------------------------------------------------------------------
 
@@ -313,9 +421,18 @@ resource "google_cloud_run_v2_job" "plugin_bundle" {
       # deadline inside it, whatever timeout an execution is given.
       timeout = "3600s"
 
-      # NO VPC ACCESS, ON PURPOSE: the job reaches Artifact Registry and Cloud
-      # Storage over Google's APIs and nothing else; the mirrors are Artifact
-      # Registry repositories.
+      # Every packet through the job's own network, which reaches Google's
+      # APIs (Artifact Registry, where the mirrors are, and Cloud Storage)
+      # through Private Google Access and nothing else: no router, no NAT.
+      vpc_access {
+        egress = "ALL_TRAFFIC"
+
+        network_interfaces {
+          network    = google_compute_network.plugin_bundle[0].id
+          subnetwork = google_compute_subnetwork.plugin_bundle[0].id
+          tags       = [local.plugin_bundle_tag]
+        }
+      }
 
       containers {
         image   = local.plugin_bundler_image
@@ -346,6 +463,8 @@ resource "google_cloud_run_v2_job" "plugin_bundle" {
   depends_on = [
     module.project_services,
     data.google_service_account.plugin_bundler,
+    google_compute_firewall.plugin_bundle_deny_egress,
+    google_compute_firewall.plugin_bundle_allow_google_apis,
   ]
 }
 
@@ -363,9 +482,10 @@ resource "google_cloud_run_v2_job_iam_member" "plugin_bundle_api_runs" {
   member   = module.iam.service_account_members["swarm-api"]
 }
 
-# The executions' logs, upstream output included, to the platform's own log
-# bucket (log_bucket.tf), where only the platform's readers see them; the
-# page never shows them (§1.4.3: a fixed code and the execution's name). The
+# The executions' logs, upstream output included, copied to the platform's own
+# log bucket (log_bucket.tf); they also stay in the project's _Default bucket,
+# where project-level log readers see them. The page never shows them (§1.4.3:
+# a fixed code and the execution's name). The
 # destination is a log bucket of this project, so the sink needs no writer
 # grant (log_bucket.tf says why). Planned only with that bucket.
 #
