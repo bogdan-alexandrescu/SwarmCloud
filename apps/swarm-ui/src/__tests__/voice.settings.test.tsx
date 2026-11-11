@@ -317,8 +317,10 @@ describe('the dedicated key', () => {
     const view = await page()
     const row = dedicatedRow()
     expect(row.getAttribute('data-dedicated-key')).toBe('set')
-    expect(row.textContent).toContain('Voice key')
-    expect(row.textContent).toContain('Available · owner@example.com')
+    // The state on the surface; its name, who added it and when behind the tick.
+    const tick = row.querySelector<HTMLElement>('.vset-tick')!
+    expect(tick.textContent).toBe('Available')
+    expect(tick.title).toMatch(/^Voice key, added by owner@example\.com, /)
     expect(within(row).getByRole('button', { name: 'Delete' }).tagName).toBe('BUTTON')
     view.unmount()
 
@@ -383,8 +385,9 @@ describe('the dedicated key', () => {
     expect(dialog.textContent).toContain('the secret could not be destroyed')
     const row = dedicatedRow()
     expect(row.getAttribute('data-dedicated-key')).toBe('set')
-    expect(row.textContent).toContain('Voice key')
-    expect(row.textContent).toContain('Available · owner@example.com')
+    expect(row.querySelector<HTMLElement>('.vset-tick')!.textContent).toBe('Available')
+    expect(within(row).queryByRole('button', { name: 'Delete' })).toBeNull()
+    expect(screen.getByRole('dialog')).toBe(dialog)
   })
 
   it('keeps its meaning behind the (i), off the surface', async () => {

@@ -191,7 +191,6 @@ function KeyStatus({ view }: { view: VoiceSettingsView }) {
       {k.set === true ? (
         <Tick tone="ok" say={k.by && k.at ? `Set by ${k.by}, ${when(k.at)}` : 'Set'}>
           Set{k.by ? ` · ${k.by}` : ''}
-          {k.at ? ` · ${when(k.at)}` : ''}
         </Tick>
       ) : k.set === false ? (
         <Tick tone="warn" say="GPT-Live cannot start without it; own speech does not need it">
@@ -262,12 +261,9 @@ function DedicatedKey({ k, canEdit, onDeleted }: { k: VoiceDedicatedKey; canEdit
       </span>
       {k.set === true ? (
         <span className="vset-switchrow">
-          <span className="vset-mono">{name}</span>
           {state !== null && (
-            <Tick tone={state.tone} say={k.by && k.at ? `Added by ${k.by}, ${when(k.at)}` : state.text}>
+            <Tick tone={state.tone} say={[name, k.by && `added by ${k.by}`, k.at && when(k.at)].filter(Boolean).join(', ')}>
               {state.text}
-              {k.by ? ` · ${k.by}` : ''}
-              {k.at ? ` · ${when(k.at)}` : ''}
             </Tick>
           )}
           {deletable && !open && <Btn onClick={() => setOpen(true)}>Delete</Btn>}
