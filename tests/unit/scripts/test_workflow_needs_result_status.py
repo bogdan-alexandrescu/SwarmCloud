@@ -83,6 +83,7 @@ def test_plugin_tag_runs_after_a_green_python_on_a_push_to_main():
     job = workflow["jobs"]["plugin-tag"]
     assert job["needs"] == ["python"]
     condition = re.sub(r"\s+", " ", str(job["if"])).strip()
+    condition = re.sub(r"^\$\{\{\s*(.*?)\s*\}\}$", r"\1", condition)
     assert condition == (
         "!cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' "
         "&& needs.python.result == 'success'"
