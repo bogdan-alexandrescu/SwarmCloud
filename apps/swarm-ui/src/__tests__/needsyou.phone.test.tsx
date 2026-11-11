@@ -185,9 +185,20 @@ describe('the Needs-you row on a phone, on every Work screen', () => {
         expect(shown(bar.querySelector('.ny-caret')!, theme), 'the caret is hidden').toBe(true)
         expect(borderY(ny, theme), 'the waiting row lost its box').toBeGreaterThan(0)
         expect(vertical(won(ny, 'padding', theme), 'padding')).toBeGreaterThan(0)
-        // One line, nothing wider than the viewport: it scrolls sideways rather than wraps.
+        // One line, nothing wider than the viewport: the button neither wraps
+        // nor scrolls; "Needs you" and the caret keep their width, the chips cut.
         expect(won(bar, 'flex-wrap', theme)).toBe('nowrap')
-        expect(won(bar, 'overflow-x', theme)).toBe('auto')
+        expect(won(bar, ['overflow', 'overflow-x'], theme), 'the toggle scrolls sideways').toBe('hidden')
+        const all = bar.querySelector('.ny-all')!
+        expect(won(all, 'white-space', theme), '"Needs you" wraps').toBe('nowrap')
+        expect(won(all, ['flex', 'flex-shrink'], theme), '"Needs you" shrinks').toBe('none')
+        const caret = bar.querySelector('.ny-caret')!
+        expect(won(caret, ['flex', 'flex-shrink'], theme), 'the caret shrinks off the row').toBe('none')
+        for (const c of chips) {
+          expect(won(c, ['flex', 'flex-shrink'], theme), `${c.className} keeps its width`).toBe('0 1 auto')
+          expect(won(c, 'min-width', theme)).toBe('0')
+          expect(won(c, ['overflow', 'overflow-x'], theme)).toBe('hidden')
+        }
         expect(won(ny, 'max-width', theme)).toBe('100%')
         const body = ny.querySelector<HTMLElement>('.ny-body')!
         expect(body.hidden).toBe(true)
