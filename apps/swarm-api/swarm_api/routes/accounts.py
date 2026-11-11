@@ -195,6 +195,20 @@ def _writer_tenant_id(ctx: AppContext, auth: AuthContext) -> str:
     return tenant_id
 
 
+def _admin_tenant_id(ctx: AppContext, auth: AuthContext) -> str:
+    """`_writer_tenant_id`, and then the role `admin` there: the gate on a
+    plan's caps, each lend's agents cap and the per-workspace caps (owner
+    pick, #3851). The `member` gate runs first, so a viewer keeps its
+    `role_member_required` answer; a member is `role_admin_required`,
+    through its switch, before any broker call. A platform admin acting in
+    the workspace passes as on every other account write, audited by
+    `deps.current_auth`."""
+    tenant_id = _writer_tenant_id(ctx, auth)
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.ADMIN)
+    return tenant_id
+
+
 def _owned(pool: AccountPool, tenant_id: str, account_id: str) -> dict[str, Any]:
     """The caller's OWN account with this id, or 404.
 
@@ -707,15 +721,20 @@ def set_lending(
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """Replace who this account lends to, with each borrower's agents cap
-    (§4.6, Q7). Owner only, exactly as max agents, the served classes and
-    the Name are: a `member` of the owning workspace, or a platform admin
-    acting there, recorded by `deps.current_auth`'s platform-admin audit.
+    (§4.6, Q7). Owner only: a `member` of the owning workspace for a bare
+    `lend_to`, as it always was, and an `admin` there for `lends`, which sets
+    the caps (`_admin_tenant_id`); a platform admin acting there passes
+    either way, recorded by `deps.current_auth`'s platform-admin audit. A
+    bare `lend_to` changes no cap: a borrower already lent keeps its own.
 
     `lends` is forwarded as `lends`; a `lend_to` body is forwarded as it
     always was, so today's callers keep working. The caps are checked before
     the broker is asked anything, in its words; a lend to the owner itself
     is refused there too, after the ownership read."""
-    tenant_id = _writer_tenant_id(ctx, auth)
+    if body.lends is not None:
+        tenant_id = _admin_tenant_id(ctx, auth)
+    else:
+        tenant_id = _writer_tenant_id(ctx, auth)
     lends = _checked_lends(body)
     _owned(pool, tenant_id, account_id)
     if lends is None:
@@ -834,12 +853,12 @@ def set_per_workspace_max(
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """At most this many of the account's agents at once may be one
-    workspace's (§4.6, Q6). Owner only, under the same rule as lending and
-    max agents. Each number is checked before the broker is asked anything,
+    workspace's (§4.6, Q6). Owner only, and an `admin` of the owning
+    workspace, as the lend caps are (`_admin_tenant_id`). Each number is checked before the broker is asked anything,
     and a workspace that neither owns nor borrows the account is refused
     after the ownership read, both in the broker's words. Lowering a cap
     closes no hold; the broker refuses the next grant over it."""
-    tenant_id = _writer_tenant_id(ctx, auth)
+    tenant_id = _admin_tenant_id(ctx, auth)
     for tenant, value in body.per_workspace_max.items():
         if not tenant:
             raise ValidationFailed("per_workspace_max names each workspace")
