@@ -80,6 +80,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
+from swarm_redaction import redact as redact_text
+
 from .errors import ConfigError
 
 #: The signed dispatch block's key and, inside it, the set's.
@@ -113,6 +115,16 @@ LOAD_FILE = "load.json"
 ENV_DIR = "plugin-env"
 DATA_DIR = "plugin-data"
 RUNS_DIR = "plugin-runs"
+#: Beside a plugin's runs file (`<install_id>.jsonl`), its failures:
+#: `<install_id>.errors.jsonl`, one row per failed run -- the event, the exit
+#: code and either the launcher's fixed reason code or the last bytes of the
+#: hook's stderr, scrubbed by the launcher. Both restated in the launcher.
+ERRORS_SUFFIX = ".errors.jsonl"
+#: The most of a failing hook's stderr the record carries, in bytes.
+ERROR_TAIL_BYTES = 400
+#: The launcher's reason codes for a run it refused or could not start.
+LAUNCH_REASONS = frozenset({"env_unreadable", "bad_install_id", "bad_usage", "command_missing",
+                            "spawn_failed"})
 SECRETS_DIR = "plugin-secrets"
 FILES_DIR = "plugin-files"
 #: The Jev calls file the worker already settles (`judge.account.TOOL_CALL_FILES`,
@@ -899,6 +911,7 @@ def load(task: Mapping[str, Any], *, private_dir: Path, store: Any = None,
         runs = private_dir / RUNS_DIR / f"{entry.install_id}.jsonl"
         runs.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         runs.unlink(missing_ok=True)
+        errors_file(runs).unlink(missing_ok=True)
         document, missing, adapter = _plugin_env(entry, private_dir, released=released,
                                                  provider_key=provider_key, others=every_variable,
                                                  secret_env_names=secret_env_names,
@@ -918,6 +931,40 @@ def load(task: Mapping[str, Any], *, private_dir: Path, store: Any = None,
 
 
 # --- after the agent ----------------------------------------------------------------
+
+
+def errors_file(runs_file: Path) -> Path:
+    """The failures file beside a plugin's runs file (`ERRORS_SUFFIX`)."""
+    return runs_file.with_name(runs_file.name.removesuffix(".jsonl") + ERRORS_SUFFIX)
+
+
+def _tail(text: Any) -> str | None:
+    """A failing hook's stderr tail as the record carries it: the launcher
+    already scrubbed the plugin's registered values; credential shapes are
+    masked again here, and the result capped at `ERROR_TAIL_BYTES`."""
+    if not isinstance(text, str) or not text:
+        return None
+    masked = redact_text(text[-4 * ERROR_TAIL_BYTES:]).text
+    return masked.encode("utf-8")[-ERROR_TAIL_BYTES:].decode("utf-8", errors="ignore")
+
+
+def _last_errors(path: Path) -> dict[str, dict[str, Any]]:
+    """Per hook event, its last failure: the exit code and the launcher's
+    reason code or the scrubbed stderr tail."""
+    out: dict[str, dict[str, Any]] = {}
+    for row in _runs(path):
+        event, code = row.get("event"), row.get("exit")
+        if not isinstance(event, str) or not _EVENT.match(event) or not isinstance(code, int):
+            continue
+        last: dict[str, Any] = {"exit": code}
+        reason = row.get("reason")
+        if isinstance(reason, str) and reason in LAUNCH_REASONS:
+            last["reason"] = reason
+        tail = _tail(row.get("tail"))
+        if tail:
+            last["tail"] = tail
+        out[event] = last
+    return out
 
 
 def _runs(path: Path) -> list[dict[str, Any]]:
@@ -941,14 +988,24 @@ def record(plugin: Loaded, skill_calls: Iterable[str]) -> dict[str, Any]:
     and counts only, never arguments, output or settings values. Hook runs
     come from the launcher's records alone (spike section 4: the stream
     reports only SessionStart): per event the runs, the blocks (exit 2, a
-    Stop hook's "not done yet") and the errors (any other non-zero exit)."""
+    Stop hook's "not done yet") and the errors (any other non-zero exit, a
+    run the launcher refused included), and for an event that failed its
+    `last_error`: the exit code and the launcher's fixed reason code or the
+    last bytes of the hook's stderr, scrubbed of every registered value and
+    every credential shape (section 16). A server the launcher could not
+    start is named in `mcp_servers_failed`."""
     e = plugin.entry
-    hooks: dict[str, dict[str, int]] = {}
+    hooks: dict[str, dict[str, Any]] = {}
     servers: dict[str, bool] = {}
+    failed: set[str] = set()
     for row in _runs(plugin.runs_file):
         if row.get("kind") == "mcp":
             name = row.get("server")
-            servers[name if isinstance(name, str) and _SERVER.match(name) else "server"] = True
+            name = name if isinstance(name, str) and _SERVER.match(name) else "server"
+            if "reason" in row:
+                failed.add(name)
+            else:
+                servers[name] = True
             continue
         event = row.get("event")
         event = event if isinstance(event, str) and _EVENT.match(event) else "unknown"
@@ -959,6 +1016,9 @@ def record(plugin: Loaded, skill_calls: Iterable[str]) -> dict[str, Any]:
             counts["blocks"] += 1
         elif isinstance(code, int) and code != 0:
             counts["errors"] += 1
+    for event, last in _last_errors(errors_file(plugin.runs_file)).items():
+        if hooks.get(event, {}).get("errors"):
+            hooks[event]["last_error"] = last
     prefix = f"{e.name}:"
     skills: dict[str, int] = {}
     for call in skill_calls:
@@ -971,6 +1031,8 @@ def record(plugin: Loaded, skill_calls: Iterable[str]) -> dict[str, Any]:
         "runnable_sha256": e.runnable_sha256, "hooks": dict(sorted(hooks.items())),
         "mcp_servers_started": sorted(servers), "skill_runs": dict(sorted(skills.items())),
     }
+    if failed:
+        out["mcp_servers_failed"] = sorted(failed)
     if plugin.secrets_missing:
         out["secrets_missing"] = len(plugin.secrets_missing)
     if plugin.adapter:
@@ -981,6 +1043,7 @@ def record(plugin: Loaded, skill_calls: Iterable[str]) -> dict[str, Any]:
 __all__ = [
     "BLOCK_KEY",
     "ENV_DIR_ENV",
+    "ERRORS_SUFFIX",
     "JEV_ADAPTER",
     "LAUNCHER",
     "LOAD_ENV",
@@ -991,6 +1054,7 @@ __all__ = [
     "REFUSALS",
     "SKIPPED_KEY",
     "entries",
+    "errors_file",
     "fetch",
     "load",
     "options",

@@ -922,6 +922,15 @@ def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
 #: `userConfig` options (a sensitive one only as a placeholder) and the skills
 #: the step turned off.
 PLUGIN_LOAD_ENV = "SWARM_PLUGIN_LOAD"
+#: The folder of the launcher's per-plugin env files (`pluginload.ENV_DIR_ENV`,
+#: restated). Every wrapped hook and server command is the launcher, which
+#: finds its plugin's file only through this variable, and the CLI's
+#: environment is built from scratch (`cliagent.run_cli_agent`), so the
+#: runner hands it on when a managed plugin loads. A directory, never a value;
+#: the launcher drops it (`SWARM_*`) from the plugin's own process. Measured
+#: 11 November 2026: without it every managed hook ran nothing and exited 1,
+#: and no run was recorded (docs/design/managed-plugins.md section 16).
+PLUGIN_ENV_DIR_ENV = "SWARM_PLUGIN_ENV_DIR"
 PLUGIN_DIR_FLAG = "--plugin-dir"
 #: At most eight plugins per step (managed-plugins.md section 13).
 MAX_MANAGED_PLUGINS = 8
@@ -2304,7 +2313,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         extra += ["--mcp-config", str(mcp)]
     # The managed plugins, after the runner's own `--settings` and
     # `--mcp-config` (managed-plugins.md section 4.2 step 5).
-    extra += plugin_dir_args(managed_plugins())
+    managed = managed_plugins()
+    extra += plugin_dir_args(managed)
+    env_dir = os.environ.get(PLUGIN_ENV_DIR_ENV, "").strip()
+    if managed and env_dir:
+        env[PLUGIN_ENV_DIR_ENV] = env_dir
     # When each switched-on tool helps, at the system prompt's weight and in
     # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
     moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
