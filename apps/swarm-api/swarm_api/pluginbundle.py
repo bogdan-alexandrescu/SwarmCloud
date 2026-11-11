@@ -462,12 +462,14 @@ def job_args(bundle_id: str, base: Mapping[str, str], versions: Mapping[str, Map
 
 
 class CheckFailed(Exception):
-    """A pushed bundle failed swarm-api's check: `bundle_check_failed`,
-    with the fixed name of the check (never anything the job wrote)."""
+    """A pushed bundle failed swarm-api's check: `code` (`bundle_check_failed`,
+    or `bundle_config_changed` for the image config), with the fixed name of
+    the check or field (never anything the job wrote)."""
 
-    def __init__(self, check: str) -> None:
+    def __init__(self, check: str, code: str = "bundle_check_failed") -> None:
         super().__init__(check)
         self.check = check
+        self.code = code
 
 
 def _image_manifest(registry: BundleRegistry, image: str, reference: str) -> tuple[str, dict[str, Any]]:
@@ -493,16 +495,101 @@ def _image_manifest(registry: BundleRegistry, image: str, reference: str) -> tup
     return digest, doc
 
 
-def _diff_ids(registry: BundleRegistry, image: str, manifest: Mapping[str, Any]) -> list[str]:
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    doc: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in doc:
+            # Two parsers may keep different copies of a repeated key: the
+            # one compared here must be the one the runtime reads.
+            raise ValueError("repeated key")
+        doc[name] = value
+    return doc
+
+
+def _config(registry: BundleRegistry, image: str, manifest: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """(the image config as read, its rootfs.diff_ids)."""
     with registry.blob(image, manifest["config"]["digest"], MANIFEST_CAP) as handle:
         raw = handle.read(MANIFEST_CAP + 1)
     try:
-        diff_ids = json.loads(raw)["rootfs"]["diff_ids"]
+        doc = json.loads(raw, object_pairs_hook=_unique_keys)
+        diff_ids = doc["rootfs"]["diff_ids"]
     except (ValueError, KeyError, TypeError):
         raise CheckFailed("config_unreadable") from None
-    if not isinstance(diff_ids, list) or not all(isinstance(d, str) and LAYER_DIGEST.match(d) for d in diff_ids):
+    if not isinstance(doc, dict) or not isinstance(doc["rootfs"], dict) or not isinstance(diff_ids, list) \
+            or not all(isinstance(d, str) and LAYER_DIGEST.match(d) for d in diff_ids):
         raise CheckFailed("config_unreadable")
-    return diff_ids
+    return doc, diff_ids
+
+
+#: The history entry the bundle job appends for each plugin layer
+#: (images/plugin-bundler/swarm-bundle, `append_layers`, on the `job` path):
+#: a fixed time and a fixed text naming the plugin's folder. The job sets no
+#: other field of the config; the top-level `created` stays the release's.
+BUNDLE_HISTORY_CREATED = "1970-01-01T00:00:00Z"
+
+
+def bundle_history(plugin: str) -> dict[str, str]:
+    return {"created": BUNDLE_HISTORY_CREATED, "created_by": f"swarm-bundle job: {PLUGIN_ROOT}/{plugin}/"}
+
+
+#: The image config's field names (OCI image-spec and Docker's own), the only
+#: names a `bundle_config_changed` refusal records: a field the job added
+#: under any other name is recorded as `other`, so the job's text never
+#: reaches the record.
+CONFIG_FIELDS = frozenset({
+    "architecture", "author", "comment", "config", "container", "container_config", "created",
+    "docker_version", "history", "id", "os", "os.features", "os.version", "parent", "rootfs", "variant"})
+RUNTIME_FIELDS = frozenset({
+    "ArgsEscaped", "AttachStderr", "AttachStdin", "AttachStdout", "Cmd", "CpuShares", "Domainname",
+    "Entrypoint", "Env", "ExposedPorts", "Healthcheck", "Hostname", "Image", "Labels", "MacAddress",
+    "Memory", "MemorySwap", "NetworkDisabled", "OnBuild", "OpenStdin", "Shell", "StdinOnce", "StopSignal",
+    "StopTimeout", "Tty", "User", "Volumes", "WorkingDir"})
+_ABSENT = object()
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal as JSON values, type for type: `1`, `1.0` and `true` differ."""
+    if a is _ABSENT or b is _ABSENT:
+        return a is b
+    return json.dumps(a, sort_keys=True, separators=(",", ":")) == json.dumps(b, sort_keys=True, separators=(",", ":"))
+
+
+def _first_difference(base: Mapping[str, Any], pushed: Mapping[str, Any], names: frozenset[str],
+                      skip: Iterable[str] = ()) -> str | None:
+    for name in sorted(set(base) | set(pushed)):
+        if name not in skip and not _same(base.get(name, _ABSENT), pushed.get(name, _ABSENT)):
+            return name if name in names else "other"
+    return None
+
+
+def check_config(base: Mapping[str, Any], pushed: Mapping[str, Any], plugins: list[str]) -> None:
+    """The pushed config is the base's with exactly two differences:
+    `rootfs.diff_ids` extended by one diff id per plugin layer (their values
+    are held to the layers as each is read) and `history` extended by the
+    job's fixed entry per plugin, in order. Anything else refused
+    `bundle_config_changed` with the first differing field's name alone."""
+    changed = _first_difference(base, pushed, CONFIG_FIELDS, skip=("config", "rootfs", "history"))
+    if changed is None:
+        runtime, pushed_runtime = base.get("config", _ABSENT), pushed.get("config", _ABSENT)
+        if isinstance(runtime, Mapping) and isinstance(pushed_runtime, Mapping):
+            inner = _first_difference(runtime, pushed_runtime, RUNTIME_FIELDS)
+            changed = None if inner is None else f"config.{inner}"
+        elif not _same(runtime, pushed_runtime):
+            changed = "config"
+    if changed is None:
+        inner = _first_difference(base["rootfs"], pushed["rootfs"], frozenset({"type"}), skip=("diff_ids",))
+        changed = None if inner is None else f"rootfs.{inner}"
+    if changed is None:
+        diff_ids, pushed_diff_ids = base["rootfs"]["diff_ids"], pushed["rootfs"]["diff_ids"]
+        if len(pushed_diff_ids) != len(diff_ids) + len(plugins) or pushed_diff_ids[:len(diff_ids)] != diff_ids:
+            changed = "rootfs.diff_ids"
+    if changed is None:
+        history = base.get("history", [])
+        if not isinstance(history, list) \
+                or not _same(pushed.get("history", _ABSENT), history + [bundle_history(p) for p in plugins]):
+            changed = "history"
+    if changed is not None:
+        raise CheckFailed(changed, code="bundle_config_changed")
 
 
 class _Hashing(io.RawIOBase):
@@ -542,13 +629,14 @@ class LayerTree:
     tree_sha256: str
     manifest: Mapping[str, Any]
     files: dict[str, str]  # path below the root -> content sha256
+    diff_id: str  # the uncompressed layer's sha256, as read
 
 
-def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> LayerTree:
+def read_layer(handle: BinaryIO, plugin: str, media_type: str) -> LayerTree:
     """One plugin's layer, read entry by entry: only paths under
     `/opt/swarm/plugins/<plugin>/`, no `..`, no link, no device, no whiteout
-    but the opaque marker on that folder; its uncompressed sha256 is the
-    config's diff_id; the tree digest computed as swarm-bundle computes it.
+    but the opaque marker on that folder; its uncompressed sha256 (the
+    diff_id the config must name) and the tree digest computed as swarm-bundle computes it.
     Past LAYER_UNPACKED_CAP bytes unpacked or LAYER_MEMBERS_CAP members the
     read stops, refused by that fixed check alone."""
     if media_type in (OCI_LAYER_GZIP, DOCKER_LAYER_GZIP):
@@ -611,8 +699,6 @@ def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> 
             pass
     except (tarfile.TarError, OSError, EOFError, zlib.error):
         raise CheckFailed("layer_unreadable") from None
-    if "sha256:" + hashing.hash.hexdigest() != diff_id:
-        raise CheckFailed("layer_diff_id")
     digest = hashlib.sha256()
     for rel in sorted(entries):
         kind, mode, sha = entries[rel]
@@ -624,7 +710,8 @@ def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> 
         manifest = None
     if not isinstance(manifest, Mapping):
         raise CheckFailed("bundle_manifest_missing")
-    return LayerTree(tree_sha256=digest.hexdigest(), manifest=manifest, files=files)
+    return LayerTree(tree_sha256=digest.hexdigest(), manifest=manifest, files=files,
+                     diff_id="sha256:" + hashing.hash.hexdigest())
 
 
 def source_files(handle: BinaryIO) -> dict[str, str]:
@@ -719,14 +806,20 @@ def check_bundle(bundle: Mapping[str, Any], registry: BundleRegistry, sources: B
         if len(pushed["layers"]) != n + len(order) \
                 or [layer["digest"] for layer in pushed["layers"][:n]] != [layer["digest"] for layer in base["layers"]]:
             raise CheckFailed("base_layers")
-        diff_ids = _diff_ids(registry, out_image, pushed)
-        if len(diff_ids) != n + len(order) or diff_ids[:n] != _diff_ids(registry, base_image, base):
-            raise CheckFailed("base_diff_ids")
+        base_config, base_diff_ids = _config(registry, base_image, base)
+        config, diff_ids = _config(registry, out_image, pushed)
+        if len(base_diff_ids) != n:
+            raise CheckFailed("config_unreadable")
+        # Entrypoint, Env, User and the rest run in every step of every
+        # tenant on this image: the job may change none of them (1.4).
+        check_config(base_config, config, [PLUGIN_OF[i] for i in order])
         for offset, install_id in enumerate(order):
             layer = pushed["layers"][n + offset]
             with registry.blob(out_image, layer["digest"], LAYER_CAP) as handle:
-                tree = read_layer(handle, PLUGIN_OF[install_id], str(layer.get("mediaType") or ""),
-                                  diff_ids[n + offset])
+                tree = read_layer(handle, PLUGIN_OF[install_id], str(layer.get("mediaType") or ""))
+            if tree.diff_id != diff_ids[n + offset]:
+                # The config's added diff ids are exactly the layers', in order.
+                raise CheckFailed("rootfs.diff_ids", code="bundle_config_changed")
             said = tree.manifest
             if (said.get("tree") or {}).get("sha256") != tree.tree_sha256:
                 raise CheckFailed("tree_sha256")
@@ -1186,8 +1279,9 @@ def finish(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, regist
         try:
             state, detail = STATE_READY, check_bundle(bundle, registry, sources, config.repository)
         except CheckFailed as failed:
-            log.warning("plugin bundle check failed bundle_id=%s check=%s", bundle_id, failed.check)
-            state, detail = STATE_FAILED, {"code": "bundle_check_failed", "check": failed.check}
+            log.warning("plugin bundle check failed bundle_id=%s code=%s check=%s", bundle_id, failed.code,
+                        failed.check)
+            state, detail = STATE_FAILED, {"code": failed.code, "check": failed.check}
     ended = mark_finished(store, bundles, bundle_id, state, detail) or dict(bundle)
     if ended.get("state") == STATE_READY:
         # A ready finish is when current (and so retention) changes: retire

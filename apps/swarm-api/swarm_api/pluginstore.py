@@ -185,6 +185,7 @@ REFUSALS: dict[str, str] = {
     "bundle_build_not_started": "The bundle build could not be started.",
     "bundle_build_failed": "The bundle build failed.",
     "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",
+    "bundle_config_changed": "The bundle image's config differs from its release image's config in more than the plugin layers and their history entries.",
     "bundle_base_invalid": "A base image is not this deployment's image by digest.",
     "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; apply again to build the bundle the live versions need.",
 }

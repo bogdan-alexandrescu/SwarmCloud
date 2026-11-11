@@ -784,7 +784,25 @@ def test_a_refused_config_records_a_field_name_never_a_value(world):
     _push_bundle(w, bundle_id, spoil_config=lambda config: config.update({marker: marker}))
     answer = _status(w, bundle_id).json()
     assert answer["refusal"] == {**answer["refusal"], "code": "bundle_config_changed", "check": "other"}
-    assert marker not in json.dumps(answer) and marker not in json.dumps(_built(w, bundle_id))
+    assert marker not in json.dumps(answer) and marker not in json.dumps(_built(w, bundle_id), default=str)
+
+
+def test_a_config_that_is_the_bases_plus_the_layers_and_history_the_job_writes_passes(world):
+    """The pushed config as the job writes it (`_push_bundle`, after
+    swarm-bundle's `append_layers`) becomes ready; so does the same check
+    on a release config with no history of its own."""
+    w = world
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id)
+    assert _status(w, bundle_id).json()["state"] == "ready"
+    base = {"rootfs": {"type": "layers", "diff_ids": [_digest("base")]}, "config": dict(RELEASE_RUNTIME)}
+    pushed = {"rootfs": {"type": "layers", "diff_ids": [_digest("base"), _digest("g"), _digest("s")]},
+              "config": dict(RELEASE_RUNTIME),
+              "history": [{"created": "1970-01-01T00:00:00Z",
+                           "created_by": "swarm-bundle job: /opt/swarm/plugins/gstack/"},
+                          {"created": "1970-01-01T00:00:00Z",
+                           "created_by": "swarm-bundle job: /opt/swarm/plugins/security-audit/"}]}
+    pb.check_config(base, pushed, ["gstack", "security-audit"])
 
 
 def test_a_value_of_another_json_type_is_a_change():
