@@ -127,6 +127,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # The planner's answer to an agent's question (voice-it.md §3.9), read
     # back by swarm-voice before it is sent (swarm_voice/tools_act.py).
     ("POST", "/v1/tasks/{task_id}/answers"),
+    # Debug mode's trace of a planner turn (voice/trace.py): a record of what
+    # the turn did, never an act, so nothing is read back before it.
+    ("POST", "/v1/voice/sessions/{session_id}/trace"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the
