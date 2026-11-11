@@ -987,7 +987,7 @@ merged of total).
 * **What Voice it started:** `voice_starts` rows (`kind`, `target_id`), read by
   project. Each `target_id` is read by id through the existing reads
   (`GET /v1/tasks/{id}`, `/v1/workflows/{id}`, `/v1/runs/{id}`).
-* **Follow-ups:** tasks carrying the project's tag,
+* **Follow-ups:** agents carrying the project's tag,
   `metadata.claude_session == voice:<project>`, the query the ledger already
   makes (`ledger.py`).
 
