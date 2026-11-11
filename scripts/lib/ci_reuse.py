@@ -109,6 +109,14 @@ REACH = {
     "integration": ("app", "==", "true"),
     "manifests": ("app", "==", "true"),
 }
+# The heavy jobs, run on a lane's pull request only when the `changes` job's
+# `full` output is `true` (owner decision 2026-11-11, "Fast checks only on
+# PRs"; docs/ci.md "What runs where"). Their `if:` reads it before REACH's own
+# condition, so with `full` = `false` the change does not reach them and a
+# skip is a pass. An absent `full` reads as `true`: a skip it cannot explain
+# still fails the gate.
+HEAVY = ("python-unit", "ui-build", "ui-tests", "integration")
+FULL_IF = "needs.changes.outputs.full == 'true'"
 # The branches whose push runs a pull request may reuse: the lanes' (CI-EARLY).
 LANE_PREFIX = "swarm/"
 # The events whose run looks a record up (the `changes` job's `reuse` step).
@@ -118,12 +126,15 @@ LOOKUP_EVENTS = ("push", "pull_request")
 def reach_if(key: str) -> str:
     output, op, value = REACH[key]
     ref = f"needs.changes.outputs.{output}"
+    full = f"{FULL_IF} && " if key in HEAVY else ""
     if op == "in":
-        return "(" + " || ".join(f"{ref} == '{v}'" for v in value) + ")"
-    return f"{ref} {op} '{value}'"
+        return full + "(" + " || ".join(f"{ref} == '{v}'" for v in value) + ")"
+    return f"{full}{ref} {op} '{value}'"
 
 
 def reached(key: str, outputs: dict) -> bool:
+    if key in HEAVY and str(outputs.get("full") or "true") != "true":
+        return False
     output, op, value = REACH[key]
     got = str(outputs.get(output) or "")
     if op == "in":
