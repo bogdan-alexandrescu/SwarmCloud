@@ -96,6 +96,27 @@ log = logging.getLogger(__name__)
 #: in the same transaction as the change each records.
 LIVE_AUDIT = "live_audit"
 
+#: A person's ready on a merge's owner-question hold that named `needs_owner`
+#: entries the merge cannot read (10 November 2026): recorded on the task,
+#: by `ready_writes`, as `{source: {by, at, review_task, verdict_digest, head,
+#: round_heads, unreadable}}`, from the park's `acknowledges`. The merge goes
+#: on past that verdict's unreadable entries while the verdict and head are
+#: the same (`agent_worker.merge._unreadable_hold`, whose
+#: `OWNER_READY_METADATA_KEY` tests/unit/worker/test_merge_ready_past_unreadable.py
+#: holds equal to this one). Before, nothing recorded the ready, and the
+#: attempt it started parked again on the same entries for eight hours.
+OWNER_READY_METADATA_KEY = "owner_hold_ready"
+#: The park phase that carries it, and the verdicts that may be acknowledged.
+OWNER_QUESTIONS_PHASE = "owner_questions"
+OWNER_READY_SOURCES = ("review", "security_review")
+#: The ready reasons that are a person's: an answer's wake acknowledges nothing.
+PERSON_READY_REASONS = ("human_ready", "human_returned")
+_ACK_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_ACK_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_ACK_SHA = re.compile(r"^[0-9a-f]{40}$")
+#: The most round heads one acknowledgement copies; a merge runs a few.
+MAX_ACK_ROUND_HEADS = 32
+
 #: §4.3, HANDOFF-POLICY (owner decision 2026-10-13, "notify, park fast, extend
 #: while watched"): how long a hold lasts with NOBODY watching -- from the
 #: request, and from the last moment a viewer was seen. Was a flat 10 minutes
@@ -431,6 +452,13 @@ def ready_writes(txn: Any, db: Any, data: dict[str, Any], *, email: str, now: da
     answered = counted.get("attempt_id") if isinstance(counted, dict) else None
     metadata[HUMAN_READY_METADATA_KEY] = {"by": email, "at": now.isoformat()}
     metadata.pop(HUMAN_RETURNED_METADATA_KEY, None)
+    acknowledged = (unreadable_acknowledgement(data.get("blocked_by"), by=email, at=now)
+                    if reason in PERSON_READY_REASONS else None)
+    if acknowledged is not None:
+        source, record = acknowledged
+        recorded = metadata.get(OWNER_READY_METADATA_KEY)
+        metadata[OWNER_READY_METADATA_KEY] = {
+            **(recorded if isinstance(recorded, dict) else {}), source: record}
     update = {
         "state": TaskState.READY.value,
         "park_reason": None,
@@ -458,6 +486,43 @@ def ready_writes(txn: Any, db: Any, data: dict[str, Any], *, email: str, now: da
     txn.update(task_ref, update)
     txn.set(task_ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
     return {**data, **update}
+
+
+def unreadable_acknowledgement(blocked_by: Any, *, by: str,
+                               at: datetime) -> tuple[str, dict[str, Any]] | None:
+    """`(source, record)` a person's ready on this park acknowledges, or None.
+
+    Only a merge's owner-question park (`park_phase` "owner_questions") that
+    names entries it cannot read (`unreadable` > 0) and what a ready on them
+    acknowledges (`acknowledges`, `agent_worker.merge._unreadable_hold`).
+    Each field is checked for shape and copied, never trusted as anything
+    but what the merge compares; any other park, or a malformed one, records
+    nothing. The ready itself still writes READY exactly as before.
+    """
+    for entry in blocked_by if isinstance(blocked_by, list) else []:
+        if not isinstance(entry, dict) or entry.get("park_phase") != OWNER_QUESTIONS_PHASE:
+            continue
+        wait = entry.get(OWNER_QUESTIONS_PHASE)
+        wait = wait if isinstance(wait, dict) else {}
+        unreadable = wait.get("unreadable")
+        basis = wait.get("acknowledges")
+        if (type(unreadable) is not int or unreadable <= 0  # noqa: E721 - bool is no count
+                or not isinstance(basis, dict)):
+            continue
+        source, review = basis.get("source"), basis.get("review_task")
+        digest, head, rounds = basis.get("verdict_digest"), basis.get("head"), basis.get("round_heads")
+        if (source not in OWNER_READY_SOURCES
+                or not (review is None or (isinstance(review, str) and _ACK_ID.fullmatch(review)))
+                or not (isinstance(digest, str) and _ACK_DIGEST.fullmatch(digest))
+                or not (isinstance(head, str) and _ACK_SHA.fullmatch(head))
+                or not isinstance(rounds, list) or len(rounds) > MAX_ACK_ROUND_HEADS
+                or not all(isinstance(r, str) and _ACK_SHA.fullmatch(r) for r in rounds)):
+            continue
+        return str(source), {
+            "by": by, "at": at.isoformat(), "review_task": review, "verdict_digest": digest,
+            "head": head, "round_heads": list(rounds), "unreadable": unreadable,
+        }
+    return None
 
 
 def _audit(

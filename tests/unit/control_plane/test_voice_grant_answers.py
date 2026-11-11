@@ -91,7 +91,8 @@ def _stored(db) -> list[dict]:
 
 def test_the_write_list_gains_the_answers_route_and_nothing_else(client):  # noqa: F811
     # MUTATION: drop the route from WRITE_ROUTES and the planner's answer is 403.
-    assert vg.WRITE_ROUTES - BEFORE == {ANSWERS}
+    # (Debug mode's trace write joined the list later: routes/voice_trace.py.)
+    assert vg.WRITE_ROUTES - BEFORE - {("POST", "/v1/voice/sessions/{session_id}/trace")} == {ANSWERS}
     assert BEFORE <= vg.WRITE_ROUTES
     assert ANSWERS not in vg.ALLOWED_ROUTES
     table = {(m, p) for m, p, _r in _authenticated(client.app)}

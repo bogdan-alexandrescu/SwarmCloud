@@ -20,9 +20,11 @@ import { PANEL_PAGES, SkyShell, litPage } from '../Spine'
 afterEach(() => cleanup())
 
 describe('Capacity › Account health is in the nav (part of #2302)', () => {
-  it('lists Account health under Accounts, after Subscription accounts', () => {
-    const accounts = PANEL_PAGES.capacity.find((p) => p.key === 'accounts')
-    expect(accounts?.kids?.map((k) => k.key)).toEqual(['accounts', 'account-health', 'quota'])
+  // Accounts became LLM Providers (docs/design/llm-providers.md §6.1): Plans
+  // and API Keys took Subscription accounts' place at the head of the group.
+  it('lists Account health under LLM Providers, after Plans and API Keys', () => {
+    const accounts = PANEL_PAGES.capacity.find((p) => p.key === 'llm-providers')
+    expect(accounts?.kids?.map((k) => k.key)).toEqual(['llm-providers/plans', 'llm-providers/api-keys', 'account-health', 'quota'])
     const kid = accounts!.kids!.find((k) => k.key === 'account-health')!
     expect(kid.label).toBe('Account health')
     expect(kid.to).toBe('capacity/account-health')
@@ -30,7 +32,7 @@ describe('Capacity › Account health is in the nav (part of #2302)', () => {
   })
 
   it('draws the row and lights it while the page is open', () => {
-    expect(litPage('capacity', 'account-health', 'live')).toEqual({ row: 'accounts', kid: 'account-health' })
+    expect(litPage('capacity', 'account-health', 'live')).toEqual({ row: 'llm-providers', kid: 'account-health' })
     render(
       <SkyShell section="capacity" tab="account-health" title="x" go={vi.fn()} foot={null}>
         {null}

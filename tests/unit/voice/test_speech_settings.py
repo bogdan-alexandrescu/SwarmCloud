@@ -301,7 +301,7 @@ def test_reading_is_for_a_voice_it_person_or_an_admin(client):
 def test_a_missing_document_reads_as_the_catalogues_defaults(client):
     body = client.get("/v1/voice/settings", headers=_as(ALICE)).json()
 
-    assert body["settings"] == {**cat.DEFAULTS, "zone": "us-central1-a"}
+    assert body["settings"] == {**cat.DEFAULTS, "zone": "us-central1-a", "debug": False}
     assert body["version"] == 0 and body["applied"] is None
     assert body["pending"] == list(vsettings.MACHINE_FIELDS)
     assert body["zones"] == ["us-central1-a"]

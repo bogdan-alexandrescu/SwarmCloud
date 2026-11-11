@@ -139,9 +139,9 @@
         "ready": "main h1"
       },
       {
-        "id": "accounts",
-        "address": "capacity/accounts",
-        "path": "/capacity/accounts",
+        "id": "llm-providers",
+        "address": "capacity/llm-providers",
+        "path": "/capacity/llm-providers/plans",
         "ready": "main h1"
       },
       {

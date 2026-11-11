@@ -94,6 +94,11 @@ longer lists or a class with no pin of its own, so swarm-voice keeps its pin
 (VOICE_PLANNER_MODEL, VOICE_FRONT_MODEL). swarm-voice keeps both for the
 session, so a change reaches the next session's start, never a running one.
 
+DEBUG MODE (voice/settings.py, the owner, 10 November 2026) is read at the
+same moment (`VoiceSettings.session_debug`); both start bodies carry
+`debug: true` only while it is on, so with it off the body is unchanged and
+swarm-voice traces nothing.
+
 THE ENGINE (docs/design/voice-it-own-speech.md §4.1, §10; pick 7: "Start
 uses exactly the engine in Settings"). The browser's Start names no engine and
 no mode. `pick_engine` reads Voice it › Settings' `engine`:
@@ -525,6 +530,9 @@ class StartCall:
     #: on its pin, and the field out of the body.
     planner_model: str | None = None
     conversation_model: str | None = None
+    #: Voice it › Settings' debug mode, read at the start: swarm-voice traces
+    #: each planner turn (voice/trace.py) only when it is True.
+    debug: bool = False
 
     def __repr__(self) -> str:
         return (f"StartCall(session_id={self.session_id!r}, project_id={self.project_id!r}, "
@@ -670,6 +678,8 @@ class HttpVoiceClient:
             body["planner_model"] = call.planner_model
         if call.conversation_model is not None:
             body["conversation_model"] = call.conversation_model
+        if call.debug:
+            body["debug"] = True
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
@@ -870,6 +880,12 @@ class VoiceSessions:
         conversation = next((m.model for m in cat.CONVERSATION_MODELS if m.name == stored), None)
         return planner, conversation
 
+    def _session_debug(self) -> bool:
+        """Whether a session starting now is traced (Settings' debug mode)."""
+        from .settings import VoiceSettings  # settings imports this module
+
+        return VoiceSettings(self._db, now=self._now).session_debug()
+
     def _project_ref(self, project_id: str) -> Any:
         return self._db.collection(PROJECTS).document(project_id)
 
@@ -990,6 +1006,7 @@ class VoiceSessions:
             mode, fallback = MODE_TEXT, FALLBACK_NOT_DEPLOYED
         # Read before anything is written, so a failed read leaves nothing held.
         planner_model, conversation_model = self._session_models()
+        debug = self._session_debug()
         person = person.strip().lower()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
@@ -1048,7 +1065,7 @@ class VoiceSessions:
             return StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
                              person=person, offer=offer if this_mode == MODE_LIVE else "", grant=grant,
                              mode=this_mode, planner_model=planner_model,
-                             conversation_model=conversation_model)
+                             conversation_model=conversation_model, debug=debug)
 
         def close(cause: str) -> None:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,

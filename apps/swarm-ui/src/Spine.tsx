@@ -152,13 +152,18 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     },
     { key: 'catalogue', label: 'Runtimes', icon: 'runtimes', to: 'capacity/catalogue' },
     { key: 'holders', label: 'Holders', icon: 'holders', to: 'capacity/holders' },
+    // LLM PROVIDERS (LP-U1; docs/design/llm-providers.md §6.1, the owner's
+    // pick of 10 November 2026): Accounts became this row, Plans and API Keys
+    // its first two children, each its own address. App passes the row's tab
+    // as `llm-providers/<sub>` (`panelTab`), so the open sub-page is lit.
     {
-      key: 'accounts',
-      label: 'Accounts',
+      key: 'llm-providers',
+      label: 'LLM Providers',
       icon: 'accounts',
-      to: 'capacity/accounts',
+      to: 'capacity/llm-providers/plans',
       kids: [
-        { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        { key: 'llm-providers/plans', label: 'Plans', to: 'capacity/llm-providers/plans' },
+        { key: 'llm-providers/api-keys', label: 'API Keys', to: 'capacity/llm-providers/api-keys' },
         // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
         { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
@@ -358,8 +363,9 @@ export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'P
 function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
-  if (section === 'capacity' && tab === 'quota') return 'accounts'
-  if (section === 'capacity' && tab === 'account-health') return 'accounts'
+  if (section === 'capacity' && tab === 'quota') return 'llm-providers'
+  if (section === 'capacity' && tab === 'account-health') return 'llm-providers'
+  if (section === 'capacity' && tab.split('/')[0] === 'llm-providers') return 'llm-providers'
   // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
   if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab
@@ -376,7 +382,8 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
   if (section === 'work' && row === 'agents') return { row, kid: agentTab }
-  return { row, kid: tab === '' ? page.kids[0]!.key : tab }
+  // A group's own tab (`llm-providers`, no sub-page named) is its first child.
+  return { row, kid: tab === '' || tab === row ? page.kids[0]!.key : tab }
 }
 
 /** The path an address is written as, for a link's `href`. */

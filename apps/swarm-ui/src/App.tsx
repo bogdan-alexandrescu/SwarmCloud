@@ -11,7 +11,6 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
-import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
 import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
@@ -76,6 +75,7 @@ import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
+import { LLM_PROVIDERS_TAB, LlmProvidersScreen, llmProvidersAddress, llmSubPage, type LlmSubPage } from './LlmProviders'
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
@@ -479,7 +479,12 @@ export const SECTIONS: SectionDef[] = [
       // ceiling does. Someone asking "why can nothing start" has to find it,
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
-      { id: 'accounts', label: 'Accounts' },
+      // LLM PROVIDERS (lane LP-U1; docs/design/llm-providers.md §6.1, the
+      // owner's pick of 10 November 2026): Accounts became this tab, with two
+      // sub-pages, Plans and API Keys, each its own address
+      // (`capacity/llm-providers/<sub>`, `fromAddress`). `capacity/accounts`
+      // lands on Plans with its `?account=` kept.
+      { id: 'llm-providers', label: 'LLM Providers' }, // a literal: a Python gate parses SECTIONS (LlmProviders.tsx LLM_PROVIDERS_TAB)
       // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; the owner's pick of
       // proposal B, 2026-10-25): what has been going wrong on each
       // subscription account, where and when -- rate-limit hits, provider
@@ -882,7 +887,7 @@ const MOVED_PANES: Record<string, { section: string; tab: string }> = {
   // needs the same interception.
   'activity/counts': { section: 'admin', tab: 'counts' },
   'settings/limits': { section: 'admin', tab: 'limits' },
-  'settings/accounts': { section: CAPACITY, tab: 'accounts' },
+  'settings/accounts': { section: CAPACITY, tab: LLM_PROVIDERS_TAB },
 }
 
 /**
@@ -1014,8 +1019,11 @@ export interface Route {
    * (`#admin/limits?pool=tenant%3Aeng`, #134).
    */
   view?: string | null
-  /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
-  page?: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
+  /**
+   * The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes.
+   * Capacity › LLM Providers' sub-page, Plans or API Keys; absent is Plans.
+   */
+  page?: 'outcomes' | typeof SETUP_CALLBACK_PAGE | LlmSubPage | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
   /**
@@ -1270,6 +1278,16 @@ export function fromAddress(full: string): Route {
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
+    // CAPACITY › LLM PROVIDERS (LP-U1): `capacity/llm-providers/<sub>`, the
+    // sub-page in `page`; Plans keeps the board's chosen account and view.
+    // ACCOUNTS LANDS ON PLANS, its `?account=` and `?view=` kept (§6.1), so
+    // a saved `#capacity/accounts?account=` link still opens the account it
+    // named. The console's own links name Plans directly.
+    if (section.id === CAPACITY && (tail[0] === LLM_PROVIDERS_TAB || wanted === 'accounts')) {
+      const page = tail[0] === LLM_PROVIDERS_TAB ? llmSubPage(tail[1]) : 'plans'
+      const kept = page === 'plans' ? keptQuery(keptKeys(CAPACITY, LLM_PROVIDERS_TAB), query) : ''
+      return { sectionId: CAPACITY, tab: LLM_PROVIDERS_TAB, ...blank, page, ...(kept !== '' ? { view: kept } : {}) }
+    }
     if (section.id === WORK && wanted === 'timeline/outcomes') {
       return { sectionId: WORK, tab: 'timeline', ...blank, page: 'outcomes', ...(query !== '' ? { view: query } : {}) }
     }
@@ -1366,7 +1384,7 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
   // And its Table / Timeline view (#2222, ACCOUNTS-TIMELINE): linkable.
-  if (tab === 'accounts') return ['account', 'view']
+  if (tab === LLM_PROVIDERS_TAB) return ['account', 'view']
   // And API reads' failures-only filter (QA1 capacity-10): `?failed=1`.
   if (tab === API_READS_TAB) return [API_FAILED_KEY]
   return []
@@ -1420,6 +1438,11 @@ export function canonical(r: Route): string {
   // setup ride on their tab's query the same way.
   if (r.sectionId === CONFIG && (r.tab === 'repositories' || r.tab === CONFIG_SECRETS_TAB || r.tab === CONFIG_WORKSPACE_TAB) && r.view) {
     return `${CONFIG}/${r.tab}?${r.view}`
+  }
+  // Capacity › LLM Providers' sub-page is a segment of its own; Plans' kept query rides after it.
+  if (r.sectionId === CAPACITY && r.tab === LLM_PROVIDERS_TAB) {
+    const at = llmProvidersAddress(llmSubPage(r.page))
+    return r.view ? `${at}?${r.view}` : at
   }
   // A plugin catalogue's page: `admin/plugins/add`, `<section>/plugins/<install_id>`.
   const plugin = pluginPageOf(r)
@@ -1799,7 +1822,9 @@ export function App() {
     <div className={`ctl-frame${trail ? ' has-ctl-bar' : ''}`}>
         <SkyShell
           section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId, at.tab)}
-          tab={at.tab}
+          // LLM Providers' sub-page rides on the panel's tab
+          // (`llm-providers/<sub>`), so the panel lights Plans or API Keys.
+          tab={at.sectionId === CAPACITY && at.tab === LLM_PROVIDERS_TAB ? `${LLM_PROVIDERS_TAB}/${llmSubPage(at.page)}` : at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
           missing={Boolean(at.missing)}
@@ -2520,8 +2545,8 @@ function SectionBody({
   onList: (list: AgentList) => void
   /** The Timeline's view, from the hash's query (#185), or null. */
   view: string | null
-  /** The Timeline's page: Outcomes, or null for Lanes. */
-  page: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
+  /** The Timeline's page: Outcomes, or null for Lanes; LLM Providers' sub-page. */
+  page: 'outcomes' | typeof SETUP_CALLBACK_PAGE | LlmSubPage | null
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
@@ -2633,8 +2658,8 @@ function SectionBody({
       return <ProfilesScreen />
     case 'capacity/holders':
       return <HoldersScreen />
-    case 'capacity/accounts':
-      return <AccountsScreen />
+    case 'capacity/llm-providers':
+      return <LlmProvidersScreen sub={llmSubPage(page)} />
     case 'capacity/account-health':
       return <AccountHealthScreen />
     case 'capacity/jev-usage':

@@ -64,7 +64,10 @@ names, with the release's swarm-voice digest in `image_refs` (a release
 without one is a `LookupError`, never a silent "off"). voice.tf's middle step,
 a ChatGPT plan account in the Voice it pool, is added in the console; swarm-voice
 reads no secret. An install state with no answer (older than the question)
-keeps Terraform's default, off.
+keeps Terraform's default, off. With Voice it on, `voice_it_summary` is the line
+`swarm team add`'s summary prints (docs/design/llm-providers.md §7): Live needs
+a key, since no plan can serve it, and the dedicated one goes in Voice it ›
+Settings › Dedicated OpenAI key.
 
 **Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
 `infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
@@ -422,6 +425,22 @@ def voice_it(state: Any, pass_name: str) -> str | None:
     if not chosen or not after(pass_name, "infra-1"):
         return "off"
     return "on" if after(pass_name, "infra-2") else "account"
+
+
+#: Voice it › Settings in the console (apps/swarm-ui paths.ts `voice/settings`),
+#: where "Dedicated OpenAI key" is set (docs/design/llm-providers.md §6.4).
+VOICE_IT_SETTINGS_PAGE = "/voice/settings"
+
+
+def voice_it_summary(state: Any, console: str) -> str | None:
+    """The line `swarm team add`'s summary prints when Voice it is on
+    (llm-providers.md §7): where its dedicated key goes, and that Live needs a
+    key, since no plan can serve Live (§3.1). None when Voice it is off or the
+    install state is older than the question."""
+    if not voice_it_chosen(state):
+        return None
+    return (f"Voice it: Live needs a key, an OpenAI key shared with Voice it or its own; add the dedicated one "
+            f"in Voice it › Settings › Dedicated OpenAI key: {console}{VOICE_IT_SETTINGS_PAGE}")
 
 
 def voice_speech(state: Any) -> dict[str, Any] | None:

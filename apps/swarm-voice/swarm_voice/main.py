@@ -166,6 +166,11 @@ class StartRequest(BaseModel):
     #: keeps VOICE_FRONT_MODEL.
     conversation_model: str | None = Field(default=None, max_length=64)
 
+    #: Voice it › Settings' debug mode, read by swarm-api at the start: True
+    #: traces each planner turn of this session to swarm-api (trace.py);
+    #: absent or False, nothing is traced.
+    debug: bool = False
+
     @field_validator("conversation_model")
     @classmethod
     def _a_curated_model(cls, value: str | None) -> str | None:
@@ -375,7 +380,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
         try:
             session = await app.state.sessions.start(
                 body.voice_session_id, person=body.person, offer=body.offer, grant=grant,
-                planner_model=body.planner_model)
+                planner_model=body.planner_model, debug=body.debug)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
@@ -420,7 +425,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             session = await fronts_.start(body.voice_session_id, person=body.person, grant=grant,
                                           exists=lambda voice_id: held_elsewhere(voice_id, but="speech"),
                                           planner_model=body.planner_model,
-                                          conversation_model=body.conversation_model)
+                                          conversation_model=body.conversation_model,
+                                          debug=body.debug)
         except FrontExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except ValueError as exc:

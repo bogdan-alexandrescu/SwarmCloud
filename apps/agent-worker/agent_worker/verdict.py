@@ -71,6 +71,15 @@ counts it, and the merge holds for it as for an unanswered one, because a
 hold the merge cannot read is still a hold. Neither key changes the gate:
 `verdict` alone decides who runs.
 
+AN ENTRY IS A REFERENCE, NOT A SENTENCE (10 November 2026). A live review
+wrote `needs_owner` as free-text sentences; each was unreadable, and its
+merge parked on them for eight hours. The review is now shown
+`NEEDS_OWNER_EXAMPLE`: each entry names the asking step's task and the
+question's index, with an optional free-text `note` beside them. A free-text
+entry already written still reads as unreadable, so nothing breaks; a
+member's ready on that park lets the merge go on past it for that verdict
+(`digest`, `merge.OWNER_READY_METADATA_KEY`).
+
 AN UNREADABLE VERDICT FAILS THE ATTEMPT. It is not read as MERGE, which would
 publish unreviewed work, and not as NOT_YET, which would run a fixer against
 findings that are not there. Every refusal is `InputUnavailable`, so the
@@ -80,9 +89,10 @@ upstream task and the file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -119,6 +129,13 @@ TRIAGE_KEY = "triage"
 #: already contains a commit a review gave MERGE runs no agent. Lowercase hex,
 #: 7 to 40 characters, as `git rev-parse` prints it; anything else is no commit.
 COMMIT_KEY = "commit"
+#: One `needs_owner` entry as the review is told to write it: the asking
+#: step's task and question index, which the merge reads, and an optional
+#: free-text `note` beside them, which it does not. It reads as a reference
+#: (`owner_question_refs`), which tests/unit/worker/test_merge_ready_past_unreadable.py holds.
+NEEDS_OWNER_EXAMPLE = {"task_id": "task_1a2b3c", "step_id": "implement",
+                       "question_index": 0, "question": "Keep the old flag?",
+                       "note": "its answer could reverse a recorded owner decision"}
 _COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 #: Where the skip is recorded, and which check it was.
 NOOP_PRECHECK_KEY = "noop_precheck"
@@ -291,6 +308,10 @@ class Verdict:
     #: The head the review judged (`commit`, #2524 check (b)): 7-40 lowercase
     #: hex, else None. Read for the no-op precheck only; never decides `verdict`.
     commit: str | None = None
+    #: The sha256 of the verdict file's bytes, as read: which verdict a
+    #: person's ready on its unreadable `needs_owner` entries acknowledged.
+    #: None for a verdict read from a parsed document.
+    digest: str | None = field(default=None, compare=False)
 
 
 def _normalise(value: Any) -> str | None:
@@ -584,7 +605,7 @@ def _verdict_of_bytes(data: bytes, refuse: Callable[[str], InputUnavailable]) ->
     read = verdict_of_document(document)
     if read is None:
         raise refuse(f"has `verdict` {document.get('verdict')!r}")
-    return read
+    return replace(read, digest=hashlib.sha256(data).hexdigest())
 
 
 def verdict_of_document(document: dict[str, Any]) -> Verdict | None:

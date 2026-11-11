@@ -81,7 +81,7 @@ body:
         - "Web UI · Capacity › Runtimes (/capacity/runtimes)"
         - "Web UI · Capacity › By runner profile (/capacity/pools/profiles)"
         - "Web UI · Capacity › Holders (/capacity/holders)"
-        - "Web UI · Capacity › Accounts (/capacity/accounts)"
+        - "Web UI · Capacity › LLM Providers (/capacity/llm-providers/plans)"
         - "Web UI · Capacity › Account health (/capacity/account-health)"
         - "Web UI · Capacity › Provider quota (/capacity/accounts/quota)"
         - "Web UI · Capacity › Jev usage (/capacity/jev-usage)"

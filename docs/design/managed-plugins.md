@@ -14,6 +14,12 @@ rewrites §1.4, §15, the lane plan (§17, lanes 13-23) and the questions (§18,
 Lanes 1-12 have since merged in part (`pluginstore.py`, `pluginload.py`, `AdminPlugins.tsx` exist); the rest of the
 document is not re-audited here, and where it still says "built-in" it means the two bundled installs of §1.4.
 
+**Revision, 11 November 2026.** After an independent security review of the bootstrap rows that would have let
+swarm-api start Cloud Build builds, the owner decided that each bundle build runs as **one Cloud Run job execution**
+under the builder account, with swarm-api allowed to run only that job, granted on the job itself; the Cloud Build
+rows are reverted. This revision changes §1.4.2 (the job, its caller, its grants, and the review's six findings),
+§1.4.3, §1.4.4's upgrade rebuild, §1.4.7, §13, §15.2, lanes 14-16 and Q16; every other decided answer stands.
+
 ## The ask
 
 The owner (the owner) asked on 6 November 2026, at about 01:18 and 01:20 UTC, for "a really well built and all inclusive
@@ -250,45 +256,185 @@ auditor, and it never builds a deployment's plugin):
    `/opt/swarm/plugins/<name>/.swarm-bundle.json`: the install id, the source commit and sha256, the recipe digest and
    the sha256 of the built tree. A fresh deployment and the switch-over therefore need **no build**: the release image
    is the bundle of the first versions.
-2. **The bundle build, new, in the deployment's own project.** When a platform admin applies an update to a bundled
-   install (§1.4.3), swarm-api starts one Cloud Build build in the deployment's project, as a builder service account
-   that can read the pinned source objects under `platform/sources/` in the plugins bucket, read the deployment's own
-   copies of the release images, and push to one repository, `swarm-plugin-bundles`, and nothing else (no Firestore,
-   no Secret Manager, no GitHub, no plugin `tenants/` prefix). The build runs the **bundler image**
-   (`swarm-plugin-bundler`, new, built and signed by the release build like every other image, and copied by stage 4),
-   which holds the recipes factored out of today's Dockerfile stages: `recipes/gstack` (`./setup --host claude
-   --no-browser` and `gstack-layers check`/`stage` with the checked-in file lists, the browser image's list for the
-   browser variant) and `recipes/security-audit` (stage `skills/security-audit/` and `LICENSE`, then run the skill's
-   validator tests on the staged copy, as `tests/unit/scripts/test_security_audit_image.py` does today). Its output
-   is one image per runner image a claude-code profile uses, each `FROM` the deployment's copy of the live release
-   image by digest, with the built tree copied over `/opt/swarm/plugins/<name>/` and a new `.swarm-bundle.json`.
+2. **The bundle build, new, in the deployment's own project, as one Cloud Run job execution (changed by the owner,
+   11 November 2026; until then a Cloud Build build).** When a platform admin applies an update to a bundled install
+   (§1.4.3), swarm-api runs **one execution** of one Cloud Run job, `swarm-plugin-bundle`, whose identity is the
+   builder account `swarm-plugin-bundler` and whose image is the **bundler image** (`swarm-plugin-bundler`, new,
+   built and signed by the release build like every other image, and copied by stage 4). The bundler image holds the
+   recipes factored out of today's Dockerfile stages: `recipes/gstack` (`./setup --host claude --no-browser` and
+   `gstack-layers check`/`stage` with the checked-in file lists, the browser image's list for the browser variant)
+   and `recipes/security-audit` (stage `skills/security-audit/` and `LICENSE`, then run the skill's validator tests on
+   the staged copy, as `tests/unit/scripts/test_security_audit_image.py` does today). Its output is one image per
+   runner image a claude-code profile uses: the deployment's copy of the live release image, by digest, with **one new
+   layer per bundled plugin** on top, each holding `/opt/swarm/plugins/<name>/` (opaque over the release's own copy)
+   and its new `.swarm-bundle.json`.
    Dependencies come only through mirror repositories, never straight from a public registry, as in the release
    build; which repositories a deployment holds for that is Q19.
+
+**Why a job and not Cloud Build (the owner, 11 November 2026).** An independent security review of the bootstrap
+rows that would have let swarm-api start Cloud Build builds (a custom role holding `cloudbuild.builds.create` and
+`cloudbuild.builds.get`, granted to swarm-api project-wide, and swarm-api's `actAs` on the builder) found that on a
+shared project those rows reach further than one build; the rows are reverted. The job follows the precedent of the
+workspace deployer's job ([workspaces.md](../workspaces.md), "The identity" and option (i) of "How an approval starts
+the job"): a job created by Terraform with a fixed identity and image, and its caller's right to run it granted **on
+the job resource itself**, because Cloud Run exposes no `resource.name` to IAM Conditions and a project-level grant
+could not be narrowed to one job.
+
+**The job.** `swarm-plugin-bundle`, in the deployment's region, `terraform/infra/plugin-bundles.tf`, planned only
+with `builtins_managed` on, as every bundle resource is:
+
+* **Identity** `swarm-plugin-bundler`; **image** the bundler image **by digest**, from the release's `image_refs`
+  like every other job, so a release upgrade moves it and nothing else can.
+* **One agent, no retries** (`max_retries = 0`: a retry is an admin's Apply again), parallelism 1, an agent timeout of
+  3600 seconds, and the entrypoint's own deadline of 3000 seconds, after which it exits non-zero having pushed
+  nothing it has not finished.
+* **No container daemon, no Dockerfile, no BuildKit.** The entrypoint runs each recipe in a scratch directory of the
+  job's own memory-backed filesystem, packs the staged tree as one tar layer (fixed owners and times, so the layer is
+  reproducible from the tree), and **appends** it with a registry library (the append operation of
+  go-containerregistry, the library `crane append` is built on) to the release image's manifest, read by digest from
+  the platform repository. The base layers are mounted across repositories by digest, never downloaded, unpacked or
+  rewritten; the job writes only the new layers, a new config and a new manifest, pushed to
+  `swarm-plugin-bundles/<runner image name>:<bundle_id>`.
+* **What reaches it from a caller: the arguments, and nothing else the job uses.** swarm-api passes
+  `overrides.containerOverrides[0].args` = the bundle id, then per bundled plugin its name, its source sha256 and its
+  recipe digest, then per runner image its name and the base digest. The entrypoint re-validates each against a closed
+  pattern (`^[a-z0-9-]{1,63}$` for names and the id, `^[0-9a-f]{64}$` for a sha256, `^sha256:[0-9a-f]{64}$` for a
+  digest; a plugin name must be one of the recipes it holds and a runner image name one the job's template lists)
+  before anything runs. As the workspace deployer's entrypoint does (workspaces.md §2.2 step 0), it then **discards
+  every environment variable** that is not in the job's own template, refuses to work unless
+  `CLOUD_RUN_TASK_COUNT` is `1` (an agent with a higher index exits 0 having done nothing), and keeps its own deadline
+  whatever timeout the call set. Arguments do not need to be trusted: they can only name pinned sources the intake
+  already checked and release images the deployment already holds, and swarm-api checks the result (below).
+* **Its network.** No VPC connector: it reaches Artifact Registry and Cloud Storage over Google's APIs and nothing
+  else it needs; the mirrors are Artifact Registry repositories.
+
+**What swarm-api holds, and what it cannot do (review finding 1).** One custom role, `swarmPluginBundleRunner`
+(`run.jobs.run` and `run.jobs.runWithOverrides`, the two Cloud Run checks a run carrying arguments passes, and
+`run.executions.get`, to read the execution it started), bound **on the job `swarm-plugin-bundle`'s IAM policy** and
+nowhere else. With it swarm-api can start that job with the override fields the run method has
+(`containerOverrides[].args`, `env` and `clearArgs`, `taskCount`, `timeout`), of which the job uses the arguments
+and neutralises the rest (above), and read that job's executions. It **cannot** change the job's image, command,
+identity, network or volumes (`run.jobs.update` is not in the role), run or read any other job, cancel or delete an
+execution, read the job's logs, or act as the builder (running a job checks no `actAs` on its identity, and swarm-api
+holds none). **Cloud Build is out of swarm-api's reach entirely**: no `cloudbuild.*` permission, so no trigger is
+created, run or read, no build is retried, and no build can name another account, the legacy Cloud Build account or
+the Compute Engine default (which holds Editor) included. **Residual, accepted:** the scheduler
+(`swarmJobDispatcher`), the acceptance account and the release deployer already hold `run.jobs.runWithOverrides`
+project-wide, unscopably (workspaces.md §2.1), so they too can start this job; none of them can change what it runs,
+and the argument check and the environment scrub are what hold for every caller.
+
+**Where upstream code runs, and what it can reach (review finding 2).** `./setup`, `bun install` and the validator
+tests are upstream plugin code, and they run **inside the job's own container**, as the builder. There is no build
+daemon and no socket to reach, but the metadata server is there, so that code can obtain **the builder's token**, and
+with it do exactly the builder's grants (below) and nothing more: read pinned sources under `platform/sources/`
+(get, no list), read the deployment's release images, read the one pinned Bun object, fetch through the npm mirror,
+and push images into `swarm-plugin-bundles` (no delete; tags are immutable, so a pushed tag never moves). It cannot
+reach Firestore, Secret Manager, a tenant's prefix, the cluster, the network of the steps, or another team's
+resources. Pushing is the lever that matters, so **swarm-api trusts nothing the job says about its output**. Before
+it marks a bundle `ready` it reads each pushed manifest by the tag `<runner image name>:<bundle_id>` (as a control
+plane reader of the repository) and refuses the bundle (`bundle_check_failed`) unless:
+
+* every layer of the base, in order, is the release image's layer **by digest**, and the config's `rootfs.diff_ids`
+  for those layers are the release image's own;
+* exactly one new layer per bundled plugin follows, and each holds only paths under that plugin's
+  `/opt/swarm/plugins/<name>/` (no `..`, no link whose target leaves it, no device file; its one whiteout is the
+  opaque marker on that directory, which hides the release's older copy, and no whiteout names a path outside it),
+  which swarm-api reads from the layer itself, a bounded transfer (a cap of 512 MiB per layer);
+* the tree's sha256 swarm-api computes from each layer equals the one in that layer's `.swarm-bundle.json`, and that
+  manifest's source sha256 and recipe digest equal the bundle key's;
+* security-audit's layer equals, file by file, the `skills/security-audit/` and `LICENSE` entries of its pinned
+  source archive, which swarm-api wrote itself (§1.4.3): its recipe copies and tests, it compiles nothing, so its
+  validators cannot be bytes the source did not carry. **Residual, accepted:** the two bundled plugins' upstream code
+  runs in one execution, so gstack's setup could alter gstack's own built tree in any way it likes; that tree is the
+  plugin's code, pinned by a platform admin after the diff (§9.1), and runs in every step that loads it anyway.
+
+The digest swarm-api records is the manifest's digest it read and checked, never a value the job reported. The
+worker's own check against the signed pins (§1.4.4) stays as the second, independent one.
+
+**The builder's grants, after the rework (review finding 4).** `swarm-plugin-bundler` holds exactly:
+
+1. `roles/storage.objectViewer` on the plugins bucket, conditioned on `platform/sources/` (get, no list), as today;
+2. `roles/artifactregistry.reader` on the platform repository: the release images it appends to and mounts from, as
+   today (it pulls no bundler image itself: Cloud Run pulls the job's image as its service agent);
+3. `roles/storage.objectViewer` on the build mirror bucket, **conditioned on the one pinned Bun object**
+   (`resource.name ==` that object), no longer the whole bucket;
+4. `roles/artifactregistry.reader` on the npm mirror repository (Q19), which `bun install --frozen-lockfile` fetches
+   through; a read of a remote repository can pull any public package through the cache, which is what the frozen
+   lockfile and the recipe's byte-for-byte lockfile check bound;
+5. `roles/artifactregistry.writer` on `swarm-plugin-bundles` alone: push, no delete, immutable tags.
+
+Gone: the Docker Hub mirror read (no Dockerfile frontend without a daemon) and `roles/logging.logWriter` at the
+project. **Logs:** the job writes to stdout and stderr, which Cloud Run collects for the job itself, so the builder
+needs no log-write role; project-wide log write was needed only because Cloud Build refuses a build as a
+user-specified account that cannot write its log. Narrower still, and part of the same Terraform: a log sink with the
+filter `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-plugin-bundle"` routes the executions' logs
+to the platform's own log bucket (`terraform/infra/log_bucket.tf`), where only the platform's readers see them. That
+stdout reaches Cloud Logging with no role on the runtime account is not verified live here; the first execution in a
+deployment is the proof, and if it is wrong the fallback is the old project-level `roles/logging.logWriter` row, the
+owner's call.
+
+**Quota and reads (review finding 3).** The job uses **no Cloud Build quota**, so no build of another team's waits
+behind a bundle build or competes with one. It draws on the region's Cloud Run job quotas, which the platform's
+worker jobs already use: one execution per Apply, one at a time per deployment (swarm-api refuses a second Apply while
+a bundle is `building`, and `swarm upgrade` runs its rebuilds one after another). swarm-api reads a bundle's state from
+**its own bundle record**; it calls `executions.get` only for a record in `building`, at most once per bundle per 15
+seconds, the time of the last call kept on the record and claimed in a transaction, so any number of open pages and
+reloads make at most one call per bundle per 15 seconds. The record leaves `building` when the execution has ended
+(`ready` after the check above, else `failed`), and a record still `building` an hour after it started is failed
+without a call.
+
+**The default build account checks (review finding 5).** No Cloud Build build runs for a bundle, so the checks on the
+project's default build account (whether it is the legacy Cloud Build account, which skips `actAs`, or the Compute
+Engine default, which holds Editor) are **no longer needed for bundle builds**; the installer and Terraform lanes stop
+carrying them for this feature. (The CI add-on's own build account check in `swarm_install/addons.py` is another
+feature's and is unchanged.)
+
+**Day One, rollback and the owner's rows (review finding 6).**
+
+* **A fresh install creates**, with `builtins_managed` on: the builder account (bootstrap, `plugin_bundler.tf`, as
+  today), the custom role `swarmPluginBundleRunner` (bootstrap: custom roles are defined only there,
+  `tests/terraform/custom_roles_out_of_ci.tftest.hcl`), the release deployer's `actAs` on the builder (bootstrap: it
+  is not on the per-account list `deployer_service_accounts.tf` grants admin on, and creating a job that runs as an
+  account needs `actAs` on it), then, in `terraform/infra`, the job, its binding of the role to swarm-api on the job,
+  the repository, the mirror grants and the log sink. Day One's bootstrap pass applies the first three; on an existing
+  deployment they, and the removal of the reverted Cloud Build rows (`terraform/bootstrap/plugin_bundle_builds.tf`),
+  go to the owner **as a runbook**, never applied by a lane or by CI.
+* **Removing it** (the switch off, or the job's rows reverted) deletes the job and its binding; Cloud Run deletes a
+  job's execution records with the job. It **leaves**: the executions' logs, in the log bucket until its retention;
+  the pushed images in `swarm-plugin-bundles`, which the retention sweep of §9.3 owns and which the repository's own
+  removal (the switch off) deletes; and the bundle records, which with the switch off nothing reads. The bootstrap
+  rows (the role, the deployer's `actAs`) stay until the owner removes them by the same runbook; an `actAs` on an
+  account whose grants run nothing, and a role bound on a job that is gone, reach nothing.
 
 **Why in the deployment and not in the release home.** The owner's rule is that every installed copy is pinned and
 updated by an admin after the diff. A release-home build would let a deployment's admin pick only the versions a
 release ships. Building in the deployment lets a bundled install update like any other, while every other part of
-the image stays the release's signed bytes (the bundle adds one layer over a verified digest). That reading, and the
-other one, are Q16.
+the image stays the release's signed bytes (the bundle adds one layer per bundled plugin over a verified digest, and
+swarm-api checks that it adds nothing else). That reading, and the other one, are Q16; the owner's answer of 11
+November 2026 keeps the build in the deployment's own project and changes only what runs it (a Cloud Run job, not
+Cloud Build).
 
 #### 1.4.3 What "publishes a new image version" means
 
 * **An update** runs §9.1 as for any plugin: swarm-api resolves the ref, the intake job checks the **source** archive
   (caps, paths, the manifest, the skills' frontmatter) and writes it under `platform/sources/<sha256>.tar`, and the
   diff is shown. Nothing is built before an admin asks; nothing is current before the build passes.
-* **Apply** on a bundled install writes a **bundle** record and starts the build instead of moving `current_version`.
+* **Apply** on a bundled install writes a **bundle** record and runs one execution of the job `swarm-plugin-bundle`
+  (§1.4.2) instead of moving `current_version` (a Cloud Build build until the owner's change of 11 November 2026).
   The catalogue's own Apply route does this itself: for a bundled install it delegates to the bundle route's start
   (one code path, the same diff check, `202` and the bundle's status), so the console keeps one Apply button and
   nothing can reach the old move-at-once path (the owner's pick on Q21).
   `plugin_bundles/{bundle_id}` (swarm-api only, MAC'd, request P6): the bundle key (every bundled install's
   `version_id`, source sha256 and recipe digest: a bundle carries **both** bundled plugins, because one step may load
-  both and runs on one image), the base (the release image digests it was built `FROM`), the output digest per runner
-  image name, the built tree's sha256 per plugin read back from the output's `.swarm-bundle.json`, and `state`
-  (`building`, `ready`, `failed`, `retired`). The page shows the build's progress; a failure is a fixed code and
-  sentence (`bundle_build_failed`, `bundle_check_failed`) with the build id, never the build's log text, which is
-  upstream output.
-* **Only a ready bundle moves `current_version`**, in the transaction that marks it ready. A step submitted after
-  that gets the new version.
+  both and runs on one image), the base (the release image digests it appended to), the execution's name, the time
+  of the last execution read (§1.4.2's cap), the output digest per runner image name **as swarm-api read and checked
+  it** from the repository, the built tree's sha256 per plugin as swarm-api computed it from the layer (and found equal
+  to the layer's `.swarm-bundle.json`), and `state` (`building`, `ready`, `failed`, `retired`). The page shows the
+  build's progress from the record; a failure is a fixed code and sentence (`bundle_build_failed`: the execution
+  failed or timed out; `bundle_check_failed`: the pushed manifest failed §1.4.2's check) with the execution's name,
+  never the execution's log text, which is upstream output.
+* **Only a ready bundle moves `current_version`**, in the transaction that marks it ready, and only after swarm-api's
+  check of every pushed manifest (§1.4.2) passed. A step submitted after that gets the new version.
 * **Tags and digests.** The bundle images are
   `<region>-docker.pkg.dev/<project>/swarm-plugin-bundles/<runner image name>:<bundle_id>`. The tag is a name for a
   person reading the registry, written once and never moved; everything that runs a bundle names its **digest**, as
@@ -319,8 +465,12 @@ other one, are Q16.
   * **An upgrade rebuilds before it switches.** A release upgrade changes the base. `swarm upgrade`
     (`swarm_install/upgrade.py`) pauses dispatch to drain, copies the new images, then applies infra, which writes the
     new digests into `WORKER_IMAGE_REFS`. It gains one step between the copy and the infra apply: one bundle build per
-    retained key on the new base, and infra waits until every one is ready (§15). A queued step therefore finds its
-    pins on the new base, built from the same source and recipe. The previous base's bundles stay until the next
+    retained key on the new base, and infra waits until every one is ready (§15). Since 11 November 2026 a build is an
+    execution of the job `swarm-plugin-bundle` (§1.4.2), whose image is pinned by Terraform, so the step first applies
+    the job alone (a targeted apply of the job resource, which moves its image to the new release's bundler digest
+    and changes nothing else), then runs one execution per retained key, **one after another** (§1.4.2's quota rule),
+    each checked by swarm-api before it is `ready`. A queued step therefore finds its pins on the new base, built from
+    the same source and recipe. The previous base's bundles stay until the next
     upgrade succeeds, so the upgrade's own rollback (the previous release's digests applied again) finds them too.
 * **When it is missing anyway** (a build that failed during the upgrade, a record deleted by hand), the dispatch is
   refused with `plugin_bundle_missing` before any pod exists, and the step takes the platform-refusal path it takes
@@ -363,7 +513,14 @@ always from the pinned copy's own validators.
 * **A bad update.** "Roll back" on the plugin's page applies the previous version. Its bundle is retained (§1.4.4),
   so it moves `current_version` at once, with the diff and the typed confirmation of §9.1, and audited
   (`plugin_updated`). Steps signed with the bad version keep it, as any pinned step does; cancel them to stop them.
-* **A failed build** changes nothing: `current_version` never moved.
+* **A failed build** (an execution that failed or timed out, or a pushed manifest that failed swarm-api's check,
+  §1.4.2) changes nothing: `current_version` never moved. What the execution pushed stays in `swarm-plugin-bundles`
+  under its never-reused `bundle_id` tag, named by no ready record, so nothing runs it, and §9.3's sweep deletes it
+  with the failed record.
+* **The job itself** (since 11 November 2026). Reverting the job's Terraform removes the job and swarm-api's binding
+  on it; bundles already `ready` keep serving steps, because a step runs a bundle by digest and never touches the job.
+  Only Apply on a bundled install and the upgrade's rebuild stop, each refused with `bundle_build_failed` until the
+  job is back (§1.4.2, Day One and rollback).
 * **The switch-over.** Turn `SWARM_BUILTINS_MANAGED` off: submission writes `capabilities.plugins` again from the code
   entries, which stay for the release after the switch for this. Steps signed through the managed route still run,
   because the release image is their bundle and the worker reads both routes. The seeded installs stay, unused, so
@@ -860,7 +1017,8 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
     hosts come only from a pinned copy an admin installed through a privileged, audited catalogue route, the way a
     platform admin registers an MCP server (`registered-mcp-servers.md`); a step's submission can never supply them.
 
-**The bundled installs (§1.4) against the same invariants.** A bundle build is not a step: it runs on Cloud Build,
+**The bundled installs (§1.4) against the same invariants.** A bundle build is not a step: it runs as one execution of
+the Cloud Run job `swarm-plugin-bundle` (since 11 November 2026; Cloud Build before), outside every tenant's namespace,
 holds no tenant slot and no lease, and creates no agent demand (1, 3). A step naming a bundled plugin is sized and
 admitted as before; only the image digest it runs differs, and a step whose bundle is missing is refused at dispatch
 before any pod exists, so nothing waits in a pending pod (1). The pod spec is unchanged apart from the image: requests,
@@ -944,9 +1102,15 @@ The rule is that anything a fresh deployment needs also updates the installer. W
 
 * **Terraform, applied by the passes `swarm install` already runs** (so no prompt): the plugins bucket and its IAM
   (§3), the intake job and its account (§2.2), the reconciler's GC grant (§9.3), the Secret Manager grants for `-plg-`
-  names, and now the bundle build's resources (§1.4.2): the `swarm-plugin-bundles` repository, the builder account
-  and its grants (read `platform/sources/`, read the deployment's release images, push to that repository only),
-  swarm-api's right to start a build as that account and nothing more, and the mirror repositories of Q19.
+  names, and now the bundle build's resources (§1.4.2): the `swarm-plugin-bundles` repository, the job
+  `swarm-plugin-bundle` and its log sink, the builder account's grants as §1.4.2 lists them after the change of 11
+  November 2026 (read `platform/sources/`, read the deployment's release images, read the one pinned Bun object, read
+  the npm mirror, push to that repository only), swarm-api's `swarmPluginBundleRunner` bound on that job and nowhere
+  else, and the mirror repositories of Q19. No Cloud Build permission for swarm-api and no `actAs` on the builder.
+* **Terraform the owner applies** (bootstrap, from a runbook on an existing deployment; Day One's bootstrap pass on a
+  fresh one): the builder account, the custom role `swarmPluginBundleRunner`, the release deployer's `actAs` on the
+  builder, and the removal of the reverted Cloud Build rows (§1.4.2, Day One and rollback). No default build account
+  check is needed for bundle builds any more: no Cloud Build build runs for one.
 * **The bundler image** in the release's `images.json`, so stage 4 (`steps/images.py`) copies and verifies it like
   every other image.
 * **`builtins_managed = "on"`** rendered by `tfvars.py` for a fresh deployment, which has no queued step to carry
@@ -958,10 +1122,12 @@ The rule is that anything a fresh deployment needs also updates the installer. W
   others and copies nothing from it.
 * **Checks.** `swarm doctor` and the install's verify stage (`steps/verify.py`, `verify.plugins`) gain: the bucket
   exists, the intake job is deployed, a tenant GSA can read `platform/`, the builder account can push only to
-  `swarm-plugin-bundles`, and, with the switch on, the two bundled installs exist and their current versions equal
+  `swarm-plugin-bundles`, the job `swarm-plugin-bundle` exists with the builder as its identity and the release's
+  bundler digest as its image, swarm-api's binding on it is the only non-owner binding in its policy, and, with the switch on, the two bundled installs exist and their current versions equal
   the live release image's `.swarm-bundle.json`.
 * **`swarm upgrade`** gains the bundle rebuild between copying images and applying infra (§1.4.4), shown in its plan
-  ("bundles to rebuild: N"), and refuses a release without bundle manifests while the switch is on.
+  ("bundles to rebuild: N"), applying the job alone first so it runs the new bundler image, and refuses a release
+  without bundle manifests while the switch is on.
 
 The platform switches keep their Terraform defaults (`contract_review_mode` stays `off` in `tfvars.py`) until a
 platform admin changes them in the console. The Setup step needs no installer change beyond the document's row: it
@@ -1040,9 +1206,9 @@ change **request** (an entry in `docs/contract-change-requests.md`, never an edi
 | # | Lane | Territory | Needs | IAM / Terraform / workflow / contract | Gives |
 |---|---|---|---|---|---|
 | 13 | **Contract request P6** | `docs/contract-change-requests.md` (the P6 entry) | the owner's answer to Q12 for P6 | contract: request only; `specsign.PLUGIN_RECORD_KINDS` gains `"bundle"` only by the owner's acceptance | a MAC'd bundle record |
-| 14 | **Bundle recipes and the bundler image** | `images/plugin-bundler/` (new: Dockerfile, `recipes/gstack/`, `recipes/security-audit/`, the `.swarm-bundle.json` writer), `images/agent-runtime-base/Dockerfile` (its two build stages run the recipes and write the manifests), `images/agent-runtime-base/bundled-plugins.json` (new), `images/agent-runtime-browser/Dockerfile` (the browser variant's recipe call), `scripts/build-images.sh` and `scripts/push-images.sh` (the `swarm-plugin-bundler` target), `tests/unit/scripts/test_plugin_bundle_recipes.py` (new), `test_gstack_image.py` and `test_security_audit_image.py` (pins read from `bundled-plugins.json`) | nothing | none expected; if a release workflow lists image names itself, the line goes in `workflow-lines.patch` | release images with bundle manifests, byte-equal plugin trees to today's (the test holds the staged trees' digests equal before and after) |
-| 15 | **Infrastructure and installer** | `terraform/infra/plugin-bundles.tf` (new), `terraform/infra/variables.tf` (`builtins_managed`, default `off` with its why beside it), `terraform/infra/locals.tf` (the two env vars: `SWARM_BUILTINS_MANAGED` to swarm-api, `PLUGIN_BUNDLE_REPOSITORY` to swarm-api and the scheduler), `apps/swarm-install/swarm_install/tfvars.py`, `record.py` (`console/plugins_step`), `steps/verify.py`, `verbs/doctor.py`, `upgrade.py` (the rebuild step and its refusal) | 14 (the bundler image's name) | **IAM and Terraform**: the builder account, its grants, swarm-api's `serviceAccountUser` on it, the repository, the mirror repositories (Q19): pushed by an operator | §1.4.2's slot and §15.2 in every new deployment and upgrade |
-| 16 | **Bundle builds in swarm-api** | `apps/swarm-api/swarm_api/pluginbundle.py` (new: bundle records, start a build, its finish notification, retention list), `routes/plugin_bundles.py` (new: build status, Roll back), `pluginstore.py` (`build: "image"`, Apply that starts a build, `current_version` moved only by a ready bundle) | 13, 14, 15 | none (uses 15's grants) | §1.4.3, §1.4.7 |
+| 14 | **Bundle recipes and the bundler image** | `images/plugin-bundler/` (new: Dockerfile, `recipes/gstack/`, `recipes/security-audit/`, the `.swarm-bundle.json` writer, and, since 11 November 2026, the job's entrypoint: the argument check, the environment scrub, the one-agent and deadline rules, and the daemonless layer append and push of §1.4.2), `images/agent-runtime-base/Dockerfile` (its two build stages run the recipes and write the manifests), `images/agent-runtime-base/bundled-plugins.json` (new), `images/agent-runtime-browser/Dockerfile` (the browser variant's recipe call), `scripts/build-images.sh` and `scripts/push-images.sh` (the `swarm-plugin-bundler` target), `tests/unit/scripts/test_plugin_bundle_recipes.py` (new), `test_gstack_image.py` and `test_security_audit_image.py` (pins read from `bundled-plugins.json`) | nothing | none expected; if a release workflow lists image names itself, the line goes in `workflow-lines.patch` | release images with bundle manifests, byte-equal plugin trees to today's (the test holds the staged trees' digests equal before and after) |
+| 15 | **Infrastructure and installer** | `terraform/infra/plugin-bundles.tf` (new), `terraform/infra/variables.tf` (`builtins_managed`, default `off` with its why beside it), `terraform/infra/locals.tf` (the two env vars: `SWARM_BUILTINS_MANAGED` to swarm-api, `PLUGIN_BUNDLE_REPOSITORY` to swarm-api and the scheduler), `apps/swarm-install/swarm_install/tfvars.py`, `record.py` (`console/plugins_step`), `steps/verify.py`, `verbs/doctor.py`, `upgrade.py` (the rebuild step and its refusal) | 14 (the bundler image's name) | **IAM and Terraform** (changed 11 November 2026): in `plugin-bundles.tf`, the job `swarm-plugin-bundle`, swarm-api's binding of `swarmPluginBundleRunner` on that job alone, the builder's five grants of §1.4.2 (the build mirror read conditioned on the one Bun object; the Docker Hub mirror read and the project-level `roles/logging.logWriter` row removed), the log sink, the repository, the npm mirror (Q19); in `terraform/bootstrap`, by the owner from a runbook: the role `swarmPluginBundleRunner`, the release deployer's `actAs` on the builder, and the removal of `plugin_bundle_builds.tf` (the reverted Cloud Build rows: no `cloudbuild.*` role and no `serviceAccountUser` for swarm-api). No default build account check (§1.4.2, finding 5); `upgrade.py`'s rebuild step applies the job alone first | §1.4.2's slot and §15.2 in every new deployment and upgrade |
+| 16 | **Bundle builds in swarm-api** | `apps/swarm-api/swarm_api/pluginbundle.py` (new: bundle records; since 11 November 2026 one `jobs.run` of `swarm-plugin-bundle` with the arguments of §1.4.2 and no other override, the capped `executions.get` read, the pushed-manifest check before `ready`; retention list; no Cloud Build client), `routes/plugin_bundles.py` (new: build status, Roll back), `pluginstore.py` (`build: "image"`, Apply that starts a build, `current_version` moved only by a ready bundle) | 13, 14, 15 | none (uses 15's binding on the job) | §1.4.3, §1.4.7 |
 | 17 | **Seed and the switch at submission** | `apps/swarm-api/swarm_api/plugincatalogue.py` (the seed source; the code entries kept one release), `pluginconfig.py` (bundled installs merged as managed entries with the step's mode and skills), `plugins.py` (no `capabilities.plugins` for them with the switch on), `routes/plugin_catalogue.py` (Update allowed on a bundled install, Remove refused) | 16 | none | §1.4.1, §1.4.5 |
 | 18 | **Scheduler: the bundle image** | `apps/scheduler/scheduler/dispatch.py` (the image lookup for a bundle key, the repository check, `plugin_bundle_missing`), `scheduler/settings.py` (`PLUGIN_BUNDLE_REPOSITORY`) | 16 (the record shape), 15 | none; a dispatch change, so it also runs `make smoke concurrency-test race-test` against a deployed environment | §1.4.4's image choice |
 | 19 | **Worker: bundled entries and the review** | `apps/agent-worker/agent_worker/pluginload.py` (a `build: "image"` entry checked in place against `.swarm-bundle.json`, nothing fetched), `agent_worker/plugins.py` (both routes for one release; gstack's environment keyed on the reserved id), `agent_worker/security_review.py` (the path constant, `applies()` on either route, the manifest check before the validators) | 14, 17 | none | §1.4.4's worker check, §1.4.6 |
@@ -1091,7 +1257,9 @@ New with this revision (9 November 2026), each in the lane's `questions.json` wi
 none decided here:
 
 * **Q16** Where a bundled install's build step runs: in the deployment's own project, so an admin may update to any
-  pin (built, §1.4.2), or only in the release home, so an admin picks among the pins a release ships.
+  pin (built, §1.4.2), or only in the release home, so an admin picks among the pins a release ships. **Answered in
+  part by the owner, 11 November 2026:** still the deployment's own project, now as one Cloud Run job execution under
+  the builder account (`swarm-plugin-bundle`, §1.4.2), never a Cloud Build build.
 * **Q17** Whether a platform admin may remove a bundled install (built: no; a workspace disallows it instead).
 * **Q18** Whether a workspace may install its own bundled plugin (built: platform scope only).
 * **Q19** How a deployment's bundle build reaches its dependencies (built: the deployment's own mirror

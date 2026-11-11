@@ -10,7 +10,7 @@
 //   * while the record is not ready, `GET /v1/workspace` is read every 5 s;
 //     it stops at ready, and on unmount;
 //   * the claude_account step's [Request a loan] posts and then reads "Loan
-//     requested"; [Add key] goes to Capacity › Accounts;
+//     requested"; [Add key] goes to Capacity › LLM Providers › Plans;
 //   * a count of zero accounts is prose, so it reads as words -- `none of your
 //     own` -- with "measured" in its accessible name, never the `real zero`
 //     mark and never a blank (owner, 2026-10-09); a count the API did not send
@@ -320,7 +320,7 @@ describe('the claude_account step', () => {
     expect(within(el).getByLabelText('none of your own (measured)')).toBeTruthy()
     expect(within(el).getByLabelText('none lent to you (measured)')).toBeTruthy()
     expect(visible(el)).toContain('Your workspace runs nothing until it has a Claude account to run on.')
-    expect(within(el).getByRole('link', { name: 'Add key' }).getAttribute('href')).toBe('/capacity/accounts')
+    expect(within(el).getByRole('link', { name: 'Add key' }).getAttribute('href')).toBe('/capacity/llm-providers/plans')
     expect(el.querySelector('#claude-account')).not.toBeNull()
   })
 
