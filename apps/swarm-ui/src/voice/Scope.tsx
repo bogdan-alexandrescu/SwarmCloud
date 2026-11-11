@@ -118,11 +118,13 @@ export function Ring({
   voice,
   mic,
   level = null,
+  word: sayWord, // MOCK-HOOK
 }: {
   state: ScopeState
   voice: MediaStream | null
   mic: MediaStream | null
   level?: number | null
+  word?: string // MOCK-HOOK: the pill mock-up's paused session says Paused, as the header does
 }) {
   const gid = useId().replace(/:/g, '')
   const wave = useRef<SVGPathElement | null>(null)
@@ -173,7 +175,7 @@ export function Ring({
     if (level !== null) bar.current?.style.setProperty('--vt-level', `${Math.round(Math.min(1, Math.max(0, level)) * 100)}%`)
   }, [level])
 
-  const word = WORD[state]
+  const word = sayWord ?? WORD[state] // MOCK-HOOK
   return (
     <figure className={`vt-ring is-${state}${still ? ' is-still' : ''}`} data-state={state}>
       <svg viewBox="0 0 400 400" role="img" aria-label={`Voice it: ${word}`}>

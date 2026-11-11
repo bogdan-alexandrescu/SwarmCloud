@@ -24,7 +24,7 @@ export const VOICE_LEDGER = '/v1/voice/sessions/{id}/ledger'
 export const LEDGER_REFRESH_MS = 30_000
 
 /** The ledger's words for its lines, in the order it serves them. */
-const LINE_WORDS: Record<string, string> = {
+export const LINE_WORDS: Record<string, string> = { // MOCK-HOOK (exported for CostPill.tsx)
   talk: 'Talk',
   planner: 'Planner',
   speech_machine: 'Speech machine',

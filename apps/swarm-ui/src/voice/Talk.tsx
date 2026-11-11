@@ -114,6 +114,7 @@ import { noteActivity } from '../Shell'
 import { CardList, type StreamEvent } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { BudgetMeter } from './Meter'
+import { CostPill, MOCK_OPEN, mockCost } from './CostPill' // MOCK-HOOK
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
@@ -446,11 +447,12 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
 }
 
 export function TalkPane() {
-  const [phase, setPhase] = useState<Phase>('idle')
+  const [mock] = useState(mockCost) // MOCK-HOOK
+  const [phase, setPhase] = useState<Phase>(mock !== null && mock.state !== 'paused' ? 'live' : 'idle') // MOCK-HOOK
   const [problem, setProblem] = useState<string | null>(null)
   /** A start refusal's full sentence, behind the problem line's (i). */
   const [problemTip, setProblemTip] = useState<string | null>(null)
-  const [lines, setLines] = useState<CaptionLine[]>([])
+  const [lines, setLines] = useState<CaptionLine[]>(mock?.captions ?? []) // MOCK-HOOK
   // Settings' debug mode, read with the engine; and the session's last traced turn while it is on.
   const [debug, setDebug] = useState(false)
   const [turn, setTurn] = useState<VoiceTraceTurnEvent | null>(null)
@@ -935,6 +937,8 @@ export function TalkPane() {
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const booting = speechMode && boot.length > 0
   const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
+  const paused = mock?.state === 'paused' && phase === 'idle' // MOCK-HOOK
+  const costPill = mock !== null ? <CostPill ledger={mock.ledger} paused={paused} defaultOpen={MOCK_OPEN} /> : null // MOCK-HOOK
 
   return (
     <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}`} data-state={state}>
@@ -942,8 +946,8 @@ export function TalkPane() {
 
       <div className="vt-hud">
         <p className="vt-status" role="status">
-          <ToneMark tone={live ? 'live' : 'unknown'} />
-          {phase === 'idle' && 'Not connected'}
+          <ToneMark tone={live ? 'live' : paused ? 'paused' : 'unknown' /* MOCK-HOOK */} />
+          {phase === 'idle' && (paused ? 'Paused' : 'Not connected') /* MOCK-HOOK */}
           {phase === 'connecting' && 'Connecting to Voice it…'}
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
@@ -952,13 +956,14 @@ export function TalkPane() {
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
+          {costPill /* MOCK-HOOK */}
           {live || phase === 'ending' ? (
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
             </Button>
           ) : (
             <Button kind="primary" size="sm" onClick={() => void start()} busy={phase === 'connecting'}>
-              Start talking
+              {paused ? 'Resume' : 'Start talking' /* MOCK-HOOK */}
             </Button>
           )}
           {/* The advice sits behind an (i), not on the surface (the owner's
@@ -1012,7 +1017,7 @@ export function TalkPane() {
       </div>
 
       {USE_FIXTURES && sessionId === null ? (
-        <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live />
+        <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live={!paused /* MOCK-HOOK: a paused session holds no read-back */} />
       ) : (
         <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={feed} />
       )}
@@ -1020,7 +1025,7 @@ export function TalkPane() {
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
-          <Ring state={state} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} />
+          <Ring state={state} voice={voice} mic={live ? micStream : null} level={textMode ? level : null} word={paused ? 'Paused' : undefined /* MOCK-HOOK */} />
         </div>
         <div className="vt-subs-band">
           <Captions lines={lines} />
