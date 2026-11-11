@@ -1,10 +1,15 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
-# swarm-plugin-bundler -- the image a deployment's bundle build runs
-# (docs/design/managed-plugins.md, section 1.4.2; owner decisions of
-# 6 November 2026, Q13, and 9 November 2026: the bundle build runs in the
-# deployment, on Cloud Build, from the deployment's copy of this signed release
-# image, at any upstream pin a platform admin applied after the diff).
+# swarm-plugin-bundler -- the image of the Cloud Run job swarm-plugin-bundle,
+# a deployment's bundle build (docs/design/managed-plugins.md, section 1.4.2;
+# owner decisions of 6 November 2026, Q13, 9 November 2026: the bundle build
+# runs in the deployment, at any upstream pin a platform admin applied after
+# the diff, and 11 November 2026: as one job execution under the builder
+# account). The job's command is `python3 -I /opt/swarm-bundler/swarm-bundle
+# job ...` (terraform/infra/plugin-bundles.tf): it checks the execution's
+# arguments, discards its environment, runs the recipes below and appends one
+# layer per plugin to the deployment's copy of each release image through the
+# registry API, with no container daemon, Dockerfile or BuildKit.
 #
 # gstack and security-audit are managed plugins whose versions are BUILT into
 # an image version, not unpacked per attempt: gstack's compiled `browse`
@@ -18,7 +23,8 @@
 #   recipes/security-audit/build  the skill folder and LICENSE, its own
 #                                 validator tests run on the staged copy
 #   swarm-bundle                  the pins check and the .swarm-bundle.json
-#                                 writer both recipes end with
+#                                 writer both recipes end with, and `job`,
+#                                 the job's entrypoint
 #
 # plus the inputs the gstack recipe names: gstack-layers, the closure walker
 # (scripts/gstack_packaging_measure.py) and both checked-in lists. The release
@@ -41,10 +47,10 @@
 # its default registry. Either way gstack installs only at the archive's
 # bun.lock, frozen, or the build fails.
 #
-# A build step runs as swarm-bundler (uid 10001), never root, although it is a
-# Cloud Build step and never a pod and holds no credential (its service
-# account's token is Cloud Build's own): the step runs an upstream's setup and
-# its dependencies' install scripts, which have no business owning the image.
+# The job runs as swarm-bundler (uid 10001), never root: it runs an upstream's
+# setup and its dependencies' install scripts, which have no business owning
+# the image. (That code can still ask the metadata server for the builder's
+# token, which is why the builder holds exactly five grants, section 1.4.2.)
 # That user owns exactly the folders a build writes: /opt/swarm/plugins, where
 # the recipes install at /opt/swarm/plugins/<name> (the install path the
 # release stages use, since gstack's compiled `browse` embeds it);

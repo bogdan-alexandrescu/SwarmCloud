@@ -1,7 +1,7 @@
 # Lane 14 of the managed plugins plan (part of #2688; docs/design/managed-plugins.md
-# section 1.4.2): images/plugin-bundler/, the image a deployment's bundle build
-# runs on Cloud Build to build gstack and security-audit at a pin a platform
-# admin applied. The release builds it (scripts/build-images.sh ALL_TARGETS) and
+# section 1.4.2): images/plugin-bundler/, the image of the Cloud Run job
+# swarm-plugin-bundle, which builds gstack and security-audit at a pin a platform
+# admin applied (the owner, 11 November 2026). The release builds it (scripts/build-images.sh ALL_TARGETS) and
 # the install copies it by digest like every release image, so a fresh
 # deployment's bundle build has its own copy to run.
 version: 1

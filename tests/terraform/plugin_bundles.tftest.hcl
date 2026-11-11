@@ -10,12 +10,20 @@
 #   * on, this root reads the builder account and the two repositories exist,
 #     labelled managed-by=swarm-terraform; the bundle repository refuses a
 #     moved tag; the npm mirror is a remote repository of the npm registry;
-#   * the builder reads platform/sources/ only (the condition is evaluated
-#     against admitted and refused names), reads the platform repository and
-#     the mirrors, pushes to the bundle repository and nowhere else, and holds
-#     one project role, logging.logWriter;
-#   * nothing here grants swarm-api actAs on the builder or a Cloud Build
-#     role: both are the owner's (plugin-bundles.tf header);
+#   * the builder holds exactly five grants (§1.4.2, the owner's change of 11
+#     November 2026): platform/sources/ by condition (evaluated against
+#     admitted and refused names), the platform repository, the ONE pinned
+#     Bun object of the build mirror by condition, the npm mirror, and a push
+#     to the bundle repository alone; no Docker Hub mirror read and no project
+#     role (tests/unit/terraform/test_plugin_bundle_job_iam.py counts them in
+#     the file and holds that nothing there names the old build service);
+#   * the job swarm-plugin-bundle plans only with the switch on and the
+#     bundler image's digest; it runs as the builder, the bundler image by
+#     digest, one task, no retries, 3600 seconds, no network, its whole
+#     configuration in its fixed command, ending `--`;
+#   * swarm-api's one binding on the job is swarmPluginBundleRunner (the role
+#     terraform/bootstrap defines, bootstrap's plugin_bundle_runner.tftest.hcl);
+#   * the job's logs go to the platform's log bucket, filtered to that job;
 #   * the control plane reads the bundle repository and a tenant pulls from it
 #     without enumerating, as from the platform repository;
 #   * no service is handed SWARM_BUILTINS_MANAGED or PLUGIN_BUNDLE_REPOSITORY
@@ -68,9 +76,10 @@ run "off_by_default_plans_nothing" {
       && length(google_storage_bucket_iam_member.plugin_bundler_tool_mirror) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundler_release_images) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundler_npm) == 0
-      && length(google_artifact_registry_repository_iam_member.plugin_bundler_dockerhub) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundler_push) == 0
-      && length(google_project_iam_member.plugin_bundler_logs) == 0
+      && length(google_cloud_run_v2_job.plugin_bundle) == 0
+      && length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 0
+      && length(google_logging_project_sink.plugin_bundle_logs) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundles_readers) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundles_pullers) == 0
     )
@@ -177,8 +186,11 @@ run "the_builder_reads_sources_only_and_pushes_to_one_repository" {
     condition = (
       google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0].bucket == "swarm-build-mirror-example-project"
       && google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0].role == "roles/storage.objectViewer"
+      && google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0].member == "serviceAccount:swarm-plugin-bundler@example-project.iam.gserviceaccount.com"
+      && google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0].condition[0].expression == "resource.name == \"projects/_/buckets/swarm-build-mirror-example-project/objects/github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip\""
+      && startswith(google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0].condition[0].description, "managed-by=swarm-terraform;")
     )
-    error_message = "the builder reads Bun's pinned zip from the build mirror bucket, read only"
+    error_message = "the builder reads the ONE pinned Bun object of the build mirror bucket, by a condition on its name, never the whole bucket (managed-plugins.md section 1.4.2, grant 3)"
   }
 
   assert {
@@ -187,10 +199,8 @@ run "the_builder_reads_sources_only_and_pushes_to_one_repository" {
       && google_artifact_registry_repository_iam_member.plugin_bundler_release_images[0].role == "roles/artifactregistry.reader"
       && google_artifact_registry_repository_iam_member.plugin_bundler_npm[0].repository == "swarm-mirror-npm"
       && google_artifact_registry_repository_iam_member.plugin_bundler_npm[0].role == "roles/artifactregistry.reader"
-      && google_artifact_registry_repository_iam_member.plugin_bundler_dockerhub[0].repository == "swarm-mirror-dockerhub"
-      && google_artifact_registry_repository_iam_member.plugin_bundler_dockerhub[0].role == "roles/artifactregistry.reader"
     )
-    error_message = "the builder reads the platform repository (the release images) and the mirrors, read only"
+    error_message = "the builder reads the platform repository (the release images) and the npm mirror, read only"
   }
 
   assert {
@@ -208,18 +218,146 @@ run "the_builder_reads_sources_only_and_pushes_to_one_repository" {
       for g in [
         google_artifact_registry_repository_iam_member.plugin_bundler_release_images[0],
         google_artifact_registry_repository_iam_member.plugin_bundler_npm[0],
-        google_artifact_registry_repository_iam_member.plugin_bundler_dockerhub[0],
       ] : g.role == "roles/artifactregistry.reader" && g.repository != "swarm-plugin-bundles"
     ])
     error_message = "the builder writes to no repository but swarm-plugin-bundles"
   }
 
+  # Every builder grant, by member: five, and they are these five.
+  assert {
+    condition = length([
+      for g in [
+        google_storage_bucket_iam_member.plugin_bundler_sources[0],
+        google_storage_bucket_iam_member.plugin_bundler_tool_mirror[0],
+        google_artifact_registry_repository_iam_member.plugin_bundler_release_images[0],
+        google_artifact_registry_repository_iam_member.plugin_bundler_npm[0],
+        google_artifact_registry_repository_iam_member.plugin_bundler_push[0],
+      ] : g if g.member == "serviceAccount:swarm-plugin-bundler@example-project.iam.gserviceaccount.com"
+    ]) == 5
+    error_message = "the builder holds exactly the design's five grants"
+  }
+}
+
+run "off_plans_no_job_even_with_the_bundler_image" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    swarm_workers_log_view_enabled = true
+    image_refs = merge(var.image_refs, {
+      "swarm-plugin-bundler" = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    })
+  }
+
   assert {
     condition = (
-      google_project_iam_member.plugin_bundler_logs[0].role == "roles/logging.logWriter"
-      && google_project_iam_member.plugin_bundler_logs[0].member == "serviceAccount:swarm-plugin-bundler@example-project.iam.gserviceaccount.com"
+      length(google_cloud_run_v2_job.plugin_bundle) == 0
+      && length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 0
+      && length(google_logging_project_sink.plugin_bundle_logs) == 0
     )
-    error_message = "the builder's one project role is logging.logWriter, for its own build log"
+    error_message = "with builtins_managed off the job is not planned, whatever image the release carries"
+  }
+}
+
+run "the_job_waits_for_the_switch_and_the_bundler_image" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # The switch on, but the release does not carry the bundler image yet: the
+  # builder's grants plan, the job and the rows that exist only for it do not.
+  variables {
+    builtins_managed = "on"
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_job.plugin_bundle) == 0
+      && length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 0
+      && length(google_logging_project_sink.plugin_bundle_logs) == 0
+    )
+    error_message = "the job, swarm-api's run of it and its log sink wait for the bundler image's digest (images.json gates swarm-plugin-bundler)"
+  }
+}
+
+run "the_job_runs_as_the_builder_and_swarm_api_may_only_run_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    builtins_managed               = "on"
+    swarm_workers_log_view_enabled = true
+    image_refs = merge(var.image_refs, {
+      "swarm-plugin-bundler" = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    })
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_job.plugin_bundle[0].name == "swarm-plugin-bundle"
+      && google_cloud_run_v2_job.plugin_bundle[0].location == "us-central1"
+      && google_cloud_run_v2_job.plugin_bundle[0].labels["managed-by"] == "swarm-terraform"
+    )
+    error_message = "the job is swarm-plugin-bundle, in the deployment's region, managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].service_account == "swarm-plugin-bundler@example-project.iam.gserviceaccount.com"
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].image == "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    )
+    error_message = "the job's identity is the builder account and its image the bundler image by digest, from the release's image_refs"
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_job.plugin_bundle[0].template[0].task_count == 1
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].parallelism == 1
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].max_retries == 0
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].timeout == "3600s"
+      && length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access) == 0
+      && length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].env) == 0
+    )
+    error_message = "one task, parallelism 1, no retries, a 3600-second agent timeout, no VPC access and no environment (managed-plugins.md section 1.4.2)"
+  }
+
+  assert {
+    condition = (
+      join(" ", slice(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, 0, 4)) == "python3 -I /opt/swarm-bundler/swarm-bundle job"
+      && element(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command) - 1) == "--"
+      && contains(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, "--bundle-repository=us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles")
+      && contains(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, "--base-repository=us-central1-docker.pkg.dev/example-project/swarm-images")
+      && contains(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, "--runner-image=agent-runtime-browser:browser")
+      && contains(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].command, "--runner-image=agent-runtime-base:base")
+      && try(length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].args), 0) == 0
+    )
+    error_message = "the job's whole configuration is its fixed command, which an execution cannot override, ending with -- before the execution's arguments"
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs[0].name == "swarm-plugin-bundle"
+      && google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs[0].role == "projects/example-project/roles/swarmPluginBundleRunner"
+      && google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
+    )
+    error_message = "swarm-api's one grant for the bundle build is swarmPluginBundleRunner on the job swarm-plugin-bundle's own IAM policy"
+  }
+
+  assert {
+    condition = (
+      google_logging_project_sink.plugin_bundle_logs[0].filter == "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-plugin-bundle\""
+      && google_logging_project_sink.plugin_bundle_logs[0].destination == "logging.googleapis.com/projects/example-project/locations/us-central1/buckets/swarm-worker-logs"
+      && startswith(google_logging_project_sink.plugin_bundle_logs[0].description, "managed-by=swarm-terraform")
+    )
+    error_message = "the job's executions' logs, and only those, go to the platform's log bucket"
   }
 }
 
