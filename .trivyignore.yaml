@@ -204,9 +204,18 @@ vulnerabilities:
   # Google's apt index, the rapid channel's components-2.json (build
   # 20261016073856) and the image's tags, so no pin moves; the other five are
   # already fixed at their pins. Re-check Google's index on 2026-11-11.
+  #
+  # Re-measured 2026-11-11 ~06:40Z, the day it expired (workspace-apply refused
+  # on this id alone in PR 3822's build-check; owner rule of 2026-11-01: extend
+  # one week only for what is still unfixed). gke-gcloud-auth-plugin is now
+  # fixed at its pin, 592.0.0 (go1.27.3). gcloud-crc32c is not: the newest
+  # google-cloud-cli in Google's apt index is 593.0.0 (SHA256 10e768c7...df934,
+  # checked over the download), and its bin/gcloud-crc32c is still go1.27.2,
+  # so bumping GCLOUD_VERSION removes nothing. Re-check Google's index on
+  # 2026-11-18.
   - id: CVE-2026-111943
-    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2) and gke-gcloud-auth-plugin (go1.27.1) from google-cloud-cli 591.0.0; no Google build on go1.27.3 yet."
-    expired_at: 2026-11-11
+    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2 in google-cloud-cli 591.0.0 through 593.0.0, the newest); no Google build on go1.27.3 yet."
+    expired_at: 2026-11-18
 
   # Same class again (PROPOSED 2026-10-28 ~10:00Z by CLD for the owner's decision;
   # this entry is not accepted until the owner merges it): go-jose v4 DoS when parsing
