@@ -217,7 +217,17 @@ class AccountPool(Protocol):
         share_with_voice_it: bool = False,
     ) -> dict[str, Any]: ...
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
+    def set_lending(
+        self,
+        account_id: str,
+        *,
+        lend_to: list[str] | None = None,
+        lends: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]: ...
 
     def set_model_classes(
         self, account_id: str, *, model_classes: list[str]
@@ -602,11 +612,33 @@ class BrokerClient:
             },
         )
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]:
+    def set_lending(
+        self,
+        account_id: str,
+        *,
+        lend_to: list[str] | None = None,
+        lends: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        # One or the other, never both: the broker refuses a body with both.
+        # `lends` carries each borrower's cap; a bare `lend_to` is today's body.
+        payload: dict[str, Any] = (
+            {"lends": {t: dict(c) for t, c in lends.items()}}
+            if lends is not None
+            else {"lend_to": list(lend_to or [])}
+        )
         return self._call(
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/lending",
-            payload={"lend_to": list(lend_to)},
+            payload=payload,
+        )
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/per-workspace-max",
+            payload={"per_workspace_max": dict(per_workspace_max)},
         )
 
     def set_model_classes(
