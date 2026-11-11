@@ -358,3 +358,17 @@ def test_the_launcher_restates_the_runs_folder_the_worker_names():
     assert f'RUNS_DIR = "{pluginload.RUNS_DIR}"' in LAUNCHER.read_text()
     assert f'ERRORS_SUFFIX = "{pluginload.ERRORS_SUFFIX}"' in LAUNCHER.read_text()
     assert claude_code.PLUGIN_ENV_DIR_ENV == pluginload.ENV_DIR_ENV
+
+
+def test_a_server_the_launcher_refused_is_named_failed_not_started(installed):
+    environ = {k: v for k, v in installed.cli_env.items() if k != pluginload.ENV_DIR_ENV}
+    environ["CLAUDE_PLUGIN_ROOT"] = str(installed.plugin.directory)
+    # A refusing launcher never reads a server's stdin (its JSON-RPC stream).
+    done = subprocess.run(["/bin/sh", "-c", f"{pluginload.LAUNCHER} {PROBE} --mcp probe -- {sys.executable} -V"],
+                          env=environ, cwd=installed.work, stdin=subprocess.PIPE, capture_output=True,
+                          timeout=60, check=False)
+    assert done.returncode == 1
+    assert installed.rows() == [{"kind": "mcp", "server": "probe", "event": "start", "exit": 1,
+                                 "reason": "env_unreadable"}]
+    record = installed.record()
+    assert record["mcp_servers_failed"] == ["probe"] and record["mcp_servers_started"] == []
