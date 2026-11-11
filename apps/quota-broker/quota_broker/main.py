@@ -147,7 +147,7 @@ from . import api_key, openai_api_key, openai_plan
 from .api_key import VENDOR_OF
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
-from .secretstore import SecretManagerStore
+from .secretstore import SecretManagerStore, is_key_secret, version_number
 from .service import QuotaBroker, TargetResetRefused, quota_to_firestore
 from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
@@ -836,6 +836,26 @@ WORKSPACE_KEY_PROVIDER: dict[str, str] = {
 #: Where an imported key was copied from, on its account document (§4.4: its
 #: delete says the workspace's own secret still holds the value).
 IMPORTED_FROM = "key_imported_from"
+
+#: A deleted API key's owed secret destruction (docs/design/llm-providers.md
+#: §4.4): one document per account id, written in the transaction that
+#: removes the account and closes its holds, marked done once the secret is
+#: destroyed. Secret name, who and when; never the value. The quota sweep
+#: retries every record not marked done (`finish_owed_key_deletions`).
+KEY_DELETIONS_COLLECTION = "key_deletions"
+#: A key's rotation (§4.5): the version it wrote and when the versions it
+#: superseded are destroyed, one hold TTL later, by the quota sweep
+#: (`destroy_superseded_key_versions`). One document per account id; a second
+#: rotation inside the TTL replaces it, keeping its own later version.
+KEY_ROTATIONS_COLLECTION = "key_rotations"
+#: How often a key marked credit gone is asked whether it can serve again
+#: (§5.2: "the broker's hourly probe").
+KEY_PROBE_INTERVAL = timedelta(hours=1)
+#: When a key's exhausted probe last ran, on its account document.
+KEY_PROBED_AT = "exhausted_probed_at"
+#: The steps of a key's delete a 502 names (§4.4).
+KEY_STEP_DESTROY = "destroy_versions"
+KEY_STEP_DELETE = "delete_secret"
 
 
 def _account_provider(provider: str) -> str:
@@ -1872,8 +1892,14 @@ def release_hold(
     return _apply(transaction)
 
 
-def remove_account_and_close_holds(db: Any, account_id: str, *, now: datetime) -> int:
+def remove_account_and_close_holds(
+    db: Any, account_id: str, *, now: datetime, key_deletion: dict[str, Any] | None = None
+) -> int:
     """Delete the account document and close every open hold record it had.
+
+    `key_deletion`, for an API key (docs/design/llm-providers.md §4.4), is
+    written as `key_deletions/<account id>` IN THE SAME TRANSACTION, so no key
+    document disappears without a record that its secret is owed a deletion.
 
     Returns how many records were closed as `account_removed`.
 
@@ -1946,9 +1972,234 @@ def remove_account_and_close_holds(db: Any, account_id: str, *, now: datetime) -
             )
             closed += 1
         txn.delete(ref)
+        if key_deletion is not None:
+            txn.set(db.collection(KEY_DELETIONS_COLLECTION).document(account_id), key_deletion)
         return closed
 
     return _apply(transaction)
+
+
+def finish_key_deletion(
+    db: Any, secrets: Any, record: dict[str, Any], *, now: datetime
+) -> dict[str, Any]:
+    """Destroy a deleted key's secret as its record says, and mark the record.
+
+    §4.4's step 2: every version destroyed, then the secret itself deleted --
+    except a dedicated Voice it key stored under its old `--<label>` name
+    (`whole` False, Q9), whose versions are destroyed and whose empty secret
+    stays. Only the secret the record names, and only when it is the deleted
+    account's own: `whole` deletes only an `--key-` name (`is_key_secret`),
+    the one the owner's conditioned grant allows. An imported key's
+    workspace secret is never named by a record, so never reached.
+
+    A failure leaves the record not done, naming the step and the error's
+    type, for the sweep to retry. Never raises; never logs a value.
+    """
+    account_id = str(record.get("account_id") or "")
+    secret = str(record.get("secret") or "")
+    whole = bool(record.get("whole"))
+    ref = db.collection(KEY_DELETIONS_COLLECTION).document(account_id)
+    step = KEY_STEP_DESTROY
+    try:
+        destroyed = secrets.destroy_all_versions(secret)
+        if whole:
+            step = KEY_STEP_DELETE
+            if not is_key_secret(secret):
+                raise ValueError("only an API key's own secret is deleted")
+            secrets.delete_key_secret(secret)
+    except Exception as exc:  # noqa: BLE001 -- the type only, never a value
+        ref.update({
+            "failed_step": step,
+            "error": type(exc).__name__,
+            "attempts": int(record.get("attempts") or 0) + 1,
+            "last_attempt_at": now,
+        })
+        log.error(
+            "a deleted API key's secret is not yet destroyed; the quota sweep retries it",
+            extra={"account_id": account_id, "secret": secret, "step": step,
+                   "error": type(exc).__name__},
+        )
+        return {"done": False, "step": step, "error": type(exc).__name__}
+    ref.update({
+        "done": True,
+        "done_at": now,
+        "failed_step": None,
+        "error": None,
+        "attempts": int(record.get("attempts") or 0) + 1,
+        "last_attempt_at": now,
+        "versions_destroyed": int(destroyed or 0),
+    })
+    log.info(
+        "audit: a deleted API key's secret was destroyed"
+        + ("" if whole else "; its empty secret is kept under its old name"),
+        extra={"audit": True, "account_id": account_id, "secret": secret,
+               "secret_deleted": whole, "versions_destroyed": int(destroyed or 0),
+               "deleted_by": record.get("deleted_by"),
+               "workspace_secret_kept": record.get("imported_from")},
+    )
+    return {"done": True, "secret_deleted": whole, "versions_destroyed": int(destroyed or 0)}
+
+
+def owed_key_deletion(db: Any, account_id: str) -> dict[str, Any] | None:
+    """The record of a deleted key on this account id not yet marked done."""
+    snap = db.collection(KEY_DELETIONS_COLLECTION).document(account_id).get()
+    if not getattr(snap, "exists", False):
+        return None
+    data = snap.to_dict() or {}
+    return None if data.get("done") else data
+
+
+def finish_owed_key_deletions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """The quota sweep's retry of every `key_deletions` record not done (§4.4).
+
+    A record whose account id has a document again is skipped and named: a
+    live account's secret is never destroyed by a sweep. Registration on that
+    label finishes the owed deletion first (`_register_api_key`), so this is
+    a guard, not a path.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    finished: list[str] = []
+    failed: list[str] = []
+    skipped: list[str] = []
+    query = db.collection(KEY_DELETIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        account_id = str(record.get("account_id") or snap.id)
+        if getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            log.error(
+                "a key deletion is owed on an account id that has a document again; "
+                "its secret was not touched",
+                extra={"account_id": account_id},
+            )
+            skipped.append(account_id)
+            continue
+        outcome = finish_key_deletion(db, secrets, {**record, "account_id": account_id}, now=now)
+        (finished if outcome["done"] else failed).append(account_id)
+    return {"finished": finished, "failed": failed, "skipped": skipped}
+
+
+def destroy_superseded_key_versions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """Destroy what a key's rotation superseded, one hold TTL after it (§4.5).
+
+    Holders keep the old value until their next turn boundary or process
+    start, and a hold lives at most its TTL, so the old version outlives
+    every holder that could have read it and then goes. A rotation whose
+    account is gone is marked done: the delete destroyed every version.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    destroyed: dict[str, int] = {}
+    failed: list[str] = []
+    query = db.collection(KEY_ROTATIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        due = record.get("destroy_after")
+        if not isinstance(due, datetime) or now < _aware_utc(due):
+            continue
+        account_id = str(record.get("account_id") or snap.id)
+        ref = db.collection(KEY_ROTATIONS_COLLECTION).document(snap.id)
+        if not getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            ref.update({"done": True, "done_at": now, "versions_destroyed": 0})
+            continue
+        keep = record.get("keep_version")
+        try:
+            count = secrets.destroy_versions_before(
+                str(record.get("secret") or ""), int(keep) if keep is not None else None
+            )
+        except Exception as exc:  # noqa: BLE001 -- the type only
+            ref.update({"error": type(exc).__name__, "last_attempt_at": now})
+            log.error(
+                "could not destroy a rotated key's superseded versions; the sweep retries",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            failed.append(account_id)
+            continue
+        ref.update({"done": True, "done_at": now, "error": None, "versions_destroyed": count})
+        log.info(
+            "audit: a rotated API key's superseded versions were destroyed",
+            extra={"audit": True, "account_id": account_id, "secret": record.get("secret"),
+                   "versions_destroyed": count},
+        )
+        destroyed[account_id] = count
+    return {"destroyed": destroyed, "failed": failed}
+
+
+def _claim_probe(db: Any, account_id: str, now: datetime) -> bool:
+    """Take this hour's probe of a key marked credit gone, in one transaction:
+    True when the key is still exhausted and its last probe (or its mark,
+    when never probed) is an hour old, and `exhausted_probed_at` is now
+    written. So two sweeps never ask the vendor twice in one hour."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return False
+        data = snap.to_dict() or {}
+        marked = data.get("exhausted_at")
+        if not isinstance(marked, datetime):
+            return False
+        last = data.get(KEY_PROBED_AT)
+        since = _aware_utc(last) if isinstance(last, datetime) else _aware_utc(marked)
+        if now - since < KEY_PROBE_INTERVAL:
+            return False
+        txn.update(ref, {KEY_PROBED_AT: now})
+        return True
+
+    return _apply(transaction)
+
+
+def probe_exhausted_keys(
+    db: Any, store: Any, secrets: Any, validator: Any, *, now: datetime
+) -> dict[str, Any]:
+    """The hourly exhausted probe (§5.2): each key marked credit gone is
+    asked once an hour, with the vendor's cheapest completion, whether it
+    can serve again, and returns to available when it can.
+
+    "Available" is its state's business, untouched: the probe clears the
+    credit mark (`exhausted_at`) alone, as a person's Resume does, so a key a
+    person paused stays paused. The key is read from its secret for the one
+    call and dropped; never logged or recorded.
+    """
+    served: list[str] = []
+    still: list[str] = []
+    failed: list[str] = []
+    for account in store.list():
+        if not api_key.is_key(account.provider) or account.exhausted_at is None:
+            continue
+        if not _claim_probe(db, account.account_id, now):
+            continue
+        try:
+            key = api_key.read_key(account.provider, secrets.access(store.secret_for(account)))
+            serves = validator.probe(account.provider, key)
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the key
+            log.warning(
+                "could not probe a key marked credit gone; it is asked again in an hour",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            failed.append(account.account_id)
+            continue
+        if not serves:
+            still.append(account.account_id)
+            continue
+        db.collection(ACCOUNTS_COLLECTION).document(account.account_id).update(
+            {"exhausted_at": None, KEY_PROBED_AT: None}
+        )
+        log.info(
+            "audit: a key marked credit gone serves again and is offered again",
+            extra={"audit": True, "account_id": account.account_id},
+        )
+        served.append(account.account_id)
+    return {"served_again": served, "still_exhausted": still, "failed": failed}
 
 
 def prune_holds(
@@ -2573,6 +2824,11 @@ def set_state_and_moves(
         if state is AccountState.AVAILABLE:
             resumed = {"limited_until": None, "limited_window": None}
             txn.set(health_ref, {"limited_until": None}, merge=True)
+            if (snap.to_dict() or {}).get("exhausted_at") is not None:
+                # RESUME (§4.3, §5.2): a person putting a key whose credit was
+                # gone back in service, after topping it up, clears the mark
+                # the hourly probe would otherwise clear.
+                resumed.update({"exhausted_at": None, KEY_PROBED_AT: None})
         txn.update(
             ref,
             {
@@ -4476,7 +4732,31 @@ def create_app(
         Parsed and VALIDATED WITH THE VENDOR before anything is written (one
         list-models call), so a refusal leaves no secret and no document; the
         key is never logged or answered.
+
+        A KEY ALREADY ON THE LABEL IS ROTATED (`_rotate_api_key`, §4.5), not
+        registered again; a label whose deleted key's secret is still owed a
+        destruction has it finished first, or is refused.
         """
+        current = store.get(f"{body.owner_tenant}:{body.label}")
+        if current is not None and api_key.is_key(current.provider):
+            if current.provider != provider:
+                raise BrokerValidationError(
+                    f"{current.account_id} is a {current.provider} key; a replacement "
+                    "is a key of the same provider"
+                )
+            return _rotate_api_key(request, body, authorization, store=store,
+                                   secrets=secrets, current=current)
+        if current is None:
+            owed = owed_key_deletion(request.app.state.broker.db, f"{body.owner_tenant}:{body.label}")
+            if owed is not None and not finish_key_deletion(
+                request.app.state.broker.db, secrets,
+                {**owed, "account_id": f"{body.owner_tenant}:{body.label}"},
+                now=datetime.now(timezone.utc),
+            )["done"]:
+                raise BrokerValidationError(
+                    f"the key deleted from {body.owner_tenant}:{body.label} still has its "
+                    "secret owed a destruction; nothing was stored. The quota sweep retries it"
+                )
         dedicated = (
             body.voice_dedicated
             if body.voice_dedicated is not None
@@ -4561,6 +4841,94 @@ def create_app(
             "account": account_to_api(registered, platform_wide=True),
             "registered": f"{registered.account_id}: an API key ({provider}), {where}"
             + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "organisation": None,
+            "expires_at": None,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    def _rotate_api_key(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None,
+        *,
+        store: Any,
+        secrets: Any,
+        current: Any,
+    ) -> dict[str, Any]:
+        """Replace a key's value under its label (docs/design/llm-providers.md §4.5).
+
+        The new value is validated with the vendor as an add is, then written
+        as a NEW VERSION of the key's one secret. Holders keep the old value
+        until their next turn boundary or process start, so the superseded
+        versions are destroyed ONE HOLD TTL LATER by the quota sweep
+        (`key_rotations`, `destroy_superseded_key_versions`), not at once.
+        Holds, caps, lends, sharing, pools, state and spend counters are
+        untouched: no `register`, only the version and who replaced it and
+        when (`key_added_by`/`key_added_at`, and `key_replaced_at`). A body's
+        lends or sharing are not read here; they change through their routes.
+        """
+        if current.voice_dedicated:
+            _platform_only(request, authorization,
+                           "only a platform admin may replace the dedicated Voice it key")
+        try:
+            key = api_key.parse_api_key(current.provider, body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an API key is recorded with the person who added it; send added_by"
+            )
+        now = datetime.now(timezone.utc)
+        try:
+            added = openai_api_key.added_fields(body.added_by, now)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        check = _check_key_with_vendor(request, current.provider, key)
+        secret = store.secret_for(current)
+        try:
+            written = secrets.add_version(secret, api_key.serialise(current.provider, key))
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not write a replaced API key's new version",
+                extra={"account_id": current.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the replacement for {current.account_id}: "
+                f"{type(exc).__name__}. The key in use is unchanged."
+            ) from None
+        destroy_after = now + DEFAULT_HOLD_TTL
+        db = request.app.state.broker.db
+        db.collection(KEY_ROTATIONS_COLLECTION).document(current.account_id).set({
+            "account_id": current.account_id,
+            "secret": secret,
+            "keep_version": version_number(str(written or "")),
+            "destroy_after": destroy_after,
+            "replaced_by": added.get("key_added_by"),
+            "replaced_at": now,
+            "done": False,
+        })
+        db.collection(ACCOUNTS_COLLECTION).document(current.account_id).update(
+            {**added, "key_replaced_at": now}
+        )
+        if check.outcome == api_key.CHECK_LIMITED:
+            store.record_health(
+                current.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was replaced",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        log.info(
+            "audit: an API key was replaced; its superseded version is destroyed after the hold TTL",
+            extra={"audit": True, "account_id": current.account_id,
+                   "replaced_by": added.get("key_added_by"),
+                   "destroy_after": destroy_after.isoformat()},
+        )
+        rotated = store.get(current.account_id) or current
+        return {
+            "account": account_to_api(rotated, platform_wide=True),
+            "registered": f"{current.account_id}: the key was replaced"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "replaced": True,
+            "superseded_destroyed_after": destroy_after.isoformat(),
             "organisation": None,
             "expires_at": None,
             "note": "stored write-only; no route in this service returns key material",
@@ -5430,13 +5798,15 @@ def create_app(
         request: Request,
         account_id: str,
         authorization: str | None = Header(default=None, alias="Authorization"),
-    ) -> dict[str, Any]:
+    ) -> Any:
         store = _accounts(request)
         account = store.get(account_id)
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
-        # The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
+        if api_key.is_key(account.provider):
+            return _remove_api_key(request, account, authorization)
+        # A PLAN's removal. The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
         # is irreversible and takes its version history with it, and an account
         # removed by mistake is then unrecoverable rather than re-registerable.
         # The secret is left to a PERSON, deliberately, and nothing collects it
@@ -5456,6 +5826,93 @@ def create_app(
                 extra={"account_id": account_id, "closed": closed},
             )
         return {"removed": account_id, "secret": "retained"}
+
+    def _remove_api_key(request: Request, account: Any, authorization: str | None) -> Any:
+        """Delete an API key (docs/design/llm-providers.md §4.4; Q3, the
+        secret destroyed at once on confirmation), in its order:
+
+        1. its holds closed and the `key_deletions/<account id>` record
+           (secret name, who, when; never the value) written in ONE
+           transaction with the document's delete;
+        2. every version of its secret destroyed and the secret deleted, the
+           record marked done, the deletion audited without the value. A
+           failure answers 502 naming the step, and the quota sweep retries
+           the record until it is done.
+
+        Closing first is deliberate: destroying first and then failing the
+        transaction would leave a live account whose secret is gone; this
+        order leaves at worst an orphan secret the record names. The two
+        exceptions are kept: an IMPORTED workspace key (Q7) is a copy, so
+        only its pool secret goes and the workspace's own
+        `swarm-tenant-<tenant>-<vendor>` is never named; the dedicated Voice
+        it key stored under its OLD `--<label>` name (Q9) has its versions
+        destroyed and keeps its empty secret. The broker never revokes the
+        key at the provider (Q4)."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError(
+                "this deployment has no secret store configured, so a key's secret "
+                "could not be destroyed; nothing was removed"
+            )
+        store = _accounts(request)
+        db = request.app.state.broker.db
+        secret = store.secret_for(account)
+        whole = secret == key_secret_name(account.owner_tenant, account.label)
+        if not whole and not account.voice_dedicated:
+            raise BrokerValidationError(
+                f"{account.account_id}'s secret is not its key secret; nothing was removed"
+            )
+        doc = db.collection(ACCOUNTS_COLLECTION).document(account.account_id).get()
+        imported_from = ((doc.to_dict() or {}).get(IMPORTED_FROM)
+                         if getattr(doc, "exists", False) else None)
+        try:
+            deleted_by = request.app.state.identity.verified_email(authorization) or None
+        except BrokerAuthError:
+            deleted_by = None
+        now = datetime.now(timezone.utc)
+        record = {
+            "account_id": account.account_id,
+            "secret": secret,
+            "whole": whole,
+            "provider": account.provider,
+            "imported_from": imported_from,
+            "deleted_by": deleted_by,
+            "deleted_at": now,
+            "done": False,
+            "done_at": None,
+            "attempts": 0,
+            "failed_step": None,
+            "error": None,
+        }
+        closed = remove_account_and_close_holds(db, account.account_id, now=now, key_deletion=record)
+        log.info(
+            "audit: an API key was deleted; its secret is destroyed now",
+            extra={"audit": True, "account_id": account.account_id, "secret": secret,
+                   "deleted_by": deleted_by, "holds_closed": closed},
+        )
+        outcome = finish_key_deletion(db, secrets, record, now=now)
+        answer: dict[str, Any] = {"removed": account.account_id, "holds_closed": closed}
+        if imported_from:
+            answer["workspace_secret"] = f"{imported_from} still holds the value"
+        if not outcome["done"]:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=502, content={
+                **answer,
+                "code": "key_secret_not_destroyed",
+                "step": outcome["step"],
+                "secret": "owed",
+                "message": (
+                    f"the key is removed but its secret is not yet destroyed: the "
+                    f"{outcome['step']} step failed ({outcome['error']}); the broker's "
+                    "quota sweep retries it until it is"
+                ),
+            })
+        # What became of the secret: deleted whole, or (the old-name Voice it
+        # key) left empty with no version to read.
+        fate = "destroyed" if whole else "emptied"
+        answer["versions_destroyed"] = outcome["versions_destroyed"]
+        return {**answer, "secret": fate}
 
     # ----------------------------------------------------------------------
     # Assignment: which account a starting agent runs on, and giving it back.
@@ -6821,6 +7278,32 @@ def create_app(
                     extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
                 )
                 result["ended_holds"] = {"error": type(exc).__name__}
+
+        # API KEYS' HOUSEKEEPING (docs/design/llm-providers.md §4.4, §4.5,
+        # §5.2), on this same tick rather than a schedule of its own: the
+        # deleted keys' secrets still owed a destruction, the rotated keys'
+        # superseded versions past their hold TTL, and the hourly probe of
+        # keys marked credit gone (`_claim_probe` keeps it hourly whatever
+        # the tick). Each in its own block, so one failing leaves the others
+        # and the quota recovery above as they were.
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is not None and account_store is not None:
+            db = request.app.state.broker.db
+            now = datetime.now(timezone.utc)
+            for key, run in (
+                ("key_deletions", lambda: finish_owed_key_deletions(db, secrets, now=now)),
+                ("key_rotations", lambda: destroy_superseded_key_versions(db, secrets, now=now)),
+                ("exhausted_probe", lambda: probe_exhausted_keys(
+                    db, account_store, secrets, request.app.state.key_validator, now=now)),
+            ):
+                try:
+                    result[key] = run()
+                except Exception as exc:  # pragma: no cover - defence in depth
+                    log.error(
+                        "an API key housekeeping block failed",
+                        extra={"block": key, "error": type(exc).__name__},
+                    )
+                    result[key] = {"error": type(exc).__name__}
 
         # The same scheduled tick refreshes subscription credentials, because
         # this service is the platform's single writer for them -- see

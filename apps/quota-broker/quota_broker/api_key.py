@@ -64,10 +64,23 @@ _MAX_LENGTH = 512
 
 #: Each vendor's list-models route, the one read-only call a key must be able
 #: to make (§4.1). A key with no credit still passes it (§5.2), which is why
-#: the exhausted probe (a later stage) is a completion and this is not.
+#: the exhausted probe (`HttpKeyValidator.probe`) is a completion and this is not.
 MODELS_URL: dict[str, str] = {
     ANTHROPIC_API: "https://api.anthropic.com/v1/models",
     OPENAI_API: "https://api.openai.com/v1/models",
+}
+#: The hourly exhausted probe's call (§5.2): a key with no credit still lists
+#: models, so the probe is the vendor's cheapest completion, capped at one
+#: output token (its cost accepted with Q5, 9 November 2026).
+PROBE_URL: dict[str, str] = {
+    ANTHROPIC_API: "https://api.anthropic.com/v1/messages",
+    OPENAI_API: "https://api.openai.com/v1/chat/completions",
+}
+#: Each vendor's smallest model, the one the probe asks. Changed here (or
+#: through `HttpKeyValidator(probe_models=...)`) the day a vendor retires it.
+DEFAULT_PROBE_MODEL: dict[str, str] = {
+    ANTHROPIC_API: "claude-haiku-4-5",
+    OPENAI_API: "gpt-4o-mini",
 }
 #: Anthropic's API version header, required on every call.
 ANTHROPIC_VERSION = "2023-06-01"
@@ -179,14 +192,47 @@ def request_headers(provider: str, key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
+def probe_body(provider: str, model: str) -> dict[str, Any]:
+    """The probe's one-token completion (§5.2). Both vendors' routes take
+    this one shape; `provider` is checked so an unknown kind is refused."""
+    if provider not in PROBE_URL:
+        raise CredentialError(f"{provider!r} is not an API key kind")
+    return {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}]}
+
+
 class HttpKeyValidator:
     """The real validation call. Injected (`app.state.key_validator`) so
     tests never make a network call."""
 
     def __init__(self, *, timeout: float = 10.0,
-                 opener: Callable[..., Any] | None = None) -> None:
+                 opener: Callable[..., Any] | None = None,
+                 probe_models: dict[str, str] | None = None) -> None:
         self._timeout = timeout
         self._opener = opener
+        self._probe_models = {**DEFAULT_PROBE_MODEL, **(probe_models or {})}
+
+    def probe(self, provider: str, key: str) -> bool:
+        """Whether a key marked credit gone can serve again (§5.2): True on
+        the vendor's 2xx to a one-token completion, False on any refusal (a
+        credit-gone 429 or 400, a revoked key's 401). `KeyCheckUnavailable`
+        when the vendor cannot be asked, carrying the type, never the key."""
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            PROBE_URL[provider],
+            data=json.dumps(probe_body(provider, self._probe_models[provider])).encode("utf-8"),
+            headers={**request_headers(provider, key), "content-type": "application/json"},
+            method="POST",
+        )
+        opener = self._opener or urllib.request.urlopen
+        try:
+            with opener(request, timeout=self._timeout) as response:
+                return 200 <= int(getattr(response, "status", 200)) < 300
+        except urllib.error.HTTPError:
+            return False
+        except (urllib.error.URLError, OSError) as exc:
+            raise KeyCheckUnavailable(f"the provider could not be reached: {type(exc).__name__}") from None
 
     def check(self, provider: str, key: str) -> KeyCheck:
         import urllib.error
@@ -213,6 +259,7 @@ __all__ = [
     "CHECK_LIMITED",
     "CHECK_REFUSED",
     "CHECK_VALID",
+    "DEFAULT_PROBE_MODEL",
     "DEFAULT_RETRY_AFTER_SECONDS",
     "HttpKeyValidator",
     "KIND_OF",
@@ -220,11 +267,13 @@ __all__ = [
     "KeyCheckUnavailable",
     "MODELS_URL",
     "OPENAI_API",
+    "PROBE_URL",
     "PROVIDERS",
     "VENDOR_OF",
     "check_from_status",
     "is_key",
     "parse_api_key",
+    "probe_body",
     "read_key",
     "request_headers",
     "serialise",
