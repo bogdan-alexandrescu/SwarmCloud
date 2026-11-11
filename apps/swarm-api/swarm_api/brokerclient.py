@@ -256,6 +256,12 @@ class AccountPool(Protocol):
         self, *, state: str, code: str, expected_owner: str
     ) -> dict[str, Any]: ...
 
+    def begin_device_sign_in(
+        self, *, owner_tenant: str, label: str, lend_to: list[str]
+    ) -> dict[str, Any]: ...
+
+    def poll_device_sign_in(self, *, state: str, expected_owner: str) -> dict[str, Any]: ...
+
     def refresh(self, account_id: str) -> dict[str, Any]: ...
 
     def remove(self, account_id: str) -> dict[str, Any]: ...
@@ -718,6 +724,32 @@ class BrokerClient:
             "POST",
             "/v1/accounts/exchange",
             payload={"state": state, "code": code, "expected_owner": expected_owner},
+        )
+
+    def begin_device_sign_in(
+        self, *, owner_tenant: str, label: str, lend_to: list[str]
+    ) -> dict[str, Any]:
+        """Start a ChatGPT plan's device-code sign-in: the code to show, the
+        address to type it at and the state. The device id the vendor is
+        polled with stays in the broker and is never in this answer."""
+        return self._call(
+            "POST",
+            "/v1/accounts/device/start",
+            payload={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": "openai",
+                "lend_to": lend_to,
+            },
+        )
+
+    def poll_device_sign_in(self, *, state: str, expected_owner: str) -> dict[str, Any]:
+        """Ask whether it was approved; the broker files the plan when it was.
+        `expected_owner` is `finish_sign_in`'s, with the same rule."""
+        return self._call(
+            "POST",
+            "/v1/accounts/device/poll",
+            payload={"state": state, "expected_owner": expected_owner},
         )
     def refresh(self, account_id: str) -> dict[str, Any]:
         return self._call(
