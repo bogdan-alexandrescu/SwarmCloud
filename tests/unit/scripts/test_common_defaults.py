@@ -190,7 +190,7 @@ def test_dev_loop_sets_its_project_before_sourcing() -> None:
 
 #: What CI runs with no PROJECT_ID (application.yml's shell and quick-checks
 #: jobs, security.yml's checks and trivy jobs): each touches no project, says
-#: so with SWARM_NO_PROJECT=1, and must get past common.sh (DAYONE-DESAGA-2B).
+#: so with SWARM_NO_PROJECT=1, and must get past common.sh (the Day One project-defaults lane).
 #: The guards' self-tests prove themselves against the placeholder list
 #: (deny_list_use_example). destroy.sh's is not here: its fixture still names
 #: the old literal's resources, which lane 3 replaces (see the PR body).
@@ -250,3 +250,31 @@ def test_empty_deny_list_expansions_are_guarded() -> None:
             if bare.search(line) and not guarded:
                 offenders.append(f"{path.relative_to(REPO)}:{n}")
     assert not offenders
+
+
+def test_a_list_written_over_several_lines_reads_as_empty_and_says_why(tmp_path: Path) -> None:
+    # deployment_list reads a one-line `NAME = [...]` only. A list split over
+    # lines reads as empty, so a script that needs it refuses (fail-closed);
+    # the operator is told why rather than left with "names no domain".
+    # MUTATION: drop the note and this fails.
+    _write_list(tmp_path)
+    tfvars = tmp_path / "config" / "dev" / "dev.tfvars"
+    tfvars.write_text('allowed_domains = [\n  "example.com",\n]\n')
+    tfvars.chmod(0o600)
+    proc = _source(tmp_path, 'printf "[%s]" "$(deployment_list allowed_domains)"', PROJECT_ID=PROJECT,
+                   REGION="example-region", ZONE="example-zone")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "[]", proc.stdout
+    assert "allowed_domains spans several lines" in proc.stderr, proc.stderr
+
+
+def test_a_list_on_one_line_is_read_without_a_note(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    tfvars = tmp_path / "config" / "dev" / "dev.tfvars"
+    tfvars.write_text('allowed_domains = ["example.com", "example.org"] # two\n')
+    tfvars.chmod(0o600)
+    proc = _source(tmp_path, 'deployment_list allowed_domains', PROJECT_ID=PROJECT,
+                   REGION="example-region", ZONE="example-zone")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["example.com", "example.org"]
+    assert "spans several lines" not in proc.stderr, proc.stderr

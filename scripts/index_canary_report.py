@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The index canary: how the repository index's runs went over a window.
 
-The owner's agent quality program (BGD, 2026-11-03) proves the landed
+The owner's agent quality program (the owner, 2026-11-03) proves the landed
 incremental carry before relying on it. On 2026-11-03 SwarmCloud's 222 index
 runs of a week were every one a full ~42-minute rebuild, and nothing said so
 until someone counted by hand. This report counts: it reads the index-runs

@@ -26,3 +26,10 @@ gha-creds-*.json
 # The never-touch list lives in gs://<state-bucket>/config/<env>/deny-list.json
 # and its cache outside the clone; a copy written here is never committed.
 deny-list.json
+
+# Local test and scan output, an agent's verification note and scratch files:
+# none belongs in the repository.
+.coverage
+*.sarif
+/verification.md
+scratchpad/

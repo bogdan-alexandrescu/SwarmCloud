@@ -28,6 +28,19 @@ part, so a comment on a frame is `add_note` with a part anchor and the pick
 is `approve_mockup` naming the frame. Approving records a choice on the
 visual; it deploys and starts nothing.
 
+EACH FRAME IS CHECKED HERE FIRST, by swarm-api's own rules (`frame_refusal`
+mirrors `swarm_api.voice.visuals._frame_refusal`): no script, iframe, object,
+embed, applet, portal, frame, form, link, base or meta tag, no `on...=`
+handler, no `javascript:`, no `@import`, and every src, href, url() and the
+other address attributes `data:` or `#`. A frame that breaks one is repaired
+(`repair_frame`: the tag or the handler removed, a form made a div, a link
+pointed at `#`, any other address dropped) and checked again; one that still
+breaks a rule is left out with its reason, and the others are drawn. The
+planner gets back what was repaired and what was left out, by frame, and the
+voice says which frame was not drawn and why (planner.py `frames_not_drawn`).
+Before this a whole page's `<meta charset>` was enough for swarm-api to refuse
+the mock-up, the planner was told only "HTTP 422", and it dropped a version.
+
 EVERY CALL GOES THROUGH THE SESSION GRANT, on the two writes the grant reaches
 (swarm_api/voice/grant.py `WRITE_ROUTES`): the visual write
 (`POST /v1/voice/sessions/{session_id}/visuals`, `{visual}`, `{focus}`,
@@ -71,6 +84,106 @@ NOTE_MAX = 2_000
 #: swarm-api's `MOCKUP_FRAMES_MAX`, and the most one frame's HTML may be.
 FRAMES_MAX = 12
 FRAME_HTML_MAX = 64 * 1024
+
+#: swarm-api's frame rules (visuals.py `_FRAME_REFUSED_RE`, `_FRAME_ADDRESS_RE`),
+#: split so a refusal can say which one a frame broke.
+_REFUSED_TAG_RE = re.compile(
+    r"<\s*/?\s*(script|iframe|frame|frameset|object|embed|applet|portal|form|link|base|meta)\b",
+    re.IGNORECASE)
+_HANDLER_RE = re.compile(r"\bon[a-z]+\s*=", re.IGNORECASE)
+_SCRIPT_URL_RE = re.compile(r"(?:java|vb)script\s*:", re.IGNORECASE)
+_IMPORT_RE = re.compile(r"@import\b", re.IGNORECASE)
+_ADDRESS_RE = re.compile(
+    r"""\b(src|srcset|href|xlink:href|action|formaction|poster|background|ping|cite|"""
+    r"""longdesc|manifest|codebase|data)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"""
+    r"""|url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)""", re.IGNORECASE)
+#: What `repair_frame` removes whole, with what they hold.
+_ELEMENT_RE = re.compile(
+    r"<\s*(script|iframe|object|embed|applet|portal|frameset|frame)\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL)
+_VOID_TAG_RE = re.compile(
+    r"<\s*/?\s*(script|iframe|frame|frameset|object|embed|applet|portal|link|base|meta)\b[^>]*>",
+    re.IGNORECASE)
+_FORM_TAG_RE = re.compile(r"<\s*(/?)\s*form\b[^>]*>", re.IGNORECASE)
+_HANDLER_ATTR_RE = re.compile(r"""\s*\bon[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE)
+_IMPORT_RULE_RE = re.compile(r"@import\b[^;<]*;?", re.IGNORECASE)
+
+
+def _kept(value: str) -> bool:
+    value = value.strip().lower()
+    return value.startswith("data:") or value.startswith("#")
+
+
+def frame_refusal(html: str) -> str | None:
+    """Why swarm-api would refuse a frame's HTML, said so a person can hear it,
+    or None. Names the tag or the attribute, never the address."""
+    tag = _REFUSED_TAG_RE.search(html)
+    if tag is not None:
+        return f"it has a {tag.group(1).lower()} tag, and a frame runs no code and loads nothing"
+    if _HANDLER_RE.search(html) or _SCRIPT_URL_RE.search(html):
+        return "it has a script handler, and a frame runs no code"
+    if _IMPORT_RE.search(html):
+        return "it imports a stylesheet, and a frame loads nothing"
+    for match in _ADDRESS_RE.finditer(html):
+        value = next((g for g in match.groups()[1:] if g is not None), "")
+        if not _kept(value):
+            where = (match.group(1) or "url()").lower()
+            return f"its {where} names an outside address, and a frame fetches nothing"
+    return None
+
+
+def repair_frame(html: str) -> tuple[str, list[str]]:
+    """`html` with what swarm-api refuses taken out, and what was changed.
+    Each repair only removes or neutralises: nothing is added that could run
+    or fetch, and `frame_refusal` judges the result again."""
+    changed: list[str] = []
+
+    def sub(pattern: re.Pattern[str], repl: Any, text: str, what: str) -> str:
+        out, n = pattern.subn(repl, text)
+        if n:
+            changed.append(what)
+        return out
+
+    html = sub(_ELEMENT_RE, "", html, "removed a script or embedded document")
+    html = sub(_VOID_TAG_RE, "", html, "removed meta, link and base tags")
+    html = sub(_FORM_TAG_RE, lambda m: f"<{m.group(1)}div>", html, "made a form a div")
+    html = sub(_HANDLER_ATTR_RE, "", html, "removed script handlers")
+    html = sub(_IMPORT_RULE_RE, "", html, "removed an @import")
+
+    def address(match: re.Match[str]) -> str:
+        value = next((g for g in match.groups()[1:] if g is not None), "")
+        if _kept(value):
+            return match.group(0)
+        attr = (match.group(1) or "").lower()
+        if not attr:
+            return "none"
+        return f'{match.group(1)}="#"' if attr in ("href", "xlink:href") else ""
+
+    repaired = _ADDRESS_RE.sub(address, html)
+    if repaired != html:
+        changed.append("replaced outside addresses (links point at #, images and fonts dropped)")
+    html = sub(_SCRIPT_URL_RE, "", repaired, "removed a javascript: address")
+    return html, changed
+
+
+def _label(frame: dict[str, Any], n: int) -> str:
+    """The frame's label on one line, cut to swarm-api's TITLE_MAX; a frame
+    with no label is refused naming the frame."""
+    label = frame.get("label")
+    label = " ".join(label.split()) if isinstance(label, str) else ""
+    if not label:
+        raise BadInput(f"frame {n}'s label is 1 to {TITLE_MAX} characters")
+    return label[:TITLE_MAX].strip()
+
+
+#: What a frame may hold, said the same way in the tool's description and the
+#: planner's instructions (prompts.py), and checked by `frame_refusal`.
+FRAME_RULES = (
+    "A frame may hold HTML elements, one <style> block and style attributes, inline <svg>, "
+    "and images only as data: URIs. It holds no <script>, <iframe>, <object>, <embed>, "
+    "<form>, <link>, <base> or <meta> tag (not even <meta charset> or a viewport), no "
+    "on...= handler and no javascript:, no @import and no web font; every href is # or "
+    "#id, and every src, url() and other address is a data: URI. Use system fonts.")
 
 
 def _str(desc: str) -> dict[str, Any]:
@@ -123,9 +236,12 @@ def tool_schemas() -> list[dict[str, Any]]:
                "step": _nullable("string", "The attempt id of one step; null for every failure."),
                "title": _TITLE}),
         _tool(SHOW_MOCKUP, "Show one proposal's mock-up on screen, as a mockup visual: 1 to 12 "
-              "frames, each a self-contained HTML document with inline CSS, no script and no "
-              "address (no links out, no remote images; data: images are kept). You get back "
-              "its visual_id and its frames' ids (frame-1, frame-2, ...).",
+              "frames, one per version asked for, each a self-contained HTML page. " + FRAME_RULES
+              + " A frame that breaks a rule is repaired (the tag or handler removed, a link "
+              "pointed at #, an outside image dropped) and one that cannot be is left out. You "
+              "get back its visual_id, its frames' ids (frame-1, frame-2, ...), and `repaired` "
+              "and `dropped` naming each frame changed or left out and why: redraw a dropped "
+              "frame by the rules, or say why it is missing.",
               {"title": _TITLE,
                "frames": {"type": "array", "description": "The frames, in the order shown.",
                           "items": {"type": "object", "additionalProperties": False,
@@ -207,15 +323,47 @@ async def _visual(api: SwarmApi, visual: dict[str, Any]) -> dict[str, Any]:
             "lines": view.get("lines")}
 
 
-def _frames(value: Any) -> list[dict[str, str]]:
+class FramesRefused(BadInput):
+    """Every frame of a mock-up broke a rule even after repair; `dropped`
+    says which and why, for the planner and for the voice."""
+
+    def __init__(self, dropped: list[dict[str, Any]]) -> None:
+        self.dropped = dropped
+        super().__init__("no frame could be drawn: " + "; ".join(
+            f"frame {d['n']} ({d['label']}) {d['why']}" for d in dropped))
+
+
+def frames_of(value: Any) -> tuple[list[dict[str, str]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(the frames to draw, numbered in the order kept; what was repaired, by
+    frame; what was left out, by frame, with why). Raises FramesRefused when
+    no frame is left."""
     if not isinstance(value, list) or not 1 <= len(value) <= FRAMES_MAX:
         raise BadInput(f"frames is 1 to {FRAMES_MAX} frames")
-    out = []
+    kept: list[dict[str, str]] = []
+    repaired: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
     for n, frame in enumerate(value, start=1):
         frame = frame if isinstance(frame, dict) else {}
-        out.append({"id": f"frame-{n}", "label": _text(frame, "label"),
-                    "html": _text(frame, "html", max=FRAME_HTML_MAX)})
-    return out
+        label, html = _label(frame, n), frame.get("html")
+        if not isinstance(html, str) or not html.strip():
+            dropped.append({"n": n, "label": label, "why": "it has no HTML"})
+            continue
+        if len(html) > FRAME_HTML_MAX:
+            dropped.append({"n": n, "label": label,
+                            "why": f"its HTML is over {FRAME_HTML_MAX // 1024} KiB"})
+            continue
+        first = frame_refusal(html)
+        if first is not None:
+            html, changed = repair_frame(html)
+            why = frame_refusal(html)
+            if why is not None or not html.strip():
+                dropped.append({"n": n, "label": label, "why": why or first})
+                continue
+            repaired.append({"n": n, "label": label, "changed": changed})
+        kept.append({"id": f"frame-{len(kept) + 1}", "label": label, "html": html.strip()})
+    if not kept:
+        raise FramesRefused(dropped)
+    return kept, repaired, dropped
 
 
 async def _mockup(api: SwarmApi, payload: dict[str, Any]) -> dict[str, Any]:
@@ -268,12 +416,18 @@ async def run_visual_tool(api: SwarmApi, name: str, args: Any) -> Any:
         visual_id = args.get("visual_id")
         if visual_id is not None:
             visual_id = _match(args, "visual_id", _VISUAL_ID_RE, "null or a visual id")
-        frames = _frames(args.get("frames"))
+        title = _text(args, "title")
+        frames, repaired, dropped = frames_of(args.get("frames"))
         drawn = await _visual(api, {
-            "kind": "mockup", "title": _text(args, "title"), "parts": None, "source": None,
+            "kind": "mockup", "title": title, "parts": None, "source": None,
             "body": json.dumps({"frames": frames}, ensure_ascii=False), "visual_id": visual_id})
-        return {"visual_id": drawn["visual_id"], "version": drawn["version"],
-                "frames": drawn["parts"]}
+        answer = {"visual_id": drawn["visual_id"], "version": drawn["version"],
+                  "frames": drawn["parts"], "asked": len(args["frames"])}
+        if repaired:
+            answer["repaired"] = repaired
+        if dropped:
+            answer["dropped"] = dropped
+        return answer
     if name == APPROVE_MOCKUP:
         answer = await _mockup(api, {"approve": {
             "visual_id": _match(args, "visual_id", _VISUAL_ID_RE, "a visual id"),

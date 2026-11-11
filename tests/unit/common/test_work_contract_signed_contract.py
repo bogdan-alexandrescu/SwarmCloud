@@ -14,6 +14,7 @@ Accepted by the owner 4 November 2026 ("Sign the key"):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,9 @@ from swarm_common import specsign
 from swarm_common.specsign import SpecNotCanonical, canonical_step_spec, signing_format, spec_digest
 
 REQUESTS = Path(__file__).resolve().parents[3] / "docs" / "contract-change-requests.md"
+#: "ACCEPTED by the owner", with or without the owner's initials in brackets
+#: after it: the record names a role, never a person.
+ACCEPTED = r"ACCEPTED by the owner (?:\([A-Z]+\) )?"
 
 DOC = {
     "tenant_id": "eng",
@@ -110,7 +114,7 @@ def test_older_formats_bytes_do_not_change(older):
 def test_the_request_is_marked_accepted_and_applied():
     text = REQUESTS.read_text()
     row = next(line for line in text.splitlines() if line.startswith("| 137 |"))
-    assert "ACCEPTED by the owner 4 November 2026" in row and "APPLIED" in row
+    assert re.search(ACCEPTED + "4 November 2026", row) and "APPLIED" in row
     section = text.split("\n## 137. ", 1)[1].split("\n## ", 1)[0]
-    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner")
+    assert re.match(re.escape("**Status:** ") + ACCEPTED, section.splitlines()[2])
     assert "digest-verified allowance list" in section

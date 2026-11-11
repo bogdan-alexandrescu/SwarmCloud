@@ -1,6 +1,6 @@
 """A hotfix whose build a newer push cancelled ends green, superseded.
 
-BGD's follow-up to PR 2446, 2026-10-26 (part of #2441). Since #2438
+The owner's follow-up to PR 2446, 2026-10-26 (part of #2441). Since #2438
 application.yml runs all of main in ONE concurrency group with
 cancel-in-progress, so a newer push cancels the older commit's run before its
 `build images` job finishes. hotfix.yml waits for exactly that job

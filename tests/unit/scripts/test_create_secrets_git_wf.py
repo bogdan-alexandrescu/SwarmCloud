@@ -1,6 +1,6 @@
 """`scripts/create-secrets.sh` no longer stores a `-git-wf` slot (#2029, WF-APP-TOKEN).
 
-BGD, 2026-10-22: the `-git-wf` slot and IAM row L-2 are removed. A
+The owner, 2026-10-22: the `-git-wf` slot and IAM row L-2 are removed. A
 workflow-file push uses a token the SwarmCloud GitHub App mints per push, for
 a repository whose `workflow_files` switch is on, so there is nothing to
 store. What this holds, and nothing else:

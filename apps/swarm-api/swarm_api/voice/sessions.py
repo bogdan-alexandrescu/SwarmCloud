@@ -168,6 +168,22 @@ the cause `voice_unreachable` and frees the person's marker, so the next try
 is not a 409. An end swarm-voice does not hear is logged and the session
 still ends: what stops OpenAI's billing then is swarm-voice's own idle stop
 (§3.10).
+
+THE REOPEN (docs/design/llm-providers.md §5.3, the owner, 11 November 2026).
+When a Live session's key is spent, swarm-voice holds the next tier and says
+so on `POST /v1/voice/sessions/{id}/reopen` through the session grant
+(routes/voice.py `tier_reopen`): `hold_reopen` records `reopen: {tier, at}` on
+the session document and the route puts `voice.tier.reopen` ({tier}, a name of
+REOPEN_TIERS and never a key) on the session's stream. A GPT-Live session is
+bound to the browser's offer, so the console makes a fresh one and starts the
+SAME session again (`{offer_sdp, session_id}`): `reopen` accepts it only for
+the session's own person in this tenant, while it is live and a reopen is held
+(at most REOPEN_HOLD_SECONDS old), and claims the hold in one transaction so
+two starts cannot both pass. Anything else is 409 `conflict`, as a second
+start always was. The offer goes to swarm-voice with no grant and no models:
+swarm-voice's reopen keeps the spent session's grant, planner model and trace.
+A reopen swarm-voice refuses ends the session (cause `reopen_failed`) and tells
+swarm-voice, so the held tier and any spent Live session are closed.
 """
 
 from __future__ import annotations
@@ -322,6 +338,18 @@ MAX_SDP_BYTES = 64 * 1024
 #: tries after the create outran this and the console said "could not be reached").
 #: Raise both together, never this alone below swarm-voice's bound.
 START_TIMEOUT_SECONDS = 20.0
+
+#: The stream event swarm-voice's held next tier puts on the session's stream
+#: (swarm_voice.live.REOPEN_EVENT).
+REOPEN_EVENT = "voice.tier.reopen"
+#: The tiers a reopen may name (swarm_voice.accountlease.TIERS): a plan, a key
+#: shared with Voice it, the dedicated Voice it key. A name, never a key.
+REOPEN_TIERS = ("plan", "api_key", "voice_dedicated")
+#: How long a held reopen is accepted. swarm-voice keeps the next tier while
+#: the spent Live session lasts and REOPEN_SECONDS (60 s) after it ends; twice
+#: that bounds a hold whose session swarm-voice has long given back.
+REOPEN_HOLD_SECONDS = 120
+END_REOPEN_FAILED = "reopen_failed"
 #: The longest a delegation is waited on: swarm-voice's
 #: claudefront.MAX_WAIT_SECONDS, the planner's turn.
 DELEGATION_WAIT_SECONDS = 240.0
@@ -533,6 +561,9 @@ class StartCall:
     #: Voice it › Settings' debug mode, read at the start: swarm-voice traces
     #: each planner turn (voice/trace.py) only when it is True.
     debug: bool = False
+    #: The second start of a Live session whose next tier is held: swarm-voice
+    #: is sent the offer alone and keeps the spent session's grant and models.
+    reopen: bool = False
 
     def __repr__(self) -> str:
         return (f"StartCall(session_id={self.session_id!r}, project_id={self.project_id!r}, "
@@ -674,6 +705,9 @@ class HttpVoiceClient:
             # defaults to live).
             body = {"voice_session_id": call.session_id, "project_id": call.project_id,
                     "person": call.person, "grant": call.grant, "mode": call.mode}
+        if call.reopen:
+            # The reopen carries no grant: swarm-voice keeps the spent session's.
+            body = {"voice_session_id": call.session_id, "person": call.person, "offer": call.offer}
         if call.planner_model is not None:
             body["planner_model"] = call.planner_model
         if call.conversation_model is not None:
@@ -1146,6 +1180,75 @@ class VoiceSessions:
             self._client.end(call.session_id, cause=END_VOICE_UNREACHABLE)
             raise
         return None
+
+    def hold_reopen(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
+                    tier: str) -> None:
+        """Record the next tier swarm-voice holds for this live Live session.
+        `NotFound` when it is not this person's in this tenant; 409 when it is
+        not a live Live session."""
+        if tier not in REOPEN_TIERS:
+            raise ValueError(f"no Voice it tier {tier!r}")
+        session_ref = self._session_ref(project_id, session_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(session_ref))
+            data = (snap.to_dict() or {}) if snap.exists else {}
+            if not self._mine(data, tenant_id, person.strip().lower()):
+                raise NotFound(f"voice session {session_id!r} not found")
+            if data.get("state") != LIVE or (data.get("mode") or MODE_LIVE) != MODE_LIVE:
+                raise VoiceSessionNotLive("This Voice it session is not a live Live session; nothing reopens.",
+                                          detail={"reason": NOT_LIVE, "state": data.get("state")})
+            txn.update(session_ref, {"reopen": {"tier": tier, "at": self._now()}})
+
+        _apply(self._db.transaction())
+        log.info("voice session %s: the %s tier is held for the reopen", session_id, tier)
+
+    def reopen(self, *, tenant_id: str, person: str, session_id: str, offer: str) -> dict[str, Any]:
+        """The second start of this person's live Live session, while a reopen
+        is held: the hold is claimed, the fresh offer goes to swarm-voice and
+        its answer comes back. 404 for a session that is not this person's in
+        this tenant; 409 `conflict` with no reopen held, as any second start."""
+        person = person.strip().lower()
+        project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
+        session_ref = self._session_ref(project_id, session_id)
+
+        @firestore.transactional
+        def _claim(txn: Any) -> str:
+            snap = _snapshot(txn.get(session_ref))
+            data = (snap.to_dict() or {}) if snap.exists else {}
+            if not self._mine(data, tenant_id, person):
+                raise NotFound(f"voice session {session_id!r} not found")
+            held = data.get("reopen") if isinstance(data.get("reopen"), dict) else {}
+            at = _aware(held.get("at"))
+            fresh = at is not None and self._now() - at <= timedelta(seconds=REOPEN_HOLD_SECONDS)
+            if data.get("state") != LIVE or (data.get("mode") or MODE_LIVE) != MODE_LIVE \
+                    or held.get("tier") not in REOPEN_TIERS or not fresh:
+                raise VoiceSessionLive(LIVE_HERE, detail={"session_id": session_id, "reason": "no_reopen_held"})
+            txn.update(session_ref, {"reopen": None})
+            return str(held["tier"])
+
+        tier = _claim(self._db.transaction())
+        call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
+                         person=person, offer=offer, grant="", mode=MODE_LIVE, reopen=True)
+        try:
+            started = self._client.start(call)
+            if not isinstance(started, StartAnswer) or not _valid_answer(started.answer):
+                raise VoiceUnreachable("swarm-voice's answer to the reopen is not an SDP answer; "
+                                       "the session was ended.")
+        except (VoiceUnreachable, VoicePoolRefused, VoicePoolBusy):
+            # The talk ends with its reason: the session, its grant, the held
+            # tier and any spent Live session swarm-voice still holds.
+            self._close(tenant_id=tenant_id, person=person, project_id=project_id,
+                        session_id=session_id, cause=END_REOPEN_FAILED)
+            self._client.end(session_id, cause=END_REOPEN_FAILED)
+            raise
+        session_ref.update({"live_session_id": started.live_session_id, "tier": tier,
+                            "reopened_at": self._now(), "activity_at": self._now()})
+        log.info("voice session reopened tenant=%s project=%s session=%s tier=%s",
+                 tenant_id, project_id, session_id, tier)
+        return {"project_id": project_id, "session_id": session_id, "state": LIVE,
+                "new_project": False, "mode": MODE_LIVE, "answer_sdp": started.answer, "tier": tier}
 
     def turn(self, *, tenant_id: str, person: str, session_id: str, text: str) -> dict[str, Any]:
         """One spoken turn of a text session, as text: swarm-voice's reply and

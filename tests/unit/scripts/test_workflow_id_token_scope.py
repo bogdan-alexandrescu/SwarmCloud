@@ -50,7 +50,7 @@ NEEDS_ID_TOKEN = {
     "terraform.yml": {"plan"},
     "security.yml": {"images"},
     "iam-refusal-probe.yml": {"probe"},
-    # Publishing a release (BGD 2026-10-30, DAYONE-RELEASE-CI): `check` reads
+    # Publishing a release (the owner 2026-10-30, DAYONE-RELEASE-CI): `check` reads
     # the inputs and release.yml's runs with no Google identity.
     "publish-release.yml": {"publish"},
     "release.yml": {"build", "promote", "infrastructure", "infrastructure-iam", "deploy"},

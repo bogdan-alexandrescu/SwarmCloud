@@ -19,6 +19,12 @@
  * (`sendTurn`), and speaks the reply itself (speech.ts). A start that names
  * no mode is a live one, as every start was before.
  *
+ * THE REOPEN (docs/design/llm-providers.md §5.3). A GPT-Live session is bound
+ * to the offer it answered, so when its key's credit is gone and swarm-api
+ * streams `voice.tier.reopen`, `reopenTalk` closes the spent peer, keeps the
+ * mic, and starts the SAME session again with a fresh offer
+ * (`{offer_sdp, session_id}`); swarm-voice answers it on the next tier.
+ *
  * THE ONE PLACE THE SESSION ROUTES ARE CALLED. swarm-api's Voice it routes are
  * built by a parallel lane (section 10, "swarm-api starts and ends a Voice it
  * session"); every call to them is in `startVoiceSession` and
@@ -73,16 +79,29 @@ export class TalkError extends Error {
 /**
  * `POST /v1/voice/sessions`: swarm-api checks the person and forwards the
  * offer. With `projectId` (a Resume), the session continues that project;
- * without it, swarm-api opens a new one.
+ * without it, swarm-api opens a new one. With `reopenOf`, the offer starts
+ * that live session again on its held next tier (the reopen).
  */
-export async function startVoiceSession(offerSdp: string, projectId: string | null = null): Promise<StartedSession> {
-  const body = projectId === null ? { offer_sdp: offerSdp } : { offer_sdp: offerSdp, project_id: projectId }
+export async function startVoiceSession(
+  offerSdp: string,
+  projectId: string | null = null,
+  reopenOf: string | null = null,
+): Promise<StartedSession> {
+  const body =
+    reopenOf !== null
+      ? { offer_sdp: offerSdp, session_id: reopenOf }
+      : projectId === null
+        ? { offer_sdp: offerSdp }
+        : { offer_sdp: offerSdp, project_id: projectId }
   const r = await write(route(VOICE_SESSIONS), 'POST', body)
   if (r.status === 'error' || r.status === 'stale') throw new TalkError(r.error.message, r.error)
   if (r.status !== 'ok') throw new TalkError('swarm-api answered the start with nothing.')
   const d = r.data as { session_id?: unknown; project_id?: unknown; mode?: unknown; answer_sdp?: unknown } | null
   if (d === null || typeof d.session_id !== 'string' || d.session_id === '') {
     throw new TalkError("swarm-api's answer to the start carried no session id.")
+  }
+  if (reopenOf !== null && d.session_id !== reopenOf) {
+    throw new TalkError("swarm-api's answer to the reopen named another session.")
   }
   const project_id = typeof d.project_id === 'string' && d.project_id !== '' ? d.project_id : projectId
   if (d.mode === 'text') return { session_id: d.session_id, project_id, mode: 'text' }
@@ -192,6 +211,62 @@ export interface TalkCall {
   micStream: MediaStream
   /** Stop listening, close the peer and stop the mic. Ends nothing at swarm-api. */
   hangUp: () => void
+  /** Close the peer and keep the mic: the reopen replaces the peer. */
+  dropPeer: () => void
+}
+
+/** One peer carrying the mic's track, with its events channel. */
+interface Peer {
+  pc: RTCPeerConnection
+  /** Close the peer; the mic is left as it is. Safe to call twice. */
+  close: () => void
+}
+
+function openPeer(h: TalkHandlers, mic: MediaStreamTrack, micStream: MediaStream): Peer {
+  const pc = new RTCPeerConnection()
+  const channel = pc.createDataChannel(EVENTS_CHANNEL)
+  let open = true
+  const onMessage = (e: Event) => {
+    if (open) h.onEvent((e as MessageEvent).data)
+  }
+  const onTrack = (e: Event) => {
+    const t = e as RTCTrackEvent
+    const stream = t.streams?.[0] ?? (t.track ? new MediaStream([t.track]) : null)
+    if (open && stream !== null) h.onVoice(stream)
+  }
+  const onState = () => {
+    if (open && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) h.onDropped()
+  }
+  channel.addEventListener('message', onMessage)
+  pc.addEventListener('track', onTrack)
+  pc.addEventListener('connectionstatechange', onState)
+  const close = () => {
+    if (!open) return
+    open = false
+    channel.removeEventListener('message', onMessage)
+    pc.removeEventListener('track', onTrack)
+    pc.removeEventListener('connectionstatechange', onState)
+    try {
+      channel.close()
+    } catch {
+      // Closing a channel that never opened is not a failure to report.
+    }
+    pc.close()
+  }
+  try {
+    pc.addTrack(mic, micStream)
+  } catch (e) {
+    close()
+    throw e
+  }
+  return { pc, close }
+}
+
+async function offerOf(pc: RTCPeerConnection): Promise<string> {
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  if (!offer.sdp) throw new TalkError('The browser made no SDP offer.')
+  return offer.sdp
 }
 
 /**
@@ -221,65 +296,64 @@ export async function connectTalk(h: TalkHandlers, projectId: string | null = nu
     micStream.getTracks().forEach((t) => t.stop())
     throw new TalkError('No microphone could be opened.')
   }
-  const pc = new RTCPeerConnection()
-  const channel = pc.createDataChannel(EVENTS_CHANNEL)
+  let peer: Peer | null = null
   let open = true
-  const onMessage = (e: Event) => {
-    if (open) h.onEvent((e as MessageEvent).data)
-  }
-  const onTrack = (e: Event) => {
-    const t = e as RTCTrackEvent
-    const stream = t.streams?.[0] ?? (t.track ? new MediaStream([t.track]) : null)
-    if (open && stream !== null) h.onVoice(stream)
-  }
-  const onState = () => {
-    if (open && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) h.onDropped()
-  }
-  channel.addEventListener('message', onMessage)
-  pc.addEventListener('track', onTrack)
-  pc.addEventListener('connectionstatechange', onState)
-  let peerOpen = true
-  // Close the peer and keep the mic: a text session needs the mic but no WebRTC.
-  const closePeer = () => {
-    if (!peerOpen) return
-    peerOpen = false
-    channel.removeEventListener('message', onMessage)
-    pc.removeEventListener('track', onTrack)
-    pc.removeEventListener('connectionstatechange', onState)
-    try {
-      channel.close()
-    } catch {
-      // Closing a channel that never opened is not a failure to report.
-    }
-    pc.close()
-  }
   const hangUp = () => {
     if (!open) return
     open = false
-    closePeer()
+    peer?.close()
     micStream.getTracks().forEach((t) => t.stop())
   }
   try {
-    pc.addTrack(mic, micStream)
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    if (!offer.sdp) throw new TalkError('The browser made no SDP offer.')
-    const started = await startVoiceSession(offer.sdp, projectId)
+    peer = openPeer(h, mic, micStream)
+    const p = peer
+    const started = await startVoiceSession(await offerOf(p.pc), projectId)
     if (started.mode === 'text') {
-      closePeer()
-      return { sessionId: started.session_id, projectId: started.project_id, mode: 'text', mic, micStream, hangUp }
+      // Close the peer and keep the mic: a text session needs the mic but no WebRTC.
+      p.close()
+      return { sessionId: started.session_id, projectId: started.project_id, mode: 'text', mic, micStream, hangUp, dropPeer: p.close }
     }
     try {
-      await pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
+      await p.pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
     } catch (e) {
       // The session exists at OpenAI: end it, so it is not billed while nobody can hear it.
       await endVoiceSession(started.session_id)
       throw e
     }
-    return { sessionId: started.session_id, projectId: started.project_id, mode: 'live', mic, micStream, hangUp }
+    return { sessionId: started.session_id, projectId: started.project_id, mode: 'live', mic, micStream, hangUp, dropPeer: p.close }
   } catch (e) {
     hangUp()
     if (e instanceof TalkError) throw e
     throw new TalkError('The call could not be set up in this browser.')
+  }
+}
+
+/**
+ * The reopen: `prev`'s spent peer is closed first (its Live session is ending,
+ * and its drop must not end the talk), the mic stays, and a fresh offer starts
+ * the same session again. On a failure the new peer is closed and the mic is
+ * left to the caller, who ends the talk with the reason.
+ */
+export async function reopenTalk(h: TalkHandlers, prev: TalkCall): Promise<TalkCall> {
+  prev.dropPeer()
+  let peer: Peer | null = null
+  try {
+    peer = openPeer(h, prev.mic, prev.micStream)
+    const p = peer
+    const started = await startVoiceSession(await offerOf(p.pc), null, prev.sessionId)
+    if (started.mode !== 'live') throw new TalkError("swarm-api's answer to the reopen was not a live session.")
+    await p.pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
+    let open = true
+    const hangUp = () => {
+      if (!open) return
+      open = false
+      p.close()
+      prev.micStream.getTracks().forEach((t) => t.stop())
+    }
+    return { ...prev, mode: 'live', hangUp, dropPeer: p.close }
+  } catch (e) {
+    peer?.close()
+    if (e instanceof TalkError) throw e
+    throw new TalkError('The call could not be set up again in this browser.')
   }
 }

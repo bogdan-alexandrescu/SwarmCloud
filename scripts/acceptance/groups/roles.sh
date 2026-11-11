@@ -26,7 +26,7 @@
 # check SKIPs and says which setting is missing; a skip is never a pass.
 #
 # Run in accept.yml's smoke job as `verify-remote.sh acceptance/groups/roles`
-# (BGD, 2026-10-28: the smoke job, not a new group), so this file is also its
+# (the owner, 2026-10-28: the smoke job, not a new group), so this file is also its
 # own entry point; sourced, it only defines the probe.
 
 # Sourced in context (common.sh, testlib.sh, lib.sh) or run on its own below;

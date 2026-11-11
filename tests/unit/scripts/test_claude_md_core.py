@@ -1,6 +1,6 @@
 """CLAUDE.md is the agent-facing core; the long explanations live in a doc.
 
-BGD, 2026-10-27 (#2524, step claude-md of bundle TOKEN-A): CLAUDE.md is in
+The owner, 2026-10-27 (#2524, step claude-md of bundle TOKEN-A): CLAUDE.md is in
 every turn of every lane on this repository, and at 25.6 KB it was about 6.4k
 tokens of cache reads per turn, laptop-only sections included. It keeps a core
 -- the rules, and a one-line form of each laptop rule with a link -- and the

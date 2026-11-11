@@ -77,7 +77,7 @@ case "${answer}" in
   28)  printf '%s\n' "$(( now + 30 ))" >"${FAKE_DIR}/clock"
        echo "curl: (28) Connection timed out after 30002 milliseconds" >&2; exit 28 ;;
   6)   echo "curl: (6) Could not resolve host: firestore.googleapis.com" >&2; exit 6 ;;
-  200) printf '{"name":"projects/swarm-test-project/databases/swarm","type":"FIRESTORE_NATIVE"}\n' ;;
+  200) printf '{"name":"projects/example-project/databases/swarm","type":"FIRESTORE_NATIVE"}\n' ;;
   403|404|503)
        printf '{"error":{"code":%s,"message":"fake answer %s","status":"FAKE"}}\n' "${answer}" "${answer}" ;;
   *)   echo "fake curl: no answer scripted for call ${n}" >&2; exit 99 ;;
@@ -133,11 +133,11 @@ def _call(tmp_path: Path, answers: list[str], fn: str = "fs_database_exists",
         "FAKE_DIR": str(tmp_path),
         "NO_COLOR": "1",
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
-        "PROJECT_ID": "swarm-test-project",
+        "PROJECT_ID": "example-project",
         "FIRESTORE_DATABASE": "swarm",
         # The placeholder deployment's region, and its never-touch list served
         # for this project: common.sh reads both as it is sourced.
-        **placeholder_deployment.child_env("swarm-test-project"),
+        **placeholder_deployment.child_env("example-project"),
     }
     env.update(extra_env or {})
     # _ACCESS_TOKEN is set so access_token returns it rather than asking gcloud:

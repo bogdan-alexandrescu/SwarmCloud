@@ -102,7 +102,7 @@ def pytest_collection_modifyitems(items):
                 raise module.NotMeasurable("no metadata server answered (test)")
         else:
             def identity():
-                return module.Identity(project="p", email="swarm-agent-worker-smoke@p.iam.gserviceaccount.com",
+                return module.Identity(project="example-project", email="swarm-agent-worker-smoke@example-project.iam.gserviceaccount.com",
                                        tenant="smoke", bearer=os.environ["ISO_TEST_BEARER"])
         module.identity = identity
         if mode == "denied":
