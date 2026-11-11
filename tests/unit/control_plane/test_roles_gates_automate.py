@@ -211,6 +211,8 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account register", "POST", "/v1/accounts", "REGISTER"),
     ("account sign-in start", "POST", "/v1/accounts/authorize", {"label": "team"}),
     ("account sign-in finish", "POST", "/v1/accounts/exchange", "EXCHANGE"),
+    ("account device sign-in start", "POST", "/v1/accounts/device/start", {"label": "plan"}),
+    ("account device sign-in poll", "POST", "/v1/accounts/device/poll", "DEVICE_POLL"),
     ("account refresh", "POST", f"/v1/accounts/{ACCOUNT}/refresh", None),
     ("account lending", "PUT", f"/v1/accounts/{ACCOUNT}/lending", {"lend_to": []}),
     ("account lend caps", "PUT", f"/v1/accounts/{ACCOUNT}/lending",
@@ -230,6 +232,8 @@ def send(client, method: str, path: str, body: Any, user: str):
         body = {"label": "team", "credential": credential()}
     elif body == "EXCHANGE":
         body = {"state": secrets.token_hex(8), "code": secrets.token_hex(4)}
+    elif body == "DEVICE_POLL":
+        body = {"state": secrets.token_hex(8)}
     kwargs: dict[str, Any] = {"headers": h(user)}
     if body is not None:
         kwargs["json"] = body
