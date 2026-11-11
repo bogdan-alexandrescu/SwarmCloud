@@ -221,8 +221,9 @@ def test_a_text_start_leases_the_plan_and_answers_text_mode_with_no_sdp():
         r = await h.start()
         assert r.status_code == 201, r.text
         assert r.json() == {"voice_session_id": VOICE_ID, "mode": "text"}
+        # The text lease walks on past the plans to a key (§5.3, `key_tier`).
         assert h.broker.leases == [{"person": PERSON, "voice_session_id": VOICE_ID, "provider": "openai",
-                                    "capability": "text"}]
+                                    "capability": "text", "key_tier": True}]
         assert h.codex.live_creates == 0
         assert h.texts.get(VOICE_ID) is not None and h.sessions.get(VOICE_ID) is None
         # A second start of the same session is refused, in either mode.

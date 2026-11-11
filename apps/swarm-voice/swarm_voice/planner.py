@@ -43,13 +43,19 @@ lease, as a worker's agent does, and counts one agent on that account while it
 runs. swarm-voice reads no Anthropic secret and holds no accessor grant: the
 broker hands the lease's token with the lease, and it goes to the Claude Code
 child's environment alone (CLAUDE_CODE_OAUTH_TOKEN), never to the Messages API
-from here and never as ANTHROPIC_API_KEY.
+from here. When the lease lands on an Anthropic developer key
+(docs/design/llm-providers.md §5.3) the key goes to the child as
+ANTHROPIC_API_KEY instead, never both. A turn that ends on a spent account
+before it spoke, drew or acted (a plan at its limit, a key's credit gone,
+`TurnResult.spent`) moves to the next tier and runs again inside the same
+TURN_SECONDS; with no tier left the voice says the pool is full.
 
 WHAT IT COSTS. A subscription turn has no measured price: `usage` carries the
 token counts, the model and `billing: "subscription"`, and the ledger
 (swarm_api.voice.ledger.turn_cost) counts the turn against the session's $100
 and the day's $300 by its estimate at Opus prices, shown as not measured --
-never as $0.
+never as $0. A turn on a key is billed per token (`billing: "api_key"`), so the
+ledger prices its usage. `usage.tier` names the tier either way.
 
 NOTHING SECRET IN A PROMPT, A LOG, A TRANSCRIPT OR A CARD. The token and the
 grant are scrubbed from the transcript, from every tool result, from the
@@ -69,7 +75,7 @@ from typing import Any
 import httpx
 
 from . import actledger, prompts, tools_act, tools_read, tools_visual
-from .accountlease import VoiceBroker, build_broker
+from .accountlease import TIER_PLAN, VoiceBroker, build_broker
 from .claudeturn import ClaudeCode
 from .credential import CredentialError
 from .grant import SessionGrant
@@ -86,6 +92,9 @@ MAX_CARDS = 4
 TURN_SECONDS = 240.0
 #: How a subscription turn's cost is recorded (module docstring, "WHAT IT COSTS").
 BILLING = "subscription"
+#: How a turn on an Anthropic developer key is recorded: billed per token, so
+#: swarm-api's ledger prices its usage like any measured turn (§5.3).
+BILLING_KEY = "api_key"
 
 DRAW_PREFIX = "draw_"
 
@@ -153,6 +162,11 @@ class TurnResult:
     drawn: list[dict[str, Any]] = field(default_factory=list)
     #: Debug mode's trace: each read, {tool, target}; never what it returned.
     read_targets: list[dict[str, Any]] = field(default_factory=list)
+    #: The tier the turn ran on (accountlease.TIERS; also `usage["tier"]`).
+    tier: str | None = None
+    #: claudeturn.SPENT_CREDIT or SPENT_RATE when the turn ended on a spent
+    #: account before it spoke or wrote anything; the turn then moves (§5.3).
+    spent: str | None = None
 
 
 def drew(result: "TurnResult") -> str:
@@ -288,9 +302,27 @@ class Planner:
                  *tools_act.tool_schemas(), prompts.speak_tool()]
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
-                return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
-                                       claude=self._claude.with_model(model) if model else self._claude,
-                                       request=request)
+                claude = self._claude.with_model(model) if model else self._claude
+                while True:
+                    result.tier, result.spent, result.error = held.tier, None, None
+                    await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
+                                    claude=claude, request=request)
+                    if result.spent is None:
+                        return result
+                    # The account is spent and the turn did nothing yet: the
+                    # next tier runs it again, within the same TURN_SECONDS
+                    # (§5.3). With no tier left the refusal below stands.
+                    spent_tier = held.tier
+                    try:
+                        await held.move()
+                    except PoolFull as exc:
+                        log.warning("voice session %s: the planner's %s tier is spent (%s) and no tier is "
+                                    "left: %s", api.session_id, spent_tier, result.spent, exc.reason)
+                        result.spoken = SAY_POOL_FULL
+                        result.error = f"the {spent_tier} tier is spent ({result.spent}) and no tier is left"
+                        return result
+                    log.info("voice session %s: the planner's %s tier is spent (%s); running the turn on the "
+                             "%s tier", api.session_id, spent_tier, result.spent, held.tier)
         except PoolFull as exc:
             log.warning("voice session %s: no planner account: %s", api.session_id, exc.reason)
             result.spoken = SAY_NO_POOL if exc.reason == NO_ACCOUNTS_REGISTERED else SAY_POOL_FULL
@@ -325,11 +357,14 @@ class Planner:
                         type(exc).__name__)
             result.spoken, result.error = SAY_FAILED, f"Claude Code could not start ({type(exc).__name__})"
             return result
-        result.usage = {**outcome.usage, "model": claude.model, "billing": BILLING}
+        result.usage = {**outcome.usage, "model": claude.model, "tier": result.tier,
+                        "billing": BILLING if result.tier in (None, TIER_PLAN) else BILLING_KEY}
         result.transcript = outcome.events
         if not said and (outcome.is_error or (outcome.exit_code not in (0, None) and not outcome.stopped)):
             log.warning("voice session %s: Claude Code ended without speaking (exit %s)", api.session_id,
                         outcome.exit_code)
+            if not result.cards and not result.acts and not result.visuals:
+                result.spent = outcome.spent
             result.error = f"Claude Code exited {outcome.exit_code} without speaking"
             result.spoken = _failed(result)
             return result

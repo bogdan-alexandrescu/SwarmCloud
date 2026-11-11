@@ -6,9 +6,16 @@ persistence, the planner's system prompt in place of Claude Code's, and a
 private temporary HOME (0700, its own cwd and TMPDIR) removed after the turn,
 whatever the turn did. Its environment is BUILT, never inherited: PATH, HOME,
 TMPDIR, the locale, the leased token in CLAUDE_CODE_OAUTH_TOKEN and the
-switches below -- so no ANTHROPIC_API_KEY, no swarm-voice setting and no other
-credential of this process reaches it. The subscription token is used only
-through Claude Code itself, never sent to the Messages API by swarm-voice.
+switches below -- so no swarm-voice setting and no other credential of this
+process reaches it. The subscription token is used only through Claude Code
+itself, never sent to the Messages API by swarm-voice.
+
+ON A KEY (docs/design/llm-providers.md §5.3). When the planner's lease lands
+on an Anthropic developer key (plannerlease.py hands its token over as an
+`ApiKey`), the child is given that key in ANTHROPIC_API_KEY in place of
+CLAUDE_CODE_OAUTH_TOKEN: one credential variable, never both. A turn that ends
+on a spent account says which (`ChildOutcome.spent`: the key's credit gone, or
+rate-limited), read from the CLI's scrubbed result.
 
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  no autoupdater, bug reports,
                                               error reporting or telemetry:
@@ -88,6 +95,17 @@ FRONT_MODEL_ENV = "VOICE_FRONT_MODEL"
 #: The MCP server's name, so its tools are `mcp__planner__<tool>` to the CLI.
 SERVER = mcp_server.SERVER_NAME
 TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+#: The variable an Anthropic developer key goes in (an `ApiKey` token).
+KEY_ENV = "ANTHROPIC_API_KEY"
+#: Why a turn's account could not serve it (`ChildOutcome.spent`, §5.2).
+SPENT_CREDIT = "credit_exhausted"
+SPENT_RATE = "rate_limited"
+#: What the CLI's error result says for each, lower-cased; credit first, as
+#: the broker's classifier matches it before the rate-limit markers.
+_SPENT_MARKERS = (
+    (SPENT_CREDIT, ("credit balance is too low", "credit_balance_exhausted", "billing_error")),
+    (SPENT_RATE, ("rate_limit_error", "rate_limit", "api error: 429")),
+)
 #: Set in the child so the CLI calls nothing but the model (module docstring).
 QUIET_ENV = {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -188,6 +206,17 @@ class ToolBridge:
                 await writer.wait_closed()
 
 
+class ApiKey(str):
+    """What a planner lease on an Anthropic developer key hands over, in place
+    of a plan's token; `ClaudeCode.env` gives it to the child in KEY_ENV. Its
+    repr never shows it."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "ApiKey(<redacted>)"
+
+
 @dataclass
 class ChildOutcome:
     """What the child did. Every string in it is scrubbed."""
@@ -201,6 +230,19 @@ class ChildOutcome:
     stopped: bool = False
     events: list[dict[str, Any]] = field(default_factory=list)
     stderr_tail: str = ""
+    #: SPENT_CREDIT or SPENT_RATE when the turn ended on a spent account, else None.
+    spent: str | None = None
+
+
+def note_result(outcome: ChildOutcome, event: dict[str, Any]) -> None:
+    """Read the CLI's (scrubbed) `result` event into `outcome`."""
+    outcome.is_error = bool(event.get("is_error"))
+    text = event.get("result")
+    outcome.result_text = text if isinstance(text, str) else ""
+    outcome.spent = None
+    if outcome.is_error:
+        said = outcome.result_text.lower()
+        outcome.spent = next((why for why, markers in _SPENT_MARKERS if any(m in said for m in markers)), None)
 
 
 _COUNTS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -244,15 +286,18 @@ class ClaudeCode:
         return [*argv[:4], "--input-format", "stream-json", *argv[4:]]
 
     def env(self, *, home: str, token: str) -> dict[str, str]:
+        """The child's whole environment: a key's token (`ApiKey`) as
+        ANTHROPIC_API_KEY, a plan's as CLAUDE_CODE_OAUTH_TOKEN, never both."""
+        variable = KEY_ENV if isinstance(token, ApiKey) else TOKEN_ENV
         return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": home, "TMPDIR": home,
-                "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "NO_COLOR": "1", **QUIET_ENV, TOKEN_ENV: token}
+                "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "NO_COLOR": "1", **QUIET_ENV, variable: str(token)}
 
     def mcp_config(self, *, socket_path: str, nonce: str) -> dict[str, Any]:
         package_root = str(Path(__file__).resolve().parents[1])
         return {"mcpServers": {SERVER: {
             "type": "stdio", "command": self.python, "args": ["-m", "swarm_voice.mcp_server"],
             "env": {mcp_server.SOCKET_ENV: socket_path, mcp_server.NONCE_ENV: nonce,
-                    "PYTHONPATH": package_root, TOKEN_ENV: ""}}}}
+                    "PYTHONPATH": package_root, TOKEN_ENV: "", KEY_ENV: ""}}}}
 
     async def run(self, *, prompt: str, system: str, token: str, tools: list[dict[str, Any]],
                   handler: ToolHandler, known: tuple[str, ...], done: asyncio.Event) -> ChildOutcome:
@@ -365,9 +410,7 @@ class ClaudeCode:
             if kind == "assistant" and message:
                 by_message[str(message.get("id") or len(by_message))] = _counts(message.get("usage"))
             elif kind == "result":
-                outcome.is_error = bool(event.get("is_error"))
-                text = event.get("result")
-                outcome.result_text = text if isinstance(text, str) else ""
+                note_result(outcome, event)
                 final = _counts(event.get("usage")) or None
         totals: dict[str, int] = {}
         for counts in ([final] if final else by_message.values()):
@@ -468,9 +511,7 @@ class Conversation:
                 if kind == "assistant" and message_:
                     by_message[str(message_.get("id") or len(by_message))] = _counts(message_.get("usage"))
                 elif kind == "result":
-                    outcome.is_error = bool(event.get("is_error"))
-                    result = event.get("result")
-                    outcome.result_text = result if isinstance(result, str) else ""
+                    note_result(outcome, event)
                     final = _counts(event.get("usage"))
                     totals: dict[str, int] = {}
                     for counts in ([final] if final else by_message.values()):

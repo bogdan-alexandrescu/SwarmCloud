@@ -363,7 +363,7 @@ def test_one_lease_for_the_session_renewed_and_released_on_end():
         assert w.broker.paths() == ["/v1/accounts/assign", "renew", "renew"]
         assign = w.broker.calls[0][1]
         assert assign == {"provider": "anthropic", "holder": "voice-front", "person": PERSON,
-                          "voice_session_id": "vs-1"}
+                          "voice_session_id": "vs-1", "key_tier": True}
         assert all(body["voice_session_id"] == "vs-1" for _, body in w.broker.calls[1:])
         await w.front.end("vs-1")
         assert w.broker.paths()[-1] == "release" and w.claude.started[0].closed
