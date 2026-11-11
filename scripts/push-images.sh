@@ -457,7 +457,7 @@ fi
 #     deployed image is never weakened.
 #
 #     A dev release's build leaves a switched-off image out of the manifest
-#     altogether (build-images.sh --reuse-ci, Bogdan's pick of 2026-11-06:
+#     altogether (build-images.sh --reuse-ci, the owner's pick of 2026-11-06:
 #     swarm-speech alone was 29 of a release's ~75 minutes). Nothing here
 #     scans an image the manifest does not hold; it is reported as not
 #     deployed, not rebuilt, not scanned.

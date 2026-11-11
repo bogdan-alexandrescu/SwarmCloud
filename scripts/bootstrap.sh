@@ -2,7 +2,7 @@
 # One-time (and safely repeatable) preparation of a project for the swarm.
 #
 # Everything here is idempotent and additive. Nothing in this script deletes or
-# reconfigures anything that already exists, because saga-agents-staging is
+# reconfigures anything that already exists, because example-project is
 # shared: another team's GKE cluster, VPC and service accounts live alongside us.
 #
 # Steps:

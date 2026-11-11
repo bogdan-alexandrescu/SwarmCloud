@@ -5,7 +5,7 @@ sentence elsewhere saying the opposite. Each check below reads the sentence
 that was wrong and the one that replaced it:
 
   * contract request 114: swarm-api's startup CPU boost (PR 2132, #1816
-    option (a)) is BGD's one recorded exception to invariant 7, and every other
+    option (a)) is the owner's one recorded exception to invariant 7, and every other
     service and every worker stays as the invariant says. The invariant's own
     text in CLAUDE.md and CONTRACT.md is not softened by it;
   * design-system.md: the 560px phone block spares the Overview Pools list's

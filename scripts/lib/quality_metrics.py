@@ -31,8 +31,9 @@ THE DEFINITIONS, and the choices behind each one:
          of the fenced block after it, plus its "N more finding(s)" line. A
          lane is NOT_YET or MERGE when any verdict in its body says so.
   M6     A hand fix-up is a non-merge commit on the PR head, outside main,
-         authored by an operator identity (`--operator-author`, default the
-         design's `bogdan-alexandrescu`). A merge from main is never one, even
+         authored by an operator identity (`--operator-author`, else the
+         comma-separated SWARM_OPERATOR_AUTHORS; with neither, M6 is not
+         measured rather than zero). A merge from main is never one, even
          under the operator's name: it brings main in, it does not fix the lane.
   M7     An issue labelled `bug`, or a comment on a wave epic, citing `#N` of a
          lane, created between its merge and 14 days after it.
@@ -61,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import statistics
 import sys
@@ -76,9 +78,15 @@ WORKFLOWS = ("application", "terraform", "security")
 #: cancelled, skipped, neutral, null (not finished) -- is dropped.
 COUNTED_CONCLUSIONS = ("success", "failure")
 LANE_PREFIX = "swarm/"
-#: The design's operator identity (§2.1 "Hand fix-up"). The worker commits as
-#: `bogdan`, and commits brought in from main carry `Bogdan Alexandrescu`.
-DEFAULT_OPERATORS = ("bogdan-alexandrescu",)
+#: The operator identities (§2.1 "Hand fix-up") are the deployment's, so they are
+#: configuration: --operator-author, else this comma-separated variable. With
+#: neither, M6 says "not measured" -- no author named is not zero hand fix-ups.
+OPERATORS_VARIABLE = "SWARM_OPERATOR_AUTHORS"
+
+
+def configured_operators() -> tuple[str, ...]:
+    """The operator identities SWARM_OPERATOR_AUTHORS names, in order; () when unset."""
+    return tuple(a.strip() for a in os.environ.get(OPERATORS_VARIABLE, "").split(",") if a.strip())
 #: How long after a merge a bug citing the lane counts as escaped (M7).
 ESCAPE_DAYS = 14
 ISSUE_RUN_MARKER = "<!-- swarmcloud-issue-run:"
@@ -300,6 +308,7 @@ def hand_fixup_metrics(lanes: Sequence[Mapping[str, Any]], commits: Mapping[int,
         "m6_commits": sum(len(v) for v in per.values()),
         "m6_hand_fixed": sorted(n for n, v in per.items() if v),
         "operators": list(operators),
+        "measured": bool(operators),
     }
 
 
@@ -560,7 +569,7 @@ def cost_metrics(lanes: Sequence[Mapping[str, Any]], tasks: Mapping[str, Mapping
 # the report
 # --------------------------------------------------------------------------
 
-def build_report(bundle: Mapping[str, Any], operators: Sequence[str] = DEFAULT_OPERATORS) -> dict[str, Any]:
+def build_report(bundle: Mapping[str, Any], operators: Sequence[str] = ()) -> dict[str, Any]:
     lanes = list(bundle.get("lanes") or [])
     runs = list(bundle.get("runs") or [])
     since = min((str(p.get("created_at") or "") for p in lanes), default="") or "1970-01-01T00:00:00Z"
@@ -627,8 +636,11 @@ def render(report: Mapping[str, Any]) -> list[str]:
         f"M4  review NOT_YET             {_share(review['m4_not_yet_prs'], n)}, "
         f"{review['m4_findings']} finding(s), {_or_na(review['m4_findings_per_not_yet'])} per NOT_YET",
         f"M5  red after a MERGE verdict  {review['m5_red_after_merge']} / {review['m5_red_prs']} red PR(s)",
-        f"M6  hand fix-up                {_share(hand['m6_prs'], hand['prs_read'])} "
-        f"({hand['m6_commits']} commit(s); author {', '.join(hand['operators'])})",
+        (f"M6  hand fix-up                {_share(hand['m6_prs'], hand['prs_read'])} "
+         f"({hand['m6_commits']} commit(s); author {', '.join(hand['operators'])})"
+         if hand["measured"] else
+         f"M6  hand fix-up                not measured (name the operator: --operator-author or "
+         f"{OPERATORS_VARIABLE})"),
     ]
     if hand["prs_unread"]:
         lines.append(f"      heads not read: {len(hand['prs_unread'])} -- not counted either way")
@@ -775,7 +787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not bundle["lanes"]:
         print("report: no lane PR was recorded, so there is nothing to measure", file=sys.stderr)
         return 2
-    report = build_report(bundle, tuple(args.operator_author) or DEFAULT_OPERATORS)
+    report = build_report(bundle, tuple(args.operator_author) or configured_operators())
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

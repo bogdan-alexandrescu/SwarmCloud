@@ -23,7 +23,7 @@ live-browser success), and a hand-off prompt must show the hand-off come back
 (`human_control_returned`). "Not reported" is never 0: a figure the API did not
 serve is None here and "not measured" in the TSV.
 
-CHALLENGES ARE COUNTED FROM THE RECORD (CAPTCHA-AVOID, BGD 2026-10-23; part
+CHALLENGES ARE COUNTED FROM THE RECORD (CAPTCHA-AVOID, the owner 2026-10-23; part
 of #2058). `challenges` is the number of challenge pages a run met: each
 hand-off the gate raised itself because it saw a challenge on the agent's page
 (`human_handoff_requested` with `detail.origin` "gate", handoff.GATE_ORIGIN),

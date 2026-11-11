@@ -2,7 +2,7 @@
 a person, signed, and the stable channel moves only after the manual test
 (DAYONE-RELEASE-1; plan §7.2 steps 5-6, §7.3; D22; lesson 27).
 
-Since DAYONE-RELEASE-CI (BGD, 2026-10-30) the person may be the reviewer of a
+Since DAYONE-RELEASE-CI (the owner, 2026-10-30) the person may be the reviewer of a
 dispatched publish-release run instead of a terminal: `--ci` takes the
 version typed into the dispatch form (`SWARM_PUBLISH_VERSION`) as the typed
 confirmation, under GitHub Actions only, for a publish only. A promotion stays

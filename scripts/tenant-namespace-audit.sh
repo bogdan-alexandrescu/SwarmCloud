@@ -3,7 +3,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# On 2026-10-11 `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the
+# On 2026-10-11 `tenants/u-owner` carried `namespace: swarm-u-owner`, the
 # spelling used before 2026-09-23, while its real namespace is the derived
 # one. The dispatcher preferred the stored value unchecked, so every GKE task
 # for that tenant was created in a namespace that does not exist and came back

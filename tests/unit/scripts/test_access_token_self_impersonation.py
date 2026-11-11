@@ -40,7 +40,7 @@ _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
 placeholder_deployment = _PLACEHOLDERS.deployment()
 COMMON = REPO / "scripts" / "lib" / "common.sh"
 
-SA = "swarm-ci-fixer@example.iam.gserviceaccount.com"
+SA = "swarm-ci-fixer@example-project.iam.gserviceaccount.com"
 
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail

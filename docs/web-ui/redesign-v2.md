@@ -692,7 +692,7 @@ data supports it directly.
 
 Three coverage gaps the panel must **state**, not smooth over:
 
-- **Spend is recorded only when the runner reported it.** *(Corrected for #72:
+- **Spend is recorded only when the runner reported it.** *(Corrected for spend on every exit:
   this bullet first said `record_spend` had exactly one caller, on the clean-exit
   path, so a quota park, a cancel, a SIGTERM, a crash and a generation fence all
   recorded no spend. No longer true of the worker.)* `lifecycle.py`

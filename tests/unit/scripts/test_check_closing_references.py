@@ -43,7 +43,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-closing-references.sh"
 AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+THIS_REPO = "example-org/example-repo"
 REFUSED = 2
 
 pytestmark = pytest.mark.skipif(

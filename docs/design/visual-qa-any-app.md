@@ -955,7 +955,7 @@ recommended first; the answer is built, not reopened.
 
 ---
 
-## 10. Environments, the run group and discovery during QA (built, #2136)
+## 10. Environments, the run group and discovery during QA (built)
 
 The owner asked on 2026-10-23 for one dispatch to QA an app's staging and
 production legs together, discovering routes while it captures, because a
