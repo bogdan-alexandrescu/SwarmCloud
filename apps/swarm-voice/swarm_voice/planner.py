@@ -75,8 +75,8 @@ from typing import Any
 import httpx
 
 from . import actledger, prompts, tools_act, tools_read, tools_visual
-from .accountlease import VoiceBroker, build_broker
-from .claudeturn import ApiKey, ClaudeCode
+from .accountlease import TIER_PLAN, VoiceBroker, build_broker
+from .claudeturn import ClaudeCode
 from .credential import CredentialError
 from .grant import SessionGrant
 from .plannerlease import NO_ACCOUNTS_REGISTERED, PlannerAccounts, PoolFull
@@ -358,7 +358,7 @@ class Planner:
             result.spoken, result.error = SAY_FAILED, f"Claude Code could not start ({type(exc).__name__})"
             return result
         result.usage = {**outcome.usage, "model": claude.model, "tier": result.tier,
-                        "billing": BILLING_KEY if isinstance(token, ApiKey) else BILLING}
+                        "billing": BILLING if result.tier in (None, TIER_PLAN) else BILLING_KEY}
         result.transcript = outcome.events
         if not said and (outcome.is_error or (outcome.exit_code not in (0, None) and not outcome.stopped)):
             log.warning("voice session %s: Claude Code ended without speaking (exit %s)", api.session_id,
