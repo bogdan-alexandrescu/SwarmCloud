@@ -109,7 +109,7 @@ async function manage(label: string): Promise<HTMLElement> {
 describe('Plans: the table', () => {
   it('groups the plans by vendor and draws each column from the account list', async () => {
     const table = await openPlans()
-    const groups = within(table).getAllByRole('rowheader').filter((h) => h.getAttribute('scope') === 'colgroup')
+    const groups = [...table.querySelectorAll('th[scope="colgroup"]')]
     // MUTATION: draw one flat list and the vendor heads are gone.
     expect(groups.map((g) => g.textContent?.replace(/\d+/, '').trim())).toEqual(['Anthropic', 'OpenAI'])
     const openai = groups[1]!.closest('tbody')!
@@ -227,7 +227,7 @@ describe('Plans: every control calls its route once', () => {
     expect(api.setAccountModelClasses).toHaveBeenCalledTimes(1)
     expect(api.setAccountModelClasses).toHaveBeenCalledWith('u-owner:primary', ['fable', 'sonnet', 'haiku'])
     expect(api.setAccountName).toHaveBeenCalledWith('u-owner:primary', 'Team main')
-    expect(api.setAccountPools).not.toHaveBeenCalled()
+    expect(spies.setAccountPools).not.toHaveBeenCalled()
   })
 
   it('Share with Voice it asks for the label, then calls the Voice it pool route', async () => {
@@ -309,7 +309,7 @@ describe('Plans: a control that fails', () => {
     await openPlans()
     const reads = spies.loadAccountsBoard.mock.calls.length
     const s = await manage('primary')
-    fireEvent.change(within(s).getByRole('spinbutton', { name: 'Max agents' }), { target: { value: '99' } })
+    fireEvent.change(within(s).getByRole('spinbutton', { name: 'Max agents' }), { target: { value: '40' } })
     await act(async () => {
       fireEvent.click(within(s).getByRole('button', { name: 'Save' }))
     })
@@ -318,6 +318,6 @@ describe('Plans: a control that fails', () => {
     expect(api.setAccountMaxAgents).toHaveBeenCalledTimes(1)
     expect(cell(row('primary'), 'Agents')).toBe('2 / 6')
     expect(spies.loadAccountsBoard.mock.calls.length).toBe(reads)
-    expect((within(s).getByRole('spinbutton', { name: 'Max agents' }) as HTMLInputElement).value).toBe('99')
+    expect((within(s).getByRole('spinbutton', { name: 'Max agents' }) as HTMLInputElement).value).toBe('40')
   })
 })

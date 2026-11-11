@@ -4,11 +4,11 @@
 // `Screen` takes an `info`, forwarded to `PageHead` so the (i) sits by the
 // title, and a `nav`, drawn right under the head whatever the read did. Plans
 // passes the tab's (i) and its Plans | API Keys strip through them, so both
-// show while the board loads and after its read failed, not only once it has
+// show while the plans load and after their read failed, not only once it has
 // data -- and still exactly once each, under one h1.
 //
 // BREAK IT: draw `nav` inside the ok branch of `Screen`, or put the strip
-// back in the board's body, and the loading and failed cases turn red; draw
+// back in the table's body, and the loading and failed cases turn red; draw
 // it both places and the counting case does.
 //
 // Placeholders only; nothing is token-shaped.
@@ -110,7 +110,7 @@ describe('LLM Providers › Plans: the strip and the (i) in every read state', (
     api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadAccountsBoard.mockResolvedValue(board([acct('a'), acct('b')]))
     render(<LlmProvidersScreen sub="plans" />)
-    await screen.findByRole('region', { name: 'Subscription accounts' }, WAIT)
+    await screen.findByRole('table', { name: 'Plans' }, WAIT)
     oneStripOneInfo()
   })
 })
