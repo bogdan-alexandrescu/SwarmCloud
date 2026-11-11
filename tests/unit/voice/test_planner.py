@@ -270,7 +270,7 @@ def test_a_turn_leases_one_account_draws_one_card_speaks_two_sentences_and_relea
     assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-1/release"]
     assign = world.broker_calls[0][1]
     assert assign == {"provider": "anthropic", "holder": "voice-planner", "person": PERSON,
-                      "voice_session_id": world.grant.session_id}
+                      "voice_session_id": world.grant.session_id, "key_tier": True}
     release = world.broker_calls[1][1]
     assert release["voice_session_id"] == world.grant.session_id and release["assignment_id"].startswith("as-")
 
@@ -562,3 +562,108 @@ def test_a_sessions_planner_model_runs_the_child_on_it_and_none_keeps_the_pin(wo
     assert picked.usage["model"] == "claude-opus-5-5"
     assert pinned_argv[pinned_argv.index("--model") + 1] == claudeturn.MODEL
     assert pinned.usage["model"] == claudeturn.MODEL
+
+
+# ------------------------------------------- the fallback order (§5.3)
+
+
+class SpentOnce:
+    """A Claude Code stand-in: the first account it runs on is spent (the CLI's
+    error result, as `claudeturn.note_result` reads it); the next one speaks."""
+
+    model = claudeturn.MODEL
+
+    def __init__(self, *, spent_every_time: bool = False) -> None:
+        self.tokens: list[str] = []
+        self.spent_every_time = spent_every_time
+
+    def with_model(self, model: str) -> "SpentOnce":
+        return self
+
+    async def run(self, *, prompt, system, token, tools, handler, known, done) -> claudeturn.ChildOutcome:
+        self.tokens.append(token)
+        if len(self.tokens) == 1 or self.spent_every_time:
+            outcome = claudeturn.ChildOutcome(exit_code=1)
+            claudeturn.note_result(outcome, {"is_error": True, "result": "Credit balance is too low"})
+            return outcome
+        await handler(prompts.SPEAK_TOOL, {"summary": "Done.", "point_at": None})
+        return claudeturn.ChildOutcome(exit_code=0, stopped=True, usage={"input_tokens": 10})
+
+
+def _chain(world: World, tiers: list[str]):
+    """The broker walks `tiers`, one account each, passing over `exclude`."""
+    world.keys = {f"acct-{i}": "k-" + secrets.token_hex(12) for i in range(len(tiers))}
+
+    def broker(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        world.broker_calls.append((request.url.path, body))
+        if request.url.path == "/v1/accounts/assign":
+            for i, tier in enumerate(tiers):
+                if f"acct-{i}" not in body.get("exclude", []):
+                    return httpx.Response(200, json={
+                        "account_id": f"acct-{i}", "assignment_id": f"as-{i}", "tier": tier, "reason": "",
+                        "credential": {"access_token": world.keys[f"acct-{i}"]}, "next_reset_at": None})
+            return httpx.Response(200, json={"account_id": None, "assignment_id": None, "credential": None,
+                                             "reason": plannerlease.NO_ACCOUNT_AVAILABLE, "next_reset_at": None})
+        return httpx.Response(200, json={"released": True})
+
+    world.broker = broker
+
+
+def _delegate_on(world: World, claude: SpentOnce) -> pl.TurnResult:
+    async def main():
+        planner = world.planner()
+        planner._claude = claude  # noqa: SLF001
+        try:
+            return await planner.delegate(person=PERSON, grant=world.grant,
+                                          transcript=[("person", "Plan it.")])
+        finally:
+            await world.http.aclose()
+
+    return asyncio.run(main())
+
+
+def test_a_turn_on_a_spent_plan_moves_to_the_key_tier_and_runs_again(world, caplog):
+    _chain(world, [accountlease.TIER_PLAN, accountlease.TIER_KEY])
+    claude = SpentOnce()
+    with caplog.at_level(logging.DEBUG):
+        result = _delegate_on(world, claude)
+    assert result.error is None and result.spoken.startswith("Done.")
+    # The plan's token first, then the key's, handed over as a key.
+    assert claude.tokens == [world.keys["acct-0"], world.keys["acct-1"]]
+    assert not isinstance(claude.tokens[0], claudeturn.ApiKey) and isinstance(claude.tokens[1], claudeturn.ApiKey)
+    # The spent plan given back, then the assign with it excluded; the key released at the end.
+    assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-0/release", "/v1/accounts/assign",
+                             "/v1/voice/lease/acct-1/release"]
+    assert world.broker_calls[2][1]["exclude"] == ["acct-0"]
+    assert result.tier == accountlease.TIER_KEY and result.usage["tier"] == accountlease.TIER_KEY
+    # A key is billed per token, so the ledger prices it.
+    assert result.usage["billing"] == pl.BILLING_KEY
+    for key in world.keys.values():
+        assert key not in caplog.text and key not in json.dumps(result.usage) and key not in result.spoken
+
+
+def test_a_turn_on_a_plan_keeps_the_subscription_billing_and_names_its_tier(world):
+    _chain(world, [accountlease.TIER_PLAN])
+    claude = SpentOnce()
+    claude.tokens.append("already-ran")  # the stand-in speaks on its first account
+    result = _delegate_on(world, claude)
+    assert result.error is None and result.tier == accountlease.TIER_PLAN
+    assert result.usage["billing"] == pl.BILLING and result.usage["tier"] == accountlease.TIER_PLAN
+    assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-0/release"]
+
+
+def test_with_both_tiers_spent_the_turn_says_the_pool_is_full_and_holds_nothing(world, caplog):
+    """The planner's chain has no tier 3 (Q2): a spent key is the end."""
+    _chain(world, [accountlease.TIER_PLAN, accountlease.TIER_KEY])
+    claude = SpentOnce(spent_every_time=True)
+    with caplog.at_level(logging.DEBUG):
+        result = _delegate_on(world, claude)
+    assert len(claude.tokens) == 2
+    assert result.spoken == pl.SAY_POOL_FULL and "no tier is left" in (result.error or "")
+    assert world.broker_calls[-1][0] == "/v1/accounts/assign"
+    assert world.broker_calls[-1][1]["exclude"] == ["acct-0", "acct-1"]
+    released = [p for p in world.paths() if p.endswith("/release")]
+    assert released == ["/v1/voice/lease/acct-0/release", "/v1/voice/lease/acct-1/release"]
+    for key in world.keys.values():
+        assert key not in caplog.text
