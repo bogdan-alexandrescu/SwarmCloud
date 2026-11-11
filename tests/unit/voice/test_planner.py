@@ -419,6 +419,39 @@ def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
                              "frames": ["Classic", "Bold"]}]
 
 
+def test_a_dropped_frame_redrawn_in_the_same_turn_is_not_said_missing(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    redrawn = [{"label": n, "html": _page(n)} for n in ("Classic", "Bold", "Minimal")]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["show_mockup", {"title": "The landing page", "frames": redrawn,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    assert [f["label"] for f in json.loads(world.visuals[-1]["body"])["frames"]] == [
+        "Classic", "Bold", "Minimal"]
+    # MUTATION: keep the first call's dropped frame and the voice says a drawn version is missing.
+    assert result.frames_dropped == []
+    assert "refused" not in result.spoken and "of the three" not in result.spoken
+
+
+def test_a_redraw_still_refused_leaves_the_missing_version_said_once(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["show_mockup", {"title": "The landing page", "frames": frames[2:],
+                                             "visual_id": None}],
+                            ["speak", {"summary": "The versions are on screen."}]]}
+    result = _delegate(world)
+    assert len(world.visuals) == 1 and len(result.frames_dropped) == 1
+    assert result.spoken.count("was refused because") == 1
+    assert "I drew two of the three versions; the third, Minimal," in result.spoken
+
+
 def test_a_child_stopped_while_writing_its_results_leaves_the_last_whole_results(world):
     # The planner stops the child once `speak` is answered, so the stop can land
     # while the fake is writing that call's results (a merge train read an empty
