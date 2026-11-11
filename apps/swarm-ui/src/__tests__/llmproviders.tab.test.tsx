@@ -4,8 +4,8 @@
 // WHAT EACH CASE HOLDS:
 //   * Plans is `/capacity/llm-providers/plans` and API Keys
 //     `/capacity/llm-providers/api-keys`, both ways, and each renders its
-//     sub-page under the sub-page control: Plans the plans table, API Keys its
-//     empty state with Add key disabled behind an (i);
+//     sub-page under the sub-page control: Plans the plans table, API Keys
+//     its key cards (LlmApiKeys.tsx; llmapikeys.test.tsx holds the cards);
 //   * the old `/capacity/accounts` lands on Plans with its `?account=` kept,
 //     in the router and in the app's bar;
 //   * the side panel draws LLM Providers with Plans and API Keys as its first
@@ -30,6 +30,20 @@ vi.mock('../LlmPlans', async (importOriginal) => ({
       {info}
       {nav}
       <p data-testid="plan-board">plans table</p>
+    </>
+  ),
+}))
+
+// The key cards are LlmApiKeys.tsx's; llmapikeys.test.tsx holds them. The
+// stand-in draws the head, (i) and strip it is given, as Plans' does.
+vi.mock('../LlmApiKeys', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../LlmApiKeys')>()),
+  LlmApiKeysScreen: ({ title, info, nav }: { title?: string; info?: ReactNode; nav?: ReactNode }) => (
+    <>
+      <h1>{title}</h1>
+      {info}
+      {nav}
+      <p data-testid="key-cards">key cards</p>
     </>
   ),
 }))
@@ -115,15 +129,13 @@ describe('Capacity › LLM Providers in the app', () => {
     expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['LLM Providers'])
   })
 
-  it('draws API Keys’ empty state, its Add key a disabled button with an (i)', async () => {
+  it('draws API Keys’ key cards under the sub-page control, API Keys current', async () => {
     await open('/capacity/llm-providers/api-keys')
     const nav = await screen.findByRole('navigation', { name: 'LLM Providers' })
     expect(within(nav).getByRole('link', { current: 'page' }).textContent).toBe('API Keys')
-    expect(screen.getByRole('heading', { name: /^No API keys/ })).toBeTruthy()
-    const add = screen.getByRole('button', { name: 'Add key' }) as HTMLButtonElement
-    // MUTATION: enable it, and a button that calls nothing is on the page.
-    expect(add.disabled).toBe(true)
-    expect(add.closest('.c-btn-wrap')?.querySelector('.acct-i')).not.toBeNull()
+    // MUTATION: keep the old empty placeholder and no cards are drawn.
+    expect(screen.getByTestId('key-cards')).toBeTruthy()
+    expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['LLM Providers'])
     expect(screen.queryByTestId('plan-board')).toBeNull()
   })
 
@@ -132,7 +144,7 @@ describe('Capacity › LLM Providers in the app', () => {
     const nav = await screen.findByRole('navigation', { name: 'LLM Providers' })
     within(nav).getByRole('link', { name: 'API Keys' }).click()
     await waitFor(() => expect(window.location.pathname).toBe('/capacity/llm-providers/api-keys'))
-    expect(await screen.findByRole('heading', { name: /^No API keys/ })).toBeTruthy()
+    expect(await screen.findByTestId('key-cards')).toBeTruthy()
   })
 })
 

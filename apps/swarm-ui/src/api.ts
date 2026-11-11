@@ -8455,6 +8455,11 @@ async function fixtureState(
   fixtureAccounts = fixtureAccounts.map((a) =>
     a.account_id === accountId ? { ...a, state, reason } : a,
   )
+  // A key's state is the same route (API Keys' Pause, Drain and Resume);
+  // Resume also clears the out-of-credit mark, as the broker's does.
+  fixtureApiKeys = fixtureApiKeys.map((k) =>
+    k.account_id === accountId ? { ...k, state, reason, ...(state === 'AVAILABLE' ? { exhausted_at: null } : {}) } : k,
+  )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
@@ -8496,9 +8501,171 @@ async function fixtureRefresh(accountId: string): Promise<Result<unknown>> {
 
 async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 200))
+  if (fixtureApiKeys.some((k) => k.account_id === accountId)) {
+    // A key's secret is destroyed with it (docs/design/llm-providers.md §4.4).
+    fixtureApiKeys = fixtureApiKeys.filter((k) => k.account_id !== accountId)
+    return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId } }
+  }
   fixtureAccounts = fixtureAccounts.filter((a) => a.account_id !== accountId)
   return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId, secret: 'retained' } }
 }
+
+// ===========================================================================
+// API keys (Capacity › LLM Providers › API Keys; docs/design/llm-providers.md
+// §4 and §6.3)
+// ===========================================================================
+//
+// A KEY IS AN ACCOUNT of an `-api` provider: the same `GET /v1/accounts` list
+// the plans come from, its `kind` `api_key`. So the key controls are the plan
+// controls' routes (`setAccountState`, `removeAccount`, both above); only the
+// read and the add are the keys' own. The value is never in any of these: the
+// broker serves none, and the add sends it once, in the redeem POST body.
+
+/** The two key vendors' providers (`sl.API_KEY_PROVIDERS` in swarm-api). */
+export const API_KEY_PROVIDERS = ['anthropic-api', 'openai-api'] as const
+export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number]
+
+/** One lend of a key (`lends`): the borrower's agents cap and spend cap; `cap_set` false is a lend carried over with no cap yet. */
+export interface ApiKeyLend {
+  max_agents: number | null
+  monthly_spend_cap_usd: number | null
+  cap_set?: boolean
+}
+
+/** A key as `account_to_api` serves it: the plan fields plus the key's own (§4.6). Absent: an older broker, said as unknown. */
+export type ApiKeyAccount = ServedAccount & {
+  kind?: 'api_key' | 'plan' | string
+  vendor?: string
+  pools?: string[]
+  lends?: Record<string, ApiKeyLend>
+  monthly_spend_cap_usd?: number | null
+  month_spend_usd?: number | null
+  lend_spend_usd?: Record<string, number>
+  exhausted_at?: string | null
+  voice_dedicated?: boolean
+  tier?: string | null
+}
+
+export interface ApiKeysBoard {
+  keys: ApiKeyAccount[]
+  /** The workspace the list was read as, echoed from the verified token; null for every workspace. */
+  tenant: string | null
+  /** When this list was read, as a browser instant (see `AccountsBoard.readAt`). */
+  readAt: number
+}
+
+/** A key, not a plan: the broker's `kind`, or, from a broker older than it, an `-api` provider. */
+export function isApiKey(a: { kind?: string; provider: string }): boolean {
+  return a.kind !== undefined ? a.kind === 'api_key' : a.provider.endsWith('-api')
+}
+
+/**
+ * The developer keys this workspace sees, from `GET /v1/accounts`. Voice it's
+ * dedicated key is left out: it is managed in Voice it › Settings, never here
+ * (§4.4, Q9). Zero keys is an ok read with an empty list, not an empty state,
+ * so the page keeps its Add key.
+ */
+export async function loadApiKeys(): Promise<Result<ApiKeysBoard>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    return { status: 'ok', fetchedAt: Date.now(), data: { keys: fixtureApiKeys.filter(listedKey), tenant: 'u-owner', readAt: Date.now() } }
+  }
+  const r = await read<AccountsPage>(route('/v1/accounts'), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<ApiKeysBoard>
+  const keys = (r.data.accounts as ApiKeyAccount[]).filter(listedKey)
+  return { ...r, data: { keys, tenant: r.data.tenant_id, readAt: r.fetchedAt } } as Result<ApiKeysBoard>
+}
+
+function listedKey(a: ApiKeyAccount): boolean {
+  return isApiKey(a) && a.voice_dedicated !== true && a.tier !== 'voice_dedicated'
+}
+
+/**
+ * ADD A KEY, ONE STEP (§4.1): mint an `api-key` link for the reader's own
+ * email, then redeem it here with the value in the POST body. The value
+ * reaches swarm-api once and is kept nowhere; a refusal never quotes it.
+ * A failed mint sends nothing; a refused redeem leaves the link reopened by
+ * swarm-api, and this page simply asks again.
+ */
+export async function addApiKey(body: { provider: ApiKeyProvider; label: string; owner: string; value: string }): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const id = `u-owner:${body.label}`
+    if (fixtureApiKeys.some((k) => k.account_id === id)) return fixtureRefused(`the key was not added: there is already an account labelled ${body.label}`)
+    fixtureApiKeys = [...fixtureApiKeys, fixtureKey(body.label, body.provider)]
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.label, provider: body.provider, account_id: id, written: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.label, owner: body.owner, provider: body.provider })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return write(route('/v1/setup/links/redeem'), 'POST', { token, value: body.value })
+}
+
+/** A key's fixture row: an `-api` account, measured by spend rather than windows. */
+function fixtureKey(label: string, provider: ApiKeyProvider, extra: Partial<ApiKeyAccount> = {}): ApiKeyAccount {
+  return {
+    account_id: `u-owner:${label}`,
+    owner_tenant: 'u-owner',
+    label,
+    provider,
+    kind: 'api_key',
+    vendor: provider === 'openai-api' ? 'openai' : 'anthropic',
+    tier: 'api_key',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    lends: {},
+    assigned: 0,
+    max_agents: 4,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: ISO(-40 * 60_000),
+    model_classes: [],
+    monthly_spend_cap_usd: null,
+    month_spend_usd: 0,
+    lend_spend_usd: {},
+    exhausted_at: null,
+    voice_dedicated: false,
+    ...extra,
+  }
+}
+
+// ONE OF EACH TREATMENT a key card draws: a live key with a lend, a paused
+// one, one out of credit, one with no spend cap, and the other vendor.
+let fixtureApiKeys: ApiKeyAccount[] = [
+  fixtureKey('team-key', 'anthropic-api', {
+    display_name: 'Team key',
+    assigned: 3,
+    max_agents: 8,
+    monthly_spend_cap_usd: 400,
+    month_spend_usd: 212.5,
+    lend_to: ['smoke'],
+    lends: { smoke: { max_agents: 2, monthly_spend_cap_usd: 50, cap_set: true } },
+    lend_spend_usd: { smoke: 18.25 },
+  }),
+  fixtureKey('night-key', 'anthropic-api', {
+    state: 'PAUSED',
+    reason: 'paused for the weekend',
+    monthly_spend_cap_usd: 100,
+    month_spend_usd: 64,
+  }),
+  fixtureKey('spare-key', 'anthropic-api', {
+    max_agents: 2,
+    monthly_spend_cap_usd: 50,
+    month_spend_usd: 50,
+    exhausted_at: ISO(-2 * 3600_000),
+    can_take_new_agent: false,
+  }),
+  fixtureKey('codex-key', 'openai-api', {
+    assigned: 1,
+    max_agents: 3,
+    month_spend_usd: 31.4,
+    pools: ['accounts', 'voice-it'],
+  }),
+]
 
 // ===========================================================================
 // Overview (the landing screen) -- two reads nothing else needed
@@ -15054,8 +15221,11 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
+/**
+ * `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes.
+ * `api-key`: a developer key for the account pool (API Keys › Add), naming its vendor (`provider`), ten minutes.
+ */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key' | 'api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -15296,7 +15466,7 @@ export function createSetupTeam(body: { group: string; display_name?: string; fi
 }
 
 /** `POST /v1/admin/setup/links`: a one-time link for one named person. */
-export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string }): Promise<Result<SetupLink>> {
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string; provider?: ApiKeyProvider }): Promise<Result<SetupLink>> {
   return setupWrite(
     route('/v1/admin/setup/links'),
     'POST',
@@ -15305,7 +15475,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' || body.kind === 'api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 
