@@ -34,7 +34,7 @@ LIVE_POOLS = {
     "backend:GKE_AUTOPILOT": 40,
     "provider:anthropic": 100,
     "provider:anthropic:tenant:eng": 40,
-    "provider:anthropic:tenant:u-bogdan": 40,
+    "provider:anthropic:tenant:u-owner": 40,
     "provider:mock-provider": 100,
     "provider:mock-provider:tenant:eng": 100,
     "provider:openai": 40,
@@ -53,7 +53,7 @@ LIVE_POOLS = {
     # 8 until the owner raised it to 20 through the admin API on 2026-10-07
     # (~23:4xZ), setting max_active and capacity_units both to 20.
     "tenant:smoke": 20,
-    "tenant:u-bogdan": 80,
+    "tenant:u-owner": 80,
     "tenant:u-sw-c90291": 4,
 }
 
@@ -65,16 +65,16 @@ LIVE_POOLS = {
 #: these into LIVE_POOLS, with the date read, once they are live.
 PENDING_POOLS = {
     # provider:anthropic was 120 here (#628); BROWSER-POOL-100 below raises it.
-    # provider_tenant 40 -> 100 (BGD, 2026-10-26, BROWSER-POOL-100's question):
+    # provider_tenant 40 -> 100 (the owner, 2026-10-26, BROWSER-POOL-100's question):
     # every per-tenant provider pool, and the platform-wide pools its floor
     # forces (anthropic 2 x 100, openai 1 x 100).
     "provider:anthropic:tenant:smoke": 100,
     "provider:anthropic:tenant:eng": 100,
     "provider:openai:tenant:eng": 100,
     "provider:openai": 100,
-    # eng 45 -> 100 (BGD, 2026-10-26): min(max_active, capacity_units).
+    # eng 45 -> 100 (the owner, 2026-10-26): min(max_active, capacity_units).
     "tenant:eng": 100,
-    # BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): 100 browser units
+    # BROWSER-POOL-100 (the owner, 2026-10-26, part of #2136): 100 browser units
     # beside claude-code's 80 standard, so every pool both draw on is 180
     # (dev.tfvars says why). This supersedes #628's provider:anthropic 120 and
     # contract request 53's backend:GKE_AUTOPILOT 100. Live once an operator
@@ -93,7 +93,7 @@ PENDING_POOLS = {
 LIVE_TENANTS = {
     "eng": (45, 45),
     "smoke": (20, 20),
-    "u-bogdan": (80, 80),
+    "u-owner": (80, 80),
     "u-sw-c90291": (4, 8),
 }
 
@@ -103,7 +103,7 @@ LIVE_TENANTS = {
 #: its pool into LIVE_POOLS, with the date read, once it is live.
 PENDING_TENANTS = {
     "u-or-9a0792": (4, 8),
-    # BGD, 2026-10-26: one tenant may hold the 100 browser units.
+    # The owner, 2026-10-26: one tenant may hold the 100 browser units.
     "eng": (100, 100),
 }
 
@@ -114,12 +114,12 @@ PENDING_TENANTS = {
 NOT_DERIVED_BY_TERRAFORM = {"provider:mock-provider", "provider:mock-provider:tenant:eng"}
 
 #: Live tenants that left dev.tfvars for a workspace record, and their pools.
-#: u-bogdan moved out of Terraform with lane W9 of #847 on 2026-10-09
+#: u-owner moved out of Terraform with lane W9 of #847 on 2026-10-09
 #: (terraform/infra/removed.tf forgets its documents; docs/workspaces.md
 #: §3.3): its tenant and pool documents stay live at the values above, but no
 #: tfvars key states them any more, so they are recorded and not compared.
-MOVED_TO_WORKSPACES = {"u-bogdan"}
-WORKSPACE_POOLS = {"tenant:u-bogdan", "provider:anthropic:tenant:u-bogdan"}
+MOVED_TO_WORKSPACES = {"u-owner"}
+WORKSPACE_POOLS = {"tenant:u-owner", "provider:anthropic:tenant:u-owner"}
 
 
 def _strip_comments(text: str) -> str:
@@ -267,7 +267,7 @@ def test_the_doubled_provider_pools_still_satisfy_the_provider_tenant_floor():
         assert providers.get(p, int(limits["global"])) >= floor, p
 
 
-#: BROWSER-POOL-100 (BGD, 2026-10-26, part of #2136): the browser pool
+#: BROWSER-POOL-100 (the owner, 2026-10-26, part of #2136): the browser pool
 #: provides 100 units, and they run BESIDE claude-code's 80 standard ones.
 BROWSER_UNITS = 100
 STANDARD_BESIDE = ("claude-code", 80)

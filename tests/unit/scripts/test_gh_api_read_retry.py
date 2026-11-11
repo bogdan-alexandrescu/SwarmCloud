@@ -33,7 +33,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+THIS_REPO = "example-org/example-repo"
 PR = "4242"
 
 pytestmark = pytest.mark.skipif(

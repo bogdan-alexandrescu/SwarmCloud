@@ -498,6 +498,19 @@ def test_a_full_registration_refuses_an_app_provider(tmp_path, provider) -> None
     ), out
 
 
+def test_a_deployment_with_no_allowed_domain_refuses_with_one_fixed_sentence(tmp_path) -> None:
+    # No ALLOWED_DOMAINS and no tfvars served: the principal cannot be checked,
+    # so the script refuses before it changes anything, in a fixed sentence.
+    # MUTATION: interpolate the principal into the refusal and this fails.
+    fakes = Fakes(tmp_path)
+    proc = fakes.run([str(REGISTER), *FULL, "--dry-run"], ALLOWED_DOMAINS="")
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    refusal = [line for line in out.splitlines() if "name an allowed domain" in line]
+    assert refusal and all(FULL[1] not in line for line in refusal), out
+    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
+
+
 @pytest.mark.parametrize("provider", ["git-merge", "git-review"])
 def test_add_provider_refuses_an_app_provider_before_reading_anything(tmp_path, provider) -> None:
     fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))

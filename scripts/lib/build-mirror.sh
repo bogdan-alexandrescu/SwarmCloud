@@ -17,7 +17,7 @@
 #           digest it pinned before. A remote repository fetches a digest
 #           from upstream once and serves it from the cache after that.
 #
-#           THE DOCKERFILES NAME NO PROJECT (DAYONE-DESAGA-1;
+#           THE DOCKERFILES NAME NO PROJECT (the Day One project-defaults lane;
 #           docs/design/day-one-install.md section 7). Their MIRROR_*
 #           defaults are empty and their `# syntax=` line is the plain
 #           docker/dockerfile reference -- BuildKit reads that line before
@@ -324,7 +324,7 @@ lightpanda_source_stage() {
 # mirror_build_args_yaml DOCKERFILE -- mirror_build_args as YAML list items
 # for a docker step's args (scripts/build-images.sh generate_config), so the
 # live project's build pulls what it pulled when the Dockerfiles named its
-# mirror and another project's build reads its own (DAYONE-DESAGA-1; design
+# mirror and another project's build reads its own (the Day One project-defaults lane; design
 # section 7). Nothing for a pull request's local build (LOCAL_BUILD=1): it
 # can read no mirror, and its replay passes the upstream registries
 # (build-images.sh LOCAL_REPLAY upstream_args), so it needs no project at

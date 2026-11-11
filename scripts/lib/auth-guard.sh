@@ -16,7 +16,7 @@
 
 set -euo pipefail
 # This script touches no project: it only runs its offline self-test. It says so, so common.sh
-# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# (no default project, the Day One project-defaults lane) does not stop on an unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
@@ -70,7 +70,7 @@ expect_auth "reauthentication demanded" \
   "ERROR: (gcloud.projects.describe) There was a problem refreshing your current auth tokens: Reauthentication required"
 
 expect_auth "no credentials at all" \
-  "ERROR: (gcloud.secrets.describe) Your current active account [bogdan@saga.xyz] does not have any valid credentials"
+  "ERROR: (gcloud.secrets.describe) Your current active account [owner@example.com] does not have any valid credentials"
 
 # --- and what must keep reporting itself ----------------------------------
 #
@@ -85,7 +85,7 @@ expect_not_auth "a missing permission" \
   "ERROR: (gcloud.artifacts.docker.images.describe) PERMISSION_DENIED: Permission 'containeranalysis.occurrences.list' denied on resource"
 
 expect_not_auth "a disabled API" \
-  "ERROR: (gcloud.run.services.list) FAILED_PRECONDITION: Cloud Run Admin API has not been used in project saga-agents-staging before or it is disabled."
+  "ERROR: (gcloud.run.services.list) FAILED_PRECONDITION: Cloud Run Admin API has not been used in project example-project before or it is disabled."
 
 expect_not_auth "a quota error" \
   "ERROR: (gcloud.builds.submit) RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Build requests'"
@@ -95,7 +95,7 @@ expect_not_auth "a quota error" \
 # uses that a looser pattern would swallow it, and the operator would re-login
 # instead of being told which permission they are missing.
 expect_not_auth "permission denied, mentioning the active account" \
-  "ERROR: (gcloud.artifacts.docker.images.describe) [bogdan@saga.xyz] does not have permission to access projects instance [saga-agents-staging] (or it may not exist): Permission 'containeranalysis.occurrences.list' denied on resource 'projects/00000030aa1b3e3c' (or it may not exist). This command is authenticated as bogdan@saga.xyz which is the active account specified by the [core/account] property"
+  "ERROR: (gcloud.artifacts.docker.images.describe) [owner@example.com] does not have permission to access projects instance [example-project] (or it may not exist): Permission 'containeranalysis.occurrences.list' denied on resource 'projects/00000030aa1b3e3c' (or it may not exist). This command is authenticated as owner@example.com which is the active account specified by the [core/account] property"
 
 expect_not_auth "an empty string" ""
 

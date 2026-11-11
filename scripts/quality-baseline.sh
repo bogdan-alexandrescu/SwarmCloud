@@ -41,7 +41,8 @@
 #   --repo-id ID         with --api: the registered repository, for M11's impact answers
 #   --run-hours H        width of each Actions runs query (default 6)
 #   --issue-runs-since T M8's window start (default: the lane window's)
-#   --operator-author A  M6's operator identity, repeatable (default bogdan-alexandrescu)
+#   --operator-author A  M6's operator identity, repeatable (default: SWARM_OPERATOR_AUTHORS,
+#                        comma-separated; with neither, M6 is not measured)
 #   --git-dir DIR        keep the history fetch here and reuse it (default: a temp dir)
 #   --out DIR            keep everything read in DIR (default: a temp dir, removed)
 #   --json               print the report as one JSON document

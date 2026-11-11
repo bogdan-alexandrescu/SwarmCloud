@@ -42,6 +42,8 @@ def _clean_env() -> dict[str, str]:
         if not k.startswith(("API_", "SWARM_", "GITHUB_", "GH_"))
     }
     env["NO_COLOR"] = "1"
+    # The placeholder deployment's sandbox: config.sh has no default for it.
+    env["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"] = os.environ["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"]
     return env
 
 

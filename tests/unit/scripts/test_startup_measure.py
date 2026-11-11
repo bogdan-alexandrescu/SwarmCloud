@@ -487,7 +487,7 @@ def test_the_script_is_executable_and_strict():
 def test_the_script_reaches_kubectl_only_through_the_guard_and_only_to_read():
     code = "\n".join(_effective_lines(SCRIPT.read_text()))
     # Never a bare kubectl: the old clients on PATH drop fields, and the
-    # context check is what keeps it off agents-staging.
+    # context check is what keeps it off peer-cluster.
     assert not re.search(r"(^|[\s;|(])kubectl\s", code)
     assert "assert_kube_context" in code
     assert code.index("assert_kube_context") < code.index("kc ")

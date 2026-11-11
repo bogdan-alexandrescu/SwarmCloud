@@ -182,7 +182,7 @@ forge_slot_ensure_pair() {
 #
 # `swarm-tenant-<tenant>-qa` (docs/design/visual-qa-any-app.md §2.1, §7):
 # terraform/infra/qa_targets.tf declares it for every tenant in var.tenants,
-# and a tenant this script registers is not one, so it is made here (BGD,
+# and a tenant this script registers is not one, so it is made here (the owner,
 # 2026-10-22: "register-tenant.sh creates it"). The same shape:
 #
 #   * EMPTY. swarm-api adds every version from the console's one-time form;

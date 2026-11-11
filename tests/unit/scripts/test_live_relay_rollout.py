@@ -346,7 +346,7 @@ def test_enabled_without_a_manifest_is_a_failure(tmp_path):
 
 
 @pytest.mark.parametrize("how", ["flag", "context", "terraform"])
-def test_the_shared_agents_staging_cluster_is_refused_before_anything_is_written(tmp_path, how):
+def test_the_shared_peer_cluster_is_refused_before_anything_is_written(tmp_path, how):
     """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's live cluster (CLAUDE.md rule 2),
     refused by common.sh's deny-list whichever way it arrives."""
     cluster = Cluster(tmp_path)

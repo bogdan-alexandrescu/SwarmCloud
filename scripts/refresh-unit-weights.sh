@@ -34,7 +34,7 @@
 set -euo pipefail
 
 # This script touches no project: it reads CI timings from GitHub and writes
-# the checkout. It says so, so common.sh (no default project, DAYONE-DESAGA-2)
+# the checkout. It says so, so common.sh (no default project, the Day One project-defaults lane)
 # does not stop on an unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR

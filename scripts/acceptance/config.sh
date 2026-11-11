@@ -36,12 +36,13 @@ set -euo pipefail
 
 #: The repository acceptance clones by default: private, default branch main.
 #: sandbox-sync.sh keeps its tests/acceptance/fixtures/ equal to the released
-#: commit's. A company's own sandbox is the CI add-on's choice: `swarm addon
+#: commit's. It is the deployment's own sandbox, and configuration: `swarm addon
 #: enable ci` sets the repository variable SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL
-#: (DAYONE-ADDON-1), which accept.yml's sandbox steps pass in. Unset, it is the
-#: live deployment's sandbox, created by the owner on 2026-10-05, because the
-#: swarm-verify job cannot be handed an environment variable (ACC_REF below).
-ACC_SANDBOX_REPOSITORY_URL="${SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL:-https://github.com/bogdan-alexandrescu/swarmcloud-sandbox.git}"
+#: (DAYONE-ADDON-1), which accept.yml's sandbox steps pass in, and Terraform
+#: renders the same URL onto the swarm-verify job from
+#: var.acceptance_sandbox_repository_url. NO DEFAULT: unset, acc_config_problem
+#: refuses and names the variable, rather than cloning someone else's sandbox.
+ACC_SANDBOX_REPOSITORY_URL="${SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL:-}"
 
 #: The tenant every submission is made for, as `X-Swarm-Tenant`.
 ACC_TENANT="${SWARM_ACCEPTANCE_TENANT:-smoke}"
@@ -110,6 +111,10 @@ acc_config_problem() {
   local here origin_repo target
   if [[ ! "${ACC_TENANT}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
     printf 'acceptance: refusing tenant %q: a tenant id is lower-case letters, digits and hyphens\n' "${ACC_TENANT}" >&2
+    return 1
+  fi
+  if [[ -z "${ACC_REPOSITORY_URL}" ]]; then
+    printf 'acceptance: SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is not set, and no script here guesses it: set it to the deployment'"'"'s private sandbox, https://github.com/<owner>/<repo>.git\n' >&2
     return 1
   fi
   if [[ ! "${ACC_REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then

@@ -299,7 +299,7 @@ def test_the_tick_rechecks_unknown_mergeability_when_it_boards_from_the_pool():
     assert "--recheck-unknown" in start
 
 
-# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
+# CHECK-STUCK-2 (the owner, 2026-10-23, task_9e9080121b104370b079 Q0; part of
 # #2031): select reads a rollup check run as done the way `judge` does --
 # status COMPLETED, OR a conclusion together with a completedAt. GitHub left
 # PR 2006's `secret scan` IN_PROGRESS after giving it both; GitHub's own
@@ -426,7 +426,7 @@ def test_judge_red_on_a_failed_commit_status(tmp_path):
     assert failed == [("secret scan", "https://x/y")]
 
 
-# CHECK-RULE-2 (BGD, 2026-10-22, both answers): the judge decides a check by
+# CHECK-RULE-2 (the owner, 2026-10-22, both answers): the judge decides a check by
 # the latest run (highest id) of EACH event that ran it, as the worker's
 # merge step, swarm-api and auto-merge.yml's gate 5 do. The event is the one
 # that made the run's check suite, from `--workflow-runs` (the Actions runs at
@@ -484,7 +484,7 @@ def test_judge_a_check_nothing_requires_by_the_latest_run_of_each_event(tmp_path
     assert got == verdict, case
 
 
-# CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+# CHECK-STUCK (the owner, 2026-10-23, part of #2031): a check run that carries a
 # conclusion AND a completed_at is judged by its conclusion, whatever
 # `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
 # `conclusion: success` and a `completed_at`; its workflow run was completed.
@@ -1290,7 +1290,7 @@ def test_the_runbook_says_how_to_roll_back():
 # a red train: retry once, hold while main is red, else bisect
 # --------------------------------------------------------------------------
 #
-# BGD, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
+# The owner, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
 # 139 trains were red, mostly on checks known to fail at random ('format /
 # unit tests', 'swarm-ui typecheck / component tests', single shards), and 6
 # of 18 ejected pull requests later landed with no change. Keep the train and
