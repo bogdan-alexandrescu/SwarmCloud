@@ -402,8 +402,9 @@ def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere
     job = _job()
     text = json.dumps(job)
     # Pull requests only, and only those the `changes` job says reach an
-    # image (test_the_build_check_is_skipped_only_on_the_changes_jobs_no).
-    assert job.get("if") == "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'", job.get("if")
+    # image (test_the_build_check_is_skipped_only_on_the_changes_jobs_no) and
+    # run the full suite (`full`, test_fast_checks_on_lane_prs.py).
+    assert job.get("if") == "needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'", job.get("if")
     assert job.get("needs") == "changes", job.get("needs")
     assert job.get("permissions") == {"contents": "read"}, job.get("permissions")
     assert "build-images.sh --build-only --local" in text, "the job builds on the runner"
@@ -535,7 +536,7 @@ def test_the_build_check_is_skipped_only_on_the_changes_jobs_no(tmp_path):
     output says build whenever it cannot tell. MUTATION: gate the job on `app`
     again, or answer `false` off a pull request or on an unreadable diff."""
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-    assert jobs[JOB]["if"] == "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'"
+    assert jobs[JOB]["if"] == "needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'"
     assert jobs["changes"]["outputs"]["images"].replace(" ", "") == "${{steps.images.outputs.images}}"
     step = _changes_images_step()
     empty = tmp_path / "not-a-repo"

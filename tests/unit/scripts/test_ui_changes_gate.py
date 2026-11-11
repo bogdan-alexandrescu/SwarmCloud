@@ -69,6 +69,7 @@ def _needs(job: dict) -> list[str]:
     return [needs] if isinstance(needs, str) else list(needs or [])
 
 
+FULL = "needs.changes.outputs.full == 'true' && "
 REUSED = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')"
 
 
@@ -92,19 +93,21 @@ def test_each_job_runs_only_on_the_gates_output():
     expected_if = {
         # Each test job is also skipped when main's push run reuses it from a
         # run of the identical tree (B1, test_ci_reuse.py).
-        "ui-build": "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-build",
-        "ui-tests": "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-tests",
+        # The heavy jobs read the fast-checks-only rule first
+        # (test_fast_checks_on_lane_prs.py): FULL is the `changes` job's `full`.
+        "ui-build": FULL + "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-build",
+        "ui-tests": FULL + "needs.changes.outputs.ui == 'true' && " + REUSED % "ui-tests",
         "python-checks": "(needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && "
                          + REUSED % "python-checks",
-        "python-unit": "needs.changes.outputs.python != 'none' && " + REUSED % "python-unit",
+        "python-unit": FULL + "needs.changes.outputs.python != 'none' && " + REUSED % "python-unit",
         "shell": "needs.changes.outputs.app == 'true' && " + REUSED % "shell",
         "workflows": "needs.changes.outputs.app == 'true' && " + REUSED % "workflows",
         "ruff": "needs.changes.outputs.app == 'true' && " + REUSED % "ruff",
-        "integration": "needs.changes.outputs.app == 'true' && " + REUSED % "integration",
+        "integration": FULL + "needs.changes.outputs.app == 'true' && " + REUSED % "integration",
         "manifests": "needs.changes.outputs.app == 'true' && " + REUSED % "manifests",
         # `images` is false when app is (the images step says so first), and
         # test_build_images_local.py runs that step against the plan's answer.
-        "build-check": "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'",
+        "build-check": FULL + "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'",
     }
     # CI-FOLD (#1799, test_ci_fold.py): four of those are name-keepers whose
     # steps run in `quick-checks`. Each keeps its condition after `always() &&

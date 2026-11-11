@@ -154,6 +154,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import httpx
@@ -162,9 +163,10 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 
 from .accountlease import SPENT_CODES, VoicePoolRefused
 from .credential import Credential, CredentialError
+from . import instructions as vinstructions
 from . import readback as vreadback
 from . import trace as vtrace
-from .grant import SessionGrant
+from .grant import GRANT_HEADER, SessionGrant
 
 if TYPE_CHECKING:
     from .planner import Planner, TurnResult
@@ -183,6 +185,31 @@ MODEL = "gpt-live-1"
 REOPEN_EVENT = "voice.tier.reopen"
 #: How long a next tier is held for a reopen after the spent session ended.
 REOPEN_SECONDS = 60.0
+
+#: THE PAUSE (§3.12.7, the owner's pick, 11 November 2026: "about 15 seconds").
+#: In a GPT-Live session with a delegation in flight, no read-back pending and
+#: nothing playing, this many seconds in which neither side speaks pause it:
+#: GPT-Live bills every second it is open, and a voice waiting on delegated
+#: work says nothing worth paying for. Shorter would pause between a person's
+#: sentences while they think; longer pays for more silence on every delegation.
+PAUSE_AFTER_SECONDS = 15.0
+#: The most the pause waits for its sentence to be spoken before it closes: the
+#: sentence takes about four seconds to say, so twice that covers a slow voice
+#: and still bounds a Live session whose audio events never come.
+PAUSE_SAY_SECONDS = 8.0
+#: The one sentence the voice says before it pauses.
+PAUSE_SENTENCE = ("I'll pause while that runs; I'll be back when it's ready, or just start talking.")
+#: What the event sink is told about the voice's state (§3.12.7), and the states.
+SESSION_STATE = "session.state"
+PAUSED, WAKING, LISTENING = "paused", "waking", "listening"
+#: Why a voice session's Live session is opened again: the delegated work's
+#: result is ready, the person started talking, Resume, or the tier move (§5.3).
+WAKE_CAUSES = ("result", "speech", "resume")
+TIER_CAUSE = "tier"
+REOPEN_CAUSES = WAKE_CAUSES + (TIER_CAUSE,)
+#: The sideband's audio playback events: while the voice plays, nothing pauses.
+OUTPUT_AUDIO_STARTED = "session.output_audio.started"
+OUTPUT_AUDIO_STOPPED = "session.output_audio.stopped"
 #: How long one attach try may take to see the session confirmed (CONFIRMS_PREFIX);
 #: inside a start, also no longer than what is left of START_SECONDS.
 ATTACH_SECONDS = 10.0
@@ -310,6 +337,10 @@ UTTERANCE_IDLE_GAP_SECONDS = 1.6
 #: closing quote or bracket after it is skipped.
 UTTERANCE_END_MARKS = (".", "?", "!", "\u2026")
 _UTTERANCE_TRAILING = "\"')]}\u201d\u2019 \t\n"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class LiveError(RuntimeError):
@@ -690,6 +721,39 @@ class LiveSession:
         self.replaced = False
         #: Whether a move to the next tier is in flight.
         self.moving = False
+        #: THE PAUSE. When either side last spoke (the injected clock); whether
+        #: the voice's audio is playing; the delegations in flight, by id, in
+        #: order (shared with the session a reopen opens: the turns run on).
+        self.spoken_at = self._clock()
+        self._playing = False
+        self.delegations: dict[str, None] = {}
+        #: Seconds of silence that pause it (Sessions sets PAUSE_AFTER_SECONDS
+        #: when the pause is armed); None never pauses.
+        self.pause_after: float | None = None
+        #: Told when the silence is long enough (Sessions runs the pause).
+        self.on_quiet: Callable[["LiveSession"], None] | None = None
+        #: Whether a read-back is held for the person's answer (Sessions' holds).
+        self.readback_pending: Callable[[], bool] = lambda: False
+        self._quiet_timer: asyncio.TimerHandle | None = None
+        #: The pause is under way (its sentence sent, the close not yet done).
+        self.pausing = False
+        #: Whether the person spoke since the pause sentence was sent (no pause then).
+        self.person_spoke = False
+        self._spoke: asyncio.Event | None = None
+        #: When the Live session was closed for the pause (ISO, UTC); None open.
+        self.paused_at: str | None = None
+        #: Results of delegations that finished while paused, said on the wake.
+        self.held_results: list[str] = []
+        #: Whether a wake was asked for (sent once; a reopen in flight absorbs the rest).
+        self.waking = False
+        #: Set once the voice session ends for good (a paused one is kept till then).
+        self.ending = False
+        #: The Live session a reopen opened in this one's place.
+        self.successor: "LiveSession | None" = None
+        #: The usage seconds of the voice session's earlier Live sessions (each reopen adds one).
+        self.earlier_seconds: float = 0.0
+        #: Set once Sessions has forgotten it (released its lease, or handed it on).
+        self.forgotten = False
 
     @property
     def tier(self) -> str | None:
@@ -700,6 +764,17 @@ class LiveSession:
     def reopen_pending(self) -> bool:
         """Whether the next tier is held and the browser was told to offer again."""
         return self.next_credential is not None
+
+    @property
+    def paused(self) -> bool:
+        """Whether the Live session was closed for the pause and not reopened."""
+        return self.paused_at is not None
+
+    @property
+    def talk_seconds(self) -> float:
+        """The voice session's billed seconds so far: every Live session's
+        `usage.seconds`, this one's once it has closed (§3.12.8)."""
+        return self.earlier_seconds + (self.usage_seconds or 0)
 
     @property
     def transcript(self) -> list[tuple[str, str]]:
@@ -802,6 +877,8 @@ class LiveSession:
                         self._end_utterances()
                         if self._planner is not None:
                             self._delegated(event)
+                    # After the transcript has taken the event: a voice line's text is current.
+                    self._note_activity(kind, event)
                     if kind == "error":
                         # The error's code only: its message may quote what was sent.
                         error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -813,12 +890,15 @@ class LiveSession:
                             await self._on_event(self.voice_id, event)
                         except Exception as exc:  # noqa: BLE001 - a sink's failure never drops the sideband
                             log.warning("voice session %s: event sink failed: %s", self.voice_id, type(exc).__name__)
+                    # ... and whether both sides have been quiet long enough to pause.
+                    self.check_quiet()
         except WebSocketException as exc:
             log.info("voice session %s: sideband dropped (%s)", self.voice_id, type(exc).__name__)
         finally:
             if self._utterance_timer is not None:
                 self._utterance_timer.cancel()
                 self._utterance_timer = None
+            self._stop_quiet_timer()
             with contextlib.suppress(Exception):
                 await socket.close()
             if self._closed.is_set():
@@ -993,12 +1073,20 @@ class LiveSession:
         if not isinstance(delegation_id, str) or not delegation_id:
             log.warning("voice session %s: a delegation without an id was ignored", self.voice_id)
             return
+        self.delegations[delegation_id] = None
         task = asyncio.create_task(self._plan(delegation_id, delegation_request(event)),
                                    name=f"planner-{self.voice_id}")
         self._turns.add(task)
         task.add_done_callback(self._turns.discard)
 
     async def _plan(self, delegation_id: str, request: str = "") -> None:
+        try:
+            await self._plan_turn(delegation_id, request)
+        finally:
+            # The `delegations` dict is shared with a reopened session: it hears this too.
+            self.delegations.pop(delegation_id, None)
+
+    async def _plan_turn(self, delegation_id: str, request: str) -> None:
         assert self._planner is not None
         transcript = list(self.transcript)
         if not transcript:
@@ -1027,17 +1115,122 @@ class LiveSession:
         body["tier"] = self.tier
         vtrace.spawn(self._planner.write_trace(self.grant, body), self._trace_writes)
 
-    async def _say(self, delegation_id: str, spoken: str) -> None:
-        """Send `spoken` back as the delegation's commentary, unless the session ended."""
-        if self.ended or self._socket is None or not spoken:
+    async def _say(self, delegation_id: str, spoken: str, *, prefix: str = "planner") -> None:
+        """Send `spoken` back as the delegation's commentary, unless the session
+        ended. Paused, it is held for the wake, which it asks for (`cause:
+        result`); reopened, the Live session open now says it (§3.12.7)."""
+        if not spoken:
             return
+        if self.successor is not None:
+            current = self.successor
+            while current.successor is not None:
+                current = current.successor
+            await current._say(delegation_id, spoken, prefix=prefix)
+            return
+        if self.paused and not self.ending:
+            self.held_results.append(spoken)
+            await self.wake(WAKE_CAUSES[0])
+            return
+        if self.ended or self._socket is None:
+            return
+        # Said aloud: the voice is speaking, so the silence counts from now.
+        self.spoken_at = self._clock()
         try:
             await self._socket.send(json.dumps({
-                "type": COMMENTARY_APPEND, "event_id": f"planner_{delegation_id}"[:64],
+                "type": COMMENTARY_APPEND, "event_id": f"{prefix}_{delegation_id}"[:64],
                 "delegation_id": delegation_id, "content": spoken}))
         except WebSocketException as exc:
             log.info("voice session %s: the planner's summary was not sent (%s)",
                      self.voice_id, type(exc).__name__)
+
+    def _note_activity(self, kind: str, event: dict) -> None:
+        """Either side speaking resets the pause's silence; audio playing holds it."""
+        if kind == OUTPUT_AUDIO_STARTED:
+            self._playing = True
+            return
+        if kind == OUTPUT_AUDIO_STOPPED:
+            self._playing = False
+            self._spoken()
+            return
+        speaker = final_speaker(kind)
+        final = speaker is not None
+        if speaker is None:
+            speaker = delta_speaker(kind)
+        if speaker is None and kind != COMMENTARY_APPENDED:
+            return
+        if speaker is not None and not (_final_text(event) if final else _delta_text(event) or "").strip():
+            return
+        self.spoken_at = self._clock()
+        if speaker == "person" and self.pausing:
+            self.person_spoke = True
+        if speaker == "voice" and (final or ends_sentence(self._voice_text())):
+            self._spoken()
+
+    def _voice_text(self) -> str:
+        for segment in reversed(self._segments):
+            if segment.speaker == "voice":
+                return segment.text
+        return ""
+
+    def _spoken(self) -> None:
+        if self._spoke is not None:
+            self._spoke.set()
+
+    async def say_and_wait(self, delegation_id: str, spoken: str, seconds: float) -> None:
+        """Say `spoken` for `delegation_id` and wait until the voice has said a
+        sentence after it (a voice final, a sentence's end, or the audio
+        stopping), at most `seconds`."""
+        self._spoke = asyncio.Event()
+        try:
+            await self._say(delegation_id, spoken, prefix="pause")
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._spoke.wait(), seconds)
+        finally:
+            self._spoke = None
+
+    def _stop_quiet_timer(self) -> None:
+        if self._quiet_timer is not None:
+            self._quiet_timer.cancel()
+            self._quiet_timer = None
+
+    def check_quiet(self) -> None:
+        """Pause when neither side has spoken for `pause_after` with a delegation
+        in flight, no read-back pending and nothing playing; else look again when
+        it could be due. Checked on every sideband event (on the injected clock)
+        and by a timer for when none comes."""
+        self._stop_quiet_timer()
+        if (self.pause_after is None or self.on_quiet is None or self.pausing or self.paused
+                or self.ended or self.replaced or self.reopen_pending):
+            return
+        if not self.delegations or self._playing or self.readback_pending():
+            return
+        left = self.spoken_at + self.pause_after - self._clock()
+        if left <= 0:
+            self.pausing = True
+            self.on_quiet(self)
+            return
+        self._quiet_timer = asyncio.get_running_loop().call_later(max(left, 0.05), self._quiet_due)
+
+    def _quiet_due(self) -> None:
+        self._quiet_timer = None
+        self.check_quiet()
+
+    async def emit(self, event: dict[str, Any]) -> None:
+        """Hand `event` to the event sink; a sink's failure is logged, never raised."""
+        if self._on_event is None:
+            return
+        try:
+            await self._on_event(self.voice_id, event)
+        except Exception as exc:  # noqa: BLE001 - a sink's failure never fails the session
+            log.warning("voice session %s: event sink failed: %s", self.voice_id, type(exc).__name__)
+
+    async def wake(self, cause: str) -> None:
+        """Ask the holder to reopen the paused voice (`session.state: waking`), once."""
+        if self.waking or not self.paused:
+            return
+        self.waking = True
+        log.info("voice session %s: asking for the wake (%s)", self.voice_id, cause)
+        await self.emit({"type": SESSION_STATE, "state": WAKING, "cause": cause})
 
     def cancel_turns(self) -> None:
         """Drop planner turns in flight: an ended session speaks nothing more."""
@@ -1079,6 +1272,15 @@ class SessionExists(Exception):
     """The voice session already has a live GPT-Live session."""
 
 
+class SessionEnded(LookupError):
+    """No such voice session is held here: it ended, or never started here."""
+
+
+class NotPaused(Exception):
+    """A wake for a voice session whose Live session is open (or a tier reopen
+    with no next tier held): there is nothing to reopen."""
+
+
 class Sessions:
     """Every live session this process holds, by swarm-api's voice session id.
 
@@ -1087,8 +1289,17 @@ class Sessions:
 
     def __init__(self, api: LiveApi, *, leases: Leases, close_grace: float = 5.0,
                  on_event: EventSink | None = None, planner: "Planner | None" = None,
-                 finals: vreadback.Finals | None = None) -> None:
+                 finals: vreadback.Finals | None = None, pause_after: float | None = None,
+                 pause_say_seconds: float = PAUSE_SAY_SECONDS,
+                 clock: Callable[[], float] | None = None) -> None:
         self.api = api
+        #: THE PAUSE: seconds of silence with a delegation in flight that pause a
+        #: session (PAUSE_AFTER_SECONDS when armed), or None: never paused.
+        self._pause_after = pause_after
+        self._pause_say = pause_say_seconds
+        #: The sessions' clock for the pause and the utterance gaps (tests inject one).
+        self._clock = clock
+        self._pauses: set[asyncio.Task] = set()
         self._planner = planner
         #: Calls swarm-api held for a read-back, by session (readback.py); the
         #: internal `/readback` route runs them from here.
@@ -1115,12 +1326,23 @@ class Sessions:
         return {"sessions": len(self._live), "attached": sum(1 for s in self._live.values() if s.attached)}
 
     def _forget(self, session: LiveSession) -> None:
+        if session.paused and not session.replaced and not session.ending:
+            # Closed for the pause: the voice session, its lease, its grant and
+            # its planner turns live on until a wake or an end.
+            return
+        if session.forgotten:
+            # Its sideband's close and the path that closed it both forget it: once.
+            return
+        session.forgotten = True
         session.cancel_turns()
         if self._live.get(session.voice_id) is session:
             del self._live[session.voice_id]
         # The Voice it pool account goes back with the session: an end, a
-        # shutdown, or OpenAI's own `session.closed` on the sideband.
-        self._release(session._credential)
+        # shutdown, or OpenAI's own `session.closed` on the sideband -- unless
+        # a wake carried it on to the Live session open now.
+        carried = session.successor is not None and session.successor._credential is session._credential
+        if not carried:
+            self._release(session._credential)
         if session.replaced:
             # A reopen took its place: the voice session lives on in the new one.
             session.grant = None
@@ -1255,60 +1477,167 @@ class Sessions:
         finally:
             self._starting.discard(voice_id)
 
-    def _config(self) -> dict[str, Any]:
+    def _base_instructions(self) -> str:
         if self._planner is None:
-            return {"model": MODEL, "instructions": INSTRUCTIONS + TURN_INSTRUCTIONS}
-        return {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS + TURN_INSTRUCTIONS,
-                "delegation": {"type": "client"}}
+            return INSTRUCTIONS + TURN_INSTRUCTIONS
+        return INSTRUCTIONS + DELEGATE_INSTRUCTIONS + TURN_INSTRUCTIONS
 
-    async def _create(self, voice_id: str, person: str, credential: LeasedCredential, offer: str) -> LiveSession:
+    def _config(self, instructions: str | None = None) -> dict[str, Any]:
+        config: dict[str, Any] = {"model": MODEL, "instructions": instructions or self._base_instructions()}
+        if self._planner is not None:
+            config["delegation"] = {"type": "client"}
+        return config
+
+    async def _create(self, voice_id: str, person: str, credential: LeasedCredential, offer: str,
+                      instructions: str | None = None) -> LiveSession:
         """The GPT-Live session for `offer` on `credential`, not yet attached."""
-        live_id, answer = await self.api.create(credential, offer, self._config())
+        live_id, answer = await self.api.create(credential, offer, self._config(instructions))
         session = LiveSession(voice_id, live_id, credential, self.api,
                               on_event=self._on_event, on_closed=self._forget,
-                              person=person, planner=self._planner, finals=self._finals)
+                              person=person, planner=self._planner, finals=self._finals,
+                              clock=self._clock)
         session.answer = answer
         session.on_spent = self._spent
+        if self._planner is not None and self._pause_after is not None:
+            # Without a planner nothing is ever delegated, so nothing waits to pause.
+            session.pause_after = self._pause_after
+            session.on_quiet = self._quiet
+            session.readback_pending = lambda: self._readback_pending(voice_id)
         if hasattr(credential, "on_lost"):
             # A renewal the broker refuses is a spent key too (§5.3).
             credential.on_lost = lambda: self._spent(session)
         return session
 
+    def _readback_pending(self, voice_id: str) -> bool:
+        """Whether a call is held for the person's answer to a read-back (readback.py)."""
+        held = getattr(self.holds, "_held", {}).get(voice_id)
+        return held is not None and self.holds.clock() - held.at <= vreadback.HOLD_SECONDS
+
+    def _quiet(self, session: LiveSession) -> None:
+        task = asyncio.get_running_loop().create_task(self._pause(session), name="voice-pause")
+        self._pauses.add(task)
+        task.add_done_callback(self._pauses.discard)
+
+    async def _pause(self, session: LiveSession) -> None:
+        """THE PAUSE (§3.12.7): say the sentence, wait for it (at most
+        `pause_say_seconds`), close the Live session keeping its usage seconds,
+        and tell the sink `session.state: paused`. The voice session, its grant,
+        its lease and its planner turns keep running. The person speaking, or the
+        delegated work finishing, before the close leaves the session open."""
+        try:
+            delegation_id = next(iter(session.delegations), None)
+            if delegation_id is None or session.ended:
+                return
+            session.person_spoke = False
+            await session.say_and_wait(delegation_id, PAUSE_SENTENCE, self._pause_say)
+            if (session.person_spoke or not session.delegations or session.ended or session.replaced
+                    or session.reopen_pending or self._live.get(session.voice_id) is not session):
+                log.info("voice session %s: the pause was called off", session.voice_id)
+                return
+            session.paused_at = _now_iso()
+            try:
+                await session.end(self._grace)
+            except (LiveError, CredentialError) as exc:
+                # Not closed: the session stays open (and billing), as before the pause.
+                session.paused_at = None
+                log.warning("voice session %s: the pause could not close the live session: %s",
+                            session.voice_id, exc)
+                return
+        finally:
+            session.pausing = False
+            if not session.paused and not session.ended:
+                session.spoken_at = session._clock()
+                session.check_quiet()
+        log.info("voice session %s: paused after %.0f s of silence (%s s talked)", session.voice_id,
+                 session.pause_after or 0, f"{session.talk_seconds:g}")
+        await session.emit({"type": SESSION_STATE, "state": PAUSED, "paused_at": session.paused_at,
+                            "usage_seconds": session.talk_seconds})
+        if not session.delegations and session.held_results:
+            await session.wake(WAKE_CAUSES[0])
+
+    async def reopen(self, voice_id: str, *, offer: str, cause: str, grant: SessionGrant | None = None,
+                     planner_model: str | None = None,
+                     context: vinstructions.ReopenContext | None = None) -> LiveSession:
+        """Open the voice session's Live session again from the browser's fresh
+        `offer`, by `cause` (REOPEN_CAUSES): a wake of a paused session on its
+        held lease, or the tier move on its held next tier. Raises ValueError
+        (an unknown cause), SessionEnded (not held here: ended), NotPaused
+        (nothing to reopen), SessionExists (a start or reopen in flight),
+        CredentialError or LiveError; a failed reopen leaves the session paused
+        (or its next tier held) for a retry."""
+        if cause not in REOPEN_CAUSES:
+            raise ValueError("cause must be one of " + ", ".join(REOPEN_CAUSES))
+        session = self._live.get(voice_id) or self._awaiting.get(voice_id)
+        if session is None or session.ending:
+            raise SessionEnded(voice_id)
+        if voice_id in self._starting:
+            raise SessionExists(voice_id)
+        if cause == TIER_CAUSE:
+            if session.next_credential is None:
+                raise NotPaused(voice_id)
+        elif not session.paused:
+            raise NotPaused(voice_id)
+        return await self._reopen(session, offer=offer, grant=grant, planner_model=planner_model,
+                                  cause=cause, context=context)
+
     async def _reopen(self, spent: LiveSession, *, offer: str, grant: SessionGrant | None,
-                      planner_model: str | None) -> LiveSession:
-        """Reopen Live for `spent`'s voice session on its next tier (§5.3): the
-        new Live session takes the browser's fresh offer on the next tier's key
-        and carries the conversation over; the spent session is closed and its
-        key given back. A failed reopen keeps the next tier held for a retry."""
+                      planner_model: str | None, cause: str = TIER_CAUSE,
+                      context: vinstructions.ReopenContext | None = None) -> LiveSession:
+        """Reopen Live for `spent`'s voice session, by `cause` (§3.12.7: one path):
+        the new Live session takes the browser's fresh offer -- on the next
+        tier's key for the tier move (§5.3), on the held lease for a wake -- with
+        instructions rebuilt (instructions.py), and carries the transcript
+        segments, the grant, the planner model, the trace, the planner turns in
+        flight and the usage seconds over. A spent session still open is closed;
+        its key is given back unless the new session carries it. A failed
+        reopen keeps the next tier held, or the session paused, for a retry."""
         voice_id = spent.voice_id
-        credential = spent.next_credential
-        assert credential is not None
+        credential = spent.next_credential if spent.next_credential is not None else spent._credential
+        spent.waking = True
+        first_words = list(spent.held_results)
+        known = (spent.grant.headers()[GRANT_HEADER],) if spent.grant is not None else ()
+        instructions = vinstructions.build(self._base_instructions(), context, transcript=spent.transcript,
+                                           cause=cause, first_words=first_words, secrets_=known)
         self._starting.add(voice_id)
         try:
             deadline = asyncio.get_running_loop().time() + START_SECONDS
             async with asyncio.timeout_at(deadline):
-                session = await self._create(voice_id, spent.person, credential, offer)
+                session = await self._create(voice_id, spent.person, credential, offer, instructions)
                 session.grant = grant if grant is not None else spent.grant
                 session.planner_model = planner_model if planner_model is not None else spent.planner_model
                 session.trace = spent.trace
                 session._segments = list(spent._segments)
                 await session.attach(deadline - ATTACH_RESERVE_SECONDS)
+        except BaseException:
+            spent.waking = False
+            raise
         finally:
             self._starting.discard(voice_id)
-        spent.next_credential = None
+        # The planner turns in flight run on: their results reach the voice open now.
+        session._turns, spent._turns = spent._turns, set()
+        session.delegations = spent.delegations
+        spent.held_results = []
+        if spent.next_credential is credential:
+            spent.next_credential = None
         spent.replaced = True
+        spent.successor = session
         timer = self._expiries.pop(voice_id, None)
         if timer is not None:
             timer.cancel()
         self._awaiting.pop(voice_id, None)
         self._live[voice_id] = session
-        log.info("voice session %s: live reopened as %s on the %s tier", voice_id, session.live_id, session.tier)
+        log.info("voice session %s: live reopened (%s) as %s on the %s tier", voice_id, cause, session.live_id,
+                 session.tier)
         if not spent.ended:
             try:
                 await spent.end(self._grace)
             except (LiveError, CredentialError) as exc:
                 log.warning("voice session %s: the spent live session did not close: %s", voice_id, exc)
+        session.earlier_seconds = spent.talk_seconds
         self._forget(spent)
+        if cause in WAKE_CAUSES:
+            await session.emit({"type": SESSION_STATE, "state": LISTENING, "cause": cause,
+                                "woke_at": _now_iso()})
         return session
 
     async def end(self, voice_id: str) -> LiveSession | None:
@@ -1322,7 +1651,9 @@ class Sessions:
                 self._expire(voice_id)
                 await self.drain_releases()
             return waiting
-        # An end is the person's: a next tier held for a reopen goes back with it.
+        # An end is the person's: a next tier held for a reopen goes back with it,
+        # and a paused session is forgotten now (its Live session closed already).
+        session.ending = True
         held, session.next_credential = session.next_credential, None
         if held is not None:
             self._release(held)

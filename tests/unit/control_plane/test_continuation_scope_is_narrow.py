@@ -92,6 +92,8 @@ NAMED_REFUSED = [
     ("PUT", "/v1/accounts/{account_id}/lending"),
     ("PUT", "/v1/accounts/{account_id}/model-classes"),
     ("PUT", "/v1/accounts/{account_id}/max-agents"),
+    ("PUT", "/v1/accounts/{account_id}/spend-cap"),
+    ("PUT", "/v1/accounts/{account_id}/per-workspace-max"),
     ("PUT", "/v1/accounts/{account_id}/state"),
     ("DELETE", "/v1/accounts/{account_id}"),
     ("POST", "/v1/tenants/me/credentials"),
