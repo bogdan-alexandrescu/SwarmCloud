@@ -115,7 +115,7 @@ def _status(request: Request, ctx: AppContext, bundle_id: str) -> dict[str, Any]
     bundle = bundles.bundle(bundle_id)
     if bundle is None:
         raise ps.PluginRefused("bundle_not_found", status=404, bundle_id=bundle_id)
-    if bundle.get("state") == pb.STATE_BUILDING and bundle.get("build_id"):
+    if bundle.get("state") == pb.STATE_BUILDING:
         try:
             bundle = pb.finish(store, bundles, _builds(request, ctx), bundle, _config(ctx).repository)
         except pb.GrantMissing:

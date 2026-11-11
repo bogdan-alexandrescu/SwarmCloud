@@ -36,6 +36,12 @@ marks the record ready and moves the install's `current_version`
 (`PluginStore.move_current`), or marks it failed and moves nothing. Roll back
 (`roll_back`, section 1.4.7) moves `current_version` to the previous version
 at once when a retained ready bundle carries it.
+Both moves first check, in that transaction, that the bundle's whole key is
+the live pair once moved (`_stale_key`); a bundle that is not fails (or is
+refused) `bundle_key_stale`. A building record whose start never recorded
+its build id within START_GRACE is failed `bundle_build_not_started`, so a
+lost start never holds later Applies. A ready finish then retires what
+retention no longer keeps (`retire`).
 
 A BUNDLE BUILD IS NOT AN AGENT ATTEMPT (invariant 1). It is a Cloud Build
 build in the deployment's project, outside every pool: it reserves no
@@ -60,6 +66,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from google.cloud import firestore
@@ -112,6 +119,12 @@ BUILD_SUCCESS = "SUCCESS"
 BUILD_FAILED = frozenset({"FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED", "EXPIRED"})
 #: The build's own timeout: gstack's setup compiles with Bun, three times.
 BUILD_TIMEOUT = "3600s"
+#: How long a `building` record may go without the build id its start
+#: records. The start is one Cloud Build call; a record still without an id
+#: after this lost its start (a write that failed after the build was
+#: created, or a process that died between the two) and is failed
+#: `bundle_build_not_started`, so it cannot hold every later Apply at 409.
+START_GRACE = timedelta(minutes=10)
 
 # Configuration. Read only here, each `(os.environ if environ is None else
 # environ).get(...)`, the shape scripts/lib/check-env-parity.sh matches.
@@ -161,11 +174,18 @@ def ref_ok(ref: Any, project: str, region: str) -> bool:
     return bool(match) and match.group(1) == region and match.group(2) == project
 
 
-def check_base(base: Any, project: str, region: str) -> dict[str, str]:
+def check_base(base: Any, project: str, region: str, *,
+               like: Mapping[str, str] | None = None) -> dict[str, str]:
     """The base map, every claude-code runner image named by digest in this
-    deployment's registry, or `bundle_base_invalid`."""
+    deployment's registry, or `bundle_base_invalid`. With `like` (the live
+    base), each image must also be in the repository its live image is in:
+    a caller names a release's digest, never another repository
+    (invariant 10)."""
     if not isinstance(base, Mapping) or any(not ref_ok(base.get(name), project, region)
                                             for name in RUNNER_IMAGES):
+        raise ps.PluginRefused("bundle_base_invalid")
+    if like is not None and any(base[name].partition("@")[0] != str(like.get(name) or "").partition("@")[0]
+                                for name in RUNNER_IMAGES):
         raise ps.PluginRefused("bundle_base_invalid")
     return {name: base[name] for name in RUNNER_IMAGES}
 
@@ -525,11 +545,56 @@ def _start(bundles: BundleStore, builds: BundleBuilds, config: BundleSettings, *
     return stored
 
 
+def _unstarted(bundle: Mapping[str, Any], now: Any) -> bool:
+    """A `building` record whose start never recorded a build id, older
+    than START_GRACE."""
+    if bundle.get("state") != STATE_BUILDING or bundle.get("build_id"):
+        return False
+    created = bundle.get("created_at")
+    if isinstance(created, str):
+        try:
+            created = datetime.fromisoformat(created)
+        except ValueError:
+            return True
+    if not isinstance(created, datetime) or not isinstance(now, datetime):
+        return True
+    try:
+        return now - created > START_GRACE
+    except TypeError:
+        return True
+
+
+def fail_unstarted(bundles: BundleStore, bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Fail a building record whose start was lost (`_unstarted`) under
+    `bundle_build_not_started`; any other record is returned unchanged."""
+    if not _unstarted(bundle, bundles._now()):
+        return dict(bundle)
+
+    def _change(whole: dict[str, Any], txn: Any) -> bool:
+        if not _unstarted(whole, bundles._now()):
+            return False
+        whole.update({"state": STATE_FAILED, "refusal": {"code": "bundle_build_not_started"},
+                      "finished_at": bundles._now().isoformat()})
+        return True
+
+    return bundles.update(bundle["bundle_id"], _change) or dict(bundle)
+
+
+def _building(bundles: BundleStore) -> list[dict[str, Any]]:
+    """The building records, once every lost start among them is failed."""
+    return [b for b in (fail_unstarted(bundles, b) for b in bundles.bundles(STATE_BUILDING))
+            if b.get("state") == STATE_BUILDING]
+
+
 def _refuse_while_building(bundles: BundleStore, install_id: str) -> None:
     """One Apply build at a time, across BOTH bundled installs: a bundle's
     key holds every bundled install's version, so a second build started
-    from the same current pair would make current a pair no bundle carries."""
-    if any(b.get("reason") == REASON_APPLY for b in bundles.bundles(STATE_BUILDING)):
+    from the same current pair would make current a pair no bundle carries.
+    This read is not transactional: two Applies at once can both pass it,
+    so the ready finish and Roll back each check, in the transaction that
+    moves current, that the bundle's whole key is the live pair
+    (`_stale_key`)."""
+    if any(b.get("reason") == REASON_APPLY for b in _building(bundles)):
         raise ps.PluginRefused("bundle_building", status=409, install_id=install_id)
 
 
@@ -565,7 +630,8 @@ def rebuild(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, c
     the new `base` (the new release's images, already copied into this
     deployment's registry), none for a key already ready or building on it.
     Moves no `current_version`."""
-    new_base = check_base(base, config.project, config.region)
+    new_base = check_base(base, config.project, config.region, like=config.base)
+    _building(bundles)
     on_base = {b.get("key_sha256") for b in bundles.bundles() if b.get("base") == new_base
                and b.get("state") in (STATE_BUILDING, STATE_READY)}
     started: list[dict[str, Any]] = []
@@ -640,6 +706,26 @@ def read_outcome(bundle: Mapping[str, Any], build: Mapping[str, Any] | None,
     return STATE_READY, {"outputs": outputs, "plugins": plugins}
 
 
+def _stale_key(store: ps.PluginStore, txn: Any, key: Iterable[Mapping[str, Any]], install_id: str,
+               version_id: str) -> bool:
+    """Read inside the transaction that moves `install_id` to `version_id`:
+    True unless, after that move, every bundled install's live current
+    version is the one `key` names. Two builds started at once from the
+    same current pair each carry the other install's old version; the
+    second to finish (or a Roll back across a pair that has since changed)
+    would make current a pair no ready bundle carries."""
+    entries = {e.get("install_id"): e.get("version_id") for e in key}
+    if entries.get(install_id) != version_id:
+        return True
+    for other, wanted in entries.items():
+        if other == install_id:
+            continue
+        live = store._verified("install", _snapshot(txn.get(store._install_ref(other))), {"install_id": other})
+        if live is None or live.get("state") != ps.STATE_ACTIVE or live.get("current_version") != wanted:
+            return True
+    return False
+
+
 def mark_finished(store: ps.PluginStore, bundles: BundleStore, bundle_id: str, state: str,
                   detail: Mapping[str, Any]) -> dict[str, Any] | None:
     """End a building record, in ONE transaction: ready moves the applied
@@ -662,6 +748,10 @@ def mark_finished(store: ps.PluginStore, bundles: BundleStore, bundle_id: str, s
                 whole.update({"state": STATE_FAILED, "refusal": {"code": "install_not_active"},
                               "finished_at": finished})
                 return True
+            if _stale_key(store, txn, whole.get("key") or (), install_id, whole["version_id"]):
+                whole.update({"state": STATE_FAILED, "refusal": {"code": "bundle_key_stale"},
+                              "finished_at": finished})
+                return True
         whole.update({"state": STATE_READY, "outputs": dict(detail["outputs"]),
                       "plugins": dict(detail["plugins"]), "finished_at": finished})
         if install is not None:
@@ -676,12 +766,24 @@ def finish(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, bu
            repository: str) -> dict[str, Any]:
     """Read a building record's build from Cloud Build and end it if it
     ended. The one path a notification and a status read both take."""
-    if bundle.get("state") != STATE_BUILDING or not bundle.get("build_id"):
+    if bundle.get("state") != STATE_BUILDING:
         return dict(bundle)
+    if not bundle.get("build_id"):
+        return fail_unstarted(bundles, bundle)
     outcome = read_outcome(bundle, builds.get(str(bundle["build_id"])), repository)
     if outcome is None:
         return dict(bundle)
-    return mark_finished(store, bundles, bundle["bundle_id"], *outcome) or dict(bundle)
+    ended = mark_finished(store, bundles, bundle["bundle_id"], *outcome) or dict(bundle)
+    if ended.get("state") == STATE_READY:
+        # A ready finish is when current (and so retention) changes: retire
+        # what retention no longer keeps, so the records `swarm upgrade`
+        # counts and rebuilds are the kept ones. Best effort: the next ready
+        # finish retires whatever this one could not.
+        try:
+            retire(bundles)
+        except Exception as exc:  # noqa: BLE001 -- the finish itself is committed
+            log.warning("plugin bundle retention not applied (%s)", type(exc).__name__)
+    return ended
 
 
 # --- Roll back and retention -------------------------------------------------------
@@ -700,6 +802,9 @@ def _move_to(store: ps.PluginStore, bundles: BundleStore, ready: Mapping[str, An
                                {"install_id": install_id})
         if live is None or live.get("state") != ps.STATE_ACTIVE:
             refused.append("install_not_active")
+            return False
+        if _stale_key(store, txn, whole.get("key") or (), install_id, version_id):
+            refused.append("bundle_key_stale")
             return False
         store.move_current(txn, live, version_id, by=by, bundle_id=whole["bundle_id"])
         return False

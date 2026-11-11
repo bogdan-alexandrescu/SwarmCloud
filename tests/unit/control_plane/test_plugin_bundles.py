@@ -18,17 +18,21 @@ import base64
 import hashlib
 import json
 import secrets
+from datetime import timedelta
 from typing import Any, Mapping
 
 import pytest
 
 from swarm_api import pluginbundle as pb
+from swarm_api import roles
+from swarm_api.auth import TENANT_HEADER
 from swarm_api import pluginstore as ps
 from swarm_api.judgment import MAC_FIELD, settings_mac
+from swarm_api.roles import RoleStore
 from swarm_api.routes import plugin_bundles as routes
 from swarm_api.routes import plugin_catalogue as pc
 
-from .conftest import PROJECT, REGION, auth_header
+from .conftest import PROJECT, REGION, auth_header, seed_tenant
 from .test_settings_mac import configure, new_key
 
 ROOT = "root@example.com"
@@ -230,6 +234,52 @@ def test_an_apply_on_the_other_bundled_install_waits_for_the_running_build(world
     assert len(w["builds"].started) == 1
 
 
+def test_two_applies_at_once_never_make_current_a_pair_no_ready_bundle_carries(world, monkeypatch):
+    # Both Applies read "nothing building" before either writes its record:
+    # the guard is a plain read, so the finish must check the whole key.
+    w = world
+    monkeypatch.setattr(pb, "_refuse_while_building", lambda bundles, install_id: None)
+    store = _store(w)
+    bundles = pb.BundleStore(store, w["db"], now=w["ctx"].now)
+    config = pb.bundle_settings(PROJECT, REGION)
+    a1 = _current(w, AUDIT)
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    a9 = _set(w["db"], f"plugin_installs/{AUDIT}/versions/v-b00000000009", "version",
+              _version(AUDIT, "v-b00000000009", "a9"), w["keys"])["version_id"]
+    first = pb.start_apply(store, bundles, w["builds"], config, GSTACK, v2, by=ROOT)
+    second = pb.start_apply(store, bundles, w["builds"], config, AUDIT, a9, by=ROOT)
+    assert len(w["builds"].started) == 2
+    for started in (first, second):
+        record = _built(w, started["bundle_id"])
+        w["builds"].succeed(record["build_id"], record)
+    assert _status(w, first["bundle_id"]).json()["state"] == "ready"
+    answer = _status(w, second["bundle_id"]).json()
+    assert answer["state"] == "failed"
+    assert answer["refusal"]["code"] == "bundle_key_stale"
+    assert (_current(w), _current(w, AUDIT)) == (v2, a1)
+
+
+def test_a_building_record_whose_start_was_lost_is_failed_and_holds_nothing(world):
+    w = world
+    bundles = pb.BundleStore(_store(w), w["db"], now=w["ctx"].now)
+    lost = {"bundle_id": "b-0000000000aa", "scope": "platform", "tenant_id": None, "reason": "apply",
+            "install_id": GSTACK, "version_id": w["versions"][(GSTACK, "2.0")]["version_id"],
+            "previous_version": _current(w), "key": [], "key_sha256": pb.key_sha256([]), "base": LIVE,
+            "bundler": "b", "state": "building", "build_id": None, "outputs": None, "plugins": None,
+            "refusal": None, "requested_by": ROOT, "finished_at": None, "created_by": ROOT}
+    # Within the grace a start may still be recording its id: it holds.
+    bundles.create({**lost, "created_at": w["ctx"].now()})
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    assert _apply(w, v2).json()["code"] == "bundle_building"
+    # Past it, the start was lost: the record fails and Apply goes on.
+    bundles.create({**lost, "created_at": w["ctx"].now() - pb.START_GRACE - timedelta(minutes=1)})
+    answer = _apply(w, v2)
+    assert answer.status_code == 202, answer.text
+    assert _built(w, "b-0000000000aa")["state"] == "failed"
+    assert _built(w, "b-0000000000aa")["refusal"] == {"code": "bundle_build_not_started"}
+    assert len(w["builds"].started) == 1
+
+
 def test_the_build_runs_as_the_builder_account_and_pushes_only_to_the_bundle_repository(world):
     w = world
     v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
@@ -346,6 +396,40 @@ def test_roll_back_moves_to_the_retained_previous_bundle(world):
     assert len(w["builds"].started) == 1
 
 
+def test_a_ready_finish_retires_what_retention_no_longer_keeps(world):
+    w = world
+    w["builds"].refuse = "grant"
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    failed = _apply(w, v2).json()["detail"]["bundle_id"]
+    w["builds"].refuse = None
+    bundle_id = _apply(w, v2).json()["bundle_id"]
+    record = _built(w, bundle_id)
+    w["builds"].succeed(record["build_id"], record)
+    assert _status(w, bundle_id).json()["state"] == "ready"
+    assert _built(w, failed)["state"] == "retired"
+    # Current and Roll back's previous stay.
+    assert _built(w, bundle_id)["state"] == "ready"
+    assert _built(w, "b-000000000001")["state"] == "ready"
+
+
+def test_roll_back_refuses_a_bundle_whose_other_install_has_moved(world):
+    w = world
+    store = _store(w)
+    bundles = pb.BundleStore(store, w["db"], now=w["ctx"].now)
+    ready = bundles.bundle("b-000000000001")
+    a9 = _set(w["db"], f"plugin_installs/{AUDIT}/versions/v-b00000000009", "version",
+              _version(AUDIT, "v-b00000000009", "a9"), w["keys"])["version_id"]
+    install = dict(store.install(AUDIT))
+    install["current_version"] = a9
+    install.pop(MAC_FIELD, None)
+    _set(w["db"], f"plugin_installs/{AUDIT}", "install", install, w["keys"])
+    gstack = store.install(GSTACK)
+    with pytest.raises(ps.PluginRefused) as refused:
+        pb._move_to(store, bundles, ready, gstack, gstack["current_version"], by=ROOT)
+    assert refused.value.code == "bundle_key_stale"
+    assert _current(w, AUDIT) == a9
+
+
 def test_roll_back_with_no_retained_bundle_is_refused_and_moves_nothing(world):
     w = world
     w["db"].docs.pop("plugin_bundles/b-000000000001")
@@ -405,6 +489,19 @@ def test_the_rebuild_route_refuses_anyone_but_a_platform_admin(world):
     assert answer.status_code == 403
     assert w["builds"].started == []
     assert w["client"].post(f"{routes.BASE}/rebuild", json={"base": _base("next")}).status_code == 401
+    # Nor a workspace's own admin.
+    seed_tenant(w["db"], "eng")
+    # The context's role store was built before the fixture gave it a key.
+    w["ctx"].roles = store = RoleStore(w["db"], w["ctx"].settings, metrics=w["ctx"].metrics, now=w["ctx"].now)
+    store.write(tenant_id="eng", subject="alice@example.com", role=roles.ADMIN, by=ROOT, via="platform_admin",
+                reason="", previous=store.newest_valid("eng", "alice@example.com", fresh=True),
+                action=roles.AUDIT_GRANTED, detail={})
+    me = w["client"].get("/v1/tenants/me", headers={**auth_header("alice"), TENANT_HEADER: "eng"})
+    assert me.json()["role"]["name"] == roles.ADMIN, me.text
+    answer = w["client"].post(f"{routes.BASE}/rebuild", json={"base": _base("next")},
+                              headers={**auth_header("alice"), TENANT_HEADER: "eng"})
+    assert answer.status_code == 403
+    assert w["builds"].started == []
 
 
 def test_the_rebuild_route_builds_each_retained_key_once_on_the_new_base(world):
@@ -425,6 +522,12 @@ def test_the_rebuild_route_refuses_a_base_outside_this_deployment(world):
     elsewhere = {image: f"{REGION}-docker.pkg.dev/other-project-1/swarm/{image}@{_digest(image)}"
                  for image in pb.RUNNER_IMAGES}
     answer = w["client"].post(f"{routes.BASE}/rebuild", json={"base": elsewhere}, headers=auth_header("root"))
+    assert answer.status_code == 422
+    assert answer.json()["code"] == "bundle_base_invalid"
+    assert w["builds"].started == []
+    # Nor one in another repository of this deployment's own registry.
+    mirror = {image: f"{REGISTRY}/docker-hub-mirror/{image}@{_digest(image)}" for image in pb.RUNNER_IMAGES}
+    answer = w["client"].post(f"{routes.BASE}/rebuild", json={"base": mirror}, headers=auth_header("root"))
     assert answer.status_code == 422
     assert answer.json()["code"] == "bundle_base_invalid"
     assert w["builds"].started == []
