@@ -7422,13 +7422,32 @@ export async function finishAccountSignIn(body: {
   }
 }
 
-/** `PUT /v1/accounts/{id}/lending`. The whole list, not a delta. */
+/**
+ * `PUT /v1/accounts/{id}/lending`. The whole set, not a delta: a list is
+ * today's bare `lend_to` (a borrower already lent keeps its cap), a map is
+ * `lends`, each borrowing workspace with its agents cap (§4.6, Q7).
+ */
 export async function setAccountLending(
   accountId: string,
-  lendTo: string[],
+  lendTo: string[] | Record<string, number>,
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
-  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
+  const body = Array.isArray(lendTo)
+    ? { lend_to: lendTo }
+    : { lends: Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n }])) }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', body)
+}
+
+/**
+ * `PUT /v1/accounts/{id}/per-workspace-max` (§4.6, Q6): at most this many of
+ * the plan's agents at once may be one workspace's, the owner's or a
+ * borrower's. The whole map; `{}` clears every cap. Owner only.
+ */
+export async function setAccountPerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixturePerWorkspaceMax(accountId, caps)
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', {
+    per_workspace_max: caps,
+  })
 }
 
 /**
@@ -7445,7 +7464,21 @@ export async function setAccountLending(
  * `blocked_by`, `next_eligible_at`, `max_agents`, the organisation and the
  * duplicate marks), typed in accountsPool.ts.
  */
-export type ServedAccount = Account & PoolFields & { model_classes?: string[] }
+export type ServedAccount = Account & PoolFields & { model_classes?: string[] } & PlanCaps
+
+/** One lend's cap as the broker serves it (§4.6, Q7); `cap_set` false is a lend carried over from `lend_to`. */
+export type LendCap = { max_agents: number; monthly_spend_cap_usd: number | null; cap_set: boolean }
+
+/**
+ * A plan's caps as served: each lend's cap, each workspace's per-workspace
+ * cap (Q6), and, on the owner's own rows, each borrower's live holders --
+ * `null` when swarm-api could not read them, absent from an older one.
+ */
+export type PlanCaps = {
+  lends?: Record<string, LendCap>
+  per_workspace_max?: Record<string, number>
+  lend_holders?: Record<string, number> | null
+}
 
 /**
  * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
@@ -8347,11 +8380,21 @@ async function fixtureFinishSignIn(body: {
   }
 }
 
-async function fixtureLending(accountId: string, lendTo: string[]): Promise<Result<unknown>> {
+async function fixtureLending(accountId: string, lendTo: string[] | Record<string, number>): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 180))
+  const borrowers = Array.isArray(lendTo) ? lendTo : Object.keys(lendTo)
+  const lends = Array.isArray(lendTo)
+    ? null
+    : Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n, monthly_spend_cap_usd: null, cap_set: true }]))
   fixtureAccounts = fixtureAccounts.map((a) =>
-    a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
+    a.account_id === accountId ? { ...a, lend_to: borrowers, ...(lends !== null ? { lends } : {}) } : a,
   )
+  return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixturePerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? { ...a, per_workspace_max: { ...caps } } : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
