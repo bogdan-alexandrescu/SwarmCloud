@@ -149,6 +149,20 @@ export const INTAKE_REFUSALS: Readonly<Record<string, string>> = {
   overlay_hook_path_missing: 'An overlay hook names a file that is not in the plugin.',
   manifest_missing: 'The plugin has no .claude-plugin/plugin.json and the overlay declares none.',
   intake_internal_error: 'The intake job failed before it finished its checks.',
+  // swarm-api: a bundled plugin's build, its bundle job and the check of what it pushed
+  // (docs/design/managed-plugins.md section 1.4).
+  install_bundled: 'This plugin is built into an image: applying a version starts a bundle build.',
+  install_not_bundled: 'This plugin is not built into an image.',
+  bundle_building: 'A bundle build is already running; wait for it to end.',
+  bundle_not_found: 'That bundle is not one of this deployment\'s bundles.',
+  bundle_not_retained: 'No retained bundle carries the previous version; apply it to build one.',
+  bundle_build_unconfigured: 'This deployment has no bundle build configured.',
+  bundle_grant_missing: 'swarm-api may not run the bundle job or read what it pushed; its grants on the job and the bundle repository are not applied yet.',
+  bundle_build_not_started: 'The bundle build could not be started.',
+  bundle_build_failed: 'The bundle build failed.',
+  bundle_check_failed: 'The bundle build\'s output is not the bundle that was asked for.',
+  bundle_base_invalid: 'A base image is not this deployment\'s image by digest.',
+  bundle_key_stale: 'Another bundled plugin\'s current version changed since this bundle was built; apply again to build the bundle the live versions need.',
 }
 
 /** The archive's PUT to the signed URL failed: a console code, since no route answered. */

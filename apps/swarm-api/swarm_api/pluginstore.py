@@ -181,14 +181,12 @@ REFUSALS: dict[str, str] = {
     "bundle_not_found": "That bundle is not one of this deployment's bundles.",
     "bundle_not_retained": "No retained bundle carries the previous version; apply it to build one.",
     "bundle_build_unconfigured": "This deployment has no bundle build configured.",
-    "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; "
-                            "its grants on the job and the bundle repository are not applied yet.",
+    "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; its grants on the job and the bundle repository are not applied yet.",
     "bundle_build_not_started": "The bundle build could not be started.",
     "bundle_build_failed": "The bundle build failed.",
     "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",
     "bundle_base_invalid": "A base image is not this deployment's image by digest.",
-    "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; "
-                        "apply again to build the bundle the live versions need.",
+    "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; apply again to build the bundle the live versions need.",
 }
 
 
