@@ -288,3 +288,47 @@ def test_an_own_speech_delegation_is_traced_only_with_debug_on():
     assert turn["secs"] == 2.5
     assert turn["events"]["finals"] == 1
     assert turn["none"] is None
+
+
+class _FailingPlanner(FakePlanner):
+    async def delegate(self, **kwargs):
+        raise RuntimeError("the planner fell over")
+
+
+def test_an_own_speech_trace_names_the_tier_the_planner_turn_ran_on():
+    from swarm_voice import accountlease
+
+    for tier in accountlease.TIERS:
+        result = pl.TurnResult("vd_1", "It's on screen.", drawn=[{"kind": "plan", "title": "Bakery website"}],
+                               tier=tier)
+        # MUTATION: leave `tier` off the front's trace and swarm-api reads it as not recorded.
+        [body] = _front_turn(True, FakePlanner(result))
+        # The field the GPT-Live turn's trace carries (live.py `_traced`), beside the engine.
+        assert body["tier"] == tier
+        assert "tier" not in body["turn"]
+
+
+def test_an_own_speech_turn_the_planner_never_finished_names_no_tier():
+    from swarm_voice import claudefront
+
+    async def go() -> list[dict]:
+        planner = _FailingPlanner()
+        fronts = claudefront.FrontSessions.__new__(claudefront.FrontSessions)
+        fronts._planner = planner
+        fronts._clock = lambda: 10.0
+        session = claudefront.FrontSession("vs-1", person="owner@example.com", grant=None,
+                                           clock=lambda: 10.0)
+        session.trace = vtrace.SessionTrace(vtrace.ENGINE_OWN, clock=lambda: 10.0)
+        delegation = claudefront.Delegation("vd_1", "vs-1", "Plan the bakery website.")
+        session.queue.append(delegation)
+        await fronts._run_delegations(session)
+        for _ in range(100):
+            if not session.trace_writes:
+                break
+            await asyncio.sleep(0.01)
+        return planner.traces
+
+    [body] = asyncio.run(asyncio.wait_for(go(), 10))
+    assert body["turn"]["none"] == vtrace.NONE_ERROR
+    # Not recorded, never guessed: no tier ran a turn that never finished.
+    assert body["tier"] is None
