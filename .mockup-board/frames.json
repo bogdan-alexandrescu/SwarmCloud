@@ -1,0 +1,93 @@
+[
+  {
+    "name": "board-rest",
+    "screen": "Projects",
+    "state": "Projects at rest",
+    "caption": "The board: one column per state, each project a card with its next step, last session, open cards and Resume. Archived sits behind its toggle.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-states",
+    "screen": "Projects",
+    "state": "Every state shown, one tooltip open",
+    "caption": "All five states side by side, each with its own colour and mark; the Waiting tooltip opens under its column head and says what waiting means.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-filtered",
+    "screen": "Projects",
+    "state": "Only completed and cancelled shown",
+    "caption": "The two live states switched off in the filter bar: only Completed and Cancelled stay on the board.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-brief",
+    "screen": "Projects",
+    "state": "A project's brief opened",
+    "caption": "Pressing the Bakery website card opens its side panel: goal, what was decided, what is open, the next step, and its recent cards.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-catchup",
+    "screen": "Talk",
+    "state": "Talk right after Resume",
+    "caption": "Resume opened Talk on the Bakery website: a catch-up of its history (sessions, picks, merges) and of what is done, decided, open and planned, lit part by part as Voice it says it. Skip ends it.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-mark",
+    "screen": "Projects",
+    "state": "Marking a project completed",
+    "caption": "Mark completed asks to close as completed or cancelled, with an outcome line; the brief and cards are kept.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-empty",
+    "screen": "Projects",
+    "state": "No projects yet",
+    "caption": "The empty board: the four states it will fill, and Start talking.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-two-open",
+    "screen": "Talk",
+    "state": "Two projects open in one session",
+    "caption": "Talk with the Bakery website current and the Newsletter signup flow open beside it, each with its progress and open cards.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-switched",
+    "screen": "Talk",
+    "state": "After saying switch to the newsletter flow",
+    "caption": "The spoken switch: Newsletter signup flow is now current and shows its own card, the pick it waits on.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-new-mid",
+    "screen": "Talk",
+    "state": "A new project started mid-session",
+    "caption": "A third project, Holiday hours banner, started by voice while the other two stay open.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-aside",
+    "screen": "Talk",
+    "state": "An unrelated question answered",
+    "caption": "Asked about running agents: the answer shows as an aside, and the Bakery website stays current with its cards.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "board-rest-390",
+    "screen": "Projects",
+    "state": "Projects at rest on a phone",
+    "caption": "On a 390 phone the columns stack and the filter chips wrap to two rows.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "board-catchup-390",
+    "screen": "Talk",
+    "state": "The catch-up on a phone",
+    "caption": "On a phone the catch-up takes the screen under a small ring and the captions.",
+    "viewport": "390x844"
+  }
+]

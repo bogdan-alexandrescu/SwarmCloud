@@ -33,6 +33,7 @@ import { Absent } from '../primitives'
 import type { Me } from '../types'
 import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
 import { VoiceProjects } from './Projects'
+import { BoardTalk, boardMockOn, ProjectsBoard } from './ProjectsBoard' // MOCK-HOOK
 import { VoiceSettings } from './Settings'
 import { TalkPane } from './Talk'
 import { VoiceTelemetry } from './Telemetry'
@@ -99,7 +100,7 @@ export function VoiceTalkScreen() {
     <>
       <PageHead title="Talk" />
       <Gate>
-        <TalkPane />
+        {boardMockOn() ? <BoardTalk /> : <TalkPane />} {/* MOCK-HOOK */}
       </Gate>
     </>
   )
@@ -111,7 +112,7 @@ export function VoiceProjectsScreen() {
     <>
       <PageHead title="Projects" />
       <Gate>
-        <VoiceProjects />
+        {boardMockOn() ? <ProjectsBoard /> : <VoiceProjects />} {/* MOCK-HOOK */}
       </Gate>
     </>
   )

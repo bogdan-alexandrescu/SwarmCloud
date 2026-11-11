@@ -1,0 +1,199 @@
+/* MOCK-HOOK FILE
+   Voice it › Projects, direction "board by state" (mock-up, ?voiceprojects=board).
+   Each state is a console tone AND a shape (StateGlyph), never colour alone:
+   in progress = info, waiting = paused, completed = ok, cancelled = text-faint
+   struck, archived = text-faint boxed. Every colour is a console token. */
+
+.pb { --pb-progress: var(--info); --pb-waiting: var(--paused); --pb-completed: var(--ok); --pb-cancelled: var(--text-faint); --pb-archived: var(--text-faint);
+  display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pb-glyph { flex: none; }
+.pb-glyph.is-progress { color: var(--pb-progress); }
+.pb-glyph.is-waiting { color: var(--pb-waiting); }
+.pb-glyph.is-completed { color: var(--pb-completed); }
+.pb-glyph.is-cancelled { color: var(--pb-cancelled); }
+.pb-glyph.is-archived { color: var(--pb-archived); }
+.pb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.pb-none { margin: 0; color: var(--text-faint); font-size: var(--t-meta); }
+
+/* The word a state shows only where it asks for something. */
+.pb-ask { display: inline-flex; align-items: center; flex: none; padding: 0 7px; border-radius: 999px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  color: var(--paused-ink, var(--text)); background: color-mix(in srgb, var(--paused) 16%, transparent); border: 1px solid color-mix(in srgb, var(--paused) 45%, transparent); }
+
+/* ---- filter bar ---------------------------------------------------------- */
+.pb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.pb-filter { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: var(--t-meta); color: var(--text-dim); background: transparent; border: 1px dashed var(--line); }
+.pb-filter[aria-pressed="true"] { color: var(--text); background: var(--surface); border-style: solid; border-color: var(--line); box-shadow: inset 0 -2px 0 var(--pb-tone, var(--line)); }
+.pb-filter[aria-pressed="false"] .pb-glyph { opacity: 0.55; }
+.pb-filter.is-progress { --pb-tone: var(--pb-progress); }
+.pb-filter.is-waiting { --pb-tone: var(--pb-waiting); }
+.pb-filter.is-completed { --pb-tone: var(--pb-completed); }
+.pb-filter.is-cancelled, .pb-filter.is-archived { --pb-tone: var(--text-faint); }
+.pb-filter:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.pb-filter-n { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.pb-bar-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+
+/* ---- the board ----------------------------------------------------------- */
+.pb-main { display: flex; gap: 14px; align-items: flex-start; min-width: 0; }
+.pb-board { flex: 1 1 auto; min-width: 0; max-width: calc(var(--pb-cols, 4) * 340px); display: grid; grid-template-columns: repeat(var(--pb-cols, 4), minmax(0, 1fr)); gap: 12px; align-items: start; }
+.pb-col { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 8px; border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent); border: 1px solid var(--line-soft); border-top: 3px solid var(--pb-tone, var(--line)); }
+.pb-col.is-progress { --pb-tone: var(--pb-progress); }
+.pb-col.is-waiting { --pb-tone: var(--pb-waiting); }
+.pb-col.is-completed { --pb-tone: var(--pb-completed); }
+.pb-col.is-cancelled { --pb-tone: var(--line); }
+.pb-col.is-archived { --pb-tone: var(--line); }
+.pb-col-h { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 2px 2px 2px 4px; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text); }
+.pb-col-n { font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.pb-col-i { margin-left: auto; font-weight: 400; }
+/* A column's tooltip opens in the flow under its head (which wraps), so it
+   never covers the column's first card (and the ask that card may carry). */
+.pb-col-h .pb-col-i, .pb-col-h .c-tip-host { display: contents; }
+.pb-col-h .c-tip-host > .c-btn { margin-left: auto; }
+.pb-col-h .c-tip { position: static; flex: 1 0 100%; order: 1; width: auto; max-width: none; white-space: normal; box-shadow: none; }
+.pb-col-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pb-col-none { padding: 6px 4px; }
+
+.pb-card { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); border-left: 3px solid var(--pb-tone, var(--line));
+  transition: border-color 120ms ease, box-shadow 120ms ease; }
+.pb-card:hover { border-color: color-mix(in srgb, var(--info) 45%, var(--line)); box-shadow: 0 1px 8px color-mix(in srgb, var(--text) 8%, transparent); }
+.pb-card.is-picked { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
+.pb-card.is-progress { --pb-tone: var(--pb-progress); }
+.pb-card.is-waiting { --pb-tone: var(--pb-waiting); }
+.pb-card.is-completed { --pb-tone: var(--pb-completed); }
+.pb-card.is-cancelled { --pb-tone: var(--line); background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.pb-card.is-cancelled .pb-card-open { color: var(--text-dim); text-decoration: line-through; text-decoration-color: var(--text-faint); }
+.pb-card.is-archived { --pb-tone: var(--line-soft); background: transparent; border: 1px dashed var(--line-soft); }
+.pb-card.is-archived .pb-card-open { color: var(--text-dim); }
+.pb-card-t { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; min-width: 0; }
+.pb-card-open { all: unset; cursor: pointer; overflow-wrap: anywhere; color: var(--text); }
+.pb-card-open:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+.pb-card-next { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); min-width: 0; }
+.pb-card-next > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.pb-card-out { margin: 0; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.pb-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.pb-meta { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
+.pb-open { color: var(--text); font-weight: 600; }
+.pb-card-act { margin-left: auto; }
+.pb-prog { position: relative; display: inline-block; width: 44px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; flex: none; }
+.pb-prog-fill { position: absolute; inset: 0 auto 0 0; background: var(--pb-tone, var(--info)); border-radius: 2px; }
+.pb-card.is-waiting .pb-prog-fill, .pb-sp.is-waiting .pb-prog-fill { background: var(--pb-waiting); }
+.pb-card.is-progress .pb-prog-fill, .pb-sp.is-progress .pb-prog-fill { background: var(--pb-progress); }
+
+/* ---- the side panel: brief and recent cards ------------------------------ */
+.pb-panel { --pb-progress: var(--info); --pb-waiting: var(--paused); --pb-completed: var(--ok); --pb-cancelled: var(--text-faint); --pb-archived: var(--text-faint);
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(420px, 100vw); overflow-y: auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 16px;
+  background: var(--surface); border-left: 1px solid var(--line); box-shadow: -12px 0 32px color-mix(in srgb, #000 18%, transparent); }
+.pb-panel-h { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pb-panel-h > h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: var(--t-title); line-height: var(--lh-title); overflow-wrap: anywhere; }
+.pb-panel-mark { display: inline-flex; }
+.pb-panel-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pb-panel-meta { margin: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.pb-brief { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line-soft); border-radius: var(--r-card); overflow: hidden; }
+.pb-brow { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 8px 10px; border-top: 1px solid var(--line-soft); }
+.pb-brow:first-child { border-top: 0; }
+.pb-brow.is-next { background: color-mix(in srgb, var(--info) 8%, transparent); }
+.pb-bk { font-size: var(--t-meta); font-weight: 600; color: var(--text-dim); }
+.pb-brow.is-next .pb-bk { color: var(--info-ink, var(--text)); }
+.pb-bv { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.pb-bv ul { margin: 0; padding-left: 16px; }
+.pb-recent h3 { margin: 0 0 6px; font-size: var(--t-meta); color: var(--text-dim); font-weight: 600; }
+.pb-recent ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.pb-recent li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 5px 6px; border-radius: var(--r-ctl); font-size: var(--t-meta); }
+.pb-recent li:hover { background: var(--surface-2); }
+.pb-recent li.is-done .pb-rc-t { color: var(--text-dim); }
+.pb-kind { font-size: var(--t-micro); color: var(--text-dim); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.pb-rc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.pb-rc-w { font-size: var(--t-micro); color: var(--text-faint); white-space: nowrap; }
+
+/* ---- mark completed / cancelled ------------------------------------------ */
+.pb-mark { display: flex; flex-direction: column; gap: 12px; min-width: min(380px, 80vw); }
+.pb-mark-n { margin: 0; display: flex; align-items: center; gap: 4px; font-size: var(--t-meta); color: var(--text-dim); }
+
+/* ---- empty --------------------------------------------------------------- */
+.pb-empty-states { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; }
+.pb-empty-col { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px dashed var(--line); border-radius: var(--r-card); font-size: var(--t-meta); color: var(--text-dim); }
+
+/* ---- Talk: the session strip, the catch-up, the aside ------------------- */
+.pb-talk { --pb-progress: var(--info); --pb-waiting: var(--paused); --pb-completed: var(--ok); --pb-cancelled: var(--text-faint); --pb-archived: var(--text-faint); --vt-ring: 230px;
+  grid-template-columns: minmax(0, 1fr) 260px; grid-template-areas: "hud hud" "strip strip" "stage core" "subs subs" "mic mic" "cards cards"; }
+.pb-talk .vt-sky { background: radial-gradient(ellipse 30% 46% at 86% 40%, color-mix(in srgb, var(--info) 18%, transparent), transparent 72%); }
+.pb-core { min-height: 0; }
+.pb-stage { grid-area: stage; min-width: 0; }
+.pb-talk > .vt-cards { grid-area: cards; }
+.pb-stage > .vt-cards { height: 100%; }
+
+.pb-strip { grid-area: strip; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.pb-sp { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; height: 34px; padding: 0 10px; cursor: pointer; font: inherit; font-size: var(--t-meta);
+  color: var(--text-dim); background: var(--vt-glass-dim); border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); }
+.pb-sp.is-current { color: var(--text); background: var(--vt-glass); border-color: var(--info); box-shadow: inset 0 -2px 0 var(--info); font-weight: 600; }
+.pb-sp:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.pb-sp-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-sp-n { min-width: 18px; padding: 0 5px; border-radius: 9px; text-align: center; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.pb-sp-new { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--info); }
+.pb-strip-i { display: inline-flex; }
+
+.pb-cu { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px; background: var(--vt-glass); border: 1px solid var(--vt-glass-line); border-radius: var(--r-card);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.pb-cu-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.pb-cu-h > h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: var(--t-title); line-height: var(--lh-title); }
+.pb-cu-k { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; vertical-align: 3px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  color: var(--info-ink, var(--text)); background: color-mix(in srgb, var(--info) 16%, transparent); }
+.pb-cu-step { display: inline-flex; gap: 4px; }
+.pb-cu-dot { width: 18px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 14%, transparent); }
+.pb-cu-dot.is-said { background: color-mix(in srgb, var(--info) 55%, transparent); }
+.pb-cu-dot.is-now { background: var(--info); }
+.pb-cu-body { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); gap: 14px; min-width: 0; }
+.pb-tl { margin: 0; padding: 0; list-style: none; position: relative; display: flex; flex-direction: column; gap: 0; }
+.pb-tl-i { position: relative; display: grid; grid-template-columns: 14px 64px minmax(0, 1fr); grid-template-areas: "dot w k" "dot w t"; column-gap: 8px; padding: 4px 0 8px; }
+.pb-tl-i::before { content: ""; position: absolute; left: 6px; top: 16px; bottom: -4px; width: 2px; background: var(--line); }
+.pb-tl-i:last-child::before { display: none; }
+.pb-tl-dot { grid-area: dot; margin-top: 5px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--text-faint); background: var(--surface); z-index: 1; }
+.pb-tl-i.is-pick .pb-tl-dot { border-color: var(--paused); }
+.pb-tl-i.is-merge .pb-tl-dot { border-color: var(--ok); background: var(--ok); }
+.pb-tl-i.is-session .pb-tl-dot { border-color: var(--info); }
+.pb-tl-i.is-agent .pb-tl-dot { border-color: var(--text-dim); }
+.pb-tl-i.is-open .pb-tl-dot { border-color: var(--paused); background: var(--paused); }
+.pb-tl-w { grid-area: w; font-size: var(--t-micro); line-height: var(--lh-micro); padding-top: 2px; color: var(--text-dim); white-space: nowrap; }
+.pb-tl-k { grid-area: k; font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.pb-tl-t { grid-area: t; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.pb-cu-parts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; align-content: start; }
+.pb-cu-part { padding: 8px 10px; border-radius: var(--r-card); border: 1px solid var(--line-soft); background: var(--vt-glass-dim); transition: opacity 200ms ease; }
+.pb-cu-part h3 { margin: 0 0 4px; font-size: var(--t-meta); color: var(--text-dim); font-weight: 600; }
+.pb-cu-part ul { margin: 0; padding-left: 16px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.pb-cu-part.is-now { border-color: var(--info); box-shadow: 0 0 0 1px var(--info), 0 0 24px color-mix(in srgb, var(--info) 22%, transparent); background: var(--vt-glass); }
+.pb-cu-part.is-now h3 { color: var(--info-ink, var(--text)); }
+.pb-cu-part:not(.is-now):not(.is-said) { opacity: 0.78; }
+
+.pb-aside { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 12px 14px; min-width: 0; background: var(--vt-glass); border: 1px dashed var(--vt-glass-line); border-radius: var(--r-card); }
+.pb-aside-h { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.pb-aside-h > h2 { margin: 0; flex: 1 1 auto; font-size: var(--t-title); line-height: var(--lh-title); }
+.pb-aside-k { padding: 1px 8px; border-radius: 999px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); border: 1px solid var(--line); }
+.pb-aside-t { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
+.pb-aside-t td { padding: 6px 8px; border-top: 1px solid var(--line-soft); color: var(--text); }
+.pb-aside-t td:nth-child(2) { color: var(--text-dim); }
+.pb-aside-t td:last-child { text-align: right; color: var(--text-dim); white-space: nowrap; }
+.pb-aside-t td:first-child .c-tone, .pb-aside-t td:first-child > :first-child { margin-right: 6px; vertical-align: -1px; }
+
+/* ---- narrower desktops: the panel takes over the right of the board ------ */
+
+/* ---- phone: columns stack, the panel and the dialog take the screen ------ */
+@media (max-width: 760px) {
+  .pb-bar { gap: 6px 4px; }
+  .pb-filter { height: 28px; padding: 0 8px; }
+  .pb-bar-sep { display: none; }
+  .pb-board { grid-template-columns: minmax(0, 1fr) !important; }
+  .pb-main { flex-direction: column; align-items: stretch; }
+  .pb-panel { inset: auto 0 0 0; width: auto; max-height: 82vh; border-radius: var(--r-dlg) var(--r-dlg) 0 0; border-top: 1px solid var(--line); }
+  .pb-talk { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "strip" "subs" "stage" "cards" "mic"; }
+  .pb-talk .vt-subs { max-height: none; }
+  .pb-talk .pb-core { display: none; }
+  .pb-sp { max-width: 100%; }
+  /* The mic bar sticks to the bottom on a full-width backing, so nothing
+     scrolls by beside or under it. */
+  .pb-talk .vt-mic { bottom: 0; margin: 0 -10px -12px; padding: 6px 10px 8px; background: var(--surface); border-top: 1px solid var(--line-soft); }  .pb-cu-body { grid-template-columns: minmax(0, 1fr); }
+  .pb-cu-parts { order: -1; }
+  .pb-cu-part { padding: 6px 8px; }
+  .pb-tl-i { grid-template-columns: 14px 60px minmax(0, 1fr); }
+}
