@@ -4265,6 +4265,75 @@ vitest ids its log names. It is read-only. Then:
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
 
+## What runs where
+
+**The owner's pick, 2026-11-11:** *"skip pr testing and only run tests when
+merging to main"*, choosing "Fast checks only on PRs". Until then every pull
+request head ran the whole of `application.yml` -- ten unit-test shards of
+about eight minutes, up to eight swarm-ui component-test shards of seven to
+nine, the swarm-ui typecheck and build, the integration tests and the image
+build -- and the merge train's pull request ran it all again on the same
+change, and main a third time unless it reused the train's tree.
+
+| run | fast checks | heavy jobs |
+|---|---|---|
+| a lane's pull request (any head but `train/`), no label | run | **skipped** |
+| a pull request labelled `full-ci` | run | run |
+| the merge train's pull request (`train/<id>`, [`scripts/merge-train.sh`](../scripts/merge-train.sh)) | run | run |
+| a push to `main`, a merge queue entry, a dispatch | run | run (main may reuse the train's green tree, [below](#the-full-suite-runs-once-per-change-in-the-merge-train)) |
+
+**Heavy**, skipped on a lane's pull request, each because it is minutes of
+runner time that the train's pull request runs again on the same change
+anyway: `unit tests (k/N)`, `swarm-ui component tests (k/N)`,
+`swarm-ui typecheck / build`, `integration tests (emulator)` and
+`build changed images without pushing`. `build images`, terraform.yml's
+`plan` and security.yml's `trivy (published images)` are heavy too, but
+already never run on any pull request (a pull request cannot mint the cloud
+token they need, or they scan what is deployed), so they keep their own `if:`.
+
+**Fast**, on every pull request, because each takes about a minute and catches
+what a reviewer would otherwise read for: `shellcheck`,
+`release workflow wiring (actionlint)`,
+`ruff check`, `lock / contract / format / bridge install`,
+`kubernetes manifests`, security.yml's `secret scan`,
+`platform policy assertions`, `checkov (terraform + kubernetes)` and
+`trivy (repo)` (a sub-minute scan of the repository, not of an image), and
+terraform.yml's `fmt / validate / tflint`, `terraform test` (one folded,
+offline, path-filtered job) and `checkov`. The deployment-values guard on the
+diff is not a job of these three workflows
+([design/generic-repository.md](design/generic-repository.md)), so this rule
+does not touch it; a SwarmCloud lane also meets it in its worker's
+pre-publish gate (`scripts/changed-guards.sh`).
+
+**The rule is written once**, as the `what this change reaches` job's `full`
+output: `true` when the event is not `pull_request`, when the head branch
+starts with `train/`, or when the pull request carries the `full-ci` label.
+Each heavy job reads `needs.changes.outputs.full == 'true'` first in its
+`if:`. terraform.yml and security.yml need no copy: none of their jobs that
+run on a pull request is heavy.
+
+**A skipped heavy job passes; a failed one does not.** A job skipped by its own
+`if:` reports `skipped`, which a required check reads as passed, and
+`ci-gate`, `format / unit tests` and `swarm-ui typecheck / component tests`
+count it as a pass and still fail on any job that ran and failed. ci-gate's
+reuse check (`scripts/lib/ci_reuse.py`, `HEAVY`) treats a heavy job as not
+reached when `full` is `false`, and as reached when `full` is `true` or
+absent, so a skip it cannot explain still fails. No job was renamed and no
+required check changed.
+
+**`full-ci`, the escape hatch.** Add the label to a pull request that needs the
+whole suite before the train -- a change to CI itself, a risky refactor. The
+label is read from the event that started the run, so it counts from the next
+push after it is added (an empty commit will do); re-running an old run does
+not see it.
+
+**What a lane gives up.** A defect only a heavy job catches is found by the
+train's pull request, which bisects and ejects the pull request that broke it;
+main never sees the failure. A lane's own agent still runs the tests related
+to its change before it finishes (`scripts/related-tests.sh --run`).
+`tests/unit/scripts/test_fast_checks_on_lane_prs.py` holds the rule against
+the three workflow files.
+
 ## The full suite runs once per change, in the merge train
 
 **[the owner]'s pick, 2026-11-06:** *"we really need to fix ci merges
@@ -4302,7 +4371,10 @@ still run, and the release's test gate reads a skipped job as passed. Any
 other push runs the full suite as before: a direct push, a tree no green train
 tested, a train that closed any other way, or an API it could not read.
 
-**B. A lane's pull request tests what its change reaches.** A pull request
+**B. A lane's pull request tests what its change reaches.** (Since
+2026-11-11 a lane's pull request skips the heavy jobs entirely unless it is
+labelled `full-ci`, [above](#what-runs-where); what follows is what they run
+when it is.) A pull request
 from a `swarm/**` branch of this repository (the `lane` step,
 `ci-select.sh lane`) still runs shellcheck, actionlint, ruff, the format,
 contract and lock checks, the swarm-ui typecheck and build, the manifests and
