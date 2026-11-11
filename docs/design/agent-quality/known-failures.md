@@ -248,6 +248,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_install_sh_uv.py` | `<module>` | `skipif` | no pinned uv for this platform |
 | `tests/unit/scripts/test_install_sh_uv.py` | `_run` | `skip_call` | a real uv in /usr/bin or /bin would be found first |
 | `tests/unit/scripts/test_join_acceptance_probe.py` | `<module>` | `skipif` | the probe needs bash, jq and base64 |
+| `tests/unit/scripts/test_k8s_render_project.py` | `_assert_names_no_live_project` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/scripts/test_lightpanda_build_scripts.py` | `test_target_selection_reaches_the_lightpanda_image_for_its_inputs_and_its_base` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `test_the_qa_identity_case_skips_every_check_unless_both_settings_are_set` | `skip_call` | bash is required |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `_stuck` | `skip_call` | bash and jq are required |
@@ -283,6 +284,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_release_publish.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_dev_release_whose_switch_is_not_literally_off_builds_it` | `skip_call` | root reads a file whatever its mode |
 | `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_manifest_holding_speech_with_its_switch_not_off_scans_and_promotes_it` | `skip_call` | root reads a file whatever its mode |
+| `tests/unit/scripts/test_repo_index_design_doc.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/scripts/test_resign_workspace_settings.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_roll_voice_workflows.py` | `<module>` | `skipif` | no workflow names swarm-voice yet: {PATCH_HINT} |
 | `tests/unit/scripts/test_sandbox_sync_git_failures.py` | `<module>` | `skipif` | git and jq are required |
@@ -298,6 +300,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_swarm_live_image.py` | `test_build_images_finds_the_relays_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_swarm_live_image.py` | `test_the_export_the_builder_runs_hashes_every_requirement` | `skipif` | needs uv |
 | `tests/unit/scripts/test_swarm_speech_image.py` | `test_build_images_finds_the_speech_servers_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
+| `tests/unit/scripts/test_terraform_install_inputs.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/scripts/test_typesafe_policies_wired.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_verify_remote_slash_targets.py` | `<module>` | `skipif` | verify-remote.sh and bash are required |
 | `tests/unit/scripts/test_warm_jobs.py` | `<module>` | `skipif` | warm-jobs.sh needs bash and jq |
