@@ -4,7 +4,7 @@
  * settings routes (routes/voice_settings.py).
  *
  *   Engine     own speech or GPT-Live, the fast model that answers, the
- *              planner, and the OpenAI key's status;
+ *              planner, debug mode, and the OpenAI key's status;
  *   Machine    the speech machine's size and zone;
  *   Models     speech to text, text to speech, the voice;
  *   Behaviour  the idle stop.
@@ -21,6 +21,12 @@
  * ONE VERSION. A save sends the version the page read; when someone else
  * saved first swarm-api answers 409, the page reads again and says who saved,
  * and the person keeps theirs or takes the other.
+ *
+ * DEBUG MODE (the owner's pick of 10 November 2026, "Trace on Telemetry"). A
+ * switch, saved the moment it is flipped (`PATCH {version, debug}`), not part
+ * of the page's Save; a platform admin's, read only for anyone else. A save
+ * that fails says so in the head and leaves the switch as it was. On, the row
+ * opens the traces on Telemetry.
  *
  * THE KEY. Its status only: set or not, by whom and when. swarm-api never
  * serves the key, and the page keeps nothing else of the answer.
@@ -197,6 +203,12 @@ function KeyStatus({ view }: { view: VoiceSettingsView }) {
   )
 }
 
+/** Telemetry, where the traces are kept: out of the router, as the console's other navigations go. */
+function openTraces(): void {
+  window.history.pushState(null, '', '/voice/telemetry')
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 interface Conflict {
   by: string | null
   at: string | null
@@ -213,6 +225,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
   const [conflict, setConflict] = useState<Conflict | null>(null)
   const [refused, setRefused] = useState<{ field: string; message: string } | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [debugSaving, setDebugSaving] = useState(false)
 
   const load = useCallback(async (): Promise<VoiceSettingsView | null> => {
     const [c, s] = await Promise.all([loadVoiceCatalogue(), loadVoiceSettings()])
@@ -300,6 +313,21 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
       setSaveError(r.error.message)
     }
     setSaving(false)
+  }
+
+  /** Debug mode is saved on its own, at once: the switch moves only with the answer. */
+  const flipDebug = async () => {
+    setDebugSaving(true)
+    setSaveError(null)
+    const r = await saveVoiceSettings(view.version, { debug: !view.debug })
+    if (r.status === 'ok' || r.status === 'stale') {
+      setView(r.data)
+    } else if (r.status === 'error') {
+      setSaveError(r.error.message)
+      // Someone else saved first: read again, so the next flip sends their version.
+      if (r.error.kind === 'conflict') await load()
+    }
+    setDebugSaving(false)
   }
 
   const discard = () => {
@@ -396,6 +424,28 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
               options={catalogue.planner_models.map((m) => ({ key: m.name, label: m.model ? `${m.label} · ${m.model}` : m.label }))}
             />
           </Row>
+          <div className="vset-row" data-row="debug">
+            <div className="vset-row-lbl">
+              Debug
+              <Why say="Every session keeps a turn-by-turn trace: what the planner was given, what it read, the cards and mock-ups it drew or refused and why, and what the voice was told. Talk shows the last turn under the Stage; Telemetry keeps the traces. Text is masked. Off, nothing is drawn and nothing is kept. A change reaches the next session." />
+            </div>
+            <div className="vset-row-val">
+              <span className="vset-switchrow">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={view.debug}
+                  aria-label="Debug mode"
+                  className="vset-switch"
+                  disabled={ro || debugSaving}
+                  onClick={() => void flipDebug()}
+                >
+                  <i aria-hidden="true" />
+                </button>
+                {view.debug && <Btn onClick={openTraces}>Traces</Btn>}
+              </span>
+            </div>
+          </div>
           <KeyStatus view={view} />
         </Card>
 

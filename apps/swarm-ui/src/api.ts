@@ -17147,7 +17147,7 @@ export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsag
 // Voice it › Settings (swarm-api routes/voice_settings.py)
 // --------------------------------------------------------------------------
 
-/** `GET` the settings, `PATCH {version, <field>: <name>}` to change them. */
+/** `GET` the settings, `PATCH {version, <field>: <name>}` (or `debug: true|false`) to change them. */
 export const VOICE_SETTINGS = '/v1/voice/settings'
 /** Every name a setting may take: the page offers these and nothing else. */
 export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
@@ -17177,6 +17177,8 @@ export interface VoiceKeyStatus {
 
 export interface VoiceSettingsView {
   settings: Record<VoiceSettingField, string>
+  /** Debug mode (`settings.debug`): each session that starts with it on keeps a turn-by-turn trace. */
+  debug: boolean
   version: number
   updated_by: string | null
   updated_at: string | null
@@ -17233,6 +17235,7 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
   const link = objOf(k.link) ?? {}
   return {
     settings,
+    debug: s.debug === true,
     version: finiteOf(d.version) ?? 0,
     updated_by: strOf(d.updated_by),
     updated_at: strOf(d.updated_at),
@@ -17277,7 +17280,7 @@ function fixtureVoiceCatalogue(): unknown {
   }
 }
 
-let fixtureVoiceSaved: { settings: Record<string, string>; version: number; updated_at: string } | null = null
+let fixtureVoiceSaved: { settings: Record<string, string>; debug: boolean; version: number; updated_at: string } | null = null
 
 function fixtureVoiceSettings(): unknown {
   const settings = fixtureVoiceSaved?.settings ?? {
@@ -17286,7 +17289,7 @@ function fixtureVoiceSettings(): unknown {
   }
   const applied = { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', at: new Date(FIXTURE_NOW - 3_600_000).toISOString() }
   return {
-    settings,
+    settings: { ...settings, debug: fixtureVoiceSaved?.debug ?? false },
     version: fixtureVoiceSaved?.version ?? 3,
     updated_by: 'owner@example.com',
     updated_at: fixtureVoiceSaved?.updated_at ?? new Date(FIXTURE_NOW - 86_400_000).toISOString(),
@@ -17322,12 +17325,15 @@ export async function loadVoiceCatalogue(): Promise<Result<VoiceCatalogue>> {
   return r as Result<VoiceCatalogue>
 }
 
+/** What a save may change: catalogue names, and debug mode as true or false. */
+export type VoiceSettingsChanges = Partial<Record<VoiceSettingField, string>> & { debug?: boolean }
+
 /**
  * `PATCH /v1/voice/settings` with the version the page read: swarm-api
  * refuses it 409 when someone else saved first, and 422 naming the field
  * for a name its catalogue does not list. Platform admins only.
  */
-export async function saveVoiceSettings(version: number, changes: Partial<Record<VoiceSettingField, string>>): Promise<Result<VoiceSettingsView>> {
+export async function saveVoiceSettings(version: number, changes: VoiceSettingsChanges): Promise<Result<VoiceSettingsView>> {
   const target = route(VOICE_SETTINGS)
   if (USE_FIXTURES) {
     if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
@@ -17336,7 +17342,8 @@ export async function saveVoiceSettings(version: number, changes: Partial<Record
     if (version !== now.version) {
       return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: now.version }, method: 'PATCH' } }
     }
-    fixtureVoiceSaved = { settings: { ...now.settings, ...changes }, version: now.version + 1, updated_at: new Date().toISOString() }
+    const { debug, ...names } = changes
+    fixtureVoiceSaved = { settings: { ...now.settings, ...names }, debug: debug ?? now.debug, version: now.version + 1, updated_at: new Date().toISOString() }
     return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
   }
   const r = await write(target, 'PATCH', { version, ...changes })
@@ -17864,4 +17871,164 @@ export function loadVoiceTelemetrySession(id: string, tz: string): Promise<Resul
 /** The live stream's address: an `EventSource` resumes from the last sample's seq by itself. */
 export function voiceTelemetryLiveUrl(): string {
   return route(VOICE_TELEMETRY_LIVE, {}, telemetryQuery({})).url
+}
+
+// ---- Voice it › debug mode: the trace (swarm-api routes/voice_trace.py, voice/trace.py) ----
+
+/** `GET`: the recent sessions with a trace, newest first. */
+export const VOICE_TRACE_SESSIONS = '/v1/voice/trace/sessions'
+/** `GET`: one session's trace, every planner turn in full. */
+export const VOICE_TRACE_SESSION = '/v1/voice/trace/sessions/{session_id}'
+/** The stream event a finished turn sends to Talk while debug mode is on (voice/stream.py). */
+export const VOICE_TRACE_TURN = 'trace.turn'
+
+/** One card or mock-up a turn drew, or tried to: `refused` is the masked reason it was not. */
+export interface VoiceTraceDrawn {
+  kind: string
+  title: string | null
+  frames?: string[]
+  refused?: string
+}
+
+/** A kept text as served: masked pieces, already masked in place by the server. */
+export type VoiceTraceText = string[]
+
+/** One planner turn as `served_turn` sends it. */
+export interface VoiceTraceTurn {
+  n: number
+  at: string | null
+  secs: number | null
+  lines: { who: string; text: VoiceTraceText }[]
+  handoff: VoiceTraceText | null
+  /** Each read as "tool: target". */
+  read: string[]
+  drawn: VoiceTraceDrawn[]
+  /** Why nothing was drawn, as the server's sentence, and its code. */
+  none: string | null
+  none_code: string | null
+  told: VoiceTraceText
+  events: Record<string, number>
+}
+
+/** One traced session in the list. */
+export interface VoiceTraceSessionRow {
+  session_id: string
+  project_id: string | null
+  engine: string | null
+  engine_code: string | null
+  started: string | null
+  turns: number
+  cards: number
+  refused: number
+}
+
+export interface VoiceTraceSessions {
+  sessions: VoiceTraceSessionRow[]
+  scope: string | null
+}
+
+/** One session's trace. */
+export interface VoiceTrace {
+  session_id: string
+  project_id: string | null
+  engine: string | null
+  engine_code: string | null
+  started: string | null
+  minutes: number | null
+  turns: VoiceTraceTurn[]
+  events: Record<string, number>
+  scope: string | null
+}
+
+/** Talk's one line for a finished turn (`trace.stream_event`): `none` is the no-cards code. */
+export interface VoiceTraceTurnEvent {
+  type: typeof VOICE_TRACE_TURN
+  seq: number
+  at: string | null
+  n: number
+  drawn: { kind: string; title: string | null }[]
+  refused: { kind: string; title: string | null; reason: string | null }[]
+  none: string | null
+}
+
+const traceTexts = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : [])
+const traceObjs = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.map(telObj) : [])
+const traceCounts = (v: unknown): Record<string, number> => {
+  const out: Record<string, number> = {}
+  for (const [k, n] of Object.entries(telObj(v))) if (telNum(n) !== null) out[k] = n as number
+  return out
+}
+
+function normVoiceTraceDrawn(raw: unknown): VoiceTraceDrawn {
+  const o = telObj(raw)
+  const d: VoiceTraceDrawn = { kind: telStr(o.kind) ?? '', title: telStr(o.title) }
+  if (Array.isArray(o.frames)) d.frames = traceTexts(o.frames)
+  if (typeof o.refused === 'string') d.refused = o.refused
+  return d
+}
+
+export function normVoiceTraceTurn(raw: unknown): VoiceTraceTurn {
+  const o = telObj(raw)
+  return {
+    n: telNum(o.n) ?? 0,
+    at: telStr(o.at),
+    secs: telNum(o.secs),
+    lines: traceObjs(o.lines).map((l) => ({ who: telStr(l.who) ?? '', text: traceTexts(l.text) })),
+    handoff: Array.isArray(o.handoff) ? traceTexts(o.handoff) : null,
+    read: traceTexts(o.read),
+    drawn: traceObjs(o.drawn).map(normVoiceTraceDrawn),
+    none: telStr(o.none),
+    none_code: telStr(o.none_code),
+    told: traceTexts(o.told),
+    events: traceCounts(o.events),
+  }
+}
+
+function traceSummary(o: Record<string, unknown>): Pick<VoiceTrace, 'session_id' | 'project_id' | 'engine' | 'engine_code' | 'started'> {
+  return { session_id: telStr(o.session_id) ?? '', project_id: telStr(o.project_id), engine: telStr(o.engine), engine_code: telStr(o.engine_code), started: telStr(o.started) }
+}
+
+export function normVoiceTraceSessions(raw: unknown): VoiceTraceSessions {
+  const o = telObj(raw)
+  return {
+    sessions: traceObjs(o.sessions).map((r) => ({ ...traceSummary(r), turns: telNum(r.turns) ?? 0, cards: telNum(r.cards) ?? 0, refused: telNum(r.refused) ?? 0 })),
+    scope: telStr(o.scope),
+  }
+}
+
+export function normVoiceTrace(raw: unknown): VoiceTrace {
+  const o = telObj(raw)
+  return { ...traceSummary(o), minutes: telNum(o.minutes), turns: traceObjs(o.turns).map(normVoiceTraceTurn), events: traceCounts(o.events), scope: telStr(o.scope) }
+}
+
+/** A `trace.turn` event's data, or null when it names no turn. */
+export function normVoiceTraceTurnEvent(raw: unknown): VoiceTraceTurnEvent | null {
+  const o = telObj(raw)
+  if (typeof o.n !== 'number' || !Number.isInteger(o.n)) return null
+  return {
+    type: VOICE_TRACE_TURN,
+    seq: telNum(o.seq) ?? 0,
+    at: telStr(o.at),
+    n: o.n,
+    drawn: traceObjs(o.drawn).map((d) => ({ kind: telStr(d.kind) ?? '', title: telStr(d.title) })),
+    refused: traceObjs(o.refused).map((d) => ({ kind: telStr(d.kind) ?? '', title: telStr(d.title), reason: telStr(d.reason) })),
+    none: telStr(o.none),
+  }
+}
+
+/**
+ * `GET /v1/voice/trace/sessions?scope=platform`, under Telemetry's access
+ * rule. A failed read answers its error, never an empty list; the fixture
+ * build serves no traced session.
+ */
+export function loadVoiceTraceSessions(): Promise<Result<VoiceTraceSessions>> {
+  const target = route(VOICE_TRACE_SESSIONS, {}, telemetryQuery({}))
+  return telemetryRead(target, normVoiceTraceSessions, { sessions: [], scope: null })
+}
+
+/** `GET /v1/voice/trace/sessions/{session_id}?scope=platform`: the error when it fails; the fixture build's is empty. */
+export function loadVoiceTrace(sessionId: string): Promise<Result<VoiceTrace>> {
+  const target = route(VOICE_TRACE_SESSION, { session_id: sessionId }, telemetryQuery({}))
+  const none: VoiceTrace = { session_id: sessionId, project_id: null, engine: null, engine_code: null, started: null, minutes: null, turns: [], events: {}, scope: null }
+  return telemetryRead(target, normVoiceTrace, none)
 }
