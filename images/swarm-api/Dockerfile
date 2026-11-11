@@ -250,4 +250,14 @@ EXPOSE 8080
 # The echo comes first so a start that is killed before uvicorn binds still
 # shows the container ran (#1816: five killed starts logged nothing). It prints
 # a fixed text and the date only -- never an environment value.
-ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c", "echo \"swarm-api container started $(date -u +%FT%TZ)\"; exec uvicorn --factory swarm_api.main:create_app --host 0.0.0.0 --port ${PORT:-8080}"]
+#
+# SWARM_API_WORKERS is the number of uvicorn worker processes. DEFAULT 1, the
+# one process this image has always run, so a deploy that sets nothing changes
+# nothing; `:-` also turns an empty value (an unset Terraform variable) into 1.
+# Whether two serve more on a 2 vCPU instance is measured by
+# scripts/measure-api-workers.sh; the owner chose two on dev (2026-11-10;
+# terraform/infra `api_workers`, default 1). Each worker calls create_app()
+# itself, so every in-process cache, limiter and semaphore is per worker, and
+# swarm_api.workers divides each per-instance cap by this count so it still
+# holds per instance.
+ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c", "echo \"swarm-api container started $(date -u +%FT%TZ)\"; exec uvicorn --factory swarm_api.main:create_app --host 0.0.0.0 --port ${PORT:-8080} --workers ${SWARM_API_WORKERS:-1}"]

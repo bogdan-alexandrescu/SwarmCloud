@@ -1223,6 +1223,67 @@
       "expected": "token\u003a ${{ lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit}}",
       "never": [],
       "count": 0
+    },
+    {
+      "name": "kv-quoted-two-words-spaces",
+      "text": "password\u003d\"otter17walrus heron42lark\"",
+      "expected": "password\u003d\"********\"",
+      "never": [
+        "otter17walrus",
+        "heron42lark"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-quoted-three-words-spaces",
+      "text": "password\u003d\"otter17walrus heron42lark finch9vole\"",
+      "expected": "password\u003d\"********\"",
+      "never": [
+        "otter17walrus",
+        "heron42lark",
+        "finch9vole"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-quoted-escaped-quote-inside-spaces",
+      "text": "password\u003d\"otter17walrus \\\"heron42lark\\\" finch9vole\"",
+      "expected": "password\u003d\"********\"",
+      "never": [
+        "otter17walrus",
+        "heron42lark",
+        "finch9vole"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-quoted-then-another-key-spaces",
+      "text": "password\u003d\"otter17walrus heron42lark\" next\u003d1",
+      "expected": "password\u003d\"********\" next\u003d1",
+      "never": [
+        "otter17walrus",
+        "heron42lark"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-unquoted-then-a-word-spaces",
+      "text": "password\u003dotter17walrus heron42lark",
+      "expected": "password\u003d******** heron42lark",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-json-quoted-spaces",
+      "text": "{\"password\"\u003a \"otter17walrus heron42lark\", \"next\"\u003a \"x\"}",
+      "expected": "{\"password\"\u003a \"********\", \"next\"\u003a \"x\"}",
+      "never": [
+        "otter17walrus",
+        "heron42lark"
+      ],
+      "count": 1
     }
   ]
 }

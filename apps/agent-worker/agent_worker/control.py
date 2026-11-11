@@ -86,6 +86,7 @@ from urllib.parse import quote, urlparse
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
+    CREDENTIAL_TIERS,
     Attempt,
     EndCause,
     ProviderState,
@@ -923,6 +924,35 @@ QUOTA_REPORT_MESSAGE_MAX = 200
 #: Seconds one report may take. Short: it sits on the way to a park, and a
 #: worker waiting on a control-plane service is a worker holding a slot.
 QUOTA_REPORT_TIMEOUT_SECONDS = 5
+
+
+#: `Attempt.credential_source` values (request 13, carried by request 152).
+CREDENTIAL_SOURCES = ("account_pool", "tenant_secret")
+
+
+def credential_fields(credential: Any) -> dict[str, Any]:
+    """The credential an attempt KEPT LAST, as its record takes it (request 152).
+
+    `{account_id, credential_source, credential_tier}` and nothing else, each
+    only in the frozen `Attempt`'s shape: a source of `CREDENTIAL_SOURCES`, a
+    tier of `CREDENTIAL_TIERS` (`plan` or `api_key`) and only beside an
+    account. Anything else is left out rather than written wrong. Never a key,
+    a secret's name or a token: an account id is the broker's document id.
+    """
+    if not isinstance(credential, Mapping):
+        return {}
+    source = credential.get("credential_source")
+    if source not in CREDENTIAL_SOURCES:
+        return {}
+    account_id = credential.get("account_id")
+    tier = credential.get("credential_tier")
+    if source != "account_pool" or not isinstance(account_id, str) or not account_id:
+        return {"account_id": None, "credential_source": source, "credential_tier": None}
+    return {
+        "account_id": account_id,
+        "credential_source": source,
+        "credential_tier": tier if tier in CREDENTIAL_TIERS else None,
+    }
 
 
 class QuotaReporter(Protocol):
@@ -2048,6 +2078,7 @@ class ControlPlane:
         """
         if not usage:
             return
+        credential = credential_fields(usage.get("credential"))
         fields = (
             "input_tokens",
             "output_tokens",
@@ -2067,6 +2098,9 @@ class ControlPlane:
         cost = usage.get("total_cost_usd")
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):
             doc["cost_usd"] = float(cost)
+        # Request 152: the account, source and tier the attempt kept last,
+        # in the same merge as its spend.
+        doc.update(credential)
         if not doc:
             return
         doc["tenant_id"] = self.tenant_id
@@ -2300,6 +2334,39 @@ class ControlPlane:
         before it is cut, so a cut never leaves half a credential unmasked."""
         text = " ".join(redact_text(str(message or "")).text.split())
         return text[:QUOTA_REPORT_MESSAGE_MAX]
+
+    def report_credit_exhausted(
+        self, *, provider: str, account: Assignment, message: str = ""
+    ) -> bool:
+        """The held KEY's credit is gone (docs/design/llm-providers.md §5.2).
+
+        To the broker's `exhausted` route under the key's OWN provider
+        (`anthropic-api`, `openai-api`), naming the account with the hold's
+        proof, so the broker records the existing `exhausted` health kind on
+        the key -- `exhausted_at`, skipped until it is resumed -- and the next
+        lease moves on. Not a rate limit: no `limited_until`, and nothing is
+        noted as a 429 window here. Never raises, like `update_quota_state`.
+        Returns True when the broker accepted it.
+        """
+        if self._quota_reporter is None or not provider:
+            return False
+        body: dict[str, Any] = {"account": self._report_account(account)}
+        text = self._report_message(message)
+        if text:
+            body["message"] = text
+        try:
+            self._quota_reporter.report(
+                provider=provider, tenant_id=self.tenant_id, route="exhausted", body=body
+            )
+        except Exception as exc:
+            self._log.warning(
+                "could not report a key's spent credit to the quota broker; carrying on",
+                provider=provider,
+                account_id=account.account_id,
+                error=str(exc)[:300],
+            )
+            return False
+        return True
 
     def report_account_error(
         self, *, provider: str, account: Assignment, kind: str, message: str = ""
@@ -3870,6 +3937,18 @@ class RemoteControlPlane(ControlPlane):
             doc["cost_usd"] = float(cost)
         if doc:
             self._usage("spend", doc)
+        credential = credential_fields(usage.get("credential"))
+        if credential:
+            # Request 152's three fields, as their own usage kind, after the
+            # spend: a swarm-api that does not take the kind yet refuses it
+            # and costs the spend nothing.
+            try:
+                self._usage("credential", credential)
+            except Exception as exc:
+                self._log.warning(
+                    "could not record the attempt's credential; its spend is recorded",
+                    error_type=type(exc).__name__,
+                )
 
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._post("attempt-end", {"exit_code": exit_code, "error": _bounded_error(error)},

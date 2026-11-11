@@ -25,7 +25,13 @@ it names, so two starts racing each other cannot both pass: the second is 409
 `conflict`. The marker's id is an HMAC of the email under the
 deployment's settings key when one is configured, so no worker can compute
 it; a session left `starting` by a crash longer than STARTING_STALE_SECONDS
-ago no longer holds it.
+ago no longer holds it. Nor does a `live` one with no activity (the newest of
+`activity_at`, written on each turn, `heartbeat_at`, written when the Talk
+tab's event stream connects, `live_at`, `created_at` and `fallback.at`) for
+LIVE_STALE_SECONDS: its tab went away without the end call. The start ends
+it in its own transaction (cause `abandoned`), and the speech sweep ends any
+others (`sweep_abandoned`); swarm-voice is told the way an end tells it. A
+session still live in another workspace is refused in words alone.
 
 THE GRANT (§3.6). Each session gets a random 256-bit grant. Only its SHA-256
 is stored, on the session document; the grant itself goes to swarm-voice in
@@ -58,8 +64,17 @@ swarm-voice's own sentence, under the established codes:
 
   403 (the person is not in the Voice it pool)        -> 403 `forbidden`,
       detail.reason `voice_pool_refused`
-  409 `voice_pool_busy` / `voice_pool_refused`        -> 409 `conflict`,
-      detail.reason the code swarm-voice sent
+  409 `voice_pool_refused` (no OpenAI API key)        -> 409 `conflict`,
+      detail.reason `voice_pool_refused`
+  409 `voice_pool_busy` on a Live start               -> 409 `conflict`,
+      detail.reason `openai_key_in_use`: the key is another session's
+  409 `voice_pool_busy` on a text start               -> 409 `conflict`,
+      detail.reason `no_voice_account_available`: no plan account is free
+
+The cause is read from the mode swarm-api asked for, never from swarm-voice's
+sentence: a text start leases the Voice it pool's ChatGPT plan, never the
+OpenAI key, so its refusal never says the key is in use (live QA, 9 November
+2026: an own-speech fallback was told so).
 
 Either way the session is ended at once (cause `voice_pool_refused`) and the
 person's marker freed, so the next try is not a 409 of ours.
@@ -78,6 +93,11 @@ Each is omitted when the setting is unset, or names an entry the catalogue no
 longer lists or a class with no pin of its own, so swarm-voice keeps its pin
 (VOICE_PLANNER_MODEL, VOICE_FRONT_MODEL). swarm-voice keeps both for the
 session, so a change reaches the next session's start, never a running one.
+
+DEBUG MODE (voice/settings.py, the owner, 10 November 2026) is read at the
+same moment (`VoiceSettings.session_debug`); both start bodies carry
+`debug: true` only while it is on, so with it off the body is unchanged and
+swarm-voice traces nothing.
 
 THE ENGINE (docs/design/voice-it-own-speech.md §4.1, §10; pick 7: "Start
 uses exactly the engine in Settings"). The browser's Start names no engine and
@@ -106,13 +126,20 @@ anything is written; own speech's are:
                         empty), so no session is opened as speech at all
   front_refused         swarm-voice's 409 `voice_front_refused`: no Claude
                         account free for the front (a refusal, never a wait)
-  no_l4                 the zone has no L4 free; no other zone is tried (Q1)
+  no_l4                 no zone of SWARM_SPEECH_ZONES had an L4 free, each tried
+                        once in order (owner, 2026-11-09)
   not_ready             the machine was not RUNNING inside the four minutes
 
-The session is not re-opened: its document turns `mode: "text"`, the front
-(if it started) is ended at swarm-voice, and swarm-voice's text start runs on
-the same session id. A speech start never builds swarm-voice's text
-conversation; only this fallback's own text start does. A machine another
+The session is not re-opened: its document turns `mode: "text"`. After a
+machine fallback (`no_l4`, `not_ready`) the front that started is KEPT and
+takes the text turns, on the Claude account it already holds: nothing is
+released and leased again, and no OpenAI key or ChatGPT plan is asked for
+(live QA, 9 November 2026: ending the front and leasing the Voice it pool's
+plan for a text start was refused, `no_voice_account_available`). A turn the
+front delegates waits for the planner's line and adds it to the reply, as a
+text page reads one reply per turn. Only `front_refused` and
+`speech_not_deployed`, where no front holds anything, start swarm-voice's text
+conversation on the same session id. A machine another
 session holds is a refusal (409, `speech_machine_in_use`), not a fallback:
 the session is ended and the person freed. While its machine starts, a
 `speech` session holds the person for SPEECH_STARTING_STALE_SECONDS.
@@ -191,8 +218,21 @@ STARTING_STALE_SECONDS = 120
 #: brings the speech machine to RUNNING: speech_machine.READY_SECONDS (240),
 #: plus swarm-voice's start call (START_TIMEOUT_SECONDS) and a margin.
 SPEECH_STARTING_STALE_SECONDS = 330
+#: A `live` session with no activity this long was abandoned (its tab went
+#: away without the end call) and no longer holds its person: the longest
+#: idle stop Settings offer (swarm-voice has stopped its side by then), plus
+#: a margin, so no idle stop a person can pick ever cuts a real conversation.
+#: An open Talk tab beats on each event-stream connect, at most
+#: stream.MAX_SECONDS (540) apart, well inside it.
+LIVE_STALE_MARGIN_SECONDS = 900
+LIVE_STALE_SECONDS = max(idle.seconds for idle in cat.IDLE) + LIVE_STALE_MARGIN_SECONDS
+#: The session-document times that show a session is still in use; the
+#: newest of them (and of `fallback.at`) is its last activity.
+ACTIVITY_FIELDS = ("activity_at", "heartbeat_at", "live_at", "created_at")
 
 END_BY_PERSON = "ended_by_person"
+#: Live with no activity for LIVE_STALE_SECONDS: ended by the next start or the sweep.
+END_ABANDONED = "abandoned"
 END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
 #: Another session holds the speech machine (speech_machine.MachineInUse).
@@ -242,6 +282,13 @@ USAGE_LIMIT = "usage_limit_reached"
 POOL_BUSY = "voice_pool_busy"
 POOL_REFUSED = "voice_pool_refused"
 POOL_REASONS = frozenset({POOL_BUSY, POOL_REFUSED})
+#: `detail.reason` of a busy pool, by what the start leased: a Live start's
+#: OpenAI API key held by another session, or no ChatGPT plan account free for
+#: a text start (the broker's own word for it).
+OPENAI_KEY_IN_USE = "openai_key_in_use"
+NO_PLAN_FREE = "no_voice_account_available"
+KEY_IN_USE_SENTENCE = "Voice it's OpenAI API key is in use by another session; try again when it ends."
+NO_PLAN_SENTENCE = "No Voice it plan account is free for a text session; try again in a few minutes."
 #: What a start is told when the Voice it pool holds no OpenAI API key. Every
 #: Voice it session is a GPT-Live session, which only a developer API key can
 #: open (OpenAI refused the ChatGPT plan's token, 403 on /v1/live/sessions, 4
@@ -266,6 +313,14 @@ AUDIT_ENDED = "voice_session_ended"
 #: An SDP offer or answer larger than this is not one a browser made.
 MAX_SDP_BYTES = 64 * 1024
 
+#: How long a start waits for swarm-voice's answer; past it the person reads
+#: "swarm-voice could not be reached". swarm-voice bounds its whole Live start
+#: (lease, create, every sideband attach try, the lease's release on a failure)
+#: by swarm_voice.live.START_WORST_SECONDS (17.0), held below this with a margin
+#: for the hop by tests/unit/voice/test_live_sideband_events.py, so a refusal
+#: swarm-voice has reaches the person as itself (10 November 2026: two 10 s attach
+#: tries after the create outran this and the console said "could not be reached").
+#: Raise both together, never this alone below swarm-voice's bound.
 START_TIMEOUT_SECONDS = 20.0
 #: The longest a delegation is waited on: swarm-voice's
 #: claudefront.MAX_WAIT_SECONDS, the planner's turn.
@@ -379,11 +434,12 @@ def _refusal_body(raw: bytes) -> tuple[str, str]:
     return code.strip(), message.strip()[:MAX_REFUSAL_MESSAGE]
 
 
-def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | None:
+def pool_refusal(status: int, raw: bytes, *, mode: str = MODE_LIVE) -> VoicePoolRefused | VoicePoolBusy | None:
     """The browser's refusal for swarm-voice's 403, or its 409 naming a pool
     code, carrying its sentence. None for any other answer (a 409 for the
     voice session already being live is not the pool's, and reads as the
-    generic refusal)."""
+    generic refusal). A busy pool says what was busy by `mode`, the start's:
+    only a Live start leases the OpenAI API key."""
     code, message = _refusal_body(raw)
     if status == 403:
         return VoicePoolRefused(
@@ -394,9 +450,9 @@ def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | 
     reason = code
     if code == POOL_REFUSED:
         return VoicePoolBusy(NO_API_KEY_SENTENCE, detail={"reason": reason})
-    return VoicePoolBusy(
-        message or "The Voice it pool's ChatGPT account is busy; try again shortly. "
-        "Nothing was started.", detail={"reason": reason})
+    if mode != MODE_LIVE:
+        return VoicePoolBusy(NO_PLAN_SENTENCE, detail={"reason": NO_PLAN_FREE})
+    return VoicePoolBusy(message or KEY_IN_USE_SENTENCE, detail={"reason": OPENAI_KEY_IN_USE})
 
 
 def openai_refusal(raw: bytes) -> VoiceUnreachable | None:
@@ -474,6 +530,9 @@ class StartCall:
     #: on its pin, and the field out of the body.
     planner_model: str | None = None
     conversation_model: str | None = None
+    #: Voice it › Settings' debug mode, read at the start: swarm-voice traces
+    #: each planner turn (voice/trace.py) only when it is True.
+    debug: bool = False
 
     def __repr__(self) -> str:
         return (f"StartCall(session_id={self.session_id!r}, project_id={self.project_id!r}, "
@@ -619,6 +678,8 @@ class HttpVoiceClient:
             body["planner_model"] = call.planner_model
         if call.conversation_model is not None:
             body["conversation_model"] = call.conversation_model
+        if call.debug:
+            body["debug"] = True
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
@@ -628,7 +689,7 @@ class HttpVoiceClient:
         if call.mode == MODE_SPEECH and status == 409 and _refusal_body(raw)[0] == FRONT_REFUSED_CODE:
             log.info("swarm-voice found no Claude account for the front of session=%s", call.session_id)
             raise SpeechFrontRefused("swarm-voice could not start the fast front")
-        refusal = pool_refusal(status, raw) if status in (403, 409) else None
+        refusal = pool_refusal(status, raw, mode=call.mode) if status in (403, 409) else None
         if refusal is not None:
             log.warning("swarm-voice refused the Voice it pool for session=%s (HTTP %s, %s)",
                         call.session_id, status, refusal.detail.get("reason"))
@@ -746,6 +807,37 @@ def client_for(settings: Any) -> VoiceClient | None:
 # --------------------------------------------------------------------------
 
 
+LIVE_HERE = "You already have a live Voice it session; end it before starting another."
+
+
+def live_elsewhere() -> str:
+    """The 409's words for a session live in another workspace: no id, no
+    workspace name (invariant 9)."""
+    return ("You already have a live Voice it session in another workspace; switch to it "
+            f"to end it, or it ends by itself after {LIVE_STALE_SECONDS // 60} minutes "
+            "without activity.")
+
+
+def last_activity(session: Mapping[str, Any]) -> datetime | None:
+    """The newest time the session document records it in use."""
+    times = [_aware(session.get(field)) for field in ACTIVITY_FIELDS]
+    fallback = session.get("fallback")
+    if isinstance(fallback, Mapping):
+        times.append(_aware(fallback.get("at")))
+    seen = [t for t in times if t is not None]
+    return max(seen) if seen else None
+
+
+def record_heartbeat(db: Any, *, project_id: str, session_id: str, now: datetime) -> None:
+    """The Talk tab is still open: `heartbeat_at`, written when its event
+    stream connects (last_activity). Best effort: never fails the stream."""
+    try:
+        (db.collection(PROJECTS).document(project_id).collection(SESSIONS).document(session_id)
+         .update({"heartbeat_at": now}))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("voice session=%s: heartbeat not recorded (%s)", session_id, type(exc).__name__)
+
+
 def _live_detail(marker: dict[str, Any] | None, tenant_id: str) -> dict[str, Any]:
     """Which session holds the person, so the console can end it; named only
     when it is in the tenant asking (invariant 9)."""
@@ -788,6 +880,12 @@ class VoiceSessions:
         conversation = next((m.model for m in cat.CONVERSATION_MODELS if m.name == stored), None)
         return planner, conversation
 
+    def _session_debug(self) -> bool:
+        """Whether a session starting now is traced (Settings' debug mode)."""
+        from .settings import VoiceSettings  # settings imports this module
+
+        return VoiceSettings(self._db, now=self._now).session_debug()
+
     def _project_ref(self, project_id: str) -> Any:
         return self._db.collection(PROJECTS).document(project_id)
 
@@ -805,23 +903,92 @@ class VoiceSessions:
     def _mine(data: dict[str, Any] | None, tenant_id: str, person: str) -> bool:
         return bool(data) and data.get("tenant_id") == tenant_id and data.get("person") == person
 
-    def _holds(self, txn: Any, marker: dict[str, Any] | None) -> bool:
-        """Whether the marker still names a live (or freshly starting) session."""
-        if not marker or not marker.get("project_id") or not marker.get("session_id"):
+    def _abandoned(self, session: Mapping[str, Any]) -> bool:
+        """A `live` session with no activity for LIVE_STALE_SECONDS. One that
+        records no time at all is never judged: every start writes some."""
+        if session.get("state") != LIVE:
             return False
+        last = last_activity(session)
+        return last is not None and self._now() - last >= timedelta(seconds=LIVE_STALE_SECONDS)
+
+    def _holder(self, txn: Any, marker: dict[str, Any] | None) -> tuple[bool, dict[str, Any] | None]:
+        """Whether the marker still names a live (or freshly starting)
+        session; with the session's data when it names an abandoned `live`
+        one, which the caller ends in its transaction (`_end_abandoned`)."""
+        if not marker or not marker.get("project_id") or not marker.get("session_id"):
+            return False, None
         snap = _snapshot(txn.get(self._session_ref(marker["project_id"], marker["session_id"])))
         if not snap.exists:
-            return False
+            return False, None
         session = snap.to_dict() or {}
         state = session.get("state")
         if state == LIVE:
-            return True
+            return (False, session) if self._abandoned(session) else (True, None)
         if state == STARTING:
             created = _aware(session.get("created_at"))
             stale = SPEECH_STARTING_STALE_SECONDS if session.get("mode") == MODE_SPEECH \
                 else STARTING_STALE_SECONDS
-            return created is None or self._now() - created < timedelta(seconds=stale)
-        return False
+            return created is None or self._now() - created < timedelta(seconds=stale), None
+        return False, None
+
+    def _end_abandoned(self, txn: Any, marker: Mapping[str, Any], session: Mapping[str, Any]) -> None:
+        """End the abandoned session the marker names, in the caller's
+        transaction (its reads done): the fields a person's end writes, with
+        its own cause."""
+        project_id, session_id = str(marker["project_id"]), str(marker["session_id"])
+        txn.update(self._session_ref(project_id, session_id), {"state": ENDED, "ended_at": self._now(), "end_cause": END_ABANDONED,
+                         "grant_hash": None})
+        self._audit(txn, action=AUDIT_ENDED, tenant_id=str(session.get("tenant_id") or ""),
+                    person=str(session.get("person") or ""), project_id=project_id,
+                    session_id=session_id, detail={"cause": END_ABANDONED})
+
+    def _tell_abandoned(self, session_id: str, session: Mapping[str, Any]) -> None:
+        """swarm-voice ends its side, and a speech session's machine stops,
+        the way the end route asks: logged, never blocking."""
+        if self._client is None:
+            log.warning("abandoned voice session=%s: no swarm-voice to tell", session_id)
+            return
+        try:
+            told = self._client.end(session_id, cause=END_ABANDONED)
+            if session.get("mode") == MODE_SPEECH and self._machine is not None:
+                holder = self._machine.holder_of(session_id)
+                if holder is not None:
+                    self._machine.stop(holder, cause=END_ABANDONED)
+        except Exception as exc:  # noqa: BLE001 -- best effort: the session is ended here
+            log.warning("abandoned voice session=%s: swarm-voice's end failed (%s)",
+                        session_id, type(exc).__name__)
+            return
+        log.info("abandoned voice session ended session=%s voice_told=%s", session_id, told)
+
+    def sweep_abandoned(self) -> list[str]:
+        """End every abandoned `live` session a person's marker names, of
+        every mode, and free the marker; the ids ended. The sweep route's.
+        Every live session is behind its person's marker: a start replaces a
+        marker only once its session no longer holds."""
+        ended: list[str] = []
+        for marker_snap in self._db.collection(LIVE_MARKERS).stream():
+            marker_ref = self._db.collection(LIVE_MARKERS).document(marker_snap.id)
+
+            @firestore.transactional
+            def _apply(txn: Any) -> tuple[str, dict[str, Any]] | None:
+                snap = _snapshot(txn.get(marker_ref))
+                marker = snap.to_dict() if snap.exists else None
+                _, session = self._holder(txn, marker)
+                if marker is None or session is None:
+                    return None
+                self._end_abandoned(txn, marker, session)
+                txn.delete(marker_ref)
+                return str(marker["session_id"]), session
+
+            try:
+                done = _apply(self._db.transaction())
+            except Exception:  # noqa: BLE001 -- one marker's failure never stops the sweep
+                log.exception("voice sweep: marker %s failed", marker_snap.id)
+                continue
+            if done is not None:
+                ended.append(done[0])
+                self._tell_abandoned(*done)
+        return ended
 
     def start(self, *, tenant_id: str, person: str, offer: str,
               project_id: str | None, mode: str = MODE_LIVE, fallback: str | None = None,
@@ -839,6 +1006,7 @@ class VoiceSessions:
             mode, fallback = MODE_TEXT, FALLBACK_NOT_DEPLOYED
         # Read before anything is written, so a failed read leaves nothing held.
         planner_model, conversation_model = self._session_models()
+        debug = self._session_debug()
         person = person.strip().lower()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
@@ -856,10 +1024,17 @@ class VoiceSessions:
                     project_snap.exists and self._mine(project_snap.to_dict(), tenant_id, person)):
                 raise NotFound(f"voice project {project_id!r} not found")
             marker = marker_snap.to_dict() if marker_snap.exists else None
-            if self._holds(txn, marker):
-                raise VoiceSessionLive(
-                    "You already have a live Voice it session; end it before starting another.",
-                    detail=_live_detail(marker, tenant_id))
+            abandoned.clear()
+            holds, stale = self._holder(txn, marker)
+            if holds:
+                here = bool(marker) and marker.get("tenant_id") == tenant_id
+                raise VoiceSessionLive(LIVE_HERE if here else live_elsewhere(),
+                                       detail=_live_detail(marker, tenant_id))
+            if marker is not None and stale is not None:
+                # Ended here, in the start's transaction; the marker is
+                # replaced below. swarm-voice is told once this commits.
+                self._end_abandoned(txn, marker, stale)
+                abandoned.append((str(marker["session_id"]), stale))
             now = self._now()
             if new_project:
                 txn.set(project_ref, {
@@ -881,18 +1056,22 @@ class VoiceSessions:
                         project_id=project_id, session_id=session_id,
                         detail={"new_project": new_project})
 
+        abandoned: list[tuple[str, dict[str, Any]]] = []
         _open(self._db.transaction())
+        for stale_id, stale in abandoned:
+            self._tell_abandoned(stale_id, stale)
 
         def call_for(this_mode: str) -> StartCall:
             return StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
                              person=person, offer=offer if this_mode == MODE_LIVE else "", grant=grant,
                              mode=this_mode, planner_model=planner_model,
-                             conversation_model=conversation_model)
+                             conversation_model=conversation_model, debug=debug)
 
         def close(cause: str) -> None:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                         session_id=session_id, cause=cause)
 
+        on_front = False
         try:
             if mode == MODE_SPEECH:
                 fallback = self._start_speech(
@@ -903,7 +1082,11 @@ class VoiceSessions:
                         {"mode": MODE_TEXT,
                          "fallback": {"from": cat.ENGINE_OWN, "reason": fallback, "at": self._now()}})
                     log.info("voice session %s falls back to text (%s)", session_id, fallback)
-            if mode != MODE_SPEECH:
+                    # A machine fallback keeps the front, which holds the
+                    # session's Claude account and takes its text turns: no
+                    # second start, so nothing is released and leased again.
+                    on_front = fallback != FALLBACK_FRONT_REFUSED
+            if mode != MODE_SPEECH and not on_front:
                 started = self._client.start(call_for(mode))
                 if not isinstance(started, StartAnswer):
                     raise VoiceUnreachable("swarm-voice did not answer the start; the session was ended.")
@@ -934,9 +1117,12 @@ class VoiceSessions:
     def _start_speech(self, call: StartCall, *, chosen: Mapping[str, Any], tenant_id: str,
                       close: Callable[[str], None]) -> str | None:
         """The front at swarm-voice, then the speech machine to RUNNING. None
-        when both started; else the fallback's fixed code, with the front
-        ended and the machine's lease released. A machine another session
-        holds, or a failure that is no fallback, ends the session and raises."""
+        when both started; else the fallback's fixed code, with the machine's
+        lease released and the front KEPT: it holds the session's Claude
+        account and carries the text session, so the fallback never releases
+        an account to race for another (live QA, 9 November 2026). A machine
+        another session holds, or a failure that is no fallback, ends the
+        session and raises."""
         from .speech_machine import MachineInUse, SessionRef, SpeechFallback  # it imports this module
 
         try:
@@ -950,10 +1136,7 @@ class VoiceSessions:
         try:
             self._machine.start(session, chosen=chosen)
         except SpeechFallback as exc:
-            reason = exc.reason if exc.reason in FALLBACK_REASONS else FALLBACK_NOT_READY
-            # The front holds a Claude account: it ends before the text start.
-            self._client.end(call.session_id, cause=reason)
-            return reason
+            return exc.reason if exc.reason in FALLBACK_REASONS else FALLBACK_NOT_READY
         except MachineInUse:
             close(END_MACHINE_IN_USE)
             self._client.end(call.session_id, cause=END_MACHINE_IN_USE)
@@ -983,11 +1166,22 @@ class VoiceSessions:
                 "This Voice it session takes no text turns: it is not a live text or speech conversation.",
                 detail={"reason": NOT_LIVE, "state": data.get("state"), "mode": data.get("mode") or MODE_LIVE})
         answered = self._client.turn(session_id, text)
+        try:
+            # The session's last activity (LIVE_STALE_SECONDS): never fails the turn.
+            self._session_ref(project_id, session_id).update({"activity_at": self._now()})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("voice turn: session=%s activity not recorded (%s)", session_id, type(exc).__name__)
         log.info("voice turn answered tenant=%s project=%s session=%s turn=%s cards=%d",
                  tenant_id, project_id, session_id, answered.turn_id, len(answered.cards))
         said: dict[str, Any] = {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
         delegation = getattr(answered, "delegation_id", None)
-        if delegation:
+        if delegation and data.get("mode") == MODE_TEXT:
+            # A text fallback on the front: the text page reads one reply per
+            # turn, so the planner's line is waited for and added to it.
+            line = self.delegation(session_id, delegation, timeout=DELEGATION_WAIT_SECONDS)
+            if line is not None:
+                said["reply"] = f"{answered.reply} {line.strip()}".strip()
+        elif delegation:
             said["delegation_id"] = delegation
         return said
 

@@ -979,6 +979,141 @@ def test_upstream_serves_a_merge_its_recorded_fixer_and_its_conflict_round_state
 
 
 # --------------------------------------------------------------------------
+# upstream: a merge step's fix loop's re-review (FIX-LOOP-REREVIEW-READ)
+#
+# On dev a merge-on-verdict workflow's loop ran one round (`re-review:1`, its
+# own one-step workflow, MERGE) and the merge step FAILED: `_loop_review`
+# reads the loop's `final_review` through the state route, which refused it
+# `upstream_not_declared`. The re-review is named only by the loop's
+# tenant-writable summary; what may be trusted is its own SIGNED
+# `fix_loop_round`, which names the loop.
+# --------------------------------------------------------------------------
+
+LOOP_TASK = "task_loop"
+REREVIEW = "task_rereview_1"
+
+
+def _loop_merge_step(client, db, worker: Worker, *, loop_profile: str = "fix-loop",
+                     loop_workflow: str = WORKFLOW, loop_tenant: str = "eng",
+                     declares_loop: bool = True, merges: bool = True) -> dict[str, Any]:
+    """A merge step behind a fix loop, as `merge_step_for` signs it: it depends on
+    the opener `task_fix` and the loop, and its target names the loop. The loop
+    ran one round; its summary names the re-review. Every spec is signed."""
+    dispatch: dict[str, Any] = {"strategy": "integrate", "carrier": "checkpoints"}
+    if merges:
+        dispatch["merge_target"] = {"pull_request": "task_fix", "review_loop": LOOP_TASK}
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           depends_on=["task_fix"] + ([LOOP_TASK] if declares_loop else []),
+           metadata={"dispatch": dispatch})
+    _ancestor(db, "task_fix")
+    loop = seed_task(db, task_id=LOOP_TASK, tenant_id=loop_tenant, state="SUCCEEDED",
+                     runner_profile=loop_profile, workflow_id=loop_workflow)
+    loop["metadata"] = {"dispatch": {"fix_loop": {
+        "review": "review", "review_task_id": "task_review", "max_rounds": 3}}}
+    SIGNER.sign_document(loop, LOOP_TASK)
+    # Unsigned and tenant-writable, as the loop driver writes it.
+    loop["result_summary"] = {"fix_loop": {"rounds": [{"round": 1}],
+                                           "final_review": REREVIEW, "verdict": "MERGE"}}
+    return loop
+
+
+def _rereview(db, task_id: str = REREVIEW, *, loop: str = LOOP_TASK, kind: str = "review",
+              tenant: str = "eng", signed_round: bool = True) -> dict[str, Any]:
+    """A `re-review:<k>`: its own one-step workflow, its round record signed in
+    its dispatch (`submit_workflow(fix_loop_round=...)`) and copied, unsigned,
+    into its metadata."""
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    workflow_id=f"wf_{task_id}")
+    record = {"loop_task": loop, "round": 1, "kind": kind, "head": "f" * 40}
+    dispatch: dict[str, Any] = {"strategy": "collect"}
+    if signed_round:
+        dispatch["fix_loop_round"] = record
+    doc["metadata"] = {"dispatch": dispatch}
+    SIGNER.sign_document(doc, task_id)
+    if not signed_round:
+        doc["metadata"]["fix_loop_round"] = record
+    return doc
+
+
+def test_upstream_serves_a_merge_step_its_one_round_loops_rereview(client, db):
+    """The live finding: the merge's reads, in `_loop_review`'s order, all served."""
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db)
+    loop = worker.get(client, "upstream", f"upstream_task_id={LOOP_TASK}")
+    assert loop.status_code == 200, loop.text
+    final = loop.json()["task"]["result_summary"]["fix_loop"]["final_review"]
+    # MUTATION: drop `_is_fix_loop_rereview` and this is the live 403.
+    review = worker.get(client, "upstream", f"upstream_task_id={final}")
+    assert review.status_code == 200, review.text
+    assert review.json()["task"]["metadata"]["dispatch"]["fix_loop_round"]["loop_task"] == (
+        LOOP_TASK)
+
+
+def test_upstream_refuses_a_rereview_of_another_loop(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    other = seed_task(db, task_id="task_other_loop", tenant_id="eng", state="SUCCEEDED",
+                      runner_profile="fix-loop", workflow_id=WORKFLOW)
+    SIGNER.sign_document(other, "task_other_loop")
+    _rereview(db, "task_rereview_other", loop="task_other_loop")
+    # MUTATION: serve any signed re-review of a loop of this workflow and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_rereview_other"))
+
+
+def test_upstream_refuses_a_task_only_the_loops_summary_names(client, db):
+    """The loop's `final_review` is tenant-writable: it serves nothing by itself."""
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, signed_round=False)
+    _bystander(db)
+    # An unsigned round record (the metadata copy) is no proof...
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+    # ...nor is a summary rewritten to name any other task of this tenant.
+    db.docs[f"tasks/{LOOP_TASK}"]["result_summary"]["fix_loop"]["final_review"] = "task_victim"
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_refuses_a_rereview_whose_round_was_rewritten_after_signing(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    doc = _rereview(db, loop="task_elsewhere")
+    doc["metadata"]["dispatch"]["fix_loop_round"]["loop_task"] = LOOP_TASK
+    # MUTATION: read the round record without verifying the spec and this is a 200.
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+def test_upstream_refuses_a_fix_round_as_a_rereview(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, kind="fix")
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+@pytest.mark.parametrize("variant", [
+    pytest.param({"declares_loop": False}, id="loop-not-declared"),
+    pytest.param({"merges": False}, id="not-a-merge-step"),
+    pytest.param({"loop_profile": "claude-code"}, id="loop-not-on-fix-loop"),
+    pytest.param({"loop_workflow": "wf_other"}, id="loop-of-another-workflow"),
+    pytest.param({"loop_tenant": "research"}, id="loop-of-another-tenant"),
+])
+def test_upstream_refuses_a_rereview_unless_the_loop_holds(client, db, variant):
+    worker = Worker()
+    _loop_merge_step(client, db, worker, **variant)
+    _rereview(db)
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+def test_upstream_refuses_a_rereview_of_another_tenant(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, tenant="research")
+    response = worker.get(client, "upstream", f"upstream_task_id={REREVIEW}")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+# --------------------------------------------------------------------------
 # upstream: a merge-only continuation's target (FIX-MERGE-CONTINUATION-READ,
 # part of #2379)
 #

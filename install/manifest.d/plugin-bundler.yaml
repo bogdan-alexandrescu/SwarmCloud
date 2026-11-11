@@ -1,0 +1,31 @@
+# Lane 14 of the managed plugins plan (part of #2688; docs/design/managed-plugins.md
+# section 1.4.2): images/plugin-bundler/, the image of the Cloud Run job
+# swarm-plugin-bundle, which builds gstack and security-audit at a pin a platform
+# admin applied (the owner, 11 November 2026). The release builds it (scripts/build-images.sh ALL_TARGETS) and
+# the install copies it by digest like every release image, so a fresh
+# deployment's bundle build has its own copy to run.
+version: 1
+entries:
+- id: image.swarm-plugin-bundler
+  kind: image
+  scope: core
+  stage: 4
+  provider: engine
+  check: the release image list carries swarm-plugin-bundler
+  apply: images.copy copies the release digest (images/plugin-bundler/Dockerfile)
+  verify: the digest is in image_refs
+  explain: the bundle build's recipes for gstack and security-audit and the .swarm-bundle.json writer; it
+    reaches no agent, only the deployment's bundle build
+  guards: null
+  secret_entry: null
+  depends_on:
+  - registry.swarm
+  evidence:
+  - images/plugin-bundler/Dockerfile:1
+  - scripts/build-images.sh:226
+  notes: null
+  step: images.copy
+  refs:
+    image:
+    - swarm-plugin-bundler
+    - dockerfile:images/plugin-bundler/Dockerfile

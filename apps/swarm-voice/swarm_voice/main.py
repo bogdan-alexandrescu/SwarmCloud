@@ -40,7 +40,9 @@ Routes:
   paths"). A text start carries no offer: swarm-voice leases the pool's
   ChatGPT plan (`capability: text`), holds the conversation (textchat.py) and
   answers `201 {voice_session_id, mode: "text"}`, with no SDP; the pool
-  refusals are the same. A Live start answers with `mode: "live"` beside the
+  refusals have the same status and codes, but name the plan, never the key
+  (TEXT_POOL_REFUSALS). Every pool refusal also carries the broker's
+  `reason` and the `capability` leased (`live` or `text`). A Live start answers with `mode: "live"` beside the
   fields above.
   `mode: "speech"` is our own speech engine (docs/design/voice-it-own-speech.md
   §4.1, §10.2): no offer either (one is 422), and its conversation is the fast
@@ -112,7 +114,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from . import readback
-from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
+from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
+                           build_broker)
 from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
                           delegations_router)
 from .claudefront import SessionExists as FrontExists
@@ -163,6 +166,11 @@ class StartRequest(BaseModel):
     #: keeps VOICE_FRONT_MODEL.
     conversation_model: str | None = Field(default=None, max_length=64)
 
+    #: Voice it › Settings' debug mode, read by swarm-api at the start: True
+    #: traces each planner turn of this session to swarm-api (trace.py);
+    #: absent or False, nothing is traced.
+    debug: bool = False
+
     @field_validator("conversation_model")
     @classmethod
     def _a_curated_model(cls, value: str | None) -> str | None:
@@ -202,6 +210,17 @@ POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
 }
 POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
                         "Voice it has no OpenAI API key in its pool yet, so this conversation can't start.")
+#: A text start leases the Voice it pool's ChatGPT plan (accountlease
+#: CAPABILITY_TEXT), never the OpenAI key, so its refusals name the plan
+#: (live QA, 9 November 2026: a text start was told the key was in use).
+TEXT_POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
+    NOT_IN_POOL: (403, "voice_pool_refused",
+                  "Voice it's plan account isn't available to you, so this conversation can't start."),
+    NONE_AVAILABLE: (409, "voice_pool_busy",
+                     "No Voice it plan account is free for a text session; try again in a few minutes."),
+}
+TEXT_POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
+                             "Voice it has no plan account in its pool yet, so this conversation can't start.")
 #: A speech start whose fast front found no Claude account (claudefront.FrontRefused):
 #: swarm-api's text fallback (swarm_api.voice.sessions.FRONT_REFUSED_CODE).
 FRONT_REFUSED = "voice_front_refused"
@@ -214,9 +233,15 @@ def openai_refusal(exc: LiveRefused) -> JSONResponse:
         "openai_code": exc.code, "openai_type": exc.type})
 
 
-def pool_refusal(reason: str) -> JSONResponse:
-    status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
-    return JSONResponse(status_code=status, content={"code": code, "message": message})
+def pool_refusal(reason: str, *, capability: str = CAPABILITY) -> JSONResponse:
+    """The refusal for a lease the Voice it pool refused: `reason` is the
+    broker's, `capability` what was leased (`live`, the key; `text`, the plan)."""
+    if capability == CAPABILITY_TEXT:
+        status, code, message = TEXT_POOL_REFUSALS.get(reason, TEXT_POOL_REFUSED_DEFAULT)
+    else:
+        status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
+    return JSONResponse(status_code=status, content={"code": code, "message": message,
+                                                     "reason": reason, "capability": capability})
 
 
 def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
@@ -355,7 +380,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
         try:
             session = await app.state.sessions.start(
                 body.voice_session_id, person=body.person, offer=body.offer, grant=grant,
-                planner_model=body.planner_model)
+                planner_model=body.planner_model, debug=body.debug)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
@@ -383,7 +408,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
             log.info("voice session %s: the Voice it pool leased no plan (%s)", body.voice_session_id, exc.reason)
-            return pool_refusal(exc.reason)
+            return pool_refusal(exc.reason, capability=CAPABILITY_TEXT)
         except CredentialError as exc:
             log.warning("voice session %s: text start failed: %s", body.voice_session_id, exc)
             raise HTTPException(502, str(exc)) from None
@@ -400,7 +425,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             session = await fronts_.start(body.voice_session_id, person=body.person, grant=grant,
                                           exists=lambda voice_id: held_elsewhere(voice_id, but="speech"),
                                           planner_model=body.planner_model,
-                                          conversation_model=body.conversation_model)
+                                          conversation_model=body.conversation_model,
+                                          debug=body.debug)
         except FrontExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except ValueError as exc:

@@ -29,6 +29,7 @@ from .backends import Backend, CloudRunBackend, GkeBackend, NamespacedBackend
 from .checkpoints import GcsCheckpointStore
 from .config import ReconcilerConfig
 from .logs import build_logger
+from .plugingc import build_plugin_collector
 from .repair import ReconcileReport, Reconciler
 from .stopexec import ExecutionStopper, parse_push
 from .store import ControlStore
@@ -85,6 +86,7 @@ def build_reconciler(config: ReconcilerConfig, settings: Settings, logger: Any) 
         config=config,
         logger=logger,
         checkpoint_store=build_checkpoint_store(config, logger),
+        plugin_gc=build_plugin_collector(config, db, logger),
     )
 
 
@@ -167,6 +169,8 @@ def create_app(
             # the last pass: anything but 0 is capacity being held on purpose
             # that somebody should look at (repair.HELD_PAST_TTL).
             "last_pass_held_past_ttl": len(last.held_past_ttl) if last else None,
+            # The plugin copy sweep, when the last pass ran it (`plugingc`).
+            "last_pass_plugin_gc": last.plugin_gc if last else None,
         }
 
     @app.post("/reconcile")

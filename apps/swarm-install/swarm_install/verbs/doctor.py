@@ -15,8 +15,10 @@ manifest entry's probe (`swarm_install.doctor`), `met`, `unmet` or `unknown`
 per entry, with the fix in words and the `swarm install --repair <id>` that
 repairs it, one line on the hourly doctor, and the managed plugins' check
 (`plugins_finding`: the bucket exists, the intake job is deployed and a tenant
-worker account may read `platform/`; managed-plugins.md §15), which stage 14's
-`verify.plugins` runs too. It never writes.
+worker account may read `platform/`; managed-plugins.md §15) with the bundle
+build's (`bundles_finding`: with the built-ins switch on, the builder account
+exists and may push to the plugin bundles repository and to no repository it
+reads; §1.4.2), which stage 14's `verify.plugins` runs too. It never writes.
 
 Exit codes follow `sc`: 0 every probed entry is met; 3 something is unmet or
 could not be checked (never 0 when a probe did not run); 1 the doctor could
@@ -235,6 +237,88 @@ def plugins_finding(target: doctor.Target, gcp: doctor.Gcp, *, intake_released: 
                           f"and {reader} may read platform/")
 
 
+# -- the bundle build (managed-plugins.md §1.4.2 and §15.2) ------------------------
+
+BUNDLES_CHECK = "plugins.bundle-build"
+#: terraform/infra/plugin-bundles.tf's account and repository, and the
+#: repositories it reads (the release images, build_mirror.tf's Docker Hub
+#: mirror, its own npm mirror): it pushes to the first and to none of these.
+PLUGIN_BUNDLER_ACCOUNT = "swarm-plugin-bundler"
+BUNDLES_REPOSITORY = "swarm-plugin-bundles"
+BUNDLER_READ_ONLY_REPOSITORIES = ("swarm-images", "swarm-mirror-dockerhub", "swarm-mirror-npm")
+#: Roles carrying artifactregistry.repositories.uploadArtifacts.
+REPOSITORY_WRITE_ROLES = frozenset({"roles/artifactregistry.writer", "roles/artifactregistry.repoAdmin",
+                                    "roles/artifactregistry.admin", "roles/artifactregistry.createOnPushWriter",
+                                    "roles/artifactregistry.createOnPushRepoAdmin"})
+BUNDLES_FIX = ("re-run `swarm install`: its infra passes apply terraform/infra/plugin-bundles.tf (the "
+               "swarm-plugin-bundler account, the swarm-plugin-bundles repository and their grants)")
+ARTIFACT_REGISTRY_API = "https://artifactregistry.googleapis.com/v1"
+#: The install state's record of the `builtins_managed` infra last applied
+#: (tfvars.BUILTINS_MANAGED_KEY, written by the infra pass; the doctor loads no
+#: apply path, so it names the key rather than importing it).
+BUILTINS_MANAGED_KEY = "builtins_managed"
+
+
+def applied_switch(outputs: Mapping[str, Any]) -> str:
+    """The `builtins_managed` infra last applied: "on" only when recorded so;
+    no record means no infra pass planned plugin-bundles.tf yet."""
+    return "on" if outputs.get(BUILTINS_MANAGED_KEY) == "on" else "off"
+
+
+def bundler_email(project: str) -> str:
+    return f"{PLUGIN_BUNDLER_ACCOUNT}@{project}.iam.gserviceaccount.com"
+
+
+def writes(policy: Mapping[str, Any], email: str) -> bool:
+    """`policy` grants `email` a role that pushes to its repository."""
+    member = f"serviceAccount:{email}"
+    return any(binding.get("role") in REPOSITORY_WRITE_ROLES and member in (binding.get("members") or ())
+               for binding in policy.get("bindings") or ())
+
+
+def bundles_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
+    """With `builtins_managed` applied on: the builder account exists, may
+    push to the bundles repository, and holds no push role on a repository it
+    reads. Off, plugin-bundles.tf plans nothing, so there is nothing to find.
+    Never writes. Push rights granted on the project rather than a repository
+    are the release's IAM review's to show (the deployer may grant none here)."""
+    if applied_switch(target.outputs) != "on":
+        return doctor.Finding(BUNDLES_CHECK, MET, "builtins_managed is off: no bundle build account or "
+                              "repository is planned")
+    if not target.region:
+        return doctor.Finding(BUNDLES_CHECK, UNKNOWN, "the install state records no region to look for the "
+                              f"{BUNDLES_REPOSITORY} repository in", fix=BUNDLES_FIX)
+    email = bundler_email(target.project)
+    account = f"projects/-/serviceAccounts/{email}"
+    repositories = f"projects/{target.project}/locations/{target.region}/repositories"
+
+    def policy(repository: str) -> Mapping[str, Any] | None:
+        name = f"{repositories}/{repository}"
+        return _found(gcp, f"{ARTIFACT_REGISTRY_API}/{name}:getIamPolicy", "artifactregistry.repositories.getIamPolicy",
+                      f"//artifactregistry.googleapis.com/{name}")
+
+    try:
+        if _found(gcp, f"https://iam.googleapis.com/v1/{account}", "iam.serviceAccounts.get",
+                  f"//iam.googleapis.com/{account}") is None:
+            return doctor.Finding(BUNDLES_CHECK, UNMET, f"the bundle builder account {email} does not exist",
+                                  fix=BUNDLES_FIX)
+        own = policy(BUNDLES_REPOSITORY)
+        if own is None:
+            return doctor.Finding(BUNDLES_CHECK, UNMET, f"the {BUNDLES_REPOSITORY} repository does not exist "
+                                  f"in {target.region}", fix=BUNDLES_FIX)
+        if not writes(own, email):
+            return doctor.Finding(BUNDLES_CHECK, UNMET, f"{email} may not push to {BUNDLES_REPOSITORY}",
+                                  fix=BUNDLES_FIX)
+        also = [name for name in BUNDLER_READ_ONLY_REPOSITORIES if writes(policy(name) or {}, email)]
+    except Exception as exc:  # noqa: BLE001 - a read that cannot run is unknown, never fine
+        return doctor.Finding(BUNDLES_CHECK, UNKNOWN, f"{type(exc).__name__}: {exc}", fix=BUNDLES_FIX)
+    if also:
+        return doctor.Finding(BUNDLES_CHECK, UNMET, f"{email} may also push to {', '.join(also)}; it pushes to "
+                              f"{BUNDLES_REPOSITORY} only (managed-plugins.md section 1.4.2)",
+                              fix="remove the push grant on " + ", ".join(also) + "; " + BUNDLES_FIX)
+    return doctor.Finding(BUNDLES_CHECK, MET, f"{email} exists and may push to {BUNDLES_REPOSITORY} only")
+
+
 # -- the verb ------------------------------------------------------------------
 
 
@@ -269,10 +353,11 @@ def run(args: argparse.Namespace) -> int:
         principal=principal(),
     )
     deps = make_deps(state)
-    findings = [*doctor.run(manifest, target, deps), plugins_finding(target, deps.gcp)]
+    findings = [*doctor.run(manifest, target, deps), plugins_finding(target, deps.gcp),
+                bundles_finding(target, deps.gcp)]
     code = doctor.exit_code(findings)
     hourly = doctor.hourly_doctor(target, deps)
-    skipped = len(manifest.entries) - (len(findings) - 1)
+    skipped = len(manifest.entries) - (len(findings) - 2)
     if args.json:
         print(json.dumps({
             "project": project,

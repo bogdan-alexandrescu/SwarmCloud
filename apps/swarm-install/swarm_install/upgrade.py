@@ -35,6 +35,17 @@ roll back (docs/design/day-one-plan.md §9.3, lane DAYONE-UPGRADE-1, part of
    place (lesson 14).
 8. **Verify**: the platform checks (stage 14's quick checks), then
    `removes-data` migrations, then dispatch resumed.
+   **The plugin bundles** (managed-plugins.md sections 1.4.4 and 15.2): one
+   step, `rebuild-bundles`, sits between the image copy and infra, because
+   infra writes the new base's digests into `WORKER_IMAGE_REFS` and a queued
+   step must find its pins on that base. The plan shows "bundles to rebuild:
+   N", N the bundle records (`plugin_bundles`) retention keeps. The bundle
+   build is started by swarm-api (lane 16 of the design's table 17.1); until
+   this installer can ask it for one, an upgrade with N above 0 is refused
+   before anything is applied, so no step loses its bundle to an upgrade.
+   With the built-ins switch on (`tfvars.builtins_managed`), a release whose
+   images carry no bundle manifests (it ships no `swarm-plugin-bundler`, the
+   image lane 14 ships with them) is refused too (section 1.4.7).
 9. **Roll back** a failed image roll (infra or the checks): the previous
    release's digests and generated inputs are applied again and the install
    state records the previous release. Data-removing migrations never ran.
@@ -64,6 +75,7 @@ from typing import Any, Protocol
 import yaml
 
 from . import migrations as mig
+from . import tfvars
 from .exitcodes import ExitCode
 from .terraform import _IAM_TYPE, review_plan
 from .events import Events
@@ -75,6 +87,7 @@ from .waits import Clock, WaitGaveUp, WaitSpec, wait_until
 APP_PERMISSIONS = "app-permissions"
 DRAIN = "drain"
 COPY_IMAGES = "copy-images"
+REBUILD_BUNDLES = "rebuild-bundles"
 MIGRATIONS_ADDITIVE = "migrations-additive"
 BOOTSTRAP = "bootstrap"
 POLICIES_ADMIT = "policies-admit"
@@ -85,8 +98,8 @@ NAMESPACES = "namespaces"
 VERIFY = "verify"
 MIGRATIONS_CLEANUP = "migrations-cleanup"
 RESUME = "resume-dispatch"
-ORDER = (APP_PERMISSIONS, DRAIN, COPY_IMAGES, MIGRATIONS_ADDITIVE, BOOTSTRAP, POLICIES_ADMIT, INFRA, POLICIES_TIGHTEN,
-         MIGRATIONS_NEW_CODE, NAMESPACES, VERIFY, MIGRATIONS_CLEANUP, RESUME)
+ORDER = (APP_PERMISSIONS, DRAIN, COPY_IMAGES, REBUILD_BUNDLES, MIGRATIONS_ADDITIVE, BOOTSTRAP, POLICIES_ADMIT, INFRA,
+         POLICIES_TIGHTEN, MIGRATIONS_NEW_CODE, NAMESPACES, VERIFY, MIGRATIONS_CLEANUP, RESUME)
 
 #: A failure of these is a failed image roll, and is rolled back (§9.3 step 8).
 ROLLED_BACK = (INFRA, VERIFY)
@@ -125,6 +138,15 @@ APP_INSTALLATION_WAIT = WaitSpec(
 )
 #: GitHub's permission levels, weakest first: a stronger one holds a weaker.
 _LEVELS = {"read": 1, "write": 2, "admin": 3}
+
+#: swarm-api's bundle records (managed-plugins.md section 1.4.3), and the
+#: states retention keeps (section 1.4.4): a failed or retired record serves
+#: no step, so it needs no build on a new base.
+BUNDLES_COLLECTION = "plugin_bundles"
+RETAINED_BUNDLE_STATES = frozenset({"building", "ready"})
+#: The image a release carrying `.swarm-bundle.json` ships beside its runner
+#: images (images/plugin-bundler, lane 14 of table 17.1 built both together).
+BUNDLER_IMAGE = "swarm-plugin-bundler"
 
 _LOG_METRIC = "google_logging_metric"
 _CUSTOM_ROLE = re.compile(r"^google_.*_iam_custom_role$")
@@ -291,6 +313,8 @@ class UpgradePlan:
     replaced_metrics: list[str] = field(default_factory=list)
     #: The App the permissions are added to, when there is one.
     app: GithubApp | None = None
+    #: The bundle records to build again on the new base (section 1.4.4).
+    bundles: list[str] = field(default_factory=list)
 
 
 def _actions(change: Mapping[str, Any]) -> list[str]:
@@ -351,6 +375,27 @@ def _subset(rendered: str, wanted: Sequence[tuple[str, str]]) -> str:
     return yaml.safe_dump_all([docs[k] for k in wanted], sort_keys=False)
 
 
+def retained_bundles(documents: mig.Documents) -> list[str]:
+    """The paths of the bundle records retention keeps, sorted: each needs a
+    build on a new base before infra moves `WORKER_IMAGE_REFS` to it."""
+    return sorted(path for path, data, _ in documents.list(BUNDLES_COLLECTION)
+                  if isinstance(data, Mapping) and data.get("state") in RETAINED_BUNDLE_STATES)
+
+
+def carries_bundle_manifests(images: Mapping[str, str]) -> bool:
+    """Whether a release's `images.json` ships the bundler image, and with it
+    the `.swarm-bundle.json` manifests the built-ins switch needs live
+    (managed-plugins.md section 1.4.7): the one check both an upgrade and
+    `swarm upgrade --builtins-managed on` refuse on."""
+    return BUNDLER_IMAGE in images
+
+
+def bundle_refusal(bundles: Sequence[str], target: str) -> str:
+    return (f"{len(bundles)} plugin bundle(s) must be built again on {target}'s images before infra switches to them "
+            "(managed-plugins.md section 1.4.4), and this installer cannot start a bundle build until swarm-api's "
+            "bundle builds ship; nothing was applied by this step, and the running release keeps its bundles")
+
+
 def parse_images_json(data: bytes) -> dict[str, str]:
     from .steps.images import parse_images
 
@@ -408,6 +453,14 @@ class Upgrade:
             images_old = {}
         images = {name: (images_old.get(name), digest) for name, digest in sorted(images_new.items())
                   if images_old.get(name) != digest}
+        if tfvars.builtins_managed(self.store.load()) == "on" and not carries_bundle_manifests(images_new):
+            raise UpgradeRefused(
+                f"{target} carries no plugin bundle manifests (its images have no {BUNDLER_IMAGE}) and the built-ins "
+                "switch is on: workers of that release could not run a step that names gstack or security-audit. "
+                "Turn builtins_managed off first (managed-plugins.md section 1.4.7); nothing was applied")
+        bundles = retained_bundles(self.world.documents())
+        if bundles:
+            raise UpgradeRefused(bundle_refusal(bundles, target))
         terraform = {root: self.world.plan_root(root, target) for root in ("bootstrap", "infra")}
         iam: list[IamRow] = []
         for root, found in terraform.items():
@@ -429,7 +482,8 @@ class Upgrade:
         return UpgradePlan(previous=previous, target=target, terraform=terraform, images=images,
                            migrations=pending, policy_admit=changed, policy_delete=removed, policy_tighten=added,
                            iam=iam, app_added=added_perms,
-                           replaced_metrics=[a for a, _ in replaced_metrics(terraform["infra"])], app=app)
+                           replaced_metrics=[a for a, _ in replaced_metrics(terraform["infra"])], app=app,
+                           bundles=bundles)
 
     def show(self, plan: UpgradePlan) -> None:
         say = self.out
@@ -445,6 +499,7 @@ class Upgrade:
         say(f"  images: {len(plan.images)} change digest")
         for name, (old, new) in plan.images.items():
             say(f"    {name}: {old or '(new)'} -> {new}")
+        say(f"  bundles to rebuild: {len(plan.bundles)}")
         say("  firestore migrations: " + (", ".join(plan.migrations) if plan.migrations else "none to run"))
         say(f"  cluster policies: {len(plan.policy_admit)} changed and {len(plan.policy_delete)} removed before "
             f"the new code, {len(plan.policy_tighten)} added after it")
@@ -569,6 +624,11 @@ class Upgrade:
             self._drain()
         elif name == COPY_IMAGES:
             self.world.copy_images(target, parse_images_json(self.world.fetch(target, "images.json")))
+        elif name == REBUILD_BUNDLES:
+            # Read again: a platform admin may have applied an update since the plan.
+            bundles = retained_bundles(self.world.documents())
+            if bundles:
+                raise UpgradeRefused(bundle_refusal(bundles, target))
         elif name == MIGRATIONS_ADDITIVE:
             self._migrate(mig.ADDITIVE, target)
         elif name == BOOTSTRAP:
@@ -676,8 +736,8 @@ class Upgrade:
 
 
 __all__ = [
-    "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
+    "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "BUNDLER_IMAGE", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
     "ROLLED_BACK", "Upgrade", "UpgradeFailed", "UpgradePlan", "UpgradeRefused", "UpgradeWorld",
-    "app_permissions_url", "iam_rows", "installation_url", "missing_permissions", "policy_diff", "replaced_metrics",
-    "version_key",
+    "app_permissions_url", "bundle_refusal", "carries_bundle_manifests", "iam_rows", "installation_url",
+    "missing_permissions", "policy_diff", "replaced_metrics", "retained_bundles", "version_key",
 ]

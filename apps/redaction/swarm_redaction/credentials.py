@@ -478,6 +478,21 @@ def _odd_backslashes(text: str) -> bool:
     return (len(text) - len(text.rstrip("\\"))) % 2 == 1
 
 
+def _value_split(match: re.Match[str]) -> tuple[str, str]:
+    """A generic match's group 1 and the value after it, as these checks read them.
+
+    The key/value rule's group 1 now ends with a single quote that opens the
+    value (`sq`, the owner's pick 'single-quotes-too' on PR #3775), so its
+    value runs across blanks to the closing `'`. Every check here reads a
+    single-quoted value as one that STARTS with its quote, as the rule's
+    value class served it before, so the quote is handed back to the value.
+    """
+    prefix = match.group(1)
+    if "sq" in match.re.groupindex and match.group("sq"):
+        prefix = prefix[:-1]
+    return prefix, match.group(0)[len(prefix):]
+
+
 def _ends_the_value(match: re.Match[str]) -> bool:
     """True when a generic match's value is the WHOLE value, not its first word.
 
@@ -490,8 +505,7 @@ def _ends_the_value(match: re.Match[str]) -> bool:
     and an unquoted one must end the line or meet a separator, a closing
     bracket or the quote of an enclosing string.
     """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
+    prefix, value = _value_split(match)
     rest = match.string[match.end():].split("\n", 1)[0]
     opened = prefix.rstrip()
     if opened.endswith('"'):
@@ -726,8 +740,8 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
             return False
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
-        value = match.group(0)[len(match.group(1)):]
-        value_at = match.start() + len(match.group(1))
+        prefix, value = _value_split(match)
+        value_at = match.start() + len(prefix)
         if value.startswith("`") and _runtime_template(match.string, value_at):
             return False
         if not in_tests:  # tier 2
@@ -742,6 +756,156 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     prefix = _VENDOR_PREFIX.match(match.group(0))
     tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
     return not _is_explicit_placeholder(tail, match.group(0))
+
+
+# -- a version is never a credential value, in a package manifest -------------
+#
+# PUBLISH SCAN, MERGED-MAIN FLOOR (reported 2026-11-10). `key_value_assignment`
+# takes any key holding `token`, `secret` or `key`, so a dependency named for
+# one -- `"tiktoken": "1.0.22"` in a package.json -- refused a lane in the
+# strict tier: the value is a literal and not a reference. In the npm family's
+# manifests and lockfiles (`PACKAGE_MANIFEST_FILES`; the rule special-cases no
+# other ecosystem's) such a key names a package, and a value that is WHOLLY a
+# version specifier is not a credential, whatever the key says.
+#
+# What a version specifier is, judged on the whole value (to its closing quote,
+# or the line's end unquoted), never on the run the rule matched:
+#
+# * a range: comparators (`<`, `<=`, `>`, `>=`, `=`, `~`, `~>`, `^`) on a version
+#   `v?N[.N[.N]]` (each part digits, `x`, `X` or `*`), joined by spaces, `||` or
+#   ` - `; or `*`, `x` or `X` alone;
+# * `workspace:` then `*`, `^`, `~` or a range;
+# * an npm alias, `npm:[@scope/]name[@range]`;
+# * a git dependency pinned to a version: `github:`, `gitlab:`, `bitbucket:`,
+#   `git://`, `git+https://` or `git+ssh://` then a path with no user, password
+#   or port in it (no `@`, no `:`), then `#semver:<range>` or `#<version>`.
+#
+# WHAT IT CANNOT LET THROUGH. A pre-release or build tag (`-beta.2`, `+exp`) is
+# made of identifiers each digits (at most 20, a date), letters (at most 20, a
+# word) or at most 12 of letters and digits (a short commit hash), and at most
+# two of those last per version; a name or path part is lowercase letters, at
+# most 4 digits after them, and none `_looks_like_a_credential`. So no run of
+# random characters long enough to be a token fits. Vendor-shaped keys, private
+# keys and JWTs are other rules and are still refused here.
+#
+# RESIDUAL RISK: an agent set on smuggling a value can always spell it in
+# short pieces; this, like the rest of the guard, stops a key put there by
+# mistake or habit.
+
+#: The file names (the last path segment, exactly) a version is not a
+#: credential value in: the npm family's manifest and lockfiles.
+PACKAGE_MANIFEST_FILES = frozenset(
+    {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+)
+
+_VERSION_PART = r"(?:[0-9]{1,10}|[xX*])"
+_VERSION_TAG = r"[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*"
+_VERSION = re.compile(
+    r"v?" + _VERSION_PART + r"(?:\." + _VERSION_PART + r"){0,2}"
+    r"(?P<pre>-" + _VERSION_TAG + r")?(?P<build>\+" + _VERSION_TAG + r")?"
+)
+_COMPARATOR = re.compile(r"(?:<=|>=|<|>|=|~>|~|\^)?[ \t]*")
+_RANGE_JOIN = re.compile(r"[ \t]*\|\|[ \t]*|[ \t]+-[ \t]+|[ \t]+")
+_TAG_DIGITS = re.compile(r"[0-9]{1,20}")
+_TAG_WORD = re.compile(r"[A-Za-z]{1,20}")
+_TAG_MIXED = re.compile(r"[0-9A-Za-z]{1,12}")
+#: How many letter-and-digit tag identifiers (a short commit hash) one version holds.
+_TAG_MIXED_MAX = 2
+_NAME_PART = re.compile(r"[a-z]{1,32}[0-9]{0,4}|[0-9]{1,4}")
+_NAME_SPLIT = re.compile(r"[-._/]")
+_NPM_ALIAS = re.compile(r"npm:(?P<name>(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)(?:@(?P<range>.+))?")
+_GIT_ALIAS = re.compile(
+    r"(?:github:|gitlab:|bitbucket:|git://|git\+https://|git\+ssh://)"
+    r"(?P<path>[A-Za-z0-9._/-]+)#(?:semver:)?(?P<range>.+)"
+)
+
+
+def _a_tame_tag(tag: str | None) -> bool:
+    """Whether a version's pre-release or build tag (with its `-` or `+`) is
+    made of identifiers too short to hide a token in."""
+    if not tag:
+        return True
+    mixed = 0
+    for part in re.split(r"[.-]", tag[1:]):
+        if _TAG_DIGITS.fullmatch(part) or _TAG_WORD.fullmatch(part):
+            continue
+        if not _TAG_MIXED.fullmatch(part):
+            return False
+        mixed += 1
+    return mixed <= _TAG_MIXED_MAX
+
+
+def _a_version_range(text: str) -> bool:
+    """Whether `text` is wholly an npm version range (see above)."""
+    text = text.strip()
+    if text in ("*", "x", "X"):
+        return True
+    if not text or len(text) > 256:
+        return False
+    for piece in _RANGE_JOIN.split(text):
+        comparator = _COMPARATOR.match(piece)
+        rest = piece[comparator.end():] if comparator else piece
+        version = _VERSION.fullmatch(rest)
+        if version is None:
+            return False
+        if not (_a_tame_tag(version.group("pre")) and _a_tame_tag(version.group("build"))):
+            return False
+    return True
+
+
+def _a_tame_name(name: str) -> bool:
+    """Whether a package name or a git path is made of word-like parts."""
+    parts = [part for part in _NAME_SPLIT.split(name.lstrip("@")) if part]
+    return bool(parts) and all(
+        _NAME_PART.fullmatch(part) and not _looks_like_a_credential(part) for part in parts
+    )
+
+
+def _is_a_version_specifier(value: str) -> bool:
+    """Whether `value` -- a package manifest's whole value -- is a version
+    specifier: a range, a `workspace:` range, or an npm or git alias of one."""
+    if value.startswith("workspace:"):
+        rest = value[len("workspace:"):]
+        return rest in ("*", "^", "~") or _a_version_range(rest)
+    alias = _NPM_ALIAS.fullmatch(value)
+    if alias is not None:
+        return _a_tame_name(alias["name"]) and (
+            alias["range"] is None or _a_version_range(alias["range"])
+        )
+    alias = _GIT_ALIAS.fullmatch(value)
+    if alias is not None:
+        return _a_tame_name(alias["path"]) and _a_version_range(alias["range"])
+    return _a_version_range(value)
+
+
+def _in_a_package_manifest(path: str) -> bool:
+    return path.replace("\\", "/").rsplit("/", 1)[-1] in PACKAGE_MANIFEST_FILES
+
+
+def _assigns_a_version(match: re.Match[str]) -> bool:
+    """Whether a `key_value_assignment` match's WHOLE value is a version
+    specifier: read from where the value starts to its closing quote on the
+    line, or to the line's end (or a ` #` comment) unquoted."""
+    text = match.string
+    at = match.start() + len(match.group(1))
+    line_end = text.find("\n", at)
+    line = text[at:] if line_end < 0 else text[at:line_end]
+    line = line.rstrip("\r")
+    quote = text[at - 1] if at and text[at - 1] in "\"'" else ""
+    if not quote and line[:1] in ("'", '"'):
+        quote, line = line[0], line[1:]
+    if quote:
+        close = line.find(quote)
+        if close < 0:
+            return False
+        value, after = line[:close], line[close + 1:]
+        # What follows is the line's end, or what ends a JSON or YAML value;
+        # a key after it is a match of its own, judged on its own.
+        if after.strip() and after.lstrip()[0] not in ",}:":
+            return False
+    else:
+        value = line.split(" #", 1)[0].strip()
+    return "\\" not in value and _is_a_version_specifier(value)
 
 
 def credential_in(path: str, added: str) -> CredentialHit | None:
@@ -765,6 +929,7 @@ def credential_in(path: str, added: str) -> CredentialHit | None:
     if not added:
         return None
     in_tests = is_test_path(path)
+    in_manifest = _in_a_package_manifest(path)
     for rule in CREDENTIAL_RULES:
         if rule.apply is not None:  # the private-key block
             # Main's rule, in every path and tier: refused exactly when
@@ -778,6 +943,8 @@ def credential_in(path: str, added: str) -> CredentialHit | None:
             if start and (added[start - 1].isalnum() or added[start - 1] == "_"):
                 continue
             if _match_counts(rule, match, in_tests):
+                if in_manifest and rule is CREDENTIAL_KEY_VALUE and _assigns_a_version(match):
+                    continue
                 return CredentialHit(rule.name, start)
     at = _headerless_key_at(added)
     if at is not None:
@@ -930,8 +1097,7 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     plausible password. The specific families (AWS keys, private keys, JWTs, provider tokens) and the
     registered literals count wherever they appear.
     """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
+    prefix, value = _value_split(match)
     # A backtick opens a literal too (`_ends_the_value` already reads one as a
     # quoted value); without it `` secret = `x\` <token>` `` was never counted.
     if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):

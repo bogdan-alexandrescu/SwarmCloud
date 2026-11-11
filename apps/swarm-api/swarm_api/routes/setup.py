@@ -18,6 +18,8 @@ DAYONE-SETUP-API-1, part of #2688).
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
     POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api (routes/addon_probe.py)
+    POST /v1/admin/setup/plugins/skip             skip the optional plugin step (`console/plugins_step`)
+    DELETE /v1/admin/setup/plugins/skip           undo the skip ("Add one anyway")
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM
@@ -64,6 +66,16 @@ publisher is off the first-team step says it waits (`steps.first_team.state
 nothing, and for one person the personal workspace is not filed: the page's
 `personal.reason` is `publishing_off` until it is.
 
+THE OPTIONAL PLUGIN STEP (docs/design/managed-plugins.md §15.1, the owner's
+Q15 of 6 November 2026). `steps.plugins` is derived on every read from the
+plugin catalogue (`pluginstore`, read only): `done` once an active install
+that is not bundled exists, platform or any workspace's own; `skipped` when a
+platform admin skipped it and none exists; else `todo`. The two bundled
+installs (§1.4) never count; `bundled` names the active ones, which the
+console's panel lists as installed (empty when none). A skip is `console/plugins_step`, created and
+removed with its `admin_audit` row in the same transaction. It is optional:
+`finish` and the engine's readiness never read it.
+
 No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
@@ -83,6 +95,7 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .. import install_record as ir
+from .. import pluginstore as ps
 from .. import refusals, roles
 from .. import setup_links as sl
 from .. import workspaces as ws
@@ -93,9 +106,11 @@ from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
+from ..judgment import settings_mac
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
 from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
+from ..voice import settings as vsettings
 from ..setup_github import (
     GitHubSetupApi,
     ManifestFlow,
@@ -1031,6 +1046,64 @@ def engine_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
     return {**engine, "verify": verify}
 
 
+#: The optional plugin step's key in `steps`, its audit actions and the
+#: `target` they name (managed-plugins §15.1).
+PLUGINS_STEP = "plugins"
+AUDIT_STEP_SKIPPED = "setup_step_skipped"
+AUDIT_STEP_UNSKIPPED = "setup_step_unskipped"
+PLUGINS_DONE = "done"
+PLUGINS_SKIPPED = "skipped"
+#: The design's word for a line not yet done (§15.1), which the console's
+#: checklist reads; the first-team and invites steps predate it with `to_do`.
+PLUGINS_TODO = "todo"
+
+
+def _bundled(install: dict[str, Any]) -> bool:
+    """A bundled install (§1.4.1): there without anyone adding it. Its id is
+    reserved (`builtin:<name>`), it is `built_in` and its build is the image."""
+    return (bool(install.get("built_in")) or install.get("build") == "image"
+            or str(install.get("install_id") or "").startswith("builtin:"))
+
+
+def _active_installs(ctx: AppContext) -> list[dict[str, Any]]:
+    """Every active install, platform first then each workspace's. Only
+    installs whose MAC verifies are read (`PluginStore.installs`), so a
+    hand-written document counts for nothing; with no settings key, none does."""
+    store = ps.PluginStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
+    return [i for scope in (ps.PLATFORM, ps.WORKSPACE) for i in store.installs(scope)
+            if i.get("state") == ps.STATE_ACTIVE]
+
+
+def added_plugins(installs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every active install a person added, as the step lists them."""
+    return [{"install_id": i["install_id"], "name": i.get("name"),
+             "display_name": i.get("display_name") or i.get("name"),
+             "scope": i.get("scope"), "tenant_id": i.get("tenant_id")}
+            for i in installs if not _bundled(i)]
+
+
+def bundled_plugins(installs: list[dict[str, Any]]) -> list[str]:
+    """The active bundled installs' names, once each, in the store's order."""
+    names = [str(i.get("name") or i["install_id"]) for i in installs if _bundled(i)]
+    return list(dict.fromkeys(names))
+
+
+def plugins_step_view(ctx: AppContext, record: ir.InstallRecord) -> dict[str, Any]:
+    """The optional ninth line: never needed, its state derived on each read;
+    an added plugin wins over a skip."""
+    installs = _active_installs(ctx)
+    added = added_plugins(installs)
+    skipped = record.read(record.console_path(ir.PLUGINS_STEP))
+    state = PLUGINS_DONE if added else PLUGINS_SKIPPED if skipped is not None else PLUGINS_TODO
+    return {"needed": False, "optional": True, "state": state, "count": len(added),
+            "added": added, "skipped": skipped, "bundled": bundled_plugins(installs)}
+
+
+def _step_audit(action: str, record: ir.InstallRecord, by: str, at: datetime) -> dict[str, Any]:
+    return {"action": action, "by": by, "at": at, "target": PLUGINS_STEP,
+            "detail": {"step": PLUGINS_STEP, "env": record.env}}
+
+
 @router.get("", dependencies=[Depends(admin_auth)])
 def setup_state(
     request: Request,
@@ -1080,7 +1153,8 @@ def setup_state(
         "engine": engine_view(engine),
         "mode": mode,
         "sizing": sizing_view(engine),
-        "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
+        "steps": {**steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
+                  PLUGINS_STEP: plugins_step_view(ctx, record)},
         "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
@@ -1100,6 +1174,36 @@ def setup_state(
         "typical_waits": TYPICAL_WAITS,
         "passes": passes_view(engine),
     }
+
+
+@router.post("/plugins/skip", dependencies=[Depends(admin_auth)])
+def skip_plugins_step(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """Skip the optional plugin step: `console/plugins_step` and its
+    `setup_step_skipped` row, in one transaction. Skipping again changes
+    nothing and audits nothing."""
+    now = ctx.now()
+    doc, _created = record.create(record.console_path(ir.PLUGINS_STEP),
+                                  {"skipped_at": now, "skipped_by": caller.email},
+                                  audit=_step_audit(AUDIT_STEP_SKIPPED, record, caller.email, now))
+    return {"plugins": plugins_step_view(ctx, record), "skipped": doc}
+
+
+@router.delete("/plugins/skip", dependencies=[Depends(admin_auth)])
+def undo_plugins_skip(
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """Undo the skip ("Add one anyway"): `console/plugins_step` removed with
+    its `setup_step_unskipped` row, in one transaction; with no skip there,
+    nothing is written or audited."""
+    removed = record.delete(record.console_path(ir.PLUGINS_STEP),
+                            audit=_step_audit(AUDIT_STEP_UNSKIPPED, record, caller.email, ctx.now()))
+    return {"plugins": plugins_step_view(ctx, record), "removed": removed}
 
 
 class SignInClient(StrictModel):
@@ -1555,12 +1659,28 @@ def start_verify_runs(
 
 
 class LinkCreate(StrictModel):
-    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key"]
+    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key", "api-key"]
     #: The pool account's label, the add-on's name; for `team-git`, the team;
-    #: for `voice-api-key`, the label the key's account gets in the Voice it pool.
+    #: for `voice-api-key`, the label the key's account gets in the Voice it pool;
+    #: for `api-key`, the label the key's account gets in the account pool.
     label: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
     #: The person the link is for: their verified email opens it.
     owner: str = Field(min_length=3, max_length=320)
+    #: `api-key` only, and required there: the vendor (`sl.API_KEY_PROVIDERS`).
+    provider: Literal["anthropic-api", "openai-api"] | None = None
+    #: `api-key` only: the workspace that will own the key. Unset: the minting
+    #: admin's own workspace. Recorded at mint; the redeem never names one.
+    workspace: str | None = Field(default=None, min_length=1, max_length=64,
+                                  pattern=r"^[a-z0-9][a-z0-9-]*$")
+    #: `api-key` only: the key also serves Voice it (§4.6), a platform admin's
+    #: choice, which minting already requires.
+    share_with_voice_it: bool = False
+
+
+#: The fixed reason an `api-key` redeem the broker refused is answered with
+#: (the established `validation_failed` code, its `detail.reason`; a new 4xx
+#: code would ship report-only behind `swarm_api.refusals`).
+API_KEY_REFUSED = "api_key_refused"
 
 
 def _is_member(directory: MembershipResolver | None, email: str, group: str) -> bool:
@@ -1584,14 +1704,18 @@ def mint_link(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """One route, four kinds (review finding 21). The token is in this answer
+    """One route, five kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
 
     `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
-    minting admin's own: `owner` must be the caller, and the account is filed
-    under the caller's own resolved workspace, recorded now so the redeem
-    cannot be pointed at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
+    minting admin's own: `owner` must be the caller. A first key is filed
+    under the caller's own resolved workspace; a key that replaces the
+    dedicated Voice it key under that key's owner workspace, as the broker's
+    account says, so an admin of another workspace replaces it rather than
+    adding a second. Either is recorded now so the redeem cannot be pointed
+    at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
 
     For one person (decision 7) a pool account is owned by the installer's
     personal workspace and its link is the installer's alone, and the
@@ -1600,8 +1724,14 @@ def mint_link(
     tenant_id: str | None = None
     team_id: str | None = None
     progress_path: str | None = None
+    if body.kind == sl.API_ACCOUNT:
+        return _mint_api_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+    if body.provider is not None or body.workspace is not None or body.share_with_voice_it:
+        raise ValidationFailed(f"provider, workspace and share_with_voice_it are an "
+                               f"{sl.API_ACCOUNT} link's; a {body.kind} link takes none")
     if body.kind == sl.VOICE_API_KEY:
-        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links,
+                                    pool=pool)
     engine = record.read_engine()
     personal = None
     if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
@@ -1658,16 +1788,32 @@ def mint_link(
 
 
 def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
-                         links: sl.SetupLinks) -> dict:
+                         links: sl.SetupLinks, pool: AccountPool) -> dict:
     """A `voice-api-key` link, for the minting platform admin alone.
 
     `admin_auth` has already refused anyone but a platform admin. The owner
     named in the body must BE that admin: a link another person could open
-    would let the key be pasted by someone the console never asked."""
+    would let the key be pasted by someone the console never asked.
+
+    The workspace the key is filed under is the dedicated key's owner when
+    the broker's platform-wide listing names one (a replace), else the
+    admin's own (a first key). A listing that could not be read mints
+    nothing (503): filing a replace under the admin's workspace would add a
+    second dedicated key instead of replacing the one there is."""
     if caller.auth is None or owner != caller.email.strip().lower():
         raise Forbidden("a Voice it API key link is for the platform admin who makes it; "
                         "name yourself as its owner")
-    tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    try:
+        listing = pool.voice_it_accounts()
+    except Exception as exc:  # noqa: BLE001 -- the class name only
+        log.warning("the broker could not be read for a Voice it key link (%s)",
+                    type(exc).__name__)
+        raise UpstreamUnavailable("the account pool could not say whether Voice it has a "
+                                  "dedicated key; no link was made, try again") from None
+    dedicated = vsettings.dedicated_account(listing)
+    replaced = dedicated.get("owner_tenant") if dedicated is not None else None
+    tenant_id = (replaced if isinstance(replaced, str) and replaced
+                 else ctx.submissions.tenant_for(caller.auth).tenant_id)
     token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
                              tenant_id=tenant_id)
     path = sl.FORMS[body.kind].format(token=token)
@@ -1678,10 +1824,46 @@ def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, c
             "expires_at": link["expires_at"].isoformat()}
 
 
+def _mint_api_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
+                       links: sl.SetupLinks) -> dict:
+    """An `api-key` link (docs/design/llm-providers.md §4.1), for the person
+    named, often the one who holds the vendor account.
+
+    `admin_auth` has already refused anyone but a platform admin. The owning
+    workspace is fixed HERE, from the body's `workspace` (which must exist) or
+    the admin's own, and stored on the link: the redeem takes no workspace, so
+    a link minted for one workspace cannot file a key under another
+    (invariant 9). It lasts ten minutes (`sl.API_KEY_TTL`)."""
+    if body.provider is None:
+        raise ValidationFailed(f"an {sl.API_ACCOUNT} link names its vendor: provider is one of "
+                               + ", ".join(sl.API_KEY_PROVIDERS))
+    if body.workspace is not None:
+        if ctx.submissions.workspaces.get(body.workspace) is None:
+            raise NotFound(f"no workspace {body.workspace!r}")
+        tenant_id = body.workspace
+    elif caller.auth is not None:
+        tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    else:
+        raise ValidationFailed(f"name the workspace that will own the key: an {sl.API_ACCOUNT} "
+                               "link needs one")
+    token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
+                             tenant_id=tenant_id,
+                             extra={"provider": body.provider,
+                                    "share_with_voice_it": body.share_with_voice_it})
+    path = sl.FORMS[body.kind].format(token=token)
+    base = console_origin(ctx.settings.console_url)
+    log.info("minted a setup link kind=%s label=%s provider=%s", body.kind, body.label,
+             body.provider)
+    return {"kind": body.kind, "label": body.label, "owner": owner, "tenant": tenant_id,
+            "provider": body.provider, "share_with_voice_it": body.share_with_voice_it,
+            "url": f"{base}{path}" if base else None, "path": path,
+            "expires_at": link["expires_at"].isoformat()}
+
+
 class LinkRedeem(StrictModel):
     token: str = Field(min_length=16, max_length=128)
-    #: The team git slot's, the add-on's or the Voice it API key's value, for
-    #: those kinds only. Write-only: no answer, log line or document carries it.
+    #: The team git slot's, the add-on's, the Voice it API key's or the API
+    #: key's value, for those kinds only. Write-only: no answer, log line or document carries it.
     value: str | None = Field(default=None, min_length=1, max_length=16384)
 
 
@@ -1715,7 +1897,16 @@ def redeem_link(
 
     The two refusals that keep the link unused, the 409 and the missing
     value's 422, carry its `expires_at` (ISO 8601, universal time) so the
-    page shows the time left. Only the named person reaches them (`peek`
+    page shows the time left.
+
+    `api-key` is opened by the person it names, with its value, which is
+    forwarded once to the broker's API key registration under the workspace
+    the link recorded. The link is consumed BEFORE the forward, so two racing
+    submits reach the broker at most once; a key the broker refuses (its shape,
+    or the vendor's answer) or a broker that does not answer REOPENS it, and
+    the refusal is a 422 with `detail.reason` `api_key_refused`.
+
+    Only the named person reaches them (`peek`
     checks the owner first); the 404 for a used, expired or unknown link
     stays one answer with no expiry, so a probe learns nothing."""
     peeked = links.peek(body.token, email=auth.email)
@@ -1723,6 +1914,9 @@ def redeem_link(
     if kind == sl.VOICE_API_KEY:
         return _redeem_voice_key(body, auth, links=links, pool=pool)
     expires_at = peeked["expires_at"].astimezone(timezone.utc).isoformat()
+    if kind == sl.API_ACCOUNT:
+        return _redeem_api_key(body, auth, peeked, expires_at=expires_at, links=links,
+                               pool=pool)
     if kind == sl.POOL_ACCOUNT:
         tenant_id = str(peeked.get("tenant_id") or "")
         state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
@@ -1786,6 +1980,50 @@ def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLin
     return {"kind": sl.VOICE_API_KEY, "label": label, "tenant": tenant_id,
             "account_id": account_id or f"{tenant_id}:{label}",
             "provider": VOICE_API_KEY_PROVIDER, "pool": "voice-it", "written": True}
+
+
+def _redeem_api_key(body: LinkRedeem, auth: AuthContext, peeked: dict[str, Any], *,
+                    expires_at: str, links: sl.SetupLinks, pool: AccountPool) -> dict:
+    """Forward a developer API key to the broker, once, and keep nothing.
+
+    The value is in this frame alone: not logged, not in the link's record, not
+    in the answer, and not in a refusal (the broker's sentences never quote a
+    key, and the sentence is scrubbed of it all the same). What is logged and
+    answered is the link's kind, label, vendor and workspace."""
+    if body.value is None:
+        raise ValidationFailed(f"an {sl.API_ACCOUNT} link is opened with its key; the link is "
+                               "still unused, open it again with the key",
+                               detail={"expires_at": expires_at})
+    provider = str(peeked.get("provider") or "")
+    if provider not in sl.API_KEY_PROVIDERS or not peeked.get("tenant_id"):
+        # A record no mint of this kind writes: refused as a dead link.
+        raise sl.LinkInvalid("this link is not valid: ask the admin for a new one")
+    link = links.redeem(body.token, email=auth.email)
+    label = str(link.get("label") or "")
+    tenant_id = str(link.get("tenant_id") or "")
+    value = body.value.strip()
+    try:
+        result = pool.register_api_key(
+            owner_tenant=tenant_id, label=label, provider=provider, credential=value,
+            added_by=auth.email, share_with_voice_it=bool(link.get("share_with_voice_it")))
+    except Exception as exc:
+        reopened = links.reopen(body.token, used_at=link["used_at"])
+        log.info("a setup link's key was not added kind=%s label=%s provider=%s code=%s "
+                 "reopened=%s", sl.API_ACCOUNT, label, provider,
+                 getattr(exc, "code", type(exc).__name__), reopened)
+        if isinstance(exc, ValidationFailed):
+            why = exc.message.replace(value, "[the key]") if value else exc.message
+            raise ValidationFailed(
+                f"the key was not added: {why}. The link is still unused; open it again "
+                "with the right key",
+                detail={"reason": API_KEY_REFUSED, "expires_at": expires_at}) from None
+        raise
+    account = result.get("account") if isinstance(result, dict) else None
+    account_id = (account or {}).get("account_id") if isinstance(account, dict) else None
+    log.info("a setup link registered its account kind=%s label=%s provider=%s tenant=%s",
+             sl.API_ACCOUNT, label, provider, tenant_id)
+    return {"kind": sl.API_ACCOUNT, "label": label, "tenant": tenant_id, "provider": provider,
+            "account_id": account_id or f"{tenant_id}:{label}", "written": True}
 
 
 # --------------------------------------------------------------------------

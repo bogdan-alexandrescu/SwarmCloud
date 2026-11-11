@@ -12,7 +12,9 @@ plugin-catalogue` for one workspace's private plugins):
     GET    {base}/installs/{install_id}/versions    an install and its versions
     POST   {base}/installs/{install_id}/update      a candidate version, by the same intake path
     GET    {base}/installs/{install_id}/diff        current -> a candidate, and the diff's digest
-    POST   {base}/installs/{install_id}/apply       make the candidate current (quotes the digest)
+    GET    {base}/installs/{install_id}/usage       who uses it, for Remove to show (section 9.2)
+    POST   {base}/installs/{install_id}/apply       make the candidate current (quotes the digest);
+                                                    a bundled install's starts its bundle build
     DELETE {base}/installs/{install_id}?confirm=    remove it: later submissions naming it are refused
 
     POST   /v1/internal/plugin-intake/report        the intake's callback (Pub/Sub push, OIDC)
@@ -52,7 +54,17 @@ there, and refused once it is past its deadline with no report: nothing
 waits on the job (invariant 4). Finishing binds the report to the MAC'd
 intake document, re-hashes the staged tar, copies it by digest into the
 scope's prefix (`ifGenerationMatch=0`) and writes the version
-(swarm_api.pluginstore).
+(swarm_api.pluginstore). For a bundled install's candidate it first keeps
+the quarantined source archive the job checked, re-hashed, at
+`platform/sources/<sha256>.tar` (once per digest), where the bundle check
+reads it back (section 1.4.3).
+
+BUNDLED INSTALLS (sections 1.4.1, 1.4.8). With SWARM_BUILTINS_MANAGED on,
+the first catalogue read seeds `builtin:gstack` and `builtin:security-audit`
+(plugincatalogue.seed), listed among the platform installs. Update works on
+them as on any plugin (its repository named by the admin while the current
+version names none) and Apply starts a bundle build; Remove is refused
+(`plugin_built_in`): a workspace disallows one instead.
 
 UPDATE (section 9.1, the owner's Q4). A candidate never runs until one admin
 applies it, quoting the digest of the diff GET answered, so what applies is
@@ -76,9 +88,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Iterable, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, TypeVar
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import Field
 
@@ -90,10 +102,12 @@ from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import Forbidden, NotFound, RoleAdminRequired, Unauthenticated, UpstreamUnavailable
 from ..judgment import MAC_FIELD, block_verifies, settings_mac
 from ..mergesettings import group_admin, is_owner
-from ..plugincatalogue import BUILT_IN_PREFIX, builtin_entries
+from .. import pluginbundle
+from ..plugincatalogue import BUILT_IN_PREFIX, builtin_entries, builtins_managed, ensure_seeded
 from ..qasettings import authorize_read, can_edit
 from ..roles import ADMIN
 from ..schemas import StrictModel
+from . import plugin_bundles
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +171,35 @@ class SourceUnreachable(Exception):
     """GitHub did not answer as expected. Carries no upstream text."""
 
 
+#: Why an intake's report was not finished, as the log names it: fixed codes
+#: beside the exception's class, never its message (which can carry report
+#: content or a transport's text).
+REASON_STORAGE = "storage_unavailable"
+REASON_REPORT = "report_invalid"
+REASON_UNEXPECTED = "finish_failed"
+
+
+class IntakeUnavailable(Exception):
+    """The plugins bucket could not be read or copied while finishing an
+    intake. Transient: the intake stays running, the callback answers 503 so
+    Pub/Sub redelivers, the console's status read answers 503."""
+
+    def __init__(self, reason: str, cause: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.cause = cause
+
+
+_T = TypeVar("_T")
+
+
+def _storage(step: Callable[[], _T]) -> _T:
+    try:
+        return step()
+    except Exception as exc:  # noqa: BLE001 -- the message may carry the transport's text; never passed on
+        raise IntakeUnavailable(REASON_STORAGE, type(exc).__name__) from None
+
+
 class PluginBucket(Protocol):
     def put_quarantine(self, intake_id: str, chunks: Iterable[bytes], limit: int) -> int: ...
 
@@ -169,6 +212,8 @@ class PluginBucket(Protocol):
     def staged_digest(self, intake_id: str) -> tuple[str, int, int] | None: ...
 
     def pin(self, intake_id: str, object_name: str, generation: int, sha256: str) -> bool: ...
+
+    def keep_source(self, intake_id: str, object_name: str, sha256: str) -> bool: ...
 
     def clean(self, intake_id: str) -> None: ...
 
@@ -257,7 +302,10 @@ class GcsPluginBucket:
         if blob is None:
             return None
         digest, size = hashlib.sha256(), 0
-        with blob.open("rb", generation=blob.generation, chunk_size=self.CHUNK) as handle:
+        # get_blob's blob already names its generation, so the reader reads
+        # exactly that one; BlobReader takes no `generation` argument (it
+        # raises ValueError for one), only the generation preconditions.
+        with blob.open("rb", chunk_size=self.CHUNK, if_generation_match=blob.generation) as handle:
             while True:
                 chunk = handle.read(self.CHUNK)
                 if not chunk:
@@ -284,10 +332,44 @@ class GcsPluginBucket:
         if existing is None:
             return False
         digest = hashlib.sha256()
-        with existing.open("rb", generation=existing.generation, chunk_size=self.CHUNK) as handle:
+        with existing.open("rb", chunk_size=self.CHUNK, if_generation_match=existing.generation) as handle:
             for chunk in iter(lambda: handle.read(self.CHUNK), b""):
                 digest.update(chunk)
         return digest.hexdigest() == sha256
+
+    def keep_source(self, intake_id: str, object_name: str, sha256: str) -> bool:
+        """Copy the quarantined archive the job checked to `object_name`,
+        once: re-hashed first, at the generation hashed; a copy already
+        there (`ifGenerationMatch=0` failed) is read back and compared. False
+        when either digest is not `sha256`."""
+        import hashlib
+
+        from google.api_core import exceptions as gexc
+
+        bucket = self._b()
+
+        def digest_of(blob: Any) -> str:
+            digest = hashlib.sha256()
+            with blob.open("rb", chunk_size=self.CHUNK, if_generation_match=blob.generation) as handle:
+                for chunk in iter(lambda: handle.read(self.CHUNK), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        existing = bucket.get_blob(object_name)
+        if existing is not None:
+            return digest_of(existing) == sha256
+        source = bucket.get_blob(_quarantine(intake_id))
+        if source is None or digest_of(source) != sha256:
+            return False
+        try:
+            bucket.copy_blob(source, bucket, object_name, if_generation_match=0,
+                             source_generation=source.generation)
+            return True
+        except gexc.PreconditionFailed:
+            pass
+        # Another finish of the same archive wrote it first: checked.
+        existing = bucket.get_blob(object_name)
+        return existing is not None and digest_of(existing) == sha256
 
     def clean(self, intake_id: str) -> None:
         from google.api_core import exceptions as gexc
@@ -485,6 +567,11 @@ class UploadBody(StrictModel):
 class UpdateBody(StrictModel):
     #: A GitHub or marketplace install: the ref to resolve (default: its own).
     ref: str | None = Field(default=None, max_length=200)
+    #: A bundled install only (section 1.4.3): the GitHub repository the new
+    #: version comes from. Its seed names none (the release image's pins
+    #: carry no upstream location), so the first update names one; later
+    #: ones default to the current version's.
+    repository: str | None = Field(default=None, max_length=141)
     #: An upload install: the new archive.
     upload: UploadBody | None = None
     #: Default: the overlay the current version was installed with.
@@ -717,20 +804,23 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
     write the version. None while there is no report yet."""
     intake_id = intake["intake_id"]
     bucket = _bucket(request, ctx)
-    raw = bucket.read_report(intake_id, ps.MAX_REPORT_BYTES)
+    raw = _storage(lambda: bucket.read_report(intake_id, ps.MAX_REPORT_BYTES))
     if raw is None:
         return None
     try:
         report = ps.parse_report(raw, intake)
     except ps.PluginRefused as refusal:
+        log.warning("plugin intake report refused intake_id=%s reason=%s (PluginRefused)", intake_id, refusal.code)
         ended = store.refuse(intake_id, refusal.code)
         _clean(request, ctx, intake_id)
         return ended
+    except _UNUSABLE as exc:
+        return _unusable(request, ctx, store, intake_id, exc)
     if report["outcome"] == "refused":
         ended = store.refuse(intake_id, report["code"], entry_index=report["entry_index"])
         _clean(request, ctx, intake_id)
         return ended
-    staged = bucket.staged_digest(intake_id)
+    staged = _storage(lambda: bucket.staged_digest(intake_id))
     if staged is None or staged[0] != report["runnable_sha256"] or staged[1] != report["runnable_bytes"]:
         ended = store.refuse(intake_id, "intake_digest_mismatch")
         _clean(request, ctx, intake_id)
@@ -740,8 +830,19 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
         ended = store.refuse(intake_id, "plugin_name_taken")
         _clean(request, ctx, intake_id)
         return ended
+    if _keeps_source(store, intake):
+        # A bundled install's candidate (section 1.4.3): the source archive
+        # the job checked is kept by digest, once, where the bundle check
+        # reads it back (pluginbundle.source_object) to compare the
+        # security-audit layer against it.
+        kept = _storage(lambda: bucket.keep_source(
+            intake_id, pluginbundle.source_object(report["source_sha256"]), report["source_sha256"]))
+        if not kept:
+            ended = store.refuse(intake_id, "intake_digest_mismatch")
+            _clean(request, ctx, intake_id)
+            return ended
     object_name = f"{ps.scope_prefix(intake['scope'], intake.get('tenant_id'))}/{report['runnable_sha256']}.tar"
-    if not bucket.pin(intake_id, object_name, staged[2], report["runnable_sha256"]):
+    if not _storage(lambda: bucket.pin(intake_id, object_name, staged[2], report["runnable_sha256"])):
         ended = store.refuse(intake_id, "pinned_copy_differs")
         _clean(request, ctx, intake_id)
         return ended
@@ -749,8 +850,33 @@ def finish_intake(request: Request, ctx: AppContext, store: ps.PluginStore,
         store.pin(intake_id, {**report, "overlay_requested": intake.get("overlay")}, object_name)
     except ps.PluginRefused as refusal:
         store.refuse(intake_id, refusal.code)
+    except _UNUSABLE as exc:
+        return _unusable(request, ctx, store, intake_id, exc)
     _clean(request, ctx, intake_id)
     return store.intake(intake_id)
+
+
+def _keeps_source(store: ps.PluginStore, intake: Mapping[str, Any]) -> bool:
+    """An update intake of a bundled install, the one kind whose source
+    archive is kept: its version is built from that archive (section 1.4.3)."""
+    install_id = intake.get("install_id")
+    return intake.get("scope") == ps.PLATFORM and isinstance(install_id, str) \
+        and ps.is_bundled(store.install(install_id))
+
+
+#: What a report swarm-api cannot use raises past `parse_report`: the same
+#: bytes raise it again, so the intake ends refused instead of being retried.
+#: A storage or Firestore failure is none of these and stays transient.
+_UNUSABLE = (ValueError, TypeError, KeyError, RecursionError)
+
+
+def _unusable(request: Request, ctx: AppContext, store: ps.PluginStore, intake_id: str,
+              exc: BaseException) -> dict[str, Any] | None:
+    log.warning("plugin intake report refused intake_id=%s reason=%s (%s)",
+                intake_id, REASON_REPORT, type(exc).__name__)
+    ended = store.refuse(intake_id, REASON_REPORT)
+    _clean(request, ctx, intake_id)
+    return ended or store.intake(intake_id)
 
 
 def intake_view(intake: Mapping[str, Any]) -> dict[str, Any]:
@@ -782,9 +908,11 @@ def _intake_for(request: Request, ctx: AppContext, store: ps.PluginStore, scope:
 
 
 def _install_for(store: ps.PluginStore, scope: Scope, install_id: str, *, active: bool = False) -> dict[str, Any]:
-    if install_id.startswith(BUILT_IN_PREFIX):
-        raise ps.PluginRefused("plugin_built_in")
     install = store.install(install_id)
+    # A `builtin:` id is a code entry, refused, unless it is the bundled
+    # install seeded with the built-ins switch on (section 1.4.1).
+    if install_id.startswith(BUILT_IN_PREFIX) and not ps.is_bundled(install):
+        raise ps.PluginRefused("plugin_built_in")
     if install is None or not scope.owns(install):
         raise NotFound("no such plugin install", detail={"install_id": install_id})
     if active and install.get("state") != ps.STATE_ACTIVE:
@@ -803,10 +931,31 @@ def _allowed_ids(ctx: AppContext, tenant_id: str) -> set[str]:
     return {n for n in block.get("allowed") or () if isinstance(n, str)}
 
 
+def _is_allowed(install: Mapping[str, Any], allowed: set[str]) -> bool:
+    """Allowed by id, or a bundled install by the name every Allowed list
+    already holds (section 1.4.1: no workspace setting is rewritten)."""
+    return install["install_id"] in allowed or (ps.is_bundled(install) and install.get("name") in allowed)
+
+
 def _views(store: ps.PluginStore, installs: Iterable[Mapping[str, Any]], *,
            allowed: set[str] | None = None) -> list[dict[str, Any]]:
-    return [ps.install_view(i, store.current(i), allowed=None if allowed is None else i["install_id"] in allowed)
+    return [ps.install_view(i, store.current(i), allowed=None if allowed is None else _is_allowed(i, allowed))
             for i in installs if i.get("state") == ps.STATE_ACTIVE]
+
+
+def _built_in(store: ps.PluginStore) -> list[dict[str, object]]:
+    """The code entries, as today, with the built-ins switch off. On, the
+    two bundled installs are seeded on this read (section 1.4.1) and listed
+    among the platform installs instead, so there is no code entry to show.
+    With no settings key nothing can be seeded: the code entries stay."""
+    if not builtins_managed():
+        return builtin_entries()
+    try:
+        ensure_seeded(store)
+    except ps.PluginRefused as refusal:
+        log.warning("bundled plugins not seeded reason=%s", refusal.code)
+        return builtin_entries()
+    return []
 
 
 def _versions_answer(store: ps.PluginStore, install: Mapping[str, Any]) -> dict[str, Any]:
@@ -834,6 +983,11 @@ def _update(request: Request, ctx: AppContext, scope: Scope, install_id: str, bo
     current = store.current(install) or {}
     overlay = _overlay_text(body.overlay) if body.overlay is not None else current.get("overlay_requested")
     source = install.get("source") or {}
+    if ps.is_bundled(install):
+        return _update_bundled(request, ctx, scope, install, current, body, overlay, by)
+    if body.repository is not None:
+        # Only a bundled install's update names its repository.
+        raise ps.PluginRefused("repository_invalid")
     if source.get("kind") == "upload":
         if body.upload is None:
             raise ps.PluginRefused("upload_missing")
@@ -847,6 +1001,30 @@ def _update(request: Request, ctx: AppContext, scope: Scope, install_id: str, bo
         requested = SourceBody(kind="github", repository=source.get("repository") or "",
                                ref=body.ref or source.get("ref") or "", subdir=source.get("subdir") or "")
     return _fetch_and_start(request, ctx, scope, install_id=install_id, source=requested,
+                            overlay=overlay, by=by)
+
+
+def _update_bundled(request: Request, ctx: AppContext, scope: Scope, install: Mapping[str, Any],
+                    current: Mapping[str, Any], body: UpdateBody, overlay: str | None, by: str) -> dict[str, Any]:
+    """An update of a bundled install (section 1.4.3): the same intake as any
+    plugin's, from an upload or a GitHub repository at a ref. The repository
+    is the body's, else the current version's when that came from GitHub;
+    the seeded first version names none. Applying the candidate starts its
+    bundle build (platform_apply)."""
+    if body.upload is not None:
+        upload = body.upload.model_copy(update={"overlay": None})
+        return _open_upload(request, ctx, scope, install_id=install["install_id"], body=upload,
+                            overlay=overlay, by=by)
+    previous = current.get("source") if isinstance(current.get("source"), Mapping) else {}
+    from_github = previous.get("kind") == "github"
+    repository = body.repository or (previous.get("repository") if from_github else None)
+    if not repository:
+        raise ps.PluginRefused("repository_invalid")
+    if not body.ref:
+        raise ps.PluginRefused("ref_invalid")
+    subdir = previous.get("subdir") if from_github and repository == previous.get("repository") else ""
+    requested = SourceBody(kind="github", repository=repository, ref=body.ref, subdir=subdir or "")
+    return _fetch_and_start(request, ctx, scope, install_id=install["install_id"], source=requested,
                             overlay=overlay, by=by)
 
 
@@ -868,6 +1046,10 @@ def _apply(ctx: AppContext, scope: Scope, install_id: str, body: ApplyBody, by: 
 def _remove(ctx: AppContext, scope: Scope, install_id: str, confirm: str | None, by: str) -> dict[str, Any]:
     store = _store(ctx)
     install = _install_for(store, scope, install_id, active=True)
+    if ps.is_bundled(install):
+        # No Remove (section 1.4.8, Q17): a workspace disallows it instead,
+        # and security_review.py and the step templates naming it keep working.
+        raise ps.PluginRefused("plugin_built_in", install_id=install_id)
     if not confirm:
         raise ps.PluginRefused("confirmation_required", install_id=install_id)
     if confirm != install.get("name"):
@@ -880,7 +1062,12 @@ def _status(request: Request, ctx: AppContext, scope: Scope, intake_id: str) -> 
     store = _store(ctx)
     intake = _intake_for(request, ctx, store, scope, intake_id)
     if intake.get("state") == ps.INTAKE_RUNNING:
-        intake = finish_intake(request, ctx, store, intake) or intake
+        try:
+            intake = finish_intake(request, ctx, store, intake) or intake
+        except IntakeUnavailable as exc:
+            log.warning("plugin intake status not finished intake_id=%s reason=%s (%s)",
+                        intake_id, exc.reason, exc.cause)
+            raise UpstreamUnavailable("the plugin intake report could not be read; try again") from None
     if store.timed_out(intake):
         code = "upload_missing" if intake.get("state") == ps.INTAKE_AWAITING_UPLOAD else "intake_timed_out"
         intake = store.refuse(intake_id, code) or intake
@@ -915,7 +1102,7 @@ def platform_catalogue(auth: AuthContext = Depends(admin_auth), ctx: AppContext 
     store = _store(ctx)
     workspace = [ps.install_view(i, store.current(i)) for i in store.installs(ps.WORKSPACE)
                  if i.get("state") == ps.STATE_ACTIVE]
-    return {"scope": ps.PLATFORM, "built_in": builtin_entries(),
+    return {"scope": ps.PLATFORM, "built_in": _built_in(store),
             "installs": _views(store, store.installs(ps.PLATFORM)),
             # Read-only here except Remove, through the workspace's own route.
             "workspace_installs": workspace, "limits": dict(ps.LIMITS), "can_install": True}
@@ -954,6 +1141,13 @@ def platform_versions(install_id: str, auth: AuthContext = Depends(admin_auth),
     return _versions_answer(store, _install_for(store, PLATFORM_SCOPE, install_id))
 
 
+@router.get(PLATFORM_BASE + "/installs/{install_id}/usage")
+def platform_usage(install_id: str, auth: AuthContext = Depends(admin_auth),
+                   ctx: AppContext = Depends(get_context)) -> dict:
+    store = _store(ctx)
+    return ps.install_usage(ctx.db, _install_for(store, PLATFORM_SCOPE, install_id), store.keys)
+
+
 @router.post(PLATFORM_BASE + "/installs/{install_id}/update", status_code=202)
 def platform_update(install_id: str, body: UpdateBody, request: Request,
                     auth: AuthContext = Depends(admin_auth), ctx: AppContext = Depends(get_context)) -> dict:
@@ -968,8 +1162,15 @@ def platform_diff(install_id: str, version_id: str = Query(max_length=16),
 
 
 @router.post(PLATFORM_BASE + "/installs/{install_id}/apply")
-def platform_apply(install_id: str, body: ApplyBody, auth: AuthContext = Depends(admin_auth),
-                   ctx: AppContext = Depends(get_context)) -> dict:
+def platform_apply(install_id: str, body: ApplyBody, request: Request, response: Response,
+                   auth: AuthContext = Depends(admin_auth), ctx: AppContext = Depends(get_context)) -> dict:
+    # A bundled install's Apply starts its bundle build (section 1.4.3; the
+    # owner's pick on Q21): the same path as the bundle route's Apply, so
+    # `current_version` moves only when that bundle is ready. 202, as there.
+    if ps.is_bundled(_store(ctx).install(install_id)):
+        response.status_code = 202
+        bundled = plugin_bundles.ApplyBody(**body.model_dump())
+        return plugin_bundles.start_bundled_apply(request, ctx, install_id, bundled, _by(auth))
     return _apply(ctx, PLATFORM_SCOPE, install_id, body, _by(auth))
 
 
@@ -987,7 +1188,7 @@ def workspace_catalogue(tenant_id: str, auth: AuthContext = Depends(current_auth
                         ctx: AppContext = Depends(get_context)) -> dict:
     scope, tenant = _workspace_read(auth, ctx, tenant_id)
     store = _store(ctx)
-    return {"scope": ps.WORKSPACE, "tenant_id": tenant_id, "built_in": builtin_entries(),
+    return {"scope": ps.WORKSPACE, "tenant_id": tenant_id, "built_in": _built_in(store),
             "platform_installs": _views(store, store.installs(ps.PLATFORM), allowed=_allowed_ids(ctx, tenant_id)),
             "installs": _views(store, store.installs(ps.WORKSPACE, tenant_id)),
             "limits": dict(ps.LIMITS),
@@ -1029,6 +1230,14 @@ def workspace_versions(tenant_id: str, install_id: str, auth: AuthContext = Depe
     scope, _tenant = _workspace_read(auth, ctx, tenant_id)
     store = _store(ctx)
     return _versions_answer(store, _install_for(store, scope, install_id))
+
+
+@router.get(WORKSPACE_BASE + "/installs/{install_id}/usage")
+def workspace_usage(tenant_id: str, install_id: str, auth: AuthContext = Depends(current_auth),
+                    ctx: AppContext = Depends(get_context)) -> dict:
+    scope, _tenant = _workspace_read(auth, ctx, tenant_id)
+    store = _store(ctx)
+    return ps.install_usage(ctx.db, _install_for(store, scope, install_id), store.keys)
 
 
 @router.post(WORKSPACE_BASE + "/installs/{install_id}/update", status_code=202)
@@ -1122,6 +1331,11 @@ async def intake_report(request: Request) -> dict[str, Any]:
         return await run_in_threadpool(_finish)
     except ps.PluginRefused:
         raise
+    except IntakeUnavailable as exc:
+        log.warning("plugin intake report not processed intake_id=%s reason=%s (%s)",
+                    intake_id, exc.reason, exc.cause)
+        raise UpstreamUnavailable("the plugin intake report could not be processed; it is retried") from None
     except Exception as exc:  # noqa: BLE001 -- 503, so Pub/Sub redelivers
-        log.warning("plugin intake report not processed intake_id=%s (%s)", intake_id, type(exc).__name__)
+        log.warning("plugin intake report not processed intake_id=%s reason=%s (%s)",
+                    intake_id, REASON_UNEXPECTED, type(exc).__name__)
         raise UpstreamUnavailable("the plugin intake report could not be processed; it is retried") from None

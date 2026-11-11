@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
-import { loadAttempts } from './api'
+import { USE_FIXTURES, loadAttempts } from './api'
 import { DECLARED_WORDS, MONO_ADVANCE_EM, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
-import type { Result } from './fetch'
+import { route, write, type Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import type { MarkHue, MarkName } from './marks'
-import { NamedMark, Segmented } from './components'
+import { Button, NamedMark, Segmented } from './components'
+import { FixLoopPill } from './components/StatePill'
+import { useRoleGate } from './Profile'
 import { Id } from './Shell'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
@@ -33,7 +35,22 @@ import {
   type MergeCard,
 } from './stepviews'
 import './styles/workflow-views.css'
-import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
+import {
+  FIX_LOOP_PROFILE,
+  TERMINAL_STATES,
+  bytesLabel,
+  fixLoopOf,
+  fixLoopRoundOf,
+  timeAgo,
+  type AttemptRow,
+  type FixLoopAddRoundsBody,
+  type FixLoopAnswer,
+  type FixLoopEndBody,
+  type Task,
+  type TaskState,
+  type Tone,
+  type WorkflowStep,
+} from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -105,6 +122,13 @@ export function tintClass(look: Pick<StepLook, 'hue'>): string {
 export interface StepRowModel {
   readonly step: WorkflowStep
   readonly taskId: string | null
+  /**
+   * The step's task as the page read it (`GET /v1/workflows/{id}` carries
+   * every step's full row), or null where it was not read. A fix loop's row
+   * reads round k of N and its person's park off it (`fixLoopOf`), so the
+   * table asks for no task of its own.
+   */
+  readonly task: Task | null
   readonly look: StepLook
   readonly times: StepTimes
   readonly ran: Cell
@@ -945,6 +969,139 @@ function inputsRowId(stepId: string): string {
   return `wf-in-${stepId.replace(/[^A-Za-z0-9_-]/g, '_')}`
 }
 
+// ---------------------------------------------------------------------------
+// The fix loop's row (docs/design/fix-loop.md §6.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * A PERSON'S TWO ANSWERS TO A LOOP PARKED FOR THEM (§4.5), the routes lane
+ * FL-DRIVE serves (swarm-api routes/fix_loop.py). The tenant is the session's,
+ * never a parameter; the body is the route's whole model: one round, no note,
+ * or `stop`. The fixture build sends nothing.
+ */
+export async function addFixLoopRound(workflowId: string): Promise<Result<FixLoopAnswer>> {
+  const target = route('/v1/workflows/{id}/fix-loop/rounds', { id: workflowId })
+  if (USE_FIXTURES) return fixtureRefusal()
+  const body: FixLoopAddRoundsBody = { rounds: 1 }
+  return (await write(target, 'POST', body)) as Result<FixLoopAnswer>
+}
+
+export async function endFixLoop(workflowId: string): Promise<Result<FixLoopAnswer>> {
+  const target = route('/v1/workflows/{id}/fix-loop/end', { id: workflowId })
+  if (USE_FIXTURES) return fixtureRefusal()
+  const body: FixLoopEndBody = { outcome: 'stop' }
+  return (await write(target, 'POST', body)) as Result<FixLoopAnswer>
+}
+
+function fixtureRefusal<T>(): Result<T> {
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build answers no fix loop.' },
+  }
+}
+
+/**
+ * ADD A ROUND, OR STOP (§4.5), as buttons on the loop's row while it waits for
+ * a person. What each does is its tooltip; Stop asks once more, since a
+ * stopped loop ends failed and does not come back. A member's controls: a
+ * viewer is shown why not (`useRoleGate`).
+ */
+export function FixLoopActions({ workflowId, onDone }: { workflowId: string; onDone: () => void }) {
+  const [phase, setPhase] = useState<'idle' | 'stop' | 'sending'>('idle')
+  const [error, setError] = useState<string | null>(null)
+  const roleGate = useRoleGate('member', 'answer a fix loop')
+  const send = async (call: (id: string) => Promise<Result<FixLoopAnswer>>) => {
+    if (phase === 'sending') return
+    setPhase('sending')
+    setError(null)
+    const r = await call(workflowId)
+    setPhase('idle')
+    if (r.status === 'error') setError(r.error.message)
+    else onDone()
+  }
+  const busy = phase === 'sending'
+  return (
+    <span className="wf-loop-act" role="group" aria-label="Answer the fix loop">
+      {phase === 'stop' ? (
+        <>
+          <Button
+            size="sm"
+            kind="danger"
+            onClick={() => void send(endFixLoop)}
+            title="The loop ends failed (fix_loop_exhausted); a merge behind it refuses and the pull request stays open."
+          >
+            Stop the loop
+          </Button>
+          <Button size="sm" onClick={() => setPhase('idle')}>
+            Keep it
+          </Button>
+        </>
+      ) : (
+        <>
+          <Button
+            size="sm"
+            kind="primary"
+            busy={busy}
+            disabledReason={roleGate ?? undefined}
+            onClick={() => void send(addFixLoopRound)}
+            title="One more round: a fix of the last verdict's findings, or a re-review of the same head when the last one did not read. No loop runs more than 10."
+          >
+            Add a round
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy}
+            disabledReason={roleGate ?? undefined}
+            onClick={() => setPhase('stop')}
+            title="Accept the last verdict and end the loop."
+          >
+            Stop
+          </Button>
+        </>
+      )}
+      {error !== null && (
+        <span className="wf-loop-err" role="alert" title={error}>
+          not recorded
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** The state a round row's mark stands for, to route its agent link as `agentPath` routes one. */
+const MARK_STATE: Readonly<Partial<Record<StepLook['mark'], TaskState>>> = {
+  queued: 'QUEUED',
+  ready: 'READY',
+  parked: 'PARKED',
+  starting: 'STARTING',
+  running: 'RUNNING',
+  succeeded: 'SUCCEEDED',
+  failed: 'FAILED',
+  dead: 'DEAD_LETTERED',
+  cancelled: 'CANCELLED',
+}
+
+/**
+ * A ROUND ROW'S OWN AGENT (§6.2: "each linking to its own agent"). A round is
+ * an agent in a workflow of its own, appended here as a pointer step, so its
+ * row opens that agent directly. A round with no task yet has no link.
+ */
+function RoundAgentLink({ row }: { row: StepRowModel }) {
+  const round = fixLoopRoundOf(row.step.step_id)
+  if (round === null || row.taskId === null) return null
+  const state = MARK_STATE[row.look.mark]
+  return (
+    <a
+      className="ctl-link wf-round-agent"
+      href={state === undefined ? addressToPath(`work/task/${encodeURIComponent(row.taskId)}`) : agentPath({ id: row.taskId, state })}
+      aria-label={`Open the agent of ${row.step.step_id}`}
+      title={`${round.kind === 'fix' ? 'Fix' : 'Re-review'} round ${round.round}: open its agent`}
+    >
+      ↗
+    </a>
+  )
+}
+
 /**
  * THE SAME STEPS AS ROWS, sortable by what a reader hunting an outlier sorts by
  * (redesign-v2 §2.3: "duration, cost, attempts, state").
@@ -979,10 +1136,16 @@ export function WorkflowTable({
   detail = null,
   head = null,
   title = null,
+  onChanged = () => undefined,
 }: {
   rows: readonly StepRowModel[]
   picked: string | null
   onPick: (stepId: string) => void
+  /**
+   * Read the page again: a person's answer to a fix loop moved its task, and
+   * the row shows the task the page read.
+   */
+  onChanged?: () => void
   /**
    * What the table says about its own figures -- the sampling mark -- drawn
    * in the table's head row, inside its card (walkthrough A: it floated in a
@@ -1066,7 +1229,11 @@ export function WorkflowTable({
           </tr>
         </thead>
         <tbody>
-          {sorted.map((r) => (
+          {sorted.map((r) => {
+            // THE LOOP'S ROUND k OF N AND ITS PARK ARE ON ITS OWN TASK, which the row carries.
+            const loopTask = r.task !== null && r.step.runner_profile === FIX_LOOP_PROFILE ? r.task : undefined
+            const loop = loopTask === undefined ? null : fixLoopOf(loopTask)
+            return (
             <Fragment key={r.step.step_id}>
             <tr
               data-step={r.step.step_id}
@@ -1087,6 +1254,8 @@ export function WorkflowTable({
                 <span className="wf-cell-state" title={r.look.title}>
                   <WfStepMark look={r.look} word />
                 </span>
+                {loop !== null && loopTask !== undefined && <FixLoopPill loop={loop} state={loopTask.state} />}
+                <RoundAgentLink row={r} />
               </td>
               {columns.length === COLUMNS.length && (
                 // A ROW WITH NO WHY PRINTS NO `Why` LABEL (QA G3-32): stacked,
@@ -1120,6 +1289,13 @@ export function WorkflowTable({
                 />
               </td>
             </tr>
+            {loop !== null && loop.waiting && loopTask?.workflow_id != null && (
+              <tr className="wf-xrow" data-loop-for={r.step.step_id}>
+                <td colSpan={columns.length}>
+                  <FixLoopActions workflowId={loopTask.workflow_id} onDone={onChanged} />
+                </td>
+              </tr>
+            )}
             {opened.has(r.step.step_id) && inputsCount(r.inputs) + r.inputs.malformed > 0 && (
               <tr className="wf-xrow">
                 <td colSpan={columns.length}>
@@ -1138,7 +1314,8 @@ export function WorkflowTable({
               </tr>
             )}
             </Fragment>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>

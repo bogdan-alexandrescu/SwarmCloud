@@ -47,7 +47,7 @@ import { colour, contrast, over, probe, resolveSheet, resolveVars, tokenTables, 
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 // The deployment's engine as Settings reads it: GPT-Live unless a test names another; 'pending' is a read not answered yet.
-const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: 'gpt-live' as string | null }))
+const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: 'gpt-live' as string | null, debug: false }))
 const vadMock = vi.hoisted(() => ({
   start: vi.fn(),
   setMic: vi.fn(),
@@ -88,7 +88,7 @@ vi.mock('../fetch', async (importOriginal) => {
       target.url === '/v1/voice/settings' && fetchMock.engine === 'pending'
         ? new Promise(() => undefined)
         : target.url === '/v1/voice/settings' && fetchMock.engine !== null
-          ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine } }, fetchedAt: Date.now() })
+          ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine, debug: fetchMock.debug } }, fetchedAt: Date.now() })
           : actual.read(target, ...rest)) as typeof actual.read,
   }
 })
@@ -792,14 +792,87 @@ describe('the Talk pane on our own speech', () => {
     await startOwn()
     expect(FakeSocket.all).toHaveLength(0)
     expect(vadMock.start).not.toHaveBeenCalled()
-    expect(screen.getByText('No L4 free in us-central1-a.')).toBeTruthy()
+    expect(screen.getByText('No L4 free in us-central1-a: text mode.')).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
     // The browser's microphone stays: mute still works on it.
     expect(mic.stop).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Mute' }).hasAttribute('disabled')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByText('No L4 free in us-central1-a.')).toBeNull()
+    expect(screen.queryByText('No L4 free in us-central1-a: text mode.')).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
+  })
+
+  it('says behind its (i) that a no-L4 fallback is text mode on the account it holds, and when to retry', async () => {
+    serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: null } })
+    render(<TalkPane />)
+    await startOwn()
+    const line = screen.getByText('No L4 free: text mode.').closest('p') as HTMLElement
+    const tip = within(line).getByRole('tooltip', { hidden: true })
+    expect(tip.textContent).toMatch(/continues as text with Voice it's Claude front, on the account it already holds/)
+    expect(tip.textContent).toMatch(/Start again in a few minutes/)
+    expect(line.textContent).not.toMatch(/OpenAI/)
+    // The talk works: a typed line is a turn on the same session.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Say to Voice it' }), { target: { value: 'Plan it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await settle(act)
+    expect(posted(`/v1/voice/sessions/${SESSION}/turns`).map(([, , b]) => b)).toEqual([{ text: 'Plan it' }])
+  })
+
+  it.each([
+    ['no_l4', false],
+    ['not_ready', false],
+    ['front_refused', true],
+    ['speech_not_deployed', true],
+  ])('a %s fallback names the ChatGPT plan in its status line only when it runs on the plan', async (reason, plan) => {
+    serveOwn({ mode: 'text', fallback: { from: 'own', reason, zone: null } })
+    render(<TalkPane />)
+    await startOwn()
+    const status = () => document.querySelector('.vt-status')?.textContent ?? ''
+    expect(status()).toMatch(/^Live/)
+    expect(/ChatGPT plan/.test(status())).toBe(plan)
+    // Dismissing the fallback's line does not change what the session runs on.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(/ChatGPT plan/.test(status())).toBe(plan)
+  })
+
+  describe('a refused start says its own cause in one line, the full sentence behind an (i)', () => {
+    function refuseStart(reason: string, message: string): void {
+      fetchMock.write.mockImplementation(async (target: { url: string }) => {
+        if (target.url === '/v1/voice/sessions') {
+          return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message, detail: { reason } } }
+        }
+        return { status: 'ok', data: null, fetchedAt: Date.now() }
+      })
+    }
+    const problem = () => document.querySelector('.vt-problem') as HTMLElement
+    const shown = () => problem().querySelector(':scope > span')?.textContent
+
+    it.each([
+      ['no_voice_account_available', 'No Voice it plan account is free for a text session; try again in a few minutes.', 'No Voice it plan account free.'],
+      ['openai_key_in_use', "Voice it's OpenAI API key is in use by another session; try again when it ends.", 'OpenAI key in use by another session.'],
+    ])('%s', async (reason, sentence, line) => {
+      refuseStart(reason, sentence)
+      render(<TalkPane />)
+      await startOwn()
+      expect(shown()).toBe(line)
+      expect(within(problem()).getByRole('tooltip', { hidden: true }).textContent).toBe(sentence)
+      expect(screen.getByRole('button', { name: 'Start talking' })).toBeTruthy()
+    })
+
+    it('names the OpenAI key only when a Live start found it in use', async () => {
+      refuseStart('no_voice_account_available', 'No Voice it plan account is free for a text session; try again in a few minutes.')
+      render(<TalkPane />)
+      await startOwn()
+      expect(problem().textContent).not.toMatch(/OpenAI|another session/)
+    })
+
+    it("any other refusal shows swarm-api's sentence as it is, with no (i)", async () => {
+      refuseStart('voice_pool_refused', 'Voice it needs an OpenAI API key in the Voice it pool: add one on Admin › Accounts')
+      render(<TalkPane />)
+      await startOwn()
+      expect(problem().textContent).toBe('Voice it needs an OpenAI API key in the Voice it pool: add one on Admin › Accounts')
+      expect(within(problem()).queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
   })
 
   it('carries on in text mode when the engine goes down mid-session, on the same mic', async () => {
@@ -812,7 +885,7 @@ describe('the Talk pane on our own speech', () => {
     await ws.json({ t: 'status', state: 'engine down' })
     expect(ws.closed).toBe(true)
     expect(vadMock.close).toHaveBeenCalled()
-    expect(screen.getByText('Engine down.')).toBeTruthy()
+    expect(screen.getByText('Engine down: text mode.')).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Say to Voice it' })).toBeTruthy()
     expect(mic.stop).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
@@ -838,7 +911,7 @@ describe('the Talk pane on our own speech', () => {
     serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'not_ready' } }, 'go')
     render(<TalkPane />)
     await startOwn()
-    expect(screen.getByText('Speech machine not ready.')).toBeTruthy()
+    expect(screen.getByText('Speech machine not ready: text mode.')).toBeTruthy()
     fireEvent.change(screen.getByRole('textbox', { name: 'Say to Voice it' }), { target: { value: 'Go' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await settle(act)
@@ -952,7 +1025,7 @@ describe('the Talk pane on our own speech', () => {
         </div>,
       )
       await startOwn()
-      const line = screen.getByText('No L4 free in us-central1-a.')
+      const line = screen.getByText('No L4 free in us-central1-a: text mode.').closest('p') as HTMLElement
       expect(line.className).toBe('vt-fallback')
       const close = within(line).getByRole('button', { name: 'Dismiss' })
       for (const width of [1440, 390]) {
@@ -987,4 +1060,69 @@ describe('the Talk pane on our own speech', () => {
     })
   })
 
+})
+
+// ---- debug mode: the turn line ------------------------------------------------
+//
+// While Settings' Debug is on, each `trace.turn` event on the session's stream
+// (swarm-api voice/stream.py) draws the turn's line under the Stage: its
+// number, the cards drawn and refused, and why nothing was drawn. Off, no line.
+//
+// MUTATIONS: draw the line with debug off; keep the first turn's line; drop
+// the refused count or the no-cards reason; read the stream twice.
+
+describe("debug mode's turn line on Talk", () => {
+  beforeEach(() => {
+    FakeEventSource.all = []
+    vi.stubGlobal('EventSource', FakeEventSource)
+    apiMock.fixtures = false
+    answerStarts()
+    installMedia({ audioContext: true })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    fetchMock.write.mockReset()
+    fetchMock.debug = false
+  })
+
+  const turnLine = (): HTMLElement | null => screen.queryByRole('group', { name: 'Last planner turn' })
+
+  it('draws each trace.turn event as the line under the Stage while debug is on', async () => {
+    fetchMock.debug = true
+    const { container } = render(<TalkPane />)
+    await start()
+    const es = FakeEventSource.last
+    expect(FakeEventSource.all).toHaveLength(1)
+    expect(turnLine()).toBeNull()
+
+    await act(async () => es.frame('trace.turn', 1, { n: 1, drawn: [{ kind: 'work', title: 'Export lane' }, { kind: 'plan', title: 'Waves' }], refused: [{ kind: 'review', title: null, reason: 'the budget is spent' }], none: null }))
+    let line = turnLine()!
+    expect(line.querySelector('.vt-turn-n')?.textContent).toBe('Turn 1')
+    expect(line.querySelector('.vt-turn-out')?.textContent).toBe('2 cards · 1 refused')
+    expect(line.closest('.vt')!.classList.contains('has-turn')).toBe(true)
+    expect(line.textContent).toContain('the budget is spent')
+
+    await act(async () => es.frame('trace.turn', 2, { n: 2, drawn: [], refused: [], none: 'answered_in_words' }))
+    line = turnLine()!
+    expect(line.querySelector('.vt-turn-n')?.textContent).toBe('Turn 2')
+    expect(line.querySelector('.vt-turn-out')?.textContent).toBe('0 cards · answered in words')
+    expect(line.getAttribute('data-outcome')).toBe('none')
+    expect(container.querySelectorAll('.vt-turn')).toHaveLength(1)
+
+    await act(async () => es.frame('trace.turn', 3, { n: 3, drawn: [], refused: [{ kind: 'work', title: 'Lane', reason: 'held' }], none: 'refused' }))
+    expect(turnLine()!.querySelector('.vt-turn-out')?.textContent).toBe('0 cards · 1 refused · all refused')
+    // The turn opens in full on Telemetry: a real button.
+    expect(within(turnLine()!).getByRole('button', { name: 'Trace' })).toBeTruthy()
+  })
+
+  it('draws no line while debug is off, whatever the stream carries', async () => {
+    fetchMock.debug = false
+    const { container } = render(<TalkPane />)
+    await start()
+    const es = FakeEventSource.last
+    await act(async () => es.frame('trace.turn', 1, { n: 1, drawn: [{ kind: 'work', title: 'Export lane' }], refused: [], none: null }))
+    expect(turnLine()).toBeNull()
+    expect(container.querySelector('.vt-turn')).toBeNull()
+    expect(container.querySelector('.vt.has-turn')).toBeNull()
+  })
 })

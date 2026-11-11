@@ -66,6 +66,37 @@ WF_DRAIN_SECONDS=60
 # 0-2 s after the answer, RUNNING 73-95 s after it, so 71-93 s of start.
 WF_START_BUDGET_SECONDS=120
 
+# The fix-loop check (docs/design/fix-loop.md §8 row FL-ACCEPT). `review` is a
+# mock that says NOT_YET; `fix`, the integrator, appends one line to
+# WF_FIX_LOOP_FILE and opens the pull request; the loop's rounds are claude-code
+# agents whose prompts make the verdict a function of that file alone: a
+# re-review says MERGE once the file holds WF_FIX_LOOP_MERGE_AT non-empty
+# lines, and each fix round appends one. So the reviews say WF_FIX_LOOP_VERDICTS
+# in order -- the mock's NOT_YET, re-review:1's NOT_YET on fix's one line,
+# re-review:2's MERGE on review-fix:2's second -- and the rounds the loop
+# appends are WF_FIX_LOOP_ROUNDS, no more: max_rounds is 3, so a loop that ran
+# past a MERGE would show review-fix:3.
+#
+# WHY NOT ALL MOCK. The design's row says a mock-profile workflow, and the
+# first review is one. The rounds cannot be: swarm-api submits each round with
+# an input that holds its prompt alone (swarm_api/fixloop.py fix_round_spec and
+# review_round_spec), and the mock writes verdict.json only when its input
+# names it (`artifact_name`), and commits nothing, so a mock re-review would
+# park the loop `review_unreadable` and a mock fix round `fix_changed_nothing`.
+WF_FIX_LOOP_FILE="fix-loop-rounds.txt"
+WF_FIX_LOOP_MERGE_AT=2
+WF_FIX_LOOP_MAX_ROUNDS=3
+WF_FIX_LOOP_VERDICTS="NOT_YET NOT_YET MERGE"
+WF_FIX_LOOP_ROUNDS="re-review:1 review-fix:2 re-review:2"
+# The whole loop, as seconds, from its submission: fix and three round agents
+# run one after another, each a claude-code start and a one-line task, and the
+# loop's own wake follows each. The group submits it first and judges it last.
+WF_FIX_LOOP_SECONDS=3600
+# Set by _wf_fix_loop_offered: a SKIP's reason when the deployment does not
+# offer the profile, or a FAIL's when its catalogue could not be read.
+WF_FIX_LOOP_SKIP=""
+WF_FIX_LOOP_PROBLEM=""
+
 workflow_checks() {
   cat <<'EOF'
 workflow: input_from stages the parent's artifact into the child byte for byte
@@ -75,12 +106,20 @@ workflow: implement -> review -> fix with integrate opens one pull request, with
 workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it
 workflow: await-input: a step waits for a member's answer holding no lease, and revise runs within one drain holding the posted form and file
 workflow: await-input expiry: a step nobody answers ends at expires_after with its declared default, and the when-gated steps take that branch
+workflow: fix-loop: a review that says NOT_YET twice and then MERGE ends the loop SUCCEEDED with re-review:1, review-fix:2 and re-review:2 appended
 EOF
 }
 
 run_workflow() {
   step "Acceptance: workflow"
-  local stage="" missing="" cascade="" chain="" carry="" await="" expire="" payload notes expire_default
+  local stage="" missing="" cascade="" chain="" carry="" await="" expire="" fixloop="" payload notes expire_default
+
+  # The fix loop first: it is the longest wait, and the clock is its own
+  # (WF_FIX_LOOP_SECONDS). Submitted only where the catalogue offers it.
+  ACC_CHECK="workflow: fix-loop"
+  if _wf_fix_loop_offered; then
+    acc_workflow fixloop "$(_wf_fix_loop_body)" || fixloop=""
+  fi
 
   # Staging: `a` writes a known file; `b` stages it. The bytes are checked in
   # b's own checkpoint, which is b's workspace as b saw it.
@@ -208,6 +247,7 @@ run_workflow() {
   _wf_check_carry "${carry}" "${notes}"
   _wf_in_own_tenant _wf_check_await "${await}"
   _wf_in_own_tenant _wf_check_expire "${expire}" "${expire_default}"
+  _wf_check_fix_loop "${fixloop}"
 }
 
 # _wf_own_tenant -> sets WF_OWN_TENANT to the id of this caller's own tenant,
@@ -808,4 +848,173 @@ _wf_check_expire() {
   acc_assert_eq "SUCCEEDED NOT_YET false" "${state} $(task_field "${ship}" '"\(.result_summary.verdict_gate.verdict // "none") \(.result_summary.verdict_gate.agent_ran | tostring)"')" \
     "ship, gated on MERGE: state, the verdict it read, whether its agent ran" "${ship}"
   acc_assert_eq "SUCCEEDED" "$(_wf_final_state "${wid}")" "the workflow's derived state" "${wid}"
+}
+
+# _wf_fix_loop_offered -> 0 when this deployment's catalogue (GET /runtimes,
+# every profile with its `available` flag) offers `fix-loop`. Otherwise 1, with
+# WF_FIX_LOOP_SKIP saying why the check is not measured (the profile is absent
+# or ships unavailable), or WF_FIX_LOOP_PROBLEM saying why it is not known.
+# Called directly, never in $(), so both assignments land in this shell.
+#
+# NO SWITCH TURNS IT ON FOR THIS RUN. `available` is the frozen catalogue's, and
+# swarm-api refuses a step that names an unavailable profile for every caller
+# (validation.validate_runner_profile). Unlike await-input (contract request
+# 105, made available on dev before its checks ran), the owner keeps fix-loop
+# off everywhere until FL-ISSUE, FL-UI and FL-DOCS are on main, then applies
+# request 151 and this check measures it. Until then, this is a SKIP.
+_wf_fix_loop_offered() {
+  local out="${ACC_WORK}/wf-runtimes.json" offered
+  WF_FIX_LOOP_SKIP=""
+  WF_FIX_LOOP_PROBLEM=""
+  if ! api_fetch "/runtimes" "${out}"; then
+    WF_FIX_LOOP_PROBLEM="GET /runtimes answered HTTP ${API_STATUS:-?}, so whether this deployment offers fix-loop is not known"
+    return 1
+  fi
+  offered="$(jq -r '.runtimes["fix-loop"] // null
+      | if . == null then "absent"
+        elif .available == true then "yes"
+        else "no: \(.disabled_reason // "" | if . == "" then "no reason given" else . end)" end' "${out}" 2>/dev/null)" \
+    || offered="unreadable"
+  case "${offered}" in
+    yes) return 0 ;;
+    absent)
+      WF_FIX_LOOP_SKIP="not measured: this deployment's catalogue (GET /runtimes) has no fix-loop profile" ;;
+    no:*)
+      WF_FIX_LOOP_SKIP="not measured: this deployment ships fix-loop unavailable (${offered#no: }); the owner turns it on with contract request 151 once FL-ISSUE, FL-UI and FL-DOCS are on main (docs/contract-change-requests.md)" ;;
+    *)
+      WF_FIX_LOOP_PROBLEM="GET /runtimes answered something that is not a catalogue, so whether this deployment offers fix-loop is not known" ;;
+  esac
+  return 1
+}
+
+# _wf_fix_loop_body -> the fix-loop workflow, as JSON. Under `integrate`:
+# review (mock, NOT_YET with one major finding, so the no-op precheck does not
+# skip the fix) -> fix (claude-code, the integrator, gated on that NOT_YET) ->
+# loop (fix-loop). The rounds override both prompts, so each says only what
+# the line count needs: a fix round appends a line, a re-review counts them.
+_wf_fix_loop_body() {
+  local verdict
+  verdict="$(jq -nc --arg f "${WF_FIX_LOOP_FILE}" --argjson n "${WF_FIX_LOOP_MERGE_AT}" \
+    '{verdict: "NOT_YET", findings: [{severity: "major", summary: ($f + " has fewer than \($n) non-empty lines")}]}')"
+  jq -nc --argjson m "$(acc_metadata)" --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" \
+      --arg run "${ACC_RUN_ID}" --arg f "${WF_FIX_LOOP_FILE}" --argjson n "${WF_FIX_LOOP_MERGE_AT}" \
+      --argjson max "${WF_FIX_LOOP_MAX_ROUNDS}" --arg v "${verdict}" '
+    ("Append one line reading fix, followed by a newline, to " + $f + " at the repository root, creating the file if it does not exist. Change no other file.") as $append
+    | ("Count the non-empty lines of " + $f + " at the repository root with: grep -c . " + $f
+       + " (a missing file counts 0). Judge by that count alone. If it is \($n) or more, write"
+       + " {\"verdict\": \"MERGE\", \"commit\": \"<the output of git rev-parse HEAD>\", \"findings\": []}"
+       + " to $SWARM_ARTIFACTS_DIR/verdict.json. Otherwise write {\"verdict\": \"NOT_YET\", \"commit\": \"<the output of git rev-parse HEAD>\","
+       + " \"findings\": [{\"severity\": \"major\", \"summary\": \"" + $f + " has <the count> non-empty lines; it needs \($n)\"}]}"
+       + " there. Change no file.") as $judge
+    | {
+        priority: 10, metadata: $m, on_step_failure: "fail_workflow",
+        strategy: "integrate", repository_url: $u, repository_ref: $r,
+        steps: [
+          {step_id: "review", runner_profile: "mock",
+           input: {prompt: ("acceptance " + $run + " fix-loop review"), artifact_name: "verdict.json", artifact_text: $v, steps: 1, sleep_seconds: 0}},
+          {step_id: "fix", runner_profile: "claude-code", depends_on: ["review"], input_from: {review: "verdict.json"},
+           when: {step: "review", verdict_in: ["NOT_YET"]},
+           input: {prompt: ($append + " Write a one-line pull request title naming the fix loop acceptance run, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and the single line acceptance-run:" + $run + " to $SWARM_ARTIFACTS_DIR/pr-body.md.")}},
+          {step_id: "loop", runner_profile: "fix-loop", depends_on: ["fix"],
+           fix_loop: {review: "review", fix: "fix", max_rounds: $max,
+                      fix_round: {runner_profile: "claude-code", prompt: $append},
+                      re_review: {runner_profile: "claude-code", prompt: $judge}}}
+        ]}'
+}
+
+# _wf_fix_loop_settled TASK -> true once the loop has ended, or has parked for
+# a person (HUMAN_REQUIRED with a park_phase), which no wait here would end. A
+# predicate for wait_until: a failed read is "not yet", never a pass.
+_wf_fix_loop_settled() {
+  local doc
+  doc="$(task_doc "$1")" || return 1
+  [[ "$(jq -r '
+      if (.state // "") | test("^(SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED)$") then "settled"
+      elif .state == "PARKED" and .park_reason == "HUMAN_REQUIRED" then "settled"
+      else "running" end' <<<"${doc}")" == "settled" ]]
+}
+
+# _wf_check_fix_loop WORKFLOW_JSON: the fix loop, live (docs/design/fix-loop.md
+# §8 row FL-ACCEPT). The loop ends SUCCEEDED on re-review:2's MERGE, the
+# workflow holds exactly the rounds WF_FIX_LOOP_ROUNDS, the reviews said
+# WF_FIX_LOOP_VERDICTS in order, and the loop itself never held a lease
+# (invariant 1: a control-plane step costs nothing while its rounds run).
+_wf_check_fix_loop() {
+  local wf="$1" wid review fix loop doc state phase out rounds step task verdicts verdict states final number branch leases
+  acc_check "workflow: fix-loop: a review that says NOT_YET twice and then MERGE ends the loop SUCCEEDED with re-review:1, review-fix:2 and re-review:2 appended"
+  if [[ -n "${WF_FIX_LOOP_SKIP}" ]]; then
+    acc_skip "${WF_FIX_LOOP_SKIP}"
+    return 0
+  fi
+  [[ -n "${wf}" ]] || { acc_fail "not submitted${WF_FIX_LOOP_PROBLEM:+: ${WF_FIX_LOOP_PROBLEM}}"; return 0; }
+  wid="$(jq -r '.workflow.workflow_id' <<<"${wf}")"
+  review="$(workflow_step_task "${wf}" review)"
+  fix="$(workflow_step_task "${wf}" fix)"
+  loop="$(workflow_step_task "${wf}" loop)"
+
+  if ! wait_until "the fix loop ended, or parked for a person" "${WF_FIX_LOOP_SECONDS}" _wf_fix_loop_settled "${loop}"; then
+    acc_fail "the loop is $(task_field "${loop}" '"\(.state // "MISSING") \(.park_reason // "none")"') ${WF_FIX_LOOP_SECONDS} s after it was submitted" "${loop}"
+    _wf_fix_loop_close "${fix}"
+    return 0
+  fi
+  if ! doc="$(task_doc "${loop}")"; then
+    acc_fail "could not read the loop" "${loop}"
+    _wf_fix_loop_close "${fix}"
+    return 0
+  fi
+  state="$(jq -r '.state // "MISSING"' <<<"${doc}")"
+  phase="$(jq -r '[.blocked_by[]? | .park_phase? // empty] | first // empty' <<<"${doc}")"
+  acc_assert_eq "SUCCEEDED" "${state}${phase:+ (parked for a person: ${phase})}" "the loop's end" "${loop}"
+  acc_assert_eq "MERGE" "$(jq -r '.result_summary.fix_loop.verdict // "none"' <<<"${doc}")" "result_summary.fix_loop.verdict" "${loop}"
+
+  # The rounds: the steps the loop appended to this workflow, in order.
+  out="${ACC_WORK}/wf-fix-loop.json"
+  if ! api_fetch "/workflows/${wid}" "${out}"; then
+    acc_fail "could not read the workflow back" "${wid}"
+    _wf_fix_loop_close "${fix}"
+    return 0
+  fi
+  rounds="$(jq -r '[.workflow.steps[]? | .step_id // "" | select(test("^(re-review|review-fix):"))] | join(" ")' "${out}")"
+  acc_assert_eq "${WF_FIX_LOOP_ROUNDS}" "${rounds}" "the round steps appended to the workflow, in order" "${wid}"
+
+  # Each round's task: cancelled at exit if it is still running, and judged.
+  verdicts="$(acc_artifact_text "${review}" "verdict.json" 2>/dev/null | jq -r '.verdict // "none"' 2>/dev/null || printf 'unreadable')"
+  states=""
+  for step in ${WF_FIX_LOOP_ROUNDS}; do
+    task="$(jq -r --arg s "${step}" '.workflow.steps[]? | select(.step_id == $s) | .task_id // empty' "${out}")"
+    if [[ -z "${task}" ]]; then
+      states="${states:+${states} }missing"
+      continue
+    fi
+    acc_record_task "${task}"
+    states="${states:+${states} }$(task_state "${task}" || printf 'unreadable')"
+    if [[ "${step}" == re-review:* ]]; then
+      verdict="$(acc_artifact_text "${task}" "verdict.json" 2>/dev/null | jq -r '.verdict // "none"' 2>/dev/null || printf 'unreadable')"
+      verdicts="${verdicts} ${verdict}"
+      final="${task}"
+    fi
+  done
+  acc_assert_eq "SUCCEEDED SUCCEEDED SUCCEEDED" "${states}" "the states of ${WF_FIX_LOOP_ROUNDS}" "${wid}"
+  acc_assert_eq "${WF_FIX_LOOP_VERDICTS}" "${verdicts}" "the verdicts of review, re-review:1 and re-review:2, read from each verdict.json" "${wid}"
+  acc_assert_eq "${final:-none}" "$(jq -r '.result_summary.fix_loop.final_review // "none"' <<<"${doc}")" \
+    "result_summary.fix_loop.final_review, against re-review:2's task" "${loop}"
+
+  # Invariant 1: the loop held no lease and ran no attempt while its rounds ran.
+  if leases="$(task_lease_ids "${loop}")"; then
+    acc_assert_eq "none 0" "${leases:-none} $(jq -r '.attempt_count // 0' <<<"${doc}")" "the loop's lease ids and attempts" "${loop}"
+  else
+    acc_fail "could not read the loop's events" "${loop}"
+  fi
+  acc_assert_eq "SUCCEEDED" "$(_wf_final_state "${wid}")" "the workflow's derived state" "${wid}"
+  _wf_fix_loop_close "${fix}"
+}
+
+# _wf_fix_loop_close FIX -> closes the pull request the integrator opened, and
+# its branch. Every round pushed onto that branch, so it is the only one.
+_wf_fix_loop_close() {
+  local git number branch
+  git="$(task_field "$1" '.result_summary.git // {}' 2>/dev/null || printf '{}')"
+  number="$(jq -r '.pull_request.number // empty' <<<"${git}" 2>/dev/null || true)"
+  branch="$(jq -r '.branch // empty' <<<"${git}" 2>/dev/null || true)"
+  acc_close_pr "${number}" "${branch:-swarm/$1}"
 }

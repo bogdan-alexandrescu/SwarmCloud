@@ -23,7 +23,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 10 | `profiles.py`: `requires_preview_disk` names a feature this platform does not use | open |
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
-| 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
+| 13 | `models.py`: `Attempt` does not record which pool account it ran on | taken up by request 152, accepted by the owner 2026-11-09 |
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | APPLIED 2026-10-02 (accepted by the owner 2026-10-02, decision OD-B15-1, with the cancel and capacity rules of its amendment; built as docs/design/child-tasks.md phase 2) |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | ACCEPTED 2026-09-25 (owner, on #184), applied in PR #210 |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
@@ -155,6 +155,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10 by the pull request that adds this text: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. Not applied; the profile is unavailable until the cause is found and the owner re-applies it |
+| 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
+| 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 
 ---
 
@@ -1418,7 +1421,9 @@ section above is not read as covering the caller.
 
 ## 13. `models.py`: `Attempt` does not record which pool account it ran on
 
-**Status:** open, filed 2026-09-24. A request, not a change: nothing under
+**Status:** taken up by request 152 on 2026-11-09, which the owner accepted
+that day; request 152 carries these two fields unchanged and adds the
+credential tier. This entry stays as filed. Originally: open, filed 2026-09-24. A request, not a change: nothing under
 `apps/common/swarm_common/` is edited. Raised in
 [`docs/web-ui/redesign-v2.md`](web-ui/redesign-v2.md) §6 S6 ("request, not
 proposal"), which asked for it to be filed here if pursued.
@@ -17514,3 +17519,284 @@ today `tests/unit/control_plane/test_platform_switches.py` holds a forged
 ### Who decided
 
 Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
+
+
+## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
+
+**Status:** PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE.
+Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
+section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
+
+**Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
+day: the revert was accepted by the owner (BGD) in advance, as the switch-on's own condition (revert at
+once if the live acceptance check fails). The check could not run, because every claude-code submission
+of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
+unproven. The profile is unavailable again until that check can run and passes.
+
+### What is true today
+
+`RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
+`disabled_reason` that points at docs/design/fix-loop.md. While it is,
+swarm-api refuses any workflow that names it
+(`validation.validate_runner_profile`, which `resolve_fix_loop` calls before
+it reads the block), for every caller and every tenant. There is no switch
+that turns a profile on for one tenant or one run, and the acceptance check
+does not invent one.
+
+Of the design's §8 lanes, read on main on 2026-11-09: FL-CONTRACT,
+FL-ROLLUP, FL-SUBMIT, FL-SCHED, FL-DRIVE, FL-WORKER and FL-PLUGIN carry their
+behaviour; FL-ISSUE (`issueruns.py`, `issueci.py`), FL-UI (the console's loop
+row) and FL-DOCS do not. FL-ACCEPT is the group check
+"workflow: fix-loop" in `scripts/acceptance/groups/workflow.sh`.
+
+### The change
+
+`apps/common/swarm_common/profiles.py`, in the `"fix-loop"` entry:
+
+```python
+        available=False,
+        disabled_reason=(
+            "fix-loop is not available yet: it ships unavailable until its "
+            "acceptance run passes, as docs/design/fix-loop.md says."
+        ),
+```
+
+becomes
+
+```python
+        available=True,
+```
+
+`available=False` becomes `available=True`, and the four `disabled_reason`
+lines are removed (its default is `""`, and `RunnerProfile` refuses a
+disabled profile without a reason, not an enabled one with none). Nothing
+else changes; Terraform's catalogue carries no availability field.
+
+### The order, and why it is the owner's
+
+The design (§7 request A) keeps the profile off until every build lane has
+merged and FL-ACCEPT passes. FL-ACCEPT cannot pass while the profile is off:
+the deployment refuses the workflow it submits, so the check reports a SKIP
+naming this request. await-input met the same circle and the owner broke it
+by applying its request D (entry 105) on dev BEFORE HW-ACCEPT ran.
+
+For fix-loop the owner picked a different order (PR 3691, question 0: 'Wait
+for FL-ISSUE, FL-UI and FL-DOCS first'; rejected: 'Enable on dev first, as
+await-input'):
+
+1. FL-ISSUE, FL-UI and FL-DOCS merge first. Until all three are on main the
+   profile stays `available=False` on every environment, dev included, and
+   "workflow: fix-loop" stays a SKIP.
+2. Then the owner applies this change on dev.
+3. The next acceptance run measures "workflow: fix-loop"; the change stays
+   only if that check is green.
+
+So no caller can submit a `fix-loop` step while issue runs, the console and
+the docs do not yet know the loop.
+
+### What it would break if accepted
+
+Callers can submit `fix-loop` steps. Because it is applied only after
+FL-ISSUE, FL-UI and FL-DOCS are on main, issue runs, the console's loop row
+and the docs already carry the step when it opens. Tests that pin `available is False`
+(`tests/unit/common/test_fix_loop_contract.py`) change with it.
+
+### Invariants
+
+**1**: the loop is `control_plane` and is parked, never leased, while its
+rounds run; the acceptance check asserts it held no lease and ran no
+attempt. **10**: a round names its profile by name. 2 to 9 are untouched.
+
+### How it is tested
+
+`tests/unit/scripts/test_acceptance_fix_loop_group.py` pins the workflow the
+check submits (and that swarm-api's own `resolve_fix_loop` accepts it once
+the profile is on), the verdicts its reviews return in order (NOT_YET,
+NOT_YET, MERGE), the rounds it expects (`re-review:1`, `review-fix:2`,
+`re-review:2`) and its judging. The live proof is the check itself, on dev.
+
+### Who decides
+
+The owner: a frozen-contract change, applied after the check is green.
+
+---
+
+## 152. `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and tier an attempt ran on (LLM providers, Q8; request 13 taken up)
+
+**Status:** ACCEPTED by the owner on 2026-11-09, as the answer to question Q8
+of [`docs/design/llm-providers.md`](design/llm-providers.md): "yes, take up the
+open contract change request so an Attempt records the credential tier and the
+account it ran on". APPLIED 2026-11-10 by the pull request that adds this
+paragraph (lane LP-C1 of that design), exactly as drawn under "The change"
+below and nothing else under `apps/common/swarm_common/`: the three fields at
+the end of `Attempt`, and `CREDENTIAL_TIERS = ("plan", "api_key")`, which
+`Attempt.__post_init__` holds `credential_tier` to (None, every older
+document, passes; any other value is refused, so no reader meets a tier it
+cannot name). `apps/swarm-ui/src/types.ts` restates them on `AttemptRow` and
+the tiers as `CredentialTier`, and `scripts/lib/check-contract-parity.sh`
+section 5 holds both to the frozen module. Nothing writes or reads the fields
+yet: its writer (LP-W1, the worker) and its reader (LP-U5, the console) come
+next. The pull request that added this entry edited nothing under
+`apps/common/swarm_common/`.
+
+### Why now, when request 13 waited
+
+Request 13 asked for the account an attempt ran on, and the answer it got was
+"the hold log and the events answer it". The LLM providers design adds a
+second credential tier beside the plan account: a metered API key, which an
+agent falls back to when the plans are spent and moves back from when a plan
+frees. With that, "which agents ran on a paid key, and on whose" is a spend
+question, and spend is already on `Attempt` (request 2). The alternative, a
+join from every attempt on a page to the broker's `account_holds` log, reads a
+collection the console does not read today and has no index for, for every
+row. One field beside `cost_usd` is one read the console already makes.
+
+### The change
+
+Add to `Attempt`, at the end of the class so no positional construction
+changes meaning:
+
+```python
+#: The pool account this attempt's agent RAN on: the last assignment it kept,
+#: not every one it was offered or moved through. None means "not recorded" --
+#: an older attempt, or a worker that never reached account selection.
+account_id: str | None = None
+#: "account_pool" or "tenant_secret". None means "not recorded". Separate from
+#: account_id because "no account" has two meanings that want different
+#: readings: the pool is not how this tenant runs, or nobody wrote it down.
+credential_source: str | None = None
+#: The kind of credential account_id is: "plan" (a subscription the broker
+#: refreshes) or "api_key" (a metered developer key). None when
+#: credential_source is not "account_pool", or not recorded.
+credential_tier: str | None = None
+```
+
+Request 13's two fields are taken as filed; `credential_tier` is new. It is
+recorded rather than derived from the account because an account can be
+deleted (a deleted key's document is gone the moment it is confirmed), and the
+attempt must still say what it ran on.
+
+**Single writer: the worker**, where request 13 put it: `_lease_account` when
+an account is kept, a swap that moves the hold, and `_decline_pool` when the
+tenant secret is used, through `control.py`'s attempt document, the way
+`record_spend` writes spend (merge, tenant-stamped).
+
+**Last kept, not a history.** An attempt that moves from a plan to a key and
+back records the account it held last. Every move stays in the broker's
+`account_holds` log and on the attempt's timeline; a list on the attempt would
+be history, and grows without bound on a long attempt.
+
+**Not on `Lease`**, for request 13's reason: the lease is capacity, taken by
+the scheduler before any account is chosen.
+
+### What it would break if applied
+
+* **No existing document.** All three fields are optional and default to
+  `None`; nothing migrates.
+* **Every reader reads `None` as "not recorded"**, never as "tenant secret" or
+  "plan".
+* **Indexes.** "An account's attempts, newest first" needs a composite
+  `(account_id, created_at)` in `terraform/modules/firestore/indexes.tf` (lane
+  LP-T1 of the design).
+* **Fencing (invariant 5).** An attempt document is keyed by its own
+  `attempt_id`, so a stale worker can only write its own attempt; the write
+  goes through the `record_spend` path, not a new one.
+* **The TypeScript restatement.** `types.ts` gains the three fields, and
+  `scripts/lib/check-contract-parity.sh` section 5 holds them.
+* **`Task.current_account`** (request 132) is a dict the worker already
+  writes; it carries the tier without a change here.
+
+### If it had been declined
+
+The design's attempt chip would read the tier from the hold log, an N+1 read
+per page, and a deleted key's attempts would lose their tier when the
+account's document went.
+
+### Who decided
+
+The owner, on 2026-11-09, as Q8 of the LLM providers design.
+
+---
+
+## 153. `specsign.py`: the plugin record kind `bundle` (managed plugins P6)
+
+**Status:** ACCEPTED by the owner 2026-11-09 (accepted by the owner
+2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and
+APPLIED 2026-11-09 by the pull request that adds this section (lane
+plugins-bundle-contract, lane 13 of the design's table 17.1). Requested by
+docs/design/managed-plugins.md section 14, request P6.
+
+### Why
+
+The owner decided on 6 November 2026 that gstack and security-audit leave the
+image-baked code entries for the managed path, through a build step that
+publishes a new image version with them bundled (design section 1.4). On 9
+November the owner settled where that build runs (in the deployment, Cloud Build
+from its copy of the signed release image) and that a bundled plugin is
+platform scope only. Apply on a bundled install then writes a
+`plugin_bundles/{bundle_id}` record (section 1.4.3): the bundle key (every
+bundled install's `version_id`, source sha256 and recipe digest), the base
+image digests it was built `FROM`, the output digest per runner image name,
+the built tree's sha256 per plugin and `state` (`building`, `ready`,
+`failed`, `retired`). Only a ready bundle moves an install's
+`current_version`.
+
+swarm-api is that record's only writer, but the tenant GSAs hold
+project-wide Firestore access, so any tenant's worker can write one. The
+scheduler's repository check and the worker's manifest check would still
+stop a wrong image from running a step, but a forged `ready` could move
+`current_version` to a pin that was never built. swarm-api acts on a bundle
+record only when its MAC, under `swarm-settings-key`, verifies, and request
+140's `canonical_plugin_record` refuses any kind it does not list.
+
+### The change
+
+```python
+PLUGIN_RECORD_KINDS = ("install", "version", "intake", "bundle")
+PLUGIN_RECORD_IDS = {..., "bundle": ("bundle_id",)}
+
+# canonical_plugin_record, after the scope and tenant checks:
+if kind == "bundle" and scope != "platform":
+    raise SpecNotCanonical("a plugin bundle record is platform scope only")
+```
+
+* The bytes are request 140's form: purpose `swarm.plugin-record/v1`, the
+  kind, `scope: "platform"`, `tenant_id: null`, and every stored key but the
+  MAC and the writer record. No new purpose and no new public name.
+* The document's id is put into `fields` by its writer and reader, as for
+  the other kinds, so a record copied onto another bundle id does not
+  verify.
+* A bundle image is built once per deployment and serves every workspace
+  that allows it (section 1.4.2, the owner's answer to Q18), so a
+  workspace-scope bundle record has no canonical form at all.
+
+### What it would break if accepted
+
+Nothing: no bundle record exists yet (lane 16 writes the first), and the
+other kinds' bytes are unchanged (their tests pin them literally).
+
+### If it is declined
+
+Lane 16 could not ship a bundle record: a record outside the MAC is one a
+tenant worker can forge, and a second canonical form in swarm-api would be a
+second opinion about what is signed.
+
+### Invariants
+
+None changes. Invariant 9: a bundle names no tenant and is never one
+workspace's. Invariant 10: the record names images by digest and is written
+by swarm-api from a build it started, never from a caller.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins a bundle record's
+bytes; signs one with swarm-api's `pluginstore.record_mac` and checks that it
+verifies, that a tampered `state`, output digest, bundle key, base, tree,
+bundle id or a planted key does not, and that neither another key nor the
+record read as an intake verifies it; refuses a workspace-scope bundle, a
+platform bundle naming a tenant and one without its id; and checks that the
+four kinds' bytes differ.
+
+### Who decided
+
+The owner, 9 November 2026, answering the managed plugins design's Q20.

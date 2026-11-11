@@ -71,7 +71,7 @@ class _StateBroker(FakeBroker):
         super().__init__(**kwargs)
         self.state = state
 
-    def hold_status(self, assignment):
+    def hold_status(self, assignment, **_kw):
         status = super().hold_status(assignment)
         if assignment.account_id == FIRST:
             status["state"] = self.state
@@ -268,14 +268,14 @@ class _FlakyBroker:
         self.assigns = 0
         self.releases: list[str] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         self.assigns += 1
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, BaseException):
             raise answer
         return answer
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         self.releases.append(account_id)
         return 0
 

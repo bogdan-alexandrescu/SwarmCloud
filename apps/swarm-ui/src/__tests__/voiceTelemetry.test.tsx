@@ -105,6 +105,8 @@ function serve(opts: { sessions?: unknown[]; days?: unknown[]; admin?: boolean; 
     }
     if (url.includes('/v1/voice/telemetry/sessions')) return json(200, { sessions: opts.sessions ?? SESSIONS, scope: 'platform', tz: 'UTC' })
     if (url.includes('/v1/voice/telemetry/days')) return json(200, { days: opts.days ?? DAYS, scope: 'platform', tz: 'UTC' })
+    // Debug mode's trace card reads its own list (voice.debug.trace.test.tsx draws it); none is traced here.
+    if (url.includes('/v1/voice/trace/sessions')) return json(200, { sessions: [], scope: 'platform' })
     return json(404, { code: 'not_found', message: 'no such route' })
   }) as unknown as typeof fetch
   return calls

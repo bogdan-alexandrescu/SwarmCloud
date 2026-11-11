@@ -99,6 +99,15 @@ class _Secrets:
         return sorted(after - before), sorted(before - after)
 
 
+class _AcceptingValidator:
+    """Every key the vendor is asked about is valid."""
+
+    def check(self, provider, key):  # noqa: ANN001
+        from quota_broker import api_key
+
+        return api_key.KeyCheck(api_key.CHECK_VALID)
+
+
 @pytest.fixture()
 def accounts(broker) -> AccountStore:
     return AccountStore(broker.db)
@@ -119,6 +128,9 @@ def client(broker, accounts, monkeypatch):
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=accounts)
     app.state.secret_store = _Secrets()
+    # The vendor's list-models call an API key passes before it is stored
+    # (docs/design/llm-providers.md §4.1), answered without a network.
+    app.state.key_validator = _AcceptingValidator()
     c = TestClient(app, raise_server_exceptions=False)
     c.identity = identity
     c.secrets = app.state.secret_store
@@ -145,7 +157,11 @@ def _key(client, accounts, owner: str, label: str) -> str:
     written as the registration route writes it."""
     from quota_broker import openai_api_key
 
-    account = accounts.register(owner, label, provider=openai_api_key.PROVIDER)
+    # Today's Voice it key, which stays the dedicated one (llm-providers.md
+    # §5.3, Q9): voice-it only, never lent.
+    account = accounts.register(
+        owner, label, provider=openai_api_key.PROVIDER, voice_dedicated=True
+    )
     client.secrets.latest[accounts.secret_for(account)] = openai_api_key.serialise(
         "sk-" + secrets.token_hex(24)
     )
@@ -863,3 +879,27 @@ def test_a_key_is_neither_refreshed_nor_polled(client, accounts):
     outcomes = poller.poll_round(listed)
     assert [o.account_id for o in outcomes] == [plan_id]
     assert len(asked) == 1
+
+
+def test_a_voice_lease_passes_over_the_accounts_it_excludes(client, accounts):
+    """A session whose key's credit is gone names it in `exclude`, so the walk
+    passes over it (llm-providers.md §5.3), as an assign's `exclude` does."""
+    first = _key(client, accounts, OWNER, "key-1")
+    second = _key(client, accounts, OWNER, "key-2")
+    for account_id in (first, second):
+        accounts.set_max_agents(account_id, 4)
+    leased = _lease(client).json()["account_id"]
+    other = ({first, second} - {leased}).pop()
+    client.identity.as_voice()
+    moved = client.post(
+        "/v1/voice/lease",
+        json={"person": PERSON, "voice_session_id": "vs-1", "provider": "openai",
+              "capability": "live", "exclude": [leased]},
+    ).json()
+    assert moved["account_id"] == other and moved["tier"] is not None
+    refused = client.post(
+        "/v1/voice/lease",
+        json={"person": PERSON, "voice_session_id": "vs-1", "provider": "openai",
+              "capability": "live", "exclude": [first, second]},
+    ).json()
+    assert refused["account_id"] is None and refused["assignment_id"] is None

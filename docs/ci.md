@@ -842,16 +842,43 @@ summary and the manifest's `incremental.full_build`:
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
 
-**An image whose Dockerfile upgrades OS packages is rebuilt by every main
-build and every release.** This was the owner's decision on 2026-10-14 ("force a fresh apt
-layer", on every release). It costs about 7 extra minutes per release.
+**What rebuilds an image now.** On main, `build-images.sh --incremental`
+rebuilds an image, and every image built FROM it (`build_after`), when:
+
+* `--affected-by` reaches it from the diff since its digest's `built_from`
+  (with `uv.lock` narrowed to its own `uv export`, above);
+* its baked build args differ from the previous digest's, or were never
+  recorded;
+* or one of the whole-build reasons above holds: build logic changed, no
+  ancestor record, a reused digest older than `BUILD_REUSE_MAX_AGE_DAYS`, the
+  `full_build` input, prod, or a dirty tree.
+
+Every other image is reused, **an image whose Dockerfile upgrades OS packages
+included**. A release's check of CI's record (`--reuse-ci`) asks the same
+questions and one more: **an image whose Dockerfile upgrades OS packages is
+rebuilt by every release**, whatever its inputs did, and so is every image
+built FROM one.
+
+**Why the release and not main.** The owner decided on 2026-10-14 to "force a
+fresh apt layer" on every release; it costs about 7 extra minutes per release.
+Until 2026-11-06 main's own build refreshed those images too, and that bought
+nothing: no digest main refreshed is ever promoted, because the release
+rebuilds every one of them whatever main did. It only delayed the release.
+Measured 2026-11-06, a commit that changed only swarm-api (`3b82588b4`) rebuilt
+17 of 19 images on main, swarm-speech for 1,717 s, and the release waited
+about 45 minutes for them. So `plan_incremental` now refreshes OS packages
+only under the release's check (`REUSE_CHECK`), and main reuses such a digest
+while its inputs are unchanged; `BUILD_REUSE_MAX_AGE_DAYS` still bounds how
+old a reused digest on main may be. The fresh layer is still in everything
+that ships, because the release builds what it scans and promotes.
+
 `APT_REFRESH` names the build: the commit plus the GitHub run id and attempt,
 or the commit and the time outside Actions. `BUILD_APT_REFRESH` overrides it.
-The manifest records it per image as `apt_refresh`. A digest of such an image
-is reused only when its `apt_refresh` is this build's, which no other run's
-is. So `plan_incremental` rebuilds every one of them, and the release's reuse
-check does too, even from a record CI built whole for the same commit. An
-image built FROM one is rebuilt with it. One that upgrades nothing
+The manifest records it per image as `apt_refresh`; a reused digest keeps the
+`apt_refresh` of the build that upgraded it. Under the release's check a
+digest of such an image is reused only when its `apt_refresh` is this build's,
+which no other run's is, so the release rebuilds every one of them, even from
+a record CI built whole for the same commit. One that upgrades nothing
 (swarm-verify) is still reused. Which images upgrade is read from their
 Dockerfiles (`upgrades_os_packages`), not listed.
 A digest CI built from the commit being released is that commit's own
@@ -872,7 +899,8 @@ serves an older upgrade either. workspace-apply's apt `RUN` also fails its own
 build when a simulated `apt-get dist-upgrade` still has something to install,
 which catches a package `apt-get upgrade` kept back. The scan stays strict:
 nothing is ignored or pinned. `test_build_images_apt_refresh.py` holds all of
-this.
+this, and `test_build_images_fast.py` holds that a main commit touching only
+swarm-api rebuilds only the images whose inputs include it.
 
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
@@ -3528,9 +3556,11 @@ What main does as of 2026-10-10:
 * **A workflow spec may set `merge: "on_merge_verdict"`** in its `metadata`
   (`MERGE_ON_VERDICT` in
   [`validation.py`](../apps/swarm-api/swarm_api/validation.py)). That
-  appends a re-review on the integrator's pushed head and a `merge` step,
-  which merges the integrator's pull request only when that review says
-  MERGE and CI is green.
+  appends a fix loop (3 rounds, the owner 2026-11-09) when the integrator is
+  gated on the review's NOT_YET, or else a re-review on the integrator's
+  pushed head, and a `merge` step, which merges the integrator's pull
+  request only when the latest review says MERGE and CI is green
+  ([workflows.md](workflows.md#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)).
 * **Merge steps on one repository take a single merge slot** and land in
   submission order, so concurrent merges no longer refuse
   `behind_too_often` behind each other

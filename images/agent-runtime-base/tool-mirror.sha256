@@ -3,7 +3,7 @@
 378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69  github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.tar.gz
 cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537  github.com/terraform-linters/tflint/releases/download/v0.64.0/tflint_linux_amd64.zip
 b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6  github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz
-c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz
+bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
 390dd08f8321807bca2e1e060ec031511adb0af002e871dfde3b1f6c8feac914  github.com/SawyerHood/dev-browser/releases/download/v1.0.0-rc.3/dev-browser-linux-x64
 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5  github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
 ae7d01d261efb9e480e18ce3424533332883863bcf70b12a4321b5733f37e19e  github.com/lightpanda-io/browser/releases/download/1.0.2/lightpanda-x86_64-linux

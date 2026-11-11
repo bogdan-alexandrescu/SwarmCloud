@@ -4,6 +4,9 @@
   show_file      a file slice of a workspace repository, as a `code` visual
   show_diff      a pull request's diff, as a `code` visual
   show_log       a failed step's log tail, as a `log` visual
+  show_mockup    one proposal's mock-up, as a `mockup` visual of HTML frames
+  approve_mockup the person's spoken pick of one of a mock-up's frames
+  approved_mockups  what the person approved, to say it and what comes next
   add_note       pin a spoken note on a visual: at the place the person's pointer
                  rests, at a part the planner names, at lines, or on the whole visual
   notes_to_work  turn open notes into a follow-up, an issue or a lane brief
@@ -17,9 +20,18 @@ visual's id, its version, its parts and its lines, which is all the planner
 gets back. So nothing the planner writes can put another tenant's file, or a
 repository the person holds no grant on, on the page.
 
+A MOCK-UP IS DRAWN, NOT READ: `show_mockup` sends its frames, each a
+self-contained HTML document with no script and no address (swarm-api refuses
+one that has either, masks the rest, and the page draws each frame in a frame
+that allows nothing). Each frame gets an id, `frame-<n>`, which is also its
+part, so a comment on a frame is `add_note` with a part anchor and the pick
+is `approve_mockup` naming the frame. Approving records a choice on the
+visual; it deploys and starts nothing.
+
 EVERY CALL GOES THROUGH THE SESSION GRANT, on the two writes the grant reaches
 (swarm_api/voice/grant.py `WRITE_ROUTES`): the visual write
-(`POST /v1/voice/sessions/{session_id}/visuals`, `{visual}` or `{focus}`) and
+(`POST /v1/voice/sessions/{session_id}/visuals`, `{visual}`, `{focus}`,
+`{approve}` or `{approved}`) and
 the note write (`POST /v1/voice/projects/{project_id}/visuals/{visual_id}/notes`,
 `{note}` or `{to_work}`). `focus` is how `speak`'s `point_at` reaches the page
 (§8.5). An error names the route and the HTTP status, never a body.
@@ -27,6 +39,7 @@ the note write (`POST /v1/voice/projects/{project_id}/visuals/{visual_id}/notes`
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -38,9 +51,13 @@ NOTE_WRITE_ROUTE = "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"
 SHOW_FILE = "show_file"
 SHOW_DIFF = "show_diff"
 SHOW_LOG = "show_log"
+SHOW_MOCKUP = "show_mockup"
+APPROVE_MOCKUP = "approve_mockup"
+APPROVED_MOCKUPS = "approved_mockups"
 ADD_NOTE = "add_note"
 NOTES_TO_WORK = "notes_to_work"
-NAMES: tuple[str, ...] = (SHOW_FILE, SHOW_DIFF, SHOW_LOG, ADD_NOTE, NOTES_TO_WORK)
+NAMES: tuple[str, ...] = (SHOW_FILE, SHOW_DIFF, SHOW_LOG, SHOW_MOCKUP, APPROVE_MOCKUP,
+                          APPROVED_MOCKUPS, ADD_NOTE, NOTES_TO_WORK)
 
 ANCHOR_TYPES: tuple[str, ...] = ("point", "region", "part", "lines")
 WORK_KINDS: tuple[str, ...] = ("follow_up", "issue", "lane_brief")
@@ -51,6 +68,9 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 TITLE_MAX = 120
 NOTE_MAX = 2_000
+#: swarm-api's `MOCKUP_FRAMES_MAX`, and the most one frame's HTML may be.
+FRAMES_MAX = 12
+FRAME_HTML_MAX = 64 * 1024
 
 
 def _str(desc: str) -> dict[str, Any]:
@@ -102,7 +122,26 @@ def tool_schemas() -> list[dict[str, Any]]:
               {"task_id": _str("The agent (task) id."),
                "step": _nullable("string", "The attempt id of one step; null for every failure."),
                "title": _TITLE}),
-        _tool(ADD_NOTE, "Pin the person's spoken note on a visual.",
+        _tool(SHOW_MOCKUP, "Show one proposal's mock-up on screen, as a mockup visual: 1 to 12 "
+              "frames, each a self-contained HTML document with inline CSS, no script and no "
+              "address (no links out, no remote images; data: images are kept). You get back "
+              "its visual_id and its frames' ids (frame-1, frame-2, ...).",
+              {"title": _TITLE,
+               "frames": {"type": "array", "description": "The frames, in the order shown.",
+                          "items": {"type": "object", "additionalProperties": False,
+                                    "properties": {"label": _str("A short name for the frame."),
+                                                   "html": _str("The frame's whole HTML.")},
+                                    "required": ["label", "html"]}},
+               "visual_id": _nullable("string", "The mock-up's visual_id to draw it again; "
+                                      "null for a new proposal.")}),
+        _tool(APPROVE_MOCKUP, "Record the person's approval of one frame of a mock-up, when "
+              "they say which one they go with.",
+              {"visual_id": _str("The mock-up's visual id."),
+               "frame": _str("The frame's id (frame-2) or label.")}),
+        _tool(APPROVED_MOCKUPS, "Read the mock-ups the person approved in this project: which "
+              "frame, who approved it and when.", {}),
+        _tool(ADD_NOTE, "Pin the person's spoken note on a visual; on a mock-up's frame, "
+              "anchor it to the frame as a part.",
               {"visual_id": _str("The visual's id."), "text": _str("The note, as said."),
                "anchor": ANCHOR_SCHEMA,
                "part": _nullable("string", "A part named by its label or id, e.g. 'the header'; "
@@ -168,6 +207,23 @@ async def _visual(api: SwarmApi, visual: dict[str, Any]) -> dict[str, Any]:
             "lines": view.get("lines")}
 
 
+def _frames(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= FRAMES_MAX:
+        raise BadInput(f"frames is 1 to {FRAMES_MAX} frames")
+    out = []
+    for n, frame in enumerate(value, start=1):
+        frame = frame if isinstance(frame, dict) else {}
+        out.append({"id": f"frame-{n}", "label": _text(frame, "label"),
+                    "html": _text(frame, "html", max=FRAME_HTML_MAX)})
+    return out
+
+
+async def _mockup(api: SwarmApi, payload: dict[str, Any]) -> dict[str, Any]:
+    path = VISUAL_WRITE_ROUTE.format(session_id=api.session_id)
+    body = await api._call("POST", VISUAL_WRITE_ROUTE, path, json_body=payload)
+    return body if isinstance(body, dict) else {}
+
+
 async def _note(api: SwarmApi, visual_id: str, payload: dict[str, Any]) -> Any:
     project_id = api._grant.project_id  # the grant's own project: the only one it writes to
     path = NOTE_WRITE_ROUTE.format(project_id=project_id, visual_id=visual_id)
@@ -208,6 +264,27 @@ async def run_visual_tool(api: SwarmApi, name: str, args: Any) -> Any:
         return await _visual(api, {
             "kind": "log", "title": _text(args, "title"), "body": None, "parts": None,
             "source": {"task_id": _match(args, "task_id", _ID_RE, "an agent id"), "step": step}})
+    if name == SHOW_MOCKUP:
+        visual_id = args.get("visual_id")
+        if visual_id is not None:
+            visual_id = _match(args, "visual_id", _VISUAL_ID_RE, "null or a visual id")
+        frames = _frames(args.get("frames"))
+        drawn = await _visual(api, {
+            "kind": "mockup", "title": _text(args, "title"), "parts": None, "source": None,
+            "body": json.dumps({"frames": frames}, ensure_ascii=False), "visual_id": visual_id})
+        return {"visual_id": drawn["visual_id"], "version": drawn["version"],
+                "frames": drawn["parts"]}
+    if name == APPROVE_MOCKUP:
+        answer = await _mockup(api, {"approve": {
+            "visual_id": _match(args, "visual_id", _VISUAL_ID_RE, "a visual id"),
+            "frame": _text(args, "frame")}})
+        view = answer.get("visual") if isinstance(answer.get("visual"), dict) else {}
+        return {"visual_id": view.get("visual_id"), "title": view.get("title"),
+                "approved": view.get("approved")}
+    if name == APPROVED_MOCKUPS:
+        answer = await _mockup(api, {"approved": True})
+        rows = answer.get("approved")
+        return {"approved": rows if isinstance(rows, list) else []}
     if name == ADD_NOTE:
         visual_id = _match(args, "visual_id", _VISUAL_ID_RE, "a visual id")
         part = args.get("part")

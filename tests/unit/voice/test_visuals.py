@@ -20,7 +20,12 @@ records what it was asked. This holds that:
 * notes become a follow-up, an issue or a lane brief, each note then `work`;
 * a grant reaches only the two writes it is listed for, and only its own
   session's; the pointer, the note edit and the notes-to-work route are the page's;
-* `speak`'s `point_at` is a `focus` event on the session's stream.
+* `speak`'s `point_at` is a `focus` event on the session's stream;
+* a mock-up is a visual of self-contained HTML frames, each frame a part: a frame
+  that runs a script or fetches anything is refused, a credential in one is
+  masked; an approval (by voice on the visual write, on the Stage on the
+  approval route) is stored on the visual and served, names one of its frames,
+  and another workspace's visual is the same 404 as a missing one.
 
 No network, no cloud credential; every token and grant is built at runtime.
 """
@@ -144,6 +149,7 @@ def test_every_route_of_the_router_is_a_voice_route_the_design_names():
         ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
         ("PATCH", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}"),
         ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/work"),
+        ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/approval"),
     }
 
 
@@ -634,3 +640,143 @@ def test_the_stream_serves_a_visual_a_focus_and_a_note_in_sequence_and_on_replay
                                               "Last-Event-ID": str(ours[0]["id"])}).text)
     assert [(f["id"], f["event"]) for f in replay if f["id"] <= ours[-1]["id"]] == [
         (f["id"], f["event"]) for f in ours[1:]]
+
+
+# ---- a mock-up: frames, approval ---------------------------------------------
+
+
+FRAMES = [{"id": "frame-1", "label": "Cards",
+           "html": "<!doctype html><style>h1{color:#333}</style><h1>Shop</h1>"},
+          {"id": "frame-2", "label": "List",
+           "html": '<h1>Shop</h1><img src="data:image/png;base64,AAAA" alt="">'}]
+
+
+def _mockup(client, call, frames=None, **visual):
+    return _draw(client, call, kind="mockup", title="The shop page",
+                 body=json.dumps({"frames": FRAMES if frames is None else frames}), **visual)
+
+
+def _approve(client, call, vid, frame, *, headers=None):
+    return client.post(f"/v1/voice/sessions/{call.session_id}/visuals",
+                       json={"approve": {"visual_id": vid, "frame": frame}},
+                       headers=headers or _grant_headers(call))
+
+
+def test_a_mockup_is_a_visual_of_frames_each_frame_a_part(client, db, voice, blobs):
+    call = _start(client, voice)
+    drawn = _mockup(client, call)
+    assert drawn.status_code == 200, drawn.text
+    visual = drawn.json()["visual"]
+    assert visual["kind"] == "mockup" and visual["approved"] is None
+    assert visual["parts"] == [{"id": "frame-1", "label": "Cards"},
+                               {"id": "frame-2", "label": "List"}]
+    stored = json.loads(blobs.objects[visual["body_ref"]])
+    assert [f["html"] for f in stored["frames"]] == [f["html"] for f in FRAMES]
+
+
+@pytest.mark.parametrize("html", [
+    "<script>alert(1)</script>",
+    '<img src="x" onerror="alert(1)">',
+    '<a href="javascript:alert(1)">go</a>',
+    '<img src="https://example.com/x.png">',
+    '<img src="//example.com/x.png">',
+    '<img src="logo.png">',
+    "<style>body{background:url(https://example.com/x.png)}</style>",
+    "<style>@import 'https://example.com/x.css';</style>",
+    '<link rel="stylesheet" href="https://example.com/x.css">',
+    '<iframe srcdoc="x"></iframe>',
+    '<meta http-equiv="refresh" content="0;url=https://example.com">',
+    '<form action="https://example.com"><input></form>',
+])
+def test_a_frame_that_runs_code_or_fetches_anything_is_refused(client, voice, blobs, html):
+    call = _start(client, voice)
+    refused = _mockup(client, call, frames=[{"id": "frame-1", "label": "One", "html": html}])
+    assert refused.status_code == 422, html
+    assert blobs.objects == {}
+
+
+def test_a_mockup_body_that_is_not_frames_is_refused(client, voice):
+    call = _start(client, voice)
+    assert _draw(client, call, kind="mockup", body="<h1>loose</h1>").status_code == 422
+    assert _mockup(client, call, frames=[]).status_code == 422
+    two = [{"id": "a", "label": "A", "html": "<p>a</p>"}, {"id": "a", "label": "B", "html": "<p>b</p>"}]
+    assert _mockup(client, call, frames=two).status_code == 422
+
+
+def test_a_credential_in_a_frame_is_masked_before_it_is_stored(client, voice, blobs):
+    call = _start(client, voice)
+    token = "ghp_" + secrets.token_hex(18)
+    drawn = _mockup(client, call, frames=[{"id": "frame-1", "label": "One",
+                                           "html": f"<p>key {token}</p>"}])
+    assert drawn.status_code == 200, drawn.text
+    stored = blobs.objects[drawn.json()["visual"]["body_ref"]].decode()
+    assert token not in stored and "<p>key " in stored
+
+
+def test_an_approval_by_voice_is_stored_on_the_visual_and_served(client, db, voice):
+    call = _start(client, voice)
+    vid = _mockup(client, call).json()["visual"]["visual_id"]
+    approved = _approve(client, call, vid, "List")
+    assert approved.status_code == 200, approved.text
+    mark = approved.json()["visual"]["approved"]
+    assert mark["frame_id"] == "frame-2" and mark["label"] == "List"
+    assert mark["by"] == ALICE and mark["via"] == "voice" and mark["at"]
+    served = client.get(f"/v1/voice/projects/{call.project_id}/visuals/{vid}",
+                        headers=auth_header("alice")).json()["visual"]
+    assert served["approved"] == mark
+    listed = client.get(f"/v1/voice/projects/{call.project_id}/visuals",
+                        headers=auth_header("alice")).json()["visuals"]
+    assert listed[0]["approved"] == mark
+    # The page hears it on the session's stream.
+    assert _events(db, call, vvis.VISUAL_UPSERT)[-1]["visual"]["approved"] == mark
+    # The planner reads what was approved, on the same write the grant reaches.
+    read = client.post(f"/v1/voice/sessions/{call.session_id}/visuals",
+                       json={"approved": True}, headers=_grant_headers(call))
+    assert read.status_code == 200, read.text
+    assert read.json()["approved"] == [{"visual_id": vid, "title": "The shop page",
+                                        "version": 1, **mark}]
+
+
+def test_an_approval_names_one_of_the_mockups_frames_and_only_a_mockup(client, voice):
+    call = _start(client, voice)
+    vid = _mockup(client, call).json()["visual"]["visual_id"]
+    assert _approve(client, call, vid, "frame-9").status_code == 422
+    spec = _draw(client, call).json()["visual"]["visual_id"]
+    assert _approve(client, call, spec, "overview").status_code == 422
+
+
+def test_the_person_approves_a_frame_on_the_stage(client, db, voice):
+    call = _start(client, voice)
+    vid = _mockup(client, call).json()["visual"]["visual_id"]
+    url = f"/v1/voice/projects/{call.project_id}/visuals/{vid}/approval"
+    approved = client.post(url, json={"frame": "frame-1", "session_id": call.session_id},
+                           headers=auth_header("alice"))
+    assert approved.status_code == 200, approved.text
+    mark = approved.json()["visual"]["approved"]
+    assert mark["frame_id"] == "frame-1" and mark["via"] == "stage" and mark["by"] == ALICE
+    # The approval route is the page's: a grant does not reach it.
+    assert client.post(url, json={"frame": "frame-1"},
+                       headers=_grant_headers(call)).status_code == 403
+
+
+def test_another_workspaces_visual_is_not_approved(client, db, voice):
+    call = _start(client, voice)
+    vid = _mockup(client, call).json()["visual"]["visual_id"]
+    url = f"/v1/voice/projects/{call.project_id}/visuals/{vid}/approval"
+    theirs = client.post(url, json={"frame": "frame-1"}, headers=auth_header("root"))
+    missing = client.post(f"/v1/voice/projects/vp_{secrets.token_hex(16)}/visuals/{vid}/approval",
+                          json={"frame": "frame-1"}, headers=auth_header("alice"))
+    assert theirs.status_code == missing.status_code == 404
+    # A grant approves only on its own session.
+    other = SimpleNamespace(session_id="vs_" + secrets.token_hex(16))
+    assert _approve(client, other, vid, "frame-1", headers=_grant_headers(call)).status_code == 403
+    doc = db.docs[f"voice_projects/{call.project_id}/visuals/{vid}"]
+    assert doc.get("approved") is None
+
+
+def test_a_mockup_drawn_again_drops_the_approval_of_its_old_frames(client, voice):
+    call = _start(client, voice)
+    vid = _mockup(client, call).json()["visual"]["visual_id"]
+    assert _approve(client, call, vid, "frame-1").status_code == 200
+    again = _mockup(client, call, visual_id=vid).json()["visual"]
+    assert again["version"] == 2 and again["approved"] is None

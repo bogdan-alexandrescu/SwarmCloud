@@ -211,8 +211,14 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account register", "POST", "/v1/accounts", "REGISTER"),
     ("account sign-in start", "POST", "/v1/accounts/authorize", {"label": "team"}),
     ("account sign-in finish", "POST", "/v1/accounts/exchange", "EXCHANGE"),
+    ("account device sign-in start", "POST", "/v1/accounts/device/start", {"label": "plan"}),
+    ("account device sign-in poll", "POST", "/v1/accounts/device/poll", "DEVICE_POLL"),
     ("account refresh", "POST", f"/v1/accounts/{ACCOUNT}/refresh", None),
     ("account lending", "PUT", f"/v1/accounts/{ACCOUNT}/lending", {"lend_to": []}),
+    ("account lend caps", "PUT", f"/v1/accounts/{ACCOUNT}/lending",
+     {"lends": {"research": {"max_agents": 1}}}),
+    ("account per-workspace caps", "PUT", f"/v1/accounts/{ACCOUNT}/per-workspace-max",
+     {"per_workspace_max": {"eng": 1}}),
     ("account model classes", "PUT", f"/v1/accounts/{ACCOUNT}/model-classes",
      {"model_classes": []}),
     ("account max agents", "PUT", f"/v1/accounts/{ACCOUNT}/max-agents", {"max_agents": 3}),
@@ -226,6 +232,8 @@ def send(client, method: str, path: str, body: Any, user: str):
         body = {"label": "team", "credential": credential()}
     elif body == "EXCHANGE":
         body = {"state": secrets.token_hex(8), "code": secrets.token_hex(4)}
+    elif body == "DEVICE_POLL":
+        body = {"state": secrets.token_hex(8)}
     kwargs: dict[str, Any] = {"headers": h(user)}
     if body is not None:
         kwargs["json"] = body
@@ -388,6 +396,65 @@ def test_a_non_member_platform_admin_sets_an_accounts_cap_audited(client, db, se
     assert "set_max_agents" in services["pool"].calls
     acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
     assert [a["detail"]["route"] for a in acted] == ["/v1/accounts/{account_id}/max-agents"]
+
+
+def test_a_non_member_platform_admin_sets_a_plans_caps_audited(client, db, seeded, services):
+    """The lend caps and the per-workspace caps pass a platform admin acting
+    in the owner's workspace, audited before the broker is asked, as max
+    agents does."""
+    for path, body in ((f"/v1/accounts/{ACCOUNT}/lending", {"lends": {"research": {"max_agents": 1}}}),
+                       (f"/v1/accounts/{ACCOUNT}/per-workspace-max", {"per_workspace_max": {"eng": 2}})):
+        response = client.put(path, json=body, headers=h("ops", "eng"))
+        assert response.status_code == 200, response.text
+    assert {"set_lending", "set_per_workspace_max"} <= set(services["pool"].calls)
+    acted = [d for d in db.dump("admin_audit/").values() if d["action"] == "platform_admin_acted"]
+    assert sorted(a["detail"]["route"] for a in acted) == [
+        "/v1/accounts/{account_id}/lending", "/v1/accounts/{account_id}/per-workspace-max"]
+
+
+CAPS = [
+    ("lend caps", f"/v1/accounts/{ACCOUNT}/lending", {"lends": {"research": {"max_agents": 1}}}),
+    ("per-workspace caps", f"/v1/accounts/{ACCOUNT}/per-workspace-max", {"per_workspace_max": {"eng": 2}}),
+]
+
+
+@pytest.mark.parametrize("name,path,body", CAPS, ids=[c[0] for c in CAPS])
+def test_a_member_setting_a_plans_caps_is_403_role_admin_required(
+        client, db, seeded, services, monkeypatch, name, path, body):
+    """A plan's caps are the workspace admin's (owner pick, #3851): a member
+    is refused before the broker is asked anything, so no cap is written."""
+    monkeypatch.setenv(MEMBER_SWITCH, "on")
+    monkeypatch.setenv(ADMIN_SWITCH, "on")
+    response = client.put(path, json=body, headers=h("alice"))
+    assert response.status_code == 403, response.text
+    assert code_of(response) == "role_admin_required"
+    assert (response.json()["detail"]["role"], response.json()["detail"]["required"]) == ("member", "admin")
+    assert services["pool"].calls == []
+
+
+@pytest.mark.parametrize("name,path,body", CAPS, ids=[c[0] for c in CAPS])
+def test_a_workspace_admin_sets_a_plans_caps(client, seeded, services, monkeypatch, name, path, body):
+    monkeypatch.setenv(MEMBER_SWITCH, "on")
+    monkeypatch.setenv(ADMIN_SWITCH, "on")
+    response = client.put(path, json=body, headers=h("wanda"))
+    assert response.status_code == 200, response.text
+    assert {"set_lending", "set_per_workspace_max"} & set(services["pool"].calls)
+
+
+def test_a_member_still_sets_who_a_plan_lends_to_with_a_bare_lend_to(client, seeded, services, monkeypatch):
+    """A bare `lend_to` sets no cap (a borrower already lent keeps its own),
+    so it stays the member write it always was."""
+    monkeypatch.setenv(MEMBER_SWITCH, "on")
+    monkeypatch.setenv(ADMIN_SWITCH, "on")
+    response = client.put(f"/v1/accounts/{ACCOUNT}/lending", json={"lend_to": ["research"]},
+                          headers=h("alice"))
+    assert response.status_code == 200, response.text
+    assert "set_lending" in services["pool"].calls
+
+
+def test_the_per_workspace_caps_are_an_admin_write_in_the_role_table():
+    assert roles.required_role("PUT", "/v1/accounts/{account_id}/per-workspace-max") == roles.ADMIN
+    assert roles.required_role("PUT", "/v1/accounts/{account_id}/lending") == roles.MEMBER
 
 
 @pytest.mark.parametrize("field,value", [("platform", True), ("merge_policy", "on_merge_verdict")])

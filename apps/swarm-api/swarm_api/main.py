@@ -79,7 +79,9 @@ from .routes import (
     people,
     platform,
     platform_switches,
+    plugin_bundles,
     plugin_catalogue,
+    plugin_config,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -112,6 +114,7 @@ from .routes import voice
 from .routes import voice_readback
 from .routes import voice_settings
 from .routes import voice_telemetry
+from .routes import voice_trace
 from .routes import voice_visuals
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
@@ -189,6 +192,9 @@ UNCAPTURED_ROUTES = frozenset({
     # GitHub redeems for the App's key and secrets; the one-time link a
     # platform admin mints, in its answer; and the redemption, whose body is
     # the link's token and the value its form carries.
+    # A managed plugin's secret or file setting, with its one-time link
+    # (docs/design/managed-plugins.md section 6.2, lane 6).
+    plugin_config.SECRET_ROUTE,
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
@@ -470,6 +476,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # installs, versions, updates and removal, platform and per workspace,
     # and the intake job's callback; admins only, audited.
     app.include_router(plugin_catalogue.router)
+    # Bundle builds of the plugins built into an image (managed-plugins.md
+    # lane 16): build status, Apply, Roll back and `swarm upgrade`'s rebuild,
+    # platform admins only, and Cloud Build's finish notification.
+    app.include_router(plugin_bundles.router)
+    # A managed plugin's settings, secrets and bindings, and the workspace's
+    # every-step defaults (managed-plugins.md lane 6): read by members,
+    # written by the workspace's owner or admin, audited.
+    app.include_router(plugin_config.router)
     # The platform switches (work contracts, contract review) set from the
     # console over their Terraform defaults: platform admins, audited.
     app.include_router(platform_switches.router)
@@ -660,6 +674,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # days and live, read by a Voice it person or an admin, a platform view
     # by an admin alone.
     app.include_router(voice_telemetry.router)
+    app.include_router(voice_trace.write_router)
+    app.include_router(voice_trace.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

@@ -139,9 +139,9 @@
         "ready": "main h1"
       },
       {
-        "id": "accounts",
-        "address": "capacity/accounts",
-        "path": "/capacity/accounts",
+        "id": "llm-providers",
+        "address": "capacity/llm-providers",
+        "path": "/capacity/llm-providers/plans",
         "ready": "main h1"
       },
       {
@@ -208,6 +208,13 @@
         "id": "platform-secrets",
         "address": "admin/platform-secrets",
         "path": "/admin/platform-secrets",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "plugins",
+        "address": "admin/plugins",
+        "path": "/admin/plugins",
         "ready": "main h1",
         "persona": "platform-admin"
       },

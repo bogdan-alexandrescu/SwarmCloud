@@ -162,7 +162,8 @@ class Hold:
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "GH_TOKEN": "fake-" + secrets.token_hex(4), "RUN_URL": RUN_URL,
                     "FAKE_WORLD": str(self.world), "FAKE_GH_LOG": str(self.log),
-                    "FAKE_BODY": str(self.body), "FAKE_COMMENTS": str(self.comments), "NO_COLOR": "1"})
+                    "FAKE_BODY": str(self.body), "FAKE_COMMENTS": str(self.comments), "NO_COLOR": "1",
+                    "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0"})
         env.pop("GITHUB_STEP_SUMMARY", None)
         cmd = ["bash", str(SCRIPT), "hold", "--train", str(TRAIN), "--body", str(self.body)]
         if dry:

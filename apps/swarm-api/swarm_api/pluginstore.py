@@ -67,7 +67,7 @@ from swarm_common.specsign import SpecNotCanonical, canonical_plugin_record, jcs
 
 from .admins import AUDIT_COLLECTION
 from .errors import ValidationFailed
-from .judgment import MAC_FIELD, MAC_VERSION, SettingsMac, key_id
+from .judgment import MAC_FIELD, MAC_VERSION, SETTINGS_COLLECTION, SettingsMac, block_verifies, key_id
 
 INSTALLS = "plugin_installs"
 VERSIONS = "versions"
@@ -112,6 +112,12 @@ UPLOAD_DEADLINE = timedelta(hours=1)
 MAX_OVERLAY_BYTES = 64 * 1024
 
 INSTALL_ID = re.compile(r"^[pw]-[0-9a-f]{12}$")
+#: The two bundled installs' reserved ids (section 1.4.1): the ids every
+#: Allowed list and default already names, never minted by `new_install_id`.
+RESERVED_INSTALL_IDS = ("builtin:gstack", "builtin:security-audit")
+#: An install whose versions are built into an image version (section 1.4):
+#: its `build` field. Any other install's versions are unpacked per attempt.
+BUILD_IMAGE = "image"
 VERSION_ID = re.compile(r"^v-[0-9a-f]{12}$")
 INTAKE_ID = re.compile(r"^[0-9a-f]{32}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -167,6 +173,21 @@ REFUSALS: dict[str, str] = {
     "diff_changed": "The diff changed since it was shown; read it again before applying.",
     "confirmation_required": "This update changes hooks, servers, hosts or secret fields: type the plugin's name to apply it.",
     "confirmation_mismatch": "The name typed is not the plugin's name.",
+    # Bundled installs (section 1.4.3, pluginbundle.py): a version becomes
+    # current only when the bundle that carries it is ready.
+    "install_bundled": "This plugin is built into an image: applying a version starts a bundle build.",
+    "install_not_bundled": "This plugin is not built into an image.",
+    "bundle_building": "A bundle build is already running; wait for it to end.",
+    "bundle_not_found": "That bundle is not one of this deployment's bundles.",
+    "bundle_not_retained": "No retained bundle carries the previous version; apply it to build one.",
+    "bundle_build_unconfigured": "This deployment has no bundle build configured.",
+    "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; its grants on the job and the bundle repository are not applied yet.",
+    "bundle_build_not_started": "The bundle build could not be started.",
+    "bundle_build_failed": "The bundle build failed.",
+    "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",
+    "bundle_config_changed": "The bundle image's config differs from its release image's config in more than the plugin layers and their history entries.",
+    "bundle_base_invalid": "A base image is not this deployment's image by digest.",
+    "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; apply again to build the bundle the live versions need.",
 }
 
 
@@ -184,6 +205,18 @@ class PluginRefused(ValidationFailed):
 
 def new_install_id(scope: str) -> str:
     return ("p-" if scope == PLATFORM else "w-") + secrets.token_hex(6)
+
+
+def install_id_valid(install_id: Any) -> bool:
+    """A minted id, or one of the two reserved bundled ids."""
+    return isinstance(install_id, str) and (bool(INSTALL_ID.match(install_id))
+                                            or install_id in RESERVED_INSTALL_IDS)
+
+
+def is_bundled(install: Mapping[str, Any] | None) -> bool:
+    """A platform install built into an image version (section 1.4)."""
+    return isinstance(install, Mapping) and install.get("build") == BUILD_IMAGE \
+        and install.get("scope") == PLATFORM
 
 
 def new_version_id() -> str:
@@ -291,7 +324,9 @@ def parse_report(raw: bytes, intake: Mapping[str, Any]) -> dict[str, Any]:
         raise PluginRefused("report_invalid")
     try:
         report = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: nesting deeper than the parser's stack, well inside
+        # the size cap. Never a reason to retry: the same bytes fail again.
         raise PluginRefused("report_invalid") from None
     if not isinstance(report, dict) or set(report) - _REPORT_KEYS:
         raise PluginRefused("report_invalid")
@@ -530,6 +565,9 @@ def install_view(install: Mapping[str, Any], current: Mapping[str, Any] | None, 
         "updated_at": _when(install.get("updated_at")),
         "updated_by": install.get("updated_by"),
     }
+    if is_bundled(install):
+        # Built into an image (section 1.4): no Remove, and an update builds.
+        view.update({"build": BUILD_IMAGE, "removable": False})
     if allowed is not None:
         view["allowed"] = allowed
     return view
@@ -582,12 +620,12 @@ class PluginStore:
         return whole if record_verifies(kind, whole, self._mac.keys) else None
 
     def install(self, install_id: str) -> dict[str, Any] | None:
-        if not INSTALL_ID.match(install_id or ""):
+        if not install_id_valid(install_id):
             return None
         return self._verified("install", self._install_ref(install_id).get(), {"install_id": install_id})
 
     def version(self, install_id: str, version_id: str) -> dict[str, Any] | None:
-        if not INSTALL_ID.match(install_id or "") or not VERSION_ID.match(version_id or ""):
+        if not install_id_valid(install_id) or not VERSION_ID.match(version_id or ""):
             return None
         return self._verified("version", self._version_ref(install_id, version_id).get(),
                               {"install_id": install_id, "version_id": version_id})
@@ -794,6 +832,12 @@ class PluginStore:
             if install is None or install.get("state") != STATE_ACTIVE:
                 refused.append("install_not_active")
                 return
+            if is_bundled(install):
+                # Only a ready bundle moves a bundled install's current
+                # version (section 1.4.3): `pluginbundle.start_apply` builds
+                # it, and `move_current` moves it in the ready transaction.
+                refused.append("install_bundled")
+                return
             target = self._verified("version", _snapshot(txn.get(self._version_ref(install_id, version_id))),
                                     {"install_id": install_id, "version_id": version_id})
             if target is None:
@@ -819,6 +863,25 @@ class PluginStore:
         if refused:
             raise PluginRefused(refused[0], status=409 if refused[0] != "version_not_found" else 404)
         return result
+
+    def move_current(self, txn: Any, install: Mapping[str, Any], version_id: str, *, by: str,
+                     bundle_id: str) -> dict[str, Any]:
+        """Inside the caller's transaction (the one that marks a bundle ready,
+        or rolls back to a retained one), make `version_id` a bundled
+        install's current version, audited `plugin_updated` with the bundle
+        id. `install` is the verified install read in that transaction. The
+        one writer of a bundled install's `current_version`."""
+        install_id = install["install_id"]
+        previous_id = install.get("current_version")
+        moved = dict(install)
+        moved.update({"current_version": version_id, "updated_at": self._now(), "updated_by": by})
+        stored = _signed("install", moved, self._mac.keys)
+        txn.set(self._install_ref(install_id), stored)
+        txn.set(self._audit_ref(), _audit_row(
+            AUDIT_UPDATED, by=by, at=self._now(), scope=install["scope"], tenant_id=install.get("tenant_id"),
+            detail={"install_id": install_id, "from_version": previous_id, "to_version": version_id,
+                    "bundle_id": bundle_id}))
+        return stored
 
     def remove(self, install_id: str, *, by: str) -> dict[str, Any]:
         """Mark the install removed, audited `plugin_removed`. Its versions
@@ -877,6 +940,150 @@ def refuse_removed(store: PluginStore, tenant_id: str, names: Iterable[str], *,
             raise PluginRefused("plugin_removed", install_id=name, field=field)
 
 
+# --- who uses an install (section 9.2) ------------------------------------------
+
+#: Each list the usage answer carries is cut at this many rows, and the answer
+#: says `truncated: true`: Remove shows who uses a plugin, it is not a report.
+USAGE_CAP = 200
+#: At most this many documents are read per collection to find those rows; a
+#: read that stops here says `truncated: true` too, never "nobody".
+USAGE_SCAN = 2000
+
+#: The `plugins` block of `workspace_settings/{tenant}` (plugins.FIELD, its
+#: `allowed` and `defaults`), restated: plugins.py imports this module.
+_SETTINGS_BLOCK = "plugins"
+_TASKS = "tasks"
+_UNFINISHED = ("SUBMITTED", "QUEUED", "PARKED", "READY", "LEASED", "DISPATCHED", "STARTING", "RUNNING")
+
+
+def _signed_names(tenant_id: str, doc: Mapping[str, Any] | None, keys: tuple[str, ...]) -> tuple[set[str], set[str]]:
+    """The workspace's allowed and every-step names, from its `plugins` block
+    only when its MAC verifies: an unsigned list is nobody's choice."""
+    block = (doc or {}).get(_SETTINGS_BLOCK) if isinstance(doc, Mapping) else None
+    if not isinstance(block, Mapping) or not block_verifies(tenant_id, _SETTINGS_BLOCK, block, keys):
+        return set(), set()
+
+    def names(key: str) -> set[str]:
+        found = block.get(key)
+        return {n for n in found if isinstance(n, str)} if isinstance(found, list) else set()
+
+    return names("allowed"), names("defaults")
+
+
+def _spec_steps(spec: Any, install_id: str, *, default: bool) -> tuple[list[str], bool]:
+    """The step ids of a stored workflow spec that get the install, and whether
+    any of them names it itself (else every one gets it from the default)."""
+    steps = spec.get("steps") if isinstance(spec, Mapping) else None
+    found: list[str] = []
+    added = False
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, Mapping) or not isinstance(step.get("step_id"), str):
+            continue
+        named = isinstance(step.get("plugins"), Mapping) and install_id in step["plugins"]
+        off = isinstance(step.get("plugins_off"), list) and install_id in step["plugins_off"]
+        if named or (default and not off):
+            found.append(step["step_id"])
+            added = added or named
+    return found, added
+
+
+def _capped(rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], Any]) -> tuple[list[dict[str, Any]], bool]:
+    rows.sort(key=key)
+    return rows[:USAGE_CAP], len(rows) > USAGE_CAP
+
+
+def install_usage(db: Any, install: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Who uses `install` (section 9.2), for Remove to show before it removes.
+
+    `workspaces`: those whose signed `plugins` block allows it or makes it an
+    every-step default; a workspace install is its own workspace's to use
+    with no opt-in, so that workspace is listed as allowing it. `workflows`:
+    the stored workflow specs (a `custom-prompt` schedule's `params.spec`,
+    kind `schedule-template`) with a step that names it or gets it from the
+    workspace's default, and `schedules`: the schedules that run them.
+    `steps`: steps not finished whose dispatch block (`metadata.dispatch.
+    plugins`, signed with the step) pins it. A platform install is looked for
+    in every workspace, a workspace install in its own only. Each list holds
+    at most USAGE_CAP rows, and at most USAGE_SCAN documents are read per
+    collection; either cut sets `truncated`."""
+    # Imported here: the schedule modules import the submission's, which
+    # import this module.
+    from .schedtypes.custom_prompt import TYPE as CUSTOM_PROMPT
+    from .schedules import COLLECTION as SCHEDULES
+
+    install_id = install["install_id"]
+    tenant_id = install.get("tenant_id") if install.get("scope") == WORKSPACE else None
+    truncated = False
+
+    def scan(collection: str, *filters: FieldFilter, fields: tuple[str, ...]) -> list[Any]:
+        nonlocal truncated
+        query = db.collection(collection)
+        if tenant_id is not None and collection != SETTINGS_COLLECTION:
+            query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        for clause in filters:
+            query = query.where(filter=clause)
+        found = list(query.select(list(fields)).limit(USAGE_SCAN + 1).stream())
+        if len(found) > USAGE_SCAN:
+            truncated = True
+        return found[:USAGE_SCAN]
+
+    if tenant_id is None:
+        settings = [(s.id, s.to_dict()) for s in scan(SETTINGS_COLLECTION, fields=(_SETTINGS_BLOCK,))]
+    else:
+        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
+        settings = [(tenant_id, snap.to_dict() if snap.exists else None)]
+    workspaces: list[dict[str, Any]] = []
+    defaults: set[str] = set()
+    for tenant, doc in settings:
+        allowed, every_step = _signed_names(tenant, doc, keys)
+        allows = install_id in allowed or tenant == tenant_id
+        if install_id in every_step:
+            defaults.add(tenant)
+        if allows or install_id in every_step:
+            workspaces.append({"tenant_id": tenant, "allowed": allows, "every_step": install_id in every_step})
+
+    workflows: list[dict[str, Any]] = []
+    schedules: list[dict[str, Any]] = []
+    for snap in scan(SCHEDULES, FieldFilter("type", "==", CUSTOM_PROMPT),
+                     fields=("tenant_id", "name", "params")):
+        doc = snap.to_dict() or {}
+        owner = doc.get("tenant_id")
+        params = doc.get("params")
+        if not isinstance(owner, str) or not isinstance(params, Mapping):
+            continue
+        steps, added = _spec_steps(params.get("spec"), install_id, default=owner in defaults)
+        if not steps:
+            continue
+        name = doc.get("name") if isinstance(doc.get("name"), str) else snap.id
+        workflows.append({"tenant_id": owner, "id": snap.id, "name": name, "kind": "schedule-template",
+                          "steps": steps, "how": "added" if added else "default"})
+        schedules.append({"tenant_id": owner, "schedule_id": snap.id, "name": name})
+
+    steps_now: list[dict[str, Any]] = []
+    for snap in scan(_TASKS, FieldFilter("state", "in", list(_UNFINISHED)),
+                     fields=("tenant_id", "state", "workflow_id", "step_id", "metadata.dispatch.plugins")):
+        doc = snap.to_dict() or {}
+        metadata = doc.get("metadata")
+        dispatch = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+        pinned = dispatch.get("plugins") if isinstance(dispatch, Mapping) else None
+        if not isinstance(pinned, Mapping) or install_id not in pinned:
+            continue
+        steps_now.append({"tenant_id": doc.get("tenant_id"), "task_id": snap.id,
+                          "workflow_id": doc.get("workflow_id"), "step": doc.get("step_id"),
+                          "state": doc.get("state")})
+
+    answer: dict[str, Any] = {}
+    for name, rows, key in (
+            ("workspaces", workspaces, lambda r: r["tenant_id"]),
+            ("workflows", workflows, lambda r: (r["tenant_id"], r["name"], r["id"])),
+            ("schedules", schedules, lambda r: (r["tenant_id"], r["name"], r["schedule_id"])),
+            ("steps", steps_now, lambda r: (str(r["tenant_id"]), str(r["workflow_id"] or ""), r["task_id"]))):
+        answer[name], cut = _capped(rows, key)
+        truncated = truncated or cut
+    answer["truncated"] = truncated
+    return answer
+
+
 __all__ = [
     "AUDIT_ACTIONS",
     "INSTALLS",
@@ -887,7 +1094,10 @@ __all__ = [
     "PluginStore",
     "REFUSALS",
     "VERSIONS",
+    "USAGE_CAP",
+    "USAGE_SCAN",
     "diff_digest",
+    "install_usage",
     "install_view",
     "parse_report",
     "record_mac",

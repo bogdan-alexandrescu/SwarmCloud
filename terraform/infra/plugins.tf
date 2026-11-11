@@ -125,6 +125,28 @@ resource "google_storage_bucket" "plugins" {
     }
   }
 
+  # THE CONSOLE'S UPLOAD. Config > Plugins > Add plugin > Upload is a browser
+  # PUT straight to the V4 URL swarm-api signs for one quarantine/ object
+  # (apps/swarm-ui/src/api.ts putPluginArchive), and that PUT is cross-origin:
+  # without this rule its preflight admits nothing and no upload from the
+  # console can arrive. The one origin is the console's own (local.console_url,
+  # never "*"), the one method PUT (Cloud Storage answers the OPTIONS preflight
+  # itself), and the headers are exactly the two the URL is signed with and the
+  # console sends. CORS grants no access: the signed URL still names the one
+  # object, and no IAM changes. Without a console (enable_frontend off or no
+  # frontend_hostname, so console_url is "") there is no origin to admit and
+  # the rule is omitted, so such a deployment still plans.
+  dynamic "cors" {
+    for_each = local.console_url == "" ? [] : [local.console_url]
+    content {
+      origin          = [cors.value]
+      method          = ["PUT"]
+      response_header = ["Content-Type", "x-goog-content-length-range"]
+      # Minutes, not hours: a changed rule reaches browsers within five.
+      max_age_seconds = 300
+    }
+  }
+
   # Intake leftovers: a quarantine object is deleted by swarm-api once its
   # intake ends, and staging/ is copied out; whatever a crash leaves goes after
   # a day. platform/ and tenants/ are the reconciler's (§9.3), never aged here.
@@ -392,6 +414,16 @@ resource "google_cloud_run_v2_job" "plugin_intake" {
         }
 
         # Names and numbers only: no secret, no credential, no database.
+        #
+        # NO VOLUME, ON PURPOSE. The job reads quarantine/<intake_id> and
+        # creates staging/<intake_id>/... through the Cloud Storage JSON API
+        # with this name (apps/plugin-intake/plugin_intake/bucket.py), over
+        # Private Google Access, as the execution's account: one object get,
+        # object creates, exactly the two grants above. A Cloud Storage FUSE
+        # volume would look directories up by listing them, which the account
+        # must not do (live QA finding, 10 November 2026: with neither, every
+        # intake failed at its first read; tests/unit/terraform/
+        # test_plugin_intake_job_access.py).
         env {
           name  = "PLUGINS_BUCKET"
           value = google_storage_bucket.plugins.name

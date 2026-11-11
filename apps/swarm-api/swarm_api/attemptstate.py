@@ -55,7 +55,16 @@ from pydantic import AwareDatetime, Field
 
 from swarm_common.admission import AdmissionConfig, _snapshot, release_lease_in_transaction
 from swarm_common.config import Settings
-from swarm_common.models import Attempt, EndCause, Tenant, new_id, retries_exhausted, utcnow
+from swarm_common.models import (
+    CREDENTIAL_TIERS,
+    Attempt,
+    EndCause,
+    Tenant,
+    check_additional_repositories,
+    new_id,
+    retries_exhausted,
+    utcnow,
+)
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -88,7 +97,7 @@ from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLE
 from .rollup import derived_state_write
 from .task_accounts import account_after
 from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
-from .validation import HUMAN_READY_METADATA_KEY
+from .validation import FIX_LOOP_PROFILE, FIX_LOOP_ROUND_FIELD, HUMAN_READY_METADATA_KEY
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
@@ -203,15 +212,24 @@ WORKFLOW_ANCESTORS_MAX: int = BUILDS_ON_MAX_DEPTH
 
 #: The attempt document's usage fields a worker may write, by `kind` (§4.2):
 #: the frozen `Attempt`'s names, nothing else. `cpu_limit_source` takes the
-#: worker's `metrics.CPU_LIMIT_SOURCES`.
+#: worker's `metrics.CPU_LIMIT_SOURCES`. `credential` is request 152's three
+#: fields, as the worker's `control.credential_fields` sends them.
 USAGE_FIELDS: dict[str, tuple[str, ...]] = {
     "resource": ("peak_rss_bytes", "peak_disk_bytes", "oom_near_miss"),
     "cpu": ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores",
             "cpu_limit_source"),
     "spend": ("input_tokens", "output_tokens", "cache_read_input_tokens",
               "cache_creation_input_tokens", "cost_usd"),
+    "credential": ("account_id", "credential_source", "credential_tier"),
 }
 CPU_LIMIT_SOURCES = ("cgroup", "resource_class")
+#: `Attempt.credential_source`'s values (request 152; the worker's
+#: `control.CREDENTIAL_SOURCES`). Only `account_pool` names an account.
+CREDENTIAL_SOURCES = ("account_pool", "tenant_secret")
+#: The longest `Attempt.account_id` taken: the broker's `<tenant>:<label>`
+#: document id is far shorter, and Firestore's own field bound is not a
+#: reason to store a megabyte.
+ACCOUNT_ID_MAX = 256
 assert all(
     name in Attempt.__dataclass_fields__ for names in USAGE_FIELDS.values() for name in names
 )
@@ -329,7 +347,7 @@ class CheckpointBody(_Tuple):
 
 
 class UsageBody(_Tuple):
-    kind: Literal["resource", "cpu", "spend"]
+    kind: Literal["resource", "cpu", "spend", "credential"]
     fields: dict[str, Any]
 
 
@@ -530,6 +548,36 @@ def fence_reason(
     return None
 
 
+def _credential_doc(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Request 152's three fields as the worker's direct path merges them
+    (`control.credential_fields`): all three, always, the absent ones None.
+
+    Held to the frozen `Attempt`'s shape and refused otherwise rather than
+    written wrong: a source of `CREDENTIAL_SOURCES`; an account only under
+    `account_pool`, a non-empty id of at most `ACCOUNT_ID_MAX`; a tier of
+    `CREDENTIAL_TIERS` and only beside an account. An account id and two
+    words: nothing here can hold a key, a secret's name or a token.
+    """
+    source = fields.get("credential_source")
+    if source not in CREDENTIAL_SOURCES:
+        raise ValidationFailed(f"credential_source is one of {', '.join(CREDENTIAL_SOURCES)}")
+    account_id = fields.get("account_id")
+    if account_id is not None:
+        if (not isinstance(account_id, str) or not account_id
+                or len(account_id) > ACCOUNT_ID_MAX):
+            raise ValidationFailed(
+                f"account_id is null or a string of 1 to {ACCOUNT_ID_MAX} characters")
+        if source != "account_pool":
+            raise ValidationFailed("account_id is written only under account_pool")
+    tier = fields.get("credential_tier")
+    if tier is not None:
+        if tier not in CREDENTIAL_TIERS:
+            raise ValidationFailed(f"credential_tier is null or one of {', '.join(CREDENTIAL_TIERS)}")
+        if account_id is None:
+            raise ValidationFailed("credential_tier is written only beside an account_id")
+    return {"account_id": account_id, "credential_source": source, "credential_tier": tier}
+
+
 def _lease_is_this_tuples(lease: Mapping[str, Any] | None, attempt: AttemptTuple) -> bool:
     return (
         lease is not None
@@ -711,6 +759,22 @@ class _Walk:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+#: A fix loop's re-review round, as `fixloop.REVIEW_KIND` signs it in the
+#: round's `fix_loop_round` record.
+FIX_LOOP_REVIEW_KIND = "review"
+
+
+def _declared_parents(task: Mapping[str, Any]) -> set[str]:
+    """The ids a task's spec declares as its parents: its `depends_on`, its
+    `metadata.input_from` and its dispatch block's `input_parents`."""
+    declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
+    metadata = _mapping(task.get("metadata"))
+    declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
+    dispatch = _mapping(metadata.get("dispatch"))
+    declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+    return declared
 
 
 def _builds_on(metadata: Mapping[str, Any]) -> str | None:
@@ -1355,7 +1419,8 @@ class AttemptState:
         return self._run(_apply)
 
     def usage(self, call: Call) -> dict[str, Any]:
-        """`record_resource_usage`, `record_cpu_usage`, `record_spend`: named
+        """`record_resource_usage`, `record_cpu_usage`, `record_spend` and the
+        credential `record_spend` sends after it (request 152): named
         fields only, typed as the frozen `Attempt` types them. `cost_usd` is
         the runner's figure, as the direct path stores it: swarm-api holds no
         price table to recompute it from (§4.2 asked for one "where a price
@@ -1367,24 +1432,27 @@ class AttemptState:
         if unknown:
             raise ValidationFailed(f"{body.kind} usage takes only {', '.join(allowed)}")
         doc: dict[str, Any] = {}
-        for key, value in body.fields.items():
-            if key == "oom_near_miss":
-                if not isinstance(value, bool):
-                    raise ValidationFailed("oom_near_miss must be a boolean")
-                doc[key] = value
-            elif key == "cpu_limit_source":
-                if value not in CPU_LIMIT_SOURCES:
-                    raise ValidationFailed("cpu_limit_source must be cgroup or resource_class")
-                doc[key] = value
-            elif key in ("cost_usd", "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores",
-                         "cpu_limit_cores"):
-                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-                    raise ValidationFailed(f"{key} must be a non-negative number")
-                doc[key] = float(value)
-            else:
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ValidationFailed(f"{key} must be a non-negative integer")
-                doc[key] = value
+        if body.kind == "credential":
+            doc = _credential_doc(body.fields)
+        else:
+            for key, value in body.fields.items():
+                if key == "oom_near_miss":
+                    if not isinstance(value, bool):
+                        raise ValidationFailed("oom_near_miss must be a boolean")
+                    doc[key] = value
+                elif key == "cpu_limit_source":
+                    if value not in CPU_LIMIT_SOURCES:
+                        raise ValidationFailed("cpu_limit_source must be cgroup or resource_class")
+                    doc[key] = value
+                elif key in ("cost_usd", "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores",
+                             "cpu_limit_cores"):
+                    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative number")
+                    doc[key] = float(value)
+                else:
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative integer")
+                    doc[key] = value
         if body.kind == "cpu":
             if "cpu_limit_source" in doc and "cpu_limit_cores" not in doc:
                 raise ValidationFailed("cpu_limit_source is written only beside cpu_limit_cores")
@@ -2107,8 +2175,9 @@ class AttemptState:
         }
 
     def context(self, attempt: AttemptTuple) -> dict[str, Any]:
-        """What the worker reads of its OWN tenant's settings, keys and grant
-        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`),
+        """What the worker reads of its OWN tenant's settings, keys and grants
+        (`secrets.load_tenant`, `secrets.grant_refusal`, `jevkey`,
+        `judge/attempt.py`, `graphstage.py`),
         and of the platform's settings only `PLATFORM_SETTINGS_SERVED`
         (`extrarepos.budget_bytes`). Every id is derived from the tuple and
         the task's signed fields."""
@@ -2135,10 +2204,7 @@ class AttemptState:
         grant = None
         repo = owner_repo(task.get("repository_url"))
         if repo is not None and isinstance(submitted_by, str) and "@" in submitted_by:
-            grant_id = grant_id_for(tenant_id, submitted_by, repo_id_for(tenant_id, *repo))
-            found = self._read(self._ref(GRANTS, grant_id))
-            if found is not None and found.get("tenant_id") in (None, tenant_id):
-                grant = {"id": grant_id, **found}
+            grant = self._grant(tenant_id, submitted_by, repo_id_for(tenant_id, *repo))
         return {
             "ok": True,
             "tenant": jsonable(tenant),
@@ -2147,8 +2213,64 @@ class AttemptState:
             "provider_keys": keys,
             "personal_tenant_id": personal,
             "forge_grant": jsonable(grant),
+            "additional_forge_grants": jsonable(
+                self._additional_grants(attempt, task, submitted_by)),
             "platform_settings": self._platform_settings(),
         }
+
+    def _grant(self, tenant_id: str, submitted_by: str, repo_id: str) -> dict[str, Any] | None:
+        """The submitter's grant on `repo_id`, with its `id`, when the
+        document exists and names no other tenant; else None."""
+        grant_id = grant_id_for(tenant_id, submitted_by, repo_id)
+        found = self._read(self._ref(GRANTS, grant_id))
+        if found is None or found.get("tenant_id") not in (None, tenant_id):
+            return None
+        return {"id": grant_id, **found}
+
+    def _additional_grants(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                           submitted_by: Any) -> dict[str, dict[str, Any]]:
+        """The submitter's grant on each of the task's SIGNED
+        `additional_repositories`, keyed by grant id: the worker re-reads it
+        before cloning the entry (`secrets.grant_refusal`), and `forge_grant`
+        is the primary's alone, so without these a switched workspace read
+        every additional grant as removed (live finding, 11 November 2026).
+
+        Each id is derived as the primary's is, from the tuple's tenant, the
+        signed `submitted_by` and the entry's `repo_id` RECOMPUTED from its
+        `repository` (a list naming one repository under another's id serves
+        nothing). The list is read only from a task whose spec verifies: the
+        worker checks a person's grant on an entry only then
+        (`_additional_suffix`), and the list is tenant-writable after signing.
+        An entry with no grant, or one naming another tenant, is absent, so
+        the worker still reads it as removed. A task with no list reads
+        nothing more."""
+        entries = task.get("additional_repositories")
+        if not entries or not isinstance(submitted_by, str) or "@" not in submitted_by:
+            return {}
+        try:
+            check_additional_repositories(entries)
+        except ValueError:
+            return {}
+        refusal = spec_refusal(self._settings, task, attempt.task_id)
+        if refusal is not None:
+            # The reason names the check, never a value from the document.
+            log.warning("state context unverified own task tenant=%s task=%s attempt=%s: %s; "
+                        "no additional repository's grant is served", attempt.tenant_id,
+                        attempt.task_id, attempt.attempt_id, refusal)
+            return {}
+        grants: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            try:
+                owner, name = parse_repository(entry["repository"])
+            except ValueError:
+                continue
+            repo_id = repo_id_for(attempt.tenant_id, owner, name)
+            if repo_id != entry["repo_id"]:
+                continue
+            found = self._grant(attempt.tenant_id, submitted_by, repo_id)
+            if found is not None:
+                grants[found["id"]] = found
+        return grants
 
     def _platform_settings(self) -> dict[str, Any]:
         """`control/settings`, cut to `PLATFORM_SETTINGS_SERVED`, each field as
@@ -2189,11 +2311,8 @@ class AttemptState:
                         attempt.tenant_id, attempt.task_id, attempt.attempt_id, refusal)
             raise UpstreamNotDeclared(
                 "this task's spec does not verify, so it declares no upstream")
-        declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
-        metadata = _mapping(task.get("metadata"))
-        declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
-        dispatch = _mapping(metadata.get("dispatch"))
-        declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+        declared = _declared_parents(task)
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
         # A merge-only continuation (`issueci.merge_workflow`,
         # `MergeSources(continued=True)`) depends on nothing: the task it
         # merges, in another workflow, is named only here, and is the
@@ -2264,6 +2383,11 @@ class AttemptState:
             (in `upstream`), the opener's and the candidate's. Unverified, a
             rewrite of any one would serve any same-tenant task it named.
             The worker still holds each one to its signed spec as well.
+          * a merge step's fix loop's re-review (`agent_worker.merge.
+            _loop_review`): a task of this tenant whose own signed
+            `fix_loop_round` is of kind "review" and names a loop this merge
+            step declares, of its workflow and on `fix-loop`
+            (`_is_fix_loop_rereview`).
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
@@ -2272,7 +2396,43 @@ class AttemptState:
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id, walk)
                 or self._is_gate_review(attempt, task, upstream_task_id, walk)
                 or self._is_workflow_ancestor(attempt, task, upstream_task_id, walk)
-                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk))
+                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk)
+                or self._is_fix_loop_rereview(attempt, task, upstream_task_id, walk))
+
+    def _is_fix_loop_rereview(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                              upstream_task_id: str, walk: "_Walk") -> bool:
+        """A merge step's read of a `re-review:<k>` its fix loop ran
+        (`agent_worker.merge._loop_review`, docs/design/fix-loop.md §4.6).
+
+        A re-review is a one-step workflow of its own, named only by the
+        loop's tenant-writable `result_summary.fix_loop.final_review`, so
+        nothing the merge declares names it. It is served when ALL hold,
+        each read from a document verified HERE by the id it was read by:
+        this task's signed dispatch carries a `merge_target` (it is a merge
+        step); the re-review, of this tenant, carries a signed
+        `fix_loop_round` of kind "review" whose `loop_task` is one this
+        task declares (`_declared_parents`); and that loop is this tenant's,
+        of this task's workflow, on the `fix-loop` profile. A task the
+        loop's summary names without that signed round record, or a
+        re-review of another loop, stays the 403."""
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
+        workflow_id = task.get("workflow_id")
+        if (not _mapping(dispatch.get("merge_target")) or not isinstance(workflow_id, str)
+                or not workflow_id):
+            return False
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
+            return False
+        record = _mapping(_mapping(_mapping(doc.get("metadata")).get("dispatch"))
+                          .get(FIX_LOOP_ROUND_FIELD))
+        loop_id = record.get("loop_task")
+        if (record.get("kind") != FIX_LOOP_REVIEW_KIND or not isinstance(loop_id, str)
+                or loop_id not in _declared_parents(task)):
+            return False
+        loop = self._read(self._ref(TASKS, loop_id))
+        return (loop is not None and self._verified(attempt, loop, loop_id, walk)
+                and loop.get("workflow_id") == workflow_id
+                and loop.get("runner_profile") == FIX_LOOP_PROFILE)
 
     def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
                              upstream_task_id: str, walk: "_Walk") -> bool:

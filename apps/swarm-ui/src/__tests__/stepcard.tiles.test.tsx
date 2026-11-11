@@ -36,6 +36,7 @@ function stepRow(over: Partial<StepRowModel> = {}): StepRowModel {
   return {
     step: wfStep(),
     taskId: 'tsk_build',
+    task: null,
     look: { tone: 'live', word: 'running', title: 'running', mark: 'running', hue: 'live' },
     times: { spans: [], mark: null, attempts: null, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: '' },
     ran: absentCell({ text: '—', note: '' }),

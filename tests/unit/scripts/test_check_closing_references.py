@@ -128,9 +128,12 @@ def _answer(
     reference_repo: str = THIS_REPO,
     references_total: int | None = None,
     commits_total: int | None = None,
+    labels: list[str] | None = None,
+    labels_total: int | None = None,
 ) -> dict:
     refs = references or []
     messages = commits if commits is not None else ["one commit"]
+    names = labels if labels is not None else ["ready"]
     return {
         "data": {
             "repository": {
@@ -152,6 +155,10 @@ def _answer(
                     "commits": {
                         "totalCount": len(messages) if commits_total is None else commits_total,
                         "nodes": [{"commit": {"message": m}} for m in messages],
+                    },
+                    "labels": {
+                        "totalCount": len(names) if labels_total is None else labels_total,
+                        "nodes": [{"name": n} for n in names],
                     },
                 }
             }
@@ -398,6 +405,65 @@ def test_a_pull_request_number_that_is_not_a_number_is_refused(run_check, pr: st
 
 
 # ---------------------------------------------------------------------------
+# A review that said NOT_YET holds it (owner decision, 9 November 2026)
+# ---------------------------------------------------------------------------
+
+#: What the script says for a pull request carrying `review-not-yet`.
+REVIEW_HOLD = (
+    "**Not merged, and `ready` removed.** This pull request carries the `review-not-yet` "
+    "label: its review said NOT_YET. A later review must say MERGE before it can merge, and "
+    "the merge step that reads that MERGE removes the label. A CI fix does not clear it, and "
+    "neither does a green CI run: `ready` is refused while the label is on."
+)
+
+
+def test_a_pull_request_labelled_review_not_yet_is_refused(run_check):
+    """The 9 November shape: green, `ready`, and its review said NOT_YET.
+    MUTATION: read only the closing references and this passes."""
+    proc, looked_up, _calls = run_check(_answer(labels=["ready", "review-not-yet"]))
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert looked_up == []
+    assert proc.stdout == f"<!-- review-not-yet -->\n{REVIEW_HOLD}\n", proc.stdout
+
+
+@pytest.mark.parametrize("labels", [[], ["ready"], ["ready", "review-notyet", "hold"]])
+def test_without_the_label_the_check_is_unchanged(run_check, labels: list[str]):
+    proc, _looked_up, _calls = run_check(_answer(labels=labels))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == ""
+
+
+def test_the_label_and_an_open_pull_request_are_both_said_once(run_check):
+    proc, looked_up, _calls = run_check(
+        _answer(body="fix #840", labels=["review-not-yet"]), [_issue(840, pull=True)])
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert looked_up == [840]
+    first, second = proc.stdout.strip().split("\n\n")
+    assert first == f"<!-- review-not-yet -->\n{REVIEW_HOLD}"
+    assert second == _refusal(840).removeprefix("**Not merged, and `ready` removed.** ")
+    assert proc.stdout.count("**Not merged") == 1
+
+
+@pytest.mark.parametrize("answer", [
+    pytest.param("no-labels", id="no label list"),
+    pytest.param("too-many", id="more labels than one page"),
+])
+def test_labels_it_cannot_read_fail_closed(run_check, answer: str):
+    """MUTATION: treat a missing label list as no label, and a NOT_YET passes."""
+    doc = _answer(labels=["ready"], labels_total=101 if answer == "too-many" else None)
+    if answer == "no-labels":
+        del doc["data"]["repository"]["pullRequest"]["labels"]
+    proc, _looked_up, _calls = run_check(doc)
+    assert proc.returncode not in (0, REFUSED), proc.stdout + proc.stderr
+    assert proc.stdout == ""
+
+
+def test_the_query_asks_for_the_labels():
+    text = SCRIPT.read_text()
+    assert re.search(r"labels\(first: \$\{PAGE\}\) \{\s*totalCount\s*nodes \{ name \}", text), text
+
+
+# ---------------------------------------------------------------------------
 # The workflow calls it before auto-merge is enabled
 # ---------------------------------------------------------------------------
 
@@ -441,6 +507,9 @@ def run_gate_with_refusal(enable: dict, tmp_path: Path):
     """The gate's own shell with a refusal handed in, against a fake gh that
     records the label removal and the comment."""
     script = next(s for s in enable["steps"] if s.get("id") == "gate")["run"]
+    # Its own directory, so a test can run the check (`run_check`) beside it.
+    tmp_path = tmp_path / "gate"
+    tmp_path.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "gh"
@@ -452,7 +521,7 @@ def run_gate_with_refusal(enable: dict, tmp_path: Path):
     )
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
-    def run(event_name: str):
+    def run(event_name: str, refusal: str | None = None):
         log = tmp_path / "gh.log"
         comments = tmp_path / "comments.md"
         output = tmp_path / "output.txt"
@@ -470,7 +539,7 @@ def run_gate_with_refusal(enable: dict, tmp_path: Path):
             "HEAD_SHA": "0" * 40,
             "MERGE_APP_ID": "123456",
             "HAS_MERGE_APP_KEY": "true",
-            "CLOSING_REFUSAL": _refusal(840),
+            "CLOSING_REFUSAL": _refusal(840) if refusal is None else refusal,
             "GITHUB_STEP_SUMMARY": str(summary),
             "GITHUB_OUTPUT": str(output),
             "FAKE_GH_LOG": str(log),
@@ -493,6 +562,26 @@ def test_a_refusal_removes_ready_comments_and_arms_nothing(run_gate_with_refusal
     assert "decision=merge" not in output and "api " not in calls, calls
     if event_name == "workflow_dispatch":
         # A re-evaluation may find auto-merge armed by an earlier run.
+        assert proc.returncode == 0 and "disarm=true" in output, output
+    else:
+        assert proc.returncode != 0
+
+
+@pytest.mark.parametrize("event_name", ["pull_request_target", "workflow_dispatch"])
+def test_the_gate_refuses_review_not_yet_removes_ready_and_comments_once(
+        run_check, run_gate_with_refusal, event_name: str):
+    """The script's refusal for `review-not-yet`, handed to auto-merge.yml's
+    own gate shell: `ready` comes off, one comment says why, nothing is armed.
+    MUTATION: drop the label check and the gate has nothing to refuse."""
+    check, _looked_up, _calls = run_check(_answer(labels=["ready", "review-not-yet"]))
+    assert check.returncode == REFUSED
+    proc, calls, comments, output = run_gate_with_refusal(event_name, check.stdout.rstrip("\n"))
+    assert calls.count("pr edit 4242 --remove-label ready") == 1, calls
+    assert calls.count("pr comment 4242") == 1, calls
+    assert REVIEW_HOLD in comments and comments.count(REVIEW_HOLD) == 1, comments
+    assert "decision=refused" in output and "decision=merge" not in output, output
+    assert "--auto" not in calls and "api " not in calls, calls
+    if event_name == "workflow_dispatch":
         assert proc.returncode == 0 and "disarm=true" in output, output
     else:
         assert proc.returncode != 0

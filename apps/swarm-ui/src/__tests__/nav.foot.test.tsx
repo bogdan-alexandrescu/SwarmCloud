@@ -149,7 +149,7 @@ describe('API reads is a page of Capacity (NAV-FOOT)', () => {
     expect(capacity.tabs[capacity.tabs.length - 1]).toEqual({ id: 'api-reads', label: 'API reads' })
     // MUTATION: leave it out of PANEL_PAGES.capacity and the panel and flyout lose it.
     // JEV-USAGE-PAGE (part of #2688) added Jev usage before it; API reads stays last.
-    expect(PANEL_PAGES.capacity.map((p) => p.label)).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'Jev usage', 'API reads'])
+    expect(PANEL_PAGES.capacity.map((p) => p.label)).toEqual(['Pools', 'Runtimes', 'Holders', 'LLM Providers', 'Jev usage', 'API reads'])
   })
 
   it('lights Capacity and its API reads page at /capacity/api-reads, with the Failures only row', async () => {

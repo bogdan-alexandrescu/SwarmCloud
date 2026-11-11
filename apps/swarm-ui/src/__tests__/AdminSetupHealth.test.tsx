@@ -219,3 +219,27 @@ describe('Admin › Setup › Health reads the doctor’s shape', () => {
     expect(tipOf(about)).toBe('The checks the hourly doctor runs, read-only, on the live deployment.')
   })
 })
+
+// THE PAGE'S (i) BESIDE ITS TITLE (the owner's pick, 2026-11-05): what Health
+// is, and where the install steps are, was a paragraph under the head; it is
+// the (i) in PageHead's info slot, beside the "Health" title, word for word.
+describe('Admin › Setup › Health, the page’s (i)', () => {
+  it('sits beside the title, in the page head’s info slot, and the help line under the head is gone', async () => {
+    serve((m, url) => (m === 'GET' && url === '/v1/admin/setup/health' ? { status: 200, body: report(RUN) } : null))
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { AdminSetupHealthScreen } = await import('../AdminSetup')
+    render(<AdminSetupHealthScreen now={NOW_MS} />)
+    await screen.findByRole('region', { name: 'quota.cloud-run-jobs' })
+    const head = document.querySelector('.c-phead .head') as HTMLElement
+    // MUTATION: draw the page's explanation as a paragraph under the head again -> fails.
+    const about = head.querySelector('button[aria-label="About the Health page"]')
+    expect(about).not.toBeNull()
+    expect(about?.closest('.c-tip-host')?.previousElementSibling?.tagName).toBe('H1')
+    expect(tipOf(about)).toBe(
+      'The hourly doctor’s checks, read-only, on the live deployment: the scheduled run’s findings, each with its repair. From a terminal, swarm doctor checks this machine and the deployment against the manifest. The install steps are on Admin › Setup.',
+    )
+    expect(document.querySelector('.asm-page > .ur-sub')).toBeNull()
+    expect(shown(document.body)).not.toContain('swarm doctor checks this machine')
+  })
+})

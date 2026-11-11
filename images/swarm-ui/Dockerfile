@@ -128,13 +128,18 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # refused it over musl 1.2.6-r2 (CVE-2026-107891, HIGH, integer overflow in
 # regcomp, fixed in 1.2.6-r3); musl-utils is the same source package, so both
 # move together. Same reason, same fix.
+# A pull request's build-check (2026-11-10, 20:36Z) refused it over libxslt
+# 1.1.43-r3 (CVE-2026-87636 and CVE-2026-9947, HIGH, fixed in 1.1.43-r4). Both
+# the pinned digest and Docker Hub's current 1.31.6-alpine digest (sha256:
+# 884e0b7f..., read on 2026-11-10) still ship 1.1.43-r3 -- checked by listing
+# their packages -- while Alpine v3.24 main carries 1.1.43-r4; same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib musl musl-utils
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib musl musl-utils libxslt
 
 # THE ENVIRONMENT, WRITTEN AT START, NOT AT BUILD. nginx's own entrypoint runs
 # every executable script in /docker-entrypoint.d before it starts nginx, as

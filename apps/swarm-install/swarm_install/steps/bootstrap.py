@@ -319,6 +319,10 @@ def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Sequence[str] =
     # by its own name: stage 10, stage 14's reads and uninstall reach it by this.
     if root == "infra" and outputs.get("gke_cluster_name"):
         recorded["gke_cluster_name"] = str(outputs["gke_cluster_name"])
+    # The built-ins switch infra now runs with, so a later pass or an upgrade
+    # renders the live value (tfvars.builtins_managed; managed-plugins.md 1.4.5).
+    if root == "infra" and inputs.get(tfvars.BUILTINS_MANAGED_KEY) in ("on", "off"):
+        recorded[tfvars.BUILTINS_MANAGED_KEY] = inputs[tfvars.BUILTINS_MANAGED_KEY]
     remember(ctx, outputs=recorded)
     return outputs
 

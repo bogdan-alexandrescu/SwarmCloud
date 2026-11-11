@@ -1719,6 +1719,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
+    # THE MANAGED PLUGINS BUCKET (managed-plugins.md §3). Where the worker
+    # fetches each pinned plugin copy (`agent_worker.pluginload.BUCKET_ENV`):
+    # the scheduler's own setting, rendered by terraform from the bucket it
+    # makes, never a caller's (invariant 10). Omitted when unset, for the
+    # merge reason above; the worker then reads the default bucket name.
+    plugins_bucket = str(getattr(settings, "plugins_bucket", "") or "").strip()
+    if plugins_bucket:
+        env["SWARM_PLUGINS_BUCKET"] = plugins_bucket
     # THE FORGE BROKER'S SWITCH (#1041, `settings.forge_broker`, terraform
     # `forge_broker`). Passed through like SWARM_PR_CONSOLE_LINKS, and omitted
     # when off, so an unswitched worker reads a person's slot with its own

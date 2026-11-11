@@ -163,6 +163,7 @@ from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import pull_request as pull_request_mod
 from . import jevkey as jevkey_mod
+from . import pluginload as pluginload_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
 from . import security_review as security_review_mod
@@ -197,9 +198,14 @@ from .accountlease import (
     BrokerUnavailable,
     NoAccount,
     NoAccountAvailable,
+    SOURCE_ACCOUNT_POOL,
+    SOURCE_TENANT_OWN,
+    SWAP_PLAN_AVAILABLE,
     ReadingForwarder,
     credential_env_from_account,
+    spend_figure,
     takes_account,
+    takes_key,
 )
 from .checkpoint import (
     ARCHIVE_NAME,
@@ -322,6 +328,7 @@ from .runners import question_bridge
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_ERROR_KINDS,
+    OUTCOME_CREDIT_EXHAUSTED,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
     QUESTION_ANSWER_FILE_ENV,
@@ -1318,6 +1325,21 @@ class Worker:
         # Why the runner was asked to stop at its turn boundary when it was not
         # a drain: the broker marked the held account `reauth_required`.
         self._move_why: str | None = None
+        # The hold-status `move` that stopped the runner when it was not a
+        # drain's: `plan_available`, a key holder asked back to a plan (Q1).
+        self._move_asked: str | None = None
+        # The attempt's `total_cost_usd` when the held account's hold began:
+        # what ran on THIS hold is the total since (`_hold_spend`), the figure
+        # its release, swap and hold-status read carry (§4.6).
+        self._hold_spend_base = 0.0
+        # The key whose credit-gone answer this attempt already reported
+        # (`_report_credit_exhausted`): its 429 is not reported again as a
+        # rate limit.
+        self._credit_reported: str | None = None
+        # The credential the attempt KEPT LAST (contract request 152), written
+        # beside its spend (`_record_spend`): `account_id`, `credential_source`,
+        # `credential_tier`. None until the pool decided either way.
+        self._credential_kept: dict[str, Any] | None = None
         # THE ACCOUNT MID-RUN (S13-S15), for an attempt that holds one. The
         # session id the runner's stream named, kept to `--resume` it under
         # another account and NEVER logged (it is registered as a secret);
@@ -1954,7 +1976,8 @@ class Worker:
                 reset_at=quota.reset_at,
                 # The pool account the runner was refused on, when it held
                 # one (#2302): the 429 is that account's, not the tenant's.
-                account=self._account,
+                # Not a key whose credit is gone: that went as `exhausted`.
+                account=self._quota_account(),
                 message=quota.detail,
             )
             if decision.park or attempt_number > MAX_IN_WORKER_RETRIES:
@@ -3872,36 +3895,13 @@ class Worker:
             payload["prompt"] += verdict_mod.rendered_review_guidance(
                 self._ui_review_paths, cfg.runner_profile
             )
-        # The step's agent plugins (docs/design/agent-plugins.md, "The start
-        # of a step"): only those signed with the step, linked from the
-        # image's read-only install, ONLY the step's skills, before the agent.
-        # An image without the install fails here (`PluginUnavailable`,
-        # CANNOT_START), naming the image, before anything is linked.
-        self._plugins = plugins_mod.start(
-            task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
-            profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
-        )
-        if self._plugins is not None and isinstance(payload.get("prompt"), str):
-            payload["prompt"] += self._plugins.guidance
         # The step's signed work contract, for the runner's end-of-step
         # judgment (JC2, jev-contract.md section 5): its body in work/ and the
         # SIGNED digest, both from the task document, never from `input`.
         self._work_contract_env = self._stage_work_contract(task, ws.work)
-        # The optional security review step (docs/design/security-review-step.md):
-        # a step whose signed contract loads security-audit is told the owner's
-        # run settings here, and its output is checked after the agent.
-        if security_review_mod.applies(self._plugins):
-            self._security_review = {}
-            if isinstance(payload.get("prompt"), str):
-                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
-        # The pull request this step works on (a peer application, 2026-11-06):
-        # one line of the brief names `work/pull_request.md`, which STEP 6b'
-        # writes after the credentials, before the agent starts.
-        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
-            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
-                pull_request_mod.pull_request_path(ws.work)
-            )
-        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
+        # The step's plugins, their guidance and the input file follow the
+        # release and the TypeSafe shim (STEP 6a+), whose answers a managed
+        # plugin needs.
 
         # ---- STEP 6: tenant credentials ---------------------------------
         self.phases.enter("credentials")
@@ -3912,10 +3912,14 @@ class Worker:
         # fence: stand down without touching the lease (invariant 5). A
         # required slot with nothing in it -- no grant, or swarm-api not
         # reachable -- parks CREDENTIAL_MISSING at no cost (invariant 1);
-        # optional slots only, the attempt starts without them.
+        # optional slots only, the attempt starts without them. A step whose
+        # signed plugin set names a plugin secret or file asks too, with no
+        # slot (managed-plugins.md §6.2): those stay in this heap for STEP
+        # 6a+ and reach only their plugin's launcher.
         try:
             released = self.secret_release.release(
-                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private
+                profile=cfg.profile, inputs=task.get("input"), private_dir=ws.private,
+                plugins=pluginload_mod.wants_release(task),
             )
         except secretrelease_mod.SecretReleaseFenced as exc:
             raise FencedWriteRefused(
@@ -3945,6 +3949,45 @@ class Worker:
             raise FencedWriteRefused(
                 cfg.generation, -1, str(exc), write="typesafe ticket"
             ) from None
+        # STEP 6a+: the step's agent plugins (docs/design/agent-plugins.md,
+        # "The start of a step"): only those signed with the step, linked from
+        # the image's read-only install, ONLY the step's skills, before the
+        # agent. An image without the install fails here (`PluginUnavailable`,
+        # CANNOT_START), naming the image, before anything is linked. After
+        # the release and the shim, because a managed plugin (managed-plugins.md
+        # §4.4, §6.2) is handed what they hold: its own released secrets
+        # (`released.plugins`, dropped from this heap once the loader has
+        # written them 0600 for its launcher alone, never the agent's
+        # environment), the workspace's TypeSafe key for a binding
+        # (`_plugin_provider_key`), and the baked gates' filter inputs, the
+        # ones `qualitygates.prepare` gets.
+        try:
+            self._plugins = plugins_mod.start(
+                task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
+                profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
+                released=released.plugins, provider_key=self._plugin_provider_key,
+                secret_env_names=tuple(cfg.profile.secrets or ()),
+                hard_stop_paths=self._plugin_hard_stop_paths(task),
+            )
+        finally:
+            released.plugins.clear()
+        if self._plugins is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += self._plugins.guidance
+        # The optional security review step (docs/design/security-review-step.md):
+        # a step whose signed contract loads security-audit is told the owner's
+        # run settings here, and its output is checked after the agent.
+        if security_review_mod.applies(self._plugins):
+            self._security_review = {}
+            if isinstance(payload.get("prompt"), str):
+                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
+        # The pull request this step works on (a peer application, 2026-11-06):
+        # one line of the brief names `work/pull_request.md`, which STEP 6b'
+        # writes after the credentials, before the agent starts.
+        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
+                pull_request_mod.pull_request_path(ws.work)
+            )
+        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
         # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
         # §4.7), ONCE, before the runner's environment: every credential is
         # registered for redaction as the answer is parsed, and the runner is
@@ -10955,6 +10998,43 @@ class Worker:
         base.update(self.mcp.env)
         return ws.child_env(base)
 
+    def _plugin_provider_key(self, provider: str) -> str | None:
+        """A managed plugin's binding to the workspace key (managed-plugins.md
+        §6.2, "Use a workspace key › TypeSafe"), asked by `pluginload` only
+        for an entry the signed set binds: the key the quality gates resolve
+        (`jevkey.resolve_workspace`: the workspace's, never a person's,
+        registered for redaction), or with the forwarder on, the shim file's
+        text and never the key; None when there is neither. Never raises:
+        no key is a plugin whose adapter does not run, and the built-in gate
+        it would replace keeps running."""
+        if provider != "typesafe":
+            return None
+        if self.typesafe.on:
+            shim = self.typesafe.shim_file
+            try:
+                return shim.read_text(encoding="ascii") if shim is not None else None
+            except OSError:
+                return None
+        return jevkey_mod.resolve_workspace(
+            db=self.db, client=self.secret_client, tenant_id=self.cfg.tenant_id,
+            logger=self.log, call_options=self.control.call_options("tenant"))
+
+    def _plugin_hard_stop_paths(self, task: dict[str, Any]) -> tuple[str, ...]:
+        """The repository's `hard_stop_paths`, which `qualitygates.prepare`
+        puts in the baked gates' config, for a managed Jev plugin's adapter.
+        Read only for a step with managed plugins; a read that fails is
+        none, as the gates take it (the secret names are still denied)."""
+        if not pluginload_mod.entries(task) or self.db is None:
+            return ()
+        try:
+            return tuple(qualitygates_mod.hard_stop_paths(
+                self.db, self.cfg.tenant_id,
+                self._repo_url or os.environ.get(qualitygates_mod.REPOSITORY_URL_ENV),
+                call_options=self.control.call_options("tenant")))
+        except Exception as exc:  # noqa: BLE001 -- the names are still denied
+            self.log.warning("plugin hard stops unread", error=type(exc).__name__)
+            return ()
+
     def _quality_gates_env(self, ws: Any, profile: Any) -> dict[str, str]:
         """`qualitygates.prepare`, once per attempt: a rebuild on a credential
         reload hands the same path. Only the claude-code runner registers the
@@ -11228,6 +11308,12 @@ class Worker:
             return None
         if self._account_broker is None:
             return self._decline_pool("no_broker_configured", profile.provider)
+        # A profile that takes its vendor's plan may also run on its vendor's
+        # key (`key_tier`, §5.3). A profile that declares the key alone
+        # (`browser`) still runs on the tenant secret: the scheduler's
+        # admission expects the pool only where the plan token is declared
+        # (`scheduler.credentials`), and the two must agree.
+        key_tier = takes_key(profile.provider, profile.secrets)
         if not takes_account(profile.provider, profile.secrets):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
@@ -11251,8 +11337,10 @@ class Worker:
         cause = POOL_UNANSWERED[0]
         for ask in range(1, POOL_ASKS + 1):
             try:
+                # `key_tier` when the profile declares its vendor's key
+                # variable (§5.3): the broker walks the plans, then the keys.
                 outcome = self._account_broker.assign(
-                    provider, exclude=tuple(self._account_rejected)
+                    provider, exclude=tuple(self._account_rejected), key_tier=key_tier
                 )
             except BrokerRefused as exc:
                 # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
@@ -11316,10 +11404,13 @@ class Worker:
 
         self._account = outcome
         self._account_released = False
+        self._hold_began()
+        self._keep_credential(outcome)
         self.log.info(
             "account assigned from the pool",
             account_id=outcome.account_id,
             provider=provider,
+            tier=outcome.tier,
             # Whether this tenant borrowed it. Worth a field of its own: a
             # deployment leaning on borrowed capacity looks healthy right up to
             # the day the lender revokes the loan.
@@ -11331,6 +11422,9 @@ class Worker:
                 "cause": "account_assigned",
                 "account_id": outcome.account_id,
                 "provider": provider,
+                # The tier the broker answered (§5.3, §5.4): `plan` or
+                # `api_key`. Never the key, nor its secret's name.
+                "tier": outcome.tier,
             },
         )
         return outcome
@@ -11483,8 +11577,22 @@ class Worker:
             self._turns_checked = turns
             if self._account_broker is None or self._account is None or move.exists():
                 return
-            status = self._account_broker.hold_status(self._account)
-            if status.get("move"):
+            status = self._account_broker.hold_status(
+                self._account, cost_usd=self._hold_spend()
+            )
+            if status.get("move") == SWAP_PLAN_AVAILABLE:
+                # BACK TO A PLAN (Q1, §5.3): this attempt holds a key and a
+                # plan would take it now. Stopped at the next turn boundary
+                # like a drain, then swapped to the plans alone; if the plan
+                # filled in between, it restarts on the same key.
+                self._move_asked = SWAP_PLAN_AVAILABLE
+                move.write_text(json.dumps({"reason": SWAP_PLAN_AVAILABLE}))
+                self.log.info(
+                    "a plan is free for this attempt; the agent moves back to it "
+                    "at its next turn boundary",
+                    account_id=self._account.account_id,
+                )
+            elif status.get("move"):
                 move.write_text(json.dumps({"reason": str(status["move"])}))
                 self.log.warning(
                     "this attempt's account is draining; the agent moves to another "
@@ -11535,10 +11643,18 @@ class Worker:
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
         why, self._move_why = self._move_why, None
+        asked, self._move_asked = self._move_asked, None
+        if data.get("outcome") == OUTCOME_CREDIT_EXHAUSTED:
+            # The KEY's credit is gone (§5.2): reported as the key's, so the
+            # broker skips it until it is resumed, then the attempt moves on
+            # as for any spent account. A plan's answer stays a rate limit.
+            self._report_credit_exhausted()
         reason: str | None = None
         if stopped_for == STOP_DRAIN and why is not None:
             # Stopped for a dead credential, not a drain (`_watch_account`).
             reason = SWAP_UNUSABLE
+        elif stopped_for == STOP_DRAIN and asked == SWAP_PLAN_AVAILABLE:
+            reason = SWAP_PLAN_AVAILABLE
         elif stopped_for == STOP_DRAIN:
             why = None
             reason = SWAP_DRAIN
@@ -11551,9 +11667,10 @@ class Worker:
             self.ws.credential_path.unlink(missing_ok=True)
         if reason is None:
             return None
-        if why is not None:
+        if why is not None or reason == SWAP_PLAN_AVAILABLE:
             # A dead credential moves with or without a session: one that
-            # named none restarts from the prompt in the same workspace.
+            # named none restarts from the prompt in the same workspace. So
+            # does a move back to a plan, which was stopped on purpose.
             return self._swap_account(reason, why=why)
         if self._session_id is None:
             # Nothing to resume. A rate limit goes the way it always went; a
@@ -11671,6 +11788,11 @@ class Worker:
                 why=why,
             )
             self._checkpoint("account-move")
+        elif reason == SWAP_PLAN_AVAILABLE:
+            # A move between tiers is checkpoint, then swap (§5.5, invariants
+            # 4 and 8): a worker lost mid-move resumes from here.
+            self._checkpoint("account-move")
+        key_tier = takes_key(profile.provider, profile.secrets)
         for _ in range(MAX_ACCOUNT_TRIES):
             try:
                 outcome = self._account_broker.swap(
@@ -11678,6 +11800,8 @@ class Worker:
                     provider=provider,
                     reason=reason,
                     exclude=tuple(self._account_rejected),
+                    key_tier=key_tier,
+                    cost_usd=self._hold_spend() if current.is_key else None,
                 )
             except (BrokerRefused, BrokerUnavailable) as exc:
                 self.log.warning(
@@ -11695,10 +11819,16 @@ class Worker:
                     dead=why is not None,
                 )
             if isinstance(outcome, NoAccount):
+                if reason == SWAP_PLAN_AVAILABLE:
+                    # The plan filled in between: the broker left the hold on
+                    # the key, so the run resumes on it, as it was.
+                    return self._stay_on_key(current, outcome)
                 return self._cannot_swap(reason, current, outcome, dead=why is not None)
             self._swaps += 1
             self._account = outcome
             self._account_released = False
+            self._hold_began()
+            self._keep_credential(outcome)
             self._emit_swapped(current, outcome, reason)
             if why is not None:
                 self._emit_moved(current, outcome, why)
@@ -11726,6 +11856,94 @@ class Worker:
         # Every account it moved to was unreadable: give the last one back as
         # such and park, as a fresh attempt does (`_pool_credential_env`).
         return self._cannot_swap(SWAP_UNUSABLE, current, NoAccount(reason=ACCOUNT_UNREADABLE))
+
+    def _stay_on_key(self, current: Assignment, outcome: NoAccount) -> dict[str, str]:
+        """A move back to a plan that found none free: resume on the key held.
+
+        The broker's swap is one transaction and left the hold where it was
+        (§5.3: never two, never none), so nothing is given back. The runner
+        was stopped at a turn boundary; it restarts with `--resume` on the
+        same key's environment.
+        """
+        self.log.info(
+            "the plan filled before this attempt could move back to it; carrying "
+            "on on the key it holds",
+            account_id=current.account_id,
+            pool_reason=outcome.reason,
+        )
+        self._resume_session = self._session_id
+        self._resume_reason = RESUME_MOVED
+        self._readings = None
+        self._turns_checked = 0
+        self._channel_seen = None
+        _stream, move = self._account_channel_paths()
+        move.unlink(missing_ok=True)
+        return self._build_child_env()
+
+    def _hold_began(self) -> None:
+        """Mark the attempt's spend at the start of the hold just taken."""
+        self._hold_spend_base = self._spend_total()
+
+    def _spend_total(self) -> float:
+        cost = self._spend.get("total_cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            return 0.0
+        return float(cost)
+
+    def _hold_spend(self) -> float | None:
+        """What has run on the held account's hold so far, by the attempt's
+        own `cost_usd` estimate (§4.6, Q5), or None when nothing has: the
+        figure the hold's close carries, and a key holder's hold-status read
+        carries while it runs."""
+        return spend_figure(self._spend_total() - self._hold_spend_base)
+
+    def _keep_credential(self, account: Assignment | None) -> None:
+        """The credential this attempt now runs on, for its record (request 152)."""
+        if account is None:
+            self._credential_kept = {
+                "account_id": None,
+                "credential_source": SOURCE_TENANT_OWN,
+                "credential_tier": None,
+            }
+            return
+        self._credential_kept = {
+            "account_id": account.account_id,
+            "credential_source": SOURCE_ACCOUNT_POOL,
+            "credential_tier": account.tier,
+        }
+
+    def _report_credit_exhausted(self) -> None:
+        """The held KEY's credit is gone (§5.2): say so to the broker, naming it.
+
+        Only for a key: a plan's `insufficient_quota` is its window, which the
+        rate-limit report already carries. Reported to the broker's
+        `exhausted` route under the key's own provider, with the hold's proof,
+        so the broker marks that key `exhausted_at` and the next lease moves
+        on; the tenant's own quota is not the key's. Never raises.
+        """
+        account = self._account
+        if account is None or not account.is_key:
+            return
+        if self._credit_reported == account.account_id:
+            return
+        self._credit_reported = account.account_id
+        self.log.warning(
+            "the held API key's credit is gone; reporting it exhausted",
+            account_id=account.account_id,
+        )
+        self.control.report_credit_exhausted(
+            provider=account.provider,
+            account=account,
+            message="the provider answered that this key's credit is gone",
+        )
+
+    def _quota_account(self) -> Assignment | None:
+        """The held account a runner's 429 names, or None when there is none
+        -- or when it was the key's credit, already reported as such."""
+        account = self._account
+        if account is not None and self._credit_reported == account.account_id:
+            return None
+        return account
 
     def _cannot_swap(
         self, reason: str, current: Assignment, outcome: NoAccount, *, dead: bool = False
@@ -11770,6 +11988,8 @@ class Worker:
             from_account_id=left.account_id,
             account_id=taken.account_id,
             reason=reason,
+            tier=taken.tier,
+            from_tier=left.tier,
         )
         # The summary's record of it (SWAP-RUNS): after which run, and when.
         self._swap_log.append({
@@ -11788,6 +12008,10 @@ class Worker:
                     "provider": self.cfg.provider,
                     "swapped_from": left.account_id,
                     "swap_reason": reason,
+                    # The tiers on either side (§5.4): a move from a plan to a
+                    # key, or back, is one line on the attempt's timeline.
+                    "tier": taken.tier,
+                    "from_tier": left.tier,
                 },
             )
         except Exception as exc:
@@ -11833,6 +12057,7 @@ class Worker:
         not answer parks instead (`POOL_UNANSWERED`). Announced either way.
         """
         self._account_declined = cause
+        self._keep_credential(None)
         self._emit_pool_declined(cause, provider, then="tenant_secret")
         return None
 
@@ -11895,7 +12120,9 @@ class Worker:
                 payload,
                 secret_env_names=profile.secrets,
                 secret_name=account.secret,
-                provider=profile.provider or "anthropic",
+                # The ACCOUNT's provider: a key fills its key variable, a plan
+                # its token, whatever the profile's own provider is named.
+                provider=account.provider or profile.provider or "anthropic",
             )
         except Exception as exc:
             raise AccountUnreadable(
@@ -11944,6 +12171,7 @@ class Worker:
         self._account_rejected.append(account.account_id)
         self._account = None
         self._account_released = False
+        self._credential_kept = None
         self._give_back(account, unusable=exc.detail)
 
     def _give_back(self, account: Assignment, *, unusable: str = "") -> None:
@@ -11962,7 +12190,11 @@ class Worker:
             return
         try:
             self._account_broker.release(
-                account.account_id, account.assignment_id, unusable=unusable
+                account.account_id,
+                account.assignment_id,
+                unusable=unusable,
+                # What ran on this hold (§4.6): a key's close meters it.
+                cost_usd=self._hold_spend() if account.is_key else None,
             )
             self.log.info(
                 "account released",
@@ -12620,7 +12852,7 @@ class Worker:
                 state=state,
                 retry_after_seconds=decision.wait_seconds,
                 reset_at=decision.next_eligible_at,
-                account=self._account if from_runner else None,
+                account=self._quota_account() if from_runner else None,
                 message=str(decision.detail.get("signal_detail") or ""),
             )
         # `source` is where the signal was OBSERVED (the runner's 429, the
@@ -18697,9 +18929,15 @@ class Worker:
         accounting write failed, and this runs on the teardown path where the
         lease is about to be released either way.
         """
-        if self._writes_forbidden or not self._spend or self._spend == self._spend_recorded:
+        kept = self._credential_kept
+        if self._writes_forbidden or (not self._spend and kept is None):
             return
         snapshot = dict(self._spend)
+        if kept is not None:
+            # Request 152: the credential the attempt KEPT LAST, beside spend.
+            snapshot["credential"] = dict(kept)
+        if snapshot == self._spend_recorded:
+            return
         try:
             self.control.record_spend(snapshot)
         except Exception as exc:
@@ -19569,11 +19807,26 @@ class _DiffLeakScanner:
     than that the carry starts mid-line, where a pattern starting the window
     counts as starting a token: a possible false hit, which folds or refuses
     -- the safe direction.
+
+    ONLY WHAT A SECOND DIFF ALSO ADDS (`within`, the merged-main floor). Given
+    a map of each file's added line ranges from another diff with the same
+    new side (`added` of a scan of `floor..HEAD`), an added line is scanned
+    only when its new-file line is in one of them: a line the other old side
+    already holds is never asked about. The lines kept are scanned exactly as
+    an unfiltered diff of them would be -- windows, overlap, and the line a
+    hit names -- and `added` records only them.
     """
 
     _HEADS = ("diff --git ", "+++ ", "@@")
 
-    def __init__(self, leaks: LeakPredicate, *, window: int, overlap: int) -> None:
+    def __init__(
+        self,
+        leaks: LeakPredicate,
+        *,
+        window: int,
+        overlap: int,
+        within: dict[str, list[tuple[int, int]]] | None = None,
+    ) -> None:
         import codecs
 
         self._leaks = leaks
@@ -19605,6 +19858,18 @@ class _DiffLeakScanner:
         # (`_added_inside_a_private_key`).
         self.added: dict[str, list[tuple[int, int]]] = {}
         self._added_key = ""
+        # The `within` filter: how the current hunk's added lines are taken
+        # ("all", "none" or "some"), and for "some" the new-file line of the
+        # next added line, the kept spans `(first, last)` still ahead, whether
+        # a line is open and kept, and the last kept line (a gap starts a new
+        # entry in `_hunks`, so a hit still names its own line).
+        self._within = within
+        self._take = "all"
+        self._line_no = 0
+        self._spans: list[tuple[int, int]] = []
+        self._line_open = False
+        self._line_kept = False
+        self._last_kept: int | None = None
 
     def feed(self, data: bytes) -> None:
         if self.hit is None:
@@ -19699,19 +19964,76 @@ class _DiffLeakScanner:
         elif self._mode == "hunk":
             start = _HUNK_NEW_START.match(self._header_line)
             if start is not None:
-                self._hunks.append((self._file_lines, int(start.group(1))))
                 count = 1 if start.group(2) is None else int(start.group(2))
-                if count and self._added_key and self._added_key != "/dev/null":
-                    self.added.setdefault(self._added_key, []).append(
-                        (int(start.group(1)), count)
-                    )
+                if self._within is None:
+                    self._hunks.append((self._file_lines, int(start.group(1))))
+                    if count and self._added_key and self._added_key != "/dev/null":
+                        self.added.setdefault(self._added_key, []).append(
+                            (int(start.group(1)), count)
+                        )
+                else:
+                    self._begin_filtered_hunk(int(start.group(1)), count)
         self._mode, self._head, self._header_line = None, "", ""
+
+    def _begin_filtered_hunk(self, first: int, count: int) -> None:
+        """Set how the hunk starting at new-file line `first`, adding `count`
+        lines, is taken under `within`: its lines the other diff also adds."""
+        last = first + count - 1
+        spans: list[tuple[int, int]] = []
+        if count and self._added_key and self._added_key != "/dev/null":
+            assert self._within is not None
+            for start, length in self._within.get(self._added_key, ()):
+                low, high = max(first, start), min(last, start + length - 1)
+                if low <= high:
+                    spans.append((low, high))
+        spans.sort()
+        for low, high in spans:
+            self.added.setdefault(self._added_key, []).append((low, high - low + 1))
+        if spans == [(first, last)]:
+            self._take = "all"
+            self._hunks.append((self._file_lines, first))
+        elif not spans:
+            self._take = "none"
+        else:
+            self._take = "some"
+            self._line_no, self._spans = first, spans
+            self._line_open, self._line_kept, self._last_kept = False, False, None
 
     # -- scanning ------------------------------------------------------------
 
     def _add(self, text: str) -> None:
-        if not text:
+        if not text or self._take == "none":
             return
+        if self._take == "some":
+            self._add_some(text)
+            return
+        self._add_kept(text)
+
+    def _add_some(self, text: str) -> None:
+        """`text` of a hunk only some of whose lines `within` keeps: each
+        line's pieces go to the scan when its new-file line is kept."""
+        pos, n = 0, len(text)
+        while pos < n and self.hit is None:
+            newline = text.find("\n", pos)
+            end = n if newline < 0 else newline + 1
+            if not self._line_open:
+                self._line_open = True
+                line = self._line_no
+                while self._spans and self._spans[0][1] < line:
+                    self._spans.pop(0)
+                self._line_kept = bool(self._spans) and self._spans[0][0] <= line
+                if self._line_kept:
+                    if self._last_kept != line - 1:
+                        self._hunks.append((self._file_lines, line))
+                    self._last_kept = line
+            if self._line_kept:
+                self._add_kept(text[pos:end])
+            if newline >= 0:
+                self._line_open = False
+                self._line_no += 1
+            pos = end
+
+    def _add_kept(self, text: str) -> None:
         self._file_lines += text.count("\n")
         self._buf.append(text)
         self._buf_len += len(text)
@@ -19753,6 +20075,7 @@ class _DiffLeakScanner:
         self._carry = ""
         self._file_lines, self._window_line, self._hunks = 0, 0, []
         self._added_key = ""
+        self._take = "all"
 
 
 def _config_seal(repo: Path) -> str | None:
@@ -19938,6 +20261,7 @@ def _scan_diff_stream(
     logger: Any,
     new_rev: str | None = None,
     git: list[str] | None = None,
+    within: dict[str, list[tuple[int, int]]] | None = None,
 ) -> tuple[int, ScanHit | None]:
     """Run a `git diff` and scan everything it adds; (exit code, the first hit or None).
 
@@ -19945,8 +20269,13 @@ def _scan_diff_stream(
     diff that added nothing credential-shaped is also asked whether an added
     line sits inside a private key of the new file
     (`_added_inside_a_private_key`, #361 box 79).
+
+    With `within`, only the added lines it also names are scanned
+    (`_DiffLeakScanner`), and only they are asked the private-key question.
     """
-    scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
+    scanner = _DiffLeakScanner(
+        leaks, window=SCAN_WINDOW_CHARS, overlap=overlap, within=within
+    )
     code = _git_stream(
         argv,
         repo=repo,
@@ -20223,10 +20552,20 @@ def final_tree_leak(
     of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
     `core.quotePath=false`, stay as a second belt.
 
-    `floor`, when given, is read from instead of `base`: a commit of the
-    repository's default branch the lane merged, proven on the forge
-    (`Worker._scan_floor`, #453). Every line its tree holds is published
-    already, so only what the branch adds over it is asked about.
+    `floor`, when given, is a commit of the repository's default branch the
+    lane merged, proven on the forge (`Worker._scan_floor`, #453). Every line
+    its tree holds is published already. So is every line of the clone base's
+    tree: `base` is the commit the worker recorded when it cloned from the
+    forge (`Worker._publish_base`), never a value the agent names. So only a
+    line the branch adds over BOTH is asked about (publish scan, merged-main
+    floor, 2026-11-10): `floor..HEAD` is read first for the line ranges it
+    adds, and `base..HEAD` is then scanned on those lines alone
+    (`_DiffLeakScanner`'s `within`). The floor used to REPLACE the base, so on
+    a stacked branch -- whose base is a parent branch already on the forge,
+    holding lines the default branch does not -- every such line was scanned
+    again as if the lane had added it, and the lane was refused for a
+    parent's line it never wrote. What is asked is never more than either
+    diff alone would ask.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -20256,19 +20595,37 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
-    if floor and _SHA_RE.match(floor.strip()):
-        before = floor.strip()
-    code, hit = _scan_diff_stream(
-        [
+
+    def diff(old: str) -> list[str]:
+        return [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
             "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
-            before, "HEAD", "--",
-        ],
+            old, "HEAD", "--",
+        ]
+
+    within: dict[str, list[tuple[int, int]]] | None = None
+    if floor and _SHA_RE.match(floor.strip()) and floor.strip() != before:
+        # What the branch adds over the floor, as line ranges only: the
+        # predicate asks nothing, and no added text is kept.
+        ranges = _DiffLeakScanner(
+            lambda _path, _text: None, window=SCAN_WINDOW_CHARS, overlap=overlap
+        )
+        code = _git_stream(
+            diff(floor.strip()), slug="publish-final-floor-diff", consume=ranges.feed,
+            **run_kwargs,
+        )
+        ranges.close()
+        if code != 0:
+            raise GitError("could not diff the branch against the merged default branch")
+        within = ranges.added
+    code, hit = _scan_diff_stream(
+        diff(before),
         leaks=leaks,
         overlap=overlap,
         new_rev="HEAD",
         git=g,
         slug="publish-final-diff",
+        within=within,
         **run_kwargs,
     )
     if code != 0:

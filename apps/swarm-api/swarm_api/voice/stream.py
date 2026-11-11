@@ -3,8 +3,9 @@ as server-sent events (docs/design/voice-it.md §3.5, §3.7, §10 phase 2).
 
     GET /v1/voice/sessions/{session_id}/events[?after=N]
         text/event-stream: `card.upsert`, `card.remove`, `session.state`,
-        `meter.update`, and the stage's `visual.upsert`, `note.upsert` and
-        `focus` (visuals.py), each with `id: <seq>`
+        `meter.update`, the stage's `visual.upsert`, `note.upsert` and
+        `focus` (visuals.py), and, while debug mode is on, `trace.turn`
+        (trace.py), each with `id: <seq>`
 
 FIRESTORE IS THE MEETING POINT, NOT A RELAY. Every event is stored before it
 is sent (`store.VoiceStore.append_event`, numbered from the session's
@@ -60,6 +61,7 @@ from ..errors import NotFound, ValidationFailed
 from . import cards as vcards
 from . import sessions as vs
 from . import store as vstore
+from . import trace as vtrace
 from . import visuals as vvis
 
 log = logging.getLogger(__name__)
@@ -72,7 +74,7 @@ METER_UPDATE = "meter.update"
 #: a note pinned, edited, resolved or made work, and the planner's focus.
 STAGE_TYPES = (vvis.VISUAL_UPSERT, vvis.NOTE_UPSERT, vvis.FOCUS)
 EVENT_TYPES = (vcards.CARD_UPSERT, vcards.CARD_REMOVE, SESSION_STATE, METER_UPDATE,
-               *STAGE_TYPES)
+               *STAGE_TYPES, vtrace.TRACE_TURN)
 
 #: What a `session.state` event may say.
 VOICE_STATES = ("listening", "thinking", "speaking", "working", "ended")
@@ -212,7 +214,15 @@ def frame(event: dict[str, Any], *, session_id: str) -> str | None:
     if kind == SESSION_STATE and event.get("state") not in VOICE_STATES:
         log.warning("voice stream skipped a session state session=%s seq=%s", session_id, seq)
         return None
-    if kind in STAGE_TYPES:
+    if kind == vtrace.TRACE_TURN:
+        # Debug mode's turn line: its number, the cards drawn and refused and
+        # the no-cards code, as trace.stream_event kept them, and nothing else.
+        if not isinstance(event.get("n"), int):
+            log.warning("voice stream skipped a trace turn session=%s seq=%s", session_id, seq)
+            return None
+        data = {"type": kind, "seq": seq, "at": event.get("at"),
+                **{k: event.get(k) for k in ("n", "drawn", "refused", "none")}}
+    elif kind in STAGE_TYPES:
         payload = stage_payload(event)
         if payload is None:
             log.warning("voice stream skipped a stage event session=%s seq=%s", session_id, seq)

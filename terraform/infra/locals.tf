@@ -873,6 +873,12 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
+      # uvicorn workers an instance (var.api_workers, default 1; dev sets 2,
+      # the owner's choice of 2026-11-10). The image passes it to
+      # `uvicorn --workers`, and swarm_api.workers divides each per-instance
+      # cap by it, so the instance's caps stay what they were.
+      SWARM_API_WORKERS = tostring(var.api_workers)
+
       # Where a cancel asks for its task's execution to be stopped now rather
       # than at the worker's next poll or the reconciler's next pass (#627).
       # The reconciler stops it: swarm-api holds no compute permission, by
@@ -1071,6 +1077,12 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) and
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository) are set here
+      # by lane 17 of managed-plugins.md section 17.1, with the swarm-api code
+      # that reads them: scripts/lib/check-env-parity.sh refuses a variable
+      # terraform sets and nothing reads.
+
       # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
       # var.plugins_switch says what each value does): "off" refuses every
       # step that names a plugin. "on" unless the environment's tfvars sets
@@ -1227,9 +1239,10 @@ locals {
       # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
       # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
       # deployed", and no speech route touches Compute.
-      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
-      #     stops (one zone, one machine; a stock-out falls back to text and
-      #     never tries a second zone).
+      #   _PROJECT/_ZONES/_INSTANCE/_TEMPLATE: the zones the one regional
+      #     bulk insert lets Google place the machine in (owner, 2026-11-09:
+      #     "let Google pick the zone"; none free, text), the machine's name
+      #     prefix, and the regional template it creates it from.
       #   _ADDR: the reserved internal address the relay dials on 8080.
       #   _AUDIENCE: the ID token's audience the speech server checks; the
       #     same constant the voice_speech output names.
@@ -1243,8 +1256,9 @@ locals {
       #     tick account, the scheduler identity this root already lists as
       #     a platform caller. Empty callers means every sweep is refused.
       SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
-      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
-      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? join(",", local.speech_zones) : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? local.speech_machine_prefix : ""
+      SWARM_SPEECH_TEMPLATE       = local.voice_speech_on && var.voice_speech.template ? google_compute_region_instance_template.speech[0].id : ""
       SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
       SWARM_SPEECH_AUDIENCE       = "swarm-speech"
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
@@ -1344,6 +1358,12 @@ locals {
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository, the one
+      # image path a bundle record's digest may name; managed-plugins.md
+      # section 1.4.4) is set here by lane 18 of section 17.1, with the
+      # scheduler code that reads it: scripts/lib/check-env-parity.sh refuses
+      # a variable terraform sets and nothing reads.
+
       # The model each profile's agent runs when a step names no class, for
       # the Jobs this scheduler creates (tenants this root does not list). The
       # same `local.profile_default_models` sets MODEL on this root's own Jobs,
@@ -1372,6 +1392,12 @@ locals {
       # serves.
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
+
+      # The managed plugins bucket (plugins.tf), passed THROUGH to every
+      # worker by `scheduler.dispatch.worker_env`: agent_worker.pluginload
+      # fetches each pinned copy from it. Empty omits it; the worker then
+      # reads the default <project>-swarm-plugins.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
 
       # A live-browser pod's JEV_API_URL for a workspace that judges with an
       # internal backend (scheduler.judgment, JUDGE-SELECT). See
@@ -1535,6 +1561,11 @@ locals {
       # of the wake topic's publisher_members in main.tf). Unset, the
       # reconciler logs a warning at start and the tick does the release.
       DISPATCH_TOPIC = local.wake_topic
+
+      # The managed plugins bucket (plugins.tf): reconciler.plugingc deletes
+      # unreferenced pinned copies under platform/ and tenants/ in it (§9.3).
+      # Empty: the default <project>-swarm-plugins name.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
     })
   }
 }

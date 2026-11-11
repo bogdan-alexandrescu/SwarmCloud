@@ -124,6 +124,9 @@ def build(args: argparse.Namespace, state: InstallState, events: Events, ctx: An
         events=events,
         out=sys.stdout,
         resume=resume_command(args),
+        # The install state the plans / keys / both answer is read from and
+        # recorded in, saved to the state bucket (llm-providers.md §7).
+        ctx=ctx,
     )
 
 

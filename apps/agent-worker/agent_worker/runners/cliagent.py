@@ -225,6 +225,22 @@ _RATE_LIMIT_MARKERS = (
 #: `,` followed by a digit after it (`429.5`, `429,117`).
 _RATE_LIMIT_STATUS = re.compile(r"(?<![\w.,-])429(?!\w|[.,]\d)")
 
+#: A KEY'S CREDIT IS GONE (docs/design/llm-providers.md §5.2), not a rate limit.
+#: The owner's brief records both codes answered live with a 429 on 9 November
+#: 2026: Anthropic's `credit_balance_exhausted` and OpenAI's
+#: `insufficient_quota`. Matched BEFORE the rate-limit markers
+#: (`detect_credit_exhausted`), because the two want opposite answers: a rate
+#: limit resets by itself, a spent key does not until somebody tops it up. The
+#: run still ends as a quota signal -- park or move, never a failed attempt --
+#: and on a pool account the channel says `credit_exhausted`, so the worker
+#: reports the KEY exhausted rather than limited. `insufficient_quota` stays
+#: in `_RATE_LIMIT_MARKERS` as well: off a key (the tenant secret) the answer
+#: is the tenant-level quota stop it always was.
+_CREDIT_EXHAUSTED_MARKERS = ("credit_balance_exhausted", "insufficient_quota")
+
+#: The run's outcome on the account channel when the key's credit is gone.
+OUTCOME_CREDIT_EXHAUSTED = "credit_exhausted"
+
 #: A CLI that surfaces the raw HTTP header and nothing else. `Retry-After` is
 #: sent with a 429 or a 503, so it is a rate limit or an outage -- both of
 #: which park rather than burn one of the task's three attempts -- UNLESS the
@@ -716,6 +732,9 @@ class AccountStreamWatcher:
         #: The provider error the run ended in, for the account's health
         #: (`classify_account_error`): {"kind", "message"}, set by `judge`.
         self.error: dict[str, str] | None = None
+        #: `credit_exhausted` when the run ended because the held key's credit
+        #: is gone (`detect_credit_exhausted`), set by `judge`; else None.
+        self.outcome: str | None = None
         self._dirty = False
         # THE RE-READ MEASURE (SWAP-RUNS). One runner process can start the
         # CLI more than once (a finish pass, repair turns), each with its own
@@ -863,6 +882,7 @@ class AccountStreamWatcher:
                 "readings": self.readings,
                 "stopped_for": self.stopped_for,
                 "error": self.error,
+                "outcome": self.outcome,
                 # SWAP-RUNS: the first action and what was spent before it,
                 # or null when the run has taken none (yet); and the tokens
                 # and seconds the run has spent so far, which is the re-read
@@ -1200,6 +1220,17 @@ def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
             break
     reset_match = _RESET_AT_PATTERN.search(text)
     return True, retry_after, (reset_match.group(1) if reset_match else None)
+
+
+def detect_credit_exhausted(text: str) -> bool:
+    """Whether CLI output says the credential's credit is gone (§5.2).
+
+    The two codes only: a rate limit, an overload or prose about money is not
+    one. Checked before `detect_rate_limit`, which also matches the 429 the
+    codes arrive with.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CREDIT_EXHAUSTED_MARKERS)
 
 
 def _rate_limit_marked(lowered: str) -> bool:
@@ -2437,6 +2468,23 @@ def run_cli_agent(
             )
 
         if run_result.exit_code != 0 or run_result.timed_out:
+            if detect_credit_exhausted(combined):
+                # THE KEY'S CREDIT IS GONE (§5.2), judged before the rate
+                # limit its 429 also matches. A quota signal as a rate limit
+                # is -- the attempt moves or parks, never fails -- and on a
+                # pool account the channel names it, so the worker reports
+                # the key exhausted and the next lease moves on.
+                if run_watcher is not None:
+                    run_watcher.outcome = OUTCOME_CREDIT_EXHAUSTED
+                    run_watcher.write()
+                _hit, retry_after, reset_at = detect_rate_limit(combined)
+                raise QuotaExhaustedSignal(
+                    provider=spec.provider,
+                    retry_after_seconds=retry_after,
+                    reset_at=reset_at,
+                    detail=f"{spec.name} reported that its credential's credit is gone",
+                    spend=spend,
+                )
             hit, retry_after, reset_at = detect_rate_limit(combined)
             if hit:
                 raise QuotaExhaustedSignal(

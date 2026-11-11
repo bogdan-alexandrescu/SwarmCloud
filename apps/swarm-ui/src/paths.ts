@@ -273,7 +273,15 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/profiles': '/capacity/pools/profiles',
   'capacity/catalogue': '/capacity/runtimes',
   'capacity/holders': '/capacity/holders',
+  // The old Accounts path: still served, and App's `fromAddress` lands it on
+  // LLM Providers › Plans with its `?account=` kept (LP-U1, llm-providers.md §6.1).
   'capacity/accounts': '/capacity/accounts',
+  // Capacity › LLM Providers' two sub-pages (LlmProviders.tsx); the tab's
+  // own address opens Plans, its first. Listed first so the path reads back
+  // as Plans' own address (FIXED_BACK keeps the last entry for a path).
+  'capacity/llm-providers': '/capacity/llm-providers/plans',
+  'capacity/llm-providers/plans': '/capacity/llm-providers/plans',
+  'capacity/llm-providers/api-keys': '/capacity/llm-providers/api-keys',
   // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
   'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
@@ -304,6 +312,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
   // workspaces whose stored role for the caller is admin.
   'admin/workspaces': '/admin/workspaces',
+  // Admin › Plugins (part of #2688; docs/design/managed-plugins.md): the
+  // platform catalogue. Add plugin and each plugin's page are its pages,
+  // `/admin/plugins/add` and `/admin/plugins/<install_id>` (PLUGIN_PAGE, below).
+  'admin/plugins': '/admin/plugins',
   // CONFIG (CONFIG-NAV; part of #2157, owner 2026-10-23): everything about
   // setting up and running a workspace, in the owner's order. Each page was
   // somewhere else until then -- Work › Access, Work › Repositories, Work ›
@@ -450,6 +462,27 @@ export function workspacePagePathTenant(path: string): string | null | undefined
   } catch {
     return undefined
   }
+}
+
+/**
+ * A PLUGIN CATALOGUE'S PAGES (part of #2688; docs/design/managed-plugins.md):
+ * `/admin/plugins/add`, `/admin/plugins/<install_id>` and
+ * `/config/plugins/<install_id>`, each its own address, the install id one
+ * encoded segment (AdminPlugins.tsx `adminPluginPath`). Config's one-time
+ * settings link (`swarm_api.pluginconfig.mint_link`,
+ * `/config/plugins/<install_id>?field=<key>&t=<token>`) is not a plugin's
+ * page: it lands on Config › Plugins, and ITS TOKEN IS NEVER PART OF AN
+ * ADDRESS -- App reads the link off the bar once (ConfigPlugins.tsx
+ * `pluginLinkOf`) before its normalise effect rewrites it.
+ */
+const PLUGIN_PAGE_SECTIONS: readonly string[] = ['admin', 'config']
+
+/** A plugin page's segments (`admin`, `plugins`, `<add or id>`), or null for anything else. */
+function pluginPageSegments(seg: readonly string[]): [string, string] | null {
+  const [section, tab, page] = seg
+  if (seg.length !== 3 || tab !== 'plugins' || section === undefined || page === undefined || page === '') return null
+  if (!PLUGIN_PAGE_SECTIONS.includes(section)) return null
+  return [section, page]
 }
 
 /**
@@ -742,6 +775,9 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const tab = workspaceTabIn(query)
     return tab === null ? WORKSPACES_PATH : `${WORKSPACES_PATH}?tab=${tab}`
   }
+  // A plugin catalogue's pages: the segment is already encoded in the address.
+  const pluginPage = pluginPageSegments(seg)
+  if (pluginPage !== null) return `/${pluginPage[0]}/plugins/${pluginPage[1]}`
   // Workspace Settings' Workspace setup part is a path of its own.
   if (bare === 'config/workspace' && new URLSearchParams(query).get('part') === 'setup') return WORKSPACE_SETUP_PATH
   const fixed = FIXED[bare]
@@ -897,6 +933,14 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   if (seg[0] === 'admin' && seg[1] === 'workspaces' && seg.length === 3 && seg[2] !== '') {
     const tab = workspaceTabIn(query)
     return plain(tab === null || tab === 'people' ? `${WORKSPACES_ADDRESS}/${seg[2]}` : `${WORKSPACES_ADDRESS}/${seg[2]}?tab=${tab}`)
+  }
+  // A plugin catalogue's pages, the segment kept as written. Config's one-time
+  // settings link drops its field and token here and lands on Config › Plugins.
+  const pluginPage = pluginPageSegments(seg)
+  if (pluginPage !== null) {
+    const link = new URLSearchParams(query)
+    if (pluginPage[0] === 'config' && (link.get('t') ?? '') !== '') return plain('config/plugins')
+    return plain(`${pluginPage[0]}/plugins/${pluginPage[1]}`)
   }
   // People and roles' and Workspace Settings' paths, old and new, open the
   // selected workspace's page (`movedToWorkspacePage`).

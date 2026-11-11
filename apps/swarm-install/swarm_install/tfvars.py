@@ -64,14 +64,18 @@ names, with the release's swarm-voice digest in `image_refs` (a release
 without one is a `LookupError`, never a silent "off"). voice.tf's middle step,
 a ChatGPT plan account in the Voice it pool, is added in the console; swarm-voice
 reads no secret. An install state with no answer (older than the question)
-keeps Terraform's default, off.
+keeps Terraform's default, off. With Voice it on, `voice_it_summary` is the line
+`swarm team add`'s summary prints (docs/design/llm-providers.md §7): Live needs
+a key, since no plan can serve it, and the dedicated one goes in Voice it ›
+Settings › Dedicated OpenAI key.
 
 **Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
 `infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
-for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
-region's zones offering the L4) and the Deep Learning VM image it pinned by
-name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
-and `image` from that, checked against infra's own validations; no would-be
+for a yes, stage 1's `infra.voice-speech-zone` adds the zones (every zone of
+the region offering the L4, in letter order: swarm-api starts the machine in
+the first of them with a free L4, then the next; owner, 2026-11-09) and the
+Deep Learning VM image it pinned by name. Every infra pass renders infra's
+`voice_speech` with `enabled`, `zones` and `image` from that, checked against infra's own validations; no would-be
 machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
 to Voice it `voice_speech` renders off whatever was recorded. An install
 state with no answer (older than the question) keeps Terraform's default, off.
@@ -181,6 +185,37 @@ CONTRACT_REVIEW_MODE = "off"
 #: stays off: a fresh deployment may have no TypeSafe key or internal route.
 WORK_CONTRACTS = "on"
 
+#: swarm-api's SWARM_BUILTINS_MANAGED (infra's `builtins_managed`): on, so a
+#: fresh deployment runs gstack and security-audit as managed plugins from the
+#: start and gets the bundle build's account and repositories
+#: (managed-plugins.md sections 1.4.5 and 15.2). It has no queued step to carry
+#: across, which is why infra's default stays off for an existing deployment.
+BUILTINS_MANAGED = "on"
+#: The install state's record of the value infra last applied (written by
+#: steps/bootstrap.py after an infra pass), so a re-run or an upgrade renders
+#: what is live rather than what a fresh deployment would get.
+BUILTINS_MANAGED_KEY = "builtins_managed"
+#: The install state's record of a platform admin's choice
+#: (`swarm upgrade --builtins-managed on|off`, verbs/upgrade.py), kept apart
+#: from the applied value so `swarm doctor` and verify still read what infra
+#: runs with until the next infra pass applies the choice.
+BUILTINS_MANAGED_CHOICE_KEY = "builtins_managed_choice"
+
+
+def builtins_managed(state: Any) -> str:
+    """`builtins_managed` for `state`: a platform admin's recorded choice
+    when there is one; else the value infra last applied when the state
+    records one; else on for an install that has not reached READY (no step
+    was ever queued on it); else off, because a deployment installed before
+    the switch existed has queued steps that carry the code entries'
+    capabilities.plugins and is turned on by a platform admin
+    (managed-plugins.md section 1.4.5), never by an upgrade."""
+    outputs = getattr(state, "outputs", None) or {}
+    for key in (BUILTINS_MANAGED_CHOICE_KEY, BUILTINS_MANAGED_KEY):
+        if outputs.get(key) in ("on", "off"):
+            return str(outputs[key])
+    return BUILTINS_MANAGED if getattr(state, "ready_at", None) is None else "off"
+
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
 TEAM = "team"
@@ -210,8 +245,8 @@ VOICE_IT = "voice_it"
 #: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
 VOICE_IMAGE = "swarm-voice"
 
-#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
-#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: terraform/infra's `voice_speech` validations (variables.tf): each of `zones`
+#: one zone of the region (one letter after it), and a Deep Learning VM image by name, never a /family/ path, which moves under the
 #: stopped machine and would replace it at the next plan.
 SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
@@ -399,6 +434,22 @@ def voice_it(state: Any, pass_name: str) -> str | None:
     return "on" if after(pass_name, "infra-2") else "account"
 
 
+#: Voice it › Settings in the console (apps/swarm-ui paths.ts `voice/settings`),
+#: where "Dedicated OpenAI key" is set (docs/design/llm-providers.md §6.4).
+VOICE_IT_SETTINGS_PAGE = "/voice/settings"
+
+
+def voice_it_summary(state: Any, console: str) -> str | None:
+    """The line `swarm team add`'s summary prints when Voice it is on
+    (llm-providers.md §7): where its dedicated key goes, and that Live needs a
+    key, since no plan can serve Live (§3.1). None when Voice it is off or the
+    install state is older than the question."""
+    if not voice_it_chosen(state):
+        return None
+    return (f"Voice it: Live needs a key, an OpenAI key shared with Voice it or its own; add the dedicated one "
+            f"in Voice it › Settings › Dedicated OpenAI key: {console}{VOICE_IT_SETTINGS_PAGE}")
+
+
 def voice_speech(state: Any) -> dict[str, Any] | None:
     """infra's `voice_speech` from the own-speech choice, or None for an
     install state recorded before the question (Terraform's default, off).
@@ -410,19 +461,30 @@ def voice_speech(state: Any) -> dict[str, Any] | None:
         raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
     if found.get("enabled") is not True or voice_it_chosen(state) is False:
         return {"enabled": False}
-    zone, image = found.get("zone"), found.get("image")
-    if not zone or not image:
-        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+    zones, image = found.get("zones"), found.get("image")
+    if zones is None and found.get("zone"):
+        # An install state recorded by an older installer holds one `zone`
+        # string; it renders as a one-zone list so an existing install keeps
+        # working (infra accepts `zone` for one release only).
+        zones = [found["zone"]]
+    if not zones or not image:
+        raise LookupError(f"the install state has no voice_speech zones and image yet; {RECORDED_BY['voice_speech']} "
                           "records them")
+    if isinstance(zones, str) or not isinstance(zones, (list, tuple)):
+        raise ValueError(f"voice_speech zones is {type(zones).__name__}, not a list of zones; "
+                         f"{RECORDED_BY['voice_speech']} records them")
     region = _required(state, "region")
-    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
-        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    for zone in zones:
+        if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+            raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if len({str(zone) for zone in zones}) != len(zones):
+        raise ValueError(f"voice_speech zones {list(zones)!r} name a zone twice; each zone is listed once")
     if not SPEECH_IMAGE.match(str(image)):
         raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
                          "(projects/deeplearning-platform-release/global/images/<name>)")
     # Never render an image below the driver floor; infra.voice-speech pins one that meets it.
     check_speech_image(str(image))
-    return {"enabled": True, "zone": str(zone), "image": str(image)}
+    return {"enabled": True, "zones": [str(zone) for zone in zones], "image": str(image)}
 
 
 def iap_members(state: Any, installer: str) -> list[str]:
@@ -581,6 +643,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "groups_auth": groups_auth(outputs),
         "contract_review_mode": CONTRACT_REVIEW_MODE,
         "work_contracts": WORK_CONTRACTS,
+        "builtins_managed": builtins_managed(state),
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }

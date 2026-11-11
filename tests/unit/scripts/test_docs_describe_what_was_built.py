@@ -479,7 +479,7 @@ def test_await_input_section_states_the_answer_and_file_bounds():
     assert "`apps/swarm-api/swarm_api/validation.py::AWAIT_INPUT_MAX_FILES`" in body
     assert f"{awaitinput.MAX_FORM_BYTES // KIB} KiB" in body
     assert f"{awaitinput.MAX_TEXT_BYTES // KIB} KiB" in body
-    assert f"{awaitinput.MAX_CONCURRENT_MULTIPART} multipart answers" in body
+    assert f"{awaitinput.MAX_CONCURRENT_MULTIPART_PER_INSTANCE} multipart answers" in body
 
 
 def test_await_input_section_lists_exactly_the_allowed_types():

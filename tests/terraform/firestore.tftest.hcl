@@ -225,6 +225,32 @@ run "account_hold_records_have_their_index_and_their_ttl" {
   }
 }
 
+# Contract request 152 (accepted 9 November 2026) records on an attempt the
+# pool account it kept last, and the console lists an account's attempts:
+#   attempts where account_id == A order by created_at DESC
+# docs/design/llm-providers.md §8.3 names this index; without it that query
+# fails rather than running slowly.
+run "an_accounts_attempts_have_their_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["attempts-account-created"].collection == "attempts" &&
+      google_firestore_index.this["attempts-account-created"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["attempts-account-created"].fields) == 2 &&
+      google_firestore_index.this["attempts-account-created"].fields[0].field_path == "account_id" &&
+      google_firestore_index.this["attempts-account-created"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["attempts-account-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["attempts-account-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "attempts needs (account_id ASC, created_at DESC): account_id is the equality filter, created_at the newest-first order (request 152)"
+  }
+}
+
 run "account_hold_ttl_survives_turning_the_audit_ttls_off" {
   command = plan
 

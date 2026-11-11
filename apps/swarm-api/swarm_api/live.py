@@ -2520,15 +2520,21 @@ class LiveLimits:
     """Viewer tickets per person, and takes per person per task.
 
     In-process, as `TokenBucketLimiter` is: N instances allow N times this,
-    which that module records."""
+    which that module records. Within an instance the settings are its
+    figures, divided by its uvicorn workers (`workers`, SWARM_API_WORKERS;
+    owner's choice 2026-11-10), because each worker builds its own: one
+    worker keeps 30 tickets and 6 takes a minute, two keep 15 and 3 each."""
 
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, environ: Mapping[str, str] | None = None) -> None:
         from .ratelimit import TokenBucketLimiter
+        from .workers import per_worker, per_worker_rate
 
         tickets = int(getattr(settings, "live_viewer_tickets_per_minute", 30))
         takes = int(getattr(settings, "live_takes_per_minute", 6))
-        self.tickets = TokenBucketLimiter(tickets / 60.0, tickets)
-        self.takes = TokenBucketLimiter(takes / 60.0, takes)
+        self.tickets = TokenBucketLimiter(per_worker_rate(tickets / 60.0, environ),
+                                          per_worker(tickets, environ))
+        self.takes = TokenBucketLimiter(per_worker_rate(takes / 60.0, environ),
+                                        per_worker(takes, environ))
 
     def ticket(self, email: str) -> None:
         self.tickets.check(email.strip().lower())

@@ -14,6 +14,11 @@
 # voice_speech.tf makes only while voice_speech.enabled (locals.tf renders
 # SWARM_SPEECH_IMAGE "" otherwise).
 #
+# swarm-plugin-intake is deliberately NOT here: terraform/infra/plugins.tf
+# plans its intake job on every deployment once image_refs carries the digest,
+# and no tfvars block switches the job off (plugins_switch is swarm-api's
+# runtime setting, not a deployment's), so every release builds and promotes it.
+#
 # Only a literal `enabled = false` in that environment's own tfvars switches an
 # image off. An absent file or block, a file that cannot be read, a value that
 # is not literally `false`: the image counts as deployed.

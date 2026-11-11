@@ -4,7 +4,7 @@
  * settings routes (routes/voice_settings.py).
  *
  *   Engine     own speech or GPT-Live, the fast model that answers, the
- *              planner, and the OpenAI key's status;
+ *              planner, debug mode, and the OpenAI key's status;
  *   Machine    the speech machine's size and zone;
  *   Models     speech to text, text to speech, the voice;
  *   Behaviour  the idle stop.
@@ -22,20 +22,34 @@
  * saved first swarm-api answers 409, the page reads again and says who saved,
  * and the person keeps theirs or takes the other.
  *
+ * DEBUG MODE (the owner's pick of 10 November 2026, "Trace on Telemetry"). A
+ * switch, saved the moment it is flipped (`PATCH {version, debug}`), not part
+ * of the page's Save; a platform admin's, read only for anyone else. A save
+ * that fails says so in the head and leaves the switch as it was. On, the row
+ * opens the traces on Telemetry.
+ *
  * THE KEY. Its status only: set or not, by whom and when. swarm-api never
  * serves the key, and the page keeps nothing else of the answer.
+ *
+ * THE DEDICATED KEY (docs/design/llm-providers.md §4.4, §6.4). Its status,
+ * and for a platform admin (`dedicated_key.can_delete`) a Delete behind the
+ * typed confirmation: the key's label typed back enables "Delete key", which
+ * sends `DELETE {label}` once. The row moves only with the answer: a delete
+ * that fails says so in the dialog and leaves the row as it was.
  *
  * Telemetry's timeline joins this section when its server lands (build plan
  * row L10); this page draws nothing for it.
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import {
+  deleteVoiceDedicatedKey,
   loadMe,
   loadVoiceCatalogue,
   loadVoiceSettings,
   saveVoiceSettings,
   type VoiceCatalogue,
+  type VoiceDedicatedKey,
   type VoiceSettingField,
   type VoiceSettingsView,
 } from '../api'
@@ -177,7 +191,6 @@ function KeyStatus({ view }: { view: VoiceSettingsView }) {
       {k.set === true ? (
         <Tick tone="ok" say={k.by && k.at ? `Set by ${k.by}, ${when(k.at)}` : 'Set'}>
           Set{k.by ? ` · ${k.by}` : ''}
-          {k.at ? ` · ${when(k.at)}` : ''}
         </Tick>
       ) : k.set === false ? (
         <Tick tone="warn" say="GPT-Live cannot start without it; own speech does not need it">
@@ -197,6 +210,116 @@ function KeyStatus({ view }: { view: VoiceSettingsView }) {
   )
 }
 
+/** The broker's state of the dedicated key, as a tick. */
+const KEY_STATE: Readonly<Record<string, { tone: Tone; text: string }>> = {
+  available: { tone: 'ok', text: 'Available' },
+  limited: { tone: 'warn', text: 'Limited' },
+  paused: { tone: 'idle', text: 'Paused' },
+  draining: { tone: 'warn', text: 'Draining' },
+  credit_gone: { tone: 'bad', text: 'Credit gone' },
+}
+
+/** The dedicated key's row, and its Delete behind the typed label (§4.4). */
+function DedicatedKey({ k, canEdit, onDeleted }: { k: VoiceDedicatedKey; canEdit: boolean; onDeleted: (view: VoiceSettingsView) => void }) {
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // A second click before the first answer re-renders must not send a second delete.
+  const sending = useRef(false)
+  const name = k.display_name ?? k.label ?? 'key'
+  const state = k.state !== null ? (KEY_STATE[k.state] ?? { tone: 'idle' as Tone, text: k.state }) : null
+  const label = k.label
+  const deletable = canEdit && k.can_delete && k.set === true && label !== null
+
+  const close = () => {
+    setOpen(false)
+    setTyped('')
+    setError(null)
+  }
+  const remove = async () => {
+    if (label === null || typed !== label || sending.current) return
+    sending.current = true
+    setBusy(true)
+    setError(null)
+    const r = await deleteVoiceDedicatedKey(label)
+    sending.current = false
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      close()
+      onDeleted(r.data)
+    } else if (r.status === 'error') {
+      setError(r.error.message)
+    }
+  }
+
+  return (
+    <div className="vset-key" data-dedicated-key={k.set === null ? 'unknown' : k.set ? 'set' : 'unset'}>
+      <span className="vset-key-name">
+        Dedicated key
+        <Why say="Voice it's own OpenAI key, the last tier after plans and shared keys. Held by the quota broker and never shown here." />
+      </span>
+      {k.set === true ? (
+        <span className="vset-switchrow">
+          {state !== null && (
+            <Tick tone={state.tone} say={[name, k.by && `added by ${k.by}`, k.at && when(k.at)].filter(Boolean).join(', ')}>
+              {state.text}
+            </Tick>
+          )}
+          {deletable && !open && <Btn onClick={() => setOpen(true)}>Delete</Btn>}
+        </span>
+      ) : k.set === false ? (
+        <Tick tone="idle" say="No dedicated key is stored">
+          Not set
+        </Tick>
+      ) : (
+        <Tick tone="idle" say="The quota broker could not say">
+          Unknown
+        </Tick>
+      )}
+      {open && deletable && (
+        <div className="vset-band is-bad" role="dialog" aria-label={`Delete API key ${name}`}>
+          <div className="vset-band-text">
+            <strong>Delete API key {name}</strong>
+            <span>
+              Revoke it at OpenAI too.
+              <Why say="The stored key is destroyed now. Sessions running on it keep the value they already read until their next renew, then move to the next tier or end. Deleting here does not revoke the key at the provider: a copy anywhere else keeps working until it is revoked there." />
+            </span>
+            <input
+              className="c-inp vset-mono"
+              aria-label={`Type ${label} to delete`}
+              placeholder={label}
+              autoComplete="off"
+              spellCheck={false}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+            {error !== null && (
+              <Tick tone="bad" say={error}>
+                Not deleted · {error}
+              </Tick>
+            )}
+          </div>
+          <div className="vset-band-acts">
+            <Btn onClick={close} disabled={busy}>
+              Cancel
+            </Btn>
+            <Btn primary onClick={() => void remove()} disabled={busy || typed !== label}>
+              Delete key
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Telemetry, where the traces are kept: out of the router, as the console's other navigations go. */
+function openTraces(): void {
+  window.history.pushState(null, '', '/voice/telemetry')
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 interface Conflict {
   by: string | null
   at: string | null
@@ -213,6 +336,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
   const [conflict, setConflict] = useState<Conflict | null>(null)
   const [refused, setRefused] = useState<{ field: string; message: string } | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [debugSaving, setDebugSaving] = useState(false)
 
   const load = useCallback(async (): Promise<VoiceSettingsView | null> => {
     const [c, s] = await Promise.all([loadVoiceCatalogue(), loadVoiceSettings()])
@@ -300,6 +424,21 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
       setSaveError(r.error.message)
     }
     setSaving(false)
+  }
+
+  /** Debug mode is saved on its own, at once: the switch moves only with the answer. */
+  const flipDebug = async () => {
+    setDebugSaving(true)
+    setSaveError(null)
+    const r = await saveVoiceSettings(view.version, { debug: !view.debug })
+    if (r.status === 'ok' || r.status === 'stale') {
+      setView(r.data)
+    } else if (r.status === 'error') {
+      setSaveError(r.error.message)
+      // Someone else saved first: read again, so the next flip sends their version.
+      if (r.error.kind === 'conflict') await load()
+    }
+    setDebugSaving(false)
   }
 
   const discard = () => {
@@ -396,7 +535,30 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
               options={catalogue.planner_models.map((m) => ({ key: m.name, label: m.model ? `${m.label} · ${m.model}` : m.label }))}
             />
           </Row>
+          <div className="vset-row" data-row="debug">
+            <div className="vset-row-lbl">
+              Debug
+              <Why say="Every session keeps a turn-by-turn trace: what the planner was given, what it read, the cards and mock-ups it drew or refused and why, and what the voice was told. Talk shows the last turn under the Stage; Telemetry keeps the traces. Text is masked. Off, nothing is drawn and nothing is kept. A change reaches the next session." />
+            </div>
+            <div className="vset-row-val">
+              <span className="vset-switchrow">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={view.debug}
+                  aria-label="Debug mode"
+                  className="vset-switch"
+                  disabled={ro || debugSaving}
+                  onClick={() => void flipDebug()}
+                >
+                  <i aria-hidden="true" />
+                </button>
+                {view.debug && <Btn onClick={openTraces}>Traces</Btn>}
+              </span>
+            </div>
+          </div>
           <KeyStatus view={view} />
+          <DedicatedKey k={view.dedicated_key} canEdit={canEdit} onDeleted={setView} />
         </Card>
 
         <Card

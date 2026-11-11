@@ -118,7 +118,8 @@ class FakeFronts:
         return object() if voice_id in self.held else None
 
     async def start(self, voice_id: str, *, person: str, grant: Any = None, exists: Any = None,
-                    planner_model: str | None = None, conversation_model: str | None = None) -> Any:
+                    planner_model: str | None = None, conversation_model: str | None = None,
+                    debug: bool = False) -> Any:
         self.starts.append({"voice_id": voice_id, "person": person, "planner_model": planner_model,
                             "conversation_model": conversation_model})
         if exists is not None and exists(voice_id):
@@ -276,3 +277,52 @@ def test_the_deployments_fronts_hold_their_accounts_as_the_front():
     fronts = voice_main.build_fronts(Live())
     assert isinstance(fronts, claudefront.FrontSessions)
     assert fronts._accounts.holder == plannerlease.FRONT_HOLDER  # noqa: SLF001
+
+
+def test_own_speechs_text_fallback_keeps_the_front_and_its_account():
+    """A machine fallback (no_l4) keeps the session on its front: the text
+    turns reach the front that holds the session's Claude account, nothing
+    ends it, and the Voice it pool's plan (textchat) is never leased."""
+    async def scenario(client, texts, fronts):
+        assert (await client.post("/internal/sessions", json=_speech_start(), headers=AUTH)).status_code == 201
+        for said in ("first typed line", "second typed line"):
+            r = await client.post(f"/internal/sessions/{VOICE_ID}/turns", json={"text": said}, headers=AUTH)
+            assert r.status_code == 200, r.text
+            assert r.json()["reply"] == "Looking at that now."
+        assert [t for _, t in fronts.turns] == ["first typed line", "second typed line"]
+        assert fronts.ended == [] and fronts.held == {VOICE_ID}
+        assert texts.starts == [] and texts.turns == []
+
+    run(scenario)
+
+
+class _RefusingTexts(FakeTexts):
+    """A text start the Voice it pool refuses with the broker's reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    async def start(self, voice_id: str, **_: Any) -> Any:
+        self.starts.append(voice_id)
+        raise voice_main.VoicePoolRefused(self.reason)
+
+
+def test_a_text_start_with_no_plan_free_says_so_and_never_names_the_openai_key():
+    async def main():
+        texts = _RefusingTexts(voice_main.NONE_AVAILABLE)
+        app = voice_main.create_app(sessions=FakeLive(), verify_caller=_caller_ok, texts=texts,
+                                    fronts=FakeFronts())
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://voice")
+        try:
+            r = await client.post("/internal/sessions", json={**_speech_start(), "mode": "text"}, headers=AUTH)
+        finally:
+            await client.aclose()
+        assert r.status_code == 409, r.text
+        body = r.json()
+        assert body["code"] == "voice_pool_busy"
+        assert body["reason"] == "no_voice_account_available" and body["capability"] == "text"
+        assert "OpenAI" not in body["message"] and "in use by another session" not in body["message"]
+        assert "plan account" in body["message"]
+
+    asyncio.run(main())

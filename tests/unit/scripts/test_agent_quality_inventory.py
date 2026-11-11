@@ -206,6 +206,11 @@ def test_the_report_counts_matrix_rows_and_fails_on_an_unnamed_live_cell(tmp_pat
 
 
 # --- the skip table: listed by location, never counted ---------------------
+# A skip is registered by its row in known-failures.md §3: file, enclosing test
+# and kind, with a reason. A change that adds a skip adds the row the failing
+# test prints; one that removes the skip deletes the row. Only the file, test
+# and kind are matched, so the reason may be reworded freely, and there is no
+# count to bump, so two changes that each add a skip land together.
 
 _TABLE_HEAD = (
     "| File | Test | Kind | Reason |\n"

@@ -82,6 +82,8 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
     ("POST", "/v1/admin/setup/addons/brave-search/probe", None),
+    ("POST", "/v1/admin/setup/plugins/skip", None),
+    ("DELETE", "/v1/admin/setup/plugins/skip", None),
 ]
 
 
@@ -211,6 +213,8 @@ class FakePool:
         #: Every `POST /v1/accounts` swarm-api forwarded, credential included,
         #: so a test can count how often a value reached the broker.
         self.registered: list[dict[str, Any]] = []
+        #: When True, the platform-wide listing raises, as an unreachable broker.
+        self.listing_fails = False
 
     def register(self, *, owner_tenant, label, provider, lend_to, credential, added_by=None):
         self.registered.append({"owner_tenant": owner_tenant, "label": label,
@@ -218,6 +222,17 @@ class FakePool:
                                 "credential": credential, "added_by": added_by})
         account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
                    "label": label, "provider": provider, "measured": False}
+        self.accounts.append(account)
+        return {"account": account, "expires_at": None}
+
+    def register_api_key(self, *, owner_tenant, label, provider, credential, added_by,
+                         share_with_voice_it=False):
+        self.registered.append({"owner_tenant": owner_tenant, "label": label,
+                                "provider": provider, "credential": credential,
+                                "added_by": added_by,
+                                "share_with_voice_it": share_with_voice_it})
+        account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
+                   "label": label, "provider": provider, "kind": "api_key"}
         self.accounts.append(account)
         return {"account": account, "expires_at": None}
 
@@ -238,6 +253,12 @@ class FakePool:
 
     def list_accounts(self, tenant_id, include_reserved: bool = False):
         return {"accounts": [a for a in self.accounts if a["owner_tenant"] == tenant_id]}
+
+    def voice_it_accounts(self):
+        """The broker's platform-wide listing (`GET /v1/accounts`, no tenant)."""
+        if self.listing_fails:
+            raise OSError("broker unreachable")
+        return {"accounts": list(self.accounts), "tenant_id": None, "unreadable_documents": []}
 
 
 class FakeRuns:

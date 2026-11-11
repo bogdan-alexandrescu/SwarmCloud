@@ -20,7 +20,7 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -66,8 +66,27 @@ from .accounts import (
     HOLD_LOG_RETENTION,
     MAX_AGENTS_BEFORE_READING,
     SWAP_DRAIN,
+    SWAP_EXHAUSTED,
+    SWAP_PLAN_AVAILABLE,
     SWAP_REASONS,
     SWAP_UNUSABLE,
+    SPEND_CAP_MAX_USD,
+    CAP_EXHAUSTED,
+    CAP_LEND_MAX_AGENTS,
+    CAP_LEND_SPEND,
+    CAP_SPEND,
+    CAP_WORKSPACE_MAX,
+    PLAN_PROVIDER_OF,
+    TIER_PLAN,
+    chain_providers,
+    lends_from_firestore,
+    lend_spend_from_firestore,
+    month_spend_from_firestore,
+    next_spend_month,
+    soonest,
+    spend_cap_from_firestore,
+    spend_month,
+    tier_of,
     DEFAULT_POOLS,
     POOL_VOICE_IT,
     POOL_WORKSPACE,
@@ -75,7 +94,15 @@ from .accounts import (
     AccountError,
     AccountState,
     Hold,
+    key_secret_name,
+    plan_labels_with_key_mark,
+    refuse_plan_label,
+    validate_lends,
+    validate_per_workspace_max,
+    validate_spend_cap,
     choose_voice,
+    choose_voice_chain,
+    voice_chain,
     validate_pools,
     Unavailable,
     WindowReading,
@@ -89,6 +116,7 @@ from .accounts import (
     holds_to_firestore,
     hold_log_entry,
     max_agents_from_firestore,
+    per_workspace_max_from_firestore,
     secret_name,
     subscription_identity,
     validate_label,
@@ -117,10 +145,11 @@ from .accountstore import (
 )
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
-from . import openai_api_key, openai_plan
+from . import api_key, openai_api_key, openai_plan
+from .api_key import VENDOR_OF
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
-from .secretstore import SecretManagerStore
+from .secretstore import SecretManagerStore, is_key_secret, version_number
 from .service import QuotaBroker, TargetResetRefused, quota_to_firestore
 from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
@@ -230,6 +259,19 @@ class AccountRegister(StrictModel):
     #: stored the key, on the key account's document
     #: (`openai_api_key.added_fields`; the owner, 5 November 2026).
     added_by: str | None = Field(default=None, max_length=254)
+    #: An API key's lends (§4.6, Q7): {borrowing workspace: {max_agents,
+    #: monthly_spend_cap_usd}}, both required on a key. A plan may send it
+    #: too, with `max_agents` alone; `lend_to` is then refused beside it.
+    #: Checked by `accounts.validate_lends`, the one check of it.
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+    #: An API key only. None: an `openai-api` key is the dedicated Voice it
+    #: key, as every one registered before §4 was (Q9); an `anthropic-api`
+    #: key is a pool key (Q2: no dedicated Anthropic key).
+    voice_dedicated: bool | None = None
+    #: A pool key only, and a platform admin's: the key also serves Voice it
+    #: (`voice-it` in its pools, §4.6), after the plans and before the
+    #: dedicated key.
+    share_with_voice_it: bool = False
 
 
 class AccountAuthorize(StrictModel):
@@ -255,8 +297,57 @@ class AccountExchange(StrictModel):
     expected_owner: str | None = Field(default=None, max_length=128)
 
 
+class AccountDevicePoll(StrictModel):
+    """Ask whether a device-code sign-in was approved, by its state.
+
+    No code here: the device id the vendor is polled with stays in the
+    pending record. `expected_owner` is `AccountExchange`'s, with its rule.
+    """
+
+    state: str = Field(min_length=8, max_length=256)
+    expected_owner: str | None = Field(default=None, max_length=128)
+
+
 class AccountLending(StrictModel):
-    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    """Who may borrow an account, and each borrower's cap (§4.6, Q7).
+
+    `lends` is the shape: {workspace: {max_agents, monthly_spend_cap_usd}},
+    `max_agents` required on both kinds and the spend cap required on a key.
+    `lend_to`, a bare list, is still read FOR A PLAN, so today's callers keep
+    working: a borrower already lent keeps its cap, a new one gets the
+    account's own `max_agents`, marked not set, as today's lends were carried
+    over. A key's bare list is refused: a key is lent only with a spend cap.
+    Neither: lent to nobody, as an empty list always meant.
+    """
+
+    lend_to: list[str] | None = Field(default=None, max_length=50)
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+
+
+class AccountPerWorkspaceMax(StrictModel):
+    """Each workspace's cap on the agents it holds on an account (Q6).
+    REQUIRED, so an empty body is refused rather than read as "no caps";
+    `{}` clears every cap."""
+
+    per_workspace_max: dict[str, Any] = Field(max_length=51)
+
+
+class AccountSpendCap(StrictModel):
+    """A key's monthly spend ceiling in US dollars, or null for none (§4.6).
+    REQUIRED, so an empty body is refused rather than read as "clear"."""
+
+    monthly_spend_cap_usd: float | None
+
+
+class ImportWorkspaceKeys(StrictModel):
+    """Import each workspace's own provider key as a pool key (Q7).
+
+    `tenants` narrows the import to those workspaces; empty imports every
+    `swarm-tenant-<tenant>-<vendor>` key the secret store lists. `added_by`
+    is the platform admin who asked, recorded on each imported key."""
+
+    tenants: list[str] = Field(default_factory=list, max_length=200)
+    added_by: str = Field(min_length=3, max_length=254)
 
 
 class AccountModelClasses(StrictModel):
@@ -343,6 +434,14 @@ class AccountAssign(StrictModel):
     person: str | None = Field(default=None, min_length=3, max_length=320)
     voice_session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
+    #: Whether the caller can run on an API key (§5.3): set the key's own
+    #: variable, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, rather than the
+    #: plan's token. A worker or a swarm-voice that predates the key shapes
+    #: sends nothing and is walked through the plans alone, so it is never
+    #: handed a key it would set as a plan token. It names no key, tier or
+    #: account (invariant 10): the broker still chooses, from the same chain.
+    key_tier: bool = False
+
     @model_validator(mode="after")
     def _one_kind_of_hold(self) -> "AccountAssign":
         voice = (self.holder, self.person, self.voice_session_id)
@@ -378,6 +477,16 @@ class VoiceLease(StrictModel):
     #: offered the pool's ChatGPT plan and never a key (`choose_voice`); no
     #: other value is accepted.
     capability: Literal["live", "text"] = openai_api_key.CAPABILITY_LIVE
+    #: As `AccountAssign.key_tier`, for a text conversation: swarm-voice can
+    #: run text on a key only once it has the developer Responses wire (lane
+    #: LP-V1), so until it says so a text lease walks the plans alone. A Live
+    #: session needs no flag: a key is the only kind it has ever run on.
+    key_tier: bool = False
+    #: As `AccountAssign.exclude`: accounts this session already held and
+    #: could not use (a key whose credit is gone, a plan at its limit), so the
+    #: walk passes over them to the next tier (llm-providers.md §5.3). It can
+    #: only narrow what the session is offered, never widen it.
+    exclude: list[str] = Field(default_factory=list, max_length=20)
 
 
 class VoiceHold(StrictModel):
@@ -404,6 +513,11 @@ class AccountRelease(StrictModel):
     #: wall, and so an operator can see the difference between an account
     #: nobody wants and one nobody can read.
     unusable: str = Field(default="", max_length=200)
+    #: The worker's `cost_usd` estimate of what ran on this hold (§4.6, Q5).
+    #: On a key it is added to the month's metered spend, and a borrower's to
+    #: its lend's, in the transaction that closes the hold. Absent from a
+    #: worker that predates it, and from a plan's hold: nothing is added.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class AttemptHoldsRelease(StrictModel):
@@ -431,6 +545,19 @@ class _AttemptHold(StrictModel):
     assignment_id: str = Field(min_length=1, max_length=128)
     task_id: str = Field(min_length=1, max_length=128)
     attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class AccountHoldStatus(_AttemptHold):
+    """A holder's per-turn status read: the proof, and on a KEY the running
+    spend (§4.6).
+
+    `cost_usd` is the attempt's estimate of what has run on this hold so far,
+    the same figure the hold's close will carry, bounded as a release's and a
+    swap's are. On a key it is recorded on the hold (`Hold.running_cost_usd`)
+    and counted toward the month cap and a borrower's lend cap before the
+    hold closes. Ignored on a plan's hold: a plan's price is flat."""
+
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class WindowIn(StrictModel):
@@ -479,6 +606,11 @@ class AccountSwap(_AttemptHold):
     reason: str = Field(min_length=1, max_length=32)
     provider: str = Field(default="anthropic", max_length=64)
     exclude: list[str] = Field(default_factory=list, max_length=20)
+    #: As `AccountAssign.key_tier`: the swap walks the key tier only for a
+    #: caller that can run on a key.
+    key_tier: bool = False
+    #: As `AccountRelease.cost_usd`, for the hold this swap closes.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class ReportAccount(_AttemptHold):
@@ -719,11 +851,49 @@ ACCOUNT_PROVIDERS = ("anthropic", openai_plan.PROVIDER)
 #: pairs the sweep refreshes and swarm-api's `schemas.ACCOUNT_PROVIDERS`
 #: restates, because no workspace's sign-in or task ever names one.
 VOICE_ONLY_PROVIDERS = (openai_api_key.PROVIDER,)
+#: Both developer API key kinds (docs/design/llm-providers.md §3): the new
+#: `anthropic-api` and `openai-api`, which is no longer Voice it only once it
+#: is registered as a pool key (`voice_dedicated` False). Registered through
+#: `_register_api_key`, never refreshed, never polled.
+API_KEY_PROVIDERS = api_key.PROVIDERS
+
+
+#: The API key kind a workspace's own provider secret is imported as (Q7):
+#: `swarm-tenant-<tenant>-<vendor>` holds that vendor's developer key.
+WORKSPACE_KEY_PROVIDER: dict[str, str] = {
+    "anthropic": api_key.ANTHROPIC_API,
+    "openai": api_key.OPENAI_API,
+}
+#: Where an imported key was copied from, on its account document (§4.4: its
+#: delete says the workspace's own secret still holds the value).
+IMPORTED_FROM = "key_imported_from"
+
+#: A deleted API key's owed secret destruction (docs/design/llm-providers.md
+#: §4.4): one document per account id, written in the transaction that
+#: removes the account and closes its holds, marked done once the secret is
+#: destroyed. Secret name, who and when; never the value. The quota sweep
+#: retries every record not marked done (`finish_owed_key_deletions`).
+KEY_DELETIONS_COLLECTION = "key_deletions"
+#: A key's rotation (§4.5): the version it wrote and when the versions it
+#: superseded are destroyed, one hold TTL later, by the quota sweep
+#: (`destroy_superseded_key_versions`). One document per account id; a second
+#: rotation inside the TTL replaces it, keeping its own later version.
+KEY_ROTATIONS_COLLECTION = "key_rotations"
+#: How often a key marked credit gone is asked whether it can serve again
+#: (§5.2: "the broker's hourly probe").
+KEY_PROBE_INTERVAL = timedelta(hours=1)
+#: When a key's exhausted probe last ran, on its account document.
+KEY_PROBED_AT = "exhausted_probed_at"
+#: The steps of a key's delete a 502 names (§4.4).
+KEY_STEP_DESTROY = "destroy_versions"
+KEY_STEP_DELETE = "delete_secret"
 
 
 def _account_provider(provider: str) -> str:
     name = (provider or "").strip().lower()
-    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS
+    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS + tuple(
+        p for p in API_KEY_PROVIDERS if p not in VOICE_ONLY_PROVIDERS
+    )
     if name not in known:
         raise BrokerValidationError(
             f"a pool account is one of {', '.join(known)}, not {provider!r}"
@@ -918,6 +1088,22 @@ def account_to_api(
             "limited_until": _iso(getattr(account, "limited_until", None)),
             "window": getattr(account, "limited_window", None),
         })
+    # A KEY'S OWN MARKS (§5.1, §5.2): credit gone, or the month's spend --
+    # closed and running (`Account.spent`) -- at its cap. `choose()` skips
+    # both (`Account.has_headroom`), so the verdict says so with its reason,
+    # for every reader, and no reader re-derives it.
+    if api_key.is_key(account.provider):
+        exhausted_at = getattr(account, "exhausted_at", None)
+        if isinstance(exhausted_at, datetime):
+            blocked_by.append({"reason": CAP_EXHAUSTED, "exhausted_at": exhausted_at.isoformat()})
+        over = getattr(account, "is_over_spend_cap", None)
+        if callable(over) and over(now):
+            blocked_by.append({
+                "reason": CAP_SPEND,
+                "monthly_spend_cap_usd": account.monthly_spend_cap_usd,
+                "spent_usd": round(account.spent(now), 6),
+                "clears_at": next_spend_month(now).isoformat(),
+            })
     max_agents = getattr(account, "max_agents", None)
     live_holds = getattr(account, "live_holds", None)
     if isinstance(max_agents, int) and callable(live_holds):
@@ -1004,6 +1190,34 @@ def account_to_api(
         "state": account.state.value,
         "reason": account.reason,
         "lend_to": list(account.lend_to),
+        #: docs/design/llm-providers.md §3 and §4.6. `getattr` for the reason
+        #: `model_classes` gives. The vendor groups a plan with its keys; a
+        #: lend's `cap_set` False is one carried over from `lend_to`, shown
+        #: `cap not set`. Never a key's value: the value is in Secret Manager.
+        "vendor": VENDOR_OF.get(account.provider, account.provider),
+        "kind": "api_key" if api_key.is_key(account.provider) else "plan",
+        "lends": {
+            t: c.to_firestore() for t, c in (getattr(account, "lends", None) or {}).items()
+        },
+        "per_workspace_max": dict(getattr(account, "per_workspace_max", None) or {}),
+        "monthly_spend_cap_usd": getattr(account, "monthly_spend_cap_usd", None),
+        "exhausted_at": (
+            account.exhausted_at.isoformat()
+            if isinstance(getattr(account, "exhausted_at", None), datetime) else None
+        ),
+        "voice_dedicated": bool(getattr(account, "voice_dedicated", False)),
+        #: The tier it serves from (§5.3), and on a key this month's metered
+        #: spend, the key's and each borrower's (§4.6), what its caps read.
+        "tier": (
+            TIER_PLAN if not api_key.is_key(account.provider)
+            else "voice_dedicated" if getattr(account, "voice_dedicated", False) else "api_key"
+        ),
+        "month_spend_usd": (getattr(account, "month_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), 0.0
+        ),
+        "lend_spend_usd": dict((getattr(account, "lend_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), {}
+        )),
         #: The classes this account's plan serves; empty means every class
         #: (R5). `getattr` for the same reason as `observed_at` above.
         "model_classes": list(getattr(account, "model_classes", ()) or ()),
@@ -1053,7 +1267,10 @@ def account_to_api(
         and not [b for b in blocked_by if not b.get("advisory")],
         #: What refuses it: each window under its floor (`used`, the `floor`
         #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
-        #: every slot is taken. Empty when nothing does.
+        #: every slot is taken; on a key, `reason` `exhausted` (credit gone,
+        #: with `exhausted_at`) or `spend_cap` (the month's spend, closed and
+        #: running, at `monthly_spend_cap_usd`, with `spent_usd` and when it
+        #: `clears_at`). Empty when nothing does.
         "blocked_by": blocked_by,
         #: When a window that blocks it clears, or null when no window does --
         #: a full account frees when an agent on it finishes, which no clock
@@ -1326,8 +1543,16 @@ def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
     serves both exactly as before. Never raises: an unreadable task is an
     unknown class, not a failed assignment.
     """
+    return step_for(db, tenant_id, task_id)[1]
+
+
+def step_for(db: Any, tenant_id: str, task_id: str | None) -> tuple[Any, str | None]:
+    """(the step's runner profile, its model class), each None when it cannot
+    be known: `step_class_for`'s read, which the walk also needs for the
+    profile's declared credentials (§3.1, `chain_providers`): `browser`
+    declares the key alone, so its chain has no plan tier."""
     if not task_id:
-        return None
+        return None, None
     try:
         snap = db.collection(TASKS_COLLECTION).document(task_id).get()
         data = snap.to_dict() if getattr(snap, "exists", False) else None
@@ -1337,17 +1562,82 @@ def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
             "every class may take it",
             extra={"task_id": task_id, "error": type(exc).__name__},
         )
-        return None
+        return None, None
     if not isinstance(data, dict) or data.get("tenant_id") != tenant_id:
-        return None
+        return None, None
     profile = RUNNER_PROFILES.get(str(data.get("runner_profile") or ""))
     requested = data.get("model_class")
     if profile is None or not (requested is None or isinstance(requested, str)):
-        return None
+        return None, None
     try:
-        return step_model_class(profile, requested)
+        return profile, step_model_class(profile, requested)
     except ValueError:
-        return None
+        return profile, None
+
+
+def walk_chain(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+    take: Any,
+) -> tuple[Any, Any, list[str]]:
+    """Walk a lease's chain, tier by tier (§5.3): the first account `take`
+    grants, or (None, None, the caps that refused).
+
+    Each tier is `choose()`'s, in today's order; `take(account)` is the one
+    transaction that grants it (`acquire_hold`, `swap_hold`) and returns None
+    when the account lost its room since the listing -- refused inside the
+    transaction, writing nothing -- so the walk tries the next candidate and
+    then the next tier. The walk itself holds nothing (§5.5 invariant 2).
+    """
+    caps: list[str] = []
+    skip = set(exclude)
+    for candidates in tiers:
+        for a in candidates:
+            # The caps the listing already shows, so a park can name them.
+            cap = a.cap_for(tenant_id, now)
+            if cap is not None and a.account_id not in skip and cap not in caps:
+                caps.append(cap)
+        while True:
+            chosen = choose(candidates, tenant_id, now, exclude=tuple(skip), model_class=model_class)
+            if chosen is None:
+                break
+            refusals: list[str] = []
+            granted = take(chosen, refusals)
+            if granted is not None:
+                return chosen, granted, caps
+            caps.extend(c for c in refusals if c not in caps)
+            skip.add(chosen.account_id)
+    return None, None, caps
+
+
+def chain_tiers(
+    listing: list[Any], tenant_id: str, providers: Iterable[str], model_class: str | None
+) -> list[list[Any]]:
+    """Each tier's candidates (`accounts_serving`, one provider per tier)."""
+    return [
+        accounts_serving(listing, tenant_id, p, model_class=model_class) for p in providers
+    ]
+
+
+def chain_unavailable(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+) -> tuple[Unavailable, datetime | None]:
+    """Why no tier could grant, and when that changes: the soonest of the
+    tiers' `eligibility` answers (§5.1, §5.3), computed with the arguments
+    the walk's `choose()` took, tier by tier."""
+    exclude = tuple(exclude)
+    return soonest(
+        eligibility(c, tenant_id, now, exclude=exclude, model_class=model_class) for c in tiers
+    )
 
 
 def _log_ref(db: Any, assignment_id: str) -> Any:
@@ -1450,8 +1740,16 @@ def acquire_hold(
     attempt_id: str | None = None,
     person: str | None = None,
     voice_session_id: str | None = None,
+    refusals: list[str] | None = None,
 ) -> tuple[str, int] | None:
     """Record one agent's claim on an account. Returns (assignment_id, assigned).
+
+    THE CAPS ARE CHECKED HERE TOO (§4.6, §5.5 invariant 2): a key's exhausted
+    mark and spend cap, the workspace's `per_workspace_max` and a borrower's
+    lend (`_raw_tenant_refusal`), in this one transaction, so a refusal writes
+    nothing and the walk moves to its next candidate. The cap that refused is
+    appended to `refusals` when the caller passes a list, so its answer can
+    name it.
 
     A VOICE IT SESSION'S CLAIM when `person` is given with no tenant:
     re-checked against the Voice it pool (`_raw_voice_assignable`) instead of a
@@ -1517,6 +1815,17 @@ def acquire_hold(
             # Full since the listing: nothing is counted, and the route
             # answers as it does for an account paused in the same gap.
             return None
+        refused = None if voice_it else _raw_tenant_refusal(data, holds, tenant_id, now)
+        if voice_it and api_key.is_key(data.get("provider")) and data.get("exhausted_at") is not None:
+            refused = CAP_EXHAUSTED
+        if refused is not None:
+            # THIS WORKSPACE at its `per_workspace_max` (Q6), a BORROWER at
+            # its lend's cap (Q7), or a key spent or exhausted: checked and
+            # counted in this one transaction, so two agents racing for the
+            # last slot cannot both win, and a refusal writes nothing.
+            if refusals is not None:
+                refusals.append(refused)
+            return None
         hold = Hold(
             assignment_id=assignment_id,
             tenant_id=tenant_id,
@@ -1547,8 +1856,13 @@ def release_hold(
     now: datetime,
     unusable: str = "",
     voice_session_id: str | None = None,
+    cost_usd: float | None = None,
 ) -> tuple[int | None, bool]:
     """Give one named assignment back. Returns (assigned, whether it was held).
+
+    `cost_usd`, the worker's estimate of what ran on the hold, is added to a
+    key's `month_spend` and a borrower's `lend_spend` IN THIS TRANSACTION
+    (`_spend_payload`, §4.6), so the spend is counted once with the close.
 
     NAMED, and that is the fix. This used to decrement a bare counter on proof
     of nothing but `may_serve`, so any tenant an account was lent to could
@@ -1609,6 +1923,8 @@ def release_hold(
             # admits, a write no caller was entitled to make.
             return len(remaining), False
         payload = _hold_payload(remaining)
+        if held:
+            payload.update(_spend_payload(data, held[0], cost_usd, now))
         if unusable and held:
             reports = _unreadable_reports(data)
             reports[held[0].tenant_id or (tenant_id or "")] = now
@@ -1626,8 +1942,14 @@ def release_hold(
     return _apply(transaction)
 
 
-def remove_account_and_close_holds(db: Any, account_id: str, *, now: datetime) -> int:
+def remove_account_and_close_holds(
+    db: Any, account_id: str, *, now: datetime, key_deletion: dict[str, Any] | None = None
+) -> int:
     """Delete the account document and close every open hold record it had.
+
+    `key_deletion`, for an API key (docs/design/llm-providers.md §4.4), is
+    written as `key_deletions/<account id>` IN THE SAME TRANSACTION, so no key
+    document disappears without a record that its secret is owed a deletion.
 
     Returns how many records were closed as `account_removed`.
 
@@ -1700,9 +2022,234 @@ def remove_account_and_close_holds(db: Any, account_id: str, *, now: datetime) -
             )
             closed += 1
         txn.delete(ref)
+        if key_deletion is not None:
+            txn.set(db.collection(KEY_DELETIONS_COLLECTION).document(account_id), key_deletion)
         return closed
 
     return _apply(transaction)
+
+
+def finish_key_deletion(
+    db: Any, secrets: Any, record: dict[str, Any], *, now: datetime
+) -> dict[str, Any]:
+    """Destroy a deleted key's secret as its record says, and mark the record.
+
+    §4.4's step 2: every version destroyed, then the secret itself deleted --
+    except a dedicated Voice it key stored under its old `--<label>` name
+    (`whole` False, Q9), whose versions are destroyed and whose empty secret
+    stays. Only the secret the record names, and only when it is the deleted
+    account's own: `whole` deletes only an `--key-` name (`is_key_secret`),
+    the one the owner's conditioned grant allows. An imported key's
+    workspace secret is never named by a record, so never reached.
+
+    A failure leaves the record not done, naming the step and the error's
+    type, for the sweep to retry. Never raises; never logs a value.
+    """
+    account_id = str(record.get("account_id") or "")
+    secret = str(record.get("secret") or "")
+    whole = bool(record.get("whole"))
+    ref = db.collection(KEY_DELETIONS_COLLECTION).document(account_id)
+    step = KEY_STEP_DESTROY
+    try:
+        destroyed = secrets.destroy_all_versions(secret)
+        if whole:
+            step = KEY_STEP_DELETE
+            if not is_key_secret(secret):
+                raise ValueError("only an API key's own secret is deleted")
+            secrets.delete_key_secret(secret)
+    except Exception as exc:  # noqa: BLE001 -- the type only, never a value
+        ref.update({
+            "failed_step": step,
+            "error": type(exc).__name__,
+            "attempts": int(record.get("attempts") or 0) + 1,
+            "last_attempt_at": now,
+        })
+        log.error(
+            "a deleted API key's secret is not yet destroyed; the quota sweep retries it",
+            extra={"account_id": account_id, "secret": secret, "step": step,
+                   "error": type(exc).__name__},
+        )
+        return {"done": False, "step": step, "error": type(exc).__name__}
+    ref.update({
+        "done": True,
+        "done_at": now,
+        "failed_step": None,
+        "error": None,
+        "attempts": int(record.get("attempts") or 0) + 1,
+        "last_attempt_at": now,
+        "versions_destroyed": int(destroyed or 0),
+    })
+    log.info(
+        "audit: a deleted API key's secret was destroyed"
+        + ("" if whole else "; its empty secret is kept under its old name"),
+        extra={"audit": True, "account_id": account_id, "secret": secret,
+               "secret_deleted": whole, "versions_destroyed": int(destroyed or 0),
+               "deleted_by": record.get("deleted_by"),
+               "workspace_secret_kept": record.get("imported_from")},
+    )
+    return {"done": True, "secret_deleted": whole, "versions_destroyed": int(destroyed or 0)}
+
+
+def owed_key_deletion(db: Any, account_id: str) -> dict[str, Any] | None:
+    """The record of a deleted key on this account id not yet marked done."""
+    snap = db.collection(KEY_DELETIONS_COLLECTION).document(account_id).get()
+    if not getattr(snap, "exists", False):
+        return None
+    data = snap.to_dict() or {}
+    return None if data.get("done") else data
+
+
+def finish_owed_key_deletions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """The quota sweep's retry of every `key_deletions` record not done (§4.4).
+
+    A record whose account id has a document again is skipped and named: a
+    live account's secret is never destroyed by a sweep. Registration on that
+    label finishes the owed deletion first (`_register_api_key`), so this is
+    a guard, not a path.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    finished: list[str] = []
+    failed: list[str] = []
+    skipped: list[str] = []
+    query = db.collection(KEY_DELETIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        account_id = str(record.get("account_id") or snap.id)
+        if getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            log.error(
+                "a key deletion is owed on an account id that has a document again; "
+                "its secret was not touched",
+                extra={"account_id": account_id},
+            )
+            skipped.append(account_id)
+            continue
+        outcome = finish_key_deletion(db, secrets, {**record, "account_id": account_id}, now=now)
+        (finished if outcome["done"] else failed).append(account_id)
+    return {"finished": finished, "failed": failed, "skipped": skipped}
+
+
+def destroy_superseded_key_versions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """Destroy what a key's rotation superseded, one hold TTL after it (§4.5).
+
+    Holders keep the old value until their next turn boundary or process
+    start, and a hold lives at most its TTL, so the old version outlives
+    every holder that could have read it and then goes. A rotation whose
+    account is gone is marked done: the delete destroyed every version.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    destroyed: dict[str, int] = {}
+    failed: list[str] = []
+    query = db.collection(KEY_ROTATIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        due = record.get("destroy_after")
+        if not isinstance(due, datetime) or now < _aware_utc(due):
+            continue
+        account_id = str(record.get("account_id") or snap.id)
+        ref = db.collection(KEY_ROTATIONS_COLLECTION).document(snap.id)
+        if not getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            ref.update({"done": True, "done_at": now, "versions_destroyed": 0})
+            continue
+        keep = record.get("keep_version")
+        try:
+            count = secrets.destroy_versions_before(
+                str(record.get("secret") or ""), int(keep) if keep is not None else None
+            )
+        except Exception as exc:  # noqa: BLE001 -- the type only
+            ref.update({"error": type(exc).__name__, "last_attempt_at": now})
+            log.error(
+                "could not destroy a rotated key's superseded versions; the sweep retries",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            failed.append(account_id)
+            continue
+        ref.update({"done": True, "done_at": now, "error": None, "versions_destroyed": count})
+        log.info(
+            "audit: a rotated API key's superseded versions were destroyed",
+            extra={"audit": True, "account_id": account_id, "secret": record.get("secret"),
+                   "versions_destroyed": count},
+        )
+        destroyed[account_id] = count
+    return {"destroyed": destroyed, "failed": failed}
+
+
+def _claim_probe(db: Any, account_id: str, now: datetime) -> bool:
+    """Take this hour's probe of a key marked credit gone, in one transaction:
+    True when the key is still exhausted and its last probe (or its mark,
+    when never probed) is an hour old, and `exhausted_probed_at` is now
+    written. So two sweeps never ask the vendor twice in one hour."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return False
+        data = snap.to_dict() or {}
+        marked = data.get("exhausted_at")
+        if not isinstance(marked, datetime):
+            return False
+        last = data.get(KEY_PROBED_AT)
+        since = _aware_utc(last) if isinstance(last, datetime) else _aware_utc(marked)
+        if now - since < KEY_PROBE_INTERVAL:
+            return False
+        txn.update(ref, {KEY_PROBED_AT: now})
+        return True
+
+    return _apply(transaction)
+
+
+def probe_exhausted_keys(
+    db: Any, store: Any, secrets: Any, validator: Any, *, now: datetime
+) -> dict[str, Any]:
+    """The hourly exhausted probe (§5.2): each key marked credit gone is
+    asked once an hour, with the vendor's cheapest completion, whether it
+    can serve again, and returns to available when it can.
+
+    "Available" is its state's business, untouched: the probe clears the
+    credit mark (`exhausted_at`) alone, as a person's Resume does, so a key a
+    person paused stays paused. The key is read from its secret for the one
+    call and dropped; never logged or recorded.
+    """
+    served: list[str] = []
+    still: list[str] = []
+    failed: list[str] = []
+    for account in store.list():
+        if not api_key.is_key(account.provider) or account.exhausted_at is None:
+            continue
+        if not _claim_probe(db, account.account_id, now):
+            continue
+        try:
+            key = api_key.read_key(account.provider, secrets.access(store.secret_for(account)))
+            serves = validator.probe(account.provider, key)
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the key
+            log.warning(
+                "could not probe a key marked credit gone; it is asked again in an hour",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            failed.append(account.account_id)
+            continue
+        if not serves:
+            still.append(account.account_id)
+            continue
+        db.collection(ACCOUNTS_COLLECTION).document(account.account_id).update(
+            {"exhausted_at": None, KEY_PROBED_AT: None}
+        )
+        log.info(
+            "audit: a key marked credit gone serves again and is offered again",
+            extra={"audit": True, "account_id": account.account_id},
+        )
+        served.append(account.account_id)
+    return {"served_again": served, "still_exhausted": still, "failed": failed}
 
 
 def prune_holds(
@@ -1988,6 +2535,93 @@ def renew_voice_hold(
     return _apply(transaction)
 
 
+def record_running_spend(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    cost_usd: float,
+    now: datetime,
+) -> tuple[dict[str, Any], Hold] | None:
+    """Record a KEY holder's running spend on its hold, in one transaction
+    (§4.6). (the account document as written, the hold), or None when the
+    caller holds no live hold there: proved again inside the transaction, so
+    a hold released or fenced since `_holder` read it is never written.
+
+    The stored figure only rises: two reads crossing in flight never lower
+    what the caps count. A plan's hold is answered unchanged; its price is
+    flat. Nothing else on the document moves, so `assigned` and every other
+    hold are written back as they were read."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[dict[str, Any], Hold] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        held = _attempt_hold(
+            data, now, assignment_id=assignment_id, tenant_id=tenant_id,
+            task_id=task_id, attempt_id=attempt_id,
+        )
+        if held is None:
+            return None
+        if not api_key.is_key(data.get("provider")):
+            return data, held
+        figure = max(held.running_cost_usd or 0.0, round(cost_usd, 6))
+        if figure == held.running_cost_usd:
+            return data, held
+        holds = list(holds_from_firestore(data.get("holds")))
+        updated = replace(held, running_cost_usd=figure)
+        holds = [updated if h == held else h for h in holds]
+        payload = _hold_payload(holds)
+        txn.update(ref, payload)
+        return {**data, **payload}, updated
+
+    return _apply(transaction)
+
+
+def _raw_spend_reached(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The spend cap a KEY holder has reached on a raw document, by name
+    (`CAP_SPEND` for the key's month cap, `CAP_LEND_SPEND` for a borrower's
+    lend), or None. The spend is `_raw_tenant_refusal`'s, closed and running,
+    so the holder that took it over is answered `move` at its next turn
+    boundary (§4.6), not when it ends. A figure nobody can read moves nobody:
+    the next grant is refused on it anyway."""
+    if not api_key.is_key(data.get("provider")):
+        return None
+    owner = data.get("owner_tenant")
+    month = spend_month(now)
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        lent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner), key=True)
+            if isinstance(owner, str) and owner
+            else {}
+        )
+    except ValueError:
+        return None
+    if cap is not None and spent + _running_spend(live) >= cap:
+        return CAP_SPEND
+    lend = lends.get(tenant_id) if tenant_id != owner else None
+    if lend is not None and lend.monthly_spend_cap_usd is not None and (
+        lent.get(tenant_id, 0.0) + _running_spend(live, tenant_id)
+        >= lend.monthly_spend_cap_usd
+    ):
+        return CAP_LEND_SPEND
+    return None
+
+
 class PoolInUse(Exception):
     """A pool cannot be removed while the account holds a lease of it."""
 
@@ -2053,6 +2687,116 @@ def set_account_pools(
     return _apply(transaction)
 
 
+def _raw_workspace_has_room(data: dict[str, Any], live: list[Hold], tenant_id: str) -> bool:
+    """Whether `tenant_id`'s live holds on a raw document leave room for one
+    more under its `per_workspace_max` (Q6; `Account.is_full_for`). LIVE
+    holds of that tenant, counted from the grant (CONTRACT.md invariant 3). A
+    malformed cap is no room, as a malformed `max_agents` is."""
+    try:
+        caps = per_workspace_max_from_firestore(data.get("per_workspace_max"))
+    except ValueError:
+        return False
+    cap = caps.get(tenant_id)
+    if cap is None:
+        return True
+    return sum(1 for h in live if h.tenant_id == tenant_id) < cap
+
+
+def _raw_tenant_refusal(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The cap that refuses `tenant_id` a NEW hold on a raw document, by name
+    (`accounts.CAP_REASONS`), or None. `Account.cap_for`, read where the hold
+    commits (§4.6, §5.5 invariant 2): the listing the walk chose from is older
+    than this transaction, so two borrowers racing for a lend's last slot
+    would both pass it there; here only one commits.
+
+    A key's own marks (`exhausted_at`, the month's spend at its cap), the
+    workspace's `per_workspace_max` (Q6), and, for a borrower, its lend's
+    `max_agents` and spend cap (Q7). A malformed cap or spend is a refusal,
+    as a malformed `max_agents` is no room: a figure nobody can read must not
+    read as no limit.
+
+    THE SPEND IS `Account.spent`'s: the closed holds' and the live holds'
+    running spend (`Hold.running_cost_usd`), so a long attempt reaches the
+    cap before it ends (§4.6).
+    """
+    owner = data.get("owner_tenant")
+    is_key = api_key.is_key(data.get("provider"))
+    month = spend_month(now)
+    if is_key and data.get("exhausted_at") is not None:
+        return CAP_EXHAUSTED
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        spent += _running_spend(live)
+        lend_spent = dict(lend_spend_from_firestore(data.get("lend_spend")).get(month, {}))
+        if tenant_id != owner:
+            lend_spent[tenant_id] = lend_spent.get(tenant_id, 0.0) + _running_spend(
+                live, tenant_id
+            )
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner or ""), key=is_key)
+            if isinstance(owner, str) and owner
+            else None
+        )
+    except ValueError:
+        return CAP_SPEND if is_key else CAP_LEND_MAX_AGENTS
+    if is_key and cap is not None and spent >= cap:
+        return CAP_SPEND
+    if not _raw_workspace_has_room(data, live, tenant_id):
+        return CAP_WORKSPACE_MAX
+    lend = (lends or {}).get(tenant_id) if tenant_id != owner else None
+    if lend is not None:
+        # A lend carried over from `lend_to` has no stored `lends`; its cap is
+        # the account's own `max_agents`, which `_raw_has_room` applies.
+        if sum(1 for h in live if h.tenant_id == tenant_id) >= lend.max_agents:
+            return CAP_LEND_MAX_AGENTS
+        if lend.monthly_spend_cap_usd is not None and (
+            lend_spent.get(tenant_id, 0.0) >= lend.monthly_spend_cap_usd
+        ):
+            return CAP_LEND_SPEND
+    return None
+
+
+def _running_spend(live: list[Hold], tenant_id: str | None = None) -> float:
+    """The live holds' running spend (`Hold.running_cost_usd`), all of them
+    or one workspace's: what `Account.spent` adds to the closed spend."""
+    return sum(
+        h.running_cost_usd or 0.0
+        for h in live
+        if tenant_id is None or h.tenant_id == tenant_id
+    )
+
+
+def _spend_payload(
+    data: dict[str, Any], hold: Hold, cost_usd: float | None, now: datetime
+) -> dict[str, Any]:
+    """The `month_spend` and `lend_spend` a closing hold adds to a KEY (§4.6,
+    Q5): its `cost_usd` on the key's month, and on its borrower's line when
+    the holder is a borrower. Written by the caller in the transaction that
+    closes the hold, so the spend a cap is measured against and the hold it
+    came from never disagree. Empty for a plan (flat price), a hold with no
+    cost, or a document whose stored spend cannot be read -- whose next grant
+    is refused anyway (`_raw_tenant_refusal`)."""
+    if not cost_usd or not api_key.is_key(data.get("provider")):
+        return {}
+    try:
+        spent = month_spend_from_firestore(data.get("month_spend"))
+        lent = lend_spend_from_firestore(data.get("lend_spend"))
+    except ValueError:
+        return {}
+    month = spend_month(now)
+    spent[month] = round(spent.get(month, 0.0) + cost_usd, 6)
+    payload: dict[str, Any] = {"month_spend": spent}
+    owner = data.get("owner_tenant")
+    if hold.tenant_id and hold.tenant_id != owner:
+        line = lent.setdefault(month, {})
+        line[hold.tenant_id] = round(line.get(hold.tenant_id, 0.0) + cost_usd, 6)
+        payload["lend_spend"] = lent
+    return payload
+
+
 def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
     """Whether a raw document's live holds leave room for one more (#2222).
 
@@ -2066,7 +2810,7 @@ def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
         cap = max_agents_from_firestore(data.get("max_agents"))
     except ValueError:
         return False
-    if data.get("observed_at") is None and data.get("provider") != openai_api_key.PROVIDER:
+    if data.get("observed_at") is None and not api_key.is_key(data.get("provider")):
         # ONE UNTIL MEASURED (#2222), re-checked here for the reason the cap
         # is: two assigns racing for a never-observed account's one slot. An
         # OpenAI API key is never measured (`Account.measured`), so its
@@ -2091,8 +2835,13 @@ def swap_hold(
     reason: str,
     now: datetime,
     ttl: timedelta = DEFAULT_HOLD_TTL,
+    cost_usd: float | None = None,
 ) -> tuple[str, int] | None:
     """Move one attempt's hold from one account to another, in ONE transaction.
+
+    The account moved to is checked as `acquire_hold` checks it, caps and all
+    (`_raw_tenant_refusal`), and the hold left closes with its `cost_usd`
+    added to a key's spend (`_spend_payload`), all in the same transaction.
 
     Returns (new assignment id, holders now on `to_account`), or None when
     `to_account` cannot take it -- removed, no longer AVAILABLE, or no longer
@@ -2148,6 +2897,8 @@ def swap_hold(
         to_live, to_expired = _split_holds(to_data, now)
         if not _raw_has_room(to_data, to_live):
             return None
+        if _raw_tenant_refusal(to_data, to_live, tenant_id, now) is not None:
+            return None
         taken = Hold(
             assignment_id=new_id,
             tenant_id=tenant_id,
@@ -2159,6 +2910,7 @@ def swap_hold(
             swap_reason=reason,
         )
         left = _hold_payload([h for h in live if h.assignment_id != held.assignment_id])
+        left.update(_spend_payload(from_data, held, cost_usd, now))
         if reason == SWAP_UNUSABLE:
             reports = _unreadable_reports(from_data)
             reports[tenant_id] = now
@@ -2228,6 +2980,11 @@ def set_state_and_moves(
         if state is AccountState.AVAILABLE:
             resumed = {"limited_until": None, "limited_window": None}
             txn.set(health_ref, {"limited_until": None}, merge=True)
+            if (snap.to_dict() or {}).get("exhausted_at") is not None:
+                # RESUME (§4.3, §5.2): a person putting a key whose credit was
+                # gone back in service, after topping it up, clears the mark
+                # the hourly probe would otherwise clear.
+                resumed.update({"exhausted_at": None, KEY_PROBED_AT: None})
         txn.update(
             ref,
             {
@@ -3065,6 +3822,10 @@ def create_app(
     # The ChatGPT token endpoint, for an `openai` account's sign-in (#2688);
     # injected for the same reason as the Claude one above.
     app.state.plan_token_endpoint = plan_token_endpoint or openai_plan.HttpPlanTokenEndpoint()
+    # The one read-only call an API key must pass before it is stored
+    # (docs/design/llm-providers.md §4.1); injected so tests never make a
+    # network call.
+    app.state.key_validator = api_key.HttpKeyValidator()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
@@ -3468,6 +4229,9 @@ def create_app(
         body: RateLimitReport = Body(default_factory=RateLimitReport),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        key_provider = provider.strip().lower()
+        if key_provider in API_KEY_PROVIDERS:
+            return _key_credit_gone(request, authorization, key_provider, tenant_id, body)
         name = _known_provider(provider)
         _authorize(request, authorization, tenant_id)
         scope = _account_scope(request, name, tenant_id, body, HEALTH_EXHAUSTED)
@@ -3483,6 +4247,60 @@ def create_app(
         request.app.state.metrics.reports.labels(provider=name, kind="exhausted").inc()
         request.app.state.metrics.observe(state)
         return _scoped_answer(state, scope)
+
+    def _key_credit_gone(
+        request: Request,
+        authorization: str | None,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport,
+    ) -> dict[str, Any]:
+        """A key holder's credit-gone report under the key's OWN provider
+        (§5.2): `anthropic-api` or `openai-api`, for a held account of that
+        provider, and nothing else.
+
+        Marked `exhausted_at` by the health record's `exhausted` kind
+        (`AccountStore.record_health`), which a Resume or the hourly probe
+        clears -- and NOT a rate limit: no `limited_until`, because credit
+        gone does not reset by itself. The tenant's AIMD target is not
+        touched; the answer reads the key's vendor's, as it stands.
+
+        REFUSED (422), as every key provider was before: a report that names
+        no account, one whose account is not a key of this provider, and one
+        whose hold proof is stale -- a key provider has no tenant-level
+        reading to fall back on, so an unproven report counts for nothing.
+        """
+        _authorize(request, authorization, tenant_id)
+        ref = body.account
+        held = (
+            _held_report_account(request, tenant_id, provider, ref)
+            if ref is not None
+            else None
+        )
+        if held is None:
+            if ref is not None:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerValidationError(
+                f"a report under {provider} names a held account of that provider"
+            )
+        account, hold = held
+        request.app.state.account_store.record_health(
+            account.account_id,
+            HEALTH_EXHAUSTED,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        log.warning(
+            "a key's credit is gone; it is skipped until a Resume or the hourly probe",
+            extra={"account_id": account.account_id, "tenant_id": tenant_id,
+                   "provider": provider},
+        )
+        vendor = VENDOR_OF.get(provider, provider)
+        state = request.app.state.broker.current(vendor, tenant_id)
+        request.app.state.metrics.reports.labels(provider=provider, kind="exhausted").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, SCOPE_ACCOUNT)
 
     @app.post("/v1/quota/{provider}/{tenant_id}/account-error")
     def report_account_error(
@@ -3814,6 +4632,7 @@ def create_app(
         credential_payload: str,
         access_token: str,
         organisation: Organisation | None = None,
+        lends: dict[str, Any] | None = None,
     ) -> Any:
         """Create both secrets, bind their readers, then publish the account.
 
@@ -3832,8 +4651,13 @@ def create_app(
         # the rule's own sentence (#1912). Unhandled, `AccountError` was a 500,
         # and swarm-api reads every status but 409/422 as the pool being down.
         # Named before anything is created, so a refusal leaves no secret.
+        existing = store.get(f"{owner_tenant}:{label}")
         try:
             base = secret_name(owner_tenant, label)
+            if existing is None:
+                # A NEW plan never carries the key mark (§4.1): `--key-` must
+                # name a key's secret alone, the one IAM lets the broker delete.
+                refuse_plan_label(label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
         # ONE SEAT, ONE ACCOUNT (#2222, #2282), refused before any secret is
@@ -3844,11 +4668,10 @@ def create_app(
         # A KEY'S LABEL IS NEVER RE-REGISTERED AS A PLAN: it would rewrite the
         # provider and bind the owner's worker to `{base}`, whose older
         # version still holds the key the broker alone may read.
-        existing = store.get(f"{owner_tenant}:{label}")
-        if existing is not None and existing.provider == openai_api_key.PROVIDER:
+        if existing is not None and api_key.is_key(existing.provider):
             raise BrokerValidationError(
-                f"{existing.account_id} is an OpenAI API key; a {provider} account "
-                "needs a label of its own"
+                f"{existing.account_id} is an {'OpenAI' if existing.provider == api_key.OPENAI_API else 'Anthropic'} "
+                f"API key; a {provider} account needs a label of its own"
             )
         labels = {
             "managed-by": "swarm-secrets",
@@ -3890,7 +4713,7 @@ def create_app(
                 secrets,
                 secret=base,
                 owner_tenant=owner_tenant,
-                lend_to=lend_to,
+                lend_to=list(lends) if lends is not None else lend_to,
                 revoke=False,
             )
             secrets.add_version(f"{base}{REFRESH_SUFFIX}", credential_payload)
@@ -3931,7 +4754,7 @@ def create_app(
                 )
 
         account = store.register(
-            owner_tenant, label, provider=provider, lend_to=lend_to
+            owner_tenant, label, provider=provider, lend_to=lend_to, lends=lends
         )
         # Re-registering is also how lending changes (`AccountStore.register`),
         # so a borrower dropped from the list loses the secret here.
@@ -3961,6 +4784,144 @@ def create_app(
         mark_duplicates(store)
         return store.get(account.account_id) or account
 
+    def _lends_for(
+        body_lends: dict[str, Any] | None, *, owner_tenant: str, key: bool
+    ) -> dict[str, Any] | None:
+        """A caller's `lends`, validated (`accounts.validate_lends`), or None
+        when it sent none. A cap's `cap_set` is the broker's mark of a
+        carried-over lend and is never taken from a caller."""
+        if body_lends is None:
+            return None
+        if any(isinstance(c, dict) and "cap_set" in c for c in body_lends.values()):
+            raise BrokerValidationError("a lend's cap is max_agents and monthly_spend_cap_usd alone")
+        try:
+            lends = validate_lends(body_lends, owner_tenant=owner_tenant, key=key)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        bad = [t for t in lends if not LENDABLE_TENANT.fullmatch(t)]
+        if bad:
+            raise BrokerValidationError(
+                f"lends names {len(bad)} entr{'y' if len(bad) == 1 else 'ies'} "
+                "that are not tenant ids (lowercase letters, digits and dashes)"
+            )
+        return lends
+
+    def _check_key_with_vendor(request: Request, provider: str, key: str) -> api_key.KeyCheck:
+        """The vendor's answer to the key's one read-only call (§4.1). A
+        refusal is the caller's: 422, "the provider refused this key". A
+        vendor that cannot be asked stores nothing: 422 too, naming the
+        status, never the key, so swarm-api does not read it as the pool
+        being down."""
+        validator = request.app.state.key_validator
+        try:
+            check = validator.check(provider, key)
+        except api_key.KeyCheckUnavailable as exc:
+            raise BrokerValidationError(
+                f"the key could not be checked with the provider ({exc}); nothing was stored"
+            ) from None
+        if check.outcome == api_key.CHECK_REFUSED:
+            raise BrokerValidationError("the provider refused this key; nothing was stored")
+        return check
+
+    def _store_api_key(
+        request: Request,
+        *,
+        store: Any,
+        secrets: Any,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        key: str,
+        check: api_key.KeyCheck,
+        lends: dict[str, Any],
+        voice_dedicated: bool,
+        share_with_voice_it: bool,
+        added: dict[str, Any],
+    ) -> Any:
+        """Write a validated key to its one secret, then publish the account.
+
+        PROVISION FIRST, REGISTER LAST, as `_provision_and_register` does. The
+        secret is the recorded one when the label exists (a dedicated Voice
+        it key from before §4 keeps `--<label>`), else `--key-<label>`. Its
+        readers: the broker always; for a pool key, the owner's worker and
+        every borrower's (`_sync_lending`), as a plan's `{base}` has; for the
+        dedicated Voice it key, nobody else.
+        """
+        existing = store.get(f"{owner_tenant}:{label}")
+        try:
+            base = store.secret_for(existing) if existing is not None else key_secret_name(
+                owner_tenant, label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": owner_tenant,
+            "account": label,
+            "provider": provider,
+            "environment": request.app.state.environment,
+        }
+        accessors = [broker_sa] if broker_sa else []
+        if not voice_dedicated:
+            worker_sa = request.app.state.worker_service_account(owner_tenant)
+            accessors += [worker_sa] if worker_sa else []
+        try:
+            secrets.ensure_secret(
+                base, labels=labels, accessors=accessors, region=request.app.state.region
+            )
+            if not voice_dedicated:
+                _sync_lending(
+                    request, secrets, secret=base, owner_tenant=owner_tenant,
+                    lend_to=list(lends), revoke=False,
+                )
+            secrets.add_version(base, api_key.serialise(provider, key))
+        except BrokerValidationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not store an API key account's secret",
+                extra={"tenant_id": owner_tenant, "label": label, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the key for {owner_tenant}:{label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+        account = store.register(
+            owner_tenant, label, provider=provider, lends=dict(lends),
+            voice_dedicated=voice_dedicated,
+        )
+        now = datetime.now(timezone.utc)
+        pools = None
+        if voice_dedicated:
+            pools = (POOL_VOICE_IT,)
+        elif share_with_voice_it:
+            pools = (POOL_WORKSPACE, POOL_VOICE_IT)
+        if pools is not None:
+            set_account_pools(
+                request.app.state.broker.db, account.account_id, pools=pools,
+                voice_it_people=request.app.state.voice_it_people, now=now,
+            )
+        if account.state is AccountState.REAUTH_REQUIRED:
+            store.clear_reauth_required(account.account_id)
+        # A replacement overwrites both fields; `registered_at` keeps the first.
+        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
+            account.account_id
+        ).update(added)
+        if check.outcome == api_key.CHECK_LIMITED:
+            # ADDED AS LIMITED (§4.1): the vendor's 429 holds it as a plan's
+            # does, until its `retry-after`.
+            store.record_health(
+                account.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was added",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        if not voice_dedicated:
+            _revoke_unlent(request, secrets, secret=base, account=store.get(account.account_id) or account)
+        return store.get(account.account_id) or account
+
     def _register_api_key(
         request: Request,
         body: AccountRegister,
@@ -3968,106 +4929,219 @@ def create_app(
         *,
         store: Any,
         secrets: Any,
+        provider: str,
     ) -> dict[str, Any]:
-        """File an OpenAI developer API key into the Voice it pool, and ONLY
-        there (`openai_api_key`; the owner, 4 November 2026, after OpenAI
-        refused the ChatGPT plan for GPT-Live).
+        """File a developer API key (`api_key`, docs/design/llm-providers.md §4.1).
 
-        PLATFORM ONLY, like a pool move: the account serves the Voice it
-        people the broker names (`VOICE_IT_PEOPLE`), which no one workspace
-        decides. Never lent. ONE secret, `{base}`, the broker its only
-        accessor and writer: no worker service account is bound (no agent
-        ever runs on it) and no `{base}-refresh` exists (a key does not
-        rotate). Parsed before anything is written, so a refusal leaves no
-        secret and no document; the key is never logged or answered.
+        TWO KINDS OF KEY. The DEDICATED Voice it key (`voice_dedicated`, an
+        `openai-api` key alone, the default for that provider so today's
+        Voice it settings path is unchanged; the owner, 4 November 2026, Q9):
+        platform only, in the Voice it pool alone, never lent, the broker its
+        only reader, one per deployment. A POOL key (every `anthropic-api`
+        key, Q2, and an `openai-api` key sent `voice_dedicated: false`): the
+        owner's workspace's, read by its worker and its borrowers', each lend
+        capped (`lends`, Q7), shared with Voice it only by a platform admin.
+
+        Parsed and VALIDATED WITH THE VENDOR before anything is written (one
+        list-models call), so a refusal leaves no secret and no document; the
+        key is never logged or answered.
+
+        A KEY ALREADY ON THE LABEL IS ROTATED (`_rotate_api_key`, §4.5), not
+        registered again; a label whose deleted key's secret is still owed a
+        destruction has it finished first, or is refused.
         """
-        _platform_only(
-            request,
-            authorization,
-            "only a platform admin may add an OpenAI API key to the Voice it pool",
+        current = store.get(f"{body.owner_tenant}:{body.label}")
+        if current is not None and api_key.is_key(current.provider):
+            if current.provider != provider:
+                raise BrokerValidationError(
+                    f"{current.account_id} is a {current.provider} key; a replacement "
+                    "is a key of the same provider"
+                )
+            return _rotate_api_key(request, body, authorization, store=store,
+                                   secrets=secrets, current=current)
+        if current is None:
+            owed = owed_key_deletion(request.app.state.broker.db, f"{body.owner_tenant}:{body.label}")
+            if owed is not None and not finish_key_deletion(
+                request.app.state.broker.db, secrets,
+                {**owed, "account_id": f"{body.owner_tenant}:{body.label}"},
+                now=datetime.now(timezone.utc),
+            )["done"]:
+                raise BrokerValidationError(
+                    f"the key deleted from {body.owner_tenant}:{body.label} still has its "
+                    "secret owed a destruction; nothing was stored. The quota sweep retries it"
+                )
+        dedicated = (
+            body.voice_dedicated
+            if body.voice_dedicated is not None
+            else provider == api_key.OPENAI_API
         )
-        if body.lend_to:
+        if dedicated and provider != api_key.OPENAI_API:
+            raise BrokerValidationError(
+                "only an OpenAI API key may be the dedicated Voice it key; there is no "
+                "dedicated Anthropic key"
+            )
+        if dedicated or body.share_with_voice_it:
+            _platform_only(
+                request,
+                authorization,
+                "only a platform admin may add an OpenAI API key to the Voice it pool"
+                if dedicated else "only a platform admin may share a key with Voice it",
+            )
+        if dedicated and (body.lend_to or body.lends or body.share_with_voice_it):
             raise BrokerValidationError(
                 "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
             )
+        if body.lend_to:
+            raise BrokerValidationError(
+                "an API key is lent only with a cap: send lends, each with max_agents "
+                "and monthly_spend_cap_usd, not lend_to"
+            )
         try:
             validate_label(body.label)
-            base = secret_name(body.owner_tenant, body.label)
+            key_secret_name(body.owner_tenant, body.label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
+        lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=True) or {}
         try:
-            key = openai_api_key.parse_api_key(body.credential)
+            key = api_key.parse_api_key(provider, body.credential)
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
         # WHO ADDED IT, checked before anything is written, like the key.
         if body.added_by is None:
             raise BrokerValidationError(
-                "an OpenAI API key is recorded with the platform admin who added it; "
-                "send added_by"
+                "an API key is recorded with the person who added it; send added_by"
             )
         try:
             added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
         existing = store.get(f"{body.owner_tenant}:{body.label}")
-        if existing is not None and existing.provider != openai_api_key.PROVIDER:
+        if existing is not None and existing.provider != provider:
             raise BrokerValidationError(
-                f"{existing.account_id} is a {existing.provider} account; an OpenAI API key "
+                f"{existing.account_id} is a {existing.provider} account; an API key "
                 "needs a label of its own"
             )
-        broker_sa = request.app.state.broker_service_account
-        if broker_sa and not broker_sa.startswith("serviceAccount:"):
-            broker_sa = f"serviceAccount:{broker_sa}"
-        labels = {
-            "managed-by": "swarm-secrets",
-            "component": "swarm-account",
-            "tenant": body.owner_tenant,
-            "account": body.label,
-            "provider": openai_api_key.PROVIDER,
-            "environment": request.app.state.environment,
-        }
-        try:
-            secrets.ensure_secret(
-                base,
-                labels=labels,
-                accessors=[broker_sa] if broker_sa else [],
-                region=request.app.state.region,
-            )
-            secrets.add_version(base, openai_api_key.serialise(key))
-        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
-            log.error(
-                "could not store an OpenAI API key account's secret",
-                extra={"tenant_id": body.owner_tenant, "label": body.label,
-                       "error": type(exc).__name__},
-            )
+        if dedicated:
+            others = [a.account_id for a in store.list()
+                      if a.voice_dedicated and a.account_id != f"{body.owner_tenant}:{body.label}"]
+            if others:
+                raise BrokerValidationError(
+                    f"{others[0]} is already the dedicated Voice it key; a deployment has one"
+                )
+        elif existing is not None and existing.voice_dedicated:
             raise BrokerValidationError(
-                f"could not store the key for {body.owner_tenant}:{body.label}: "
-                f"{type(exc).__name__}. No account was registered."
-            ) from None
-        account = store.register(
-            body.owner_tenant, body.label, provider=openai_api_key.PROVIDER, lend_to=()
+                f"{existing.account_id} is the dedicated Voice it key; a pool key needs a "
+                "label of its own"
+            )
+        check = _check_key_with_vendor(request, provider, key)
+        registered = _store_api_key(
+            request, store=store, secrets=secrets, owner_tenant=body.owner_tenant,
+            label=body.label, provider=provider, key=key, check=check, lends=lends,
+            voice_dedicated=dedicated, share_with_voice_it=body.share_with_voice_it,
+            added=added,
         )
-        set_account_pools(
-            request.app.state.broker.db,
-            account.account_id,
-            pools=(POOL_VOICE_IT,),
-            voice_it_people=request.app.state.voice_it_people,
-            now=datetime.now(timezone.utc),
-        )
-        if account.state is AccountState.REAUTH_REQUIRED:
-            store.clear_reauth_required(account.account_id)
-        # A replacement overwrites both fields; `registered_at` keeps the first.
-        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
-            account.account_id
-        ).update(added)
         log.info(
-            "audit: an OpenAI API key was added to the Voice it pool",
-            extra={"audit": True, "account_id": account.account_id, "pool": POOL_VOICE_IT},
+            "audit: an API key was added",
+            extra={"audit": True, "account_id": registered.account_id,
+                   "provider": provider, "voice_dedicated": dedicated,
+                   "pools": list(registered.pools)},
         )
-        registered = store.get(account.account_id) or account
+        where = (
+            "in the Voice it pool only" if dedicated
+            else f"in {', '.join(registered.pools)}"
+        )
         return {
             "account": account_to_api(registered, platform_wide=True),
-            "registered": f"{registered.account_id}: an OpenAI API key, in the Voice it pool only",
+            "registered": f"{registered.account_id}: an API key ({provider}), {where}"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "organisation": None,
+            "expires_at": None,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    def _rotate_api_key(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None,
+        *,
+        store: Any,
+        secrets: Any,
+        current: Any,
+    ) -> dict[str, Any]:
+        """Replace a key's value under its label (docs/design/llm-providers.md §4.5).
+
+        The new value is validated with the vendor as an add is, then written
+        as a NEW VERSION of the key's one secret. Holders keep the old value
+        until their next turn boundary or process start, so the superseded
+        versions are destroyed ONE HOLD TTL LATER by the quota sweep
+        (`key_rotations`, `destroy_superseded_key_versions`), not at once.
+        Holds, caps, lends, sharing, pools, state and spend counters are
+        untouched: no `register`, only the version and who replaced it and
+        when (`key_added_by`/`key_added_at`, and `key_replaced_at`). A body's
+        lends or sharing are not read here; they change through their routes.
+        """
+        if current.voice_dedicated:
+            _platform_only(request, authorization,
+                           "only a platform admin may replace the dedicated Voice it key")
+        try:
+            key = api_key.parse_api_key(current.provider, body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an API key is recorded with the person who added it; send added_by"
+            )
+        now = datetime.now(timezone.utc)
+        try:
+            added = openai_api_key.added_fields(body.added_by, now)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        check = _check_key_with_vendor(request, current.provider, key)
+        secret = store.secret_for(current)
+        try:
+            written = secrets.add_version(secret, api_key.serialise(current.provider, key))
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not write a replaced API key's new version",
+                extra={"account_id": current.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the replacement for {current.account_id}: "
+                f"{type(exc).__name__}. The key in use is unchanged."
+            ) from None
+        destroy_after = now + DEFAULT_HOLD_TTL
+        db = request.app.state.broker.db
+        db.collection(KEY_ROTATIONS_COLLECTION).document(current.account_id).set({
+            "account_id": current.account_id,
+            "secret": secret,
+            "keep_version": version_number(str(written or "")),
+            "destroy_after": destroy_after,
+            "replaced_by": added.get("key_added_by"),
+            "replaced_at": now,
+            "done": False,
+        })
+        db.collection(ACCOUNTS_COLLECTION).document(current.account_id).update(
+            {**added, "key_replaced_at": now}
+        )
+        if check.outcome == api_key.CHECK_LIMITED:
+            store.record_health(
+                current.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was replaced",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        log.info(
+            "audit: an API key was replaced; its superseded version is destroyed after the hold TTL",
+            extra={"audit": True, "account_id": current.account_id,
+                   "replaced_by": added.get("key_added_by"),
+                   "destroy_after": destroy_after.isoformat()},
+        )
+        rotated = store.get(current.account_id) or current
+        return {
+            "account": account_to_api(rotated, platform_wide=True),
+            "registered": f"{current.account_id}: the key was replaced"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "replaced": True,
+            "superseded_destroyed_after": destroy_after.isoformat(),
             "organisation": None,
             "expires_at": None,
             "note": "stored write-only; no route in this service returns key material",
@@ -4147,19 +5221,22 @@ def create_app(
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         _authorize(request, authorization, body.owner_tenant)
-        _accounts(request)  # refuse early if the pool is not configured
+        pool_store = _accounts(request)  # refuse early if the pool is not configured
         # Before the pending record is written, so a refused label leaves no
         # sign-in that could never finish. A 422 with the rule's sentence, not
         # the 500 that read as "the account pool is down" (#1912).
         try:
             validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                # A NEW plan never carries the key mark (§4.1).
+                refuse_plan_label(body.label)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
 
         provider = _account_provider(body.provider)
-        if provider == openai_api_key.PROVIDER:
+        if api_key.is_key(provider):
             raise BrokerValidationError(
-                "an OpenAI API key has no sign-in: it is pasted once, through the console's "
+                "an API key has no sign-in: it is pasted once, through the console's "
                 "one-time link, and stored by this broker"
             )
         verifier = new_verifier()
@@ -4373,6 +5450,265 @@ def create_app(
             "note": "stored write-only; no route in this service returns key material",
         }
 
+    # ------------------------------------------------------------------
+    # A ChatGPT plan from a browser, with a device code
+    # ------------------------------------------------------------------
+    #
+    # The plan's PKCE sign-in redirects to the signing-in machine, so a
+    # browser cannot finish it. The codex CLI's `--device-auth` flow shows a
+    # one-time code to type on the vendor's page instead (openai_plan's
+    # docstring says what was read and where). The DEVICE ID the vendor is
+    # polled with is held here, in the pending record keyed by `state`, and
+    # never answered: the browser sees the code to type, the address and the
+    # state. A poll is the exchange's twin -- the same caller rule, the same
+    # owner check before anything is spent, the same filing.
+
+    #: How long a claimed poll keeps others off the vendor, so two polls of
+    #: one approved sign-in cannot both redeem it, and a poll that died
+    #: mid-way does not wedge the sign-in.
+    DEVICE_CLAIM = timedelta(seconds=60)
+
+    def _device_caller(request: Request, authorization: str | None, claimed: str | None) -> str:
+        """Who is polling: `finish_account_authorization`'s rule, unchanged."""
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        claimed = (claimed or "").strip()
+        if is_platform:
+            if not claimed:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="missing_expected_owner"
+                ).inc()
+                raise BrokerAuthError(
+                    "a platform caller must send expected_owner, the tenant it "
+                    "checked the person to be; without it this sign-in cannot "
+                    "be tied to whoever is polling it"
+                )
+            return claimed
+        caller = str(caller_tenant or "")
+        if claimed and claimed != caller:
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError("caller may not poll a sign-in for another tenant")
+        return caller
+
+    def _claim_device_poll(db: Any, ref: Any, now: datetime) -> dict[str, Any] | None:
+        """The pending record, claimed for this poll in one transaction, or
+        None when another poll holds it or it was filed meanwhile."""
+        from google.cloud import firestore
+
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any] | None:
+            snap = _txn_snapshot(txn.get(ref))
+            if not getattr(snap, "exists", False):
+                return None
+            data = snap.to_dict() or {}
+            if data.get("filed_account_id"):
+                return None
+            held = data.get("claimed_at")
+            if isinstance(held, datetime) and now - _aware_utc(held) < DEVICE_CLAIM:
+                return None
+            txn.update(ref, {"claimed_at": now})
+            return data
+
+        return _apply(transaction)
+
+    def _filed_answer(
+        account: Any, organisation: Organisation | None, expires_at: str | None
+    ) -> dict[str, Any]:
+        return {
+            "status": "filed",
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": expires_at,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    @app.post("/v1/accounts/device/start")
+    def begin_device_authorization(
+        request: Request,
+        body: AccountAuthorize,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        pool_store = _accounts(request)
+        try:
+            validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                refuse_plan_label(body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if _account_provider(body.provider) != openai_plan.PROVIDER:
+            raise BrokerValidationError(
+                "only a ChatGPT plan signs in with a device code; a Claude "
+                "subscription uses the sign-in that shows a code to paste"
+            )
+        try:
+            device = request.app.state.plan_token_endpoint.start_device()
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        state = new_state()
+        request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
+            {
+                "state": state,
+                "kind": "device",
+                "device_auth_id": device["device_auth_id"],
+                "user_code": device["user_code"],
+                "interval": int(device["interval"]),
+                "owner_tenant": body.owner_tenant,
+                "label": body.label,
+                "provider": openai_plan.PROVIDER,
+                "lend_to": list(body.lend_to),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return {
+            "state": state,
+            "user_code": device["user_code"],
+            "verification_uri": openai_plan.DEVICE_VERIFICATION_URI,
+            "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            "interval_seconds": int(device["interval"]),
+            "provider": openai_plan.PROVIDER,
+        }
+
+    @app.post("/v1/accounts/device/poll")
+    def poll_device_authorization(
+        request: Request,
+        body: AccountDevicePoll,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        caller = _device_caller(request, authorization, body.expected_owner)
+        store = _accounts(request)
+        secrets_store = getattr(request.app.state, "secret_store", None)
+        if secrets_store is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        db = request.app.state.broker.db
+        ref = db.collection(PENDING_AUTH).document(body.state)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            # Expired and dropped, or never started: either way there is
+            # nothing to poll, and saying which would tell a stranger which
+            # states exist.
+            return {"status": "expired"}
+        pending = snap.to_dict() or {}
+        if pending.get("kind") != "device":
+            raise BrokerValidationError(
+                "this sign-in shows a code to paste, not a device code; finish it there"
+            )
+
+        # THE OWNER CHECK, before the vendor is asked and before anything is
+        # changed: a refused caller spends nothing and leaves the sign-in for
+        # its owner, as `finish_account_authorization` does.
+        owner = str(pending.get("owner_tenant") or "")
+        if not owner or caller != owner:
+            from fastapi.responses import JSONResponse
+
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": SIGN_IN_OWNER_MISMATCH,
+                    "message": (
+                        "this sign-in was started by a different tenant; only "
+                        "that tenant can finish it. Press Add plan to start "
+                        "your own."
+                    ),
+                },
+            )
+
+        filed = str(pending.get("filed_account_id") or "")
+        if filed:
+            account = store.get(filed)
+            if account is not None:
+                recorded = (
+                    Organisation(
+                        identity=account.organisation_id,
+                        name=account.organisation_name,
+                        plan=account.organisation_plan,
+                    )
+                    if account.organisation_id
+                    else None
+                )
+                return _filed_answer(account, recorded, pending.get("expires_at"))
+            return {"status": "expired"}
+
+        now = datetime.now(timezone.utc)
+        started = pending.get("created_at")
+        if isinstance(started, datetime) and now - _aware_utc(started) > PENDING_TTL:
+            ref.delete()
+            return {"status": "expired"}
+
+        interval = int(pending.get("interval") or openai_plan.DEVICE_DEFAULT_INTERVAL)
+        claimed = _claim_device_poll(db, ref, now)
+        if claimed is None:
+            # Another poll holds it, or filed it a moment ago: the next poll
+            # reads the outcome.
+            return {"status": "pending", "interval_seconds": interval}
+
+        endpoint = request.app.state.plan_token_endpoint
+        try:
+            approved = endpoint.poll_device(
+                device_auth_id=str(claimed.get("device_auth_id") or ""),
+                user_code=str(claimed.get("user_code") or ""),
+            )
+        except CredentialError as exc:
+            ref.update({"claimed_at": None})
+            raise BrokerValidationError(str(exc)) from None
+        if approved is None:
+            ref.update({"claimed_at": None})
+            return {"status": "pending", "interval_seconds": interval}
+
+        # Approved: the vendor's code is single-use, so whatever happens now
+        # the device sign-in is spent. A failure drops the record and says to
+        # start again; success files the plan exactly as a PKCE sign-in does.
+        try:
+            payload = endpoint.redeem(
+                code=approved["authorization_code"],
+                verifier=approved["code_verifier"],
+                redirect_uri=openai_plan.DEVICE_REDIRECT_URI,
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            ref.delete()
+            raise BrokerValidationError(f"{exc} Press Add plan to start again.") from None
+        try:
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets_store,
+                owner_tenant=owner,
+                label=str(claimed.get("label") or ""),
+                provider=openai_plan.PROVIDER,
+                lend_to=list(claimed.get("lend_to") or ()),
+                credential_payload=openai_plan.serialise_plan(credential),
+                access_token=openai_plan.published_value(credential),
+                organisation=credential.organisation,
+            )
+        except Exception:
+            ref.delete()
+            raise
+        expires_at = credential.expires_at.isoformat()
+        # The record stays, without the device id, so a second poll finds the
+        # plan filed instead of starting anything; it ages out with the rest.
+        ref.set(
+            {
+                "state": body.state,
+                "kind": "device",
+                "owner_tenant": owner,
+                "provider": openai_plan.PROVIDER,
+                "filed_account_id": account.account_id,
+                "expires_at": expires_at,
+                "created_at": claimed.get("created_at") or now,
+                "filed_at": now,
+            }
+        )
+        return _filed_answer(account, credential.organisation, expires_at)
+
     @app.post("/v1/accounts", status_code=201)
     def register_account(
         request: Request,
@@ -4391,12 +5727,22 @@ def create_app(
         # message; accepting it costs them a pool entry that looks healthy and
         # dies silently at its first expiry.
         provider = _account_provider(body.provider)
-        if provider == openai_api_key.PROVIDER:
-            return _register_api_key(request, body, authorization, store=store, secrets=secrets)
+        if api_key.is_key(provider):
+            return _register_api_key(
+                request, body, authorization, store=store, secrets=secrets, provider=provider
+            )
         if body.added_by is not None:
             raise BrokerValidationError(
                 "added_by is recorded for an OpenAI API key alone; send none for this provider"
             )
+        if body.voice_dedicated is not None or body.share_with_voice_it:
+            raise BrokerValidationError(
+                "voice_dedicated and share_with_voice_it are an API key's; a plan moves "
+                "between pools through its pools route"
+            )
+        if body.lends is not None and body.lend_to:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        plan_lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=False)
         if provider == openai_plan.PROVIDER:
             # A ChatGPT plan's pair, or codex's own auth.json (#2688). Its
             # organisation is what the pasted id_token says, when it carries one.
@@ -4412,6 +5758,7 @@ def create_app(
                 label=body.label,
                 provider=provider,
                 lend_to=body.lend_to,
+                lends=plan_lends,
                 credential_payload=openai_plan.serialise_plan(plan),
                 access_token=openai_plan.published_value(plan),
                 organisation=plan.organisation,
@@ -4445,6 +5792,7 @@ def create_app(
             label=body.label,
             provider=body.provider,
             lend_to=body.lend_to,
+            lends=plan_lends,
             credential_payload=body.credential,
             access_token=credential.access_token,
             organisation=organisation,
@@ -4470,15 +5818,26 @@ def create_app(
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
-        if account.provider == openai_api_key.PROVIDER:
+        if account.voice_dedicated:
             # Even `lend_to: []` would bind the owner's worker as a reader of
-            # `{base}` (`_sync_lending`): the key's secret stays the broker's
-            # alone, so a key account has no lending to change.
+            # `{base}` (`_sync_lending`): the dedicated key's secret stays the
+            # broker's alone, so it has no lending to change.
             raise BrokerValidationError(
                 f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
                 "is never lent and no worker reads its secret"
             )
-        if body.lend_to and POOL_WORKSPACE not in account.pools:
+        if body.lends is not None and body.lend_to is not None:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        lends = _lends_for(body.lends, owner_tenant=account.owner_tenant, key=account.is_api_key)
+        if lends is None and account.is_api_key and body.lend_to:
+            raise BrokerValidationError(
+                f"{account_id} is an API key, lent only with a cap: send lends, each "
+                "with max_agents and monthly_spend_cap_usd"
+            )
+        if lends is None and account.is_api_key:
+            lends = {}
+        borrowers = list(lends) if lends is not None else list(body.lend_to or [])
+        if borrowers and POOL_WORKSPACE not in account.pools:
             # Reserved for Voice it: never lent, and no borrower is granted
             # read of its secret.
             raise BrokerValidationError(
@@ -4496,7 +5855,7 @@ def create_app(
                     secrets,
                     secret=secret,
                     owner_tenant=account.owner_tenant,
-                    lend_to=body.lend_to,
+                    lend_to=borrowers,
                     revoke=False,
                 )
             except BrokerValidationError:
@@ -4524,11 +5883,182 @@ def create_app(
             account.owner_tenant,
             account.label,
             provider=account.provider,
-            lend_to=body.lend_to,
+            lend_to=borrowers,
+            lends=lends,
         )
         if secrets is not None:
             _revoke_unlent(request, secrets, secret=secret, account=updated)
+        log.info(
+            "an account's lends changed",
+            extra={"account_id": account_id, "lends": {
+                t: c.to_firestore() for t, c in updated.lends.items()}},
+        )
         return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/per-workspace-max")
+    def set_per_workspace_max(
+        request: Request,
+        account_id: str,
+        body: AccountPerWorkspaceMax,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Each workspace's cap on the agents it holds on this account (Q6,
+        both kinds). The lender sets it: the owner's admin or the platform.
+
+        A workspace named here is the owner or a borrower: a cap on a
+        workspace that may not use the account would read as a permission.
+        Lowering a cap closes no hold; the next grant over it is refused
+        inside `acquire_hold`'s transaction.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            caps = validate_per_workspace_max(body.per_workspace_max)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        allowed = {account.owner_tenant, *account.lends}
+        stranger = sorted(t for t in caps if t not in allowed)
+        if stranger:
+            raise BrokerValidationError(
+                f"per_workspace_max names {stranger[0]}, which neither owns nor borrows {account_id}"
+            )
+        updated = store.set_per_workspace_max(account_id, caps)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's per-workspace caps changed",
+            extra={"account_id": account_id, "per_workspace_max": dict(updated.per_workspace_max)},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/spend-cap")
+    def set_spend_cap(
+        request: Request,
+        account_id: str,
+        body: AccountSpendCap,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A key's monthly spend ceiling, metered from the workers' `cost_usd`
+        estimates (§4.6, Q5), or null for none. A plan has none: its price is
+        flat. Lowering it closes no hold."""
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if not account.is_api_key:
+            raise BrokerValidationError(
+                f"{account_id} is a plan, whose price is flat; a spend cap is an API key's"
+            )
+        try:
+            cap = None if body.monthly_spend_cap_usd is None else validate_spend_cap(
+                body.monthly_spend_cap_usd)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_monthly_spend_cap(account_id, cap)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "a key's monthly spend cap changed",
+            extra={"account_id": account_id, "monthly_spend_cap_usd": cap},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.post("/v1/accounts/carry-over-lends")
+    def carry_over_lends(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Write `lends` on every account lent before the field (§4.6):
+        each borrower capped at the account's own `max_agents`, marked not
+        set. Platform only; idempotent. Also lists the plans whose label
+        carries the key mark, which must be none before the delete grant of
+        §8.3 is made."""
+        _platform_only(request, authorization, "only the platform may carry lends over")
+        store = _accounts(request)
+        written = store.carry_over_lends()
+        marked = plan_labels_with_key_mark(store.list())
+        log.info(
+            "audit: today's lends were carried over with a cap",
+            extra={"audit": True, "accounts": written, "plans_with_key_mark": marked},
+        )
+        return {"carried_over": written, "plans_with_key_mark": marked}
+
+    @app.post("/v1/accounts/import-workspace-keys")
+    def import_workspace_keys(
+        request: Request,
+        body: ImportWorkspaceKeys,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Import each workspace's own provider key as a pool key (Q7).
+
+        A COPY (§5.3): the broker reads `swarm-tenant-<tenant>-<vendor>`,
+        validates it as an add is validated, and registers it as that
+        workspace's `*-api` account, labelled `workspace-<vendor>`, lent to
+        nobody, its value written to its own `--key-` secret. The tenant
+        secret stays where it is, `scripts/create-secrets.sh`'s, the outage
+        path. A key that cannot be validated -- not a key at all (a
+        subscription token), refused by the vendor, or not checkable -- is
+        SKIPPED and listed with the reason, never registered half-checked.
+        An account already on the label is skipped, so a repeat is harmless.
+        Platform only. Never answers or logs a value.
+        """
+        _platform_only(request, authorization, "only the platform may import workspace keys")
+        store = _accounts(request)
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        wanted = set(body.tenants)
+        imported: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for tenant, vendor in secrets.workspace_provider_keys():
+            if wanted and tenant not in wanted:
+                continue
+            source = f"swarm-tenant-{tenant}-{vendor}"
+            provider = WORKSPACE_KEY_PROVIDER.get(vendor)
+            label = f"workspace-{vendor}"
+            entry = {"tenant_id": tenant, "vendor": vendor, "source": source}
+            if provider is None:
+                skipped.append({**entry, "reason": "no API key kind for this vendor"})
+                continue
+            if store.get(f"{tenant}:{label}") is not None:
+                skipped.append({**entry, "reason": "already imported"})
+                continue
+            try:
+                raw = secrets.access(source)
+            except Exception as exc:  # noqa: BLE001 -- the type only
+                skipped.append({**entry, "reason": f"unreadable: {type(exc).__name__}"})
+                continue
+            try:
+                key = api_key.parse_api_key(provider, raw)
+                check = _check_key_with_vendor(request, provider, key)
+                account = _store_api_key(
+                    request, store=store, secrets=secrets, owner_tenant=tenant,
+                    label=label, provider=provider, key=key, check=check, lends={},
+                    voice_dedicated=False, share_with_voice_it=False,
+                    added={**added, IMPORTED_FROM: source},
+                )
+            except CredentialError:
+                skipped.append({**entry, "reason": "not an API key"})
+                continue
+            except BrokerValidationError as exc:
+                skipped.append({**entry, "reason": str(exc)})
+                continue
+            imported.append({**entry, "account_id": account.account_id,
+                             "limited": check.outcome == api_key.CHECK_LIMITED})
+        log.info(
+            "audit: workspace provider keys were imported as pool keys",
+            extra={"audit": True, "imported": [i["account_id"] for i in imported],
+                   "skipped": [f"{s['source']}: {s['reason']}" for s in skipped]},
+        )
+        return {"imported": imported, "skipped": skipped}
 
     @app.put("/v1/accounts/{account_id}/model-classes")
     def set_model_classes(
@@ -4740,13 +6270,15 @@ def create_app(
         request: Request,
         account_id: str,
         authorization: str | None = Header(default=None, alias="Authorization"),
-    ) -> dict[str, Any]:
+    ) -> Any:
         store = _accounts(request)
         account = store.get(account_id)
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
-        # The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
+        if api_key.is_key(account.provider):
+            return _remove_api_key(request, account, authorization)
+        # A PLAN's removal. The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
         # is irreversible and takes its version history with it, and an account
         # removed by mistake is then unrecoverable rather than re-registerable.
         # The secret is left to a PERSON, deliberately, and nothing collects it
@@ -4766,6 +6298,93 @@ def create_app(
                 extra={"account_id": account_id, "closed": closed},
             )
         return {"removed": account_id, "secret": "retained"}
+
+    def _remove_api_key(request: Request, account: Any, authorization: str | None) -> Any:
+        """Delete an API key (docs/design/llm-providers.md §4.4; Q3, the
+        secret destroyed at once on confirmation), in its order:
+
+        1. its holds closed and the `key_deletions/<account id>` record
+           (secret name, who, when; never the value) written in ONE
+           transaction with the document's delete;
+        2. every version of its secret destroyed and the secret deleted, the
+           record marked done, the deletion audited without the value. A
+           failure answers 502 naming the step, and the quota sweep retries
+           the record until it is done.
+
+        Closing first is deliberate: destroying first and then failing the
+        transaction would leave a live account whose secret is gone; this
+        order leaves at worst an orphan secret the record names. The two
+        exceptions are kept: an IMPORTED workspace key (Q7) is a copy, so
+        only its pool secret goes and the workspace's own
+        `swarm-tenant-<tenant>-<vendor>` is never named; the dedicated Voice
+        it key stored under its OLD `--<label>` name (Q9) has its versions
+        destroyed and keeps its empty secret. The broker never revokes the
+        key at the provider (Q4)."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError(
+                "this deployment has no secret store configured, so a key's secret "
+                "could not be destroyed; nothing was removed"
+            )
+        store = _accounts(request)
+        db = request.app.state.broker.db
+        secret = store.secret_for(account)
+        whole = secret == key_secret_name(account.owner_tenant, account.label)
+        if not whole and not account.voice_dedicated:
+            raise BrokerValidationError(
+                f"{account.account_id}'s secret is not its key secret; nothing was removed"
+            )
+        doc = db.collection(ACCOUNTS_COLLECTION).document(account.account_id).get()
+        imported_from = ((doc.to_dict() or {}).get(IMPORTED_FROM)
+                         if getattr(doc, "exists", False) else None)
+        try:
+            deleted_by = request.app.state.identity.verified_email(authorization) or None
+        except BrokerAuthError:
+            deleted_by = None
+        now = datetime.now(timezone.utc)
+        record = {
+            "account_id": account.account_id,
+            "secret": secret,
+            "whole": whole,
+            "provider": account.provider,
+            "imported_from": imported_from,
+            "deleted_by": deleted_by,
+            "deleted_at": now,
+            "done": False,
+            "done_at": None,
+            "attempts": 0,
+            "failed_step": None,
+            "error": None,
+        }
+        closed = remove_account_and_close_holds(db, account.account_id, now=now, key_deletion=record)
+        log.info(
+            "audit: an API key was deleted; its secret is destroyed now",
+            extra={"audit": True, "account_id": account.account_id, "secret": secret,
+                   "deleted_by": deleted_by, "holds_closed": closed},
+        )
+        outcome = finish_key_deletion(db, secrets, record, now=now)
+        answer: dict[str, Any] = {"removed": account.account_id, "holds_closed": closed}
+        if imported_from:
+            answer["workspace_secret"] = f"{imported_from} still holds the value"
+        if not outcome["done"]:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=502, content={
+                **answer,
+                "code": "key_secret_not_destroyed",
+                "step": outcome["step"],
+                "secret": "owed",
+                "message": (
+                    f"the key is removed but its secret is not yet destroyed: the "
+                    f"{outcome['step']} step failed ({outcome['error']}); the broker's "
+                    "quota sweep retries it until it is"
+                ),
+            })
+        # What became of the secret: deleted whole, or (the old-name Voice it
+        # key) left empty with no version to read.
+        fate = "destroyed" if whole else "emptied"
+        answer["versions_destroyed"] = outcome["versions_destroyed"]
+        return {**answer, "secret": fate}
 
     # ----------------------------------------------------------------------
     # Assignment: which account a starting agent runs on, and giving it back.
@@ -4833,7 +6452,7 @@ def create_app(
             pools = validate_pools(body.pools)
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
-        if account.provider == openai_api_key.PROVIDER and pools != (POOL_VOICE_IT,):
+        if account.voice_dedicated and pools != (POOL_VOICE_IT,):
             # Never lent to any agent or workspace: a key in the workspace
             # pool would be one `may_serve` hands a task.
             raise BrokerValidationError(
@@ -4934,6 +6553,13 @@ def create_app(
             raise BrokerValidationError("this broker has no secret store, so it cannot lend an account to Voice it")
         try:
             token = str(secrets.access(_accounts(request).secret_for(account)) or "").strip()
+            if api_key.is_key(account.provider):
+                # A key's secret holds the key in its stored shape (§4.1);
+                # `kind` tells swarm-voice to set the key's own variable.
+                return {
+                    "access_token": api_key.read_key(account.provider, token),
+                    "kind": api_key.KIND_OF[account.provider],
+                }
         except Exception as exc:  # noqa: BLE001 -- the name only, never the value
             log.error(
                 "could not read a Claude account's token for a voice hold",
@@ -4967,11 +6593,22 @@ def create_app(
         store = _accounts(request)
         now = datetime.now(timezone.utc)
         listing = store.list()
-        chosen, reason = choose_voice(listing, person, provider, now, capability=body.capability)
+        # THE CHAIN (§5.3): Live walks the keys shared with Voice it, then
+        # the dedicated Voice it key; text walks the pool's plans, then, once
+        # swarm-voice can run text on a key (`key_tier`), the same two.
+        tiers = voice_chain(
+            listing, provider, capability=body.capability, key_tier=body.key_tier
+        )
+        # Minus what the session already left as spent (`exclude`, §5.3).
+        skip = {a for a in body.exclude if a}
+        if skip:
+            tiers = [[a for a in tier if a.account_id not in skip] for tier in tiers]
+        chosen, reason = choose_voice_chain(tiers, listing, person, now)
         refused = {
             "account_id": None,
             "assignment_id": None,
             "credential": None,
+            "tier": None,
             "reason": reason,
             "next_reset_at": None,
         }
@@ -4994,12 +6631,11 @@ def create_app(
             )
             if held is not None:
                 break
-            chosen, _ = choose_voice(
-                [a for a in listing if a.account_id not in tried],
+            chosen, _ = choose_voice_chain(
+                [[a for a in tier if a.account_id not in tried] for tier in tiers],
+                listing,
                 person,
-                provider,
                 now,
-                capability=body.capability,
             )
         if held is None or chosen is None:
             return {**refused, "reason": VOICE_NONE_AVAILABLE}
@@ -5024,11 +6660,14 @@ def create_app(
                 "assignment_id": assignment_id,
                 "voice_session_id": body.voice_session_id,
                 "pool": POOL_VOICE_IT,
+                "tier": tier_of(chosen),
             },
         )
         return {
             "account_id": chosen.account_id,
             "assignment_id": assignment_id,
+            # Which tier serves the session (§5.3, §5.4): the header's mark.
+            "tier": tier_of(chosen),
             "label": chosen.label,
             "display_name": chosen.display_name,
             "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
@@ -5205,30 +6844,31 @@ def create_app(
             "next_reset_at": None,
         }
         listing = store.list()
-        candidates = accounts_serving(listing, tenant_id, provider, model_class=None)
-        tried: set[str] = set(exclude)
-        while True:
-            chosen = choose(candidates, tenant_id, now, exclude=tuple(tried), model_class=None)
-            if chosen is None:
-                if tried == set(exclude):
-                    reason, next_reset = eligibility(
-                        candidates, tenant_id, now, exclude=exclude, model_class=None
-                    )
-                    return {**refused, "reason": reason.value,
-                            "next_reset_at": next_reset.isoformat() if next_reset else None}
-                return {**refused, "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value}
-            tried.add(chosen.account_id)
-            held = acquire_hold(
+        # The planner's and the front's chain (§5.3): the workspace's plans,
+        # then its vendor's keys once swarm-voice can set the key's variable
+        # (`key_tier`, lane LP-V1). No tier 3 (Q2): no dedicated Anthropic key.
+        tiers = chain_tiers(
+            listing, tenant_id, chain_providers(provider, key_tier=asked.key_tier), None
+        )
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=None,
+            take=lambda a, refusals: acquire_hold(
                 request.app.state.broker.db,
-                chosen.account_id,
+                a.account_id,
                 tenant_id=tenant_id,
                 now=now,
                 ttl=VOICE_HOLD_TTL,
                 person=person,
                 voice_session_id=voice_session_id,
+                refusals=refusals,
+            ),
+        )
+        if chosen is None:
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=None
             )
-            if held is not None:
-                break
+            return {**refused, "reason": reason.value, "caps": caps,
+                    "next_reset_at": next_reset.isoformat() if next_reset else None}
         assignment_id, assigned = held
         try:
             credential = _voice_claude_credential(request, chosen)
@@ -5252,11 +6892,13 @@ def create_app(
                 "voice_session_id": voice_session_id,
                 "holder": asked.holder,
                 "assigned": assigned,
+                "tier": tier_of(chosen),
             },
         )
         return {
             "account_id": chosen.account_id,
             "assignment_id": assignment_id,
+            "tier": tier_of(chosen),
             "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
             "credential": credential,
             "reason": "",
@@ -5333,49 +6975,55 @@ def create_app(
         # class no account serves is therefore `no_accounts_registered`: the
         # worker falls back to the tenant's own key, which serves every class,
         # and a tenant with none was parked by admission before any lease.
-        model_class = step_class_for(request.app.state.broker.db, tenant_id, asked.task_id)
-        candidates = accounts_serving(
-            store.list(), tenant_id, provider, model_class=model_class
+        #
+        # THE CHAIN (§5.3): this provider's plans, then its vendor's keys
+        # when the caller can run on one (`key_tier`) and the step's profile
+        # declares the key's variable -- `browser` declares the key alone, so
+        # its chain starts at the key tier. A new attempt always starts at
+        # tier 1.
+        db = request.app.state.broker.db
+        profile, model_class = step_for(db, tenant_id, asked.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=asked.key_tier,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
         )
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
 
-        chosen = choose(candidates, tenant_id, now, exclude=exclude, model_class=model_class)
+        # The account store is built from the broker's own Firestore client,
+        # deliberately (see create_app), so this is the same client and the
+        # same database the listing above read from. A candidate that lost
+        # its room between the listing and its transaction is refused there,
+        # writing nothing, and the walk tries the next (§5.5 invariant 2).
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class,
+            take=lambda a, refusals: acquire_hold(
+                db,
+                a.account_id,
+                tenant_id=tenant_id,
+                now=now,
+                task_id=asked.task_id,
+                attempt_id=asked.attempt_id,
+                refusals=refusals,
+            ),
+        )
         if chosen is None:
-            reason, next_reset = eligibility(
-                candidates, tenant_id, now, exclude=exclude, model_class=model_class
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=model_class
             )
             return {
                 "account_id": None,
                 "assignment_id": None,
                 "secret": None,
                 "account": None,
+                "tier": None,
                 "reason": reason.value,
                 "next_reset_at": next_reset.isoformat() if next_reset else None,
                 # The class the pool was asked about, so a decline names it.
                 "model_class": model_class,
-            }
-
-        # The account store is built from the broker's own Firestore client,
-        # deliberately (see create_app), so this is the same client and the
-        # same database the listing above read from.
-        held = acquire_hold(
-            request.app.state.broker.db,
-            chosen.account_id,
-            tenant_id=tenant_id,
-            now=now,
-            task_id=asked.task_id,
-            attempt_id=asked.attempt_id,
-        )
-        if held is None:
-            # Removed, paused, drained or no longer lent to this tenant between
-            # the read and the hold. Nothing was counted, so there is nothing
-            # to undo and nothing to hand out.
-            return {
-                "account_id": None,
-                "assignment_id": None,
-                "secret": None,
-                "account": None,
-                "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value,
-                "next_reset_at": None,
+                # Which caps held a candidate (`accounts.CAP_REASONS`): a
+                # borrower at its lend's cap is told so, beside the wait.
+                "caps": caps,
             }
         assignment_id, assigned = held
 
@@ -5392,7 +7040,8 @@ def create_app(
                 "account_id": chosen.account_id,
                 "assignment_id": assignment_id,
                 "tenant_id": tenant_id,
-                "provider": provider,
+                "provider": chosen.provider,
+                "tier": tier_of(chosen),
                 "model_class": model_class,
                 "borrowed": chosen.owner_tenant != tenant_id,
                 "assigned": assigned,
@@ -5400,6 +7049,9 @@ def create_app(
         )
         return {
             "account_id": chosen.account_id,
+            # Which tier granted it (§5.3), and the account's `provider` in
+            # `account`, so the worker knows which variable to set.
+            "tier": tier_of(chosen),
             # The HOLD this worker now has. It carries it back on release, so a
             # release can only ever give back the assignment it was issued
             # for, and the hold expires on its own if the worker is killed
@@ -5482,6 +7134,7 @@ def create_app(
             tenant_id=None if is_platform else caller_tenant,
             now=now,
             unusable=body.unusable,
+            cost_usd=body.cost_usd,
         )
         if body.unusable and was_held:
             # Refused at assignment, on the account's health record (#2302).
@@ -5596,7 +7249,7 @@ def create_app(
     def account_hold_status(
         request: Request,
         account_id: str,
-        body: _AttemptHold,
+        body: AccountHoldStatus,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         """Whether the caller's hold must move (S14). One cheap read.
@@ -5605,11 +7258,75 @@ def create_app(
         the mark a drain wrote on the hold, or `drain` for an account that is
         DRAINING whatever its holds say. A POST, so the assignment id is in a
         body rather than in a URL an access log keeps.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`,
+        recorded on its hold in one transaction (`record_running_spend`), so
+        the key's month cap and a borrower's lend cap count a long attempt
+        before it ends. A key whose spend, closed and running, has reached
+        either cap answers `move` `exhausted`: the worker checkpoints and
+        swaps at this turn boundary, and the swap closes the hold with its
+        `cost_usd`, counted once.
         """
-        _tenant, data, hold = _holder(request, authorization, account_id, body)
+        tenant_id, data, hold = _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        if body.cost_usd is not None and api_key.is_key(data.get("provider")):
+            recorded = record_running_spend(
+                request.app.state.broker.db,
+                account_id,
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+                cost_usd=body.cost_usd,
+                now=now,
+            )
+            if recorded is None:
+                # Released or fenced between the proof and the write.
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                )
+            data, hold = recorded
         state = data.get("state")
         move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        if move is None and _raw_spend_reached(
+            data, _live_holds(data, now), tenant_id, now
+        ) is not None:
+            move = SWAP_EXHAUSTED
+        if move is None:
+            move = _plan_available(request, tenant_id, data, hold)
         return {"account_id": account_id, "held": True, "move": move, "state": state}
+
+    def _plan_available(
+        request: Request, tenant_id: str, data: dict[str, Any], hold: Hold
+    ) -> str | None:
+        """`plan_available` when the caller holds a KEY and a plan of its
+        vendor would grant this attempt now (Q1, §5.3), else None.
+
+        The availability test is `choose()`'s (§5.1), so a plan the attempt
+        left on a 429 is not offered back before its `limited_until` passes.
+        Only an answer: the swap it leads to re-checks the plan inside its
+        one transaction, and leaves the hold on the key if the plan filled in
+        between -- never two holds, never none. A profile that does not
+        declare the plan's variable (`browser`) is never moved to a plan.
+        """
+        plan_provider = PLAN_PROVIDER_OF.get(str(data.get("provider") or ""))
+        if plan_provider is None or data.get("voice_dedicated") is True:
+            return None
+        profile, model_class = step_for(request.app.state.broker.db, tenant_id, hold.task_id)
+        if plan_provider not in chain_providers(
+            plan_provider,
+            key_tier=False,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
+        ):
+            return None
+        now = datetime.now(timezone.utc)
+        plans = accounts_serving(
+            _accounts(request).list(), tenant_id, plan_provider, model_class=model_class
+        )
+        if choose(plans, tenant_id, now, model_class=model_class) is None:
+            return None
+        return SWAP_PLAN_AVAILABLE
 
     @app.post("/v1/accounts/swap")
     def swap_account(
@@ -5652,38 +7369,45 @@ def create_app(
         # A swap moves the step to another account of ITS class, never to one
         # whose plan cannot run it (R5). `_holder` has proved the hold names
         # this task, so the task id here is the hold's own.
-        model_class = step_class_for(db, tenant_id, body.task_id)
-        candidates = accounts_serving(
-            store.list(), tenant_id, provider, model_class=model_class
+        #
+        # THE SAME CHAIN AS ASSIGN, minus `exclude` (§5.3): a plan at its
+        # window hands over to a key at the next turn boundary. A move back
+        # (`plan_available`, Q1) walks tier 1 only: never sideways to another
+        # key, and with no plan free the hold stays where it is.
+        profile, model_class = step_for(db, tenant_id, body.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=body.key_tier and body.reason != SWAP_PLAN_AVAILABLE,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
         )
-        # Twice at most: an account chosen from the listing may stop being
-        # assignable before the transaction reads it, and is then skipped.
-        for _ in range(2):
-            chosen = choose(
-                candidates, tenant_id, now, exclude=exclude, model_class=model_class
-            )
-            if chosen is None:
-                break
+        if body.reason == SWAP_PLAN_AVAILABLE:
+            providers = tuple(p for p in providers if not api_key.is_key(p))
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
+
+        def _move(a: Any, _refusals: list[str]) -> Any:
             try:
-                moved = swap_hold(
+                return swap_hold(
                     db,
                     body.account_id,
-                    chosen.account_id,
+                    a.account_id,
                     assignment_id=body.assignment_id,
                     tenant_id=tenant_id,
                     task_id=body.task_id,
                     attempt_id=body.attempt_id,
                     reason=body.reason,
                     now=now,
+                    cost_usd=body.cost_usd,
                 )
             except HoldNotHeld:
                 request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
                 raise BrokerAuthError(
                     "this caller holds no live hold on that account for that task and attempt"
                 ) from None
-            if moved is None:
-                exclude.add(chosen.account_id)
-                continue
+
+        chosen, moved, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class, take=_move
+        )
+        if chosen is not None:
             assignment_id, assigned = moved
             log.info(
                 "moved an attempt to another account",
@@ -5695,6 +7419,7 @@ def create_app(
                     "task_id": body.task_id,
                     "attempt_id": body.attempt_id,
                     "assigned": assigned,
+                    "tier": tier_of(chosen),
                 },
             )
             current = replace(chosen, assigned=assigned, last_assigned_at=now)
@@ -5702,14 +7427,15 @@ def create_app(
                 "swapped": True,
                 "from_account_id": body.account_id,
                 "account_id": chosen.account_id,
+                "tier": tier_of(chosen),
                 "assignment_id": assignment_id,
                 "secret": store.secret_for(chosen),
                 "account": account_to_api(current, now=now, viewer=tenant_id),
                 "reason": "",
                 "next_reset_at": None,
             }
-        why, next_reset = eligibility(
-            candidates, tenant_id, now, exclude=exclude, model_class=model_class
+        why, next_reset = chain_unavailable(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class
         )
         return {
             "swapped": False,
@@ -5718,8 +7444,10 @@ def create_app(
             "assignment_id": None,
             "secret": None,
             "account": None,
+            "tier": None,
             "reason": why.value,
             "next_reset_at": next_reset.isoformat() if next_reset else None,
+            "caps": caps,
         }
 
     # -- who holds an account, and who held it (#379) ----------------------
@@ -6057,6 +7785,32 @@ def create_app(
                     extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
                 )
                 result["ended_holds"] = {"error": type(exc).__name__}
+
+        # API KEYS' HOUSEKEEPING (docs/design/llm-providers.md §4.4, §4.5,
+        # §5.2), on this same tick rather than a schedule of its own: the
+        # deleted keys' secrets still owed a destruction, the rotated keys'
+        # superseded versions past their hold TTL, and the hourly probe of
+        # keys marked credit gone (`_claim_probe` keeps it hourly whatever
+        # the tick). Each in its own block, so one failing leaves the others
+        # and the quota recovery above as they were.
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is not None and account_store is not None:
+            db = request.app.state.broker.db
+            now = datetime.now(timezone.utc)
+            for key, run in (
+                ("key_deletions", lambda: finish_owed_key_deletions(db, secrets, now=now)),
+                ("key_rotations", lambda: destroy_superseded_key_versions(db, secrets, now=now)),
+                ("exhausted_probe", lambda: probe_exhausted_keys(
+                    db, account_store, secrets, request.app.state.key_validator, now=now)),
+            ):
+                try:
+                    result[key] = run()
+                except Exception as exc:  # pragma: no cover - defence in depth
+                    log.error(
+                        "an API key housekeeping block failed",
+                        extra={"block": key, "error": type(exc).__name__},
+                    )
+                    result[key] = {"error": type(exc).__name__}
 
         # The same scheduled tick refreshes subscription credentials, because
         # this service is the platform's single writer for them -- see
