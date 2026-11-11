@@ -143,7 +143,7 @@ describe('the cost pill', () => {
     expect(within(session).getByRole('img').getAttribute('aria-label')).toBe('$3.50 spent and $9.00 reserved of $100')
 
     // What is not counted sits behind the (i), not on the surface.
-    expect(panel.textContent).not.toContain('pod compute')
+    expect(measure(panel).tokens.join(' ')).not.toContain('pod')
     const info = within(panel).getByRole('button', { name: 'What is not counted' })
     expect(info.closest('.c-tip-host')?.textContent).toContain('Not counted: pod compute for lanes, CI runner minutes, deploys.')
 

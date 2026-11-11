@@ -113,7 +113,7 @@ import { read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { CardList, type StreamEvent } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
-import { BudgetMeter } from './Meter'
+import { CostPill } from './CostPill'
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
@@ -952,6 +952,8 @@ export function TalkPane() {
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
+          {/* The session's cost, beside End: the ledger's figures, every line behind the pill. */}
+          {sessionId !== null && <CostPill sessionId={sessionId} live={live} />}
           {live || phase === 'ending' ? (
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
@@ -1088,8 +1090,6 @@ export function TalkPane() {
         <p className="vt-cards-h">Cards</p>
         <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} onTraceEvent={onTraceEvent} onTierEvent={onTierEvent} />
       </section>
-
-      {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}
 
       <audio ref={audio} autoPlay className="vt-voice" />
     </div>
