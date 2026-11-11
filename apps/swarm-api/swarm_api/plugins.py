@@ -74,6 +74,14 @@ joins the step's built-ins in unattended mode with every skill that mode
 offers, carried in the work contract as before, so with work contracts off
 it is skipped and recorded (`work_contracts_off`).
 
+THE BUILT-INS SWITCH (docs/design/managed-plugins.md section 1.4.5).
+With SWARM_BUILTINS_MANAGED exactly `on` (`plugincatalogue.builtins_managed`),
+gstack and security-audit are the bundled managed installs: a step naming
+one with its mode and skills, or a default naming one, gets it in
+`metadata.dispatch.plugins` (`pluginconfig.bundled_entry`) and nothing in
+`capabilities.plugins`, so it needs no work contract. Off (the default on
+every deployment), every step resolves exactly as above.
+
 THE ALLOWED LIST, WRITTEN AGAIN. `PluginsStore.put` names catalogue
 built-ins and active platform installs (a platform install serves only the
 workspaces that allow it). Its block also carries the defaults and the
@@ -119,6 +127,8 @@ from .plugincatalogue import (
     MODES,
     SUPPORTED_MODES,
     PluginEntry,
+    builtins_managed,
+    bundled_id,
     offered_skills,
 )
 from .qasettings import authorize_read, can_edit
@@ -431,7 +441,23 @@ def merge_step_plugins(chosen: Mapping[str, Mapping[str, Any]], off: Iterable[st
                       step_id=step_id, field=STEP_FIELD, plugins_off=both)
     built_ins: dict[str, dict[str, Any]] = {}
     added: dict[str, dict[str, Any]] = {}
+    # The built-ins switch (docs/design/managed-plugins.md section 1.4.5):
+    # on, gstack and security-audit are the bundled managed installs, so a
+    # step naming one carries it in `metadata.dispatch.plugins` with its mode
+    # and skills, never in `capabilities.plugins`. Off, nothing changes.
+    managed_builtins = builtins_managed(environ)
     for name, entry in sorted(chosen.items()):
+        if managed_builtins and bundled_id(name) is not None:
+            if entry.get("overrides"):
+                raise _refuse(f"{name} is a built-in plugin and has no settings to override",
+                              step_id=step_id, field=STEP_FIELD, plugin=name)
+            if entry.get("mode") is None:
+                raise _refuse(f"{name} names a mode ({', '.join(SUPPORTED_MODES)}) and the skills it uses",
+                              step_id=step_id, field=STEP_FIELD, plugin=name,
+                              modes=list(SUPPORTED_MODES))
+            added[name] = {"mode": entry.get("mode"), "skills": list(entry.get("skills") or ()),
+                           "overrides": {}}
+            continue
         if ps.INSTALL_ID.match(name):
             if entry.get("mode") is not None or entry.get("skills") is not None:
                 raise _refuse(f"{name} is a managed plugin: it loads every component of its pinned "
@@ -455,7 +481,7 @@ def merge_step_plugins(chosen: Mapping[str, Mapping[str, Any]], off: Iterable[st
             allowed=allowed_plugins(tenant_id, settings_doc, mac), added=added,
             # A built-in the step names itself keeps the step's own mode and
             # skills: never a second, default copy of it.
-            off=[*turned_off, *built_ins])
+            off=[*turned_off, *built_ins], builtins_managed=managed_builtins)
     except ValidationFailed as exc:
         raise _with_step(exc, step_id) from None
     skipped = list(merged["skipped"])

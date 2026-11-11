@@ -290,6 +290,10 @@ def test_a_finished_bundled_intake_keeps_its_checked_archive_once(world, switch_
     assert w["bucket"].kept == {path: archive}
     version = _store(w["ctx"]).version("builtin:security-audit", first["version_id"])
     assert version["source_sha256"] == sha
+    # The admin reads the diff from the seeded version before Apply builds it.
+    diff = w["client"].get(f"{PLATFORM}/installs/builtin:security-audit/diff",
+                           params={"version_id": first["version_id"]}, headers=auth_header("root"))
+    assert diff.status_code == 200, diff.text
 
     second = _bundled_update(w, archive)
     assert second["state"] == ps.INTAKE_PINNED, second
