@@ -21,7 +21,13 @@
 //   * no plans is "No plans", the add control beside it and the read mark;
 //   * `?account=` opens that plan's Manage sheet, and one naming a plan not
 //     in the list draws neither a sheet nor its scrim;
-//   * the page draws one h1.
+//   * the page draws one h1;
+//   * Add plan chooses its vendor first: Claude's sign-in as it was, or the
+//     ChatGPT plan's device code, polled at the served interval until it is
+//     filed (the sheet closes, the list reloads), it expires (said, with a
+//     restart) or the sheet closes (polling stops); a failed start or poll
+//     says why and leaves the sheet as it was; the sheet's words stay under
+//     their count and its parts fit a phone at 390.
 //
 // Placeholders only; nothing is token-shaped.
 
@@ -51,6 +57,8 @@ const spies = vi.hoisted(() => ({
   removeAccount: vi.fn(),
   beginAccountSignIn: vi.fn(),
   finishAccountSignIn: vi.fn(),
+  beginDeviceSignIn: vi.fn(),
+  pollDeviceSignIn: vi.fn(),
   mintSetupLink: vi.fn(),
   loadAccountsBoard: vi.fn(),
   setAccountPools: vi.fn(),
@@ -93,6 +101,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   window.history.replaceState(null, '', '/')
 })
@@ -547,5 +556,213 @@ describe('Plans: a control that fails', () => {
     expect(text(card('primary').querySelector('.lpc-agents'))).toBe('2/6 agents')
     expect(spies.loadAccountsBoard.mock.calls.length).toBe(reads)
     expect((within(s).getByRole('spinbutton', { name: 'Max agents' }) as HTMLInputElement).value).toBe('40')
+  })
+})
+
+describe('Plans: Add plan chooses its vendor', () => {
+  const DEVICE = {
+    status: 'ok',
+    fetchedAt: 0,
+    data: { state: 'dev-state-1', user_code: 'WXYZ-7788', verification_uri: 'https://device.example.test/activate', expires_in_seconds: 900, interval_seconds: 7 },
+  } as const
+  const PENDING = { status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: null } } as const
+  const FILED = { status: 'ok', fetchedAt: 0, data: { status: 'filed', account: { account_id: 'u-owner:chat', label: 'chat', provider: 'openai' }, expires_at: null } } as const
+  const EXPIRED = { status: 'ok', fetchedAt: 0, data: { status: 'expired' } } as const
+
+  async function openAdd(): Promise<HTMLElement> {
+    await openPlans()
+    fireEvent.click(screen.getByRole('button', { name: 'Add plan' }))
+    return screen.findByRole('dialog', { name: 'Add plan' })
+  }
+
+  /** Lets the spies' promises settle and moves the faked clock by `ms`. */
+  async function tick(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  /** The ChatGPT path, labelled `chat`, started with the clock faked from the press on. */
+  async function started(): Promise<HTMLElement> {
+    const add = await openAdd()
+    fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
+    fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
+    await tick()
+    return add
+  }
+
+  beforeEach(() => {
+    spies.beginDeviceSignIn.mockResolvedValue(DEVICE)
+    spies.pollDeviceSignIn.mockResolvedValue(PENDING)
+  })
+
+  it('shows both vendors, Claude chosen, and Claude keeps its sign-in', async () => {
+    const add = await openAdd()
+    const vendor = within(add).getByRole('radiogroup', { name: 'Vendor' })
+    expect(within(vendor).getAllByRole('radio').map((r) => [text(r), r.getAttribute('aria-checked')])).toEqual([
+      ['Claude', 'true'],
+      ['ChatGPT', 'false'],
+    ])
+    expect(within(add).getByRole('radiogroup', { name: 'Signed in by' })).toBeTruthy()
+    fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'night' } })
+    fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
+    await waitFor(() => expect(api.beginAccountSignIn).toHaveBeenCalledWith({ label: 'night', lend_to: [] }))
+    expect(api.beginDeviceSignIn).not.toHaveBeenCalled()
+  })
+
+  it('ChatGPT starts the device sign-in and shows the code and a button to its page', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const add = await started()
+    expect(api.beginDeviceSignIn).toHaveBeenCalledWith({ label: 'chat', lend_to: [] })
+    expect(api.beginAccountSignIn).not.toHaveBeenCalled()
+    expect(within(add).queryByRole('radiogroup', { name: 'Signed in by' })).toBeNull()
+    expect((within(add).getByRole('textbox', { name: 'Device code' }) as HTMLInputElement).value).toBe('WXYZ-7788')
+    fireEvent.click(within(add).getByRole('button', { name: 'Open sign-in' }))
+    expect(open).toHaveBeenCalledWith('https://device.example.test/activate', '_blank', 'noopener')
+    open.mockRestore()
+  })
+
+  it('polls at the interval the start answered, then at each poll\'s own', async () => {
+    spies.pollDeviceSignIn.mockResolvedValueOnce({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: 3 } })
+    await started()
+    await tick(6999)
+    expect(api.pollDeviceSignIn).not.toHaveBeenCalled()
+    await tick(1)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledWith({ state: 'dev-state-1' })
+    await tick(2999)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+    await tick(1)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(2)
+    // A pending answer with no interval keeps the start's.
+    await tick(6999)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(2)
+    await tick(1)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(3)
+  })
+
+  it('closes and reloads the list once the plan is filed', async () => {
+    spies.pollDeviceSignIn.mockResolvedValue(FILED)
+    await started()
+    const reads = spies.loadAccountsBoard.mock.calls.length
+    await tick(7000)
+    await tick()
+    vi.useRealTimers()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add plan' })).toBeNull())
+    expect(spies.loadAccountsBoard.mock.calls.length).toBeGreaterThan(reads)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('sets a changed max agents on the filed plan', async () => {
+    spies.pollDeviceSignIn.mockResolvedValue(FILED)
+    const add = await openAdd()
+    fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
+    fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
+    fireEvent.change(within(add).getByRole('spinbutton', { name: 'Max agents' }), { target: { value: '3' } })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
+    await tick()
+    await tick(7000)
+    await tick()
+    expect(api.setAccountMaxAgents).toHaveBeenCalledWith('u-owner:chat', 3)
+  })
+
+  it('says the code expired, stops polling, and starts again on the button', async () => {
+    spies.pollDeviceSignIn.mockResolvedValue(EXPIRED)
+    const add = await started()
+    await tick(7000)
+    expect(text(add)).toContain('Code expired')
+    expect(within(add).queryByRole('textbox', { name: 'Device code' })).toBeNull()
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+    spies.pollDeviceSignIn.mockResolvedValue(PENDING)
+    fireEvent.click(within(add).getByRole('button', { name: 'Start again' }))
+    await tick()
+    expect(api.beginDeviceSignIn).toHaveBeenCalledTimes(2)
+    expect((within(add).getByRole('textbox', { name: 'Device code' }) as HTMLInputElement).value).toBe('WXYZ-7788')
+    await tick(7000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads the code as expired once its time is up, whatever the polls answered', async () => {
+    spies.beginDeviceSignIn.mockResolvedValue({ ...DEVICE, data: { ...DEVICE.data, expires_in_seconds: 10 } })
+    spies.pollDeviceSignIn.mockResolvedValue(FAIL)
+    const add = await started()
+    await tick(7000)
+    expect(within(add).getByRole('alert').textContent).toContain('max_agents is above the limit')
+    await tick(7000)
+    expect(text(add)).toContain('Code expired')
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops polling when the sheet closes', async () => {
+    const add = await started()
+    await tick(7000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(add).getByRole('button', { name: 'Close' }))
+    await tick()
+    expect(screen.queryByRole('dialog', { name: 'Add plan' })).toBeNull()
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed start says why and leaves the sheet as it was', async () => {
+    spies.beginDeviceSignIn.mockResolvedValue(FAIL)
+    const add = await started()
+    expect(within(add).getByRole('alert').textContent).toContain('max_agents is above the limit')
+    expect(within(add).queryByRole('textbox', { name: 'Device code' })).toBeNull()
+    expect(within(add).getByRole('button', { name: 'Start sign-in' })).toBeTruthy()
+    expect((within(add).getByRole('textbox', { name: 'Label' }) as HTMLInputElement).value).toBe('chat')
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).not.toHaveBeenCalled()
+  })
+
+  it('a failed poll says why, keeps the code and polls on', async () => {
+    spies.pollDeviceSignIn.mockResolvedValueOnce(FAIL)
+    const add = await started()
+    await tick(7000)
+    expect(within(add).getByRole('alert').textContent).toContain('max_agents is above the limit')
+    expect((within(add).getByRole('textbox', { name: 'Device code' }) as HTMLInputElement).value).toBe('WXYZ-7788')
+    await tick(7000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(2)
+    expect(within(add).queryByRole('alert')).toBeNull()
+  })
+
+  /** The words a reader sees in the sheet: its text nodes, tooltips' hidden copy left out. */
+  function words(el: HTMLElement): number {
+    const copy = el.cloneNode(true) as HTMLElement
+    for (const n of copy.querySelectorAll('[data-help-description], style, script')) n.remove()
+    const inputs = [...copy.querySelectorAll('input')].map((i) => (i as HTMLInputElement).value)
+    return [...(copy.textContent ?? '').split(/\s+/), ...inputs.flatMap((v) => v.split(/\s+/))].filter((t) => /[\p{L}\p{N}]/u.test(t)).length
+  }
+
+  it('keeps the sheet to its words: no explanatory prose on either path', async () => {
+    const add = await openAdd()
+    // The Claude sheet's own words, plus the vendor choice's two.
+    expect(words(add)).toBeLessThanOrEqual(23)
+    fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
+    fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
+    expect(words(add)).toBeLessThanOrEqual(17)
+    fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
+    await within(add).findByRole('textbox', { name: 'Device code' })
+    expect(words(add)).toBeLessThanOrEqual(19)
+    for (const p of add.querySelectorAll('p')) expect(p.getAttribute('role')).toBe('alert')
+  })
+
+  it('fits a phone at 390: the device step is drawn only from rules with no fixed width past the viewport', async () => {
+    const add = await started()
+    const flat = PLANS_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    const rules = [...flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim(), body: m[2]! }))
+    const classes = new Set([...add.querySelectorAll('[class]')].flatMap((e) => [...e.classList]).filter((c) => c.startsWith('llp-')))
+    expect(classes.size).toBeGreaterThan(0)
+    for (const c of classes) {
+      const own = rules.filter((r) => new RegExp(`\\.${c}(?![\\w-])`).test(r.sel))
+      expect(own.length, c).toBeGreaterThan(0)
+      for (const r of own) for (const m of r.body.matchAll(/(?:^|;)\s*(?:min-)?width\s*:\s*(\d+)px/g)) expect(Number(m[1]), r.sel).toBeLessThanOrEqual(120)
+    }
+    expect(add.querySelector('[style*="width"]')).toBeNull()
   })
 })

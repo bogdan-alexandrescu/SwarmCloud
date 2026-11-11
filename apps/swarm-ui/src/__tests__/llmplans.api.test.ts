@@ -55,3 +55,91 @@ describe('the plan cap calls', () => {
     expect(call().body).toEqual({ per_workspace_max: { 'u-owner': 3, smoke: 1 } })
   })
 })
+
+// THE DEVICE SIGN-IN CALLS (the `openai` plan's add, routes/accounts.py's
+// `/device/start` and `/device/poll`): what each sends, and the answer
+// normalised as the API serves it.
+//
+// BREAK IT: send a provider or an owner on start, open a non-https device
+// page, read a poll's unknown status as pending, or drop the poll's own
+// interval -- a case below turns red.
+describe('the device sign-in calls', () => {
+  const STATE = 'device-state-0001'
+
+  it('beginDeviceSignIn posts the label and lends to /device/start, nothing else', async () => {
+    const api = await live()
+    sent.write.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: 0,
+      data: { state: STATE, user_code: 'ABCD-1234', verification_uri: 'https://device.example.com/activate', expires_in_seconds: 900, interval_seconds: 7, provider: 'openai' },
+    })
+    const r = await api.beginDeviceSignIn({ label: 'chat-one', lend_to: [] })
+    expect(call().method).toBe('POST')
+    expect(call().url).toContain('/v1/accounts/device/start')
+    expect(call().body).toEqual({ label: 'chat-one', lend_to: [] })
+    expect(r).toEqual({
+      status: 'ok',
+      fetchedAt: 0,
+      data: { state: STATE, user_code: 'ABCD-1234', verification_uri: 'https://device.example.com/activate', expires_in_seconds: 900, interval_seconds: 7 },
+    })
+  })
+
+  it('refuses a start answer without a code or with a device page that is not https', async () => {
+    const api = await live()
+    sent.write.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { state: STATE, verification_uri: 'https://device.example.com/activate', interval_seconds: 5 } })
+    expect((await api.beginDeviceSignIn({ label: 'chat-one', lend_to: [] })).status).toBe('error')
+    sent.write.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { state: STATE, user_code: 'ABCD-1234', verification_uri: 'javascript:alert(1)', interval_seconds: 5 } })
+    expect((await api.beginDeviceSignIn({ label: 'chat-one', lend_to: [] })).status).toBe('error')
+  })
+
+  it('passes a failed start through as its error', async () => {
+    const api = await live()
+    const refused = { status: 'error', error: { kind: 'forbidden', httpStatus: 403, code: null, message: 'not a writer' } }
+    sent.write.mockResolvedValue(refused)
+    expect(await api.beginDeviceSignIn({ label: 'chat-one', lend_to: [] })).toEqual(refused)
+  })
+
+  it('pollDeviceSignIn posts the state to /device/poll and reads pending with its interval, expired, and filed with the plan', async () => {
+    const api = await live()
+    sent.write.mockResolvedValueOnce({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: 10 } })
+    const pending = await api.pollDeviceSignIn({ state: STATE })
+    expect(call().method).toBe('POST')
+    expect(call().url).toContain('/v1/accounts/device/poll')
+    expect(call().body).toEqual({ state: STATE })
+    expect(pending).toEqual({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: 10 } })
+
+    sent.write.mockResolvedValueOnce({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: null } })
+    expect(await api.pollDeviceSignIn({ state: STATE })).toEqual({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: null } })
+
+    sent.write.mockResolvedValueOnce({ status: 'ok', fetchedAt: 0, data: { status: 'expired' } })
+    expect(await api.pollDeviceSignIn({ state: STATE })).toEqual({ status: 'ok', fetchedAt: 0, data: { status: 'expired' } })
+
+    const account = { account_id: 'eng:chat-one', label: 'chat-one', provider: 'openai' }
+    sent.write.mockResolvedValueOnce({ status: 'ok', fetchedAt: 0, data: { status: 'filed', account, registered: null, organisation: null, expires_at: null, note: 'n' } })
+    expect(await api.pollDeviceSignIn({ state: STATE })).toEqual({ status: 'ok', fetchedAt: 0, data: { status: 'filed', account, expires_at: null } })
+  })
+
+  it('refuses a poll answer whose status it does not know', async () => {
+    const api = await live()
+    sent.write.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { status: 'maybe' } })
+    expect((await api.pollDeviceSignIn({ state: STATE })).status).toBe('error')
+  })
+
+  it('in fixture mode serves a code, then a filed plan the list then holds', async () => {
+    vi.resetModules()
+    const api = await import('../api')
+    expect(api.USE_FIXTURES).toBe(true)
+    const start = await api.beginDeviceSignIn({ label: 'chat-new', lend_to: [] })
+    expect(start.status).toBe('ok')
+    if (start.status !== 'ok') return
+    expect(start.data.user_code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)
+    expect(start.data.verification_uri).toMatch(/^https:\/\//)
+    expect(start.data.interval_seconds).toBeGreaterThan(0)
+    let polled = await api.pollDeviceSignIn({ state: start.data.state })
+    for (let i = 0; i < 3 && polled.status === 'ok' && polled.data.status === 'pending'; i++) polled = await api.pollDeviceSignIn({ state: start.data.state })
+    expect(polled.status === 'ok' && polled.data.status).toBe('filed')
+    const board = await api.loadAccountsBoard()
+    const rows = board.status === 'ok' ? board.data.page.accounts : []
+    expect(rows.filter((a) => a.label === 'chat-new').map((a) => a.provider)).toEqual(['openai'])
+  }, 15000)
+})
