@@ -95,6 +95,7 @@ import { useRecentName, WorkflowsScreen } from './Workflows'
 import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceSettingsSectionScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 import { HomeScreen } from './Home'
+import { VoiceCardsViewerScreen } from './voice/viewer/VoiceCardsViewer' // MOCK-HOOK
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -2710,6 +2711,7 @@ function SectionBody({
     // VOICE IT (voice-it.md §10): the three panes' shells; each says what it
     // holds and when it arrives, and offers nothing that cannot work yet.
     case 'voice/talk':
+      if (new URLSearchParams(window.location.search).get('voicecards') === 'viewer') return <VoiceCardsViewerScreen /> // MOCK-HOOK
       return <VoiceTalkScreen />
     case 'voice/projects':
       return <VoiceProjectsScreen />
