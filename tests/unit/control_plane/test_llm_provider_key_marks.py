@@ -249,10 +249,12 @@ def test_the_running_spend_counts_toward_the_month_cap(client, broker):
     assert listed["can_take_new_agent"] is False
     assert any(b.get("reason") == "spend_cap" for b in listed["blocked_by"])
     # The close counts the same figure once: the running one goes with the hold.
+    other = _key(broker, label="other-key")
     moved = client.post("/v1/accounts/swap", json={
         **proof, "account_id": key, "reason": "exhausted", "key_tier": True, "cost_usd": 6.5,
     })
     assert moved.status_code == 200, moved.text
+    assert moved.json()["account_id"] == other
     stored = _doc(broker, key)
     assert stored["holds"] == []
     assert stored["month_spend"] == {_month(): 10.5}
