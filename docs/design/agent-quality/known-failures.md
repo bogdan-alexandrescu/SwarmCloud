@@ -182,6 +182,8 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/mcp/test_build_board_wire.py` | `_hook` | `skip_call` | bash is not installed |
 | `tests/unit/mcp/test_plugin_agents_and_workflows.py` | `_node` | `skip_call` | node is not installed; CI runs these |
 | `tests/unit/mcp/test_plugin_bridge_install.py` | `test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it` | `skipif` | network: CI sets SWARM_BRIDGE_INSTALL_REF to a pushed commit to install |
+| `tests/unit/mcp/test_plugin_portable.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
+| `tests/unit/mcp/test_plugin_user_config.py` | `test_nothing_in_the_manifest_names_this_repositorys_deployment` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/mcp/test_plugin_version_guard.py` | `_hook` | `skip_call` | sh, bash or ps is not installed |
 | `tests/unit/mcp/test_remote_steps_bridge.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/mcp/test_sc_auto_watch.py` | `_hook` | `skip_call` | bash is not installed |
