@@ -12,15 +12,19 @@
 # apply moves the image digest; this review is the step before that. Branch
 # protection must require the code owner's review for these paths, or this
 # file is only a suggestion (the owner's setting, not this repository's).
+#
+# `@example-org/swarm-owners` is the owners' team in GitHub's `@org/team` form,
+# a placeholder: the repository names its own owners' team, which must have
+# write access for GitHub to route these reviews to it.
 
-/scripts/lib/workspace-guard.sh         @bogdan-alexandrescu
-/scripts/lib/workspace-calls.json       @bogdan-alexandrescu
-/scripts/lib/workspace-guard-cases.json @bogdan-alexandrescu
-/scripts/lib/guard-bin/                 @bogdan-alexandrescu
-/scripts/lib/common.sh                  @bogdan-alexandrescu
-/scripts/register-tenant.sh             @bogdan-alexandrescu
-/scripts/workspace-apply.sh             @bogdan-alexandrescu
-/images/workspace-apply/entry.py        @bogdan-alexandrescu
-/images/workspace-apply/Dockerfile      @bogdan-alexandrescu
-/images/workspace-apply/cloudbuild.yaml @bogdan-alexandrescu
-/.github/CODEOWNERS                     @bogdan-alexandrescu
+/scripts/lib/workspace-guard.sh         @example-org/swarm-owners
+/scripts/lib/workspace-calls.json       @example-org/swarm-owners
+/scripts/lib/workspace-guard-cases.json @example-org/swarm-owners
+/scripts/lib/guard-bin/                 @example-org/swarm-owners
+/scripts/lib/common.sh                  @example-org/swarm-owners
+/scripts/register-tenant.sh             @example-org/swarm-owners
+/scripts/workspace-apply.sh             @example-org/swarm-owners
+/images/workspace-apply/entry.py        @example-org/swarm-owners
+/images/workspace-apply/Dockerfile      @example-org/swarm-owners
+/images/workspace-apply/cloudbuild.yaml @example-org/swarm-owners
+/.github/CODEOWNERS                     @example-org/swarm-owners
