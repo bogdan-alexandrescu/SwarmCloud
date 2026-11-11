@@ -28,7 +28,13 @@
 #     requests that are green at head, labelled `ready`, mergeable, not drafts,
 #     not forks and aimed at main board a new one, oldest first, each still
 #     passing main's closing-references and dependency checks (the same two
-#     scripts auto-merge.yml's gate runs).
+#     scripts auto-merge.yml's gate runs). Fewer than MERGE_TRAIN_MIN_PRS
+#     (default 6) of them board nothing while the oldest has been `ready` (the
+#     label's last addition, read from GitHub) less than
+#     MERGE_TRAIN_MAX_WAIT_MINUTES (default 20), and the tick says so in one
+#     line; a `train-first` one, or a ready time that cannot be read, boards
+#     them at once (THE GATHER, gather_waits). A bisection's held-back half
+#     never gathers.
 #
 # WHAT A TRAIN IS. `train/<run id>-<attempt>` = origin/main plus each boarding
 # pull request squashed in order, one commit each, titled `<title> (#N)`. A
@@ -129,6 +135,10 @@
 #       The state block a train pull request's body carries.
 #   tell --prs <gh pr list json>
 #       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
+#   gather --prs <gh pr list json> --chosen <select lines>
+#       The gather alone (gather_waits), for the pull requests that would
+#       board: `wait` (and the one line saying why) or `board` (GH_REPO,
+#       GH_TOKEN).
 #   list-prs --out <file>
 #       The open pull request list the tick reads (list_open_prs) alone,
 #       into <file> (GH_REPO, GH_TOKEN).
@@ -171,6 +181,17 @@ STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
 MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
+# THE GATHER (gather_waits). A train boards once this many pull requests would
+# board, or once the oldest of them has been `ready` this long: the owner's
+# pick on 11 November 2026, "6 ready or 20 minutes", so fewer, larger trains
+# each pay the full suite once. Six: a red train of six is found in three more
+# trains. Twenty minutes: no `ready` pull request waits longer than about one
+# CI run before it boards. MIN_PRS 1 or MAX_WAIT_MINUTES 0 boards as soon as
+# one is green, as the train did before. A minimum above MAX_PRS counts as
+# MAX_PRS: a train never holds more.
+MIN_PRS="${MERGE_TRAIN_MIN_PRS:-6}"
+# Minutes; 0 turns the gather off (see MIN_PRS above).
+MAX_WAIT_MINUTES="${MERGE_TRAIN_MAX_WAIT_MINUTES:-20}"
 # A pull request GitHub is still computing the mergeability of is read this
 # many times in all, this many seconds apart: GitHub computes it in a few
 # seconds once asked, and a longer wait holds the whole tick. One still
@@ -968,6 +989,63 @@ guards_pass() {
   fi
 }
 
+ready_since() {
+  # When `ready` was last added to pull request $1, in epoch seconds, from its
+  # issue events on GitHub; nothing printed when that cannot be read or was
+  # never added. Never a time this script keeps: GitHub's is the one record.
+  local number="$1" out="${WORK}/ready-since-$1.txt"
+  if ! gh_read "when #${number} became ready" "${out}" \
+    gh api "repos/${GH_REPO}/issues/${number}/events" --paginate \
+    --jq '[.[] | select(.event == "labeled" and .label.name == "ready") | .created_at | fromdateiso8601] | max // empty'; then
+    return 0
+  fi
+  grep -E '^[0-9]+$' "${out}" | sort -n | tail -n 1 || true
+}
+
+gather_waits() {
+  # THE GATHER (MIN_PRS, MAX_WAIT_MINUTES). $1 the open pull request list,
+  # $2 the pull requests that would board (start_train's chosen list). 0 when
+  # they wait, said in one summary line; 1 when they board. They board when
+  # the gather is off, when there are MIN_PRS of them, when one is labelled
+  # FIRST_LABEL (it waits for no queue and takes the rest with it), or when
+  # the oldest has been `ready` MAX_WAIT_MINUTES. A pull request whose ready
+  # time cannot be read counts as having waited the whole window: an
+  # unreadable time never holds work.
+  local prs="$1" chosen="$2" min="${MIN_PRS}" count numbers n since age
+  local window=$((MAX_WAIT_MINUTES * 60)) oldest="" oldest_age=-1 now
+  [[ "${min}" -le "${MAX_PRS}" ]] || min="${MAX_PRS}"
+  [[ "${min}" -gt 1 && "${MAX_WAIT_MINUTES}" -gt 0 ]] || return 1
+  count="$(grep -c . "${chosen}" || true)"
+  [[ "${count}" -lt "${min}" ]] || return 1
+  numbers="$(awk -F'\t' '{ print $1 }' "${chosen}" | tr '\n' ' ')"
+  if jq -e --arg first "${FIRST_LABEL}" --argjson these "$(awk -F'\t' '{ print $1 }' "${chosen}" | jq -s .)" '
+    any(.[]; (.number as $n | $these | index($n)) and any(.labels[]?; .name == $first))' \
+    "${prs}" >/dev/null; then
+    return 1
+  fi
+  now="$(date +%s)"
+  for n in ${numbers}; do
+    since="$(ready_since "${n}")"
+    if [[ -z "${since}" ]]; then
+      info "#${n}: when it became ready could not be read: it counts as having waited ${MAX_WAIT_MINUTES} minutes"
+      return 1
+    fi
+    age=$((now - since))
+    [[ "${age}" -ge 0 ]] || age=0
+    [[ "${age}" -lt "${window}" ]] || return 1
+    if [[ "${age}" -gt "${oldest_age}" ]]; then
+      oldest="${n}"
+      oldest_age="${age}"
+    fi
+  done
+  local at left noun="ready pull requests wait"
+  at="$(jq -nr --argjson t "$((now - oldest_age + window))" '$t | todate')"
+  left=$(((window - oldest_age + 59) / 60))
+  [[ "${count}" -ne 1 ]] || noun="ready pull request waits"
+  summary "gathering: ${count} ${noun} for ${min} to board (or ${MAX_WAIT_MINUTES} minutes); the oldest, #${oldest}, has been ready $((oldest_age / 60)) minutes; they board at the latest at ${at}, in ${left} minutes"
+  return 0
+}
+
 start_train() {
   # $1 dry (true|false); $2 an explicit list to board in that order (a
   # bisection), or empty for the pool; $3 the suspects to carry.
@@ -988,6 +1066,11 @@ start_train() {
       printf '%s\t%s\t%s\n' "${n}" "${sha}" "${title}" >>"${chosen}"
       count=$((count + 1))
     done <"${eligible}"
+    # The gather: the pool alone. A bisection's named half above boards at
+    # once, and a red train's retry never comes here.
+    if [[ -s "${chosen}" ]] && gather_waits "${WORK}/prs.json" "${chosen}"; then
+      return 0
+    fi
   fi
   if [[ ! -s "${chosen}" ]]; then
     if [[ -n "${explicit}" ]]; then
@@ -1744,6 +1827,33 @@ cmd_tell() {
   tell_skipped "${prs}"
 }
 
+cmd_gather() {
+  # The gather alone (gather_waits), over the open pull request list --prs
+  # and the pull requests that would board, --chosen (a select line each):
+  # prints `wait` or `board` (GH_REPO, GH_TOKEN).
+  local prs="" chosen=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; prs="$2"; shift 2 ;;
+      --chosen) [[ $# -ge 2 ]] || die "--chosen needs a value"; chosen="$2"; shift 2 ;;
+      *) die "gather: unknown argument: $1" ;;
+    esac
+  done
+  is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
+  gather_knobs_valid
+  retry_knobs_valid
+  [[ -f "${prs}" ]] || die "gather: no --prs file"
+  [[ -f "${chosen}" ]] || die "gather: no --chosen file"
+  : "${GH_REPO:?GH_REPO is required}"
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "${WORK}"' EXIT
+  if gather_waits "${prs}" "${chosen}"; then
+    echo wait
+  else
+    echo board
+  fi
+}
+
 cmd_list_prs() {
   # The tick's open pull request list alone (list_open_prs), into --out.
   local out=""
@@ -1819,6 +1929,12 @@ cmd_land() {
   printf 'rc\t%s\nlanded\t%s\nreason\t%s\n' "${rc}" "${LANDED}" "${LAND_REASON}"
 }
 
+gather_knobs_valid() {
+  is_number "${MIN_PRS}" || die "MERGE_TRAIN_MIN_PRS is not a positive number: ${MIN_PRS}"
+  [[ "${MAX_WAIT_MINUTES}" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || die "MERGE_TRAIN_MAX_WAIT_MINUTES is not a number of minutes: ${MAX_WAIT_MINUTES}"
+}
+
 retry_knobs_valid() {
   [[ "${MERGE_RETRY_WAITS}" =~ ^([0-9]+( [0-9]+)*)?$ ]] \
     || die "MERGE_TRAIN_MERGE_RETRY_WAITS is not a list of seconds: ${MERGE_RETRY_WAITS}"
@@ -1838,6 +1954,7 @@ cmd_tick() {
   : "${RUN_ID:?RUN_ID is required}"
   : "${RUN_URL:?RUN_URL is required}"
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
+  gather_knobs_valid
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
   is_number "${MAIN_RED_WAIT_MINUTES}" || die "MERGE_TRAIN_MAIN_RED_WAIT_MINUTES is not a positive number: ${MAIN_RED_WAIT_MINUTES}"
   [[ "${RERUN_BY}" == "workflow" || "${RERUN_BY}" == "app" ]] \
@@ -1918,6 +2035,7 @@ main() {
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
     list-prs) cmd_list_prs "$@" ;;
+    gather) cmd_gather "$@" ;;
     hold) cmd_hold "$@" ;;
     land) cmd_land "$@" ;;
     judge) cmd_judge "$@" ;;

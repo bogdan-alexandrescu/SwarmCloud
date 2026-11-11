@@ -118,6 +118,9 @@ class Gather:
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "FAKE_GH_LOG": str(self.log), "FAKE_EVENTS": str(self.events),
                     "GITHUB_STEP_SUMMARY": str(summary),
+                    # The repository's batch size; the script's default, 4,
+                    # sits below the minimum (that case is tested on its own).
+                    "MERGE_TRAIN_MAX_PRS": "40",
                     "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0", **knobs})
         proc = subprocess.run(["bash", str(SCRIPT), "gather", "--prs", str(prs), "--chosen", str(chosen)],
                               capture_output=True, text=True, timeout=60, check=False, env=env)
