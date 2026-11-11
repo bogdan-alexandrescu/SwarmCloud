@@ -80,6 +80,10 @@
 .llp-in.mono { font-family: var(--mono); font-size: var(--t-micro); }
 .llp-in:focus { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
 .llp-in-n { width: 96px; }
+.llp-f-row { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-start; }
+.llp-f-row > .llp-f { flex: 1 1 160px; }
+.llp-mini .llp-in { min-width: 0; max-width: 100%; }
+.llp-lent { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
 .llp-seg { height: 32px; max-width: 100%; }
 .llp-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .llp-btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -124,6 +128,8 @@
   .llp-who, .llp-name { max-width: 100%; white-space: normal; }
   .llp-meta > span { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .llp-over { min-width: 0; }
+  /* A window's reset time stays in its tooltip: at 390 it ran into the next cell. */
+  .llp-win-at { display: none; }
   .llp-lend { display: flex !important; align-items: center; gap: 4px 14px; padding: 6px 12px 6px 22px; }
   .llp-lend td { border: 0; padding: 0 !important; background: none; }
   .llp-lend td.llp-act { margin-left: auto; width: auto; }
