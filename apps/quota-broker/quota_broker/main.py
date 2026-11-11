@@ -20,7 +20,7 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -66,8 +66,25 @@ from .accounts import (
     HOLD_LOG_RETENTION,
     MAX_AGENTS_BEFORE_READING,
     SWAP_DRAIN,
+    SWAP_PLAN_AVAILABLE,
     SWAP_REASONS,
     SWAP_UNUSABLE,
+    SPEND_CAP_MAX_USD,
+    CAP_EXHAUSTED,
+    CAP_LEND_MAX_AGENTS,
+    CAP_LEND_SPEND,
+    CAP_SPEND,
+    CAP_WORKSPACE_MAX,
+    PLAN_PROVIDER_OF,
+    TIER_PLAN,
+    chain_providers,
+    lends_from_firestore,
+    lend_spend_from_firestore,
+    month_spend_from_firestore,
+    soonest,
+    spend_cap_from_firestore,
+    spend_month,
+    tier_of,
     DEFAULT_POOLS,
     POOL_VOICE_IT,
     POOL_WORKSPACE,
@@ -82,6 +99,8 @@ from .accounts import (
     validate_per_workspace_max,
     validate_spend_cap,
     choose_voice,
+    choose_voice_chain,
+    voice_chain,
     validate_pools,
     Unavailable,
     WindowReading,
@@ -402,6 +421,14 @@ class AccountAssign(StrictModel):
     person: str | None = Field(default=None, min_length=3, max_length=320)
     voice_session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
+    #: Whether the caller can run on an API key (§5.3): set the key's own
+    #: variable, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, rather than the
+    #: plan's token. A worker or a swarm-voice that predates the key shapes
+    #: sends nothing and is walked through the plans alone, so it is never
+    #: handed a key it would set as a plan token. It names no key, tier or
+    #: account (invariant 10): the broker still chooses, from the same chain.
+    key_tier: bool = False
+
     @model_validator(mode="after")
     def _one_kind_of_hold(self) -> "AccountAssign":
         voice = (self.holder, self.person, self.voice_session_id)
@@ -437,6 +464,11 @@ class VoiceLease(StrictModel):
     #: offered the pool's ChatGPT plan and never a key (`choose_voice`); no
     #: other value is accepted.
     capability: Literal["live", "text"] = openai_api_key.CAPABILITY_LIVE
+    #: As `AccountAssign.key_tier`, for a text conversation: swarm-voice can
+    #: run text on a key only once it has the developer Responses wire (lane
+    #: LP-V1), so until it says so a text lease walks the plans alone. A Live
+    #: session needs no flag: a key is the only kind it has ever run on.
+    key_tier: bool = False
 
 
 class VoiceHold(StrictModel):
@@ -463,6 +495,11 @@ class AccountRelease(StrictModel):
     #: wall, and so an operator can see the difference between an account
     #: nobody wants and one nobody can read.
     unusable: str = Field(default="", max_length=200)
+    #: The worker's `cost_usd` estimate of what ran on this hold (§4.6, Q5).
+    #: On a key it is added to the month's metered spend, and a borrower's to
+    #: its lend's, in the transaction that closes the hold. Absent from a
+    #: worker that predates it, and from a plan's hold: nothing is added.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class AttemptHoldsRelease(StrictModel):
@@ -538,6 +575,11 @@ class AccountSwap(_AttemptHold):
     reason: str = Field(min_length=1, max_length=32)
     provider: str = Field(default="anthropic", max_length=64)
     exclude: list[str] = Field(default_factory=list, max_length=20)
+    #: As `AccountAssign.key_tier`: the swap walks the key tier only for a
+    #: caller that can run on a key.
+    key_tier: bool = False
+    #: As `AccountRelease.cost_usd`, for the hold this swap closes.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class ReportAccount(_AttemptHold):
@@ -1097,6 +1139,18 @@ def account_to_api(
             if isinstance(getattr(account, "exhausted_at", None), datetime) else None
         ),
         "voice_dedicated": bool(getattr(account, "voice_dedicated", False)),
+        #: The tier it serves from (§5.3), and on a key this month's metered
+        #: spend, the key's and each borrower's (§4.6), what its caps read.
+        "tier": (
+            TIER_PLAN if not api_key.is_key(account.provider)
+            else "voice_dedicated" if getattr(account, "voice_dedicated", False) else "api_key"
+        ),
+        "month_spend_usd": (getattr(account, "month_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), 0.0
+        ),
+        "lend_spend_usd": dict((getattr(account, "lend_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), {}
+        )),
         #: The classes this account's plan serves; empty means every class
         #: (R5). `getattr` for the same reason as `observed_at` above.
         "model_classes": list(getattr(account, "model_classes", ()) or ()),
@@ -1419,8 +1473,16 @@ def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
     serves both exactly as before. Never raises: an unreadable task is an
     unknown class, not a failed assignment.
     """
+    return step_for(db, tenant_id, task_id)[1]
+
+
+def step_for(db: Any, tenant_id: str, task_id: str | None) -> tuple[Any, str | None]:
+    """(the step's runner profile, its model class), each None when it cannot
+    be known: `step_class_for`'s read, which the walk also needs for the
+    profile's declared credentials (§3.1, `chain_providers`): `browser`
+    declares the key alone, so its chain has no plan tier."""
     if not task_id:
-        return None
+        return None, None
     try:
         snap = db.collection(TASKS_COLLECTION).document(task_id).get()
         data = snap.to_dict() if getattr(snap, "exists", False) else None
@@ -1430,17 +1492,82 @@ def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
             "every class may take it",
             extra={"task_id": task_id, "error": type(exc).__name__},
         )
-        return None
+        return None, None
     if not isinstance(data, dict) or data.get("tenant_id") != tenant_id:
-        return None
+        return None, None
     profile = RUNNER_PROFILES.get(str(data.get("runner_profile") or ""))
     requested = data.get("model_class")
     if profile is None or not (requested is None or isinstance(requested, str)):
-        return None
+        return None, None
     try:
-        return step_model_class(profile, requested)
+        return profile, step_model_class(profile, requested)
     except ValueError:
-        return None
+        return profile, None
+
+
+def walk_chain(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+    take: Any,
+) -> tuple[Any, Any, list[str]]:
+    """Walk a lease's chain, tier by tier (§5.3): the first account `take`
+    grants, or (None, None, the caps that refused).
+
+    Each tier is `choose()`'s, in today's order; `take(account)` is the one
+    transaction that grants it (`acquire_hold`, `swap_hold`) and returns None
+    when the account lost its room since the listing -- refused inside the
+    transaction, writing nothing -- so the walk tries the next candidate and
+    then the next tier. The walk itself holds nothing (§5.5 invariant 2).
+    """
+    caps: list[str] = []
+    skip = set(exclude)
+    for candidates in tiers:
+        for a in candidates:
+            # The caps the listing already shows, so a park can name them.
+            cap = a.cap_for(tenant_id, now)
+            if cap is not None and a.account_id not in skip and cap not in caps:
+                caps.append(cap)
+        while True:
+            chosen = choose(candidates, tenant_id, now, exclude=tuple(skip), model_class=model_class)
+            if chosen is None:
+                break
+            refusals: list[str] = []
+            granted = take(chosen, refusals)
+            if granted is not None:
+                return chosen, granted, caps
+            caps.extend(c for c in refusals if c not in caps)
+            skip.add(chosen.account_id)
+    return None, None, caps
+
+
+def chain_tiers(
+    listing: list[Any], tenant_id: str, providers: Iterable[str], model_class: str | None
+) -> list[list[Any]]:
+    """Each tier's candidates (`accounts_serving`, one provider per tier)."""
+    return [
+        accounts_serving(listing, tenant_id, p, model_class=model_class) for p in providers
+    ]
+
+
+def chain_unavailable(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+) -> tuple[Unavailable, datetime | None]:
+    """Why no tier could grant, and when that changes: the soonest of the
+    tiers' `eligibility` answers (§5.1, §5.3), computed with the arguments
+    the walk's `choose()` took, tier by tier."""
+    exclude = tuple(exclude)
+    return soonest(
+        eligibility(c, tenant_id, now, exclude=exclude, model_class=model_class) for c in tiers
+    )
 
 
 def _log_ref(db: Any, assignment_id: str) -> Any:
@@ -1543,8 +1670,16 @@ def acquire_hold(
     attempt_id: str | None = None,
     person: str | None = None,
     voice_session_id: str | None = None,
+    refusals: list[str] | None = None,
 ) -> tuple[str, int] | None:
     """Record one agent's claim on an account. Returns (assignment_id, assigned).
+
+    THE CAPS ARE CHECKED HERE TOO (§4.6, §5.5 invariant 2): a key's exhausted
+    mark and spend cap, the workspace's `per_workspace_max` and a borrower's
+    lend (`_raw_tenant_refusal`), in this one transaction, so a refusal writes
+    nothing and the walk moves to its next candidate. The cap that refused is
+    appended to `refusals` when the caller passes a list, so its answer can
+    name it.
 
     A VOICE IT SESSION'S CLAIM when `person` is given with no tenant:
     re-checked against the Voice it pool (`_raw_voice_assignable`) instead of a
@@ -1610,10 +1745,16 @@ def acquire_hold(
             # Full since the listing: nothing is counted, and the route
             # answers as it does for an account paused in the same gap.
             return None
-        if not voice_it and not _raw_workspace_has_room(data, holds, tenant_id):
-            # THIS WORKSPACE at its `per_workspace_max` (Q6): checked and
-            # counted in this one transaction, so two of its agents racing
-            # for its last slot cannot both win, and a refusal writes nothing.
+        refused = None if voice_it else _raw_tenant_refusal(data, holds, tenant_id, now)
+        if voice_it and api_key.is_key(data.get("provider")) and data.get("exhausted_at") is not None:
+            refused = CAP_EXHAUSTED
+        if refused is not None:
+            # THIS WORKSPACE at its `per_workspace_max` (Q6), a BORROWER at
+            # its lend's cap (Q7), or a key spent or exhausted: checked and
+            # counted in this one transaction, so two agents racing for the
+            # last slot cannot both win, and a refusal writes nothing.
+            if refusals is not None:
+                refusals.append(refused)
             return None
         hold = Hold(
             assignment_id=assignment_id,
@@ -1645,8 +1786,13 @@ def release_hold(
     now: datetime,
     unusable: str = "",
     voice_session_id: str | None = None,
+    cost_usd: float | None = None,
 ) -> tuple[int | None, bool]:
     """Give one named assignment back. Returns (assigned, whether it was held).
+
+    `cost_usd`, the worker's estimate of what ran on the hold, is added to a
+    key's `month_spend` and a borrower's `lend_spend` IN THIS TRANSACTION
+    (`_spend_payload`, §4.6), so the spend is counted once with the close.
 
     NAMED, and that is the fix. This used to decrement a bare counter on proof
     of nothing but `may_serve`, so any tenant an account was lent to could
@@ -1707,6 +1853,8 @@ def release_hold(
             # admits, a write no caller was entitled to make.
             return len(remaining), False
         payload = _hold_payload(remaining)
+        if held:
+            payload.update(_spend_payload(data, held[0], cost_usd, now))
         if unusable and held:
             reports = _unreadable_reports(data)
             reports[held[0].tenant_id or (tenant_id or "")] = now
@@ -2166,6 +2314,82 @@ def _raw_workspace_has_room(data: dict[str, Any], live: list[Hold], tenant_id: s
     return sum(1 for h in live if h.tenant_id == tenant_id) < cap
 
 
+def _raw_tenant_refusal(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The cap that refuses `tenant_id` a NEW hold on a raw document, by name
+    (`accounts.CAP_REASONS`), or None. `Account.cap_for`, read where the hold
+    commits (§4.6, §5.5 invariant 2): the listing the walk chose from is older
+    than this transaction, so two borrowers racing for a lend's last slot
+    would both pass it there; here only one commits.
+
+    A key's own marks (`exhausted_at`, the month's spend at its cap), the
+    workspace's `per_workspace_max` (Q6), and, for a borrower, its lend's
+    `max_agents` and spend cap (Q7). A malformed cap or spend is a refusal,
+    as a malformed `max_agents` is no room: a figure nobody can read must not
+    read as no limit.
+    """
+    owner = data.get("owner_tenant")
+    is_key = api_key.is_key(data.get("provider"))
+    month = spend_month(now)
+    if is_key and data.get("exhausted_at") is not None:
+        return CAP_EXHAUSTED
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        lend_spent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner or ""), key=is_key)
+            if isinstance(owner, str) and owner
+            else None
+        )
+    except ValueError:
+        return CAP_SPEND if is_key else CAP_LEND_MAX_AGENTS
+    if is_key and cap is not None and spent >= cap:
+        return CAP_SPEND
+    if not _raw_workspace_has_room(data, live, tenant_id):
+        return CAP_WORKSPACE_MAX
+    lend = (lends or {}).get(tenant_id) if tenant_id != owner else None
+    if lend is not None:
+        # A lend carried over from `lend_to` has no stored `lends`; its cap is
+        # the account's own `max_agents`, which `_raw_has_room` applies.
+        if sum(1 for h in live if h.tenant_id == tenant_id) >= lend.max_agents:
+            return CAP_LEND_MAX_AGENTS
+        if lend.monthly_spend_cap_usd is not None and (
+            lend_spent.get(tenant_id, 0.0) >= lend.monthly_spend_cap_usd
+        ):
+            return CAP_LEND_SPEND
+    return None
+
+
+def _spend_payload(
+    data: dict[str, Any], hold: Hold, cost_usd: float | None, now: datetime
+) -> dict[str, Any]:
+    """The `month_spend` and `lend_spend` a closing hold adds to a KEY (§4.6,
+    Q5): its `cost_usd` on the key's month, and on its borrower's line when
+    the holder is a borrower. Written by the caller in the transaction that
+    closes the hold, so the spend a cap is measured against and the hold it
+    came from never disagree. Empty for a plan (flat price), a hold with no
+    cost, or a document whose stored spend cannot be read -- whose next grant
+    is refused anyway (`_raw_tenant_refusal`)."""
+    if not cost_usd or not api_key.is_key(data.get("provider")):
+        return {}
+    try:
+        spent = month_spend_from_firestore(data.get("month_spend"))
+        lent = lend_spend_from_firestore(data.get("lend_spend"))
+    except ValueError:
+        return {}
+    month = spend_month(now)
+    spent[month] = round(spent.get(month, 0.0) + cost_usd, 6)
+    payload: dict[str, Any] = {"month_spend": spent}
+    owner = data.get("owner_tenant")
+    if hold.tenant_id and hold.tenant_id != owner:
+        line = lent.setdefault(month, {})
+        line[hold.tenant_id] = round(line.get(hold.tenant_id, 0.0) + cost_usd, 6)
+        payload["lend_spend"] = lent
+    return payload
+
+
 def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
     """Whether a raw document's live holds leave room for one more (#2222).
 
@@ -2204,8 +2428,13 @@ def swap_hold(
     reason: str,
     now: datetime,
     ttl: timedelta = DEFAULT_HOLD_TTL,
+    cost_usd: float | None = None,
 ) -> tuple[str, int] | None:
     """Move one attempt's hold from one account to another, in ONE transaction.
+
+    The account moved to is checked as `acquire_hold` checks it, caps and all
+    (`_raw_tenant_refusal`), and the hold left closes with its `cost_usd`
+    added to a key's spend (`_spend_payload`), all in the same transaction.
 
     Returns (new assignment id, holders now on `to_account`), or None when
     `to_account` cannot take it -- removed, no longer AVAILABLE, or no longer
@@ -2261,6 +2490,8 @@ def swap_hold(
         to_live, to_expired = _split_holds(to_data, now)
         if not _raw_has_room(to_data, to_live):
             return None
+        if _raw_tenant_refusal(to_data, to_live, tenant_id, now) is not None:
+            return None
         taken = Hold(
             assignment_id=new_id,
             tenant_id=tenant_id,
@@ -2272,6 +2503,7 @@ def swap_hold(
             swap_reason=reason,
         )
         left = _hold_payload([h for h in live if h.assignment_id != held.assignment_id])
+        left.update(_spend_payload(from_data, held, cost_usd, now))
         if reason == SWAP_UNUSABLE:
             reports = _unreadable_reports(from_data)
             reports[tenant_id] = now
@@ -5392,6 +5624,13 @@ def create_app(
             raise BrokerValidationError("this broker has no secret store, so it cannot lend an account to Voice it")
         try:
             token = str(secrets.access(_accounts(request).secret_for(account)) or "").strip()
+            if api_key.is_key(account.provider):
+                # A key's secret holds the key in its stored shape (§4.1);
+                # `kind` tells swarm-voice to set the key's own variable.
+                return {
+                    "access_token": api_key.read_key(account.provider, token),
+                    "kind": api_key.KIND_OF[account.provider],
+                }
         except Exception as exc:  # noqa: BLE001 -- the name only, never the value
             log.error(
                 "could not read a Claude account's token for a voice hold",
@@ -5425,11 +5664,18 @@ def create_app(
         store = _accounts(request)
         now = datetime.now(timezone.utc)
         listing = store.list()
-        chosen, reason = choose_voice(listing, person, provider, now, capability=body.capability)
+        # THE CHAIN (§5.3): Live walks the keys shared with Voice it, then
+        # the dedicated Voice it key; text walks the pool's plans, then, once
+        # swarm-voice can run text on a key (`key_tier`), the same two.
+        tiers = voice_chain(
+            listing, provider, capability=body.capability, key_tier=body.key_tier
+        )
+        chosen, reason = choose_voice_chain(tiers, listing, person, now)
         refused = {
             "account_id": None,
             "assignment_id": None,
             "credential": None,
+            "tier": None,
             "reason": reason,
             "next_reset_at": None,
         }
@@ -5452,12 +5698,11 @@ def create_app(
             )
             if held is not None:
                 break
-            chosen, _ = choose_voice(
-                [a for a in listing if a.account_id not in tried],
+            chosen, _ = choose_voice_chain(
+                [[a for a in tier if a.account_id not in tried] for tier in tiers],
+                listing,
                 person,
-                provider,
                 now,
-                capability=body.capability,
             )
         if held is None or chosen is None:
             return {**refused, "reason": VOICE_NONE_AVAILABLE}
@@ -5482,11 +5727,14 @@ def create_app(
                 "assignment_id": assignment_id,
                 "voice_session_id": body.voice_session_id,
                 "pool": POOL_VOICE_IT,
+                "tier": tier_of(chosen),
             },
         )
         return {
             "account_id": chosen.account_id,
             "assignment_id": assignment_id,
+            # Which tier serves the session (§5.3, §5.4): the header's mark.
+            "tier": tier_of(chosen),
             "label": chosen.label,
             "display_name": chosen.display_name,
             "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
@@ -5663,30 +5911,31 @@ def create_app(
             "next_reset_at": None,
         }
         listing = store.list()
-        candidates = accounts_serving(listing, tenant_id, provider, model_class=None)
-        tried: set[str] = set(exclude)
-        while True:
-            chosen = choose(candidates, tenant_id, now, exclude=tuple(tried), model_class=None)
-            if chosen is None:
-                if tried == set(exclude):
-                    reason, next_reset = eligibility(
-                        candidates, tenant_id, now, exclude=exclude, model_class=None
-                    )
-                    return {**refused, "reason": reason.value,
-                            "next_reset_at": next_reset.isoformat() if next_reset else None}
-                return {**refused, "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value}
-            tried.add(chosen.account_id)
-            held = acquire_hold(
+        # The planner's and the front's chain (§5.3): the workspace's plans,
+        # then its vendor's keys once swarm-voice can set the key's variable
+        # (`key_tier`, lane LP-V1). No tier 3 (Q2): no dedicated Anthropic key.
+        tiers = chain_tiers(
+            listing, tenant_id, chain_providers(provider, key_tier=asked.key_tier), None
+        )
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=None,
+            take=lambda a, refusals: acquire_hold(
                 request.app.state.broker.db,
-                chosen.account_id,
+                a.account_id,
                 tenant_id=tenant_id,
                 now=now,
                 ttl=VOICE_HOLD_TTL,
                 person=person,
                 voice_session_id=voice_session_id,
+                refusals=refusals,
+            ),
+        )
+        if chosen is None:
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=None
             )
-            if held is not None:
-                break
+            return {**refused, "reason": reason.value, "caps": caps,
+                    "next_reset_at": next_reset.isoformat() if next_reset else None}
         assignment_id, assigned = held
         try:
             credential = _voice_claude_credential(request, chosen)
@@ -5710,11 +5959,13 @@ def create_app(
                 "voice_session_id": voice_session_id,
                 "holder": asked.holder,
                 "assigned": assigned,
+                "tier": tier_of(chosen),
             },
         )
         return {
             "account_id": chosen.account_id,
             "assignment_id": assignment_id,
+            "tier": tier_of(chosen),
             "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
             "credential": credential,
             "reason": "",
@@ -5791,49 +6042,55 @@ def create_app(
         # class no account serves is therefore `no_accounts_registered`: the
         # worker falls back to the tenant's own key, which serves every class,
         # and a tenant with none was parked by admission before any lease.
-        model_class = step_class_for(request.app.state.broker.db, tenant_id, asked.task_id)
-        candidates = accounts_serving(
-            store.list(), tenant_id, provider, model_class=model_class
+        #
+        # THE CHAIN (§5.3): this provider's plans, then its vendor's keys
+        # when the caller can run on one (`key_tier`) and the step's profile
+        # declares the key's variable -- `browser` declares the key alone, so
+        # its chain starts at the key tier. A new attempt always starts at
+        # tier 1.
+        db = request.app.state.broker.db
+        profile, model_class = step_for(db, tenant_id, asked.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=asked.key_tier,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
         )
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
 
-        chosen = choose(candidates, tenant_id, now, exclude=exclude, model_class=model_class)
+        # The account store is built from the broker's own Firestore client,
+        # deliberately (see create_app), so this is the same client and the
+        # same database the listing above read from. A candidate that lost
+        # its room between the listing and its transaction is refused there,
+        # writing nothing, and the walk tries the next (§5.5 invariant 2).
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class,
+            take=lambda a, refusals: acquire_hold(
+                db,
+                a.account_id,
+                tenant_id=tenant_id,
+                now=now,
+                task_id=asked.task_id,
+                attempt_id=asked.attempt_id,
+                refusals=refusals,
+            ),
+        )
         if chosen is None:
-            reason, next_reset = eligibility(
-                candidates, tenant_id, now, exclude=exclude, model_class=model_class
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=model_class
             )
             return {
                 "account_id": None,
                 "assignment_id": None,
                 "secret": None,
                 "account": None,
+                "tier": None,
                 "reason": reason.value,
                 "next_reset_at": next_reset.isoformat() if next_reset else None,
                 # The class the pool was asked about, so a decline names it.
                 "model_class": model_class,
-            }
-
-        # The account store is built from the broker's own Firestore client,
-        # deliberately (see create_app), so this is the same client and the
-        # same database the listing above read from.
-        held = acquire_hold(
-            request.app.state.broker.db,
-            chosen.account_id,
-            tenant_id=tenant_id,
-            now=now,
-            task_id=asked.task_id,
-            attempt_id=asked.attempt_id,
-        )
-        if held is None:
-            # Removed, paused, drained or no longer lent to this tenant between
-            # the read and the hold. Nothing was counted, so there is nothing
-            # to undo and nothing to hand out.
-            return {
-                "account_id": None,
-                "assignment_id": None,
-                "secret": None,
-                "account": None,
-                "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value,
-                "next_reset_at": None,
+                # Which caps held a candidate (`accounts.CAP_REASONS`): a
+                # borrower at its lend's cap is told so, beside the wait.
+                "caps": caps,
             }
         assignment_id, assigned = held
 
@@ -5850,7 +6107,8 @@ def create_app(
                 "account_id": chosen.account_id,
                 "assignment_id": assignment_id,
                 "tenant_id": tenant_id,
-                "provider": provider,
+                "provider": chosen.provider,
+                "tier": tier_of(chosen),
                 "model_class": model_class,
                 "borrowed": chosen.owner_tenant != tenant_id,
                 "assigned": assigned,
@@ -5858,6 +6116,9 @@ def create_app(
         )
         return {
             "account_id": chosen.account_id,
+            # Which tier granted it (§5.3), and the account's `provider` in
+            # `account`, so the worker knows which variable to set.
+            "tier": tier_of(chosen),
             # The HOLD this worker now has. It carries it back on release, so a
             # release can only ever give back the assignment it was issued
             # for, and the hold expires on its own if the worker is killed
@@ -5940,6 +6201,7 @@ def create_app(
             tenant_id=None if is_platform else caller_tenant,
             now=now,
             unusable=body.unusable,
+            cost_usd=body.cost_usd,
         )
         if body.unusable and was_held:
             # Refused at assignment, on the account's health record (#2302).
@@ -6064,10 +6326,43 @@ def create_app(
         DRAINING whatever its holds say. A POST, so the assignment id is in a
         body rather than in a URL an access log keeps.
         """
-        _tenant, data, hold = _holder(request, authorization, account_id, body)
+        tenant_id, data, hold = _holder(request, authorization, account_id, body)
         state = data.get("state")
         move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        if move is None:
+            move = _plan_available(request, tenant_id, data, hold)
         return {"account_id": account_id, "held": True, "move": move, "state": state}
+
+    def _plan_available(
+        request: Request, tenant_id: str, data: dict[str, Any], hold: Hold
+    ) -> str | None:
+        """`plan_available` when the caller holds a KEY and a plan of its
+        vendor would grant this attempt now (Q1, §5.3), else None.
+
+        The availability test is `choose()`'s (§5.1), so a plan the attempt
+        left on a 429 is not offered back before its `limited_until` passes.
+        Only an answer: the swap it leads to re-checks the plan inside its
+        one transaction, and leaves the hold on the key if the plan filled in
+        between -- never two holds, never none. A profile that does not
+        declare the plan's variable (`browser`) is never moved to a plan.
+        """
+        plan_provider = PLAN_PROVIDER_OF.get(str(data.get("provider") or ""))
+        if plan_provider is None or data.get("voice_dedicated") is True:
+            return None
+        profile, model_class = step_for(request.app.state.broker.db, tenant_id, hold.task_id)
+        if plan_provider not in chain_providers(
+            plan_provider,
+            key_tier=False,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
+        ):
+            return None
+        now = datetime.now(timezone.utc)
+        plans = accounts_serving(
+            _accounts(request).list(), tenant_id, plan_provider, model_class=model_class
+        )
+        if choose(plans, tenant_id, now, model_class=model_class) is None:
+            return None
+        return SWAP_PLAN_AVAILABLE
 
     @app.post("/v1/accounts/swap")
     def swap_account(
@@ -6110,38 +6405,45 @@ def create_app(
         # A swap moves the step to another account of ITS class, never to one
         # whose plan cannot run it (R5). `_holder` has proved the hold names
         # this task, so the task id here is the hold's own.
-        model_class = step_class_for(db, tenant_id, body.task_id)
-        candidates = accounts_serving(
-            store.list(), tenant_id, provider, model_class=model_class
+        #
+        # THE SAME CHAIN AS ASSIGN, minus `exclude` (§5.3): a plan at its
+        # window hands over to a key at the next turn boundary. A move back
+        # (`plan_available`, Q1) walks tier 1 only: never sideways to another
+        # key, and with no plan free the hold stays where it is.
+        profile, model_class = step_for(db, tenant_id, body.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=body.key_tier and body.reason != SWAP_PLAN_AVAILABLE,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
         )
-        # Twice at most: an account chosen from the listing may stop being
-        # assignable before the transaction reads it, and is then skipped.
-        for _ in range(2):
-            chosen = choose(
-                candidates, tenant_id, now, exclude=exclude, model_class=model_class
-            )
-            if chosen is None:
-                break
+        if body.reason == SWAP_PLAN_AVAILABLE:
+            providers = tuple(p for p in providers if not api_key.is_key(p))
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
+
+        def _move(a: Any, _refusals: list[str]) -> Any:
             try:
-                moved = swap_hold(
+                return swap_hold(
                     db,
                     body.account_id,
-                    chosen.account_id,
+                    a.account_id,
                     assignment_id=body.assignment_id,
                     tenant_id=tenant_id,
                     task_id=body.task_id,
                     attempt_id=body.attempt_id,
                     reason=body.reason,
                     now=now,
+                    cost_usd=body.cost_usd,
                 )
             except HoldNotHeld:
                 request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
                 raise BrokerAuthError(
                     "this caller holds no live hold on that account for that task and attempt"
                 ) from None
-            if moved is None:
-                exclude.add(chosen.account_id)
-                continue
+
+        chosen, moved, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class, take=_move
+        )
+        if chosen is not None:
             assignment_id, assigned = moved
             log.info(
                 "moved an attempt to another account",
@@ -6153,6 +6455,7 @@ def create_app(
                     "task_id": body.task_id,
                     "attempt_id": body.attempt_id,
                     "assigned": assigned,
+                    "tier": tier_of(chosen),
                 },
             )
             current = replace(chosen, assigned=assigned, last_assigned_at=now)
@@ -6160,14 +6463,15 @@ def create_app(
                 "swapped": True,
                 "from_account_id": body.account_id,
                 "account_id": chosen.account_id,
+                "tier": tier_of(chosen),
                 "assignment_id": assignment_id,
                 "secret": store.secret_for(chosen),
                 "account": account_to_api(current, now=now, viewer=tenant_id),
                 "reason": "",
                 "next_reset_at": None,
             }
-        why, next_reset = eligibility(
-            candidates, tenant_id, now, exclude=exclude, model_class=model_class
+        why, next_reset = chain_unavailable(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class
         )
         return {
             "swapped": False,
@@ -6176,8 +6480,10 @@ def create_app(
             "assignment_id": None,
             "secret": None,
             "account": None,
+            "tier": None,
             "reason": why.value,
             "next_reset_at": next_reset.isoformat() if next_reset else None,
+            "caps": caps,
         }
 
     # -- who holds an account, and who held it (#379) ----------------------

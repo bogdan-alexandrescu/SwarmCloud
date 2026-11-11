@@ -294,3 +294,35 @@ def test_a_hold_of_an_exhausted_or_spent_key_is_no_candidate():
                         lends={OWNER: Lend(1, 5.0)},
                         holds=(Hold("x", OWNER, now + timedelta(hours=1)),))
     assert choose([spent, gone, lent_full], OWNER, now) is None
+
+
+# -- Voice it ------------------------------------------------------------------------
+
+
+def test_voice_it_live_walks_the_shared_keys_before_the_dedicated_key():
+    from quota_broker.accounts import POOL_VOICE_IT, choose_voice_chain, tier_of, voice_chain
+
+    now = _now()
+    person = "owner@example.com"
+
+    def voice_key(label: str, dedicated: bool, **extra) -> Account:
+        return Account(account_id=f"{OWNER}:{label}", owner_tenant=OWNER, label=label,
+                       provider="openai-api", pools=(POOL_VOICE_IT,),
+                       voice_it_people=(person,), voice_dedicated=dedicated, **extra)
+
+    dedicated = voice_key("voice", True)
+    shared = voice_key("shared", False)
+    listing = [dedicated, shared]
+    tiers = voice_chain(listing, "openai", capability="live", key_tier=False)
+    chosen, _ = choose_voice_chain(tiers, listing, person, now)
+    assert chosen == shared and tier_of(chosen) == "api_key"
+
+    # The shared key limited: tier 3, the dedicated Voice it key.
+    limited = voice_key("shared", False, limited_until=now + timedelta(minutes=5))
+    listing = [dedicated, limited]
+    tiers = voice_chain(listing, "openai", capability="live", key_tier=False)
+    chosen, _ = choose_voice_chain(tiers, listing, person, now)
+    assert chosen == dedicated and tier_of(chosen) == "voice_dedicated"
+
+    # A text conversation walks no key until swarm-voice says it can run on one.
+    assert voice_chain(listing, "openai", capability="text", key_tier=False) == [[]]
