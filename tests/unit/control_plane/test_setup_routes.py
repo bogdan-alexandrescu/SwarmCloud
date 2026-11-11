@@ -213,6 +213,8 @@ class FakePool:
         #: Every `POST /v1/accounts` swarm-api forwarded, credential included,
         #: so a test can count how often a value reached the broker.
         self.registered: list[dict[str, Any]] = []
+        #: When True, the platform-wide listing raises, as an unreachable broker.
+        self.listing_fails = False
 
     def register(self, *, owner_tenant, label, provider, lend_to, credential, added_by=None):
         self.registered.append({"owner_tenant": owner_tenant, "label": label,
@@ -251,6 +253,12 @@ class FakePool:
 
     def list_accounts(self, tenant_id, include_reserved: bool = False):
         return {"accounts": [a for a in self.accounts if a["owner_tenant"] == tenant_id]}
+
+    def voice_it_accounts(self):
+        """The broker's platform-wide listing (`GET /v1/accounts`, no tenant)."""
+        if self.listing_fails:
+            raise OSError("broker unreachable")
+        return {"accounts": list(self.accounts), "tenant_id": None, "unreadable_documents": []}
 
 
 class FakeRuns:
