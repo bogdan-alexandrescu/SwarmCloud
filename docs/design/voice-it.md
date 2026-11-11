@@ -1232,7 +1232,7 @@ disagree, the code is quoted and this section says what changes.
   confirmation swarm-api moves the project to `cancelled` (`by: person`),
   then cancels each start through the platform's own cancel for its kind
   (`POST /v1/tasks/{id}/cancel` for an agent; the same route on an issue
-  run's running task, since a run whose task is cancelled ends cancelled,
+  run's running agent, since a run whose agent is cancelled ends cancelled,
   `runs.py`, and there is no run cancel route; `POST
   /v1/workflows/{id}/cancel` for a workflow), as the person, with the
   person's own permission on each: a start the person may not cancel is
