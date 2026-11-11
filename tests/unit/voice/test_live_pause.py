@@ -300,20 +300,19 @@ def test_speech_inside_the_window_resets_it():
     async def scenario():
         session, voice_id = await _talking_then_delegated(world)
         socket = world.socket(session)
-        world.clock.now += 10
-        socket.push({"type": PERSON_DELTA, "delta": "And the signup page", "item_id": "item_b"})
-        world.clock.now += 10
-        socket.push({"type": AUDIO})
-        await _settle()
+
+        async def after(seconds: float, event: dict) -> None:
+            world.clock.now += seconds
+            socket.push(event)
+            await _settle()
+
+        await after(10, {"type": PERSON_DELTA, "delta": "And the signup page", "item_id": "item_b"})
+        await after(10, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE)
-        world.clock.now += 4
-        socket.push({"type": VOICE_DELTA, "delta": "Still working.", "response_id": "resp_c"})
-        world.clock.now += 14
-        socket.push({"type": AUDIO})
-        await _settle()
+        await after(4, {"type": VOICE_DELTA, "delta": "Still working.", "response_id": "resp_c"})
+        await after(14, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
-        world.clock.now += 1
-        socket.push({"type": AUDIO})
+        await after(1, {"type": AUDIO})
         await _until(lambda: _said(socket, live.PAUSE_SENTENCE))
         world.planner.go.set()
         await world.sessions.end(voice_id)
@@ -328,26 +327,30 @@ def test_no_delegation_means_no_pause_and_nor_does_audio_playing_or_a_held_read_
         voice_id = _voice_id()
         session = await world.sessions.start(voice_id, person=PERSON, offer=_offer(), grant=_grant(voice_id))
         socket = world.socket(session)
-        socket.push({"type": PERSON_DELTA, "delta": "Hello there.", "item_id": "item_a"})
-        world.clock.now += 120
-        socket.push({"type": AUDIO})
-        await _settle()
+
+        async def after(seconds: float, event: dict) -> None:
+            world.clock.now += seconds
+            socket.push(event)
+            await _settle()
+
+        await after(0, {"type": PERSON_DELTA, "delta": "Hello there.", "item_id": "item_a"})
+        await after(120, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
 
         # A delegation, but the voice is still playing.
-        socket.push({"type": live.DELEGATION_CREATED, "delegation": {"id": "item_d1"}})
-        socket.push({"type": live.OUTPUT_AUDIO_STARTED})
-        world.clock.now += 60
-        socket.push({"type": AUDIO})
-        await _settle()
-        assert not _said(socket, live.PAUSE_SENTENCE)
+        await after(0, {"type": live.OUTPUT_AUDIO_STARTED})
+        await after(0, {"type": live.DELEGATION_CREATED, "delegation": {"id": "item_d1"}})
+        await after(60, {"type": AUDIO})
+        assert session.delegations and not _said(socket, live.PAUSE_SENTENCE)
         # Playing stopped, but a read-back is held for the person's answer.
-        world.sessions.holds.hold(voice_id, "rb_" + secrets.token_hex(8), lambda readback_id: None)
-        socket.push({"type": live.OUTPUT_AUDIO_STOPPED})
-        world.clock.now += 60
-        socket.push({"type": AUDIO})
-        await _settle()
+        world.sessions.holds.hold(voice_id, "vr_" + secrets.token_hex(16), lambda readback_id: None)
+        await after(0, {"type": live.OUTPUT_AUDIO_STOPPED})
+        await after(60, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE)
+        # Neither: now it pauses.
+        world.sessions.holds.forget(voice_id)
+        await after(1, {"type": AUDIO})
+        await _until(lambda: _said(socket, live.PAUSE_SENTENCE))
         world.planner.go.set()
         await world.sessions.end(voice_id)
 
