@@ -54,6 +54,20 @@ account stored before the broker kept them falls back to the `voice-api-key`
 one-time link that was redeemed last, whose owner is the platform admin who
 pasted it (`setup_links`). This module reads neither the key nor its secret;
 no answer of the broker's carries it.
+
+THE DEDICATED KEY AND THE CHAIN LINE (docs/design/llm-providers.md §5.3,
+§6.4) are read from the broker's platform-wide account listing
+(`GET /v1/accounts`, asked as this service), never measured here.
+`dedicated_key_status` is the `voice_dedicated` account's
+`{set, label, display_name, by, at, state, link, replace}`: one per
+deployment, in the Voice it pool alone, never lent; its state is the broker's
+(`key_state`). `chain_status` is the three tiers a Voice it lease walks
+(plans in the Voice it pool, keys shared with Voice it, the dedicated key),
+each `available`, `no_quota_left` or `not_set_up` for the person, from the
+broker's `can_take_new_agent`. Only those words leave this module: no account
+id, owner workspace, key or secret name. A listing that could not be read is
+None everywhere, never "not set". Deleting the key waits on the broker's
+`DELETE /v1/accounts/{id}` for a key (LP-B1 stage (c)); nothing here offers it.
 """
 
 from __future__ import annotations
@@ -89,6 +103,16 @@ KEY_PROVIDER = "openai-api"
 #: The broker's `GET /v1/voice/pool` reasons that settle whether a key exists.
 NO_KEY = vs.NO_LIVE_ACCOUNT
 KEY_BUSY = "no_voice_account_available"
+
+#: The broker's Voice it pool (`quota_broker.accounts.POOL_VOICE_IT`) and the
+#: plan provider whose plans in it are the chain's first tier (§5.3).
+POOL_VOICE_IT = "voice-it"
+PLAN_PROVIDER = "openai"
+#: The chain line's tiers, in the order a Voice it lease walks them (§5.3):
+#: the broker's tier names (`quota_broker.accounts.TIERS`).
+CHAIN_TIERS: tuple[str, ...] = ("plan", "_".join(("api", "key")), "voice_dedicated")
+#: The dedicated key's states (`key_state`).
+KEY_STATES: tuple[str, ...] = ("available", "limited", "paused", "draining", "credit_gone")
 
 
 def _iso(value: Any) -> str | None:
@@ -326,26 +350,154 @@ def key_status(pool_answer: Mapping[str, Any] | None, links: Iterable[Mapping[st
         if last is not None:
             by = last.get("owner") if isinstance(last.get("owner"), str) else None
             at = _iso(last.get("used_at"))
-    open_links = [r for r in rows if r.get("used_at") is None
+    return {"set": is_set, "by": by, "at": at, "label": label, "link": _open_link(rows, now)}
+
+
+def _open_link(links: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
+    """The newest unused, unexpired `voice-api-key` link's expiry, if any."""
+    open_links = [r for r in links if r.get("used_at") is None
                   and isinstance(r.get("expires_at"), datetime) and r["expires_at"] > now]
     newest = _latest(open_links, "expires_at")
-    return {"set": is_set, "by": by, "at": at, "label": label,
-            "link": {"open": True, "expires_at": _iso(newest["expires_at"])}
-            if newest is not None else {"open": False, "expires_at": None}}
+    return ({"open": True, "expires_at": _iso(newest["expires_at"])}
+            if newest is not None else {"open": False, "expires_at": None})
+
+
+def _rows(listing: Mapping[str, Any] | None) -> list[Mapping[str, Any]] | None:
+    """The broker listing's account rows, or None when it could not be read."""
+    if not isinstance(listing, Mapping) or not isinstance(listing.get("accounts"), list):
+        return None
+    return [a for a in listing["accounts"] if isinstance(a, Mapping)]
+
+
+def _in_voice_pool(row: Mapping[str, Any]) -> bool:
+    return POOL_VOICE_IT in (row.get("pools") or ())
+
+
+def _is_dedicated(row: Mapping[str, Any]) -> bool:
+    return (row.get("provider") == KEY_PROVIDER and row.get("voice_dedicated") is True
+            and _in_voice_pool(row))
+
+
+def _over_spend_cap(row: Mapping[str, Any]) -> bool:
+    cap, spent = row.get("monthly_spend_cap_usd"), row.get("month_spend_usd")
+    return (isinstance(cap, (int, float)) and isinstance(spent, (int, float))
+            and spent >= cap)
+
+
+def _can_serve(row: Mapping[str, Any]) -> bool:
+    """The broker's verdict (`can_take_new_agent`), with the two §5.1 marks
+    the listing's verdict does not fold in yet: credit gone (`exhausted_at`)
+    and a month's spend at its cap, both the broker's own figures."""
+    return (row.get("can_take_new_agent") is True and row.get("exhausted_at") is None
+            and not _over_spend_cap(row))
+
+
+def key_state(row: Mapping[str, Any]) -> str:
+    """One of KEY_STATES for the broker's row of a key: an operator's pause or
+    drain first, then credit gone, then a recorded 429 that has not reset."""
+    state = str(row.get("state") or "").upper()
+    if state == "DRAINING":
+        return "draining"
+    if state == "PAUSED":
+        return "paused"
+    if row.get("exhausted_at") is not None:
+        return "credit_gone"
+    if any(isinstance(b, Mapping) and b.get("limited_until") for b in row.get("blocked_by") or ()):
+        return "limited"
+    return "available" if state == "AVAILABLE" else state.lower()
+
+
+def dedicated_key_status(listing: Mapping[str, Any] | None,
+                         pool_answer: Mapping[str, Any] | None,
+                         links: Iterable[Mapping[str, Any]], *, now: datetime,
+                         admin: bool) -> dict[str, Any]:
+    """`{set, label, display_name, by, at, state, link, replace}` for the
+    dedicated Voice it key (the broker's `voice_dedicated` account, one per
+    deployment, never lent), never the key or its secret's name.
+
+    `set` (and with it everything the broker says) is None when the listing
+    could not be read, never False. `by` and `at` are the broker's record when
+    its pool answer names this very account, else the last redeemed
+    `voice-api-key` link for its label. `replace` is the one-time link that
+    replaces it, `{kind, label}`, for a platform admin while a key is set; a
+    reader who is not one gets None, the read-only view."""
+    rows = list(links)
+    status: dict[str, Any] = {"set": None, "label": None, "display_name": None, "by": None,
+                              "at": None, "state": None, "link": _open_link(rows, now),
+                              "replace": None}
+    accounts = _rows(listing)
+    if accounts is None:
+        return status
+    dedicated = next((a for a in accounts if _is_dedicated(a)), None)
+    if dedicated is None:
+        return {**status, "set": False}
+    label = dedicated.get("label") if isinstance(dedicated.get("label"), str) else None
+    name = dedicated.get("display_name")
+    by = at = None
+    chosen = pool_answer.get("account") if isinstance(pool_answer, Mapping) else None
+    if isinstance(chosen, Mapping) and chosen.get("account_id") == dedicated.get("account_id"):
+        added_by, added_at = chosen.get("key_added_by"), chosen.get("key_added_at")
+        if isinstance(added_by, str) and added_by and isinstance(added_at, str) and added_at:
+            by, at = added_by, added_at
+    if by is None and label is not None:
+        last = _latest([r for r in rows if r.get("label") == label
+                        and isinstance(r.get("used_at"), datetime)], "used_at")
+        if last is not None:
+            by = last.get("owner") if isinstance(last.get("owner"), str) else None
+            at = _iso(last.get("used_at"))
+    return {**status, "set": True, "label": label,
+            "display_name": name if isinstance(name, str) else None, "by": by, "at": at,
+            "state": key_state(dedicated),
+            "replace": {"kind": sl.VOICE_API_KEY, "label": label}
+            if admin and label is not None else None}
+
+
+def chain_status(listing: Mapping[str, Any] | None, person: str) -> list[dict[str, Any]]:
+    """The Voice it chain line of §6.4, "Plans → shared keys → this key":
+    `[{tier, state}]` in CHAIN_TIERS' order, each tier's accounts those of the
+    Voice it pool that list `person` (the broker's `may_serve_voice`).
+
+    `state` is `available` when the broker says one of them can take a
+    session now, `no_quota_left` when some are registered and none can (spent,
+    limited, out of credit, full or paused: the broker's
+    `no_voice_account_available`), `not_set_up` when none is, and None when
+    the listing could not be read."""
+    accounts = _rows(listing)
+    if accounts is None:
+        return [{"tier": tier, "state": None} for tier in CHAIN_TIERS]
+    who = person.strip().lower()
+    mine = [a for a in accounts if _in_voice_pool(a)
+            and who in [str(p).strip().lower() for p in a.get("voice_it_people") or ()]]
+    plans = [a for a in mine if a.get("provider") == PLAN_PROVIDER]
+    keys = [a for a in mine if a.get("provider") == KEY_PROVIDER]
+    tiers = (plans, [a for a in keys if a.get("voice_dedicated") is not True],
+             [a for a in keys if a.get("voice_dedicated") is True])
+
+    def _state(tier: list[Mapping[str, Any]]) -> str:
+        if not tier:
+            return "not_set_up"
+        return "available" if any(_can_serve(a) for a in tier) else "no_quota_left"
+
+    return [{"tier": name, "state": _state(tier)} for name, tier in zip(CHAIN_TIERS, tiers)]
 
 
 __all__ = [
     "AUDIT_CHANGED",
+    "CHAIN_TIERS",
     "COLLECTION",
     "DEBUG",
     "DOCUMENT",
     "KEY_PROVIDER",
+    "KEY_STATES",
     "MACHINE_FIELDS",
     "VoiceSettings",
+    "chain_status",
     "check_changes",
     "debug_on",
+    "dedicated_key_status",
     "effective",
     "key_links",
+    "key_state",
     "key_status",
     "pending",
     "view",
