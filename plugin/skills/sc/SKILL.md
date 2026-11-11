@@ -951,6 +951,9 @@ swarm-api still checks every value -- the ids, the catalogues, the tenant,
 the limits against the step's -- and its 422 is reported in its own words.
 Never write, amend or drop a contract the spec did not carry.
 
+A step's `plugins` names the plugins it runs, `{install_id: {overrides?}}` or `{name: {mode, skills}}`, sent as given.
+A step's `plugins_off` lists the workspace's default plugins it does not load, by install id or name, sent as given.
+
 ### `runs`
 
 ONE read: call `swarm_runs` (in a terminal, `sc runs`) and report each
