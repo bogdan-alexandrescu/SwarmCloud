@@ -427,7 +427,7 @@ def test_pypi_license_accepts_how_pypi_writes_it_now():
 
 
 # ---------------------------------------------------------------------------
-# CAPTCHA-AVOID (owner, 2026-10-23; part of #2058): the challenge pages a run
+# CAPTCHA-AVOID (the owner, 2026-10-23; part of #2058): the challenge pages a run
 # met, read from what the run recorded -- the gate's own hand-offs (a
 # `human_handoff_requested` event with `origin: "gate"`) and challenge pages
 # in the action log's visited URLs -- never from the agent's own words.

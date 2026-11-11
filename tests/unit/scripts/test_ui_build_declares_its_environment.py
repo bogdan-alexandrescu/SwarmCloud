@@ -39,7 +39,7 @@ TAG=testtag
 BUILD_ONLY=0
 LOCAL_BUILD=0
 REPO_ROOT={REPO}
-# The project whose build mirrors the config names (DAYONE-GENERIC-1).
+# The project whose build mirrors the config names (the Day One project-defaults lane).
 PROJECT_ID=swarm-test-project
 REGION=us-central1
 die() {{ printf '%s\\n' "$*" >&2; exit 1; }}

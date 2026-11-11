@@ -30,7 +30,6 @@ def test_the_qa_account_can_own_a_service_workspace() -> None:
     # to collecting without it.
     from swarm_api.workspaces import PLATFORM_SA_PREFIX
 
-    # The prefix rule looks at the local part only; the project is a placeholder.
     address = f"{_qa_account_id()}@example-project.iam.gserviceaccount.com"
     assert not address.startswith(PLATFORM_SA_PREFIX), (
         f"{address} would be refused by the workspace flow (WORKSPACE_SERVICE_PLATFORM), "
@@ -39,8 +38,7 @@ def test_the_qa_account_can_own_a_service_workspace() -> None:
 
 def test_bootstrap_admits_the_same_account_at_iap() -> None:
     tfvars = (REPO / "terraform" / "bootstrap" / "terraform.tfvars").read_text()
-    # The account lives in the deployment's own project, read from the same
-    # file rather than spelled here.
+    # The bootstrap's own project, read from the same file rather than restated.
     project = re.search(r'^project_id\s*=\s*"([^"]+)"', tfvars, flags=re.M)
     assert project, "terraform/bootstrap/terraform.tfvars no longer sets project_id"
     member = f'"serviceAccount:{_qa_account_id()}@{project.group(1)}.iam.gserviceaccount.com"'

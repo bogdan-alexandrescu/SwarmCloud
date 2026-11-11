@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from .test_docs_spec_amendments import _assert_cites_resolve
+from .test_no_live_literals import guard
 
 REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "repo-index.md"
@@ -230,6 +231,7 @@ def test_doc_and_mockup_carry_nothing_credential_shaped(doc: Path):
 
 @pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
 def test_doc_and_mockup_name_nothing_on_the_shared_project_deny_list(doc: Path):
+    assert "peer-cluster" not in _text(doc)
     _assert_names_no_shared_resource(_text(doc))
 
 
@@ -314,6 +316,9 @@ def test_the_mockup_uses_placeholder_names_only():
     text = _text(MOCKUP)
     for needle in ("example-org/example-api", "swarm.example.com", "Operator"):
         assert needle in text, needle
+    # Nothing in it that the deployment-values guard's shape rules read as a deployment's value.
+    source = guard.Source(MOCKUP.relative_to(REPO).as_posix(), MOCKUP.read_text(encoding="utf-8"))
+    assert not guard.scan([source], guard.Allow.load(), [], archive_refs=False, address=None)
     # The company and the live deployment's names: test_docs_name_nothing_the_pattern_list_lists.
     _assert_names_no_shared_resource(text)
 
@@ -530,6 +535,7 @@ def test_the_git_tokens_doc_lists_its_contract_requests_and_links_its_mockups():
 def test_the_git_tokens_doc_cites_real_files_and_nothing_credential_shaped(doc: Path):
     text = _text(doc)
     assert not _CREDENTIAL_SHAPES.search(text)
+    assert "peer-cluster" not in text
     _assert_names_no_shared_resource(text)
     for path in _CITE.findall(text):
         assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"

@@ -395,6 +395,7 @@ def test_script_reads_our_cluster_only_and_refuses_the_shared_one():
     text = SCRIPT.read_text()
     assert 'resource.labels.cluster_name=\\"${GKE_CLUSTER}\\"' in text
     assert 'is_shared_resource "${GKE_CLUSTER}"' in text
+    assert "peer-cluster" not in "\n".join(_effective_lines(text))
 
 
 def test_script_names_nothing_on_the_pattern_list():

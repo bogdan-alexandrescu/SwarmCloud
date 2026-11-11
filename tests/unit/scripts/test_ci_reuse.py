@@ -561,7 +561,7 @@ def test_the_merge_step_reads_a_reused_green_as_green():
     """At a lane's head: the push run's ci-gate passed, and the pull request's
     ci-gate passed with the heavy jobs skipped by reuse. Each event's latest
     run of a required check is green there (merge.py REQUIRED_GREEN = success,
-    skipped; a check is decided by the latest run of each event, owner,
+    skipped; a check is decided by the latest run of each event, the owner
     2026-10-22, beside CI-EARLY's every-event rule). MUTATION (merge.py): drop
     `skipped` from REQUIRED_GREEN, or let one event's red latest run be
     outvoted by another event's green one."""

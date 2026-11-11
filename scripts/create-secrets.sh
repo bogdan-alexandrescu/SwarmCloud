@@ -174,7 +174,7 @@
 # re-sign has run.
 #
 # There is no --git-wf. The `-git-wf` slot (a person's workflow-scoped token
-# for the platform tenant) was removed on 2026-10-22 by BGD's decision (#2029,
+# for the platform tenant) was removed on 2026-10-22 by the owner's decision (#2029,
 # WF-APP-TOKEN): swarm-api now pushes a change under .github/workflows/ or
 # .github/actions/ with a token the SwarmCloud GitHub App mints per push, for
 # one repository whose registration has `workflow_files` switched on

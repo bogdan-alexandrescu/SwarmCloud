@@ -7,7 +7,7 @@ times in two bursts -- 2026-10-20 08:04-11:24Z over 18 commits and 2026-10-21
 
     429 RESOURCE_EXHAUSTED ... cloudbuild.googleapis.com/get_requests
 
-the per-minute status-read quota of the live deployment's project, a project SHARED with
+the per-minute status-read quota of example-project, a project SHARED with
 another team that draws on the same quota. Every main commit runs its own
 build, and each ran up to `--parallel` (4) `gcloud builds submit` processes at
 once, each streaming its log and polling its own build. Nothing was wrong with

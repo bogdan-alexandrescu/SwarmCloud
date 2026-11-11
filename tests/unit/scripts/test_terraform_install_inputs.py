@@ -48,13 +48,18 @@ BOOTSTRAP = ROOT / "terraform" / "bootstrap"
 MONITORING_VARS = ROOT / "terraform" / "modules" / "monitoring" / "variables.tf"
 PREREQUISITES = ROOT / "scripts" / "prerequisites.sh"
 
-# What only the live deployment is: its project, the project's number, its
-# hosted domain and its tailnet come from the deployment pattern list the guard
-# reads (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE; see
-# test_no_live_literals.py), never from this file. Its two project-derived
-# service tenants are checked always. A default holding any of them configures
-# a new install as the live one.
+# What only a deployment is: its project, the project's number, its hosted
+# domain, its tailnet and its two project-derived service tenants. Here they are
+# the placeholder set; the live values come from the deployment pattern list the
+# guard reads (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE; see
+# test_no_live_literals.py and test_no_listed_live_value_in_a_default), never
+# from this file. A default holding any of them configures a new install as
+# that deployment.
 LIVE_MARKERS = (
+    "example-project",
+    "123456789012",
+    "example.com",
+    "example-tailnet",
     "u-sw-c90291",
     "u-or-9a0792",
 )

@@ -14,7 +14,7 @@ effective `iam.allowedPolicyMemberDomains` policy on the project already admits
 it -- the Q4 org-policy exception, an org-admin act -- and only after the
 operator types the project id, which `SWARM_ASSUME_YES` does not skip.
 
-`--ci-publisher EMAIL` (DAYONE-RELEASE-CI, the owner, 2026-10-30: CI publishes) grants
+`--ci-publisher EMAIL` (DAYONE-RELEASE-CI, the owner 2026-10-30: CI publishes) grants
 the publish-release workflow's identity exactly four roles, each on one
 resource and none on the project: `roles/artifactregistry.writer` on the
 repository, `roles/storage.objectAdmin` on the bucket, and
@@ -355,7 +355,7 @@ def test_alternate_release_project_is_admitted(tmp_path: Path) -> None:
 # --ci-publisher: the four release roles for publish-release.yml's identity
 # ---------------------------------------------------------------------------
 
-PUBLISHER = "swarm-deployer@example-project.iam.gserviceaccount.com"
+PUBLISHER = "swarm-deployer@example-shared-project.iam.gserviceaccount.com"
 PUBLISHER_MEMBER = f"serviceAccount:{PUBLISHER}"
 #: (resource kind, role) -- the whole of what --ci-publisher may grant.
 PUBLISHER_GRANTS = {
@@ -451,7 +451,7 @@ def test_ci_publisher_grants_only_what_is_missing(tmp_path: Path) -> None:
     """A role held by someone else, or another role held by the publisher, is
     not the grant: only the bucket's is in place here."""
     state = _all_exist(**{
-        "repo-iam": _bound("roles/artifactregistry.writer", "serviceAccount:other@example-project.iam.gserviceaccount.com"),
+        "repo-iam": _bound("roles/artifactregistry.writer", "serviceAccount:other@example-shared-project.iam.gserviceaccount.com"),
         "bucket-iam": _bound("roles/storage.objectAdmin"),
         "key-iam": _bound("roles/cloudkms.viewer"),
     })
@@ -483,7 +483,7 @@ def test_ci_publisher_that_can_sign_also_gets_the_key_reader(tmp_path: Path) -> 
     "",
     "someone@example.com",
     "user:someone@example.com",
-    "serviceAccount:swarm-deployer@example-project.iam.gserviceaccount.com",
+    "serviceAccount:swarm-deployer@example-shared-project.iam.gserviceaccount.com",
     "allUsers",
     "ci-runner@example-shared-project.iam.gserviceaccount.com",
 ])

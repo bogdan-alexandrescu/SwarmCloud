@@ -260,7 +260,7 @@ def test_it_runs_only_on_main(event):
 
 
 def test_it_names_no_environment_and_never_prod():
-    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, the owner,
+    # The one environment allowed is `repo-secrets` (REPO-SECRETS-ENV, the owner
     # 2026-10-23): it holds the sandbox token, main only, with no reviewers and
     # no deployment record. It gates nothing; a deploy environment would.
     for job_id, job in _accept()["jobs"].items():
@@ -719,10 +719,12 @@ def test_the_report_script_is_a_script_this_repository_accepts():
 def _without_api_or_swarm_settings() -> dict[str, str]:
     """This process's environment less every API_ and SWARM_ setting, but for
     the placeholder deployment's never-touch list (conftest.py): common.sh
-    reads it for the project as it is sourced, and stops without it."""
+    reads it for the project as it is sourced, and stops without it; and its
+    sandbox, which scripts/acceptance/config.sh has no default for."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("API_", "SWARM_"))}
-    if "SWARM_DEPLOY_CONFIG_DIR" in os.environ:
-        env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
+    for name in ("SWARM_DEPLOY_CONFIG_DIR", "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"):
+        if name in os.environ:
+            env[name] = os.environ[name]
     env["NO_COLOR"] = "1"
     return env
 

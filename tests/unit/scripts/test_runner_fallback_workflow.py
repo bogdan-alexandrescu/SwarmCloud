@@ -1,7 +1,7 @@
 """CI falls back to GitHub-hosted runners on its own, and comes back.
 
-MEASURED 2026-10-17 (part of #1483). runner-dispatcher (in the CI
-runners' project) registers SwarmCloud's runners as the owner's GitHub user.
+MEASURED 2026-10-17 (part of #1483). runner-dispatcher (in the
+runners' own project) registers SwarmCloud's runners as the owner's GitHub user.
 When that user's quota ran out (generate-jitconfig 403 from 02:00 UTC) its
 sweep read `per_target: {swarmcloud: 0}` and every pull request's checks
 stayed queued for hours, until SELF_HOSTED_CI was set to `off` by hand.
@@ -39,7 +39,7 @@ WORKFLOW = REPO / ".github" / "workflows" / "runner-fallback.yml"
 CI_DOC = REPO / "docs" / "ci.md"
 
 NOW = datetime(2026, 10, 17, 5, 30, tzinfo=timezone.utc)
-POOL = ["self-hosted", "linux", "x64", "swarm-ci"]
+POOL = ["self-hosted", "linux", "x64", "example-ci"]
 
 
 def _load() -> dict:
@@ -142,7 +142,7 @@ def test_the_docs_describe_the_fallback():
 # --- The decision, run from the workflow's own script ------------------------
 
 
-CFG = {"POOL_LABEL": "swarm-ci", "QUEUED_MINUTES": "10", "RECOVER_MINUTES": "15", "HYSTERESIS_MINUTES": "30"}
+CFG = {"POOL_LABEL": "example-ci", "QUEUED_MINUTES": "10", "RECOVER_MINUTES": "15", "HYSTERESIS_MINUTES": "30"}
 
 
 def _iso(minutes_ago: float) -> str:

@@ -263,11 +263,11 @@ def test_a_test_named_outside_a_continuation_is_not_historic_red():
 
 def test_a_fix_commit_after_the_first_red_run_adds_the_test_files_it_edited():
     commits = [
-        {"sha": "1" * 40, "parents": ["0" * 40], "author": "an-operator", "date": "2026-10-12T08:30:00+00:00",
+        {"sha": "1" * 40, "parents": ["0" * 40], "author": "owner", "date": "2026-10-12T08:30:00+00:00",
          "files": ["apps/x.py", "tests/unit/x/test_before.py"]},
-        {"sha": "2" * 40, "parents": ["1" * 40], "author": "an-operator", "date": "2026-10-12T09:30:00+00:00",
+        {"sha": "2" * 40, "parents": ["1" * 40], "author": "owner", "date": "2026-10-12T09:30:00+00:00",
          "files": ["apps/x.py", "tests/unit/x/test_fixed.py", "apps/swarm-ui/src/A.test.tsx"]},
-        {"sha": "3" * 40, "parents": ["2" * 40, "9" * 40], "author": "an-operator",
+        {"sha": "3" * 40, "parents": ["2" * 40, "9" * 40], "author": "owner",
          "date": "2026-10-12T09:40:00+00:00", "files": ["tests/unit/x/test_from_main.py"]},
     ]
     tests = cr.historic_red_tests(_body(), commits=commits, first_red_at="2026-10-12T09:00:00Z")

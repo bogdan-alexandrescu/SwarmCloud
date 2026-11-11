@@ -14,7 +14,7 @@
 #       Write the accept list the gate reads (below, gate_ignores) to
 #       <out.yaml>, for the workflow's SARIF scan to pass as --ignorefile:
 #       the code-scanning alerts then honour the same entries, and the same
-#       expiry, as the gate (BGD, 2026-11-05, #2688). Prints the count kept.
+#       expiry, as the gate (the owner, 2026-11-05, #2688). Prints the count kept.
 #
 # WHY. Measured on PR 1186 (2026-10-12, #1194): editing Dockerfile FROM lines
 # made the PR's scan report "new" alerts that already existed on main,
@@ -44,7 +44,7 @@
 set -euo pipefail
 
 # This script touches no project: it compares trivy reports of the checkout. It says so, so common.sh
-# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# (no default project, the Day One project-defaults lane) does not stop on an unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -103,7 +103,7 @@ GATE_ACCEPTED_PATH="apps/swarm-speech/uv.lock"
 
 # gate_ignores IN OUT -- write to OUT the entries of IN whose paths name
 # GATE_ACCEPTED_PATH and nothing else and whose expired_at is after today,
-# each as written; print how many. BGD, 2026-11-05 (#2688): the repository
+# each as written; print how many. The owner, 2026-11-05 (#2688): the repository
 # gate accepts swarm-speech's pinned lockfile findings, and every other
 # acceptance in the list -- the agent CLIs', the vendor Go binaries' -- stays
 # the image scans' alone, as it was before the gate read the list at all. An

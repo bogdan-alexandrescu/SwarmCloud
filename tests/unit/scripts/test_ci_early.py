@@ -131,7 +131,7 @@ def _run(run_id: int, event: str, conclusion: str | None, status: str = "complet
         ([_run(1, "push", "failure"), _run(2, "pull_request", "success")], "failed"),
         # The lane push's run passed; the pull request's run is red.
         ([_run(1, "push", "success"), _run(2, "pull_request", "failure")], "failed"),
-        # ONE event, a flake re-run green: the re-run replaces it (owner,
+        # ONE event, a flake re-run green: the re-run replaces it (the owner,
         # 2026-10-22). Under the every-run rule this read "failed" (#1999).
         ([_run(1, "push", "failure"), _run(2, "push", "success")], "green"),
         # ONE event, green and then red: the latest is red.

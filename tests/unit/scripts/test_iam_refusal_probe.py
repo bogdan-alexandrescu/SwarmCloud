@@ -884,7 +884,7 @@ def test_no_step_prints_the_project_policy_or_asks_for_a_token(tmp_path):
 # if the condition were broken, the deployer would hold project-wide
 # secrets.setIamPolicy over the other team's secrets until the revert.
 
-SECRET_LISTER = "projects/example-shared-project/roles/swarmSecretLister"
+SECRET_LISTER = "projects/example-project/roles/swarmSecretLister"
 
 
 def test_preflight_stops_when_a_chunk_lists_swarm_secret_lister(tmp_path):

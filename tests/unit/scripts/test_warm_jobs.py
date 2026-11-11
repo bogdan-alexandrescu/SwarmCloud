@@ -171,7 +171,7 @@ def test_warms_each_per_tenant_worker_job_once_with_the_self_test(world):
 
 
 def test_a_deny_listed_name_on_the_command_line_is_refused_and_never_executed(world):
-    # The deny-list is keyed by project (DAYONE-GENERIC-2): it is the list of
+    # The deny-list is keyed by project (the Day One project-defaults lane): it is the list of
     # the project named, where PEER_NAME is another team's. Elsewhere the
     # job-prefix rule below still refuses the name.
     proc = _run(world, PEER_NAME, "swarm-job-acme-mock", PROJECT_ID=_P.SHARED_PROJECT)

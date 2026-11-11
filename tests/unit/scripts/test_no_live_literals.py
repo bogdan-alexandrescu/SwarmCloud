@@ -2,14 +2,14 @@
 
 Lesson 5 of the Day One install (docs/design/day-one/lessons.md): defaults
 named the live project, so a new install inherited the live deployment's
-identity. docs/design/day-one-plan.md section 1.1, lane DAYONE-GENERIC-3.
+identity. docs/design/day-one-plan.md section 1.1, lane the Day One project-defaults lane.
 
 `test_no_runtime_literal` parses every Python file under `apps/*/` and reads
 each `ast.Constant` string -- the values the code holds when it runs.
 Comments are not in the tree and docstrings are skipped, so a comment may
 still mention history. Excluded: tests; `apps/common` (frozen, CLAUDE.md
 rule 1; its literals are contract requests 127 and 128); `apps/swarm-mcp`
-and `apps/swarm-ui` (lanes DAYONE-PLUGIN-1 and DAYONE-GENERIC-4 own them).
+and `apps/swarm-ui` (lanes DAYONE-PLUGIN-1 and the Day One project-defaults lane own them).
 A label or annotation key prefix (`swarm.<domain>/`) is exempt (plan R5:
 renaming a key breaks every live object that matches it).
 

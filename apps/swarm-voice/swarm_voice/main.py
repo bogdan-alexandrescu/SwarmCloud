@@ -99,6 +99,20 @@ Configuration, read once at start (never at import):
   draws cards as the session's person through the session grant. Unset, no
   session offers delegation. Each turn runs Claude Code (`CLAUDE_CODE_BIN`,
   `claude` on PATH) on a pool lease; a full pool is a spoken refusal.
+  The same address is where a Live session's event sink (`ReopenSink`) tells
+  swarm-api the next tier a spent key's reopen holds; unset, no sink is wired
+  and a spent Live key ends the talk after live.REOPEN_SECONDS.
+
+THE REOPEN REACHES THE CONSOLE (docs/design/llm-providers.md §5.3, the owner,
+11 November 2026). live.py emits `voice.tier.reopen` ({tier}) through the
+session's event sink when a spent key's next tier is held. `ReopenSink` is
+that sink: it posts the tier to swarm-api's
+`POST /v1/voice/sessions/{session_id}/reopen` exactly as the planner reaches
+swarm-api (tools_read.SwarmApi: this service's ID token and the session's
+grant, a route on the grant's write list), and swarm-api puts it on the
+session's stream. Every other event the sink is handed -- the sideband's
+transcripts among them -- is dropped here unread: nothing else leaves, and the
+tier is a name, never a key.
 """
 
 from __future__ import annotations
@@ -122,7 +136,8 @@ from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
+from . import tools_read
+from .live import MAX_OFFER_BYTES, REOPEN_EVENT, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
 from .planner import build_planner
 from .plannerlease import FRONT_HOLDER, PlannerAccounts
 from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
@@ -274,6 +289,62 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
     return check
 
 
+#: swarm-api's route for a held next tier (swarm_api/routes/voice.py
+#: `tier_reopen`), on the session grant's write list.
+REOPEN_ROUTE = "/v1/voice/sessions/{session_id}/reopen"
+
+
+class ReopenSink:
+    """A Live session's event sink: tells swarm-api, through the session's
+    grant, the tier a spent key's reopen holds (see THE REOPEN REACHES THE
+    CONSOLE). Any other event is dropped unread."""
+
+    def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens) -> None:
+        self._http = http
+        self._base = api_base
+        self._id_tokens = id_tokens
+        #: The sessions whose events this sink is handed (`bind`).
+        self._sessions: Sessions | None = None
+
+    def bind(self, sessions: Sessions) -> None:
+        self._sessions = sessions
+
+    def _grant(self, voice_id: str) -> SessionGrant | None:
+        if self._sessions is None:
+            return None
+        session = self._sessions.get(voice_id) \
+            or self._sessions._awaiting.get(voice_id)  # noqa: SLF001 -- a spent session that already ended
+        return session.grant if session is not None else None
+
+    async def __call__(self, voice_id: str, event: dict[str, Any]) -> None:
+        if event.get("type") != REOPEN_EVENT:
+            return
+        tier = event.get("tier")
+        grant = self._grant(voice_id)
+        if not isinstance(tier, str) or grant is None:
+            log.info("voice session %s: no grant, so swarm-api is not told of the next tier", voice_id)
+            return
+        api = tools_read.SwarmApi.for_session(self._http, base_url=self._base, id_tokens=self._id_tokens,
+                                              grant=grant)
+        try:
+            await api._call("POST", REOPEN_ROUTE, REOPEN_ROUTE.format(session_id=grant.session_id),  # noqa: SLF001
+                            json_body={"tier": tier})
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: swarm-api was not told of the %s tier: %s", voice_id, tier, exc)
+            return
+        log.info("voice session %s: swarm-api was told of the %s tier", voice_id, tier)
+
+
+def build_reopen_sink(http: Any) -> ReopenSink | None:
+    """The sink from SWARM_API_URL (and SWARM_API_AUDIENCE, else the URL), the
+    planner's own address; None when it is unset."""
+    base = os.environ.get("SWARM_API_URL", "").strip()
+    if not base:
+        return None
+    audience = os.environ.get("SWARM_API_AUDIENCE", "").strip() or base
+    return ReopenSink(http, api_base=base, id_tokens=tools_read.google_id_tokens(audience))
+
+
 def build_sessions(http: Any) -> Sessions:
     # Every session's account is leased from the quota broker's Voice it pool;
     # without QUOTA_BROKER_URL this raises and the process does not start.
@@ -281,7 +352,13 @@ def build_sessions(http: Any) -> Sessions:
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
     # Each planner turn leases its Claude account through the same broker client.
-    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
+    # A spent key's next tier reaches swarm-api the same way (ReopenSink).
+    sink = build_reopen_sink(http)
+    sessions = Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases),
+                        on_event=sink)
+    if sink is not None:
+        sink.bind(sessions)
+    return sessions
 
 
 def build_texts(http: Any, sessions: Sessions) -> TextSessions:

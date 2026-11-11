@@ -1,6 +1,6 @@
 """The issue forms are forms GitHub will render, and they offer the screens that exist.
 
-Adopted from a peer application on 2026-09-24 at the owner's request: bugs, fixes
+Adopted from a peer application's repository on 2026-09-24 at the owner's request: bugs, fixes
 and improvements are filed through `.github/ISSUE_TEMPLATE/`, and CLAUDE.md's
 "Issues" section holds the rules around them.
 
@@ -744,9 +744,9 @@ def test_an_epic_is_filed_with_no_task_item_in_its_body() -> None:
     the epic is not closeable. A task item the form writes into every epic's
     body therefore makes every epic unclosable by that procedure. Ticked on
     arrival, it also reads as finished work to anyone who trusts the body over
-    the comments -- the failure CLAUDE.md cites from a peer application's #871,
+    the comments -- the failure CLAUDE.md cites from a peer application's repository,
     which closed on its body's index over two live defects the index never
-    listed. That application's own epics (#1399) carry no task item in the body.
+    listed. That repository's own epics carry no task item in the body.
 
     This holds the PROPERTY -- nothing the form submits is a task item -- not
     the shape "has no checkboxes element", so a ticked box smuggled in as a

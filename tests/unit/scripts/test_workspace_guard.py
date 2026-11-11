@@ -44,6 +44,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import placeholder_deployment, write_placeholder_deny_list, write_placeholder_tfvars
+
 REPO = Path(__file__).resolve().parents[3]
 LIB = REPO / "scripts" / "lib"
 GUARD = LIB / "workspace-guard.sh"
@@ -585,14 +587,83 @@ QA_SECRET = "swarm-tenant-u-alice-qa"
 API_EMAIL = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
 
 
-def _kind_expectation(tmp: Path, kind: str) -> dict:
-    env = _env(tmp)
+def _kind_env(tmp: Path, tfvars: dict | None = None) -> dict[str, str]:
+    """_env with the placeholder deployment's list and tfvars (TFVARS, or
+    the settings given), served the way config_fetch reads them offline: a group's or a
+    service's expectation reads its label key's prefix from the tfvars."""
+    config = tmp / "deploy-config"
+    write_placeholder_deny_list(config, "example-project", ["dev"])
+    write_placeholder_tfvars(config, ["dev"], tfvars)
+    (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
+    return _env(tmp, SWARM_DEPLOY_CONFIG_DIR=str(config), XDG_CACHE_HOME=str(tmp / "config-cache"))
+
+
+def _kind_expect(tmp: Path, kind: str, tfvars: dict | None = None) -> tuple[subprocess.CompletedProcess[str], dict]:
+    env = _kind_env(tmp, tfvars)
     assert _guard("init", "--workspace-id", WORKSPACE, env=env).returncode == 0
     record = tmp / f"record-{kind}.json"
     record.write_text(json.dumps(CASE_DOC["kind_records"][kind]))
     done = _guard("expect", "--record", str(record), env=env)
+    return done, json.loads(Path(env["SWARM_CALL_GUARD"]).read_text())
+
+
+def _kind_expectation(tmp: Path, kind: str) -> dict:
+    done, exp = _kind_expect(tmp, kind)
     assert done.returncode == 0, done.stderr
-    return json.loads(Path(env["SWARM_CALL_GUARD"]).read_text())
+    return exp
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_group_or_service_expectation_names_the_deployments_label_key(tmp_path: Path, kind: str) -> None:
+    # The key C7 admits a job-made Namespace by is <label prefix>/workspace, the
+    # prefix the deployment's tfvars give: swarm.<its first allowed domain>.
+    # MUTATION: write a literal key into the guard and this fails.
+    exp = _kind_expectation(tmp_path, kind)
+    assert exp["namespace_label_key"] == f"swarm.{placeholder_deployment.TFVARS['allowed_domains'][0]}/workspace"
+
+
+def _unlabelled_namespace_refusal(tmp: Path, drop_key: bool) -> tuple[subprocess.CompletedProcess[str], dict]:
+    done, exp = _kind_expect(tmp, "group")
+    assert done.returncode == 0, done.stderr
+    assert exp.get("namespace_label") and exp.get("namespace_label_key"), sorted(exp)
+    if drop_key:
+        exp.pop("namespace_label_key")
+    env = _kind_env(tmp)
+    Path(env["SWARM_CALL_GUARD"]).write_text(json.dumps(exp))
+    manifest = f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {exp['namespace']}\n"
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=env, stdin=manifest)
+    assert out.returncode == REFUSED and "rule C7" in out.stderr, out.stderr
+    return out, exp
+
+
+def test_an_unlabelled_team_namespace_is_refused_without_printing_the_configured_key(tmp_path: Path) -> None:
+    # The key comes from the deployment's tfvars; the refusal names the label
+    # value the image expects, never the deployment's key.
+    # MUTATION: print \($key) in the reason and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=False)
+    assert exp["namespace_label_key"] not in out.stderr, out.stderr
+
+
+def test_an_expectation_without_a_label_key_refuses_with_one_fixed_sentence(tmp_path: Path) -> None:
+    # MUTATION: interpolate the namespace into the refusal and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=True)
+    assert "the expectation names no namespace label key, so no team Namespace can be admitted" in out.stderr
+    assert exp["namespace"] not in out.stderr, out.stderr
+
+
+def test_a_team_expectation_is_refused_when_the_deployment_names_no_label_prefix(tmp_path: Path) -> None:
+    # Neither label_prefix nor allowed_domains: the key is unknown, so no
+    # expectation is written, rather than one judged against a guessed key.
+    done, exp = _kind_expect(tmp_path, "group", {"platform_owner": "owner@example.com"})
+    assert done.returncode != 0 and "label key cannot be read" in done.stderr, done.stderr
+    assert exp["phase"] == "bootstrap", "an expectation was written"
+
+
+def test_a_personal_expectation_reads_no_label_key(ready: dict[str, str]) -> None:
+    # A person's namespace carries no workspace label, so its expectation needs
+    # no tfvars and names no key.
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    assert "namespace_label_key" not in exp and "namespace_label" not in exp, sorted(exp)
 
 
 def test_a_personal_expectation_names_its_qa_secret_and_swarm_api(ready: dict[str, str]) -> None:

@@ -1,9 +1,9 @@
 """oracle-api submits work as a tenant of its own (#1568).
 
 OWNER DECISION 2026-10-18. The orchestrating client application runs as the
-service account `oracle-api@<project>.iam.gserviceaccount.com` and is
+service account `oracle-api@example-project.iam.gserviceaccount.com` and is
 admitted as a tenant of its own, the way swarm-verify is (u-sw-c90291), and
-NEVER as a member of the eng group (eng@<domain>): eng's tenant decides eng's worker account,
+NEVER as a member of eng@example.com: eng's tenant decides eng's worker account,
 provider keys, GCS prefix and namespace (invariant 9), and a client
 application's work has no business holding any of them.
 
@@ -12,7 +12,7 @@ Three places have to agree for that to hold, and each is checked here:
   * the front door: IAP admits the account (`frontend_iap_members` in
     terraform/bootstrap/terraform.tfvars, which the owner applies himself --
     the committed line is the record of that apply);
-  * swarm-api: ALLOWED_USERS admits the account past the org domain
+  * swarm-api: ALLOWED_USERS admits the account past the example.com domain
     check (terraform/infra/locals.tf appends var.allowed_users, which
     dev.tfvars sets to the account since DAYONE-TF-1);
   * the tenant: dev.tfvars declares the id the frozen identity module gives
@@ -41,6 +41,7 @@ from .test_verify_identity_grants import (
     BOOTSTRAP_TFVARS,
     LOCALS_TF,
     _string_list,
+    _allowed_domain,
     _strip_comments,
     _verify_identity,
 )
@@ -161,7 +162,7 @@ def test_the_account_is_in_no_group_tenant_and_holds_no_admin_reach() -> None:
         f"exactly its own, {tenant_id_for_user(ORACLE_API)}"
     )
     eng = _tenants()["eng"]
-    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]).startswith("eng@")
+    assert _unquote(eng["kind"]) == "group" and _unquote(eng["principal"]) == f"eng@{_allowed_domain()}"
     for listing in ("admin_users", "admin_pool_users", "secret_admin_members"):
         members = {m.lower().split(":", 1)[-1] for m in _string_list(DEV_TFVARS, listing)}
         assert ORACLE_API not in members, f"{listing} names {ORACLE_API}"
@@ -173,10 +174,8 @@ def test_the_bootstrap_admits_the_account_at_the_front_door() -> None:
         f"frontend_iap_members is {members}; IAP answers 403 'Access denied. "
         f"For user {ORACLE_API}' before swarm-api ever sees the request"
     )
-    # Adding the client must not have replaced anybody already admitted: the
-    # org domain (eng's group lives in it) and swarm-verify.
-    org_domain = _unquote(_tenants()["eng"]["principal"]).split("@", 1)[1]
-    assert f"domain:{org_domain}" in members
+    # Adding the client must not have replaced anybody already admitted.
+    assert f"domain:{_allowed_domain()}" in members
     assert f"serviceAccount:{_verify_identity()}" in members
 
 
@@ -193,7 +192,7 @@ def test_swarm_api_admits_the_account_beside_swarm_verify() -> None:
     allowed = _string_list(DEV_TFVARS, "allowed_users")
     assert ORACLE_API in allowed, (
         f"dev.tfvars allowed_users is {allowed}; swarm-api answers {ORACLE_API} "
-        "403 on the org domain check until it is listed"
+        "403 on the example.com domain check until it is listed"
     )
     # The account alone: nothing else rides in with it.
     assert allowed == [ORACLE_API], allowed

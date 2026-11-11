@@ -237,7 +237,7 @@ def test_only_a_masked_jwt_where_only_this_credential_goes_is_counted_as_it() ->
     masked = credential[:mcp.JWT_KEPT] + mcp.MASK
     # Every Google ID token's header starts the same, so its masked form is
     # every such token's: on its own it names no credential.
-    assert mcp.fake_id_token(AUD, "other@example-project.iam.gserviceaccount.com")[:mcp.JWT_KEPT] \
+    assert mcp.fake_id_token(AUD, "other@example-shared-project.iam.gserviceaccount.com")[:mcp.JWT_KEPT] \
         == credential[:mcp.JWT_KEPT]
     loose = [f"Authorization: Bearer {masked}", f'{{"token": "{masked}"}}']
     tied = [f'{{"mcp_credentials": {{"acc-echo": "{masked}"}}}}',

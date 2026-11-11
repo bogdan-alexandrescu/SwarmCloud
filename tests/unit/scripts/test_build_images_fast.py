@@ -1,5 +1,5 @@
 """Main's image build reuses what a commit did not change, starts the slowest
-image first, and builds swarm-speech on its previous image's layers (owner,
+image first, and builds swarm-speech on its previous image's layers (the owner,
 2026-11-06: unblock CI so more merges and deploys happen overnight).
 
 MEASURED that morning from Cloud Build: on main's newest commit `build

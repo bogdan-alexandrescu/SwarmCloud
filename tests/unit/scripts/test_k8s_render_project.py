@@ -39,6 +39,8 @@ placeholder_deployment = _PLACEHOLDERS.deployment()
 
 #: A project id built at runtime, so no test reads as naming a real one.
 PROJECT = f"k8s-render-{secrets.token_hex(4)}"
+#: A deployment's project, which a render for PROJECT must never name (the old default).
+LIVE_PROJECT = _PLACEHOLDERS.PROJECT
 _GUARD_SPEC = importlib.util.spec_from_file_location(
     "swarm_guards_deployment_values", REPO / "scripts" / "guards" / "deployment_values.py"
 )
@@ -111,7 +113,7 @@ def test_project_is_required() -> None:
     """A namespace and RBAC render for a cluster, with no --project, exits 2.
 
     It rendered the live project's scheduler and reconciler into every tenant
-    namespace of any project (render.py's `--project` had a default), and apply.sh's
+    namespace of any project (render.py's default for `--project`), and apply.sh's
     tenant mode passed no project.
     """
     uids = ("--scheduler-uid", _uid(), "--reconciler-uid", _uid())
@@ -252,7 +254,8 @@ def test_policies_unchanged_without_project() -> None:
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert _docs(out), "policies rendered nothing"
-    # MUTATION: put a live project back as the default of policies' --project.
+    # MUTATION: put `default="example-project"` back on policies' --project.
+    assert LIVE_PROJECT not in out
     projects = set(re.findall(r"@([a-z0-9-]+)\.iam\.gserviceaccount\.com", out))
     assert projects == {_load().OFFLINE_PROJECT}, projects
     assert "google" in _load().OFFLINE_PROJECT  # a restricted string in a GCP project id
