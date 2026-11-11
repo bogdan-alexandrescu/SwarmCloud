@@ -24,7 +24,7 @@ import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
-import { CountNote, FailedPanel, Screen, timeAgo } from './Shell'
+import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { linkRefusal, redeemSetupLink } from './SetupLink'
@@ -184,12 +184,17 @@ const EMPTY_UI: Persisted = { chosen: null, refresh: {}, reauth: {}, signin: { k
  * flow that proves nothing.
  */
 /**
- * `title` and `nav` are LLM Providers' (LlmProviders.tsx): on Plans this board's
- * head IS the page's one head (qa.head Q2/Q10), so it carries the tab's name,
- * these topics and the refresh, and the Plans | API Keys strip comes first
- * under it, before the count. Alone (a test), it is still "Accounts".
+ * `title`, `info` and `nav` are LLM Providers' (LlmProviders.tsx): on Plans this
+ * board's head IS the page's one head (qa.head Q2/Q10), so it carries the tab's
+ * name, its (i), these topics and the refresh, and `Screen` draws the Plans |
+ * API Keys strip under it in every read state, before the count. Alone (a
+ * test), it is still "Accounts".
  */
-export function AccountsScreen({ title = 'Accounts', nav }: { title?: string; nav?: ReactNode } = {}) {
+export function AccountsScreen({
+  title = 'Accounts',
+  info,
+  nav,
+}: { title?: string; info?: ReactNode; nav?: ReactNode } = {}) {
   // Bumping this remounts Screen, which re-runs `load`. Every mutation here
   // changes what the table says, so every mutation reloads rather than patching
   // a local copy -- a table edited client-side after a write is a table that
@@ -253,13 +258,14 @@ export function AccountsScreen({ title = 'Accounts', nav }: { title?: string; na
       // "Move the topics behind the page's one ?"). They were the `Reading
       // this screen:` footer under the pool; see ACCOUNT_TOPICS.
       help={ACCOUNT_TOPICS}
+      info={info}
+      nav={nav}
       load={load}
       // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
       // never remounts the screen under a sign-in in progress.
       pollMs={capacityPoll(ACCOUNTS_POLL_MS)}
-      // With a strip, the count goes under it (below), not over it.
-      summary={nav === undefined ? (b) => <SummaryLine board={b} /> : undefined}
+      summary={(b) => <SummaryLine board={b} />}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its
        * children, so an empty pool would hide the add form -- the single
@@ -269,28 +275,18 @@ export function AccountsScreen({ title = 'Accounts', nav }: { title?: string; na
        */
     >
       {(b) => (
-        <>
-          {nav !== undefined && (
-            <>
-              {nav}
-              <CountNote>
-                <SummaryLine board={b} />
-              </CountNote>
-            </>
-          )}
-          {/* `acct-page`: the Accounts section's own scope, which draws no box
-              (styles/capacity.css). The squared dashed side of the `partial`
-              mark is written against it, so it applies here and on Provider
-              quota and nowhere else (QA-049, owner 2026-10-20). */}
-          <div className="acct-page">
-            <Body
-              board={b}
-              ui={ui}
-              patch={patch}
-              reload={() => setNonce((n) => n + 1)}
-            />
-          </div>
-        </>
+        // `acct-page`: the Accounts section's own scope, which draws no box
+        // (styles/capacity.css). The squared dashed side of the `partial`
+        // mark is written against it, so it applies here and on Provider
+        // quota and nowhere else (QA-049, owner 2026-10-20).
+        <div className="acct-page">
+          <Body
+            board={b}
+            ui={ui}
+            patch={patch}
+            reload={() => setNonce((n) => n + 1)}
+          />
+        </div>
       )}
     </Screen>
   )

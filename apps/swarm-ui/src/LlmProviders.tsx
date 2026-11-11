@@ -87,18 +87,19 @@ export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
   // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
   // (qa.head Q2/Q10): on Plans the board's own head is the page's, titled
   // "LLM Providers", with the board's refresh, its age and its topics behind
-  // the one `?` (VQ-033: they were the old Accounts page's), and the strip
-  // first in its body. `Screen` draws no (i), so the tab's (i) sits by the
-  // strip there; API Keys reads nothing and draws the head itself, (i) by the
-  // title.
+  // the one `?` (VQ-033: they were the old Accounts page's). `Screen` draws
+  // the tab's (i) by the title and the strip under the head in every read
+  // state (the owner's answer of 11 November 2026), so both show while the
+  // board loads and after its read failed. API Keys reads nothing and draws
+  // the head itself, (i) by the title, the same placement.
   if (sub === 'plans') {
     return (
       <AccountsScreen
         title="LLM Providers"
+        info={INFO}
         nav={
           <div className="cap-seg">
             <SubPages sub={sub} />
-            {INFO}
           </div>
         }
       />

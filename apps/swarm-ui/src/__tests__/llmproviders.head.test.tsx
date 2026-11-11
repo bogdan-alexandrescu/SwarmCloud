@@ -82,10 +82,10 @@ function board(accounts: PoolAccount[]): Result<AccountsBoard> {
 function oneStripOneInfo() {
   const strips = screen.getAllByRole('navigation', { name: 'LLM Providers' })
   expect(strips).toHaveLength(1)
-  expect(within(strips[0]).getAllByRole('link').map((a) => a.textContent)).toEqual(['Plans', 'API Keys'])
+  expect(within(strips[0]!).getAllByRole('link').map((a) => a.textContent)).toEqual(['Plans', 'API Keys'])
   const infos = screen.getAllByRole('button', { name: 'About LLM Providers' })
   expect(infos).toHaveLength(1)
-  expect(infos[0].closest('.c-phead .head')?.querySelector('h1')?.textContent).toBe('LLM Providers')
+  expect(infos[0]!.closest('.c-phead .head')?.querySelector('h1')?.textContent).toBe('LLM Providers')
   expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['LLM Providers'])
 }
 

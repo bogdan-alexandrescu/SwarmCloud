@@ -19,13 +19,15 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 
 // The plan board is Accounts.tsx's; its own tests hold it. A stand-in here
 // keeps this file about the tab, not about the board's reads. On Plans the
-// board's head is the page's one head and the strip comes first in its body
-// (`nav`), so the stand-in draws the head it is given and then the strip.
+// board's head is the page's one head, with the tab's (i) (`info`), and the
+// strip right under it (`nav`), so the stand-in draws what it is given in that
+// order; llmproviders.head.test.tsx holds the real board's every read state.
 vi.mock('../Accounts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../Accounts')>()),
-  AccountsScreen: ({ title, nav }: { title?: string; nav?: ReactNode }) => (
+  AccountsScreen: ({ title, info, nav }: { title?: string; info?: ReactNode; nav?: ReactNode }) => (
     <>
       <h1>{title}</h1>
+      {info}
       {nav}
       <p data-testid="plan-board">plan board</p>
     </>
