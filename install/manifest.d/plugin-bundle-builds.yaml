@@ -1,0 +1,73 @@
+# The two bootstrap rows a managed plugin's bundle build needs (docs/design/managed-plugins.md
+# sections 1.4.2 and 15.2): terraform/bootstrap/plugin_bundle_builds.tf gives swarm-api
+# roles/iam.serviceAccountUser on swarm-plugin-bundler alone, and a custom role of
+# cloudbuild.builds.create and cloudbuild.builds.get, so swarm-api may start a bundle build
+# that runs as the builder and read its status. terraform/infra/plugin-bundles.tf leaves both
+# out (its WHAT IS NOT HERE): the release deployer may neither set the builder's IAM policy
+# nor define a custom role. Planned always: bootstrap has no builtins_managed switch, and
+# with it off no swarm-api path starts a build.
+# Both are applied by bootstrap pass 1, which applies the whole root on a fresh install.
+version: 1
+entries:
+- id: role.custom.swarmPluginBuildStarter
+  kind: custom-role
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam roles describe swarmPluginBuildStarter --project=$P
+  apply: terraform/bootstrap/plugin_bundle_builds.tf resource "google_project_iam_custom_role" "plugin_build_starter" (unconditional, always created)
+  verify: 'permissions: cloudbuild.builds.create and cloudbuild.builds.get only'
+  explain: Lets swarm-api start a managed plugin's bundle build and read its status (section 1.4.3); not roles/cloudbuild.builds.editor, which also lists, updates and cancels every build in the project.
+  guards: managed-plugins.md sections 1.4.2 and 15.2; the owner's answer of 10 November 2026 (the rows live in terraform/bootstrap)
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/plugin_bundle_builds.tf
+  notes: Nothing in terraform/infra names this role, so it has no order against a release; until it is applied no bundle build can start.
+  step: bootstrap.pass-1
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.plugin_build_starter
+- id: iam-binding.api-plugin-build-starter
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmPluginBuildStarter'
+  apply: terraform/bootstrap/plugin_bundle_builds.tf resource "google_project_iam_member" "plugin_build_starter"
+  verify: swarm-api alone, no condition (Cloud Build evaluates no resource attribute; the bound is actAs on the builder)
+  explain: swarm-api's only Cloud Build right; a build it starts runs as an account it may act as, and it acts as swarm-plugin-bundler for this.
+  guards: NOT VERIFIED LIVE per file; read the project's default build account (gcloud builds get-default-service-account) before applying
+  secret_entry: null
+  depends_on:
+  - role.custom.swarmPluginBuildStarter
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/plugin_bundle_builds.tf
+  notes: null
+  step: bootstrap.pass-1
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.plugin_build_starter
+- id: iam-binding.api-acts-as-plugin-bundler
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts get-iam-policy swarm-plugin-bundler@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/plugin_bundle_builds.tf resource "google_service_account_iam_member" "api_acts_as_plugin_bundler"
+  verify: swarm-api holds roles/iam.serviceAccountUser on swarm-plugin-bundler, on that account only
+  explain: Cloud Build checks actAs on the account a build runs as; swarm-api's bundle builds run as swarm-plugin-bundler, which holds only plugin-bundles.tf's grants.
+  guards: never project-wide
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/plugin_bundle_builds.tf
+  notes: null
+  step: bootstrap.pass-1
+  refs:
+    terraform:
+    - bootstrap/google_service_account_iam_member.api_acts_as_plugin_bundler

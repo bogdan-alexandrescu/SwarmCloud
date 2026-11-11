@@ -42,13 +42,19 @@
 #     an account's IAM policy needs serviceAccountAdmin on that account, which
 #     the release deployer holds only on the accounts terraform/bootstrap
 #     grants it on (deployer_service_accounts.tf, #334), and this root runs as
-#     the deployer in every release and every install pass. So the row is a
-#     terraform/bootstrap change the owner applies; until it is applied no
-#     bundle build can start, and nothing else here depends on it.
+#     the deployer in every release and every install pass. So the row is
+#     terraform/bootstrap/plugin_bundle_builds.tf's
+#     google_service_account_iam_member.api_acts_as_plugin_bundler, which the
+#     owner applies; until it is applied no bundle build can start, and
+#     nothing else here depends on it.
 #   * swarm-api's right to start a build (cloudbuild.builds.create and get).
 #     roles/cloudbuild.builds.editor is not on the deployer's grantable project
 #     roles, and the narrow role it should be is a custom role, which this root
-#     may not define (tests/terraform/custom_roles_out_of_ci.tftest.hcl).
+#     may not define (tests/terraform/custom_roles_out_of_ci.tftest.hcl). So it
+#     is terraform/bootstrap/plugin_bundle_builds.tf's swarmPluginBuildStarter
+#     (google_project_iam_custom_role.plugin_build_starter, those two
+#     permissions alone) and its grant to swarm-api
+#     (google_project_iam_member.plugin_build_starter), applied by the owner.
 #
 # THE OTHER TEAM'S RESOURCES. Nothing here names one: one account, two
 # repositories, all spelled from name_prefix; the grants are on those two
