@@ -113,6 +113,7 @@ from .routes import voice
 from .routes import voice_readback
 from .routes import voice_settings
 from .routes import voice_telemetry
+from .routes import voice_trace
 from .routes import voice_visuals
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
@@ -668,6 +669,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # days and live, read by a Voice it person or an admin, a platform view
     # by an admin alone.
     app.include_router(voice_telemetry.router)
+    app.include_router(voice_trace.write_router)
+    app.include_router(voice_trace.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

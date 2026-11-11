@@ -118,7 +118,8 @@ class FakeFronts:
         return object() if voice_id in self.held else None
 
     async def start(self, voice_id: str, *, person: str, grant: Any = None, exists: Any = None,
-                    planner_model: str | None = None, conversation_model: str | None = None) -> Any:
+                    planner_model: str | None = None, conversation_model: str | None = None,
+                    debug: bool = False) -> Any:
         self.starts.append({"voice_id": voice_id, "person": person, "planner_model": planner_model,
                             "conversation_model": conversation_model})
         if exists is not None and exists(voice_id):
