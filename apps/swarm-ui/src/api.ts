@@ -8592,8 +8592,8 @@ export interface ApiKeyLend {
   cap_set?: boolean
 }
 
-/** A key as `account_to_api` serves it: the plan fields plus the key's own (§4.6). Absent: an older broker, said as unknown. */
-export type ApiKeyAccount = ServedAccount & {
+/** A key as `account_to_api` serves it: the plan fields plus the key's own (§4.6), its `lends` in a key's shape rather than a plan's `LendCap`. Absent: an older broker, said as unknown. */
+export type ApiKeyAccount = Omit<ServedAccount, 'lends'> & {
   kind?: 'api_key' | 'plan' | string
   vendor?: string
   pools?: string[]
