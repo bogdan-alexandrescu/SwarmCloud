@@ -27,6 +27,7 @@ PLATFORM_REFUSAL_CODES (the drain test finds an attempt spent).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import secrets
 from datetime import datetime, timezone
@@ -107,7 +108,7 @@ def _record(**overrides: Any) -> dict[str, Any]:
 
 def _with_key(task, key: Any = KEY, **dispatch: Any):
     block = {"plugins": {"bundle": key}, **dispatch}
-    return task.model_copy(update={"metadata": {**(task.metadata or {}), "dispatch": block}})
+    return dataclasses.replace(task, metadata={**(task.metadata or {}), "dispatch": block})
 
 
 class _Bundles:
@@ -165,7 +166,7 @@ def test_a_step_with_no_bundle_key_runs_the_release_image_and_reads_no_bundle(te
 
 def test_a_step_with_an_empty_plugin_set_runs_the_release_image(tenant):
     settings = _settings()
-    task = make_task(PROFILE).model_copy(update={"metadata": {"dispatch": {"plugins": {}}}})
+    task = dataclasses.replace(make_task(PROFILE), metadata={"dispatch": {"plugins": {}}})
     api = _dispatch(settings, tenant, task, _Bundles())
     assert _worker(api)["image"] == LIVE_BASE
 
@@ -290,14 +291,14 @@ def test_the_image_is_never_taken_from_the_caller(tenant):
     settings = _settings()
     forged = f"{REPOSITORY}/{IMAGE}@{_digest()}"
     task = _with_key(make_task(PROFILE), image=forged, worker_image=forged)
-    task = task.model_copy(update={"input": {"image": forged}})
+    task = dataclasses.replace(task, input={"image": forged})
     plugins = dict(task.metadata["dispatch"]["plugins"], image=forged, outputs={IMAGE: forged})
-    task = task.model_copy(update={"metadata": {"dispatch": {**task.metadata["dispatch"], "plugins": plugins}}})
+    task = dataclasses.replace(task, metadata={"dispatch": {**task.metadata["dispatch"], "plugins": plugins}})
     api = _dispatch(settings, tenant, task, _Bundles(_record()))
     assert _worker(api)["image"] == BUNDLE_OUTPUT
 
-    plain = make_task(PROFILE).model_copy(update={"input": {"image": forged},
-                                                  "metadata": {"dispatch": {"image": forged}}})
+    plain = dataclasses.replace(make_task(PROFILE), input={"image": forged},
+                                metadata={"dispatch": {"image": forged}})
     api = _dispatch(settings, tenant, plain, _Bundles(_record()))
     assert _worker(api)["image"] == LIVE_BASE
 
@@ -306,6 +307,8 @@ def test_the_image_is_never_taken_from_the_caller(tenant):
 
 
 def test_the_repository_is_read_from_its_variable(monkeypatch):
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("REGION", REGION)
     monkeypatch.setenv("PLUGIN_BUNDLE_REPOSITORY", f"  {REPOSITORY}  ")
     assert SchedulerSettings.from_env().plugin_bundle_repository == REPOSITORY
     monkeypatch.delenv("PLUGIN_BUNDLE_REPOSITORY")
