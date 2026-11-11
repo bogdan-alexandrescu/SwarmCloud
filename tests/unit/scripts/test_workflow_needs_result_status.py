@@ -57,6 +57,10 @@ def _jobs_reading_a_result() -> list[tuple[str, str, str]]:
 
 JOBS = _jobs_reading_a_result()
 
+# Red until the operator applies the workflow lines (a lane cannot push a
+# workflow file): the fix ships beside this test as workflow-lines.patch.
+PATCH_NOTE = "-- the plugin-tag fix ships as workflow-lines.patch, which the operator pushes by hand"
+
 
 def test_the_jobs_were_found():
     """The test below is parametrised over these; an empty list checks nothing."""
@@ -73,7 +77,7 @@ def test_a_job_reading_a_result_names_a_status_function(workflow: str, job_id: s
     assert _STATUS_FUNCTION.search(condition), (
         f"{workflow} job `{job_id}` reads a `needs.<job>.result` in its `if:` with no status function, "
         "so GitHub ANDs the implicit success(), which is false whenever any job up its needs chain was "
-        f"skipped -- the job is then skipped whatever that result is. Add `!cancelled() && `: {condition}"
+        f"skipped -- the job is then skipped whatever that result is. Add `!cancelled() && `: {condition} {PATCH_NOTE}"
     )
 
 
@@ -87,4 +91,4 @@ def test_plugin_tag_runs_after_a_green_python_on_a_push_to_main():
     assert condition == (
         "!cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' "
         "&& needs.python.result == 'success'"
-    ), condition
+    ), f"{condition} {PATCH_NOTE}"
