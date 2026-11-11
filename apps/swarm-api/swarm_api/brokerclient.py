@@ -308,6 +308,8 @@ class AccountPool(Protocol):
 
     def voice_pool(self, person: str) -> dict[str, Any]: ...
 
+    def voice_it_accounts(self) -> dict[str, Any]: ...
+
 
 def urllib_transport(
     method: str,
@@ -781,6 +783,15 @@ class BrokerClient:
 
     def voice_pool(self, person: str) -> dict[str, Any]:
         return self._call("GET", "/v1/voice/pool", params={"person": person})
+
+    def voice_it_accounts(self) -> dict[str, Any]:
+        """The broker's PLATFORM-WIDE listing (`GET /v1/accounts` with no
+        tenant, which only this service may ask), for Voice it › Settings'
+        dedicated key and chain line: the Voice it pool is the deployment's,
+        not one workspace's. Its rows never carry a key; the caller reduces
+        them to a key's status and each tier's state and answers nothing
+        else, so no workspace's account is named to another."""
+        return self._call("GET", "/v1/accounts")
 
     # ----------------------------------------------------------------- plumbing
 
