@@ -122,6 +122,8 @@ describe('every record state draws its own copy', () => {
     expect(visible(el)).toContain('Your own isolated space to run agents in')
     expect(visible(el)).toContain('Team work is not affected.')
     expect(within(el).getByRole('button', { name: 'Request my workspace' })).toBeTruthy()
+    // The guide's page for a person with no workspace yet.
+    expect(within(el).getByRole('link', { name: 'Start here' }).getAttribute('href')).toBe('/guide/start-here')
     // The anchor the API's setup_url names.
     expect(el.querySelector('#workspace')).not.toBeNull()
   })

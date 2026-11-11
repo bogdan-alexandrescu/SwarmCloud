@@ -2,6 +2,10 @@
 
 Read the pages in this order. Each page is one job, in short numbered steps.
 
+## Before you have a workspace
+
+* [Start here](start-here.md)
+
 ## Get started
 
 1. [What SwarmCloud is](what-is-swarmcloud.md)
