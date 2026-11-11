@@ -29,7 +29,10 @@ describe('Settings › API keys, moved', () => {
   it('keeps the old #settings hashes where they always landed', () => {
     expect(fromAddress('settings')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
-    expect(fromAddress('settings/accounts')).toMatchObject({ sectionId: 'capacity', tab: 'accounts' })
+    // Capacity › Accounts is LLM Providers › Plans since LP-U1, and the old
+    // hash lands there.
+    expect(fromAddress('settings/accounts')).toMatchObject({ sectionId: 'capacity', tab: 'llm-providers' })
+    expect(addressToPath(canonical(fromAddress('settings/accounts')))).toBe('/capacity/llm-providers/plans')
   })
 })
 

@@ -14,9 +14,10 @@
  * form). The side panel carries the same two as LLM Providers' first children
  * (Spine.tsx `PANEL_PAGES`).
  *
- * PLANS IS TODAY'S PLAN BOARD, UNCHANGED: `AccountsScreen` keeps its reads, its
- * head and its own `?account=` / `?view=` addresses until lane LP-U2 moves the
- * board into its own file.
+ * PLANS IS TODAY'S PLAN BOARD: `AccountsScreen` keeps its reads and its own
+ * `?account=` / `?view=` addresses until lane LP-U2 moves the board into its
+ * own file. Its head is the page's one head, titled "LLM Providers", with the
+ * old Accounts page's topics behind its `?`.
  *
  * API KEYS IS AN EMPTY STATE until the broker and swarm-api lanes (LP-B1,
  * LP-A1) ship the key calls: nothing reads keys yet, so there is no read mark
@@ -50,15 +51,18 @@ export function llmProvidersAddress(sub: LlmSubPage): string {
 /** Plans | API Keys, each its own address. */
 function SubPages({ sub }: { sub: LlmSubPage }) {
   return (
-    <div className="cap-seg">
-      <Segmented
-        label="LLM Providers"
-        value={sub}
-        options={LLM_SUB_PAGES.map((s) => ({ key: s, label: SUB_LABEL[s], href: `/${llmProvidersAddress(s)}` }))}
-      />
-    </div>
+    <Segmented
+      label="LLM Providers"
+      value={sub}
+      options={LLM_SUB_PAGES.map((s) => ({ key: s, label: SUB_LABEL[s], href: `/${llmProvidersAddress(s)}` }))}
+    />
   )
 }
+
+/** What the tab is for, behind its (i) (no visible prose, §6.5). */
+const INFO = (
+  <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />
+)
 
 /** API Keys' empty state: no key calls exist yet, so Add key is disabled and its (i) says why. */
 function ApiKeys() {
@@ -80,16 +84,33 @@ function ApiKeys() {
 
 export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
   // HEADED WITH THE TAB'S OWN WORDS (test_nav_headings_agree.py), the strip
-  // under the head as the picked direction and Pools draw it. Plans' board
-  // keeps its own head, with its refresh and its age, until LP-U2 moves it.
+  // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
+  // (qa.head Q2/Q10): on Plans the board's own head is the page's, titled
+  // "LLM Providers", with the board's refresh, its age and its topics behind
+  // the one `?` (VQ-033: they were the old Accounts page's), and the strip
+  // first in its body. `Screen` draws no (i), so the tab's (i) sits by the
+  // strip there; API Keys reads nothing and draws the head itself, (i) by the
+  // title.
+  if (sub === 'plans') {
+    return (
+      <AccountsScreen
+        title="LLM Providers"
+        nav={
+          <div className="cap-seg">
+            <SubPages sub={sub} />
+            {INFO}
+          </div>
+        }
+      />
+    )
+  }
   return (
     <>
-      <PageHead
-        title="LLM Providers"
-        info={<Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />}
-      />
-      <SubPages sub={sub} />
-      {sub === 'plans' ? <AccountsScreen /> : <ApiKeys />}
+      <PageHead title="LLM Providers" info={INFO} />
+      <div className="cap-seg">
+        <SubPages sub={sub} />
+      </div>
+      <ApiKeys />
     </>
   )
 }

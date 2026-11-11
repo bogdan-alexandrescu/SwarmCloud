@@ -88,8 +88,10 @@ describe('V062: the Submit pages ask their own question behind the title `?`', (
 describe('VQ-033 with Q2: a Capacity page’s one head `?` asks the section and lists the page’s topics', () => {
   const PAGES: ReadonlyArray<readonly [string, readonly TopicId[]]> = [
     ['/capacity/pools', ['units-not-agents', 'pools-all-at-once', 'pool-freshness', 'tenant-scope', 'absent-vs-zero']],
+    // The old Accounts page's topics, on the page that now shows its board
+    // (LLM Providers › Plans; `/capacity/accounts` redirects there).
     [
-      '/capacity/accounts',
+      '/capacity/llm-providers/plans',
       [
         'accounts-table-shape',
         'binding-window',

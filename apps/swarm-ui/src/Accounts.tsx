@@ -24,7 +24,7 @@ import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
-import { FailedPanel, Screen, timeAgo } from './Shell'
+import { CountNote, FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { linkRefusal, redeemSetupLink } from './SetupLink'
@@ -183,7 +183,13 @@ const EMPTY_UI: Persisted = { chosen: null, refresh: {}, reauth: {}, signin: { k
  * server-side, keyed by `state`, because a verifier the client holds is a PKCE
  * flow that proves nothing.
  */
-export function AccountsScreen() {
+/**
+ * `title` and `nav` are LLM Providers' (LlmProviders.tsx): on Plans this board's
+ * head IS the page's one head (qa.head Q2/Q10), so it carries the tab's name,
+ * these topics and the refresh, and the Plans | API Keys strip comes first
+ * under it, before the count. Alone (a test), it is still "Accounts".
+ */
+export function AccountsScreen({ title = 'Accounts', nav }: { title?: string; nav?: ReactNode } = {}) {
   // Bumping this remounts Screen, which re-runs `load`. Every mutation here
   // changes what the table says, so every mutation reloads rather than patching
   // a local copy -- a table edited client-side after a write is a table that
@@ -242,7 +248,7 @@ export function AccountsScreen() {
   return (
     <Screen
       key={nonce}
-      title="Accounts"
+      title={title}
       // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26:
       // "Move the topics behind the page's one ?"). They were the `Reading
       // this screen:` footer under the pool; see ACCOUNT_TOPICS.
@@ -252,7 +258,8 @@ export function AccountsScreen() {
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
       // never remounts the screen under a sign-in in progress.
       pollMs={capacityPoll(ACCOUNTS_POLL_MS)}
-      summary={(b) => <SummaryLine board={b} />}
+      // With a strip, the count goes under it (below), not over it.
+      summary={nav === undefined ? (b) => <SummaryLine board={b} /> : undefined}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its
        * children, so an empty pool would hide the add form -- the single
@@ -262,18 +269,28 @@ export function AccountsScreen() {
        */
     >
       {(b) => (
-        // `acct-page`: the Accounts section's own scope, which draws no box
-        // (styles/capacity.css). The squared dashed side of the `partial`
-        // mark is written against it, so it applies here and on Provider
-        // quota and nowhere else (QA-049, owner 2026-10-20).
-        <div className="acct-page">
-          <Body
-            board={b}
-            ui={ui}
-            patch={patch}
-            reload={() => setNonce((n) => n + 1)}
-          />
-        </div>
+        <>
+          {nav !== undefined && (
+            <>
+              {nav}
+              <CountNote>
+                <SummaryLine board={b} />
+              </CountNote>
+            </>
+          )}
+          {/* `acct-page`: the Accounts section's own scope, which draws no box
+              (styles/capacity.css). The squared dashed side of the `partial`
+              mark is written against it, so it applies here and on Provider
+              quota and nowhere else (QA-049, owner 2026-10-20). */}
+          <div className="acct-page">
+            <Body
+              board={b}
+              ui={ui}
+              patch={patch}
+              reload={() => setNonce((n) => n + 1)}
+            />
+          </div>
+        </>
       )}
     </Screen>
   )
