@@ -36,7 +36,8 @@ quick checks. Dispatch is paused and resumed as the person (a platform admin
 signed in with `swarm login`) through `POST /v1/admin/dispatch/{pause,resume}`.
 Kept plugin bundles are rebuilt the same way, as that person: the bundle job
 applied alone through `apply_pass` with `BUNDLE_JOB_ADDRESS` as its one
-target, then `POST /v1/admin/plugin-bundles/rebuild` and each build's
+target, then `POST /v1/admin/plugin-bundles/rebuild` (one build started per
+call, called again after each build) and each build's
 `GET /v1/admin/plugin-bundles/{id}` (managed-plugins.md section 1.4.4).
 
 **The built-ins switch** (`--builtins-managed on|off`; managed-plugins.md

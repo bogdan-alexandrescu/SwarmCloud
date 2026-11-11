@@ -42,8 +42,9 @@ roll back (docs/design/day-one-plan.md §9.3, lane DAYONE-UPGRADE-1, part of
    N", N the bundle records (`plugin_bundles`) retention keeps. With N above
    0 the step first applies the job `swarm-plugin-bundle` alone (a targeted
    infra apply, so the job runs the new release's bundler image and nothing
-   else moves), then asks swarm-api's rebuild route for one build per kept key
-   on the new base and waits for each build in turn, bounded; a build that
+   else moves), then asks swarm-api's rebuild route, which starts one build of
+   a kept key on the new base per call, waits for that build, bounded, and
+   asks again until the route has nothing left to start; a build that
    fails refuses the upgrade (`bundle_build_failed`, naming the bundle) before
    anything past the step is applied. With N at 0 the step does nothing.
    Kept bundles with the switch off (no job exists to build them) are refused
@@ -681,7 +682,8 @@ class Upgrade:
 
     def _rebuild_bundles(self, target: str) -> None:
         """Section 1.4.4: the job alone on the new bundler image, then one
-        build per kept key on the new base, each waited for in turn."""
+        build per kept key on the new base, each started by its own call to
+        the rebuild route and waited for before the next."""
         # Read again: a platform admin may have applied an update since the plan.
         bundles = retained_bundles(self.world.documents())
         if not bundles:
@@ -691,20 +693,34 @@ class Upgrade:
         base = bundle_base(self.project, str(self.store.load().region or ""),
                            parse_images_json(self.world.fetch(target, "images.json")))
         self.world.apply_bundle_job(target)
-        for bundle_id in bundles_to_wait_for(self.world.rebuild_bundles(base), base):
-            self.out(f"  plugin bundle {bundle_id}: building on {target}'s images")
+        # The route starts at most one build per call (the owner's pick on
+        # PR #3873's question 1), so it is asked again after each build ends
+        # ready, until it reports nothing new to wait for. Each ready build
+        # takes its key off the route's list and a failed one refuses, so the
+        # calls end; a build reported again is not waited for twice.
+        waited: set[str] = set()
+        while True:
+            fresh = [b for b in bundles_to_wait_for(self.world.rebuild_bundles(base), base) if b not in waited]
+            if not fresh:
+                return
+            for bundle_id in fresh:
+                waited.add(bundle_id)
+                self._wait_for_bundle(target, bundle_id)
 
-            def built(bundle_id: str = bundle_id) -> str:
-                view = self.world.bundle_status(bundle_id)
-                state = view.get("state")
-                if state == "ready":
-                    return "met"
-                if state == "building":
-                    return "waiting"
-                raise UpgradeRefused(bundle_failed(bundle_id, view))
+    def _wait_for_bundle(self, target: str, bundle_id: str) -> None:
+        self.out(f"  plugin bundle {bundle_id}: building on {target}'s images")
 
-            wait_until(f"upgrade.{REBUILD_BUNDLES}", BUNDLE_WAIT, built, clock=self.clock, events=self.events,
-                       on_poll=self.heartbeat, resume="swarm upgrade")
+        def built() -> str:
+            view = self.world.bundle_status(bundle_id)
+            state = view.get("state")
+            if state == "ready":
+                return "met"
+            if state == "building":
+                return "waiting"
+            raise UpgradeRefused(bundle_failed(bundle_id, view))
+
+        wait_until(f"upgrade.{REBUILD_BUNDLES}", BUNDLE_WAIT, built, clock=self.clock, events=self.events,
+                   on_poll=self.heartbeat, resume="swarm upgrade")
 
     def _verify(self) -> None:
         results = self.world.checks()

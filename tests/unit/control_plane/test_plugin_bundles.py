@@ -1016,6 +1016,38 @@ def test_the_rebuild_route_builds_each_retained_key_once_on_the_new_base(world):
     assert _current(w) == w["versions"][(GSTACK, "1.0")]["version_id"]
 
 
+def test_the_rebuild_route_starts_one_build_per_call_and_none_while_one_builds_on_the_base(world):
+    w = world
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    bundle_id = _apply(w, v2).json()["bundle_id"]
+    _push_bundle(w, _built(w, bundle_id)["bundle_id"])
+    assert _status(w, bundle_id).json()["state"] == "ready"
+    # Two kept keys: current (v2) and Roll back's previous (v1).
+    assert len(w["jobs"].runs) == 1
+    nxt = _base("next")
+    first = w["client"].post(f"{routes.BASE}/rebuild", json={"base": nxt}, headers=auth_header("root"))
+    assert first.status_code == 202, first.text
+    assert len(first.json()["started"]) == 1
+    assert [b["bundle_id"] for b in first.json()["building"]] == first.json()["started"]
+    assert len(w["jobs"].runs) == 2
+    # While that build runs on the new base, a second call starts nothing.
+    waiting = w["client"].post(f"{routes.BASE}/rebuild", json={"base": nxt}, headers=auth_header("root"))
+    assert waiting.json()["started"] == []
+    assert len(w["jobs"].runs) == 2
+    _push_bundle(w, first.json()["started"][0])
+    assert _status(w, first.json()["started"][0]).json()["state"] == "ready"
+    second = w["client"].post(f"{routes.BASE}/rebuild", json={"base": nxt}, headers=auth_header("root"))
+    assert len(second.json()["started"]) == 1
+    assert second.json()["started"] != first.json()["started"]
+    assert len(w["jobs"].runs) == 3
+    _push_bundle(w, second.json()["started"][0])
+    assert _status(w, second.json()["started"][0]).json()["state"] == "ready"
+    done = w["client"].post(f"{routes.BASE}/rebuild", json={"base": nxt}, headers=auth_header("root"))
+    assert done.json() == {"started": [], "building": []}
+    assert len(w["jobs"].runs) == 3
+    assert _current(w) == v2
+
+
 def test_the_rebuild_route_refuses_a_base_outside_this_deployment(world):
     w = world
     elsewhere = {image: f"{REGION}-docker.pkg.dev/other-project-1/swarm/{image}@{_digest(image)}"

@@ -653,12 +653,13 @@ RUNNERS = ("agent-runtime-base", "agent-runtime-browser", "agent-runtime-lightpa
 
 class Rebuilding(BundlerRelease):
     """The bundler release, its runner images, and swarm-api's rebuild route:
-    `answer` is the route's reply, `statuses[id]` each read of a bundle's
-    status in turn (the last repeats)."""
+    `answers` are the route's replies, one per call in turn (an empty reply
+    once they run out: nothing left to start), `statuses[id]` each read of a
+    bundle's status in turn (the last repeats)."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.answer: dict[str, Any] = {"started": [], "building": []}
+        self.answers: list[dict[str, Any]] = []
         self.statuses: dict[str, list[dict[str, Any]]] = {}
 
     def fetch(self, version: str, name: str) -> bytes:
@@ -671,7 +672,8 @@ class Rebuilding(BundlerRelease):
 
     def rebuild_bundles(self, base: Mapping[str, str]) -> dict[str, Any]:
         self.calls.append(("rebuild_bundles", dict(base)))
-        return json.loads(json.dumps(self.answer))
+        answer = self.answers.pop(0) if self.answers else {"started": [], "building": []}
+        return json.loads(json.dumps(answer))
 
     def bundle_status(self, bundle_id: str) -> dict[str, Any]:
         self.calls.append(("bundle_status", bundle_id))
@@ -702,12 +704,17 @@ def test_kept_bundles_rebuild_on_the_new_base_one_after_another_before_infra(tmp
     _kept(world)
     other = {**_new_base(), "agent-runtime-base": "us-central1-docker.pkg.dev/x/swarm-images/agent-runtime-base@"
              + digest("old")}
-    world.answer = {"started": ["n1", "n2"],
-                    "building": [{"bundle_id": "n1", "base": _new_base()}, {"bundle_id": "n2", "base": _new_base()},
-                                 # A build a run that stopped here started on the new base: waited for too.
-                                 {"bundle_id": "n0", "base": _new_base()},
-                                 # One on another base is not this upgrade's.
-                                 {"bundle_id": "x9", "base": other}]}
+    # The route starts one build per call; the upgrade waits for it, then asks again.
+    world.answers = [{"started": [],
+                      # A build a run that stopped here started on the new base: waited for first.
+                      "building": [{"bundle_id": "n0", "base": _new_base()},
+                                   # One on another base is not this upgrade's.
+                                   {"bundle_id": "x9", "base": other}]},
+                     {"started": ["n1"], "building": [{"bundle_id": "n1", "base": _new_base()},
+                                                      {"bundle_id": "x9", "base": other}]},
+                     # n0 reported again (a stale read) is not waited for twice.
+                     {"started": ["n2"], "building": [{"bundle_id": "n0", "base": _new_base()},
+                                                      {"bundle_id": "n2", "base": _new_base()}]}]
     world.statuses = {"n1": [{"state": "building"}, {"state": "ready"}], "n2": [{"state": "ready"}],
                       "n0": [{"state": "ready"}]}
     flow, store, lines = make(tmp_path, world)
@@ -715,17 +722,20 @@ def test_kept_bundles_rebuild_on_the_new_base_one_after_another_before_infra(tmp
     assert flow.run(NEW) == ExitCode.OK
     assert "  bundles to rebuild: 2" in lines
     calls = _bundle_calls(world)
-    assert calls[:8] == [("copy_images", NEW), ("apply_bundle_job", NEW), ("rebuild_bundles", _new_base()),
-                         ("bundle_status", "n1"), ("bundle_status", "n1"), ("bundle_status", "n2"),
-                         ("bundle_status", "n0"), ("apply_root", "bootstrap", NEW)]
-    assert ("apply_root", "infra", NEW) in calls[8:]
+    route = ("rebuild_bundles", _new_base())
+    assert calls[:11] == [("copy_images", NEW), ("apply_bundle_job", NEW),
+                          route, ("bundle_status", "n0"),
+                          route, ("bundle_status", "n1"), ("bundle_status", "n1"),
+                          route, ("bundle_status", "n2"),
+                          route, ("apply_root", "bootstrap", NEW)]
+    assert ("apply_root", "infra", NEW) in calls[11:]
     assert ("bundle_status", "x9") not in calls
 
 
 def test_a_failed_rebuild_refuses_the_upgrade_naming_the_bundle_before_infra(tmp_path: Path) -> None:
     world = Rebuilding()
     _kept(world)
-    world.answer = {"started": ["n1", "n2"], "building": []}
+    world.answers = [{"started": ["n1"], "building": []}, {"started": ["n2"], "building": []}]
     world.statuses = {"n1": [{"state": "building"},
                              {"state": "failed", "refusal": {"code": "bundle_manifest_mismatch"}}],
                       "n2": [{"state": "ready"}]}
@@ -735,6 +745,7 @@ def test_a_failed_rebuild_refuses_the_upgrade_naming_the_bundle_before_infra(tmp
         flow.run(NEW)
     assert "bundle_manifest_mismatch" in str(refused.value)
     assert ("bundle_status", "n2") not in world.calls, "the next build is not waited for"
+    assert len([c for c in world.calls if c[0] == "rebuild_bundles"]) == 1, "nor started"
     assert not [c for c in world.calls if c[0] == "apply_root"], "nothing past the rebuild was applied"
     assert world.calls[-1] == ("resume_dispatch",)
     assert store.load().outputs[up.UPGRADE_KEY]["failed"] == up.REBUILD_BUNDLES
@@ -743,7 +754,7 @@ def test_a_failed_rebuild_refuses_the_upgrade_naming_the_bundle_before_infra(tmp
 def test_a_rebuild_that_never_ends_gives_up_before_infra(tmp_path: Path) -> None:
     world = Rebuilding()
     _kept(world)
-    world.answer = {"started": ["n1"], "building": []}
+    world.answers = [{"started": ["n1"], "building": []}]
     world.statuses = {"n1": [{"state": "building"}]}
     flow, store, _ = make(tmp_path, world)
     _switch(store, "on")
@@ -787,7 +798,7 @@ def test_a_bundle_made_after_the_plan_is_rebuilt_before_infra(tmp_path: Path) ->
             self.docs.times[f"{up.BUNDLES_COLLECTION}/late"] = 1
 
     world = Late()
-    world.answer = {"started": ["n1"], "building": []}
+    world.answers = [{"started": ["n1"], "building": []}]
     world.statuses = {"n1": [{"state": "ready"}]}
     flow, store, lines = make(tmp_path, world)
     _switch(store, "on")
