@@ -13,14 +13,23 @@
 //
 // Placeholders only; nothing is token-shaped.
 
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 
-// The plan board is Accounts.tsx's, rendered unchanged; its own tests hold it.
-// A stand-in here keeps this file about the tab, not about the board's reads.
+// The plan board is Accounts.tsx's; its own tests hold it. A stand-in here
+// keeps this file about the tab, not about the board's reads. On Plans the
+// board's head is the page's one head and the strip comes first in its body
+// (`nav`), so the stand-in draws the head it is given and then the strip.
 vi.mock('../Accounts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../Accounts')>()),
-  AccountsScreen: () => <p data-testid="plan-board">plan board</p>,
+  AccountsScreen: ({ title, nav }: { title?: string; nav?: ReactNode }) => (
+    <>
+      <h1>{title}</h1>
+      {nav}
+      <p data-testid="plan-board">plan board</p>
+    </>
+  ),
 }))
 
 const { canonical, fromAddress } = await import('../App')
@@ -99,6 +108,9 @@ describe('Capacity › LLM Providers in the app', () => {
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/capacity/llm-providers/plans', '/capacity/llm-providers/api-keys'])
     expect(within(nav).getByRole('link', { current: 'page' }).textContent).toBe('Plans')
     expect(screen.getByTestId('plan-board')).toBeTruthy()
+    // ONE HEAD (qa.head Q2/Q10): the board's, titled with the tab's name.
+    // MUTATION: draw LlmProviders' own PageHead on Plans too -> two.
+    expect(screen.getAllByRole('heading', { level: 1 }).map((h) => h.textContent)).toEqual(['LLM Providers'])
   })
 
   it('draws API Keys’ empty state, its Add key a disabled button with an (i)', async () => {
