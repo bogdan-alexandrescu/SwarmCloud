@@ -55,7 +55,7 @@ The owner answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.14 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
 | Above the page (2026-11-11) | The session **follows him across the console** in a floating view; a **working card** between replies; the **agents pulled in** listed; the paid voice **pauses after about 15 s** waiting on delegated work and reopens on the result, his voice or Resume | (none; the pause was picked from options) | §3.12 |
-| Projects and cards (2026-11-11) | Projects **keep their state** (in progress, waiting, completed, cancelled, archived) and **resume with a catch-up**; one session **switches between projects**, starts new ones and takes loose tasks; cards **draw by their content**, in **"Cards and a viewer"**: compact cards in the list and a viewer that opens one full size with its actions | (none; the viewer was picked from two mock-up directions) | §3.13 |
+| Projects and cards (2026-11-11) | Projects **keep their state** (in progress, waiting, completed, cancelled, archived) and **resume with a catch-up**; one session **switches between projects**, starts new ones and takes side requests; cards **draw by their content**, in **"Cards and a viewer"**: compact cards in the list and a viewer that opens one full size with its actions | (none; the viewer was picked from two mock-up directions) | §3.13 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus the owner's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
 | Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs the owner | The command deck | §11 |
 
@@ -575,7 +575,7 @@ prefix; another tenant's project is the same 404 as a missing one.
 
 | Collection or path | Holds | Notes |
 |---|---|---|
-| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, state (in progress, waiting, completed, cancelled, archived; §3.13.2) and its `state_history`, the **brief** (goal, decided, open, next; at most 16 KiB; §3.13.3), references (repositories, issues, runs, workflows, agents, schedules), the tag `voice:<project>`, and `standing` for the person's Quick tasks project (§3.13.5) | The resumable memory. On `main` the status is one of active, waiting, shipped, archived and nothing moves it; those old names are read, never rewritten in bulk (§3.13.2) |
+| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, state (in progress, waiting, completed, cancelled, archived; §3.13.2) and its `state_history`, the **brief** (goal, decided, open, next; at most 16 KiB; §3.13.3), references (repositories, issues, runs, workflows, agents, schedules), the tag `voice:<project>`, and `standing` for the person's Side requests project (§3.13.5) | The resumable memory. On `main` the status is one of active, waiting, shipped, archived and nothing moves it; those old names are read, never rewritten in bulk (§3.13.2) |
 | `…/cards/{card}` | The card envelope and body (§4), versioned, and the `outcome` of a person's deciding action (§3.13.8) | Large bodies go to GCS. A card lives under the project that was current when it was first drawn |
 | `…/cards/{card}/actions/{action}` | One person's action on the card: action, arguments, `via` (click or voice), session, card version, state (pending, sent, consumed), the turn that consumed it (§3.13.8) | Idempotent by `action_id` |
 | `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause, and the session's `current_project_id` and `open_project_ids` (§3.13.5) | One live session per person. It stays under its **home** project, the one it started in, whatever project is current |
@@ -1376,17 +1376,17 @@ the grant, writing only the grant's own session:
 | `list_projects(state?)` | The person's projects in the session's tenant: id, title, state, goal's first line, last session; at most 50 | `GET /v1/voice/sessions/{session_id}/projects` (read list) |
 | `switch_project(project_id)` | Makes it current, opening it if needed; a catch-up follows when §3.13.4 says so | `POST /v1/voice/sessions/{session_id}/projects` `{action: switch}` |
 | `start_project(title, goal)` | Creates a new project (`in_progress`, the goal as its brief), opens it and makes it current; the previous one stays open | `{action: start}` |
-| `take_loose_task()` | Makes the person's standing **Quick tasks** project current, creating it on first use | `{action: loose}` |
+| `take_side_request()` | Makes the person's standing **Side requests** project current, creating it on first use | `{action: side}` |
 | `set_project_state(state, why)` | §3.13.2 | `{action: state}` |
 
 A spoken name ("switch to the bakery one") is resolved by the planner over
 `list_projects`; two close matches draw a Details card with the candidates,
-never a guess. **Quick tasks** (question 18) is one project per person and
+never a guess. **Side requests** (question 18) is one project per person and
 workspace, flagged `standing: true`: it is never completed, cancelled or
-archived, is pinned at the top of Projects, and its brief keeps the loose
-tasks' `open` and `decided` like any other. Every card and start therefore
+archived, is pinned at the top of Projects, and its brief keeps the side
+requests' `open` and `decided` like any other. Every card and start therefore
 still has a project, which is what the store, the ledger and the tag key on.
-A loose task that grows ("this is really a project") is moved by
+A side request that grows ("this is really a project") is moved by
 `start_project` plus the planner's next brief change; cards already drawn stay
 where they were drawn.
 
@@ -1588,8 +1588,8 @@ lanes start after §3.12.9's lanes they share a file with (V3 before
 | **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
 | **P2. The brief has a shape and a bound, and the session context serves it** | `swarm_api/voice/brief.py` (new: the shape, the change merge, the bounds, the old `open` items), `swarm_api/routes/voice_context.py` (new: `GET .../context`, `POST .../brief`), `swarm_api/voice/grant.py` (the two routes, after V4), `swarm_api/main.py` (its include line, after P1), `tests/unit/control_plane/test_voice_brief.py` | P1 | A change merges once per `turn_id`; past a bound `open` is 422 and `decided` drops its oldest; a fake key built at runtime in a change is refused naming the field; a follow-up's old item reads as text | the bound (question 15) |
 | **P3. The planner reads its context and saves the brief after every turn** | `swarm_voice/planner.py` (the context read; `speak`'s `brief`; the turn record), `swarm_voice/prompts.py` (the brief's rules and the kind choice table, after V5), `swarm_voice/tools_read.py` (the context read), `tests/unit/voice/test_planner_brief.py` | P2 | With a fake swarm-api: every turn posts one change with its `turn_id`; a failed turn posts none; the system prompt's bytes do not change with the brief | no |
-| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; Quick tasks is created once | the cap and Quick tasks (questions 17, 18) |
-| **P5. The planner switches, opens and starts projects and takes loose tasks by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a loose task goes to Quick tasks | no |
+| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; Side requests is created once | the cap and Side requests (questions 17, 18) |
+| **P5. The planner switches, opens and starts projects and takes side requests by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a side request goes to Side requests | no |
 | **P6. A resumed project opens with a catch-up from stored facts, which the owner can skip** | `swarm_api/voice/catchup.py` (new: the pack), `swarm_api/routes/voice_context.py` (`catchup` in the context, after P2), `swarm_voice/planner.py` (the first turn, after P5), `tests/unit/control_plane/test_voice_catchup.py` | P3, P5 | The pack holds only facts since the last session; ten minutes and nothing changed gives none; a skip still draws the card from the pack | the length (question 16) |
 | **C1. The catalogue names each kind's content, and the new kinds join on both sides** | `swarm_api/voice/cards.py` (`content`; `wireframe`, `code`, `diff`, `document`, `test_results`; diagram types; `mockup_ref`, `frame_ref`, `viewport`; `outcome`; `CATALOGUE_VERSION` 3; after V5), `apps/swarm-ui/src/voice/cards.ts`, `tests/unit/control_plane/test_voice_cards.py` | V5 | Red until both sides name the same kinds, contents and actions, and every content has a renderer or is `generic` | no |
 | **C2. The viewer opens any card full size, and the list draws compact cards from one registry** | `voice/viewer/registry.tsx` (new: `RENDERERS`, the generic viewer), `voice/viewer/Viewer.tsx` (new: the shell, beside, the action foot), `voice/CardList.tsx` (the compact cards, after V9), `styles/voice-viewer.css` (new), `__tests__/voice.viewer.test.tsx` | C1 | An unknown kind draws the generic viewer as text; the action foot shows only the kind's actions; Open beside keeps the first card | no (the pick is made; the code ports `mockups/voice-cards-viewer`) |
@@ -1597,7 +1597,7 @@ lanes start after §3.12.9's lanes they share a file with (V3 before
 | **C4. swarm-voice runs a person's actions as the next planner turn** | `swarm_voice/main.py` (`/internal/sessions/{id}/input`, after V2), `swarm_voice/planner.py` (actions as fenced input, after P6), `tests/unit/voice/test_card_action_turn.py` | C3, P6 | Two actions during a turn ride one next turn; each is marked consumed once; an action's text cannot change the system prompt | no |
 | **C5. Each content type has its renderer** | `voice/viewer/kinds/` (new: options, frames, graph, code, diff, markdown, tests), `__tests__/voice.viewer.kinds.test.tsx` | C2 | A frame's markup is `sandbox=""` with the policy and no other attribute grants anything; a document's `javascript:` link is text; a diff over its bound reads from the blob | no |
 | **C6. Projects shows the states and Talk the open projects** | `voice/Projects.tsx` (states, filter, tooltips, Resume into a live session), `voice/Talk.tsx` (the current project, the switcher; after V7), `__tests__/voice.projects.test.tsx` | P1, P4, P0 | Each state draws its tooltip line; archived is hidden by default; Resume with a live session switches it and writes no `RESUME_KEY` | **mock-up** (P0) |
-| **P7. Projects, the catch-up, a switch and a picked card run end to end on a deployment** | none in the repository: a recorded session on the epic resuming a project with its catch-up, switching to a second, taking a loose task, picking a proposal and a mock-up page, and the project states after a merge | everything | n/a | no |
+| **P7. Projects, the catch-up, a switch and a picked card run end to end on a deployment** | none in the repository: a recorded session on the epic resuming a project with its catch-up, switching to a second, taking a side request, picking a proposal and a mock-up page, and the project states after a merge | everything | n/a | no |
 
 **Invariants.** Nothing here creates infrastructure demand (1): a project's
 state, its brief, a switch and a card action are documents; what a turn
@@ -2000,7 +2000,7 @@ file with another or with a Phase 5 lane, §3.13.9 names the order. C2 ports
 the picked viewer (`mockups/voice-cards-viewer`); C6 waits for the Projects
 mock-up pick (P0). **Phase 6 is done when** the owner resumes a project and
 hears its catch-up, switches to a second project and back by voice, takes a
-loose task, picks a proposal and a mock-up page from the viewer and hears the
+side request, picks a proposal and a mock-up page from the viewer and hears the
 planner act on it, and sees a project move to Completed after its last merge.
 
 **Lanes that wait for the owner:**
@@ -2103,8 +2103,8 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     or the whole catch-up spoken.
 17. **How many projects one session holds open (§3.13.5):** six, the least
     used closing first (recommended); three; or no cap below Projects' 50.
-18. **Where loose tasks go (§3.13.5):** one standing Quick tasks project per
-    person and workspace (recommended); each loose task its own small
+18. **Where side requests go (§3.13.5):** one standing Side requests project per
+    person and workspace (recommended); each side request its own small
     project; or the session alone, with no project.
 19. **Whether a comment starts a planner turn (§3.13.8):** comments ride the
     next turn, and Send on the viewer sends them now (recommended); every
