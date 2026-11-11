@@ -79,6 +79,15 @@ export function thumbIntervalMs(visible: number): number {
   return tier[1]
 }
 
+/**
+ * A USE'S OWN PACE, NEVER FASTER THAN THE TABLE: a page that wants a slower
+ * thumbnail (Home's tiny rows, about one frame a second) passes `paceMs`; the
+ * floor `thumbIntervalMs` picks still holds, so a pace can only slow it.
+ */
+export function pacedIntervalMs(visible: number, paceMs: number = 0): number {
+  return Math.max(paceMs, thumbIntervalMs(visible))
+}
+
 /** The thumbnails on screen now, by mount; each card re-reads the count when it schedules. */
 const onScreen = new Set<object>()
 const onScreenListeners = new Set<() => void>()
@@ -823,11 +832,11 @@ const STATUS_WORD: Record<Status, string> = {
  * for a card that was really running at 5 fps once did. The visible badge
  * stays this short; the longer sentence is the tooltip only (`title={note}`).
  */
-function liveRateWord(visible: number): string {
-  return `live · ≤${Math.round(1000 / thumbIntervalMs(visible))} fps`
+function liveRateWord(visible: number, paceMs: number): string {
+  return `live · ≤${Math.round(1000 / pacedIntervalMs(visible, paceMs))} fps`
 }
-function liveRateNote(visible: number): string {
-  const fps = Math.round(1000 / thumbIntervalMs(visible))
+function liveRateNote(visible: number, paceMs: number): string {
+  const fps = Math.round(1000 / pacedIntervalMs(visible, paceMs))
   return `The live view of this step’s browser, at most ${fps} frames a second. Open the Browser tab for the full view.`
 }
 
@@ -844,12 +853,15 @@ export function LiveThumb({
   workflowId,
   open = openLiveSocket,
   frame = null,
+  paceMs = 0,
 }: {
   taskId: string
   workflowId: string | null
   open?: OpenLive
   /** The device shape to draw in (`ThumbFrame`); null keeps the host's box. */
   frame?: ThumbFrame | null
+  /** This use's floor between requests (`pacedIntervalMs`); 0 keeps the table's. */
+  paceMs?: number
 }) {
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const failures = useRef(0)
@@ -870,6 +882,8 @@ export function LiveThumb({
   const frameWidth = frame === null ? null : frameCssWidth(frame)
   const frameAsk = useRef(frameWidth)
   frameAsk.current = frameWidth
+  const pace = useRef(paceMs)
+  pace.current = paceMs
   useEffect(() => {
     const card = {}
     setOnScreen(card, inView)
@@ -930,7 +944,7 @@ export function LiveThumb({
         const t = setTimeout(fn, ms)
         return () => clearTimeout(t)
       },
-      minIntervalMs: () => thumbIntervalMs(thumbsOnScreen()),
+      minIntervalMs: () => pacedIntervalMs(thumbsOnScreen(), pace.current),
       paused: () => !shown.current,
       onError: () => finish(),
     })
@@ -986,8 +1000,8 @@ export function LiveThumb({
     }
   }, [taskId, open, generation])
 
-  const word = status === 'live' ? liveRateWord(visible) : STATUS_WORD[status]
-  const note = status === 'live' ? liveRateNote(visible) : STATUS_NOTE[status]
+  const word = status === 'live' ? liveRateWord(visible, paceMs) : STATUS_WORD[status]
+  const note = status === 'live' ? liveRateNote(visible, paceMs) : STATUS_NOTE[status]
 
   return (
     // A FIXED BOX: `.wf-live` fills the node's `.node-live` slot, whose height

@@ -12,8 +12,9 @@
  *                      requests a platform admin may decide, agents waiting
  *                      for this person at a browser, and their own runs that
  *                      failed today
- *   Your work          their agents holding capacity now, and what of theirs
- *                      waits and why (waiting costs nothing: invariant 1)
+ *   Your work          two lists, their agents and their workflows in
+ *                      progress (HomeWorkLists.tsx); a waiting agent says why
+ *                      in its dot's tooltip (waiting costs nothing: invariant 1)
  *   Recently finished  their agents that ended
  *   Start, Your workspaces, This workspace   the side column
  *
@@ -28,7 +29,7 @@
  * read and a member's refusal draw no Requests at all, since neither may
  * decide one.
  */
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react'
 import {
   answerQuestion,
   approveApproval,
@@ -49,11 +50,12 @@ import {
   type LiveSession,
 } from './api'
 import { approvalAddress } from './Approvals'
-import { Button, ButtonLink, Card, CardLink, Chip, StatTile, type TileValue } from './components'
+import { Button, ButtonLink, Card, CardLink, StatTile, type TileValue } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { handoffOf, humanReady, needsYou, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { LiveControl } from './LiveBrowser'
-import { LiveThumb, browserTabPath, showsLiveThumb } from './LiveThumb'
+import { WorkLists } from './HomeWorkLists'
+import { browserTabPath } from './LiveThumb'
 import { doneCount, SetupCard, stepRequired } from './Onboarding'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
@@ -418,7 +420,15 @@ export function HomeScreen({ now: fixedNow }: { now?: number } = {}) {
               </p>
             )}
           </Card>
-          <YourWork running={running} waiting={waiting} now={now} />
+          <WorkLists
+            mine={mine}
+            questions={questions}
+            now={now}
+            round={round}
+            why={waitWhy}
+            onDone={done}
+            head={(count, action) => <Head title="Your work" count={count} why="Your agents and workflows in progress. Waiting work holds no capacity." action={action} />}
+          />
           <RecentlyFinished mine={mine} now={now} />
         </div>
         <aside className="hm-col hm-rail">
@@ -840,64 +850,7 @@ function TakeControl({ taskId }: { taskId: string }) {
   return <LiveControl taskId={taskId} session={session} reload={() => void read(true)} takeOnly />
 }
 
-// ---------------------------------------------------------------- your work
-
-function YourWork({ running, waiting, now }: { running: Task[] | null; waiting: Task[] | null; now: number }) {
-  const groups = useMemo(() => {
-    const g = new Map<string, number>()
-    for (const t of waiting ?? []) g.set(waitWhy(t), (g.get(waitWhy(t)) ?? 0) + 1)
-    return [...g.entries()].sort((a, b) => b[1] - a[1])
-  }, [waiting])
-  const shown = (running ?? []).slice(0, 6)
-  return (
-    <Card id="home-work">
-      <Head
-        title="Your work"
-        count={running === null ? null : running.length}
-        why="Your agents holding capacity now: leased, dispatched, starting or running. A running browser agent shows its live browser; any other shows its step. What of yours waits holds no capacity."
-        action={<CardLink href={addressToPath('work/running/live')}>All running</CardLink>}
-      />
-      <div className="hm-work">
-        {shown.map((t) => (
-          <div key={t.id} className="hm-workcard">
-            {showsLiveThumb(t.runner_profile, t.state, t.id) ? (
-              <LiveThumb taskId={t.id} workflowId={t.workflow_id} />
-            ) : (
-              <div className="hm-thumb">
-                <span>no live browser</span>
-                <b>{t.step_id ?? t.runner_profile}</b>
-              </div>
-            )}
-            <a className="hm-workcard-title hm-ellipsis" href={agentPath(t)}>
-              {titleOf(t)} <Tid id={t.id} />
-            </a>
-            <span className="hm-workcard-meta">
-              <StateDot state={t.state} />
-              <span>{age(t.started_at ?? t.created_at, now)}</span>
-            </span>
-          </div>
-        ))}
-        {running !== null && running.length === 0 && <p className="hm-empty">Nothing of yours is running.</p>}
-        {running === null && <p className="hm-dash">— your tasks not read yet</p>}
-      </div>
-      <div className="hm-why-row">
-        <span className="hm-why-label">Waiting, and why</span>
-        {waiting === null ? (
-          <span className="hm-dash">— your tasks not read yet</span>
-        ) : groups.length === 0 ? (
-          <span className="hm-meta">nothing of yours waits</span>
-        ) : (
-          groups.map(([w, n]) => (
-            <Chip key={w} href={addressToPath('work/running/waiting')}>
-              {n} for {w}
-            </Chip>
-          ))
-        )}
-        <span className="hm-meta">waiting costs nothing</span>
-      </div>
-    </Card>
-  )
-}
+// ---------------------------------------------------------------- recently finished
 
 function RecentlyFinished({ mine, now }: { mine: Task[] | null; now: number }) {
   const ended = mine === null ? null : mine.filter((t) => FINISHED.has(t.state)).slice(0, 5)
