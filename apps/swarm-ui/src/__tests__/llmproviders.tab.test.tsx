@@ -4,7 +4,7 @@
 // WHAT EACH CASE HOLDS:
 //   * Plans is `/capacity/llm-providers/plans` and API Keys
 //     `/capacity/llm-providers/api-keys`, both ways, and each renders its
-//     sub-page under the sub-page control: Plans the plan board, API Keys its
+//     sub-page under the sub-page control: Plans the plans table, API Keys its
 //     empty state with Add key disabled behind an (i);
 //   * the old `/capacity/accounts` lands on Plans with its `?account=` kept,
 //     in the router and in the app's bar;
@@ -17,19 +17,19 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 
-// The plan board is Accounts.tsx's; its own tests hold it. A stand-in here
-// keeps this file about the tab, not about the board's reads. On Plans the
-// board's head is the page's one head, with the tab's (i) (`info`), and the
-// strip right under it (`nav`), so the stand-in draws what it is given in that
-// order; llmproviders.head.test.tsx holds the real board's every read state.
-vi.mock('../Accounts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../Accounts')>()),
-  AccountsScreen: ({ title, info, nav }: { title?: string; info?: ReactNode; nav?: ReactNode }) => (
+// The plans table is LlmPlans.tsx's; llmplans.test.tsx holds it. A stand-in
+// here keeps this file about the tab, not about the table's reads. On Plans
+// the table's head is the page's one head, with the tab's (i) (`info`), and
+// the strip right under it (`nav`), so the stand-in draws what it is given in
+// that order; llmproviders.head.test.tsx holds the real page's every read state.
+vi.mock('../LlmPlans', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../LlmPlans')>()),
+  LlmPlansScreen: ({ title, info, nav }: { title?: string; info?: ReactNode; nav?: ReactNode }) => (
     <>
       <h1>{title}</h1>
       {info}
       {nav}
-      <p data-testid="plan-board">plan board</p>
+      <p data-testid="plan-board">plans table</p>
     </>
   ),
 }))
@@ -95,7 +95,7 @@ describe('Capacity › LLM Providers in the app', () => {
     render(<App />)
   }
 
-  it('rewrites /capacity/accounts?account= to Plans, the account kept, and draws the plan board', async () => {
+  it('rewrites /capacity/accounts?account= to Plans, the account kept, and draws the plans table', async () => {
     await open('/capacity/accounts?account=eng%3Ab')
     await waitFor(() => expect(window.location.pathname).toBe('/capacity/llm-providers/plans'))
     expect(window.location.search).toBe('?account=eng%3Ab')

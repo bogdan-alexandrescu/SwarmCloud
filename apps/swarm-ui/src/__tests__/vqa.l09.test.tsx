@@ -88,21 +88,9 @@ describe('V062: the Submit pages ask their own question behind the title `?`', (
 describe('VQ-033 with Q2: a Capacity page’s one head `?` asks the section and lists the page’s topics', () => {
   const PAGES: ReadonlyArray<readonly [string, readonly TopicId[]]> = [
     ['/capacity/pools', ['units-not-agents', 'pools-all-at-once', 'pool-freshness', 'tenant-scope', 'absent-vs-zero']],
-    // The old Accounts page's topics, on the page that now shows its board
-    // (LLM Providers › Plans; `/capacity/accounts` redirects there).
-    [
-      '/capacity/llm-providers/plans',
-      [
-        'accounts-table-shape',
-        'binding-window',
-        'no-amber-band',
-        'unreadable-documents',
-        'skipped-for-this-tenant',
-        'refresh-token-required',
-        'advisory-vs-lease',
-        'never-assigned-pool',
-      ],
-    ],
+    // LLM Providers › Plans (`/capacity/accounts` redirects there): the old
+    // Accounts page's topics that still describe the plans table.
+    ['/capacity/llm-providers/plans', ['binding-window', 'refresh-token-required', 'advisory-vs-lease']],
     [addressToPath('capacity/quota'), ['provider-quota-states', 'quota-row-fields', 'quota-document-absent', 'absent-vs-zero']],
   ]
 

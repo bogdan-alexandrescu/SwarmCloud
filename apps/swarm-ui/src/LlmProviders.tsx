@@ -14,18 +14,18 @@
  * form). The side panel carries the same two as LLM Providers' first children
  * (Spine.tsx `PANEL_PAGES`).
  *
- * PLANS IS TODAY'S PLAN BOARD: `AccountsScreen` keeps its reads and its own
- * `?account=` / `?view=` addresses until lane LP-U2 moves the board into its
- * own file. Its head is the page's one head, titled "LLM Providers", with the
- * old Accounts page's topics behind its `?`.
+ * PLANS IS THE PICKED TABLE (lane LP-U2, LlmPlans.tsx): the plans grouped by
+ * vendor, a line per lend under its plan, and every plan control in a side
+ * sheet; `?account=` opens that plan's Manage sheet. Its head is the page's
+ * one head, titled "LLM Providers".
  *
  * API KEYS IS AN EMPTY STATE until the broker and swarm-api lanes (LP-B1,
  * LP-A1) ship the key calls: nothing reads keys yet, so there is no read mark
  * claiming one succeeded, and Add key is a disabled button whose (i) says why.
  * No visible prose (§6.5): each explanation is a tooltip behind an (i).
  */
-import { AccountsScreen } from './Accounts'
 import { Info } from './AccountsVerdict'
+import { LlmPlansScreen } from './LlmPlans'
 import { PageHead } from './Shell'
 import { Button, Segmented } from './components'
 
@@ -85,16 +85,15 @@ function ApiKeys() {
 export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
   // HEADED WITH THE TAB'S OWN WORDS (test_nav_headings_agree.py), the strip
   // under the head as the picked direction and Pools draw it. ONE HEAD A PAGE
-  // (qa.head Q2/Q10): on Plans the board's own head is the page's, titled
-  // "LLM Providers", with the board's refresh, its age and its topics behind
-  // the one `?` (VQ-033: they were the old Accounts page's). `Screen` draws
-  // the tab's (i) by the title and the strip under the head in every read
-  // state (the owner's answer of 11 November 2026), so both show while the
-  // board loads and after its read failed. API Keys reads nothing and draws
-  // the head itself, (i) by the title, the same placement.
+  // (qa.head Q2/Q10): on Plans the table's `Screen` head is the page's,
+  // titled "LLM Providers", with its refresh and its age. `Screen` draws the
+  // tab's (i) by the title and the strip under the head in every read state
+  // (the owner's answer of 11 November 2026), so both show while the plans
+  // load and after their read failed. API Keys reads nothing and draws the
+  // head itself, (i) by the title, the same placement.
   if (sub === 'plans') {
     return (
-      <AccountsScreen
+      <LlmPlansScreen
         title="LLM Providers"
         info={INFO}
         nav={
