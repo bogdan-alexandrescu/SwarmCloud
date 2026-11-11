@@ -47,7 +47,7 @@ import { colour, contrast, over, probe, resolveSheet, resolveVars, tokenTables, 
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 // The deployment's engine as Settings reads it: GPT-Live unless a test names another; 'pending' is a read not answered yet.
-const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: 'gpt-live' as string | null }))
+const fetchMock = vi.hoisted(() => ({ write: vi.fn(), engine: 'gpt-live' as string | null, debug: false }))
 const vadMock = vi.hoisted(() => ({
   start: vi.fn(),
   setMic: vi.fn(),
@@ -88,7 +88,7 @@ vi.mock('../fetch', async (importOriginal) => {
       target.url === '/v1/voice/settings' && fetchMock.engine === 'pending'
         ? new Promise(() => undefined)
         : target.url === '/v1/voice/settings' && fetchMock.engine !== null
-          ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine } }, fetchedAt: Date.now() })
+          ? Promise.resolve({ status: 'ok', data: { settings: { engine: fetchMock.engine, debug: fetchMock.debug } }, fetchedAt: Date.now() })
           : actual.read(target, ...rest)) as typeof actual.read,
   }
 })
@@ -1060,4 +1060,69 @@ describe('the Talk pane on our own speech', () => {
     })
   })
 
+})
+
+// ---- debug mode: the turn line ------------------------------------------------
+//
+// While Settings' Debug is on, each `trace.turn` event on the session's stream
+// (swarm-api voice/stream.py) draws the turn's line under the Stage: its
+// number, the cards drawn and refused, and why nothing was drawn. Off, no line.
+//
+// MUTATIONS: draw the line with debug off; keep the first turn's line; drop
+// the refused count or the no-cards reason; read the stream twice.
+
+describe("debug mode's turn line on Talk", () => {
+  beforeEach(() => {
+    FakeEventSource.all = []
+    vi.stubGlobal('EventSource', FakeEventSource)
+    apiMock.fixtures = false
+    answerStarts()
+    installMedia({ audioContext: true })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    fetchMock.write.mockReset()
+    fetchMock.debug = false
+  })
+
+  const turnLine = (): HTMLElement | null => screen.queryByRole('group', { name: 'Last planner turn' })
+
+  it('draws each trace.turn event as the line under the Stage while debug is on', async () => {
+    fetchMock.debug = true
+    const { container } = render(<TalkPane />)
+    await start()
+    const es = FakeEventSource.last
+    expect(FakeEventSource.all).toHaveLength(1)
+    expect(turnLine()).toBeNull()
+
+    await act(async () => es.frame('trace.turn', 1, { n: 1, drawn: [{ kind: 'work', title: 'Export lane' }, { kind: 'plan', title: 'Waves' }], refused: [{ kind: 'review', title: null, reason: 'the budget is spent' }], none: null }))
+    let line = turnLine()!
+    expect(line.querySelector('.vt-turn-n')?.textContent).toBe('Turn 1')
+    expect(line.querySelector('.vt-turn-out')?.textContent).toBe('2 cards · 1 refused')
+    expect(line.closest('.vt')!.classList.contains('has-turn')).toBe(true)
+    expect(line.textContent).toContain('the budget is spent')
+
+    await act(async () => es.frame('trace.turn', 2, { n: 2, drawn: [], refused: [], none: 'answered_in_words' }))
+    line = turnLine()!
+    expect(line.querySelector('.vt-turn-n')?.textContent).toBe('Turn 2')
+    expect(line.querySelector('.vt-turn-out')?.textContent).toBe('0 cards · answered in words')
+    expect(line.getAttribute('data-outcome')).toBe('none')
+    expect(container.querySelectorAll('.vt-turn')).toHaveLength(1)
+
+    await act(async () => es.frame('trace.turn', 3, { n: 3, drawn: [], refused: [{ kind: 'work', title: 'Lane', reason: 'held' }], none: 'refused' }))
+    expect(turnLine()!.querySelector('.vt-turn-out')?.textContent).toBe('0 cards · 1 refused · all refused')
+    // The turn opens in full on Telemetry: a real button.
+    expect(within(turnLine()!).getByRole('button', { name: 'Trace' })).toBeTruthy()
+  })
+
+  it('draws no line while debug is off, whatever the stream carries', async () => {
+    fetchMock.debug = false
+    const { container } = render(<TalkPane />)
+    await start()
+    const es = FakeEventSource.last
+    await act(async () => es.frame('trace.turn', 1, { n: 1, drawn: [{ kind: 'work', title: 'Export lane' }], refused: [], none: null }))
+    expect(turnLine()).toBeNull()
+    expect(container.querySelector('.vt-turn')).toBeNull()
+    expect(container.querySelector('.vt.has-turn')).toBeNull()
+  })
 })
