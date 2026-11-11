@@ -181,8 +181,8 @@ REFUSALS: dict[str, str] = {
     "bundle_not_found": "That bundle is not one of this deployment's bundles.",
     "bundle_not_retained": "No retained bundle carries the previous version; apply it to build one.",
     "bundle_build_unconfigured": "This deployment has no bundle build configured.",
-    "bundle_grant_missing": "swarm-api may not start a bundle build as the builder account; "
-                            "the builder's grants in bootstrap are not applied yet.",
+    "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; "
+                            "its grants on the job and the bundle repository are not applied yet.",
     "bundle_build_not_started": "The bundle build could not be started.",
     "bundle_build_failed": "The bundle build failed.",
     "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",

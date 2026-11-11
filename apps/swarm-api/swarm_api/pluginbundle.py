@@ -20,54 +20,68 @@ Platform scope only, no tenant.
                 runs on one image), sorted by install id
     key_sha256  the sha256 of the key's JCS: what a step's signed set names
     base        {runner image name: the release image it is built FROM, by digest}
-    bundler     the bundler image the build ran, by digest
+    recipes     {install_id: the recipe digest the job was asked to build with},
+                read back from the release image's own `.swarm-bundle.json`
+    job         the one Cloud Run job it ran (configuration, never a caller's)
+    execution   that job's execution, as `jobs.run` named it
+    execution_read_at  the last `executions.get`, claimed in a transaction
     state       building -> ready | failed; ready -> retired (retention)
-    outputs     {runner image name: the pushed image, by digest}, once ready
-    plugins     {install_id: {tree_sha256, recipe_digest}}, read back from the
-                build's own `.swarm-bundle.json` files, once ready
-    refusal     {code} once failed: a fixed code, never the build's log text
+    outputs     {runner image name: the pushed image, by the digest swarm-api
+                computed from the manifest it read and checked}, once ready
+    plugins     {install_id: {recipe_digest, tree_sha256 per runner image}},
+                each tree digest computed by swarm-api from the layer itself
+    refusal     {code, check} once failed: fixed values, never the job's log text
 
 THE LIFECYCLE (section 1.4.3). An Apply on a bundled install (`start_apply`)
-writes one `building` record and starts one Cloud Build build as the builder
-account; it never moves `current_version`. The finish (`finish`), reached by
-the build status read or by the Cloud Build notification, reads the build from
-Cloud Build itself, never from the notification's body, and in ONE transaction
-marks the record ready and moves the install's `current_version`
+writes one `building` record and runs ONE execution of the Cloud Run job
+`swarm-plugin-bundle` (owner, 11 November 2026: a job under the builder
+account, never Cloud Build), passing only `containerOverrides[0].args` in the
+design's order (`job_args`); it never moves `current_version`. The status read
+(`finish`) reads the record, and calls `executions.get` at most once per bundle
+per READ_EVERY (`_claim_read`); a record still building BUILD_DEADLINE after it
+started is failed `bundle_build_failed` without a call. A succeeded execution
+is ready only after `check_bundle` read every pushed manifest and layer from
+the bundle repository and found them to be the release image plus one layer
+per plugin, under its own root, with the tree its manifest names (and, for
+security-audit, its pinned source's files); then ONE transaction marks the
+record ready and moves the install's `current_version`
 (`PluginStore.move_current`), or marks it failed and moves nothing. Roll back
 (`roll_back`, section 1.4.7) moves `current_version` to the previous version
 at once when a retained ready bundle carries it.
 Both moves first check, in that transaction, that the bundle's whole key is
 the live pair once moved (`_stale_key`); a bundle that is not fails (or is
 refused) `bundle_key_stale`. A building record whose start never recorded
-its build id within START_GRACE is failed `bundle_build_not_started`, so a
+its execution within START_GRACE is failed `bundle_build_not_started`, so a
 lost start never holds later Applies. A ready finish then retires what
 retention no longer keeps (`retire`).
 
-A BUNDLE BUILD IS NOT AN AGENT ATTEMPT (invariant 1). It is a Cloud Build
-build in the deployment's project, outside every pool: it reserves no
-capacity, creates no lease and no pod, and a queued step costs nothing while
-it waits for one. Nothing here sleeps on it (invariant 4): the finish is read
-when it is asked for.
+A BUNDLE BUILD IS NOT AN AGENT ATTEMPT (invariant 1). It is one execution of
+a platform job, outside every pool: it reserves no capacity, creates no lease
+and no pod, and a queued step costs nothing while it waits for one. Nothing
+here sleeps on it (invariant 4): the finish is read when it is asked for.
 
-A MISSING GRANT IS A FIXED CODE. The builder account's IAM rows (swarm-api's
-`serviceAccountUser` on it, and the right to create a build) are bootstrap's,
-applied by the owner (lane 15). Until they are, Cloud Build refuses the start,
-and the Apply answers 503 `bundle_grant_missing` with the record failed under
-the same code, never a 500.
+A MISSING GRANT IS A FIXED CODE. swarm-api's role on the job
+(`swarmPluginBundleRunner`) and its read of the bundle repository are the
+infrastructure lane's. Until they are applied, Cloud Run refuses the run, and
+the Apply answers 503 `bundle_grant_missing` with the record failed under the
+same code, never a 500.
 """
 
 from __future__ import annotations
 
-import base64
+import gzip
 import hashlib
+import io
 import json
 import logging
 import os
 import re
 import secrets
+import tarfile
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Protocol
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -110,30 +124,57 @@ PLUGIN_ROOT = "/opt/swarm/plugins"
 #: Read from the frozen profiles, never restated.
 RUNNER_IMAGES: tuple[str, ...] = tuple(sorted({
     p.image for name, p in RUNNER_PROFILES.items() if name == "claude-code" or name.startswith("claude-code-")}))
-#: gstack's file list per runner image (images/plugin-bundler/recipes/gstack):
-#: the browser image lays its list over the base's; every other image, base.
-GSTACK_LISTS = {"agent-runtime-browser": "browser"}
 
-#: Cloud Build's terminal states, and the ones a build ends well in.
-BUILD_SUCCESS = "SUCCESS"
-BUILD_FAILED = frozenset({"FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED", "EXPIRED"})
-#: The build's own timeout: gstack's setup compiles with Bun, three times.
-BUILD_TIMEOUT = "3600s"
-#: How long a `building` record may go without the build id its start
-#: records. The start is one Cloud Build call; a record still without an id
-#: after this lost its start (a write that failed after the build was
+#: How long a `building` record may go without the execution name its start
+#: records. The start is one Cloud Run call; a record still without a name
+#: after this lost its start (a write that failed after the execution was
 #: created, or a process that died between the two) and is failed
 #: `bundle_build_not_started`, so it cannot hold every later Apply at 409.
 START_GRACE = timedelta(minutes=10)
+#: At most one `executions.get` per bundle per this long (1.4.2's read cap),
+#: the time of the last read claimed on the record in a transaction, so any
+#: number of open pages and reloads make at most one call.
+READ_EVERY = timedelta(seconds=15)
+#: A record still `building` this long after it started is failed
+#: `bundle_build_failed` without a call: the job's own agent timeout is
+#: 3600 seconds, so its execution has ended by then whatever it says.
+BUILD_DEADLINE = timedelta(hours=1)
+
+#: What swarm-api reads from the registry, each bounded: a manifest or a
+#: config, and one layer (1.4.2: a cap of 512 MiB per layer).
+MANIFEST_CAP = 4 * 1024 * 1024
+LAYER_CAP = 512 * 1024 * 1024
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
+OCI_LAYER = "application/vnd.oci.image.layer.v1.tar"
+OCI_LAYER_GZIP = "application/vnd.oci.image.layer.v1.tar+gzip"
+DOCKER_LAYER_GZIP = "application/vnd.docker.image.rootfs.diff.tar.gzip"
+LAYER_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: The one whiteout a plugin's layer may hold: the opaque marker on its own
+#: folder, which hides the release's older copy.
+OPAQUE = ".wh..wh..opq"
+#: The manifest each built tree carries (images/plugin-bundler/swarm-bundle).
+MANIFEST_NAME = ".swarm-bundle.json"
+#: security-audit's validators, the part of its source the layer must equal.
+AUDIT_SKILL = "skills/security-audit"
+
+#: The closed patterns of the job's arguments (1.4.2), the entrypoint's own.
+ARG_NAME = re.compile(r"^[a-z0-9-]{1,63}$")
+ARG_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+ARG_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: An execution of a job, as Cloud Run names it.
+EXECUTION = re.compile(r"^projects/[a-z][a-z0-9-]{4,61}[a-z0-9]/locations/[a-z0-9-]+/jobs/[a-z][a-z0-9-]{0,62}"
+                       r"/executions/[a-z0-9][a-z0-9-]{0,62}$")
 
 # Configuration. Read only here, each `(os.environ if environ is None else
 # environ).get(...)`, the shape scripts/lib/check-env-parity.sh matches.
 REPOSITORY_ENV = "PLUGIN_BUNDLE_REPOSITORY"
-BUNDLER_ENV = "SWARM_PLUGIN_BUNDLER_IMAGE"
+#: The job's name (`swarm-plugin-bundle`, terraform/infra/plugin-bundles.tf),
+#: set by the infrastructure lane beside the repository.
+JOB_ENV = "PLUGIN_BUNDLE_JOB"
 BASE_ENV = "WORKER_IMAGE_REFS"
 PLUGINS_BUCKET_ENV = "SWARM_PLUGINS_BUCKET"
-#: The builder account terraform/bootstrap creates (plugin-bundles.tf reads it).
-BUILDER_ACCOUNT = "swarm-plugin-bundler"
+JOB_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
 
 # --- configuration -----------------------------------------------------------
@@ -144,28 +185,14 @@ class BundleSettings:
     project: str
     region: str
     repository: str
-    bundler: str
+    job_name: str
     base: Mapping[str, str]
     plugins_bucket: str
 
     @property
-    def builder(self) -> str:
-        return f"{BUILDER_ACCOUNT}@{self.project}.iam.gserviceaccount.com"
-
-    @property
-    def prefix(self) -> str:
-        match = REPOSITORY.match(self.repository)
-        return match.group(3) if match else ""
-
-    @property
-    def npm_registry(self) -> str:
-        """The deployment's npm mirror (plugin-bundles.tf, Q19)."""
-        return f"https://{self.region}-npm.pkg.dev/{self.project}/{self.prefix}-mirror-npm/"
-
-    @property
-    def mirror_bucket(self) -> str:
-        """Bun's pinned zip (build_mirror.tf's bucket)."""
-        return f"{self.prefix}-build-mirror-{self.project}"
+    def job(self) -> str:
+        """The one job swarm-api may run, in this deployment's region."""
+        return f"projects/{self.project}/locations/{self.region}/jobs/{self.job_name}"
 
 
 def ref_ok(ref: Any, project: str, region: str) -> bool:
@@ -195,7 +222,7 @@ def bundle_settings(project: str, region: str, environ: Mapping[str, str] | None
     when any part is missing or not this deployment's: a build is started
     from configuration alone, never from a caller's words (invariant 10)."""
     repository = (os.environ if environ is None else environ).get(REPOSITORY_ENV, "").strip()
-    bundler = (os.environ if environ is None else environ).get(BUNDLER_ENV, "").strip()
+    job_name = (os.environ if environ is None else environ).get(JOB_ENV, "").strip()
     refs = (os.environ if environ is None else environ).get(BASE_ENV, "").strip()
     bucket = (os.environ if environ is None else environ).get(PLUGINS_BUCKET_ENV, "").strip()
     match = REPOSITORY.match(repository)
@@ -204,62 +231,86 @@ def bundle_settings(project: str, region: str, environ: Mapping[str, str] | None
     except ValueError:
         base = None
     if not (project and region and match and match.group(1) == region and match.group(2) == project
-            and bucket and ref_ok(bundler, project, region)):
+            and bucket and JOB_NAME.match(job_name)):
         raise ps.PluginRefused("bundle_build_unconfigured", status=503)
     try:
         checked = check_base(base, project, region)
     except ps.PluginRefused:
         raise ps.PluginRefused("bundle_build_unconfigured", status=503) from None
-    return BundleSettings(project=project, region=region, repository=repository, bundler=bundler,
+    return BundleSettings(project=project, region=region, repository=repository, job_name=job_name,
                           base=checked, plugins_bucket=bucket)
 
 
-# --- Cloud Build -------------------------------------------------------------
+# --- the job, the registry and the sources ---------------------------------------
 
 
 class GrantMissing(Exception):
-    """Cloud Build refused the caller (401/403): a grant is not applied."""
+    """Cloud Run or the registry refused swarm-api (401/403): a grant is not applied."""
 
 
 class BuildNotStarted(Exception):
-    """Cloud Build answered anything else; the status code only, never its text."""
+    """Cloud Run answered anything else; the status code only, never its text."""
 
 
-class BundleBuilds(Protocol):
-    def start(self, build: Mapping[str, Any]) -> str: ...
+class RegistryUnavailable(Exception):
+    """The registry or the bucket could not be read now; the status code only.
+    The record stays `building` and the next read tries again."""
 
-    def get(self, build_id: str) -> Mapping[str, Any] | None: ...
+
+class BundleJobs(Protocol):
+    def run(self, job: str, args: list[str]) -> str: ...
+
+    def get(self, execution: str) -> Mapping[str, Any] | None: ...
 
 
-class CloudBuildBundleBuilds:
-    """`projects.locations.builds` create and get, in this deployment's region."""
+class BundleRegistry(Protocol):
+    def manifest(self, image: str, reference: str) -> bytes | None: ...
 
-    def __init__(self, project: str, region: str) -> None:
-        self._base = f"https://cloudbuild.googleapis.com/v1/projects/{project}/locations/{region}/builds"
+    def blob(self, image: str, digest: str, cap: int) -> BinaryIO: ...
+
+
+class BundleSources(Protocol):
+    def source(self, source_sha256: str) -> BinaryIO | None: ...
+
+
+def _session() -> Any:
+    import google.auth
+    from google.auth.transport.requests import AuthorizedSession
+
+    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    return AuthorizedSession(credentials)
+
+
+class CloudRunBundleJobs:
+    """The Cloud Run Admin API's `jobs.run` (with overrides) and
+    `executions.get`: the two calls swarm-api's role on the job allows."""
+
+    API = "https://run.googleapis.com/v2"
+
+    def __init__(self) -> None:
         self._session: Any = None
 
     def _s(self) -> Any:
         if self._session is None:
-            import google.auth
-            from google.auth.transport.requests import AuthorizedSession
-
-            credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-            self._session = AuthorizedSession(credentials)
+            self._session = _session()
         return self._session
 
-    def start(self, build: Mapping[str, Any]) -> str:
-        answer = self._s().post(self._base, json=dict(build), timeout=30)
+    def run(self, job: str, args: list[str]) -> str:
+        """One execution of `job`, overriding only the one container's
+        arguments: never `env`, never a second container."""
+        body = {"overrides": {"containerOverrides": [{"args": list(args)}]}}
+        answer = self._s().post(f"{self.API}/{job}:run", json=body, timeout=30)
         if answer.status_code in (401, 403):
             raise GrantMissing(answer.status_code)
         if answer.status_code >= 300:
             raise BuildNotStarted(answer.status_code)
-        build_id = ((answer.json().get("metadata") or {}).get("build") or {}).get("id")
-        if not isinstance(build_id, str) or not build_id:
+        name = (answer.json().get("metadata") or {}).get("name")
+        if not isinstance(name, str) or not EXECUTION.match(name) or not name.startswith(job + "/executions/"):
             raise BuildNotStarted(answer.status_code)
-        return build_id
+        return name
 
-    def get(self, build_id: str) -> Mapping[str, Any] | None:
-        answer = self._s().get(f"{self._base}/{build_id}", timeout=30)
+    def get(self, execution: str) -> Mapping[str, Any] | None:
+        answer = self._s().get(f"{self.API}/{execution}", timeout=30)
         if answer.status_code == 404:
             return None
         if answer.status_code in (401, 403):
@@ -270,62 +321,103 @@ class CloudBuildBundleBuilds:
         return found if isinstance(found, Mapping) else None
 
 
-#: The fetch step: the pins file and the mirror folder the recipes read.
-#: Runs in the bundler image (python3, no extra tool), with the builder's own
-#: token from the metadata server, reading only the two objects it names. The
-#: pins file is the image's release pins with each plugin's version and
-#: source replaced by the bundle key's, so the toolchain stays the release's.
-_FETCH = r"""
-import json, sys, urllib.parse, urllib.request
-spec = json.loads(sys.argv[1])
-meta = urllib.request.Request(
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-    headers={"Metadata-Flavor": "Google"})
-grant = json.load(urllib.request.urlopen(meta, timeout=30))
-headers = {"Authorization": grant["token_type"] + " " + grant["access_token"]}
-def fetch(bucket, name, to):
-    import os
-    url = ("https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/"
-           + urllib.parse.quote(name, safe="") + "?alt=media")
-    request = urllib.request.Request(url, headers=headers)
-    os.makedirs(os.path.dirname(to), exist_ok=True)
-    with urllib.request.urlopen(request, timeout=300) as got, open(to, "wb") as out:
-        while True:
-            chunk = got.read(1 << 20)
-            if not chunk:
+class _Capped(io.RawIOBase):
+    """A blob read as it arrives: refused past `cap` bytes, and refused at
+    its end unless its sha256 is the digest it was asked for."""
+
+    def __init__(self, chunks: Iterable[bytes], digest: str, cap: int) -> None:
+        self._chunks = iter(chunks)
+        self._digest = digest
+        self._cap = cap
+        self._hash = hashlib.sha256()
+        self._size = 0
+        self._left = b""
+        self._done = False
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while not self._left and not self._done:
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                self._done = True
+                if "sha256:" + self._hash.hexdigest() != self._digest:
+                    raise CheckFailed("blob_digest")
                 break
-            out.write(chunk)
-pins = json.load(open("/opt/swarm-bundler/bundled-plugins.json"))
-for name, plugin in spec["plugins"].items():
-    pins["plugins"][name].update({"version": plugin["version"], "source": plugin["source"]})
-    fetch(spec["sources_bucket"], plugin["object"], "/workspace/mirror/" + plugin["source"]["object"])
-    for tool in (pins["plugins"][name].get("toolchain") or {}).values():
-        fetch(spec["mirror_bucket"], tool["object"], "/workspace/mirror/" + tool["object"])
-json.dump(pins, open("/workspace/pins.json", "w"), indent=2, sort_keys=True)
-"""
-
-#: The last step: each built tree's manifest, as the build's step output
-#: (4 KiB, base64 in `results.buildStepOutputs`), the one place swarm-api
-#: reads the tree digests from. The build log is never read.
-_REPORT = r"""
-import json, os, sys
-images = json.loads(sys.argv[1])
-found = {}
-for image in images:
-    folder = "/workspace/out/" + image
-    for name in sorted(n for n in os.listdir(folder) if os.path.isdir(folder + "/" + n)):
-        manifest = json.load(open("/workspace/out/" + image + "/" + name + "/.swarm-bundle.json"))
-        found.setdefault(manifest["install_id"], {})[image] = {
-            "source_sha256": manifest["source"]["sha256"], "recipe_digest": manifest["recipe"]["digest"],
-            "tree_sha256": manifest["tree"]["sha256"]}
-json.dump(found, open(os.environ["BUILDER_OUTPUT"] + "/output", "w"), sort_keys=True, separators=(",", ":"))
-"""
+            self._size += len(chunk)
+            if self._size > self._cap:
+                raise CheckFailed("blob_too_large")
+            self._hash.update(chunk)
+            self._left = chunk
+        count = min(len(buffer), len(self._left))
+        buffer[:count] = self._left[:count]
+        self._left = self._left[count:]
+        return count
 
 
-def _version_label(version: Mapping[str, Any]) -> str:
-    label = str(((version.get("manifest") or {}).get("version")) or "")
-    commit = str((version.get("source") or {}).get("commit") or "")
-    return label if re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$", label) else commit
+class ArtifactRegistryReader:
+    """The Docker registry API of Artifact Registry, as a reader of the
+    repositories: a manifest by tag or digest, a blob by digest."""
+
+    ACCEPT = ", ".join((OCI_MANIFEST, DOCKER_MANIFEST))
+
+    def __init__(self) -> None:
+        self._session: Any = None
+
+    def _s(self) -> Any:
+        if self._session is None:
+            self._session = _session()
+        return self._session
+
+    @staticmethod
+    def _url(image: str, kind: str, reference: str) -> str:
+        host, _, path = image.partition("/")
+        return f"https://{host}/v2/{path}/{kind}/{reference}"
+
+    def manifest(self, image: str, reference: str) -> bytes | None:
+        answer = self._s().get(self._url(image, "manifests", reference), headers={"Accept": self.ACCEPT},
+                               timeout=30, stream=True)
+        if answer.status_code == 404:
+            return None
+        if answer.status_code in (401, 403):
+            raise GrantMissing(answer.status_code)
+        if answer.status_code >= 300:
+            raise RegistryUnavailable(answer.status_code)
+        body = b""
+        for chunk in answer.iter_content(1 << 16):
+            body += chunk
+            if len(body) > MANIFEST_CAP:
+                raise CheckFailed("manifest_too_large")
+        return body
+
+    def blob(self, image: str, digest: str, cap: int) -> BinaryIO:
+        answer = self._s().get(self._url(image, "blobs", digest), timeout=300, stream=True)
+        if answer.status_code in (401, 403):
+            raise GrantMissing(answer.status_code)
+        if answer.status_code == 404:
+            raise CheckFailed("blob_missing")
+        if answer.status_code >= 300:
+            raise RegistryUnavailable(answer.status_code)
+        return io.BufferedReader(_Capped(answer.iter_content(1 << 20), digest, cap), 1 << 20)
+
+
+class GcsBundleSources:
+    """The pinned source archives swarm-api's intake finish wrote
+    (`platform/sources/<sha256>.tar` in the plugins bucket)."""
+
+    def __init__(self, bucket: str, project: str) -> None:
+        self._name = bucket
+        self._project = project
+        self._bucket: Any = None
+
+    def source(self, source_sha256: str) -> BinaryIO | None:
+        if self._bucket is None:
+            from google.cloud import storage  # lazy: no client at import
+
+            self._bucket = storage.Client(project=self._project).bucket(self._name)
+        blob = self._bucket.get_blob(source_object(source_sha256))
+        return None if blob is None else blob.open("rb")
 
 
 def source_object(source_sha256: str) -> str:
@@ -333,56 +425,306 @@ def source_object(source_sha256: str) -> str:
     return f"platform/sources/{source_sha256}.tar"
 
 
-def build_request(bundle_id: str, config: BundleSettings, base: Mapping[str, str],
-                  versions: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """The Cloud Build build for one bundle: fetch, one recipe run per plugin
-    and runner image, one image per runner image `FROM` its base by digest,
-    pushed as `<repository>/<image>:<bundle_id>`, and the manifests' digests
-    as the last step's output. Every value is the deployment's or a MAC'd
-    record's; nothing comes from a caller."""
-    spec = {"sources_bucket": config.plugins_bucket, "mirror_bucket": config.mirror_bucket, "plugins": {}}
-    for install_id, version in sorted(versions.items()):
-        sha = version["source_sha256"]
-        spec["plugins"][PLUGIN_OF[install_id]] = {
-            "object": source_object(sha), "version": _version_label(version),
-            "source": {"object": source_object(sha), "sha256": sha,
-                       "commit": (version.get("source") or {}).get("commit")}}
-    steps: list[dict[str, Any]] = [{"id": "fetch", "name": config.bundler, "entrypoint": "python3",
-                                    "args": ["-c", _FETCH, json.dumps(spec, sort_keys=True)]}]
-    recipes = "/opt/swarm-bundler/recipes"
-    inputs = "/opt/swarm-bundler/inputs"
+def job_args(bundle_id: str, base: Mapping[str, str], versions: Mapping[str, Mapping[str, Any]],
+             recipes: Mapping[str, str]) -> list[str]:
+    """The job's arguments, in the design's order and form (1.4.2): the
+    bundle id; then per bundled plugin, by name, its name, its source sha256
+    and its recipe digest; then per runner image its name and its base
+    digest. Each value is checked here against the closed pattern the
+    entrypoint checks again; nothing else reaches the job."""
+    args = [bundle_id]
+    for install_id in sorted(versions, key=lambda i: PLUGIN_OF[i]):
+        args += [PLUGIN_OF[install_id], versions[install_id]["source_sha256"], recipes[install_id]]
     for image in RUNNER_IMAGES:
-        out = f"/workspace/out/{image}"
-        lines = [f"mkdir -p {out}"]
-        for install_id in sorted(versions):
-            plugin = PLUGIN_OF[install_id]
-            if plugin == "gstack":
-                lines.append(
-                    f"{recipes}/gstack/build --pins /workspace/pins.json --mirror /workspace/mirror"
-                    f" --layers {inputs}/gstack-layers --measure {inputs}/gstack_packaging_measure.py"
-                    f" --base-list {inputs}/gstack-base-files.txt --browser-list {inputs}/gstack-browser-files.txt"
-                    f" --list {GSTACK_LISTS.get(image, 'base')} --bun install"
-                    f" --bun-path /opt/swarm-bundler/bun/bun --registry {config.npm_registry}"
-                    f" --out {out}/{plugin}")
-            else:
-                lines.append(f"{recipes}/{plugin}/build --pins /workspace/pins.json --mirror /workspace/mirror"
-                             f" --validate-with /usr/local/bin/node --out {out}/{plugin}")
-        copies = "".join(f"COPY {p} {PLUGIN_ROOT}/{p}/\\n" for p in sorted(PLUGIN_OF[i] for i in versions))
-        lines.append(f"printf 'FROM {base[image]}\\n{copies}' > {out}/Dockerfile")
-        steps.append({"id": f"recipes-{image}", "name": config.bundler, "entrypoint": "bash",
-                      "args": ["-c", "set -euo pipefail\n" + "\n".join(lines)]})
-        steps.append({"id": f"image-{image}", "name": "gcr.io/cloud-builders/docker",
-                      "args": ["build", "--pull=false", "-t", f"{config.repository}/{image}:{bundle_id}", out]})
-    steps.append({"id": "report", "name": config.bundler, "entrypoint": "python3",
-                  "args": ["-c", _REPORT, json.dumps(list(RUNNER_IMAGES))]})
-    return {
-        "steps": steps,
-        "images": [f"{config.repository}/{image}:{bundle_id}" for image in RUNNER_IMAGES],
-        "serviceAccount": f"projects/{config.project}/serviceAccounts/{config.builder}",
-        "timeout": BUILD_TIMEOUT,
-        "tags": ["swarm-plugin-bundle", bundle_id],
-        "options": {"logging": "CLOUD_LOGGING_ONLY", "requestedVerifyOption": "VERIFIED"},
-    }
+        args += [image, base[image].partition("@")[2]]
+    patterns = [ARG_NAME] + [p for _ in versions for p in (ARG_NAME, ARG_SHA256, ARG_SHA256)] \
+        + [p for _ in RUNNER_IMAGES for p in (ARG_NAME, ARG_DIGEST)]
+    if len(args) != len(patterns) or not all(isinstance(a, str) and p.match(a) for a, p in zip(args, patterns)):
+        raise ps.PluginRefused("bundle_build_not_started", status=503, bundle_id=bundle_id)
+    return args
+
+
+# --- the check before ready (1.4.2) --------------------------------------------------
+
+
+class CheckFailed(Exception):
+    """A pushed bundle failed swarm-api's check: `bundle_check_failed`,
+    with the fixed name of the check (never anything the job wrote)."""
+
+    def __init__(self, check: str) -> None:
+        super().__init__(check)
+        self.check = check
+
+
+def _image_manifest(registry: BundleRegistry, image: str, reference: str) -> tuple[str, dict[str, Any]]:
+    """(the digest swarm-api computed from the bytes it read, the manifest)."""
+    raw = registry.manifest(image, reference)
+    if raw is None:
+        raise CheckFailed("manifest_missing")
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if reference.startswith("sha256:") and reference != digest:
+        raise CheckFailed("manifest_digest")
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        raise CheckFailed("manifest_unreadable") from None
+    layers = doc.get("layers") if isinstance(doc, Mapping) else None
+    config = doc.get("config") if isinstance(doc, Mapping) else None
+    if doc.get("schemaVersion") != 2 or doc.get("mediaType", OCI_MANIFEST) not in (OCI_MANIFEST, DOCKER_MANIFEST) \
+            or not isinstance(layers, list) or not isinstance(config, Mapping) \
+            or not all(isinstance(layer, Mapping) and isinstance(layer.get("digest"), str)
+                       and LAYER_DIGEST.match(layer["digest"]) for layer in layers) \
+            or not isinstance(config.get("digest"), str) or not LAYER_DIGEST.match(config["digest"]):
+        raise CheckFailed("manifest_unreadable")
+    return digest, doc
+
+
+def _diff_ids(registry: BundleRegistry, image: str, manifest: Mapping[str, Any]) -> list[str]:
+    with registry.blob(image, manifest["config"]["digest"], MANIFEST_CAP) as handle:
+        raw = handle.read(MANIFEST_CAP + 1)
+    try:
+        diff_ids = json.loads(raw)["rootfs"]["diff_ids"]
+    except (ValueError, KeyError, TypeError):
+        raise CheckFailed("config_unreadable") from None
+    if not isinstance(diff_ids, list) or not all(isinstance(d, str) and LAYER_DIGEST.match(d) for d in diff_ids):
+        raise CheckFailed("config_unreadable")
+    return diff_ids
+
+
+class _Hashing(io.RawIOBase):
+    """The uncompressed layer, hashed as tarfile reads it: its diff_id."""
+
+    def __init__(self, inner: BinaryIO) -> None:
+        self._inner = inner
+        self.hash = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        data = self._inner.read(len(buffer))
+        self.hash.update(data)
+        buffer[:len(data)] = data
+        return len(data)
+
+
+def _file_sha256(handle: Any) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+@dataclass
+class LayerTree:
+    """What swarm-api read from one plugin's layer."""
+
+    tree_sha256: str
+    manifest: Mapping[str, Any]
+    files: dict[str, str]  # path below the root -> content sha256
+
+
+def read_layer(handle: BinaryIO, plugin: str, media_type: str, diff_id: str) -> LayerTree:
+    """One plugin's layer, read entry by entry: only paths under
+    `/opt/swarm/plugins/<plugin>/`, no `..`, no link, no device, no whiteout
+    but the opaque marker on that folder; its uncompressed sha256 is the
+    config's diff_id; the tree digest computed as swarm-bundle computes it."""
+    if media_type in (OCI_LAYER_GZIP, DOCKER_LAYER_GZIP):
+        inner: BinaryIO = gzip.GzipFile(fileobj=handle, mode="rb")  # type: ignore[assignment]
+    elif media_type == OCI_LAYER:
+        inner = handle
+    else:
+        raise CheckFailed("layer_media_type")
+    root = f"{PLUGIN_ROOT.lstrip('/')}/{plugin}"
+    hashing = _Hashing(inner)
+    reader = io.BufferedReader(hashing, 1 << 20)
+    entries: dict[str, tuple[str, str, str]] = {}
+    files: dict[str, str] = {}
+    manifest_raw: bytes | None = None
+    try:
+        with tarfile.open(fileobj=reader, mode="r|") as tar:
+            for member in tar:
+                name = member.name
+                while name.startswith("./"):
+                    name = name[2:]
+                name = name.lstrip("/").rstrip("/")
+                parts = name.split("/")
+                if not name or ".." in parts or "." in parts or "" in parts or "\n" in name or "\r" in name:
+                    raise CheckFailed("layer_path")
+                if name == root:
+                    if not member.isdir():
+                        raise CheckFailed("layer_path")
+                    continue
+                if not name.startswith(root + "/"):
+                    raise CheckFailed("layer_path")
+                rel = name[len(root) + 1:]
+                if parts[-1].startswith(".wh."):
+                    if rel != OPAQUE or not member.isfile():
+                        raise CheckFailed("layer_whiteout")
+                    continue
+                if member.issym() or member.islnk():
+                    raise CheckFailed("layer_link")
+                if not (member.isdir() or member.isfile()):
+                    raise CheckFailed("layer_device")
+                if rel in entries:
+                    raise CheckFailed("layer_duplicate")
+                mode = f"{member.mode & 0o7777:04o}"
+                if member.isdir():
+                    entries[rel] = ("d", mode, "")
+                    continue
+                if member.size > LAYER_CAP:
+                    raise CheckFailed("blob_too_large")
+                extracted = tar.extractfile(member)
+                if rel == MANIFEST_NAME:
+                    manifest_raw = extracted.read(MANIFEST_CAP + 1) if extracted else b""
+                    continue
+                sha = _file_sha256(extracted) if extracted else hashlib.sha256(b"").hexdigest()
+                entries[rel] = ("f", mode, sha)
+                files[rel] = sha
+        while reader.read(1 << 20):
+            pass
+        while handle.read(1 << 20):
+            pass
+    except (tarfile.TarError, OSError, EOFError, zlib.error):
+        raise CheckFailed("layer_unreadable") from None
+    if "sha256:" + hashing.hash.hexdigest() != diff_id:
+        raise CheckFailed("layer_diff_id")
+    digest = hashlib.sha256()
+    for rel in sorted(entries):
+        kind, mode, sha = entries[rel]
+        line = f"d {mode} {rel}/\n" if kind == "d" else f"f {mode} {sha} {rel}\n"
+        digest.update(line.encode())
+    try:
+        manifest = json.loads(manifest_raw) if manifest_raw is not None and len(manifest_raw) <= MANIFEST_CAP else None
+    except ValueError:
+        manifest = None
+    if not isinstance(manifest, Mapping):
+        raise CheckFailed("bundle_manifest_missing")
+    return LayerTree(tree_sha256=digest.hexdigest(), manifest=manifest, files=files)
+
+
+def source_files(handle: BinaryIO) -> dict[str, str]:
+    """security-audit's `skills/security-audit/` and `LICENSE` in its pinned
+    source archive: path -> content sha256. A single top-level folder (the
+    form a forge's archive takes) is taken off every path first."""
+    found: dict[str, str] = {}
+    names: list[tuple[str, str]] = []
+    try:
+        with tarfile.open(fileobj=handle, mode="r|*") as tar:
+            for member in tar:
+                if not member.isfile():
+                    continue
+                name = member.name
+                while name.startswith("./"):
+                    name = name[2:]
+                extracted = tar.extractfile(member)
+                names.append((name.lstrip("/"), _file_sha256(extracted) if extracted else ""))
+    except (tarfile.TarError, OSError, EOFError, zlib.error):
+        raise CheckFailed("source_unreadable") from None
+    tops = {n.split("/", 1)[0] for n, _ in names}
+    strip = len(tops) == 1 and all("/" in n for n, _ in names)
+    for name, sha in names:
+        rel = name.split("/", 1)[1] if strip else name
+        if rel == "LICENSE" or rel.startswith(AUDIT_SKILL + "/"):
+            found[rel] = sha
+    return found
+
+
+def release_recipes(registry: BundleRegistry, base_ref: str, wanted: Iterable[str]) -> dict[str, str]:
+    """The recipe digest of each bundled install, from the live release
+    image's own `.swarm-bundle.json` (1.4.2: the release image is the bundle
+    of the first versions, built by the same recipes the bundler image
+    holds). Its layers are read newest first until every one is found."""
+    image, _, digest = base_ref.partition("@")
+    _, manifest = _image_manifest(registry, image, digest)
+    wanted = set(wanted)
+    paths = {f"{PLUGIN_ROOT.lstrip('/')}/{PLUGIN_OF[i]}/{MANIFEST_NAME}": i for i in wanted}
+    found: dict[str, str] = {}
+    for layer in reversed(manifest["layers"]):
+        if set(found) == wanted:
+            break
+        media = layer.get("mediaType")
+        mode = "r|gz" if media in (OCI_LAYER_GZIP, DOCKER_LAYER_GZIP) else "r|" if media == OCI_LAYER else None
+        if mode is None:
+            continue
+        with registry.blob(image, layer["digest"], LAYER_CAP) as handle:
+            try:
+                with tarfile.open(fileobj=handle, mode=mode) as tar:
+                    for member in tar:
+                        install_id = paths.get(member.name.lstrip("./").lstrip("/"))
+                        if install_id is None or install_id in found or not member.isfile():
+                            continue
+                        extracted = tar.extractfile(member)
+                        try:
+                            doc = json.loads(extracted.read(MANIFEST_CAP)) if extracted else None
+                        except ValueError:
+                            doc = None
+                        recipe = ((doc or {}).get("recipe") or {}).get("digest") if isinstance(doc, Mapping) else None
+                        if isinstance(recipe, str) and ARG_SHA256.match(recipe):
+                            found[install_id] = recipe
+                # To its end, so the blob's digest is checked too.
+                while handle.read(1 << 20):
+                    pass
+            except (tarfile.TarError, OSError, EOFError, zlib.error):
+                raise CheckFailed("release_unreadable") from None
+    if set(found) != wanted:
+        raise CheckFailed("release_recipe_missing")
+    return found
+
+
+def check_bundle(bundle: Mapping[str, Any], registry: BundleRegistry, sources: BundleSources,
+                 repository: str) -> dict[str, Any]:
+    """Section 1.4.2's check of every pushed manifest, read by the tag
+    `<runner image>:<bundle_id>`; {outputs, plugins} as swarm-api read and
+    checked them, or CheckFailed. Nothing the job reported is used."""
+    bundle_id = bundle["bundle_id"]
+    key = {e["install_id"]: e for e in bundle.get("key") or ()}
+    recipes = bundle.get("recipes") or {}
+    order = sorted(key, key=lambda i: PLUGIN_OF.get(i, ""))
+    if not key or any(i not in PLUGIN_OF for i in key) or set(recipes) != set(key):
+        raise CheckFailed("bundle_key")
+    outputs: dict[str, str] = {}
+    trees: dict[str, dict[str, str]] = {i: {} for i in order}
+    audit_source: dict[str, str] | None = None
+    for image in RUNNER_IMAGES:
+        base_image, _, base_digest = str((bundle.get("base") or {}).get(image) or "").partition("@")
+        _, base = _image_manifest(registry, base_image, base_digest)
+        out_image = f"{repository}/{image}"
+        digest, pushed = _image_manifest(registry, out_image, bundle_id)
+        n = len(base["layers"])
+        if len(pushed["layers"]) != n + len(order) \
+                or [layer["digest"] for layer in pushed["layers"][:n]] != [layer["digest"] for layer in base["layers"]]:
+            raise CheckFailed("base_layers")
+        diff_ids = _diff_ids(registry, out_image, pushed)
+        if len(diff_ids) != n + len(order) or diff_ids[:n] != _diff_ids(registry, base_image, base):
+            raise CheckFailed("base_diff_ids")
+        for offset, install_id in enumerate(order):
+            layer = pushed["layers"][n + offset]
+            with registry.blob(out_image, layer["digest"], LAYER_CAP) as handle:
+                tree = read_layer(handle, PLUGIN_OF[install_id], str(layer.get("mediaType") or ""),
+                                  diff_ids[n + offset])
+            said = tree.manifest
+            if (said.get("tree") or {}).get("sha256") != tree.tree_sha256:
+                raise CheckFailed("tree_sha256")
+            if said.get("install_id") != install_id \
+                    or (said.get("source") or {}).get("sha256") != key[install_id]["source_sha256"] \
+                    or (said.get("recipe") or {}).get("digest") != recipes[install_id]:
+                raise CheckFailed("bundle_manifest")
+            if PLUGIN_OF[install_id] == "security-audit":
+                if audit_source is None:
+                    handle = sources.source(key[install_id]["source_sha256"])
+                    if handle is None:
+                        raise CheckFailed("source_missing")
+                    with handle:
+                        audit_source = source_files(handle)
+                # The layer holds exactly those files, byte for byte: the
+                # recipe copies and tests, it compiles nothing.
+                if not audit_source or tree.files != audit_source:
+                    raise CheckFailed("security_audit_files")
+            trees[install_id][image] = tree.tree_sha256
+        outputs[image] = f"{out_image}@{digest}"
+    plugins = {i: {"recipe_digest": recipes[i], "tree_sha256": trees[i]} for i in order}
+    return {"outputs": outputs, "plugins": plugins}
 
 
 # --- the record --------------------------------------------------------------
@@ -410,8 +752,9 @@ def bundle_view(bundle: Mapping[str, Any]) -> dict[str, Any]:
         "install_id": bundle.get("install_id"), "version_id": bundle.get("version_id"),
         "previous_version": bundle.get("previous_version"), "key": bundle.get("key"),
         "key_sha256": bundle.get("key_sha256"), "base": bundle.get("base"), "outputs": bundle.get("outputs"),
-        "plugins": bundle.get("plugins"), "build_id": bundle.get("build_id"),
-        "refusal": {"code": code, "sentence": ps.REFUSALS.get(code, "")} if code else None,
+        "plugins": bundle.get("plugins"), "execution": bundle.get("execution"),
+        "refusal": {"code": code, "check": refusal.get("check"),
+                    "sentence": ps.REFUSALS.get(code, "")} if code else None,
         "requested_by": bundle.get("requested_by"), "finished_at": bundle.get("finished_at"),
     }
 
@@ -505,35 +848,50 @@ def _versions_for(store: ps.PluginStore, installs: list[dict[str, Any]], *, targ
     return versions
 
 
-def _start(bundles: BundleStore, builds: BundleBuilds, config: BundleSettings, *, base: Mapping[str, str],
-           versions: Mapping[str, Mapping[str, Any]], reason: str, by: str, install_id: str | None,
-           version_id: str | None, previous_version: str | None) -> dict[str, Any]:
-    """Write one `building` record, then start its one build. A refused
-    start fails the record under the start's fixed code and raises it."""
+def _start(bundles: BundleStore, jobs: BundleJobs, registry: BundleRegistry, config: BundleSettings, *,
+           base: Mapping[str, str], versions: Mapping[str, Mapping[str, Any]], reason: str, by: str,
+           install_id: str | None, version_id: str | None, previous_version: str | None) -> dict[str, Any]:
+    """Write one `building` record, then run its one execution of the job.
+    A refused start fails the record under the start's fixed code and
+    raises it."""
     bundle_id = new_bundle_id()
     key = bundle_key(versions)
     now = bundles._now()
+    code = None
+    recipes: dict[str, str] = {}
+    try:
+        # The recipe digest each plugin is built with: the one the live
+        # release image carries, read back from its own manifest.
+        recipes = _known_recipes(bundles, base, versions) \
+            or release_recipes(registry, base[RUNNER_IMAGES[0]], versions)
+    except GrantMissing as exc:
+        code = "bundle_grant_missing"
+        log.warning("plugin bundle recipes not read bundle_id=%s status=%s", bundle_id, exc.args[0])
+    except Exception as exc:  # noqa: BLE001 -- a fixed code; the upstream's words are never passed on
+        code = "bundle_build_not_started"
+        log.warning("plugin bundle recipes not read bundle_id=%s (%s)", bundle_id, type(exc).__name__)
     bundles.create({
         "bundle_id": bundle_id, "scope": ps.PLATFORM, "tenant_id": None, "reason": reason,
         "install_id": install_id, "version_id": version_id, "previous_version": previous_version,
-        "key": key, "key_sha256": key_sha256(key), "base": dict(base), "bundler": config.bundler,
-        "state": STATE_BUILDING, "build_id": None, "outputs": None, "plugins": None, "refusal": None,
+        "key": key, "key_sha256": key_sha256(key), "base": dict(base), "recipes": dict(recipes),
+        "job": config.job, "state": STATE_BUILDING, "execution": None, "execution_read_at": None,
+        "outputs": None, "plugins": None, "refusal": None,
         "requested_by": by, "finished_at": None, "created_at": now, "created_by": by,
     })
-    code = None
-    build_id = None
-    try:
-        build_id = builds.start(build_request(bundle_id, config, base, versions))
-    except GrantMissing as exc:
-        code = "bundle_grant_missing"
-        log.warning("plugin bundle build not started bundle_id=%s status=%s", bundle_id, exc.args[0])
-    except Exception as exc:  # noqa: BLE001 -- a fixed code; the upstream's words are never passed on
-        code = "bundle_build_not_started"
-        log.warning("plugin bundle build not started bundle_id=%s (%s)", bundle_id, type(exc).__name__)
+    execution = None
+    if code is None:
+        try:
+            execution = jobs.run(config.job, job_args(bundle_id, base, versions, recipes))
+        except GrantMissing as exc:
+            code = "bundle_grant_missing"
+            log.warning("plugin bundle job not run bundle_id=%s status=%s", bundle_id, exc.args[0])
+        except Exception as exc:  # noqa: BLE001 -- a fixed code; the upstream's words are never passed on
+            code = "bundle_build_not_started"
+            log.warning("plugin bundle job not run bundle_id=%s (%s)", bundle_id, type(exc).__name__)
 
     def _record(whole: dict[str, Any], txn: Any) -> bool:
         if code is None:
-            whole["build_id"] = build_id
+            whole["execution"] = execution
         else:
             whole.update({"state": STATE_FAILED, "refusal": {"code": code},
                           "finished_at": bundles._now().isoformat()})
@@ -545,23 +903,46 @@ def _start(bundles: BundleStore, builds: BundleBuilds, config: BundleSettings, *
     return stored
 
 
-def _unstarted(bundle: Mapping[str, Any], now: Any) -> bool:
-    """A `building` record whose start never recorded a build id, older
-    than START_GRACE."""
-    if bundle.get("state") != STATE_BUILDING or bundle.get("build_id"):
-        return False
-    created = bundle.get("created_at")
-    if isinstance(created, str):
+def _known_recipes(bundles: BundleStore, base: Mapping[str, str],
+                   versions: Mapping[str, Any]) -> dict[str, str] | None:
+    """The recipe digests a ready bundle on the same base was checked with
+    (the same bundler image, so the same recipes), sparing the release
+    image's read."""
+    for ready in reversed(bundles.bundles(STATE_READY)):
+        recipes = ready.get("recipes")
+        if ready.get("base") == dict(base) and isinstance(recipes, Mapping) and set(recipes) == set(versions) \
+                and all(isinstance(v, str) and ARG_SHA256.match(v) for v in recipes.values()):
+            return dict(recipes)
+    return None
+
+
+def _time(value: Any) -> datetime | None:
+    if isinstance(value, str):
         try:
-            created = datetime.fromisoformat(created)
+            value = datetime.fromisoformat(value)
         except ValueError:
-            return True
-    if not isinstance(created, datetime) or not isinstance(now, datetime):
+            return None
+    return value if isinstance(value, datetime) else None
+
+
+def _older(value: Any, now: Any, limit: timedelta) -> bool:
+    """`value` is more than `limit` before `now`; True when either is not a
+    time, so a record that cannot say when it started never holds."""
+    then = _time(value)
+    if then is None or not isinstance(now, datetime):
         return True
     try:
-        return now - created > START_GRACE
+        return now - then > limit
     except TypeError:
         return True
+
+
+def _unstarted(bundle: Mapping[str, Any], now: Any) -> bool:
+    """A `building` record whose start never recorded an execution, older
+    than START_GRACE."""
+    if bundle.get("state") != STATE_BUILDING or bundle.get("execution"):
+        return False
+    return _older(bundle.get("created_at"), now, START_GRACE)
 
 
 def fail_unstarted(bundles: BundleStore, bundle: Mapping[str, Any]) -> dict[str, Any]:
@@ -598,9 +979,9 @@ def _refuse_while_building(bundles: BundleStore, install_id: str) -> None:
         raise ps.PluginRefused("bundle_building", status=409, install_id=install_id)
 
 
-def start_apply(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, config: BundleSettings,
-                install_id: str, version_id: str, *, by: str) -> dict[str, Any]:
-    """Apply `version_id` to a bundled install: start exactly one build of
+def start_apply(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, registry: BundleRegistry,
+                config: BundleSettings, install_id: str, version_id: str, *, by: str) -> dict[str, Any]:
+    """Apply `version_id` to a bundled install: run exactly one execution of
     the bundle carrying it on the live base. `current_version` does not
     move here; the ready finish moves it. A ready bundle with the same key
     on the live base is applied at once (nothing to build)."""
@@ -620,12 +1001,12 @@ def start_apply(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuild
     for ready in bundles.bundles(STATE_READY):
         if ready.get("key_sha256") == key_digest and ready.get("base") == dict(config.base):
             return _move_to(store, bundles, ready, install, version_id, by=by)
-    return _start(bundles, builds, config, base=config.base, versions=versions, reason=REASON_APPLY, by=by,
+    return _start(bundles, jobs, registry, config, base=config.base, versions=versions, reason=REASON_APPLY, by=by,
                   install_id=install_id, version_id=version_id, previous_version=install.get("current_version"))
 
 
-def rebuild(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, config: BundleSettings,
-            base: Mapping[str, Any], *, by: str) -> list[dict[str, Any]]:
+def rebuild(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, registry: BundleRegistry,
+            config: BundleSettings, base: Mapping[str, Any], *, by: str) -> list[dict[str, Any]]:
     """`swarm upgrade`'s step (section 1.4.4): one build per retained key on
     the new `base` (the new release's images, already copied into this
     deployment's registry), none for a key already ready or building on it.
@@ -646,7 +1027,7 @@ def rebuild(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, c
             versions[entry["install_id"]] = version
         else:
             on_base.add(kept.get("key_sha256"))
-            started.append(_start(bundles, builds, config, base=new_base, versions=versions,
+            started.append(_start(bundles, jobs, registry, config, base=new_base, versions=versions,
                                   reason=REASON_REBUILD, by=by, install_id=None, version_id=None,
                                   previous_version=None))
     return started
@@ -655,55 +1036,20 @@ def rebuild(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, c
 # --- the finish ------------------------------------------------------------------
 
 
-def _step_output(build: Mapping[str, Any]) -> Any:
-    outputs = (build.get("results") or {}).get("buildStepOutputs") or []
-    if not outputs or not isinstance(outputs[-1], str):
+def execution_outcome(execution: Mapping[str, Any] | None) -> str | None:
+    """What a Cloud Run execution says: None while it runs, "succeeded"
+    once its one task succeeded, "failed" otherwise (failed, cancelled,
+    timed out, or gone). Only its counts and completion time are read."""
+    if execution is None:
+        return STATE_FAILED
+    def count(name: str) -> int:
+        value = execution.get(name)
+        return value if isinstance(value, int) else 0
+    if count("failedCount") or count("cancelledCount"):
+        return STATE_FAILED
+    if not execution.get("completionTime"):
         return None
-    try:
-        return json.loads(base64.b64decode(outputs[-1], validate=True))
-    except (ValueError, TypeError):
-        return None
-
-
-def read_outcome(bundle: Mapping[str, Any], build: Mapping[str, Any] | None,
-                 repository: str) -> tuple[str, dict[str, Any]] | None:
-    """What a build's own record says about `bundle`: None while it runs,
-    ("failed", {code}) or ("ready", {outputs, plugins}). Every value read is
-    checked by shape and against the record; nothing upstream is kept."""
-    if build is None:
-        return STATE_FAILED, {"code": "bundle_build_failed"}
-    status = build.get("status")
-    if status in BUILD_FAILED:
-        return STATE_FAILED, {"code": "bundle_build_failed"}
-    if status != BUILD_SUCCESS:
-        return None
-    bundle_id = bundle["bundle_id"]
-    outputs: dict[str, str] = {}
-    for image in (build.get("results") or {}).get("images") or ():
-        name, digest = image.get("name"), image.get("digest")
-        for runner in RUNNER_IMAGES:
-            if name == f"{repository}/{runner}:{bundle_id}" and isinstance(digest, str) \
-                    and re.match(r"^sha256:[0-9a-f]{64}$", digest):
-                outputs[runner] = f"{repository}/{runner}@{digest}"
-    report = _step_output(build)
-    if set(outputs) != set(RUNNER_IMAGES) or not isinstance(report, Mapping):
-        return STATE_FAILED, {"code": "bundle_check_failed"}
-    plugins: dict[str, dict[str, str]] = {}
-    for entry in bundle.get("key") or ():
-        per_image = report.get(entry["install_id"])
-        if not isinstance(per_image, Mapping) or set(per_image) != set(RUNNER_IMAGES):
-            return STATE_FAILED, {"code": "bundle_check_failed"}
-        trees = {}
-        for runner in RUNNER_IMAGES:
-            got = per_image[runner]
-            if not isinstance(got, Mapping) or got.get("source_sha256") != entry["source_sha256"] \
-                    or not all(isinstance(got.get(k), str) and ps.SHA256.match(got[k])
-                               for k in ("recipe_digest", "tree_sha256")):
-                return STATE_FAILED, {"code": "bundle_check_failed"}
-            trees[runner] = got["tree_sha256"]
-        plugins[entry["install_id"]] = {"recipe_digest": per_image[RUNNER_IMAGES[0]]["recipe_digest"],
-                                        "tree_sha256": trees}
-    return STATE_READY, {"outputs": outputs, "plugins": plugins}
+    return "succeeded" if count("succeededCount") >= 1 else STATE_FAILED
 
 
 def _stale_key(store: ps.PluginStore, txn: Any, key: Iterable[Mapping[str, Any]], install_id: str,
@@ -737,7 +1083,10 @@ def mark_finished(store: ps.PluginStore, bundles: BundleStore, bundle_id: str, s
             return False
         finished = bundles._now().isoformat()
         if state == STATE_FAILED:
-            whole.update({"state": STATE_FAILED, "refusal": {"code": detail["code"]}, "finished_at": finished})
+            refusal = {"code": detail["code"]}
+            if detail.get("check"):
+                refusal["check"] = detail["check"]
+            whole.update({"state": STATE_FAILED, "refusal": refusal, "finished_at": finished})
             return True
         install = None
         if whole.get("reason") == REASON_APPLY:
@@ -762,18 +1111,60 @@ def mark_finished(store: ps.PluginStore, bundles: BundleStore, bundle_id: str, s
     return bundles.update(bundle_id, _change)
 
 
-def finish(store: ps.PluginStore, bundles: BundleStore, builds: BundleBuilds, bundle: Mapping[str, Any],
-           repository: str) -> dict[str, Any]:
-    """Read a building record's build from Cloud Build and end it if it
-    ended. The one path a notification and a status read both take."""
+def _claim_read(bundles: BundleStore, bundle_id: str) -> bool:
+    """Claim this bundle's one execution read for the next READ_EVERY, in a
+    transaction on the record: any number of pages and reloads make at most
+    one call per bundle per READ_EVERY (1.4.2)."""
+    claimed: list[bool] = []
+
+    def _change(whole: dict[str, Any], txn: Any) -> bool:
+        now = bundles._now()
+        if whole.get("state") != STATE_BUILDING or not whole.get("execution"):
+            return False
+        last = whole.get("execution_read_at")
+        if last is not None and not _older(last, now, READ_EVERY - timedelta(microseconds=1)):
+            return False
+        whole["execution_read_at"] = now.isoformat()
+        claimed.append(True)
+        return True
+
+    bundles.update(bundle_id, _change)
+    return bool(claimed)
+
+
+def finish(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, registry: BundleRegistry,
+           sources: BundleSources, config: BundleSettings, bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """End a building record if its execution ended. Read from the record
+    alone unless this bundle's read is claimed (`_claim_read`); a record
+    still building BUILD_DEADLINE after it started is failed with no call.
+    A succeeded execution is ready only after `check_bundle` passed."""
     if bundle.get("state") != STATE_BUILDING:
         return dict(bundle)
-    if not bundle.get("build_id"):
+    bundle_id = bundle["bundle_id"]
+    if _older(bundle.get("created_at"), bundles._now(), BUILD_DEADLINE):
+        return mark_finished(store, bundles, bundle_id, STATE_FAILED, {"code": "bundle_build_failed"}) \
+            or dict(bundle)
+    if not bundle.get("execution"):
         return fail_unstarted(bundles, bundle)
-    outcome = read_outcome(bundle, builds.get(str(bundle["build_id"])), repository)
+    execution = str(bundle["execution"])
+    if not execution.startswith(config.job + "/executions/") or not EXECUTION.match(execution):
+        # Not this deployment's job: never read, never trusted.
+        return mark_finished(store, bundles, bundle_id, STATE_FAILED, {"code": "bundle_build_failed"}) \
+            or dict(bundle)
+    if not _claim_read(bundles, bundle_id):
+        return bundles.bundle(bundle_id) or dict(bundle)
+    outcome = execution_outcome(jobs.get(execution))
     if outcome is None:
-        return dict(bundle)
-    ended = mark_finished(store, bundles, bundle["bundle_id"], *outcome) or dict(bundle)
+        return bundles.bundle(bundle_id) or dict(bundle)
+    if outcome == STATE_FAILED:
+        state, detail = STATE_FAILED, {"code": "bundle_build_failed"}
+    else:
+        try:
+            state, detail = STATE_READY, check_bundle(bundle, registry, sources, config.repository)
+        except CheckFailed as failed:
+            log.warning("plugin bundle check failed bundle_id=%s check=%s", bundle_id, failed.check)
+            state, detail = STATE_FAILED, {"code": "bundle_check_failed", "check": failed.check}
+    ended = mark_finished(store, bundles, bundle_id, state, detail) or dict(bundle)
     if ended.get("state") == STATE_READY:
         # A ready finish is when current (and so retention) changes: retire
         # what retention no longer keeps, so the records `swarm upgrade`
