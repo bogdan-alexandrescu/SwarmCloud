@@ -183,7 +183,18 @@ const EMPTY_UI: Persisted = { chosen: null, refresh: {}, reauth: {}, signin: { k
  * server-side, keyed by `state`, because a verifier the client holds is a PKCE
  * flow that proves nothing.
  */
-export function AccountsScreen() {
+/**
+ * `title`, `info` and `nav` are LLM Providers' (LlmProviders.tsx): on Plans this
+ * board's head IS the page's one head (qa.head Q2/Q10), so it carries the tab's
+ * name, its (i), these topics and the refresh, and `Screen` draws the Plans |
+ * API Keys strip under it in every read state, before the count. Alone (a
+ * test), it is still "Accounts".
+ */
+export function AccountsScreen({
+  title = 'Accounts',
+  info,
+  nav,
+}: { title?: string; info?: ReactNode; nav?: ReactNode } = {}) {
   // Bumping this remounts Screen, which re-runs `load`. Every mutation here
   // changes what the table says, so every mutation reloads rather than patching
   // a local copy -- a table edited client-side after a write is a table that
@@ -242,11 +253,13 @@ export function AccountsScreen() {
   return (
     <Screen
       key={nonce}
-      title="Accounts"
+      title={title}
       // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26:
       // "Move the topics behind the page's one ?"). They were the `Reading
       // this screen:` footer under the pool; see ACCOUNT_TOPICS.
       help={ACCOUNT_TOPICS}
+      info={info}
+      nav={nav}
       load={load}
       // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
@@ -390,7 +403,7 @@ function Body({
     }
   })
   const pageView = viewOf(linkedView, storedView)
-  const viewHref = (v: AccountsView) => paneHref('capacity/accounts', { account: linked, view: v })
+  const viewHref = (v: AccountsView) => paneHref('capacity/llm-providers/plans', { account: linked, view: v })
   const chooseView = (v: AccountsView) => {
     try {
       safeStorage()?.setItem(VIEW_KEY, v)
@@ -408,11 +421,11 @@ function Body({
   // A Table address stays bare, as it always was.
   useEffect(() => {
     if (typeof window === 'undefined' || linkedView !== null || pageView !== 'timeline') return
-    replaceHash(paneHref('capacity/accounts', { account: linked, view: 'timeline' }))
+    replaceHash(paneHref('capacity/llm-providers/plans', { account: linked, view: 'timeline' }))
   }, [linkedView, pageView, linked])
   const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
-    if (typeof window !== 'undefined') followHash(paneHref('capacity/accounts', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
+    if (typeof window !== 'undefined') followHash(paneHref('capacity/llm-providers/plans', { account: id, view: pageView === 'timeline' ? pageView : linkedView }))
   }
   const view = linked !== null ? { ...ui, chosen: linked } : ui
   // THE ANSWER FIRST (#2222, proposal A): can the pool take another agent,

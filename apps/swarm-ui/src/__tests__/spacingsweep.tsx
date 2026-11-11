@@ -606,7 +606,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // heaviest slice, 485 s in CI, and ran into the 900 s timeout in six runs of
   // shard 1/8 and 1/4 with their findings complete. The rail's order is kept:
   // holders to Account health here, Provider quota onwards in `quota`.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health'], floor: 80 },
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/llm-providers', 'capacity/account-health'], floor: 80 },
   // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   { name: 'quota', routes: ['capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 80 },

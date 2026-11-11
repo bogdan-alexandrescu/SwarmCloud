@@ -111,11 +111,11 @@ To translate a filename or a route in a report into today's address:
 |---|---|
 | `#agents`, `#agents/running`, `#agents/workflows` | `#work`, `#work/running`, `#work/workflows` |
 | `#agents/task/<id>` | `#work/task/<id>` |
-| `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/accounts` |
+| `#pools`, `#pools/pools`, `#pools/holders`, `#pools/accounts` | `#capacity`, `#capacity/pools`, `#capacity/holders`, `#capacity/llm-providers/plans` |
 | `#activity/timeline`, `#history/timeline` | `#work/timeline` |
 | `#counts`, `#history/counts`, `#activity/counts` | `#admin/counts` |
 | `#runtimes/catalogue` | `#capacity/catalogue` |
-| `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/accounts` |
+| `#settings/limits`, `#settings/accounts` | `#admin/limits`, `#capacity/llm-providers/plans` |
 | the "Agents" section | the **Work** section |
 | the "Pools" section | the **Capacity** section |
 | the "Runtimes" section | the **Runtimes** tab of **Capacity** |
@@ -210,7 +210,7 @@ is under `/v1`.
 | Live Transcript | shipped: the worker runs stream-json and `GET /v1/tasks/{id}/transcript` serves it redacted | `apps/agent-worker/agent_worker/procman.py::StreamCapture`, `apps/swarm-api/swarm_api/routes/tasks.py::read_transcript` |
 | Browser Filmstrip | partly shipped: the artifact byte route exists and images render inline, one artifact at a time | `apps/swarm-api/swarm_api/routes/tasks.py::read_artifact_raw`, `apps/swarm-ui/src/Artifacts.tsx` (`function ImageFigure({`) |
 | Live Browser View | still blocked, and still not to be promised | — |
-| ACC-1 Account pool | shipped: `GET /v1/accounts`, rendered by Capacity ▸ Accounts | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen() {`) |
+| ACC-1 Account pool | shipped: `GET /v1/accounts`, rendered by Capacity ▸ LLM Providers ▸ Plans | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen(`) |
 | ACC-2 Account detail drawer | partly shipped: the read and the drawer exist; refresh health is still not persisted | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`function Detail({`) |
 | ACC-3 Add account | shipped: the browser sign-in, `POST /v1/accounts/authorize` then `POST /v1/accounts/exchange`; no CLI handoff is needed | `apps/swarm-api/swarm_api/routes/accounts.py::begin_sign_in`, `apps/swarm-api/swarm_api/routes/accounts.py::finish_sign_in` |
 | ACC-4 State changes and danger zone | partly shipped: pause, resume, drain, remove and refresh routes are used by the UI; no `expected_state`, actor or audit trail | `apps/swarm-api/swarm_api/routes/accounts.py::set_account_state`, `apps/swarm-api/swarm_api/routes/accounts.py::remove_account`, `apps/swarm-api/swarm_api/routes/accounts.py::refresh_account` |
@@ -243,7 +243,7 @@ is under `/v1`.
 | O5 — Control-Action Trail | partly shipped: the latest actor on pools; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py::set_global_limit` |
 | O6 — Alerts panel | still blocked | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
 | O6 — Platform error feed | still blocked: events are per agent only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
-| O7 — Account health (admin slice) | partly shipped: accounts, refresh and history routes and the Accounts screen exist, tenant-scoped; no admin slice | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen() {`) |
+| O7 — Account health (admin slice) | partly shipped: accounts, refresh and history routes and the Accounts screen exist, tenant-scoped; no admin slice | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen(`) |
 | F1 — The gate | partly shipped: the external ALB, IAP and assertion verification exist (where `enable_frontend` is set); no "authenticated but not admitted" page | `terraform/modules/frontend/main.tf` (`# The front door. An external Application Load Balancer, with IAP, in front of`), `apps/swarm-api/swarm_api/auth.py::IapAssertionVerifier` |
 | F2 — Identity and tenant bar | shipped: `GET /v1/tenants/me`, in the shell | `apps/swarm-api/swarm_api/routes/tenants.py::get_me`, `apps/swarm-ui/src/Spine.tsx` (`const loadFrameMe = () => loadMe({ frame: true })`) |
 | F4 — System status and reachability panel | partly shipped: per-route data-source cells; rate-limit headroom is still not exposed | `apps/swarm-ui/src/DataSources.tsx` (`export function DataSourceCells({`), `apps/swarm-api/swarm_api/ratelimit.py::TokenBucketLimiter` |

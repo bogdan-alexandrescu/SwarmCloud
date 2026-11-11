@@ -34,7 +34,7 @@ import { read, route, write } from '../fetch'
 export const VOICE_POOL = '/v1/voice/pool'
 
 /** Where the Voice it pool is kept. */
-export const CAPACITY_ACCOUNTS_HREF = '/capacity/accounts'
+export const CAPACITY_ACCOUNTS_HREF = '/capacity/llm-providers/plans'
 
 export type VoicePoolReason = '' | 'not_in_voice_pool' | 'no_voice_account_registered' | 'no_voice_account_available'
 
@@ -93,7 +93,7 @@ export function VoicePreferences() {
   }, [])
 
   return (
-    <Card title="ChatGPT plan" action={<CardLink href={CAPACITY_ACCOUNTS_HREF}>Capacity › Accounts</CardLink>}>
+    <Card title="ChatGPT plan" action={<CardLink href={CAPACITY_ACCOUNTS_HREF}>LLM Providers</CardLink>}>
       {readError !== null ? (
         <Banner tone="bad" title="Could not read the Voice it pool" role="alert">
           {readError}

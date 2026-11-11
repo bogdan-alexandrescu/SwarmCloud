@@ -116,7 +116,9 @@ test('a retired spelling is rewritten to the current one, not merely accepted', 
     // the shared MOVED_PANES map. Deleting either entry leaves `#settings/...`
     // resolving through LEGACY to Pool limits, so the accounts one would fail
     // loudly here and nowhere else.
-    ['settings/accounts', 'capacity/accounts'],
+    // Accounts became Capacity › LLM Providers, landing on Plans (LP-U1,
+    // docs/design/llm-providers.md §6.1).
+    ['settings/accounts', 'capacity/llm-providers/plans'],
     ['settings/limits', 'admin/limits'],
   ] as const) {
     at(`#${old}`)
