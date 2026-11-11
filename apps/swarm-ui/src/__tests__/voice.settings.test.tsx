@@ -217,6 +217,71 @@ describe('saving', () => {
   })
 })
 
+describe('the Debug switch', () => {
+  const debugSwitch = (): HTMLElement => within(card('engine')).getByRole('switch', { name: 'Debug mode' })
+
+  it('draws debug mode as served, and saves a flip as PATCH {version, debug} at once', async () => {
+    let debug = false
+    let version = 7
+    const calls = serve(
+      () => settings(version, { settings: { ...settings(version).settings, debug } }),
+      (body) => {
+        debug = body.debug === true
+        version += 1
+        return json(200, settings(version, { settings: { ...settings(version).settings, debug } }))
+      },
+    )
+    await page()
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(within(card('engine')).queryByRole('button', { name: 'Traces' })).toBeNull()
+    await act(async () => {
+      fireEvent.click(debugSwitch())
+    })
+    expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([{ version: 7, debug: true }])
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('true')
+    // On, the row opens the traces on Telemetry; the page's Save waits for nothing.
+    expect(within(card('engine')).getByRole('button', { name: 'Traces' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(screen.getByText(/^v8/)).toBeTruthy()
+  })
+
+  it('is read only without the edit right: the state, and nothing that writes', async () => {
+    const calls = serve(() => settings(7, { settings: { ...settings(7).settings, debug: true } }))
+    await page(false)
+    const sw = debugSwitch() as HTMLButtonElement
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    expect(sw.disabled).toBe(true)
+    await act(async () => {
+      fireEvent.click(sw)
+    })
+    expect(calls.filter((c) => c.method === 'PATCH')).toEqual([])
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('leaves the switch as it was when the save fails, and says it was not saved', async () => {
+    const calls = serve(
+      () => settings(7),
+      () => json(500, { code: 'internal', message: 'the settings store did not answer' }),
+    )
+    await page()
+    await act(async () => {
+      fireEvent.click(debugSwitch())
+    })
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1)
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('false')
+    const failed = screen.getByText('Not saved').closest('.vset-tick')!
+    expect(failed.getAttribute('title')).toContain('the settings store did not answer')
+  })
+
+  it('keeps its meaning behind the (i), off the surface', async () => {
+    serve(() => settings(7))
+    await page()
+    const row = card('engine').querySelector<HTMLElement>('[data-row="debug"]')!
+    expect(row.textContent).toBe('Debugi')
+    expect(within(row).getByRole('button', { name: /turn-by-turn trace/ })).toBeTruthy()
+  })
+})
+
 describe('the OpenAI key', () => {
   it('shows whether it is set, by whom and when, and nothing else of the answer', async () => {
     serve(() => settings(7))

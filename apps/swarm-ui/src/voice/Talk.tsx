@@ -72,6 +72,14 @@
  * line says why, and a close button dismisses it. Text mode keeps the
  * browser's microphone and its speech recognition, with a text box beside it.
  *
+ * DEBUG MODE (the owner's pick of 10 November 2026, "Trace on Telemetry").
+ * While Settings' Debug is on (read with the engine, when the page opens),
+ * each planner turn's `trace.turn` event on the session's stream (the card
+ * list hands it up, `onTraceEvent`) draws one line under the Stage: the
+ * turn's number, the cards drawn and refused, and why nothing was drawn; what
+ * was drawn and each refusal's reason are behind its tooltip, and Trace opens
+ * the turn on Telemetry. Off, no line, whatever the stream carries.
+ *
  * BY VOICE. Every control also answers a whole spoken phrase (`spokenAction`):
  * "stop the session" ends it, "mute", "push to talk", "open mic" and "stop
  * speaking" do what their buttons do. A read-back's Go and Not that are heard
@@ -82,11 +90,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { normVoiceSettings, USE_FIXTURES, VOICE_SETTINGS } from '../api'
+import { normVoiceSettings, normVoiceTraceTurnEvent, USE_FIXTURES, VOICE_SETTINGS, type VoiceTraceTurnEvent } from '../api'
 import { Button, buttonClass, Segmented, ToneMark } from '../components'
 import { read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
-import { CardList } from './CardList'
+import { CardList, type StreamEvent } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { BudgetMeter } from './Meter'
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
@@ -111,6 +119,55 @@ import { startVoiceDetection, type VoiceDetection } from './vad'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
+
+/** Why a turn drew nothing, by the server's code (swarm_api/voice/trace.py `NONE_CODES`), in the line's words. */
+const NONE_WORDS: Readonly<Record<string, string>> = {
+  empty_transcript: 'empty transcript',
+  refused: 'all refused',
+  planner_error: 'planner error',
+  timeout: 'timed out',
+  no_grant: 'no grant',
+  answered_in_words: 'answered in words',
+}
+
+const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`
+const named = (d: { kind: string; title: string | null }): string => (d.title ? `${d.kind} “${d.title}”` : d.kind)
+
+/** The turn in full on Telemetry, out of the router as the console's other navigations go. */
+function openTrace(sessionId: string, n: number): void {
+  window.history.pushState(null, '', `/voice/telemetry?${new URLSearchParams({ s: sessionId, open: String(n) })}`)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/** Debug mode's one line under the Stage: the last planner turn's outcome, what it drew and refused in its tooltip. */
+function TurnLine({ turn, sessionId }: { turn: VoiceTraceTurnEvent; sessionId: string | null }) {
+  const cards = turn.drawn.length
+  const out = [
+    plural(cards, 'card'),
+    ...(turn.refused.length > 0 ? [`${turn.refused.length} refused`] : []),
+    ...(cards === 0 && turn.none !== null ? [NONE_WORDS[turn.none] ?? turn.none] : []),
+  ].join(' · ')
+  const tip = [
+    ...(cards > 0 ? [`Drawn: ${turn.drawn.map(named).join(', ')}`] : []),
+    ...turn.refused.map((r) => `Refused: ${named(r)}, ${r.reason ?? 'no reason given'}`),
+  ].join('. ')
+  return (
+    <div className="vt-turn" role="group" aria-label="Last planner turn" data-outcome={cards > 0 ? 'drawn' : 'none'}>
+      <TalkTip tip={tip || `Turn ${turn.n}: nothing drawn`}>
+        <span className="vt-turn-main" tabIndex={0}>
+          <span className={`vt-turn-dot ${cards > 0 ? 'is-ok' : 'is-warn'}`} aria-hidden="true" />
+          <span className="vt-turn-n">Turn {turn.n}</span>
+          <span className="vt-turn-out">{out}</span>
+        </span>
+      </TalkTip>
+      {sessionId !== null && (
+        <Button kind="ghost" size="sm" onClick={() => openTrace(sessionId, turn.n)}>
+          Trace
+        </Button>
+      )}
+    </div>
+  )
+}
 
 /** The call the page holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
@@ -352,6 +409,9 @@ export function TalkPane() {
   /** A start refusal's full sentence, behind the problem line's (i). */
   const [problemTip, setProblemTip] = useState<string | null>(null)
   const [lines, setLines] = useState<CaptionLine[]>([])
+  // Settings' debug mode, read with the engine; and the session's last traced turn while it is on.
+  const [debug, setDebug] = useState(false)
+  const [turn, setTurn] = useState<VoiceTraceTurnEvent | null>(null)
   const [voice, setVoice] = useState<MediaStream | null>(null)
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
   const [track, setTrack] = useState<MediaStreamTrack | null>(null)
@@ -388,6 +448,11 @@ export function TalkPane() {
   const audio = useRef<HTMLAudioElement | null>(null)
   // The card list reads the session's one stream and hands the stage its visual, note and focus events through this.
   const feed = useMemo(stageFeed, [])
+  // Debug mode's turns come up from the same stream; a frame that names no turn changes nothing.
+  const onTraceEvent = useCallback((ev: StreamEvent) => {
+    const t = normVoiceTraceTurnEvent({ ...ev.data, seq: ev.seq })
+    if (t !== null) setTurn(t)
+  }, [])
   // The Resume's project: undefined until the first start takes it, then the
   // id until a start succeeds, then null.
   const resumed = useRef<string | null | undefined>(undefined)
@@ -403,7 +468,10 @@ export function TalkPane() {
     if (USE_FIXTURES) return
     let stop = false
     void read<unknown>(route(VOICE_SETTINGS), () => false).then((r) => {
-      if (!stop && (r.status === 'ok' || r.status === 'stale')) engine.current = normVoiceSettings(r.data).settings.engine || null
+      if (stop || (r.status !== 'ok' && r.status !== 'stale')) return
+      const view = normVoiceSettings(r.data)
+      engine.current = view.settings.engine || null
+      setDebug(view.debug)
     })
     return () => {
       stop = true
@@ -702,6 +770,7 @@ export function TalkPane() {
         beginText()
       } else if (c.mode === 'speech') beginSpeech(c)
       setSessionId(c.sessionId)
+      setTurn(null)
       setMicStream(c.micStream)
       setTrack(c.mic)
       setPhase('live')
@@ -764,7 +833,7 @@ export function TalkPane() {
   const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
 
   return (
-    <div className="vt has-stage" data-state={state}>
+    <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}`} data-state={state}>
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
@@ -838,6 +907,7 @@ export function TalkPane() {
       ) : (
         <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={feed} />
       )}
+      {debug && turn !== null && <TurnLine turn={turn} sessionId={sessionId} />}
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
@@ -907,7 +977,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} onTraceEvent={onTraceEvent} />
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}
