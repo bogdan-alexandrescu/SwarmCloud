@@ -1206,7 +1206,7 @@ disagree, the code is quoted and this section says what changes.
 | `in_progress` | In progress | Work on this project is going on; resume it to continue. | A new project; a session starting on it or switching to it; the planner (`set_project_state`); a person's Reopen; a merge or an answer that clears the last thing waiting |
 | `waiting` | Waiting on you | Nothing moves until you decide something; resume it to see what. | A session ending while a card of the project waits on the owner (a Proposal or Plan `proposed`, a Review, Details, Credential, Budget, Stop or Read-back `waiting`); the planner, when it cannot go on without the owner |
 | `completed` | Completed | Finished: what it set out to do is done. Reopen it to do more. | A person's Mark completed; the planner, only when nothing of the project runs and its brief has nothing open; the last merge of its work (below) |
-| `cancelled` | Cancelled | Stopped on purpose before it was finished; its record is kept. | A person's Cancel only. The planner never cancels a project |
+| `cancelled` | Cancelled | Stopped on purpose before it was finished, with the work it had running; its record is kept. | A person's Cancel only, which also cancels the project's running work. The planner never cancels a project |
 | `archived` | Archived | Put away: hidden from the default list, kept whole. | A person's Archive only, from any state; Unarchive returns it to the state it had |
 
 **What moves each, precisely.**
@@ -1219,11 +1219,33 @@ disagree, the code is quoted and this section says what changes.
   refuses any move of a `cancelled` or `archived` project: those are the
   owner's.
 * **A person's action in Projects** (and in Talk's project menu): Mark
-  completed, Cancel, Archive, Unarchive, Reopen. Cancel and Mark completed
-  ask once ("Cancel Bakery website? Its running work keeps running"); they
-  are not typed, because nothing is deleted. **Cancelling a project does not
-  cancel its running work** (question 14): Projects lists what still runs,
-  each row opening its own page, where Cancel is the platform's own action.
+  completed, Cancel, Archive, Unarchive, Reopen. Mark completed asks once;
+  it is not typed, because nothing is deleted.
+* **Cancelling a project also cancels its running work** (question 14).
+  Cancel asks once and names everything it will stop, as swarm-api resolves
+  it, never as the model said it: "Cancel Bakery website? This also cancels
+  its running work: run #412, workflow site-build". The list is the
+  project's starts that are queued or running, read as the roster and the
+  completion check read them (`voice_starts` by id, follow-ups by the
+  project's tag, §3.12.6). The confirmation is not typed: a cancel deletes
+  nothing, and every record and the project's brief are kept. On the
+  confirmation swarm-api moves the project to `cancelled` (`by: person`),
+  then cancels each start through the platform's own cancel for its kind
+  (`POST /v1/tasks/{id}/cancel` for an agent; the same route on an issue
+  run's running task, since a run whose task is cancelled ends cancelled,
+  `runs.py`, and there is no run cancel route; `POST
+  /v1/workflows/{id}/cancel` for a workflow), as the person, with the
+  person's own permission on each: a start the person may not cancel is
+  left running and named. The platform's cancel is the only path, so a
+  cancelled attempt's lease, its fencing generation and its capacity are
+  released as for any other cancel, and nothing new reserves or frees
+  capacity. Each start's Work card reads `cancelled`. A start that ended
+  between the list and the cancel is skipped; one whose cancel fails stays
+  listed on the project as still running, with its own Cancel, and the
+  failure is in the project's `voice_audit` row. The planner cannot do this:
+  it never cancels a project, and its own `stop` tool still cancels only its
+  turn and the actions in their grace window. In a session the person
+  cancels from Talk's project menu, with the same confirmation.
 * **A session ending** moves the session's open projects (§3.13.5) to
   `waiting` when one of their cards waits on the owner, and leaves the rest as
   they are. It never completes or cancels anything.
@@ -1588,7 +1610,7 @@ whitelist, so a lane that writes a new event lists `stream.py`.
 | Lane | Files | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|
 | **P0. The Projects page is drawn as variants: states, filter, Resume, the current project and the switcher on Talk** | none in the repository (a mock-up lane's frames) | none | n/a | **the pick** |
-| **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
+| **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check, a person's Cancel and the list of running starts it cancels), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; a person's Cancel cancels each queued or running start of the project through its kind's cancel route (a fake platform client records the calls) and leaves one whose cancel fails listed as running; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
 | **P2. The brief has a shape and a bound, and the session context serves it** | `swarm_api/voice/brief.py` (new: the shape, the change merge, the bounds, the old `open` items), `swarm_api/routes/voice_context.py` (new: `GET .../context`, `POST .../brief`), `swarm_api/voice/grant.py` (the two routes, after V4), `swarm_api/main.py` (its include line, after P1), `tests/unit/control_plane/test_voice_brief.py` | P1 | A change merges once per `turn_id`; past a bound `open` is 422 and `decided` drops its oldest; a fake key built at runtime in a change is refused naming the field; a follow-up's old item reads as text | the bound (question 15) |
 | **P3. The planner reads its context and saves the brief after every turn** | `swarm_voice/planner.py` (the context read; `speak`'s `brief`; the turn record), `swarm_voice/prompts.py` (the brief's rules and the kind choice table, after V5), `swarm_voice/tools_read.py` (the context read), `tests/unit/voice/test_planner_brief.py` | P2 | With a fake swarm-api: every turn posts one change with its `turn_id`; a failed turn posts none; the system prompt's bytes do not change with the brief | no |
 | **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; Side requests is created once | the cap and Side requests (questions 17, 18) |
@@ -2094,10 +2116,12 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     Completed (recommended); a merge never completes a project (only the
     owner or the planner does); or every merge only moves Waiting to In
     progress.
-14. **What Cancel does to running work (§3.13.2):** nothing; the project is
-    marked Cancelled and Projects lists what still runs, each with its own
-    Cancel (recommended); or cancelling the project also cancels its running
-    work, each through its read-back.
+14. **What Cancel does to running work (§3.13.2):** answered 11 November
+    2026: cancelling a project also cancels its running work. The one
+    confirmation names each queued or running start, and swarm-api cancels
+    each through the platform's own cancel for its kind (§3.13.2). The other
+    option was to cancel nothing and list what still runs, each with its own
+    Cancel.
 15. **The brief's size (§3.13.3):** at most 16 KiB, about 4,000 tokens (goal
     600 characters, 40 decided, 30 open, 10 next) (recommended); 32 KiB; or
     8 KiB.
