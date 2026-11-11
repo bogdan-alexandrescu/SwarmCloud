@@ -10,17 +10,23 @@
  *
  * READS AND WRITES ARE api.ts's PLAN CALLS, nothing else: the account list
  * (`loadAccountsBoard`), `setAccountState`, `setAccountMaxAgents`,
- * `setAccountName`, `setAccountLending`, `setAccountModelClasses`,
+ * `setAccountName`, `setAccountLending` (each lend with its agents cap),
+ * `setAccountPerWorkspaceMax`, `setAccountModelClasses`,
  * `refreshAccount`, `removeAccount`, the sign-in pair and `mintSetupLink`,
  * and the Voice it pool route (`setAccountPools`, which still lives beside
  * the old board's Pools control in Accounts.tsx). A write that succeeds
  * re-reads the list rather than patching a copy; a write that fails says why
  * in its sheet and leaves the row as the platform last said it was.
  *
- * WHAT IS NOT DRAWN, because no route serves it yet: a lend's agents cap and
- * spend cap, and adding a ChatGPT plan from the browser (its sign-in is the
- * plugin's `sc account add --provider openai`). Both are questions in the
- * lane's PR, not dead controls.
+ * A LEND LINE is the borrower's live holders over its lend's agents cap
+ * (§4.6), the holders counted by swarm-api on the owner's rows only; a lend
+ * carried over from before lend caps reads `cap not set`, and a row whose
+ * broker serves no `lends` draws no figure. A spend cap is a key's, not a
+ * plan's (a plan's price is flat).
+ *
+ * WHAT IS NOT DRAWN, because no route serves it yet: adding a ChatGPT plan
+ * from the browser (its sign-in is the plugin's `sc account add --provider
+ * openai`). It is a question in the lane's PR, not a dead control.
  *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
@@ -36,6 +42,7 @@ import {
   setAccountMaxAgents,
   setAccountModelClasses,
   setAccountName,
+  setAccountPerWorkspaceMax,
   setAccountState,
   type AccountsBoard,
   type ServedAccount,
@@ -142,6 +149,36 @@ function Over({ used, cap, title }: { used: number; cap: number; title?: string 
   )
 }
 
+/** A lend's agents cap, or null for one carried over that no lender has saved. */
+function lendCap(a: Plan, t: string): number | null {
+  const c = a.lends?.[t]
+  return c !== undefined && c.cap_set !== false && Number.isFinite(c.max_agents) ? c.max_agents : null
+}
+
+/** A borrower's live holders over its lend's cap; nothing when the broker serves no `lends`. */
+function LendUse({ a, t }: { a: Plan; t: string }) {
+  if (a.lends === undefined) return null
+  const held = a.lend_holders?.[t]
+  const n = typeof held === 'number' ? held : null
+  const cap = lendCap(a, t)
+  if (cap === null)
+    return (
+      <span className="llp-over-n">
+        {n ?? '—'}{' '}
+        <span className="ctl-mark is-partial" title="Carried over from before lend caps; bounded by the plan's own max agents until a lender saves one">
+          cap not set
+        </span>
+      </span>
+    )
+  if (n === null)
+    return (
+      <span className="llp-over-n llp-dim" title={`${t}: live holders not read`}>
+        — / {cap}
+      </span>
+    )
+  return <Over used={n} cap={cap} title={`${t}: agents now over the lend's cap`} />
+}
+
 /** A usage window: the share used and when it resets; a window past its reset is not a reading. */
 function Win({ w, name, now }: { w: AccountWindow | undefined; name: string; now: number }) {
   if (w === undefined || !Number.isFinite(w.utilization)) return <span className="llp-dim">—</span>
@@ -152,7 +189,7 @@ function Win({ w, name, now }: { w: AccountWindow | undefined; name: string; now
   return (
     <span className={`llp-over ${tone}`} title={`${name}: ${pct}% used, resets ${at}`}>
       <span className="llp-over-n">
-        {pct}%<span className="llp-dim"> · {at}</span>
+        {pct}%<span className="llp-dim llp-win-at"> · {at}</span>
       </span>
       <span className="llp-bar" aria-hidden="true">
         <b style={{ width: `${Math.min(100, pct)}%` }} />
@@ -304,15 +341,19 @@ function Table({
                 </tr>
                 {a.lend_to.map((t) => (
                   <tr key={t} className="llp-lend">
-                    <td colSpan={COLS - 1} data-l="Lent to">
+                    <td colSpan={2} data-l="Lent to">
                       <span className="llp-lend-who">
                         <span className="llp-lend-arm" aria-hidden="true" />
                         <span className="mono">{t}</span>
                       </span>
                     </td>
+                    <td data-l="Agents">
+                      <LendUse a={a} t={t} />
+                    </td>
+                    <td colSpan={COLS - 4} className="llp-opt" />
                     <td className="llp-act">
                       {owned(a) && (
-                        <Button size="sm" onClick={() => open({ kind: 'lend', id: a.account_id })}>
+                        <Button size="sm" onClick={() => open({ kind: 'lend', id: a.account_id, to: t })}>
                           Edit lend
                         </Button>
                       )}
@@ -330,7 +371,7 @@ function Table({
 
 /* ---------------- the side sheet ---------------- */
 
-type Sheet = { kind: 'add' } | { kind: 'manage'; id: string } | { kind: 'lend'; id: string } | { kind: 'remove'; id: string }
+type Sheet = { kind: 'add' } | { kind: 'manage'; id: string } | { kind: 'lend'; id: string; to?: string } | { kind: 'remove'; id: string }
 
 function SheetFrame({
   title,
@@ -462,6 +503,10 @@ function Manage({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const pwServed = Object.entries(a.per_workspace_max ?? {}).map(([tenant, n]) => ({ tenant, max: String(n) }))
+  const [pw, setPw] = useState(pwServed)
+  // Only the owner and its borrowers may carry a cap: the broker refuses any other workspace.
+  const pwFree = [a.owner_tenant, ...a.lend_to].filter((t) => !pw.some((p) => p.tenant === t))
 
   const hasClasses = a.provider === 'anthropic'
   const maxN = Number(max)
@@ -470,8 +515,15 @@ function Manage({
   const classesDirty = hasClasses && !sameList(classesToSave(classes), classesToSave(classesServed))
   const nameDirty = name.trim() !== (a.display_name ?? '')
   const voiceDirty = voice !== voiceServed
-  const dirty = maxDirty || classesDirty || nameDirty || voiceDirty
-  const ready = dirty && (!maxDirty || maxOk) && (!voiceDirty || typed === a.label) && (!hasClasses || classes.length > 0)
+  const pwKey = (rows: { tenant: string; max: string }[]) => JSON.stringify([...rows].sort((x, y) => x.tenant.localeCompare(y.tenant)))
+  const pwDirty = pwKey(pw) !== pwKey(pwServed)
+  const pwOk = pw.every((p) => {
+    const n = Number(p.max)
+    return Number.isInteger(n) && n >= 1 && n <= MAX_AGENTS_LIMIT
+  })
+  const dirty = maxDirty || classesDirty || nameDirty || voiceDirty || pwDirty
+  const ready =
+    dirty && (!maxDirty || maxOk) && (!pwDirty || pwOk) && (!voiceDirty || typed === a.label) && (!hasClasses || classes.length > 0)
 
   const run = async (calls: (() => Promise<Result<unknown>>)[], after?: (results: Result<unknown>[]) => void) => {
     setBusy(true)
@@ -495,6 +547,7 @@ function Manage({
   const save = () => {
     const calls: (() => Promise<Result<unknown>>)[] = []
     if (maxDirty) calls.push(() => setAccountMaxAgents(a.account_id, maxN))
+    if (pwDirty) calls.push(() => setAccountPerWorkspaceMax(a.account_id, Object.fromEntries(pw.map((p) => [p.tenant, Number(p.max)]))))
     if (classesDirty) calls.push(() => setAccountModelClasses(a.account_id, classesToSave(classes)))
     if (voiceDirty) {
       const pools = poolsOf(a) ?? ['workspace']
@@ -607,6 +660,57 @@ function Manage({
                 onChange={(e) => setMax(e.target.value)}
               />
             </Field>
+            <Field label="Per workspace" info="At most this many of the agents at once may be one workspace's, the owner's included.">
+              {pw.length > 0 && (
+                <table className="llp-mini" aria-label="Per workspace">
+                  <tbody>
+                    {pw.map((p, i) => (
+                      <tr key={i}>
+                        <td className="mono">
+                          {pwServed.some((q) => q.tenant === p.tenant) ? (
+                            p.tenant
+                          ) : (
+                            <select
+                              className="llp-in"
+                              aria-label={`Workspace of cap ${i + 1}`}
+                              value={p.tenant}
+                              onChange={(e) => setPw(pw.map((q, j) => (j === i ? { ...q, tenant: e.target.value } : q)))}
+                            >
+                              {[p.tenant, ...pwFree].map((t) => (
+                                <option key={t}>{t}</option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+                        <td>
+                          <input
+                            className="llp-in llp-in-n"
+                            type="number"
+                            min={1}
+                            max={MAX_AGENTS_LIMIT}
+                            aria-label={`${p.tenant} max agents`}
+                            value={p.max}
+                            onChange={(e) => setPw(pw.map((q, j) => (j === i ? { ...q, max: e.target.value } : q)))}
+                          />
+                        </td>
+                        <td>
+                          <Button size="sm" kind="ghost" aria-label={`Remove cap for ${p.tenant}`} onClick={() => setPw(pw.filter((_, j) => j !== i))}>
+                            Remove
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {pwFree.length > 0 && (
+                <span>
+                  <Button size="sm" onClick={() => setPw([...pw, { tenant: pwFree[0]!, max: '1' }])}>
+                    Add workspace cap
+                  </Button>
+                </span>
+              )}
+            </Field>
             {hasClasses && (
               <Field label="Model classes" info="A step of a class no plan serves waits parked, holding nothing.">
                 <div className="llp-checks">
@@ -636,8 +740,9 @@ function Manage({
             {a.lend_to.length > 0 && (
               <ul className="llp-list">
                 {a.lend_to.map((t) => (
-                  <li key={t} className="mono">
-                    {t}
+                  <li key={t} className="llp-lent">
+                    <span className="mono">{t}</span>
+                    <LendUse a={a} t={t} />
                   </li>
                 ))}
               </ul>
@@ -667,13 +772,30 @@ function Manage({
   )
 }
 
-function LendSheet({ a, board, close, back, reread }: { a: Plan; board: AccountsBoard; close: () => void; back: () => void; reread: () => Promise<void> }) {
+function LendSheet({
+  a,
+  board,
+  edit,
+  close,
+  back,
+  reread,
+}: {
+  a: Plan
+  board: AccountsBoard
+  edit?: string
+  close: () => void
+  back: () => void
+  reread: () => Promise<void>
+}) {
   const free = (board.tenants ?? []).map((t) => t.tenant_id).filter((t) => t !== a.owner_tenant && !a.lend_to.includes(t))
-  const [to, setTo] = useState(board.tenants === null ? '' : (free[0] ?? ''))
+  const top = maxOf(a)
+  const editing = edit !== undefined && a.lend_to.includes(edit) ? edit : null
+  const [to, setTo] = useState(editing ?? (board.tenants === null ? '' : (free[0] ?? '')))
+  const [agents, setAgents] = useState(String((editing !== null ? lendCap(a, editing) : null) ?? Math.min(2, top)))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
 
-  const send = async (lendTo: string[]) => {
+  const send = async (lendTo: string[] | Record<string, number>) => {
     setBusy(true)
     setError(null)
     const r = await setAccountLending(a.account_id, lendTo)
@@ -684,7 +806,16 @@ function LendSheet({ a, board, close, back, reread }: { a: Plan; board: Accounts
     if (refused === null) setTo('')
   }
   const target = to.trim()
-  const ok = target !== '' && target !== a.owner_tenant && !a.lend_to.includes(target)
+  const n = Number(agents)
+  const lent = target !== '' && a.lend_to.includes(target)
+  const ok = target !== '' && target !== a.owner_tenant && Number.isInteger(n) && n >= 1 && n <= top
+  // Every lend with its cap: one carried over keeps the plan's own max agents, the limit it already has.
+  const withCap = () => ({ ...Object.fromEntries(a.lend_to.map((t) => [t, lendCap(a, t) ?? top])), [target]: n })
+  const pick = (t: string) => {
+    setTo(t)
+    const cap = a.lend_to.includes(t) ? lendCap(a, t) : null
+    if (cap !== null) setAgents(String(cap))
+  }
 
   return (
     <SheetFrame
@@ -693,7 +824,7 @@ function LendSheet({ a, board, close, back, reread }: { a: Plan; board: Accounts
         <>
           <span className="mono">{a.label}</span>
           <span>
-            {a.assigned} / {maxOf(a)} agents
+            {a.assigned} / {top} agents
           </span>
         </>
       }
@@ -701,33 +832,49 @@ function LendSheet({ a, board, close, back, reread }: { a: Plan; board: Accounts
       onClose={close}
     >
       <Failure error={error} />
-      <Field label="Workspace" info="Its agents may take this plan after their own.">
-        {board.tenants === null ? (
-          <input className="llp-in mono" aria-label="Workspace" autoComplete="off" spellCheck={false} value={to} onChange={(e) => setTo(e.target.value)} />
-        ) : (
-          <select className="llp-in" aria-label="Workspace" value={to} onChange={(e) => setTo(e.target.value)}>
-            <option value="">—</option>
-            {free.map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
-        )}
-      </Field>
+      <div className="llp-f-row">
+        <Field label="Workspace" info="Its agents may take this plan after their own.">
+          {board.tenants === null ? (
+            <input className="llp-in mono" aria-label="Workspace" autoComplete="off" spellCheck={false} value={to} onChange={(e) => pick(e.target.value)} />
+          ) : (
+            <select className="llp-in" aria-label="Workspace" value={to} onChange={(e) => pick(e.target.value)}>
+              <option value="">—</option>
+              {[...a.lend_to, ...free].map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+          )}
+        </Field>
+        <Field label="Agents at once" info={`Required, 1 to ${top}: within the plan's own max agents. Enforced where the hold is granted.`}>
+          <input
+            className="llp-in llp-in-n"
+            type="number"
+            min={1}
+            max={top}
+            aria-label="Agents at once"
+            value={agents}
+            onChange={(e) => setAgents(e.target.value)}
+          />
+        </Field>
+      </div>
       <div className="llp-btnrow">
-        <Button kind="primary" disabled={!ok || busy} onClick={() => void send([...a.lend_to, target])}>
-          Lend
+        <Button kind="primary" disabled={!ok || busy} onClick={() => void send(withCap())}>
+          {lent ? 'Save cap' : 'Lend'}
         </Button>
         <Button kind="ghost" onClick={back}>
           Cancel
         </Button>
       </div>
       {a.lend_to.length > 0 && (
-        <Section title="Lent now" info="Ending a lend closes nothing: the workspace's holders run on; its next grant is refused.">
+        <Section title="Lent now" info="Ending a lend or narrowing its cap closes nothing: the workspace's holders run on; its next grant over the cap is refused.">
           <table className="llp-mini">
             <tbody>
               {a.lend_to.map((t) => (
                 <tr key={t}>
                   <td className="mono">{t}</td>
+                  <td data-l="Agents">
+                    <LendUse a={a} t={t} />
+                  </td>
                   <td>
                     <Button size="sm" kind="ghost" aria-label={`End lend to ${t}`} disabled={busy} onClick={() => void send(a.lend_to.filter((x) => x !== t))}>
                       End
@@ -965,6 +1112,9 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
 
   const active: Sheet | null = sheet ?? (linked !== null ? { kind: 'manage', id: linked } : null)
   const acc = active !== null && active.kind !== 'add' ? find(active.id) : null
+  // A sheet is drawn for Add plan, or for a plan the list has; a `?account=`
+  // naming a plan not in it draws neither the sheet nor its scrim.
+  const drawn = active?.kind === 'add' || acc !== null
   const close = () => {
     setSheet(null)
     if (linked !== null) goAccount(null)
@@ -984,7 +1134,7 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
   }
 
   return (
-    <div className={`llp-page${active !== null ? ' has-sheet' : ''}`}>
+    <div className={`llp-page${drawn ? ' has-sheet' : ''}`}>
       {plans.length === 0 ? (
         <section className="llp-empty" aria-label="No plans">
           <h2>
@@ -1009,7 +1159,7 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
           <Table board={board} sel={acc?.account_id ?? null} open={open} onResume={(a) => void resume(a)} rowError={rowError} />
         </>
       )}
-      {active !== null && <div className="llp-scrim" onClick={close} aria-hidden="true" />}
+      {drawn && <div className="llp-scrim" onClick={close} aria-hidden="true" />}
       {active?.kind === 'add' && (
         <AddPlan
           close={close}
@@ -1022,7 +1172,7 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
       {active?.kind === 'manage' && acc !== null && (
         <Manage a={acc} owned={tenant === null || acc.owner_tenant === tenant} close={close} go={open} reread={reread} />
       )}
-      {active?.kind === 'lend' && acc !== null && <LendSheet a={acc} board={board} close={close} back={back} reread={reread} />}
+      {active?.kind === 'lend' && acc !== null && <LendSheet a={acc} board={board} edit={active.to} close={close} back={back} reread={reread} />}
       {active?.kind === 'remove' && acc !== null && (
         <RemoveSheet
           a={acc}
