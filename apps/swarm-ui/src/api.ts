@@ -8588,8 +8588,14 @@ function listedKey(a: ApiKeyAccount): boolean {
  * reaches swarm-api once and is kept nowhere; a refusal never quotes it.
  * A failed mint sends nothing; a refused redeem leaves the link reopened by
  * swarm-api, and this page simply asks again.
+ *
+ * `redeem` is SetupLink.tsx's `redeemSetupLink`, the one redemption path (as
+ * Accounts.tsx's Voice it key uses it), handed in because SetupLink.tsx
+ * imports this module.
  */
-export async function addApiKey(body: { provider: ApiKeyProvider; label: string; owner: string; value: string }): Promise<Result<unknown>> {
+export type RedeemLink = (token: string, value: string) => Promise<Result<unknown>>
+
+export async function addApiKey(body: { provider: ApiKeyProvider; label: string; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 160))
     const id = `u-owner:${body.label}`
@@ -8600,7 +8606,7 @@ export async function addApiKey(body: { provider: ApiKeyProvider; label: string;
   const m = await mintSetupLink({ kind: 'api-key', label: body.label, owner: body.owner, provider: body.provider })
   if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
   const token = m.data.path.split('/').pop() ?? ''
-  return write(route('/v1/setup/links/redeem'), 'POST', { token, value: body.value })
+  return redeem(token, body.value)
 }
 
 /**
@@ -8610,7 +8616,7 @@ export async function addApiKey(body: { provider: ApiKeyProvider; label: string;
  * version and expires the old one; holds, caps, lends and the Voice it share
  * are untouched.
  */
-export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; value: string }): Promise<Result<unknown>> {
+export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
   const provider = body.key.provider as ApiKeyProvider
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 160))
@@ -8622,7 +8628,7 @@ export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; v
   const m = await mintSetupLink({ kind: 'api-key', label: body.key.label, owner: body.owner, provider, replace: true })
   if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
   const token = m.data.path.split('/').pop() ?? ''
-  return write(route('/v1/setup/links/redeem'), 'POST', { token, value: body.value })
+  return redeem(token, body.value)
 }
 
 /** `PUT /v1/accounts/{id}/spend-cap`: a key's monthly spend cap in US dollars, null for none (§4.6). Owner only. */

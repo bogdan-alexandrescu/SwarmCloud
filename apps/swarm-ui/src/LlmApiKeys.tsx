@@ -48,6 +48,7 @@ import {
 } from './api'
 import { accountName } from './accountName'
 import { Info } from './AccountsVerdict'
+import { redeemSetupLink } from './SetupLink'
 import { Button } from './components'
 import type { ApiError, Result } from './fetch'
 import './styles/lp-cards.css'
@@ -466,7 +467,7 @@ function KeyCard({ k, owned, reread }: { k: ApiKeyAccount; owned: boolean; rerea
       )}
       {owned && asking === 'delete' && <DeleteKey k={k} busy={busy} onCancel={() => setAsking(null)} onDelete={() => void run(() => removeAccount(k.account_id))} />}
       {owned && asking === 'replace' && (
-        <ReplaceKey k={k} busy={busy} onCancel={() => setAsking(null)} onSend={(owner, value) => run(() => replaceApiKey({ key: k, owner, value }))} />
+        <ReplaceKey k={k} busy={busy} onCancel={() => setAsking(null)} onSend={(owner, value) => run(() => replaceApiKey({ key: k, owner, value }, redeemSetupLink))} />
       )}
       {owned && asking === 'caps' && <KeyCaps k={k} busy={busy} onCancel={() => setAsking(null)} onSave={(change) => void run(() => saveCaps(k.account_id, change))} />}
       {owned && (asking === 'PAUSED' || asking === 'DRAINING') && (
@@ -542,7 +543,7 @@ function AddKey({ close, done }: { close: () => void; done: () => Promise<void> 
     setBusy(true)
     setError(null)
     if (mode === 'key' && own !== null) {
-      const r = await addApiKey({ provider, label, owner: own, value })
+      const r = await addApiKey({ provider, label, owner: own, value }, redeemSetupLink)
       // The value leaves the page's state whatever the answer: a retry types it again.
       setValue('')
       setBusy(false)

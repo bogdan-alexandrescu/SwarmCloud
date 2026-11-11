@@ -190,7 +190,7 @@ describe('API Keys: every control calls its api.ts function once', () => {
     await waitFor(() => expect(submit.disabled).toBe(false))
     await act(async () => fireEvent.click(submit))
     expect(spies.addApiKey).toHaveBeenCalledTimes(1)
-    expect(spies.addApiKey).toHaveBeenCalledWith({ provider: 'anthropic-api', label: 'build-key', owner: OWNER, value })
+    expect(spies.addApiKey).toHaveBeenCalledWith({ provider: 'anthropic-api', label: 'build-key', owner: OWNER, value }, expect.any(Function))
     expect(spies.mintSetupLink).not.toHaveBeenCalled()
   })
 
