@@ -277,6 +277,9 @@ other one, are Q16.
   (caps, paths, the manifest, the skills' frontmatter) and writes it under `platform/sources/<sha256>.tar`, and the
   diff is shown. Nothing is built before an admin asks; nothing is current before the build passes.
 * **Apply** on a bundled install writes a **bundle** record and starts the build instead of moving `current_version`.
+  The catalogue's own Apply route does this itself: for a bundled install it delegates to the bundle route's start
+  (one code path, the same diff check, `202` and the bundle's status), so the console keeps one Apply button and
+  nothing can reach the old move-at-once path (the owner's pick on Q21).
   `plugin_bundles/{bundle_id}` (swarm-api only, MAC'd, request P6): the bundle key (every bundled install's
   `version_id`, source sha256 and recipe digest: a bundle carries **both** bundled plugins, because one step may load
   both and runs on one image), the base (the release image digests it was built `FROM`), the output digest per runner

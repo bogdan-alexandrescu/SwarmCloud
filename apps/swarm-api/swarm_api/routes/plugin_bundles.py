@@ -13,6 +13,9 @@ rebuild route is the one `swarm upgrade` calls between its image copy and
 infra (the owner, 10 November 2026); it names the new release's base images,
 each checked to be this deployment's own copy by digest.
 
+The catalogue's own Apply route delegates a bundled install's Apply here
+(`start_bundled_apply`), so either route starts the same one build.
+
 Apply and Roll back read the diff as the catalogue's Apply does (section 9.1):
 the admin sends the `diff_sha256` they read, and the plugin's name typed when
 the diff is marked.
@@ -142,17 +145,25 @@ def bundle_status(bundle_id: str, request: Request, auth: AuthContext = Depends(
     return _status(request, ctx, bundle_id)
 
 
-@router.post(BASE + "/installs/{install_id}/apply", status_code=202)
-def apply_bundled(install_id: str, body: ApplyBody, request: Request, auth: AuthContext = Depends(admin_auth),
-                  ctx: AppContext = Depends(get_context)) -> dict:
+def start_bundled_apply(request: Request, ctx: AppContext, install_id: str, body: ApplyBody, by: str) -> dict:
+    """Apply on a bundled install: the diff checked, one build started.
+
+    The one path for both Apply routes: this module's, and the catalogue's
+    own Apply, which delegates here for a bundled install (the owner's pick
+    on Q21) so the console's one Apply button starts the build."""
     store = _store(ctx)
     store.require_key()
     _checked_diff(store, install_id, body)
     config = _config(ctx)
     bundles = _bundles(ctx, store)
-    started = pb.start_apply(store, bundles, _builds(request, ctx), config, install_id, body.version_id,
-                             by=_by(auth))
+    started = pb.start_apply(store, bundles, _builds(request, ctx), config, install_id, body.version_id, by=by)
     return pb.bundle_view(started)
+
+
+@router.post(BASE + "/installs/{install_id}/apply", status_code=202)
+def apply_bundled(install_id: str, body: ApplyBody, request: Request, auth: AuthContext = Depends(admin_auth),
+                  ctx: AppContext = Depends(get_context)) -> dict:
+    return start_bundled_apply(request, ctx, install_id, body, _by(auth))
 
 
 @router.post(BASE + "/installs/{install_id}/roll-back")

@@ -294,21 +294,47 @@ def test_the_build_runs_as_the_builder_account_and_pushes_only_to_the_bundle_rep
     assert w["versions"][(GSTACK, "2.0")]["source_sha256"] in text
 
 
-def test_the_catalogues_own_apply_never_moves_a_bundled_installs_current_version(world):
+def test_the_catalogues_own_apply_starts_the_bundle_build_and_leaves_current_version(world):
+    # The owner's pick on Q21: the catalogue's Apply delegates a bundled
+    # install to the bundle build, the same one start as the bundle route.
     w = world
     before = _current(w)
     v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
     answer = w["client"].post(f"{pc.PLATFORM_BASE}/installs/{GSTACK}/apply",
                               json={"version_id": v2, "diff_sha256": _diff_sha(w, GSTACK, v2)},
                               headers=auth_header("root"))
-    # The catalogue's route refuses a reserved id today (lane 17 opens it to
-    # Update); the store under it refuses a bundled Apply whoever calls it.
-    assert answer.status_code in (409, 422)
-    assert answer.json()["code"] in ("install_bundled", "plugin_built_in")
+    assert answer.status_code == 202, answer.text
+    assert answer.json()["state"] == "building"
+    assert len(w["builds"].started) == 1
+    assert _built(w, answer.json()["bundle_id"])["version_id"] == v2
+    assert _current(w) == before
+    # The store under it still refuses to move a bundled install directly.
     with pytest.raises(ps.PluginRefused) as refused:
         _store(w).apply(GSTACK, v2, by=ROOT)
     assert refused.value.code == "install_bundled"
     assert _current(w) == before
+
+
+def test_the_catalogues_own_apply_on_a_bundled_install_checks_the_diff_it_was_shown(world):
+    w = world
+    before = _current(w)
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    answer = w["client"].post(f"{pc.PLATFORM_BASE}/installs/{GSTACK}/apply",
+                              json={"version_id": v2, "diff_sha256": "0" * 64},
+                              headers=auth_header("root"))
+    assert answer.status_code == 409
+    assert answer.json()["code"] == "diff_changed"
+    assert w["builds"].started == []
+    assert _current(w) == before
+
+
+def test_the_catalogues_own_apply_on_a_bundled_install_is_a_platform_admins_alone(world):
+    w = world
+    v2 = w["versions"][(GSTACK, "2.0")]["version_id"]
+    answer = w["client"].post(f"{pc.PLATFORM_BASE}/installs/{GSTACK}/apply",
+                              json={"version_id": v2, "diff_sha256": _diff_sha(w, GSTACK, v2)},
+                              headers=auth_header("carol"))
+    assert answer.status_code in (401, 403)
     assert w["builds"].started == []
 
 
