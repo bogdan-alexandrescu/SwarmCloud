@@ -90,6 +90,8 @@ class ChainBroker:
         self.minted: set[str] = set()
         self.calls: list[tuple[str, dict]] = []
         self.accounts = {a.id: a for tiers in chains.values() for tier in tiers for a in tier}
+        #: A broker from before the voice lease's `exclude`: it refuses the field.
+        self.refuses_exclude = False
 
     def _walk(self, tiers: list[list[Account]], exclude: set[str]) -> Account | None:
         for tier in tiers:
@@ -114,10 +116,12 @@ class ChainBroker:
         path = request.url.path
         self.calls.append((path, body))
         if path == "/v1/voice/lease":
+            if self.refuses_exclude and "exclude" in body:
+                return httpx.Response(422, json={"detail": "extra fields not permitted"})
             chain = self.chains[body.get("capability", "live")]
             if body.get("capability") == "text" and not body.get("key_tier"):
                 chain = chain[:1]
-            return self._grant(self._walk(chain, set()))
+            return self._grant(self._walk(chain, set(body.get("exclude") or ())))
         if path == "/v1/accounts/assign":
             chain = self.chains["planner"]
             if not body.get("key_tier"):
@@ -228,9 +232,34 @@ def test_a_spent_voice_lease_moves_to_the_next_tier_and_gives_the_spent_one_back
     asyncio.run(scenario())
 
 
-def test_a_move_the_broker_answers_with_the_same_account_is_refused_and_holds_nothing_more():
+def test_a_move_names_the_spent_accounts_in_exclude_so_the_walk_passes_over_them():
+    """The spent key need not read as limited yet: `exclude` passes over it."""
     shared, dedicated = Account(al.TIER_KEY), Account(al.TIER_VOICE_KEY)
     broker, _, http, voice = _broker({"live": [[shared], [dedicated]], "text": [[]]})
+
+    async def scenario():
+        held = await voice.lease(person=PERSON, voice_session_id=VOICE_ID)
+        assert "exclude" not in broker.leases("/v1/voice/lease")[0]
+        moved = await voice.move(held, person=PERSON)
+        assert broker.leases("/v1/voice/lease")[-1]["exclude"] == [shared.id]
+        assert moved.account_id == dedicated.id and moved.excluded == (shared.id,)
+        await held.release()
+        # No tier 3 for Live: the next move passes over both and is refused.
+        with pytest.raises(al.VoicePoolRefused):
+            await voice.move(moved, person=PERSON)
+        assert broker.leases("/v1/voice/lease")[-1]["exclude"] == [shared.id, dedicated.id]
+        await moved.release()
+        assert not shared.holds and not dedicated.holds
+        await http.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_a_move_the_broker_answers_with_the_same_account_is_refused_and_holds_nothing_more():
+    """A broker from before `exclude` (422) is asked again without it."""
+    shared, dedicated = Account(al.TIER_KEY), Account(al.TIER_VOICE_KEY)
+    broker, _, http, voice = _broker({"live": [[shared], [dedicated]], "text": [[]]})
+    broker.refuses_exclude = True
 
     async def scenario():
         held = await voice.lease(person=PERSON, voice_session_id=VOICE_ID)

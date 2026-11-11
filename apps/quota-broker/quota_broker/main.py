@@ -469,6 +469,11 @@ class VoiceLease(StrictModel):
     #: LP-V1), so until it says so a text lease walks the plans alone. A Live
     #: session needs no flag: a key is the only kind it has ever run on.
     key_tier: bool = False
+    #: As `AccountAssign.exclude`: accounts this session already held and
+    #: could not use (a key whose credit is gone, a plan at its limit), so the
+    #: walk passes over them to the next tier (llm-providers.md §5.3). It can
+    #: only narrow what the session is offered, never widen it.
+    exclude: list[str] = Field(default_factory=list, max_length=20)
 
 
 class VoiceHold(StrictModel):
@@ -5670,6 +5675,10 @@ def create_app(
         tiers = voice_chain(
             listing, provider, capability=body.capability, key_tier=body.key_tier
         )
+        # Minus what the session already left as spent (`exclude`, §5.3).
+        skip = {a for a in body.exclude if a}
+        if skip:
+            tiers = [[a for a in tier if a.account_id not in skip] for tier in tiers]
         chosen, reason = choose_voice_chain(tiers, listing, person, now)
         refused = {
             "account_id": None,

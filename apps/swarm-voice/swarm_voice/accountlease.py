@@ -39,10 +39,12 @@ textchat.py speaks the developer Responses wire). A session whose account is
 spent (a key's credit gone, a plan at its limit, a renewal refused) MOVES
 (`VoiceBroker.move`): it leases again while it still holds the spent account,
 so the broker's walk passes over it, and gives the spent one back once the
-next tier holds the session. The voice lease names no `exclude` (the broker's
-`VoiceLease` refuses one), so a broker that answers the spent account again
-has nothing further to offer: the move is refused and the extra hold given
-straight back.
+next tier holds the session. The move's lease names every account the session
+has left as spent in `exclude` (the broker's `VoiceLease.exclude`), so the
+walk passes over them even once their holds are gone; a broker from before
+`exclude` refuses the field (422), and the lease is asked again without it. A
+broker that answers a spent account again has nothing further to offer: the
+move is refused and the extra hold given straight back.
 
 The hold's TTL is ten minutes and swarm-voice renews every four
 (`RENEW_SECONDS`), so a swarm-voice that dies leaves a hold that expires on its
@@ -194,7 +196,7 @@ class VoiceBroker:
         return await self._post(path, payload)
 
     async def lease(self, *, person: str, voice_session_id: str,
-                    capability: str = CAPABILITY) -> "PoolCredential":
+                    capability: str = CAPABILITY, exclude: tuple[str, ...] = ()) -> "PoolCredential":
         """Lease a Voice it pool account for `person`'s session: a key for a Live
         session (`CAPABILITY`), the ChatGPT plan for a text one
         (`CAPABILITY_TEXT`). Raises VoicePoolRefused with the broker's reason,
@@ -208,7 +210,14 @@ class VoiceBroker:
             # so the broker walks on past the plans (§5.3). Live sends nothing:
             # a key is the only kind it has ever run on.
             payload["key_tier"] = True
+        if exclude:
+            payload["exclude"] = list(exclude)
         status, body = await self._post("/v1/voice/lease", payload)
+        if status == 422 and exclude:
+            # A broker from before `exclude` (module docstring): the spent
+            # account is still held, so its walk passes over it anyway.
+            del payload["exclude"]
+            status, body = await self._post("/v1/voice/lease", payload)
         if status != 200 or not isinstance(body, dict):
             # The status only: an error body may quote the request.
             raise CredentialError(f"the quota broker refused the voice lease (HTTP {status})")
@@ -220,7 +229,7 @@ class VoiceBroker:
         return PoolCredential(self, account_id=str(body["account_id"]), assignment_id=str(body["assignment_id"]),
                               voice_session_id=voice_session_id, bearer=bearer,
                               label=str(body.get("label") or ""), tier=tier_of(body),
-                              capability=capability)
+                              capability=capability, excluded=tuple(exclude))
 
     async def move(self, spent: "PoolCredential", *, person: str) -> "PoolCredential":
         """The next tier for a session whose account is spent (§5.3): a new
@@ -229,8 +238,8 @@ class VoiceBroker:
         session. A broker that answers the spent account again has no other to
         offer: that hold is given back and VoicePoolRefused raised."""
         moved = await self.lease(person=person, voice_session_id=spent.voice_session_id,
-                                 capability=spent.capability)
-        if moved.account_id == spent.account_id:
+                                 capability=spent.capability, exclude=(*spent.excluded, spent.account_id))
+        if moved.account_id in (*spent.excluded, spent.account_id):
             await moved.release()
             raise VoicePoolRefused(NONE_AVAILABLE)
         log.info("voice session %s: moved from the %s tier to the %s tier", spent.voice_session_id,
@@ -264,7 +273,7 @@ class PoolCredential:
 
     def __init__(self, broker: VoiceBroker, *, account_id: str, assignment_id: str,
                  voice_session_id: str, bearer: Bearer, label: str = "", tier: str | None = None,
-                 capability: str = CAPABILITY) -> None:
+                 capability: str = CAPABILITY, excluded: tuple[str, ...] = ()) -> None:
         self._broker = broker
         self.account_id = account_id
         self.assignment_id = assignment_id
@@ -273,6 +282,8 @@ class PoolCredential:
         #: The tier the broker granted (`TIERS`), None when it named none.
         self.tier = tier
         self.capability = capability
+        #: The accounts this session already left as spent, which a move passes over.
+        self.excluded = excluded
         #: Called once when the broker refuses a renewal (the hold is gone):
         #: the session moves to the next tier (live.py).
         self.on_lost: Callable[[], None] | None = None

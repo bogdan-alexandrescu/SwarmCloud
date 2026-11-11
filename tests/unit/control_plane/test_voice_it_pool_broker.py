@@ -879,3 +879,27 @@ def test_a_key_is_neither_refreshed_nor_polled(client, accounts):
     outcomes = poller.poll_round(listed)
     assert [o.account_id for o in outcomes] == [plan_id]
     assert len(asked) == 1
+
+
+def test_a_voice_lease_passes_over_the_accounts_it_excludes(client, accounts):
+    """A session whose key's credit is gone names it in `exclude`, so the walk
+    passes over it (llm-providers.md §5.3), as an assign's `exclude` does."""
+    first = _key(client, accounts, OWNER, "key-1")
+    second = _key(client, accounts, OWNER, "key-2")
+    for account_id in (first, second):
+        accounts.set_max_agents(account_id, 4)
+    leased = _lease(client).json()["account_id"]
+    other = ({first, second} - {leased}).pop()
+    client.identity.as_voice()
+    moved = client.post(
+        "/v1/voice/lease",
+        json={"person": PERSON, "voice_session_id": "vs-1", "provider": "openai",
+              "capability": "live", "exclude": [leased]},
+    ).json()
+    assert moved["account_id"] == other and moved["tier"] is not None
+    refused = client.post(
+        "/v1/voice/lease",
+        json={"person": PERSON, "voice_session_id": "vs-1", "provider": "openai",
+              "capability": "live", "exclude": [first, second]},
+    ).json()
+    assert refused["account_id"] is None and refused["assignment_id"] is None
