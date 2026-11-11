@@ -4,6 +4,7 @@
                                             applied, pending, openai_key, zones}
     GET   /v1/voice/settings/catalogue  -> the catalogue: every name a setting may take
     PATCH /v1/voice/settings            {version, <field>: <name>, ...} -> the same as GET
+                                        (`debug` takes true or false, not a name)
 
 WHO. Reading is for a Voice it person (VOICE_IT_PEOPLE, else the platform
 owner) or a platform admin: the read-only view for one, the editing view for
@@ -15,7 +16,9 @@ NAMES ONLY. The body is `version` plus the fields to change, each a name from
 the catalogue. A field the catalogue does not define, a value that is not one
 of its names, or a zone with no speech machine is 422 with `detail.field`
 naming it; a stale `version` is 409 with the current one in `detail.version`.
-Each write lands with its `voice_audit` row in one transaction.
+Each write lands with its `voice_audit` row in one transaction. Debug mode
+(`debug`, voice/settings.py) is written by the same people the same way: a
+platform admin, versioned and audited; anything but true or false is 422.
 
 THE KEY. `openai_key` is `{set, by, at, label, link}`: whether the Voice it
 pool holds an OpenAI developer API key (the broker's `GET /v1/voice/pool`,
