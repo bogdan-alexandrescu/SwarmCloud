@@ -102,7 +102,11 @@ returns this park to READY, reason `owner_questions_answered`, once every
 question its `owner_questions` hold names is answered. An answer while
 another named question is still open leaves it parked, and a hold the route
 cannot read -- `unreadable` entries, a malformed or out-of-workflow entry --
-waits for a person's `human-ready`, as before. A review re-running wakes
+waits for a person's `human-ready`, as before. That ready is recorded with
+the verdict and head it acknowledged (10 November 2026, `_unreadable_hold`),
+and the next attempt goes on past those unreadable entries; before, nothing
+recorded it, and the attempt the ready started parked again on the same
+entries, every time. A review re-running wakes
 nothing. Either way the next attempt reads every answer again. The
 scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
 it spares a `question_wait` or `release_wait` one, so it never dead-letters
@@ -219,6 +223,21 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: A member's ready on an owner-question hold that named `needs_owner`
+#: entries the merge cannot read (10 November 2026): swarm-api's
+#: `handoff.ready_writes` records it on this task, in the transaction that
+#: returns it to READY, as `{source: {by, at, review_task, verdict_digest,
+#: head, round_heads, unreadable}}` -- `source` one of the two below, the
+#: rest copied from the park's `acknowledges` (`_unreadable_hold`). Held
+#: equal to swarm-api's `handoff.OWNER_READY_METADATA_KEY` by
+#: tests/unit/worker/test_merge_ready_past_unreadable.py.
+OWNER_READY_METADATA_KEY = "owner_hold_ready"
+OWNER_READY_REVIEW = "review"
+OWNER_READY_SECURITY = "security_review"
+#: What an acknowledgement must match, field for field, to be this hold's.
+OWNER_READY_BASIS = ("review_task", "verdict_digest", "head", "round_heads")
+#: Where the merge records that it went on past a hold's unreadable entries.
+OWNER_READY_SUMMARY_KEY = "owner_unreadable_ready"
 #: The code, and the HUMAN_REQUIRED park's `park_phase`, of a CI wait handed
 #: to a person (part of #2688, 2026-11-06): the repair rounds are spent past
 #: CI_STUCK_SECONDS, or a check that failed at a head a repair round was
@@ -2272,7 +2291,8 @@ class _Run:
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
-    def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
+    def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int,
+                       acknowledges: dict[str, Any] | None = None) -> ActionOutcome:
         """The owner's questions are a hold no tick can clear: park for a person.
 
         `held` is each still-unanswered `needs_owner` question, or each
@@ -2280,15 +2300,24 @@ class _Run:
         how many entries could not be read. The lifecycle writes the park in
         one fenced transaction (`handoff.park_human_required`), releases the
         lease and exits 75.
+
+        `acknowledges` (with `unreadable`) is what a member's ready on this
+        park acknowledges (`_unreadable_hold`): swarm-api records it on the
+        task when the ready returns it to READY, and the next attempt goes on
+        past these unreadable entries while the verdict and head are the same.
         """
         named = [f"step {q.get('step_id') or q.get('task_id')} question {q.get('question_index')}"
                  for q in held]
         if unreadable:
             named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
-                         "the merge cannot read")
+                         "the merge cannot read (a member's ready lets the merge go on past "
+                         f"{'it' if unreadable == 1 else 'them'})")
         message = ("the review, or a blocking question of a fix round, says these owner "
                    "questions hold the merge, and they are unanswered: " + "; ".join(named))
-        wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
+        wait: dict[str, Any] = {"code": OWNER_QUESTIONS_OPEN, "questions": held,
+                                "unreadable": unreadable}
+        if unreadable and acknowledges is not None:
+            wait["acknowledges"] = acknowledges
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{OWNER_QUESTIONS_OPEN}: {message}",
@@ -2434,8 +2463,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # (`owner_questions.hold_reason`) -- no longer holds the merge. It
         # is merged past, recorded, and stays open for the owner.
         held, past = _advisory_split(ctx, held)
-        if held or verdict.needs_owner_unreadable:
-            return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        # 10 November 2026: unreadable entries a member said ready on, for
+        # this verdict at this head, hold no more; readable ones still do.
+        unreadable, basis = _unreadable_hold(run, OWNER_READY_REVIEW, target.review,
+                                             verdict, target, opener)
+        if held or unreadable:
+            return run.wait_for_owner(held, unreadable=unreadable, acknowledges=basis)
         if past:
             summary[ADVISORY_MERGED_PAST_KEY] = past
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
@@ -2724,7 +2757,9 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
     review's own task. Then every answer must accept the risk or mark a false
     positive; any other answer -- "Fix it now", or free text naming no option
     -- refuses `security_fix_requested`, so the finding is fixed and reviewed
-    before anything merges. A NOT_YET naming no question, or a verdict that
+    before anything merges. Entries it cannot read park too; once a member's
+    ready acknowledges them (`_unreadable_hold`) the merge refuses
+    `security_verdict_not_merge`, since no unreadable entry accepts a risk. A NOT_YET naming no question, or a verdict that
     does not read, refuses: an unreadable security review is not a pass.
     """
     staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
@@ -2752,8 +2787,20 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
         if ended is not None:
             return ended
     held = _unanswered(ctx, verdict.needs_owner)
-    if held or verdict.needs_owner_unreadable:
-        return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+    unreadable, basis = _unreadable_hold(run, OWNER_READY_SECURITY, None, verdict, target, opener)
+    if held or unreadable:
+        return run.wait_for_owner(held, unreadable=unreadable, acknowledges=basis)
+    if verdict.needs_owner_unreadable:
+        # A ready acknowledged entries no one can read: none of them is an
+        # answer that accepts a risk or marks a false positive, so the gate
+        # stays closed -- refused, not parked for ever and not merged.
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and "
+            f"{verdict.needs_owner_unreadable} of its needs_owner entries cannot be read, so no "
+            "answer accepts the risk or marks a false positive for them: re-run the security "
+            "review",
+        )
     answers = _security_answers(ctx, verdict.needs_owner)
     record["answers"] = answers
     fix = [row for row in answers
@@ -3252,6 +3299,55 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
                              "gets")
     return wait(OWNER_PICK_FIX_PENDING, still,
                 f"pick fix round {len(rounds) + 1} of {MERGE_PICK_ROUNDS_MAX} is due to build it")
+
+
+def _unreadable_hold(run: _Run, source: str, review_task: str | None, verdict: Any,
+                     target: MergeTarget, opener: Mapping[str, Any],
+                     ) -> tuple[int, dict[str, Any] | None]:
+    """`(unreadable entries still holding, what a ready on them acknowledges)`.
+
+    THE LIVE FINDING (10 November 2026): a review wrote its `needs_owner`
+    entries as sentences, the merge parked on two it could not read, and
+    every human-ready re-ran it into the same park for eight hours: nothing
+    recorded that a person had said ready, and nothing could ever read the
+    entries. Now the park names what a ready acknowledges -- the review task,
+    the verdict file's digest, the head the merge pins (`reviewed_head`, else
+    the opener's pushed head) and this merge's own rounds' heads -- and
+    swarm-api's `ready_writes` copies it onto the task, with who and when,
+    under `OWNER_READY_METADATA_KEY`. While all four are the same, this
+    attempt goes on past that verdict's unreadable entries, and records so
+    in `OWNER_READY_SUMMARY_KEY`. A newer review (another digest), a moved
+    head or a new round's head is another hold, which parks again until
+    someone says ready again. Only the UNREADABLE entries are acknowledged:
+    a readable `needs_owner` question is still re-read and must still be
+    answered, and the pick-built check, the checks and every later gate
+    still apply. The record is the task's own document, which only a ready
+    writes; a forged one could at most skip what a ready skips.
+    """
+    count = verdict.needs_owner_unreadable
+    if not count:
+        return 0, None
+    ctx = run.ctx
+    own = _own_doc(ctx)
+    rounds = _fix_round_heads(ctx, own, opener, target.pull_request or "")
+    basis: dict[str, Any] = {
+        "source": source,
+        "review_task": review_task,
+        "verdict_digest": verdict.digest,
+        "head": _str_or_none(run.summary.get("reviewed_head")) or _pushed_head(opener),
+        "round_heads": sorted({head for _task, head in rounds}),
+    }
+    if basis["verdict_digest"] is None or basis["head"] is None:
+        return count, None
+    record = _mapping(_mapping(_mapping(own.get("metadata")).get(OWNER_READY_METADATA_KEY))
+                      .get(source))
+    if any(record.get(key) != basis[key] for key in OWNER_READY_BASIS):
+        return count, basis
+    run.summary.setdefault(OWNER_READY_SUMMARY_KEY, {})[source] = {
+        "by": _str_or_none(record.get("by")), "at": _str_or_none(record.get("at")),
+        "unreadable": count, "verdict_digest": basis["verdict_digest"], "head": basis["head"],
+    }
+    return 0, None
 
 
 def _unanswered(ctx: ActionContext,

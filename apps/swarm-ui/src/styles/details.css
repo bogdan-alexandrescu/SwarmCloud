@@ -537,6 +537,13 @@
 .qc-asker-head { margin: 4px 0 0; overflow-wrap: anywhere; }
 .qc-unreadable { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .qc-unreadable p { margin: 0; }
+/* The tip hangs from the SENTENCE, not from its (i). The inspector (.drawer.ag-split) clips sideways, and where the
+   (i) lands depends on how the sentence wraps: pinned to either side of the icon, the tip escaped one edge or the
+   other (a right-pinned tip lost 160 of its 240px past the inspector's left edge at 1440x900). The paragraph spans
+   the card, so a tip from its left edge, no wider than it, stays inside wherever the icon falls. */
+.qc-unreadable > p { position: relative; }
+.qc-unreadable > p > .c-tip-host { position: static; }
+.qc-unreadable .c-tip { left: 0; right: auto; max-width: min(240px, 100%); }
 
 /* --- "Why it's waiting" (WaitPanel.tsx, #1782) ----------------------------
    The card's own tokens and a 3px leading rule like the Now card's: warn
