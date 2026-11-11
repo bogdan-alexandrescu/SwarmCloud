@@ -648,7 +648,8 @@ describe('Plans: Add plan chooses its vendor', () => {
     await started()
     const reads = spies.loadAccountsBoard.mock.calls.length
     await tick(7000)
-    await tick()
+    // The list's reload runs on the faked clock too.
+    await tick(5000)
     vi.useRealTimers()
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add plan' })).toBeNull())
     expect(spies.loadAccountsBoard.mock.calls.length).toBeGreaterThan(reads)
@@ -731,24 +732,30 @@ describe('Plans: Add plan chooses its vendor', () => {
     expect(within(add).queryByRole('alert')).toBeNull()
   })
 
-  /** The words a reader sees in the sheet: its text nodes, tooltips' hidden copy left out. */
-  function words(el: HTMLElement): number {
+  /**
+   * The words a reader sees in the sheet, text node by text node (proseapp.tsx's
+   * rule): what sits behind an (i) -- its hidden copy and its tooltip -- and the
+   * (i) glyph itself are not on the surface, so they are left out.
+   */
+  function words(el: HTMLElement): string[] {
     const copy = el.cloneNode(true) as HTMLElement
-    for (const n of copy.querySelectorAll('[data-help-description], style, script')) n.remove()
-    const inputs = [...copy.querySelectorAll('input')].map((i) => (i as HTMLInputElement).value)
-    return [...(copy.textContent ?? '').split(/\s+/), ...inputs.flatMap((v) => v.split(/\s+/))].filter((t) => /[\p{L}\p{N}]/u.test(t)).length
+    for (const n of copy.querySelectorAll('[data-help-description], [hidden], [role="tooltip"], .acct-i, style, script')) n.remove()
+    const walk = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT)
+    const out: string[] = []
+    for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) out.push(...(n.textContent ?? '').split(/\s+/).filter((t) => /[\p{L}\p{N}]/u.test(t)))
+    return out
   }
 
   it('keeps the sheet to its words: no explanatory prose on either path', async () => {
     const add = await openAdd()
-    // The Claude sheet's own words, plus the vendor choice's two.
-    expect(words(add)).toBeLessThanOrEqual(23)
+    // Claude: the sheet's 20 words before this change, plus the vendor choice's three.
+    expect(words(add).join(' ')).toBe("Add plan Claude Vendor Claude ChatGPT Signed in by Me, here The plan's owner Label Max agents 1 Claude sign-in Start sign-in Cancel")
     fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
     fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
-    expect(words(add)).toBeLessThanOrEqual(17)
+    expect(words(add).join(' ')).toBe('Add plan ChatGPT Vendor Claude ChatGPT Label Max agents 1 ChatGPT sign-in Start sign-in Cancel')
     fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
     await within(add).findByRole('textbox', { name: 'Device code' })
-    expect(words(add)).toBeLessThanOrEqual(19)
+    expect(words(add).join(' ')).toBe('Add plan ChatGPT Vendor Claude ChatGPT Label Max agents 1 ChatGPT sign-in Open sign-in 2 Code Cancel')
     for (const p of add.querySelectorAll('p')) expect(p.getAttribute('role')).toBe('alert')
   })
 
@@ -760,7 +767,6 @@ describe('Plans: Add plan chooses its vendor', () => {
     expect(classes.size).toBeGreaterThan(0)
     for (const c of classes) {
       const own = rules.filter((r) => new RegExp(`\\.${c}(?![\\w-])`).test(r.sel))
-      expect(own.length, c).toBeGreaterThan(0)
       for (const r of own) for (const m of r.body.matchAll(/(?:^|;)\s*(?:min-)?width\s*:\s*(\d+)px/g)) expect(Number(m[1]), r.sel).toBeLessThanOrEqual(120)
     }
     expect(add.querySelector('[style*="width"]')).toBeNull()

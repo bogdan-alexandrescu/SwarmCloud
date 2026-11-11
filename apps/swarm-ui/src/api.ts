@@ -7440,6 +7440,93 @@ export async function finishAccountSignIn(body: {
 }
 
 /**
+ * What `POST /v1/accounts/device/start` answers with, as routes/accounts.py's
+ * `_DEVICE_START_FIELDS` passes it: the code to type, the page to type it on
+ * and the state to poll with. Never the device id, which the broker keeps.
+ */
+export interface DeviceSignIn {
+  state: string
+  user_code: string
+  /** Always https: it is handed to `window.open`. */
+  verification_uri: string
+  /** Null when the server did not say; no deadline is invented here. */
+  expires_in_seconds: number | null
+  interval_seconds: number
+}
+
+/** What `POST /v1/accounts/device/poll` answers with. */
+export type DevicePoll =
+  | { status: 'pending'; interval_seconds: number | null }
+  | { status: 'expired' }
+  | { status: 'filed'; account: Account | null; expires_at: string | null }
+
+/** RFC 8628 §3.5's default poll interval, for a start answer that names none. */
+const DEVICE_INTERVAL_DEFAULT_S = 5
+
+function deviceRefusal(message: string): Result<never> {
+  return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message } }
+}
+
+function positiveSeconds(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
+
+/**
+ * `POST /v1/accounts/device/start`: a ChatGPT plan's sign-in with a one-time
+ * code, for a browser that cannot catch the plan's localhost redirect. The
+ * body is `AccountDeviceSignInStart`'s, a `StrictModel`: the label and the
+ * lends, no provider (only that plan signs in this way) and no owner (the
+ * proxy resolves the caller's workspace).
+ */
+export async function beginDeviceSignIn(body: { label: string; lend_to: string[] }): Promise<Result<DeviceSignIn>> {
+  const res = USE_FIXTURES ? await fixtureBeginDeviceSignIn(body) : await write(route('/v1/accounts/device/start'), 'POST', body)
+  if (res.status !== 'ok') return res as Result<DeviceSignIn>
+  const b = res.data
+  if (!isRecord(b) || typeof b.state !== 'string' || typeof b.user_code !== 'string' || b.user_code === '' || typeof b.verification_uri !== 'string') {
+    return deviceRefusal('The platform answered the sign-in request without a code and a page to type it on. Nothing was registered.')
+  }
+  // Checked for `authorize_url`'s reason: this value goes to `window.open`.
+  if (!/^https:\/\//i.test(b.verification_uri)) {
+    return deviceRefusal('The platform returned a sign-in page this console will not open, because it is not an https address. Nothing was registered.')
+  }
+  return {
+    status: 'ok',
+    fetchedAt: res.fetchedAt,
+    data: {
+      state: b.state,
+      user_code: b.user_code,
+      verification_uri: b.verification_uri,
+      expires_in_seconds: positiveSeconds(b.expires_in_seconds),
+      interval_seconds: positiveSeconds(b.interval_seconds) ?? DEVICE_INTERVAL_DEFAULT_S,
+    },
+  }
+}
+
+/**
+ * `POST /v1/accounts/device/poll`: `pending` (with the interval to wait),
+ * `expired`, or `filed` with the plan. Only the tenant that started it may
+ * poll; the broker files the plan once and a second poll reads it filed. An
+ * answer naming any other status is an error, never a guess at pending.
+ */
+export async function pollDeviceSignIn(body: { state: string }): Promise<Result<DevicePoll>> {
+  const res = USE_FIXTURES ? await fixturePollDeviceSignIn(body) : await write(route('/v1/accounts/device/poll'), 'POST', body)
+  if (res.status !== 'ok') return res as Result<DevicePoll>
+  const b = res.data
+  const ok = (data: DevicePoll): Result<DevicePoll> => ({ status: 'ok', fetchedAt: res.fetchedAt, data })
+  if (isRecord(b) && b.status === 'pending') return ok({ status: 'pending', interval_seconds: positiveSeconds(b.interval_seconds) })
+  if (isRecord(b) && b.status === 'expired') return ok({ status: 'expired' })
+  if (isRecord(b) && b.status === 'filed') {
+    return ok({
+      status: 'filed',
+      // A filed answer that names no account is still filed: the list's reload finds the plan.
+      account: isRecord(b.account) && typeof b.account.account_id === 'string' ? (b.account as unknown as Account) : null,
+      expires_at: typeof b.expires_at === 'string' ? b.expires_at : null,
+    })
+  }
+  return deviceRefusal('The platform answered the sign-in check with a status this console does not know. Nothing on this page was changed.')
+}
+
+/**
  * `PUT /v1/accounts/{id}/lending`. The whole set, not a delta: a list is
  * today's bare `lend_to` (a borrower already lent keeps its cap), a map is
  * `lends`, each borrowing workspace with its agents cap (§4.6, Q7).
@@ -8395,6 +8482,59 @@ async function fixtureFinishSignIn(body: {
       note: 'stored write-only; no route in this service returns key material',
     },
   }
+}
+
+/**
+ * The device sign-ins this fixture holds, keyed by state: a code, then the
+ * plan filed on the second poll (the first reads pending, so the console's
+ * polling is exercised). The plan filed is the label the person typed, on
+ * the fixture's own workspace, unmeasured: no account is invented.
+ */
+const fixtureDevice = new Map<string, { label: string; lend_to: string[]; polls: number }>()
+
+function fixtureDeviceCode(): string {
+  const pick = () => Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, '0')
+  return `${pick()}-${pick()}`
+}
+
+async function fixtureBeginDeviceSignIn(body: { label: string; lend_to: string[] }): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 260))
+  if (!/^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(body.label)) {
+    return fixtureRefused(`account label '${body.label}' must be lowercase letters, digits and dashes, starting and ending alphanumeric, at most 40 characters`)
+  }
+  const state = `fixture-device-${Math.random().toString(36).slice(2)}`
+  fixtureDevice.set(state, { label: body.label, lend_to: body.lend_to, polls: 0 })
+  noteFixtureProbe(route('/v1/accounts/device/start'), 260, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      state,
+      user_code: fixtureDeviceCode(),
+      verification_uri: 'https://device.example.com/activate',
+      expires_in_seconds: 900,
+      interval_seconds: 5,
+      provider: 'openai',
+    },
+  }
+}
+
+async function fixturePollDeviceSignIn(body: { state: string }): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 120))
+  const pending = fixtureDevice.get(body.state)
+  if (!pending) return { status: 'ok', fetchedAt: Date.now(), data: { status: 'expired' } }
+  noteFixtureProbe(route('/v1/accounts/device/poll'), 120, true)
+  pending.polls += 1
+  if (pending.polls < 2) return { status: 'ok', fetchedAt: Date.now(), data: { status: 'pending', interval_seconds: 5 } }
+  const id = `${FIXTURE_TENANT}:${pending.label}`
+  const existing = fixtureAccounts.find((a) => a.account_id === id)
+  const account: ServedAccount = existing
+    ? { ...existing, lend_to: pending.lend_to }
+    : fixtureAccount(FIXTURE_TENANT, pending.label, { provider: 'openai', lend_to: pending.lend_to, observed_at: null, stale: true, windows: {} })
+  fixtureAccounts = existing ? fixtureAccounts.map((a) => (a.account_id === id ? account : a)) : [...fixtureAccounts, account]
+  // Filed once; the state then reads as a sign-in that is over.
+  fixtureDevice.delete(body.state)
+  return { status: 'ok', fetchedAt: Date.now(), data: { status: 'filed', account, expires_at: ISO(8 * 3600_000), registered: null, organisation: null } }
 }
 
 async function fixtureLending(accountId: string, lendTo: string[] | Record<string, number>): Promise<Result<unknown>> {
