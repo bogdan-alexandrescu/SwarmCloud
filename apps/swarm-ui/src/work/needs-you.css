@@ -138,10 +138,16 @@
 @media (max-width: 560px) {
   .ny-bar { flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
   /* The toggle does not scroll: a button with a scrollbar pushed its caret, the
-     only open/closed cue, past the screen's edge. "Needs you" and the caret
-     keep their width; the chips give theirs up and cut at their edge. */
-  .ny.has-some .ny-bar { overflow: hidden; }
-  .ny.has-some .ny-bar > .ny-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+     only open/closed cue, past the screen's edge. Nor does it cut: every count
+     stays whole. As WorkflowNeedsCard draws only the kinds with something
+     waiting, a zero chip is not drawn in the collapsed header, and a faint
+     "not known" mark is its glyph alone, its words in the tooltip and its
+     label; what is left fits on one line beside "Needs you" and the caret, and
+     wraps to a second line rather than clip if it does not. */
+  .ny.has-some .ny-bar { flex-wrap: wrap; overflow: visible; }
+  .ny.has-some .ny-bar > .ny-chip { flex: none; }
+  .ny.has-some .ny-bar > .ny-chip.is-zero { display: none; }
+  .ny.has-some .ny-bar > .ny-chip.is-faint > b { display: none; }
   .ny:not(.has-some) { padding: 0; border: 0; background: none; }
   .ny:not(.has-some) > .ny-quiet { display: none; }
 }
