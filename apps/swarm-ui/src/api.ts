@@ -17968,6 +17968,8 @@ export interface VoiceTraceTurn {
   none_code: string | null
   told: VoiceTraceText
   events: Record<string, number>
+  /** The credential tier that served the turn (`plan`, `api_key`, `voice_dedicated`), only when the server sends one. */
+  tier?: string
 }
 
 /** One traced session in the list. */
@@ -18041,6 +18043,7 @@ export function normVoiceTraceTurn(raw: unknown): VoiceTraceTurn {
     none_code: telStr(o.none_code),
     told: traceTexts(o.told),
     events: traceCounts(o.events),
+    ...(typeof o.tier === 'string' ? { tier: o.tier } : {}),
   }
 }
 

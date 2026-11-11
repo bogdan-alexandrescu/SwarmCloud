@@ -13,6 +13,9 @@
  *             partial, real-time factors, first audio), Machine (peaks, model
  *             load and warm-up), Start (the start's phases) and Cost (minutes,
  *             the ledger's machine cost against both caps, stock-outs).
+ *   Trace     debug mode's card (voice/DebugTrace.tsx, the owner's pick of 10
+ *             November 2026, "Trace on Telemetry"): the recent traced
+ *             sessions and one opened, every planner turn in full.
  *
  * EVERY NUMBER IS SERVED. Percentiles, minutes, days and cost are computed by
  * swarm-api on read (speech_telemetry.py); the page adds nothing up but the
@@ -45,6 +48,7 @@ import type { ApiError } from '../fetch'
 import { PageHead } from '../Shell'
 import { currentZone } from '../timezone'
 import { clockTime } from '../types'
+import { DebugTrace } from './DebugTrace'
 import { Bars, CapMeter, PhaseTrack, Spark, Tile, orderedPhases, phaseWord, quantile, usd } from './telemetryCharts'
 import '../styles/voice-settings.css'
 import '../styles/voice-telemetry.css'
@@ -502,6 +506,7 @@ export function VoiceTelemetry() {
       <div className="vset vtel">
         {head}
         <p className="vtel-empty">No sessions yet</p>
+        <DebugTrace sessionId={null} quiet />
       </div>
     )
   }
@@ -521,6 +526,7 @@ export function VoiceTelemetry() {
         </section>
       )}
       {session !== null && <SessionCards s={session} day={day} detail={detail} detailError={detailError} onRetry={() => void loadDetail()} />}
+      <DebugTrace sessionId={sessionId} />
     </div>
   )
 }
