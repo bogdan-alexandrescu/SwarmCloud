@@ -319,7 +319,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -369,6 +369,9 @@ from .issueci import (
     MAX_EXCERPT_CHECKS,
     MAX_TITLE_CHARS,
     NO_CHANGE_MARKER,
+    TRAIN_CONTEXT,
+    TRAIN_ON,
+    TRAIN_VARIABLE,
     _bound,
     _clip,
     _log_failures,
@@ -687,14 +690,37 @@ def in_merge_queue(writer: GitHubWriter, ref: IssueRef, token: str) -> bool:
     return queued
 
 
+def _train_on(writer: GitHubWriter, ref: IssueRef, token: str) -> bool:
+    """Whether the repository's merge train is on, for the wake tick.
+
+    `vars.MERGE_TRAIN` exactly `on`, read as the worker's
+    `agent_worker.merge.repository_train` reads it. Unlike the step, a switch
+    the tick cannot read -- a token without *Variables: Read*, any other
+    refusal -- is off: the park then waits on `merge-train` as on any other
+    required check, and the step's own read decides when it wakes otherwise,
+    as before. A quota refusal raises, so the tick's hold is unchanged.
+    """
+    try:
+        return writer.repository_variable(ref, TRAIN_VARIABLE, token) == TRAIN_ON
+    except ForgeRateLimited:
+        raise
+    except Exception as exc:  # noqa: BLE001 - unreadable is off
+        code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+        log.info("merge wake %s: merge train switch not read (%s); read as off",
+                 ref.repository, code)
+        return False
+
+
 def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
-          update_pending: bool = False, queued: bool = False) -> _Reading:
+          update_pending: bool = False, queued: bool = False,
+          train_on: Callable[[], bool] | None = None) -> _Reading:
     """`settled`, keeping what was read: the pull request and, when read, the checks.
 
     `update_pending`: the park waits on an update GitHub has not made yet, so
     an unmoved head is a wait and its checks are not read (module docstring).
     `queued`: the park waits on the merge queue, which is read in place of
-    the checks.
+    the checks. `train_on`: whether the repository's merge train is on, asked
+    only of a base that requires its `merge-train`; None reads it as off.
     """
     pull = writer.read_pull(ref, ref.number, token)
     if pull.merged:
@@ -714,11 +740,22 @@ def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
     # With the pull request's head ref, as the worker's `merge.checks_at` reads
     # it: another branch's push suite at this sha is dropped
     # (`_other_branch_push`), so its green never stands for ours (#2946).
-    reading = evaluate(
-        required_status_checks(rules),
-        writer.check_runs(ref, head, token, head_ref=pull.head_ref or None),
-        writer.commit_statuses(ref, head, token),
-    )
+    required = required_status_checks(rules)
+    runs = writer.check_runs(ref, head, token, head_ref=pull.head_ref or None)
+    statuses = writer.commit_statuses(ref, head, token)
+    # The repository merge train's own `merge-train` (#3312), which it posts
+    # only on a pull request it boarded; it boards only `ready` ones, which
+    # the merge step labels once woken. With the train on, it is left out as
+    # the step's gate leaves it out, so a head whose other required checks
+    # are green wakes the step instead of waiting on it forever. With the
+    # train off, or unreadable, it is an ordinary required check.
+    if (train_on is not None and any(c.context == TRAIN_CONTEXT for c in required)
+            and train_on()):
+        required = [c for c in required if c.context != TRAIN_CONTEXT]
+        runs = [r for r in runs if not (isinstance(r, Mapping) and r.get("name") == TRAIN_CONTEXT)]
+        statuses = [s for s in statuses
+                    if not (isinstance(s, Mapping) and s.get("context") == TRAIN_CONTEXT)]
+    reading = evaluate(required, runs, statuses)
     if reading.state == GREEN:
         return _Reading("green", pull, reading)
     if reading.state == RED:
@@ -2526,6 +2563,10 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
         log.info("github quota: merge wake tenant=%s held until %s", tenant_id,
                  halted.isoformat())
     logged: set[str] = set()
+    # The repository merge train's switch, by repository: read at most once
+    # a tick, only for a base that requires `merge-train`, and with the
+    # tenant's own token (invariant 9).
+    trains: dict[str, bool] = {}
     try:
         for doc in docs[:limit]:
             # The query filtered on it; asked again, so a task of another
@@ -2589,6 +2630,13 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             # A train round's park (#3313) is green at its head: the pull
             # request is read, never the checks, as for a pending update.
             training = _train_park(wait)
+
+            def train_on(ref: IssueRef = ref) -> bool:
+                if ref.repository not in trains:
+                    with forge_limits.acting_as(tenant_credential):
+                        trains[ref.repository] = _train_on(writer, ref, token)
+                return trains[ref.repository]
+
             try:
                 with forge_limits.acting_as(reading_credential):
                     if picking:
@@ -2599,7 +2647,8 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         read = _read(writer, ref, head, reading_token,
                                      update_pending=training
                                      or wait.get("code") in HEAD_MOVE_CODES,
-                                     queued=wait.get("code") == MERGE_QUEUED)
+                                     queued=wait.get("code") == MERGE_QUEUED,
+                                     train_on=train_on)
                 reason = read.reason
                 if picking:
                     if reason is None:
