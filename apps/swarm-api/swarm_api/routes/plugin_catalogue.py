@@ -13,7 +13,8 @@ plugin-catalogue` for one workspace's private plugins):
     POST   {base}/installs/{install_id}/update      a candidate version, by the same intake path
     GET    {base}/installs/{install_id}/diff        current -> a candidate, and the diff's digest
     GET    {base}/installs/{install_id}/usage       who uses it, for Remove to show (section 9.2)
-    POST   {base}/installs/{install_id}/apply       make the candidate current (quotes the digest)
+    POST   {base}/installs/{install_id}/apply       make the candidate current (quotes the digest);
+                                                    a bundled install's starts its bundle build
     DELETE {base}/installs/{install_id}?confirm=    remove it: later submissions naming it are refused
 
     POST   /v1/internal/plugin-intake/report        the intake's callback (Pub/Sub push, OIDC)
@@ -79,7 +80,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, TypeVar
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import Field
 
@@ -95,6 +96,7 @@ from ..plugincatalogue import BUILT_IN_PREFIX, builtin_entries
 from ..qasettings import authorize_read, can_edit
 from ..roles import ADMIN
 from ..schemas import StrictModel
+from . import plugin_bundles
 
 log = logging.getLogger(__name__)
 
@@ -1033,8 +1035,15 @@ def platform_diff(install_id: str, version_id: str = Query(max_length=16),
 
 
 @router.post(PLATFORM_BASE + "/installs/{install_id}/apply")
-def platform_apply(install_id: str, body: ApplyBody, auth: AuthContext = Depends(admin_auth),
-                   ctx: AppContext = Depends(get_context)) -> dict:
+def platform_apply(install_id: str, body: ApplyBody, request: Request, response: Response,
+                   auth: AuthContext = Depends(admin_auth), ctx: AppContext = Depends(get_context)) -> dict:
+    # A bundled install's Apply starts its bundle build (section 1.4.3; the
+    # owner's pick on Q21): the same path as the bundle route's Apply, so
+    # `current_version` moves only when that bundle is ready. 202, as there.
+    if ps.is_bundled(_store(ctx).install(install_id)):
+        response.status_code = 202
+        bundled = plugin_bundles.ApplyBody(**body.model_dump())
+        return plugin_bundles.start_bundled_apply(request, ctx, install_id, bundled, _by(auth))
     return _apply(ctx, PLATFORM_SCOPE, install_id, body, _by(auth))
 
 

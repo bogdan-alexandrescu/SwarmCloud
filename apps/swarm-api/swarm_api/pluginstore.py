@@ -112,6 +112,12 @@ UPLOAD_DEADLINE = timedelta(hours=1)
 MAX_OVERLAY_BYTES = 64 * 1024
 
 INSTALL_ID = re.compile(r"^[pw]-[0-9a-f]{12}$")
+#: The two bundled installs' reserved ids (section 1.4.1): the ids every
+#: Allowed list and default already names, never minted by `new_install_id`.
+RESERVED_INSTALL_IDS = ("builtin:gstack", "builtin:security-audit")
+#: An install whose versions are built into an image version (section 1.4):
+#: its `build` field. Any other install's versions are unpacked per attempt.
+BUILD_IMAGE = "image"
 VERSION_ID = re.compile(r"^v-[0-9a-f]{12}$")
 INTAKE_ID = re.compile(r"^[0-9a-f]{32}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -167,6 +173,22 @@ REFUSALS: dict[str, str] = {
     "diff_changed": "The diff changed since it was shown; read it again before applying.",
     "confirmation_required": "This update changes hooks, servers, hosts or secret fields: type the plugin's name to apply it.",
     "confirmation_mismatch": "The name typed is not the plugin's name.",
+    # Bundled installs (section 1.4.3, pluginbundle.py): a version becomes
+    # current only when the bundle that carries it is ready.
+    "install_bundled": "This plugin is built into an image: applying a version starts a bundle build.",
+    "install_not_bundled": "This plugin is not built into an image.",
+    "bundle_building": "A bundle build is already running; wait for it to end.",
+    "bundle_not_found": "That bundle is not one of this deployment's bundles.",
+    "bundle_not_retained": "No retained bundle carries the previous version; apply it to build one.",
+    "bundle_build_unconfigured": "This deployment has no bundle build configured.",
+    "bundle_grant_missing": "swarm-api may not run the bundle job or read what it pushed; "
+                            "its grants on the job and the bundle repository are not applied yet.",
+    "bundle_build_not_started": "The bundle build could not be started.",
+    "bundle_build_failed": "The bundle build failed.",
+    "bundle_check_failed": "The bundle build's output is not the bundle that was asked for.",
+    "bundle_base_invalid": "A base image is not this deployment's image by digest.",
+    "bundle_key_stale": "Another bundled plugin's current version changed since this bundle was built; "
+                        "apply again to build the bundle the live versions need.",
 }
 
 
@@ -184,6 +206,18 @@ class PluginRefused(ValidationFailed):
 
 def new_install_id(scope: str) -> str:
     return ("p-" if scope == PLATFORM else "w-") + secrets.token_hex(6)
+
+
+def install_id_valid(install_id: Any) -> bool:
+    """A minted id, or one of the two reserved bundled ids."""
+    return isinstance(install_id, str) and (bool(INSTALL_ID.match(install_id))
+                                            or install_id in RESERVED_INSTALL_IDS)
+
+
+def is_bundled(install: Mapping[str, Any] | None) -> bool:
+    """A platform install built into an image version (section 1.4)."""
+    return isinstance(install, Mapping) and install.get("build") == BUILD_IMAGE \
+        and install.get("scope") == PLATFORM
 
 
 def new_version_id() -> str:
@@ -532,6 +566,9 @@ def install_view(install: Mapping[str, Any], current: Mapping[str, Any] | None, 
         "updated_at": _when(install.get("updated_at")),
         "updated_by": install.get("updated_by"),
     }
+    if is_bundled(install):
+        # Built into an image (section 1.4): no Remove, and an update builds.
+        view.update({"build": BUILD_IMAGE, "removable": False})
     if allowed is not None:
         view["allowed"] = allowed
     return view
@@ -584,12 +621,12 @@ class PluginStore:
         return whole if record_verifies(kind, whole, self._mac.keys) else None
 
     def install(self, install_id: str) -> dict[str, Any] | None:
-        if not INSTALL_ID.match(install_id or ""):
+        if not install_id_valid(install_id):
             return None
         return self._verified("install", self._install_ref(install_id).get(), {"install_id": install_id})
 
     def version(self, install_id: str, version_id: str) -> dict[str, Any] | None:
-        if not INSTALL_ID.match(install_id or "") or not VERSION_ID.match(version_id or ""):
+        if not install_id_valid(install_id) or not VERSION_ID.match(version_id or ""):
             return None
         return self._verified("version", self._version_ref(install_id, version_id).get(),
                               {"install_id": install_id, "version_id": version_id})
@@ -796,6 +833,12 @@ class PluginStore:
             if install is None or install.get("state") != STATE_ACTIVE:
                 refused.append("install_not_active")
                 return
+            if is_bundled(install):
+                # Only a ready bundle moves a bundled install's current
+                # version (section 1.4.3): `pluginbundle.start_apply` builds
+                # it, and `move_current` moves it in the ready transaction.
+                refused.append("install_bundled")
+                return
             target = self._verified("version", _snapshot(txn.get(self._version_ref(install_id, version_id))),
                                     {"install_id": install_id, "version_id": version_id})
             if target is None:
@@ -821,6 +864,25 @@ class PluginStore:
         if refused:
             raise PluginRefused(refused[0], status=409 if refused[0] != "version_not_found" else 404)
         return result
+
+    def move_current(self, txn: Any, install: Mapping[str, Any], version_id: str, *, by: str,
+                     bundle_id: str) -> dict[str, Any]:
+        """Inside the caller's transaction (the one that marks a bundle ready,
+        or rolls back to a retained one), make `version_id` a bundled
+        install's current version, audited `plugin_updated` with the bundle
+        id. `install` is the verified install read in that transaction. The
+        one writer of a bundled install's `current_version`."""
+        install_id = install["install_id"]
+        previous_id = install.get("current_version")
+        moved = dict(install)
+        moved.update({"current_version": version_id, "updated_at": self._now(), "updated_by": by})
+        stored = _signed("install", moved, self._mac.keys)
+        txn.set(self._install_ref(install_id), stored)
+        txn.set(self._audit_ref(), _audit_row(
+            AUDIT_UPDATED, by=by, at=self._now(), scope=install["scope"], tenant_id=install.get("tenant_id"),
+            detail={"install_id": install_id, "from_version": previous_id, "to_version": version_id,
+                    "bundle_id": bundle_id}))
+        return stored
 
     def remove(self, install_id: str, *, by: str) -> dict[str, Any]:
         """Mark the install removed, audited `plugin_removed`. Its versions
