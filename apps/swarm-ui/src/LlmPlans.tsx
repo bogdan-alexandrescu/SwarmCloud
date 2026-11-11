@@ -1,12 +1,20 @@
 /**
- * CAPACITY › LLM PROVIDERS › PLANS (docs/design/llm-providers.md §6, the
- * owner's pick of 10 November 2026, direction "Tables and a side sheet").
+ * CAPACITY › LLM PROVIDERS › PLANS (docs/design/llm-providers.md §6; the
+ * owner's ask of 11 November 2026, the cards direction in place of the table).
  *
- * ONE TABLE, GROUPED BY VENDOR. A row is a plan: its state, the five-hour and
- * seven-day windows, live holders over max agents, the Voice it mark and how
- * many workspaces it is lent to, with one line per lend under it. Every
- * change happens in a side sheet on the right, the table still in view: Add
- * plan, Manage (every plan control) and Lend, with Remove behind Manage.
+ * CARDS, GROUPED BY VENDOR. A card is a plan and leads with what the owner
+ * asked to see at a glance: the quota LEFT in the 5-hour and 7-day windows
+ * (100 minus the measured share used) as its largest figures, each with a
+ * bar and its next reset (local time, the day when not today, and how long
+ * until it). Then its state, live holders over max agents, the Voice it mark
+ * and its lends as one line. ONE Manage control per card (the whole card
+ * opens it too) and Resume only while paused; lends are edited in Manage.
+ * Every change happens in a side sheet on the right: Add plan, Manage
+ * (every plan control) and Lend, with Remove behind Manage.
+ *
+ * READABLE TYPE: nothing on a card is drawn below the body step; the name is
+ * at the lead step and the quota figures at the figure step
+ * (styles/llm-providers.css, the `.lpc-` rules).
  *
  * READS AND WRITES ARE api.ts's PLAN CALLS, nothing else: the account list
  * (`loadAccountsBoard`), `setAccountState`, `setAccountMaxAgents`,
@@ -30,7 +38,7 @@
  *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   beginAccountSignIn,
   finishAccountSignIn,
@@ -51,14 +59,14 @@ import { accountName } from './accountName'
 import { MODEL_CLASSES, classesToSave, servedClasses, setAccountPools } from './Accounts'
 import { Info } from './AccountsVerdict'
 import { inVoiceItPool, poolsOf } from './AccountsTable'
-import { DEFAULT_MAX_AGENTS, utcAt, type PoolAccount } from './accountsPool'
+import { DEFAULT_MAX_AGENTS, blocksOf, inTime, isWindowBlock, type PoolAccount } from './accountsPool'
 import { MAX_AGENTS_LIMIT } from './AccountSheet'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
 import { Button } from './components'
 import type { ApiError, Result } from './fetch'
 import type { TopicId } from './help'
 import { Screen } from './Shell'
-import { FIVE_HOUR, SEVEN_DAY, type AccountWindow } from './types'
+import { FIVE_HOUR, SEVEN_DAY, humaniseUntil, isProjected, readingOf } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/llm-providers.css'
 
@@ -179,67 +187,111 @@ function LendUse({ a, t }: { a: Plan; t: string }) {
   return <Over used={n} cap={cap} title={`${t}: agents now over the lend's cap`} />
 }
 
-/** A usage window: the share used and when it resets; a window past its reset is not a reading. */
-function Win({ w, name, now }: { w: AccountWindow | undefined; name: string; now: number }) {
-  if (w === undefined || !Number.isFinite(w.utilization)) return <span className="llp-dim">—</span>
-  if (w.reset) return <span className="llp-dim" title={`${name}: reset since its last reading`}>reset</span>
-  const pct = Math.round(w.utilization * 100)
-  const tone = pct >= 100 ? 'is-full' : pct >= 80 ? 'is-near' : ''
-  const at = utcAt(w.resets_at, now)
-  return (
-    <span className={`llp-over ${tone}`} title={`${name}: ${pct}% used, resets ${at}`}>
-      <span className="llp-over-n">
-        {pct}%<span className="llp-dim llp-win-at"> · {at}</span>
-      </span>
-      <span className="llp-bar" aria-hidden="true">
-        <b style={{ width: `${Math.min(100, pct)}%` }} />
-      </span>
-    </span>
-  )
+/* ---------------- the card's quota ---------------- */
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** `14:20` in the reader's own zone, with the day (`Thu 09:00`) when it is not today. */
+export function localAt(at: number, now: number): string {
+  const d = new Date(at)
+  const n = new Date(now)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const today = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+  return today ? hm : `${DAYS[d.getDay()]} ${hm}`
 }
 
-function VoiceMark({ on }: { on: boolean }) {
-  return on ? (
-    <span className="llp-voice" title="Shared with Voice it">
-      Voice it
-    </span>
-  ) : (
-    <span className="llp-dim" title="Not shared with Voice it">
-      —
-    </span>
-  )
-}
-
-/** The plan's name, its label, its plan and, when it is borrowed, whose it is. */
-function Who({ a, tenant }: { a: Plan; tenant: string | null }) {
-  const v = vendorOf(a.provider)
-  const named = typeof a.display_name === 'string' && a.display_name !== ''
-  const tier = a.organisation?.plan ? `${v?.plan ?? a.provider} ${a.organisation.plan}` : null
-  const classes = servedClasses(a)
+/**
+ * One window's quota LEFT (100 minus the measured share used), the card's
+ * largest figure, and its next reset. The marks keep their meaning: a
+ * measured figure plainly; a stale one, or one past its reset, as projected
+ * (`~`), never as current; no reading as "unknown", never 0% or 100%.
+ */
+function Quota({ a, k, name, now }: { a: Plan; k: string; name: string; now: number }) {
+  const r = readingOf(a, k)
+  const measured = r.kind === 'live' || r.kind === 'stale'
+  // A window past its reset has refilled: projected full until the next reading.
+  const left = measured ? Math.round(100 - r.pct) : r.kind === 'reset' ? 100 : null
+  const projected = isProjected(r)
+  const resets = measured ? Date.parse(r.resetsAt) : NaN
+  const upcoming = Number.isFinite(resets) && resets > now
+  const blocks = blocksOf(a).some((b) => isWindowBlock(b) && b.window === k)
+  const tone = left === null ? ' is-off' : blocks ? ' is-bad' : projected ? ' is-projected' : ''
+  const tip =
+    left === null
+      ? `${name}: no reading`
+      : `${name}: ${projected ? 'projected ' : ''}${left}% left` +
+        (r.kind === 'reset' ? `, reset ${localAt(Date.parse(r.resetsAt), now)}, nothing read since` : '') +
+        (r.kind === 'stale' ? ', from an old reading' : '')
   return (
-    <span className="llp-who">
-      {named && (
-        <span className="llp-name" title={accountName(a)}>
-          {accountName(a)}
+    <div className={`lpc-q${tone}`} data-window={k} title={tip}>
+      <span className="lpc-q-l">{name}</span>
+      <span className="lpc-q-v">
+        {left === null ? (
+          <span className="lpc-q-unk">unknown</span>
+        ) : (
+          <>
+            <span className="lpc-q-n">
+              {projected ? '~' : ''}
+              {left}%
+            </span>{' '}
+            left
+          </>
+        )}
+      </span>
+      <span className="lpc-qbar" aria-hidden="true">
+        {left !== null && <b style={{ width: `${Math.max(0, Math.min(100, left))}%` }} />}
+      </span>
+      <span className="lpc-q-at" data-reset="">
+        <span className="lpc-q-ic" aria-hidden="true">
+          ↻
         </span>
-      )}
-      <span className="llp-meta">
-        <span className={`mono llp-label${named ? '' : ' is-lead'}`} title={a.label}>
-          {a.label}
-        </span>
-        {tier !== null && <span>{tier}</span>}
-        {tenant !== null && a.owner_tenant !== tenant && (
-          <span className="mono" title="Lent to this workspace by">
-            {a.owner_tenant}
+        {upcoming ? (
+          <span title={`${name}: resets ${localAt(resets, now)}, ${inTime(resets, now)}`}>
+            <span className="lpc-q-time">{localAt(resets, now)}</span> <span className="lpc-q-in">in {humaniseUntil(resets - now).replace(' ', '')}</span>
+          </span>
+        ) : (
+          <span className="lpc-q-time" title={`${name}: next reset not served`}>
+            unknown
           </span>
         )}
       </span>
-      {classes.length > 0 && (
-        <span className="llp-classes" title="Model classes it serves">
-          {classes.join(' · ')}
-        </span>
-      )}
-    </span>
+    </div>
+  )
+}
+
+/** The lends as one line: each borrower with its live holders over its lend's cap. */
+function LendsLine({ a }: { a: Plan }) {
+  if (a.lend_to.length === 0) return null
+  return (
+    <p className="lpc-lends" title="Lent to: live holders / the lend's agents cap">
+      <span className="lpc-lends-l">Lent</span>{' '}
+      {a.lend_to.map((t, i) => {
+        const held = a.lends === undefined ? undefined : a.lend_holders?.[t]
+        const n = typeof held === 'number' ? held : null
+        const cap = lendCap(a, t)
+        const over = n !== null && cap !== null && n >= cap
+        return (
+          <span key={t} className="lpc-lend" data-lend={t}>
+            {i > 0 && ' '}
+            <span className="lpc-mono">{t}</span>
+            {a.lends !== undefined && (
+              <span className={`lpc-num${over ? ' is-bad' : ''}`}>
+                {' '}
+                {n ?? '—'}
+                {cap === null ? (
+                  <span className="lpc-dim" title="Carried over from before lend caps; bounded by the plan's own max agents until a lender saves one">
+                    {' '}
+                    cap not set
+                  </span>
+                ) : (
+                  `/${cap}`
+                )}
+              </span>
+            )}
+          </span>
+        )
+      })}
+    </p>
   )
 }
 
@@ -252,11 +304,100 @@ function Failure({ error }: { error: ApiError | null }) {
   )
 }
 
-/* ---------------- the table ---------------- */
+/* ---------------- the cards ---------------- */
 
-const COLS = 8
+/**
+ * One plan as a card: its name, its quota left in the 5-hour and 7-day
+ * windows with each next reset, then its state, live holders over max
+ * agents, Voice it and its lends. ONE control opens Manage (the whole card
+ * does too); Resume only while paused. Lends are edited in Manage.
+ */
+function Card({
+  a,
+  tenant,
+  sel,
+  now,
+  open,
+  onResume,
+  error,
+}: {
+  a: Plan
+  tenant: string | null
+  sel: boolean
+  now: number
+  open: (s: Sheet) => void
+  onResume: (a: Plan) => void
+  error: ApiError | null
+}) {
+  const owned = tenant === null || a.owner_tenant === tenant
+  const v = vendorOf(a.provider)
+  const tier = a.organisation?.plan ? `${v?.plan ?? a.provider} ${a.organisation.plan}` : null
+  const classes = servedClasses(a)
+  const max = maxOf(a)
+  const full = a.assigned >= max
+  const manage = () => open({ kind: 'manage', id: a.account_id })
+  return (
+    <article
+      className={`lpc-card is-${String(a.state).toLowerCase()}${sel ? ' is-sel' : ''}${owned ? ' is-owned' : ''}`}
+      aria-label={a.label}
+      data-plan={a.account_id}
+      // The whole card opens Manage; its one Manage button is the keyboard's way in.
+      onClick={owned ? (e) => !(e.target as HTMLElement).closest('button, a, input, select') && manage() : undefined}
+    >
+      <div className="lpc-head">
+        <span className="lpc-name">
+          <span className="lpc-title" title={accountName(a)}>
+            {accountName(a)}
+          </span>
+          <span className="lpc-sub">
+            {accountName(a) !== a.label && (
+              <span className="lpc-mono llp-label" title={a.label}>
+                {a.label}
+              </span>
+            )}
+            {tier !== null && <span title={classes.length > 0 ? `Serves ${classes.join(' · ')}` : undefined}>{tier}</span>}
+            {!owned && (
+              <span className="lpc-mono" title="Lent to this workspace by">
+                {a.owner_tenant}
+              </span>
+            )}
+          </span>
+        </span>
+        <StateMark a={a} />
+      </div>
+      <div className="lpc-quota">
+        <Quota a={a} k={FIVE_HOUR} name="5-hour" now={now} />
+        <Quota a={a} k={SEVEN_DAY} name="7-day" now={now} />
+      </div>
+      <div className="lpc-facts">
+        <span className={`lpc-num lpc-agents${full ? ' is-bad' : ''}`} title="Live holders over max agents, counted from the grant (LEASED), not from RUNNING">
+          {a.assigned}/{max} agents
+        </span>
+        {inVoiceItPool(a) && (
+          <span className="lpc-voice" title="Shared with Voice it">
+            Voice it
+          </span>
+        )}
+      </div>
+      <LendsLine a={a} />
+      {owned && (
+        <div className="lpc-foot">
+          {a.state === 'PAUSED' && (
+            <Button onClick={() => onResume(a)}>
+              Resume
+            </Button>
+          )}
+          <Button aria-label={`Manage ${a.label}`} onClick={manage}>
+            Manage
+          </Button>
+        </div>
+      )}
+      <Failure error={error} />
+    </article>
+  )
+}
 
-function Table({
+function Cards({
   board,
   sel,
   open,
@@ -272,99 +413,29 @@ function Table({
   const now = useNow(AGE_TICK_MS)
   const tenant = board.page.tenant_id
   const plans = (board.page.accounts as Plan[]).filter(isPlan)
-  const owned = (a: Plan) => tenant === null || a.owner_tenant === tenant
   return (
-    <div className="llp-tablewrap">
-      <table className="llp-table" aria-label="Plans">
-        <thead>
-          <tr>
-            <th>Plan</th>
-            <th>State</th>
-            <th>
-              Agents <Info about="Agents" tip="Live holders over max agents, counted from the grant (LEASED), not from RUNNING." />
-            </th>
-            <th className="llp-opt">5-hour</th>
-            <th className="llp-opt">7-day</th>
-            <th className="llp-opt">Voice it</th>
-            <th className="llp-opt">Lent</th>
-            <th className="llp-act">
-              <span className="llp-vh">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        {byVendor(plans).map((g) => (
-          <tbody key={g.provider}>
-            <tr className="llp-group">
-              <th colSpan={COLS} scope="colgroup">
-                {vendorOf(g.provider)?.label ?? <span className="mono">{g.provider}</span>} <span className="llp-dim">{g.rows.length}</span>
-              </th>
-            </tr>
+    <div className="lpc-groups" aria-label="Plans" role="region">
+      {byVendor(plans).map((g) => (
+        <section key={g.provider} className="lpc-group" aria-label={vendorOf(g.provider)?.label ?? g.provider}>
+          <h2 className="lpc-group-h">
+            {vendorOf(g.provider)?.label ?? <span className="lpc-mono">{g.provider}</span>} <span className="lpc-dim">{g.rows.length}</span>
+          </h2>
+          <div className="lpc-grid">
             {g.rows.map((a) => (
-              <Fragment key={a.account_id}>
-                <tr className={`llp-row${sel === a.account_id ? ' is-sel' : ''}`} aria-selected={sel === a.account_id || undefined}>
-                  <td data-l="">
-                    <Who a={a} tenant={tenant} />
-                  </td>
-                  <td data-l="State">
-                    <StateMark a={a} />
-                  </td>
-                  <td data-l="Agents">
-                    <Over used={a.assigned} cap={maxOf(a)} title="Live holders over max agents" />
-                  </td>
-                  <td data-l="5-hour" className="llp-opt">
-                    <Win w={a.windows[FIVE_HOUR]} name="5-hour window" now={now} />
-                  </td>
-                  <td data-l="7-day" className="llp-opt">
-                    <Win w={a.windows[SEVEN_DAY]} name="7-day window" now={now} />
-                  </td>
-                  <td data-l="Voice it" className="llp-opt">
-                    <VoiceMark on={inVoiceItPool(a)} />
-                  </td>
-                  <td data-l="Lent" className="llp-num llp-opt">
-                    {a.lend_to.length > 0 ? a.lend_to.length : <span className="llp-dim">—</span>}
-                  </td>
-                  <td className="llp-act">
-                    {owned(a) && (
-                      <span className="llp-acts">
-                        {a.state === 'PAUSED' && (
-                          <Button size="sm" onClick={() => onResume(a)}>
-                            Resume
-                          </Button>
-                        )}
-                        <Button size="sm" onClick={() => open({ kind: 'manage', id: a.account_id })}>
-                          Manage
-                        </Button>
-                      </span>
-                    )}
-                    {rowError?.id === a.account_id && <Failure error={rowError.error} />}
-                  </td>
-                </tr>
-                {a.lend_to.map((t) => (
-                  <tr key={t} className="llp-lend">
-                    <td colSpan={2} data-l="Lent to">
-                      <span className="llp-lend-who">
-                        <span className="llp-lend-arm" aria-hidden="true" />
-                        <span className="mono">{t}</span>
-                      </span>
-                    </td>
-                    <td data-l="Agents">
-                      <LendUse a={a} t={t} />
-                    </td>
-                    <td colSpan={COLS - 4} className="llp-opt" />
-                    <td className="llp-act">
-                      {owned(a) && (
-                        <Button size="sm" onClick={() => open({ kind: 'lend', id: a.account_id, to: t })}>
-                          Edit lend
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </Fragment>
+              <Card
+                key={a.account_id}
+                a={a}
+                tenant={tenant}
+                sel={sel === a.account_id}
+                now={now}
+                open={open}
+                onResume={onResume}
+                error={rowError?.id === a.account_id ? rowError.error : null}
+              />
             ))}
-          </tbody>
-        ))}
-      </table>
+          </div>
+        </section>
+      ))}
     </div>
   )
 }
@@ -743,6 +814,9 @@ function Manage({
                   <li key={t} className="llp-lent">
                     <span className="mono">{t}</span>
                     <LendUse a={a} t={t} />
+                    <Button size="sm" kind="ghost" aria-label={`Edit lend to ${t}`} onClick={() => go({ kind: 'lend', id: a.account_id, to: t })}>
+                      Edit
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -1156,7 +1230,7 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
               Add plan
             </Button>
           </div>
-          <Table board={board} sel={acc?.account_id ?? null} open={open} onResume={(a) => void resume(a)} rowError={rowError} />
+          <Cards board={board} sel={acc?.account_id ?? null} open={open} onResume={(a) => void resume(a)} rowError={rowError} />
         </>
       )}
       {drawn && <div className="llp-scrim" onClick={close} aria-hidden="true" />}
