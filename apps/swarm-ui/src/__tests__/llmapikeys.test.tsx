@@ -41,6 +41,10 @@ const spies = vi.hoisted(() => ({
   setAccountState: vi.fn(),
   removeAccount: vi.fn(),
   addApiKey: vi.fn(),
+  replaceApiKey: vi.fn(),
+  setKeySpendCap: vi.fn(),
+  setKeyPerWorkspaceMax: vi.fn(),
+  setKeyLends: vi.fn(),
   mintSetupLink: vi.fn(),
   loadApiKeys: vi.fn(),
   loadMe: vi.fn(),
@@ -60,7 +64,7 @@ const OWNER = 'owner@example.test'
 
 beforeEach(() => {
   spies.loadApiKeys.mockImplementation(realLoad)
-  for (const k of ['setAccountState', 'removeAccount', 'addApiKey'] as const) spies[k].mockResolvedValue(OK)
+  for (const k of ['setAccountState', 'removeAccount', 'addApiKey', 'replaceApiKey', 'setKeySpendCap', 'setKeyPerWorkspaceMax', 'setKeyLends'] as const) spies[k].mockResolvedValue(OK)
   spies.loadMe.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { principal: { email: OWNER, is_admin: true } } })
   spies.mintSetupLink.mockResolvedValue({
     status: 'ok',
@@ -206,6 +210,71 @@ describe('API Keys: every control calls its api.ts function once', () => {
   })
 })
 
+describe('API Keys: Replace and Caps (the owner\'s picks on PR #3859)', () => {
+  it("Replace sends the key, the reader's email and the new value to replaceApiKey once", async () => {
+    await draw()
+    fireEvent.click(within(card('Team key')).getByRole('button', { name: 'Replace' }))
+    const form = screen.getByRole('form', { name: 'Replace key Team key' })
+    const submit = within(form).getByRole('button', { name: 'Replace key' }) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+    const value = `placeholder-${randomBytes(8).toString('hex')}`
+    fireEvent.change(within(form).getByLabelText('New key'), { target: { value } })
+    await waitFor(() => expect(submit.disabled).toBe(false))
+    await act(async () => fireEvent.click(submit))
+    expect(spies.replaceApiKey).toHaveBeenCalledTimes(1)
+    const sent = spies.replaceApiKey.mock.calls[0]?.[0]
+    expect([sent.key.account_id, sent.key.provider, sent.owner, sent.value]).toEqual(['u-owner:team-key', 'anthropic-api', OWNER, value])
+    expect(spies.addApiKey).not.toHaveBeenCalled()
+  })
+
+  it('Caps saves only what changed, each through its own route', async () => {
+    await draw()
+    fireEvent.click(within(card('Team key')).getByRole('button', { name: 'Caps' }))
+    const form = screen.getByRole('form', { name: 'Caps of Team key' })
+    const save = within(form).getByRole('button', { name: 'Save caps' }) as HTMLButtonElement
+    // Nothing changed yet: nothing to save.
+    expect(save.disabled).toBe(true)
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Spend cap, US dollars' }), { target: { value: '500' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Agents cap, u-owner' }), { target: { value: '5' } })
+    expect(save.disabled).toBe(false)
+    await act(async () => fireEvent.click(save))
+    expect(spies.setKeySpendCap).toHaveBeenCalledTimes(1)
+    expect(spies.setKeySpendCap).toHaveBeenCalledWith('u-owner:team-key', 500)
+    expect(spies.setKeyPerWorkspaceMax).toHaveBeenCalledWith('u-owner:team-key', { 'u-owner': 5 })
+    expect(spies.setKeyLends).not.toHaveBeenCalled()
+  })
+
+  it("edits a lend's two caps and refuses a lend left without one", async () => {
+    await draw()
+    fireEvent.click(within(card('Team key')).getByRole('button', { name: 'Caps' }))
+    const form = screen.getByRole('form', { name: 'Caps of Team key' })
+    const save = within(form).getByRole('button', { name: 'Save caps' }) as HTMLButtonElement
+    const usd = within(form).getByRole('textbox', { name: 'Lend to smoke, spend cap, US dollars' })
+    fireEvent.change(usd, { target: { value: '' } })
+    // MUTATION: drop the lend check and a key is lent with no spend ceiling.
+    expect(save.disabled).toBe(true)
+    fireEvent.change(usd, { target: { value: '75' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Lend to smoke, agents' }), { target: { value: '3' } })
+    await act(async () => fireEvent.click(save))
+    expect(spies.setKeyLends).toHaveBeenCalledTimes(1)
+    expect(spies.setKeyLends).toHaveBeenCalledWith('u-owner:team-key', { smoke: { max_agents: 3, monthly_spend_cap_usd: 75 } })
+    expect(spies.setKeySpendCap).not.toHaveBeenCalled()
+  })
+
+  it('a refused cap says why on the card and stops before the next route', async () => {
+    spies.setKeySpendCap.mockResolvedValue(FAIL)
+    await draw()
+    fireEvent.click(within(card('Team key')).getByRole('button', { name: 'Caps' }))
+    const form = screen.getByRole('form', { name: 'Caps of Team key' })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Spend cap, US dollars' }), { target: { value: '' } })
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Agents cap, u-owner' }), { target: { value: '2' } })
+    await act(async () => fireEvent.click(within(form).getByRole('button', { name: 'Save caps' })))
+    expect(spies.setKeySpendCap).toHaveBeenCalledWith('u-owner:team-key', null)
+    expect(spies.setKeyPerWorkspaceMax).not.toHaveBeenCalled()
+    expect(within(card('Team key')).getByRole('alert').textContent).toBe(FAIL.error.message)
+  })
+})
+
 describe('API Keys: a control that fails', () => {
   it('shows its error on the card and leaves the card as it was', async () => {
     await draw()
@@ -277,7 +346,8 @@ describe('API Keys: readable type', () => {
     const page = await draw()
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.click(within(card('Team key')).getByRole('button', { name: 'Delete' }))
-    fireEvent.click(within(card('night-key')).getByRole('button', { name: 'Resume' }))
+    fireEvent.click(within(card('night-key')).getByRole('button', { name: 'Replace' }))
+    fireEvent.click(within(card('spare-key')).getByRole('button', { name: 'Caps' }))
     fireEvent.click(within(card('codex-key')).getByRole('button', { name: 'Pause' }))
     const small = textElements(page)
       .map((el) => ({ el, step: stepOf(el, width) }))
@@ -334,9 +404,11 @@ function visibleWords(root: HTMLElement): string[] {
 /**
  * The page's word count on the fixture when the cards landed (11 November
  * 2026): four key cards, their figures, one lend and the controls. A ceiling,
- * not a target; it may only go down.
+ * not a target; it may only go down. 72 when the cards landed; 80 since the
+ * owner's picks on PR #3859 added Caps and Replace to each of the four cards,
+ * one word each, and nothing else.
  */
-const WORD_CEILING = 72
+const WORD_CEILING = 80
 
 describe('API Keys: the prose guard', () => {
   it('shows no sentence on the surface: every run of text is a label or a figure', async () => {

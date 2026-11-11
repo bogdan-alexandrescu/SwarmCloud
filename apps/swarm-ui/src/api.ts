@@ -8539,6 +8539,8 @@ export type ApiKeyAccount = ServedAccount & {
   pools?: string[]
   lends?: Record<string, ApiKeyLend>
   monthly_spend_cap_usd?: number | null
+  /** Each workspace's cap on the agents it holds on the key (Q6). */
+  per_workspace_max?: Record<string, number>
   month_spend_usd?: number | null
   lend_spend_usd?: Record<string, number>
   exhausted_at?: string | null
@@ -8599,6 +8601,66 @@ export async function addApiKey(body: { provider: ApiKeyProvider; label: string;
   if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
   const token = m.data.path.split('/').pop() ?? ''
   return write(route('/v1/setup/links/redeem'), 'POST', { token, value: body.value })
+}
+
+/**
+ * REPLACE KEY (§4.5): the same one step as the add, for the key's own label
+ * and vendor, the link minted with `replace` so swarm-api refuses it unless a
+ * key of that vendor is on the label. The broker adds the value as a new
+ * version and expires the old one; holds, caps, lends and the Voice it share
+ * are untouched.
+ */
+export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; value: string }): Promise<Result<unknown>> {
+  const provider = body.key.provider as ApiKeyProvider
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (!fixtureApiKeys.some((k) => k.account_id === body.key.account_id && k.provider === provider)) {
+      return fixtureRefused(`the key was not replaced: there is no ${provider} key labelled ${body.key.label} to replace`)
+    }
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.key.label, provider, account_id: body.key.account_id, written: true, replaced: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.key.label, owner: body.owner, provider, replace: true })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return write(route('/v1/setup/links/redeem'), 'POST', { token, value: body.value })
+}
+
+/** `PUT /v1/accounts/{id}/spend-cap`: a key's monthly spend cap in US dollars, null for none (§4.6). Owner only. */
+export async function setKeySpendCap(accountId: string, usd: number | null): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (usd !== null && !(usd > 0 && usd <= 1_000_000)) return fixtureRefused('a monthly spend cap is above 0 and at most 1,000,000 US dollars')
+    return fixtureKeyWrite(accountId, { monthly_spend_cap_usd: usd })
+  }
+  return write(route('/v1/accounts/{account_id}/spend-cap', { account_id: accountId }), 'PUT', { monthly_spend_cap_usd: usd })
+}
+
+/** `PUT /v1/accounts/{id}/per-workspace-max`: each workspace's cap on the agents it holds on the key (Q6); `{}` clears them. Owner only. */
+export async function setKeyPerWorkspaceMax(accountId: string, caps: Readonly<Record<string, number>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    return fixtureKeyWrite(accountId, { per_workspace_max: { ...caps } })
+  }
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', { per_workspace_max: caps })
+}
+
+/** `PUT /v1/accounts/{id}/lending` with `lends`: every lend of a key with its agents cap and spend cap (Q7), the whole map. Owner only. */
+export async function setKeyLends(accountId: string, lends: Readonly<Record<string, { max_agents: number; monthly_spend_cap_usd: number }>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const full: Record<string, ApiKeyLend> = {}
+    for (const [ws, c] of Object.entries(lends)) full[ws] = { ...c, cap_set: true }
+    return fixtureKeyWrite(accountId, { lends: full, lend_to: Object.keys(lends).sort() })
+  }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lends })
+}
+
+function fixtureKeyWrite(accountId: string, change: Partial<ApiKeyAccount>): Result<unknown> {
+  const found = fixtureApiKeys.find((k) => k.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account = { ...found, ...change }
+  fixtureApiKeys = fixtureApiKeys.map((k) => (k.account_id === accountId ? account : k))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
 
 /** A key's fixture row: an `-api` account, measured by spend rather than windows. */
@@ -15466,7 +15528,7 @@ export function createSetupTeam(body: { group: string; display_name?: string; fi
 }
 
 /** `POST /v1/admin/setup/links`: a one-time link for one named person. */
-export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string; provider?: ApiKeyProvider }): Promise<Result<SetupLink>> {
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string; provider?: ApiKeyProvider; replace?: boolean }): Promise<Result<SetupLink>> {
   return setupWrite(
     route('/v1/admin/setup/links'),
     'POST',

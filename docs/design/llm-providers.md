@@ -256,6 +256,16 @@ caps, sharing or spend counters, and the key's row shows "replaced by
 <person>, <date>" (the `key_added_by`/`key_added_at` fields that exist for the
 Voice it key today, `openai_api_key.py`).
 
+**In swarm-api** (the owner's pick on PR #3859) Replace key is the `api-key`
+link with `replace: true`: minted and redeemed only while the label holds a
+key of the same vendor, so a replace never creates a key, and an add (the
+link without it) is refused on a label already in use, so an add never
+rotates one by accident. Both checks run at mint and again at redeem, before
+the link is spent. The caps of §4.6 reach the console through swarm-api's
+owner-only proxies of the broker's routes: `PUT /v1/accounts/{id}/spend-cap`,
+`PUT /v1/accounts/{id}/per-workspace-max` and `PUT /v1/accounts/{id}/lending`
+with `lends`.
+
 ### 4.6 Leasing and agent quotas
 
 | Control | Plan account today | API key (this design) | Measured from |

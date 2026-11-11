@@ -18,12 +18,13 @@
  * Resume (`setAccountState`, the plans' route), Delete (`removeAccount`, the
  * typed confirmation of §4.4), Add (`addApiKey`, the one-time `api-key` link
  * minted and redeemed here, or `mintSetupLink` to send that link to the key's
- * holder). A write that succeeds re-reads the list; one that fails says why
- * on its card and leaves the card as the platform last said it was.
- *
- * NOT DRAWN, because swarm-api has no route for it yet: Replace key (§4.5),
- * and a key's caps (spend cap, per-workspace and lend caps). Each is a
- * question in the lane's PR, not a dead control.
+ * holder), Replace (`replaceApiKey`, §4.5: the same one step, its link minted
+ * in `replace` mode for the key's own label and vendor) and Caps (§4.6: the
+ * spend cap, each workspace's agents cap and each lend's two caps, through
+ * `setKeySpendCap`, `setKeyPerWorkspaceMax` and `setKeyLends`; the owner's
+ * picks on PR #3859). A write that succeeds re-reads the list; one that
+ * fails says why on its card and leaves the card as the platform last said
+ * it was.
  *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
@@ -35,7 +36,11 @@ import {
   loadMe,
   mintSetupLink,
   removeAccount,
+  replaceApiKey,
   setAccountState,
+  setKeyLends,
+  setKeyPerWorkspaceMax,
+  setKeySpendCap,
   type ApiKeyAccount,
   type ApiKeyProvider,
   type ApiKeysBoard,
@@ -139,7 +144,196 @@ function Lends({ k }: { k: ApiKeyAccount }) {
   )
 }
 
-type Asking = 'PAUSED' | 'DRAINING' | 'delete' | null
+type Asking = 'PAUSED' | 'DRAINING' | 'delete' | 'replace' | 'caps' | null
+
+/**
+ * Replace key (§4.5): a new value for the same label and vendor, sent once in
+ * the redeem body, as the add's is. The field is a password input and its
+ * value leaves the page's state whatever the answer.
+ */
+function ReplaceKey({ k, busy, onCancel, onSend }: { k: ApiKeyAccount; busy: boolean; onCancel: () => void; onSend: (owner: string, value: string) => Promise<void> }) {
+  const own = useOwnEmail()
+  const [value, setValue] = useState('')
+  const ready = value !== '' && own !== null && !busy
+  return (
+    <form
+      className="lpc-panel"
+      aria-label={`Replace key ${accountName(k)}`}
+      autoComplete="off"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!ready || own === null) return
+        const v = value
+        setValue('')
+        void onSend(own, v)
+      }}
+    >
+      <span className="lpc-ptitle">
+        New key
+        <Info about="Replace key" tip="The new key is checked with its vendor and stored as the key's new value; the old one is expired once running agents have moved off it. Holders, caps, lends and sharing stay as they are." />
+      </span>
+      <input
+        className="c-inp lpc-input lpc-mono"
+        type="password"
+        aria-label="New key"
+        placeholder="New key"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(e) => setValue(e.target.value.trim())}
+      />
+      <span className="lpc-prow">
+        <Button kind="primary" type="submit" disabled={!ready} busy={busy ? 'Replacing' : false}>
+          Replace key
+        </Button>
+        <Button kind="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </span>
+    </form>
+  )
+}
+
+/** A typed amount, or null for an empty field; NaN for anything else, which keeps Save disabled. */
+function amount(text: string): number | null {
+  const t = text.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : Number.NaN
+}
+
+function shown(n: number | null | undefined): string {
+  return typeof n === 'number' ? String(n) : ''
+}
+
+/** What `KeyCaps` saves: only the parts that changed, each its own route. */
+export type CapsChange = {
+  spendCap?: number | null
+  perWorkspaceMax?: Record<string, number>
+  lends?: Record<string, { max_agents: number; monthly_spend_cap_usd: number }>
+}
+
+/**
+ * Caps (§4.6): the key's monthly spend cap (empty: none), each workspace's
+ * agents cap (the owner and every borrower; empty: none) and each lend's
+ * agents and spend caps, both required on a key's lend (Q7).
+ */
+function KeyCaps({ k, busy, onCancel, onSave }: { k: ApiKeyAccount; busy: boolean; onCancel: () => void; onSave: (change: CapsChange) => void }) {
+  const lendNames = [...new Set([...Object.keys(k.lends ?? {}), ...k.lend_to])].sort()
+  const workspaces = [k.owner_tenant, ...lendNames.filter((w) => w !== k.owner_tenant)]
+  const [spend, setSpend] = useState(shown(k.monthly_spend_cap_usd))
+  const [perWs, setPerWs] = useState<Record<string, string>>(() => Object.fromEntries(workspaces.map((w) => [w, shown(k.per_workspace_max?.[w])])))
+  const [lends, setLends] = useState<Record<string, { agents: string; usd: string }>>(() =>
+    Object.fromEntries(lendNames.map((w) => [w, { agents: shown(k.lends?.[w]?.max_agents), usd: shown(k.lends?.[w]?.monthly_spend_cap_usd) }])),
+  )
+
+  const spendCap = amount(spend)
+  const perWsCaps: Record<string, number> = {}
+  let perWsOk = true
+  for (const w of workspaces) {
+    const n = amount(perWs[w] ?? '')
+    if (n === null) continue
+    if (!Number.isInteger(n) || n < 1) perWsOk = false
+    else perWsCaps[w] = n
+  }
+  const lendCaps: Record<string, { max_agents: number; monthly_spend_cap_usd: number }> = {}
+  let lendsOk = true
+  for (const w of lendNames) {
+    const a = amount(lends[w]?.agents ?? '')
+    const u = amount(lends[w]?.usd ?? '')
+    if (a === null || u === null || !Number.isInteger(a) || a < 1 || !(u > 0)) lendsOk = false
+    else lendCaps[w] = { max_agents: a, monthly_spend_cap_usd: u }
+  }
+  const spendOk = spendCap === null || spendCap > 0
+
+  const change: CapsChange = {}
+  if (spendOk && spendCap !== (k.monthly_spend_cap_usd ?? null)) change.spendCap = spendCap
+  const servedPerWs = k.per_workspace_max ?? {}
+  if (perWsOk && JSON.stringify(Object.entries(perWsCaps).sort()) !== JSON.stringify(Object.entries(servedPerWs).sort())) change.perWorkspaceMax = perWsCaps
+  if (
+    lendsOk &&
+    lendNames.length > 0 &&
+    lendNames.some((w) => {
+      const served = k.lends?.[w]
+      const typed = lendCaps[w]
+      return served === undefined || typed === undefined || served.cap_set === false || served.max_agents !== typed.max_agents || served.monthly_spend_cap_usd !== typed.monthly_spend_cap_usd
+    })
+  ) {
+    change.lends = lendCaps
+  }
+  const ready = spendOk && perWsOk && lendsOk && Object.keys(change).length > 0 && !busy
+
+  return (
+    <form
+      className="lpc-panel"
+      aria-label={`Caps of ${accountName(k)}`}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (ready) onSave(change)
+      }}
+    >
+      <span className="lpc-ptitle">
+        Caps
+        <Info about="Caps" tip="The key's monthly spend cap in US dollars, each workspace's cap on the agents it holds on the key, and each lend's agents and spend caps. An empty cap is none, except on a lend, which always carries both. Lowering a cap stops no running agent: the next one over it is refused." />
+      </span>
+      <input className="c-inp lpc-input lpc-num" inputMode="decimal" aria-label="Spend cap, US dollars" placeholder="Spend cap $" value={spend} onChange={(e) => setSpend(e.target.value)} />
+      {workspaces.map((w) => (
+        <input
+          key={`ws-${w}`}
+          className="c-inp lpc-input lpc-num"
+          inputMode="numeric"
+          aria-label={`Agents cap, ${w}`}
+          placeholder={`${w} agents`}
+          value={perWs[w] ?? ''}
+          onChange={(e) => setPerWs({ ...perWs, [w]: e.target.value })}
+        />
+      ))}
+      {lendNames.map((w) => (
+        <span key={`lend-${w}`} className="lpc-prow">
+          <input
+            className="c-inp lpc-input lpc-num"
+            inputMode="numeric"
+            aria-label={`Lend to ${w}, agents`}
+            placeholder={`${w} lend agents`}
+            value={lends[w]?.agents ?? ''}
+            onChange={(e) => setLends({ ...lends, [w]: { usd: lends[w]?.usd ?? '', agents: e.target.value } })}
+          />
+          <input
+            className="c-inp lpc-input lpc-num"
+            inputMode="decimal"
+            aria-label={`Lend to ${w}, spend cap, US dollars`}
+            placeholder={`${w} lend $`}
+            value={lends[w]?.usd ?? ''}
+            onChange={(e) => setLends({ ...lends, [w]: { agents: lends[w]?.agents ?? '', usd: e.target.value } })}
+          />
+        </span>
+      ))}
+      <span className="lpc-prow">
+        <Button kind="primary" type="submit" disabled={!ready} busy={busy ? 'Saving' : false}>
+          Save caps
+        </Button>
+        <Button kind="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </span>
+    </form>
+  )
+}
+
+/** Each changed part of a caps edit, in order, stopping at the first refusal. */
+async function saveCaps(accountId: string, change: CapsChange): Promise<Result<unknown>> {
+  let last: Result<unknown> = { status: 'ok', fetchedAt: Date.now(), data: null }
+  if (change.spendCap !== undefined) {
+    last = await setKeySpendCap(accountId, change.spendCap)
+    if (failed(last) !== null) return last
+  }
+  if (change.perWorkspaceMax !== undefined) {
+    last = await setKeyPerWorkspaceMax(accountId, change.perWorkspaceMax)
+    if (failed(last) !== null) return last
+  }
+  if (change.lends !== undefined) last = await setKeyLends(accountId, change.lends)
+  return last
+}
 
 /** The typed confirmation of §4.4: the label typed back, then Delete key. */
 function DeleteKey({ k, busy, onCancel, onDelete }: { k: ApiKeyAccount; busy: boolean; onCancel: () => void; onDelete: () => void }) {
@@ -271,6 +465,10 @@ function KeyCard({ k, owned, reread }: { k: ApiKeyAccount; owned: boolean; rerea
         </p>
       )}
       {owned && asking === 'delete' && <DeleteKey k={k} busy={busy} onCancel={() => setAsking(null)} onDelete={() => void run(() => removeAccount(k.account_id))} />}
+      {owned && asking === 'replace' && (
+        <ReplaceKey k={k} busy={busy} onCancel={() => setAsking(null)} onSend={(owner, value) => run(() => replaceApiKey({ key: k, owner, value }))} />
+      )}
+      {owned && asking === 'caps' && <KeyCaps k={k} busy={busy} onCancel={() => setAsking(null)} onSave={(change) => void run(() => saveCaps(k.account_id, change))} />}
       {owned && (asking === 'PAUSED' || asking === 'DRAINING') && (
         <ReasonFor state={asking} busy={busy} onCancel={() => setAsking(null)} onSend={(reason) => void run(() => setAccountState(k.account_id, asking, reason))} />
       )}
@@ -286,6 +484,8 @@ function KeyCard({ k, owned, reread }: { k: ApiKeyAccount; owned: boolean; rerea
               <Button onClick={() => setAsking('DRAINING')}>Drain</Button>
             </>
           )}
+          <Button onClick={() => setAsking('caps')}>Caps</Button>
+          <Button onClick={() => setAsking('replace')}>Replace</Button>
           <span className="lpc-grow" />
           <Button kind="danger" onClick={() => setAsking('delete')}>
             Delete
