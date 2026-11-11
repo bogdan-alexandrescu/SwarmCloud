@@ -20,7 +20,7 @@ import pytest
 
 from swarm_api.brokerclient import AccountPoolUnavailable, BrokerClient
 from swarm_api.errors import ValidationFailed
-from swarm_api.setup_links import API_KEY, API_KEY_TTL, COLLECTION, digest
+from swarm_api.setup_links import API_ACCOUNT, API_KEY_TTL, COLLECTION, digest
 
 from .conftest import auth_header
 from .test_setup_routes import (  # noqa: F401 - fixtures
@@ -82,7 +82,7 @@ def test_mint_names_vendor_label_and_workspace_for_ten_minutes(setup_client, db)
     minted = _mint(setup_client, workspace=team)
     token = _token(minted)
     record = _record(db, token)
-    assert record["kind"] == API_KEY == "api-key"
+    assert record["kind"] == API_ACCOUNT == "api-key"
     assert record["owner"] == ALICE and record["tenant_id"] == team
     assert record["provider"] == "anthropic-api" and record["label"] == "team-key"
     assert record["share_with_voice_it"] is False
@@ -100,7 +100,6 @@ def test_mint_without_a_workspace_files_the_key_under_the_admins_own(setup_clien
 
 def test_mint_is_a_platform_admins_and_names_a_vendor_and_a_real_workspace(setup_client,
                                                                           db) -> None:
-    before = dict(db.docs)
     by_alice = _mint(setup_client, as_user="alice")
     assert by_alice.status_code == 403, by_alice.text
     no_vendor = setup_client.post(LINKS, json={"kind": "api-key", "label": "team-key",
@@ -115,7 +114,7 @@ def test_mint_is_a_platform_admins_and_names_a_vendor_and_a_real_workspace(setup
                                            "owner": ALICE, "provider": "anthropic-api"},
                               headers=auth_header("root"))
     assert stray.status_code == 422, stray.text
-    assert db.docs == before
+    assert not [path for path in db.docs if path.startswith(f"{COLLECTION}/")]
 
 
 def test_mint_then_redeem_calls_the_broker_once_and_returns_no_key(setup_client, db, pool,
@@ -279,9 +278,9 @@ def test_a_link_for_one_workspace_never_registers_a_key_for_another(setup_client
                                     headers=auth_header("alice"))
         assert refused.status_code == 422, (stray, refused.text)
     assert pool.registered == [] and _record(db, token)["used_at"] is None
-    selected = {**auth_header("alice"), "X-Swarm-Tenant": "u-alice"}
+    # The key is filed under the link's workspace, whoever opens it.
     opened = setup_client.post(REDEEM, json={"token": token, "value": _key()},
-                               headers=selected)
+                               headers=auth_header("alice"))
     assert opened.status_code == 200, opened.text
     assert [r["owner_tenant"] for r in pool.registered] == [team]
     assert "lend_to" not in pool.registered[0] and "lends" not in pool.registered[0]

@@ -206,6 +206,17 @@ class AccountPool(Protocol):
         added_by: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def register_api_key(
+        self,
+        *,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        credential: str,
+        added_by: str,
+        share_with_voice_it: bool = False,
+    ) -> dict[str, Any]: ...
+
     def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
 
     def set_model_classes(
@@ -553,6 +564,41 @@ class BrokerClient:
                 # one reader of this shape; a second parse here would be a
                 # second definition of it.
                 "credential": credential,
+            },
+        )
+
+    def register_api_key(
+        self,
+        *,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        credential: str,
+        added_by: str,
+        share_with_voice_it: bool = False,
+    ) -> dict[str, Any]:
+        """A developer API key for the account pool (`anthropic-api` or
+        `openai-api`; docs/design/llm-providers.md §4.1), the broker's one
+        registration route. Always a POOL key (`voice_dedicated: false`, which
+        the broker would otherwise assume for an OpenAI key) owned by
+        `owner_tenant`, and sent with NO lend: a key is lent afterwards, with
+        its caps, through its lending route. `added_by` is the verified email
+        of the person who typed it. The broker checks the shape and asks the
+        vendor before storing anything; its refusal is a 422, raised here as
+        the caller's `ValidationFailed` by `_result`."""
+        return self._call(
+            "POST",
+            "/v1/accounts",
+            payload={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": provider,
+                # Taken as typed. `quota_broker.api_key.parse_api_key` is the
+                # one reader of a key's shape.
+                "credential": credential,
+                "added_by": added_by,
+                "voice_dedicated": False,
+                "share_with_voice_it": bool(share_with_voice_it),
             },
         )
 
