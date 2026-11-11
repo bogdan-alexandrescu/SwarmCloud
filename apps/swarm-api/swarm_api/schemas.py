@@ -1215,8 +1215,22 @@ ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
 ACCOUNT_HOLD_DEADLINE = "latest_hold_deadline"
 
 
+class AccountLendCap(StrictModel):
+    """One lend's cap (docs/design/llm-providers.md §4.6, Q7): the borrower's
+    agents at once and, on an API key, its month's spend ceiling. Whether the
+    cap is complete for the account's kind is the broker's
+    (`accounts.validate_lends`): its 422 reaches the caller in its own words."""
+
+    max_agents: StrictInt
+    monthly_spend_cap_usd: float | None = None
+
+
 class AccountLending(StrictModel):
+    #: The borrowing workspaces by name: a plan's lends, uncapped.
     lend_to: list[str] = Field(default_factory=list, max_length=50)
+    #: {borrowing workspace: its cap}, the one way an API key is lent (§4.6).
+    #: Sent instead of `lend_to`, never beside it.
+    lends: dict[str, AccountLendCap] | None = Field(default=None, max_length=50)
 
 
 class AccountStateChange(StrictModel):

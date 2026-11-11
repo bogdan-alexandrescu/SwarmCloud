@@ -89,7 +89,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
-from pydantic import Field, StrictInt
+from pydantic import Field, StrictFloat, StrictInt
 from swarm_redaction import redact as redact_text
 
 from .. import roles
@@ -613,10 +613,78 @@ def set_lending(
     ctx: AppContext = Depends(get_context),
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """Replace the list of tenants this account lends to. Owner only."""
+    """Replace the list of tenants this account lends to. Owner only.
+
+    `lend_to` names the borrowers; `lends` gives each its cap (agents at once
+    and, on an API key, a monthly spend cap; docs/design/llm-providers.md
+    §4.6), and is how an API key is lent at all. One or the other, refused
+    here when both are sent so the broker is not asked.
+    """
+    if body.lends is not None and body.lend_to:
+        raise ValidationFailed("send lends or lend_to, not both")
     tenant_id = _writer_tenant_id(ctx, auth)
     _owned(pool, tenant_id, account_id)
-    return _own_answer(pool.set_lending(account_id, lend_to=list(body.lend_to)), tenant_id)
+    if body.lends is None:
+        return _own_answer(pool.set_lending(account_id, lend_to=list(body.lend_to)), tenant_id)
+    lends = {ws: cap.model_dump(exclude_none=True) for ws, cap in body.lends.items()}
+    return _own_answer(pool.set_lending(account_id, lend_to=[], lends=lends), tenant_id)
+
+
+class AccountSpendCap(StrictModel):
+    """An API key's monthly spend cap in US dollars, or null for none (§4.6).
+
+    Declared here, beside the one route that takes it. Required, so an empty
+    body is not read as "clear". What a cap may be (above 0, the ceiling) and
+    that a plan has none are the broker's: its 422 reaches the caller.
+    """
+
+    monthly_spend_cap_usd: StrictFloat | StrictInt | None
+
+
+@router.put("/{account_id}/spend-cap")
+def set_spend_cap(
+    account_id: str,
+    body: AccountSpendCap,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """An API key's monthly spend cap. Owner only, as lending is.
+
+    Metered by the broker from the workers' `cost_usd` estimates (Q5); a key
+    at its cap takes no new agent. Lowering it closes no hold.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    cap = None if body.monthly_spend_cap_usd is None else float(body.monthly_spend_cap_usd)
+    return _own_answer(pool.set_spend_cap(account_id, monthly_spend_cap_usd=cap), tenant_id)
+
+
+class AccountPerWorkspaceMax(StrictModel):
+    """Each workspace's cap on the agents it holds on an account (Q6), the
+    owner or a borrower; `{}` clears every cap. Required, so an empty body is
+    not read as "clear". The range and who may be named are the broker's."""
+
+    per_workspace_max: dict[str, StrictInt] = Field(max_length=51)
+
+
+@router.put("/{account_id}/per-workspace-max")
+def set_per_workspace_max(
+    account_id: str,
+    body: AccountPerWorkspaceMax,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Each workspace's cap on the agents it holds on this account. Owner
+    only, as lending is. Lowering one closes no hold: the broker refuses the
+    next grant over it."""
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    return _own_answer(
+        pool.set_per_workspace_max(account_id, per_workspace_max=dict(body.per_workspace_max)),
+        tenant_id,
+    )
 
 
 class AccountModelClasses(StrictModel):

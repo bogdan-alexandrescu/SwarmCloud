@@ -217,7 +217,17 @@ class AccountPool(Protocol):
         share_with_voice_it: bool = False,
     ) -> dict[str, Any]: ...
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
+    def set_lending(
+        self, account_id: str, *, lend_to: list[str], lends: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
+
+    def set_spend_cap(
+        self, account_id: str, *, monthly_spend_cap_usd: float | None
+    ) -> dict[str, Any]: ...
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]: ...
 
     def set_model_classes(
         self, account_id: str, *, model_classes: list[str]
@@ -604,11 +614,37 @@ class BrokerClient:
             },
         )
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]:
+    def set_lending(
+        self, account_id: str, *, lend_to: list[str], lends: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        # The broker refuses `lends` and `lend_to` together, so exactly one is
+        # sent: a lend with its caps (an API key's only form, §4.6), or names.
+        payload: dict[str, Any] = (
+            {"lends": dict(lends)} if lends is not None else {"lend_to": list(lend_to)}
+        )
         return self._call(
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/lending",
-            payload={"lend_to": list(lend_to)},
+            payload=payload,
+        )
+
+    def set_spend_cap(
+        self, account_id: str, *, monthly_spend_cap_usd: float | None
+    ) -> dict[str, Any]:
+        # None is sent as null: it is how a key's cap is cleared.
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/spend-cap",
+            payload={"monthly_spend_cap_usd": monthly_spend_cap_usd},
+        )
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/per-workspace-max",
+            payload={"per_workspace_max": dict(per_workspace_max)},
         )
 
     def set_model_classes(
