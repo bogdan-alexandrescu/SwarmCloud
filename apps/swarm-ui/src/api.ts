@@ -17151,6 +17151,8 @@ export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsag
 export const VOICE_SETTINGS = '/v1/voice/settings'
 /** Every name a setting may take: the page offers these and nothing else. */
 export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+/** `DELETE {label}`: the dedicated key, its label typed back. Platform admins only. */
+export const VOICE_DEDICATED_KEY = '/v1/voice/settings/dedicated-key'
 
 /** The fields a write may name (speech_catalogue.FIELDS). */
 export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
@@ -17175,6 +17177,19 @@ export interface VoiceKeyStatus {
   link: { open: boolean; expires_at: string | null }
 }
 
+/** The dedicated Voice it key's status (`dedicated_key`): never the key or its secret. */
+export interface VoiceDedicatedKey {
+  /** null when the quota broker could not say. */
+  set: boolean | null
+  label: string | null
+  display_name: string | null
+  by: string | null
+  at: string | null
+  state: string | null
+  /** Whether the reader may delete it: a platform admin, while it is set. */
+  can_delete: boolean
+}
+
 export interface VoiceSettingsView {
   settings: Record<VoiceSettingField, string>
   /** Debug mode (`settings.debug`): each session that starts with it on keeps a turn-by-turn trace. */
@@ -17187,6 +17202,7 @@ export interface VoiceSettingsView {
   /** The machine fields the next start changes. */
   pending: VoiceSettingField[]
   openai_key: VoiceKeyStatus
+  dedicated_key: VoiceDedicatedKey
 }
 
 const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -17233,6 +17249,7 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
   const a = objOf(d.applied)
   const k = objOf(d.openai_key) ?? {}
   const link = objOf(k.link) ?? {}
+  const dk = objOf(d.dedicated_key) ?? {}
   return {
     settings,
     debug: s.debug === true,
@@ -17246,6 +17263,15 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
       by: strOf(k.by),
       at: strOf(k.at),
       link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+    dedicated_key: {
+      set: typeof dk.set === 'boolean' ? dk.set : null,
+      label: strOf(dk.label),
+      display_name: strOf(dk.display_name),
+      by: strOf(dk.by),
+      at: strOf(dk.at),
+      state: strOf(dk.state),
+      can_delete: dk.can_delete === true,
     },
   }
 }
@@ -17281,6 +17307,7 @@ function fixtureVoiceCatalogue(): unknown {
 }
 
 let fixtureVoiceSaved: { settings: Record<string, string>; debug: boolean; version: number; updated_at: string } | null = null
+let fixtureVoiceKeyDeleted = false
 
 function fixtureVoiceSettings(): unknown {
   const settings = fixtureVoiceSaved?.settings ?? {
@@ -17296,6 +17323,9 @@ function fixtureVoiceSettings(): unknown {
     applied,
     pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
     openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+    dedicated_key: fixtureVoiceKeyDeleted
+      ? { set: false, label: null, display_name: null, by: null, at: null, state: null, can_delete: false }
+      : { set: true, label: 'voice-openai', display_name: null, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), state: 'available', can_delete: fixtureIsAdmin },
   }
 }
 
@@ -17347,6 +17377,24 @@ export async function saveVoiceSettings(version: number, changes: VoiceSettingsC
     return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
   }
   const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/**
+ * `DELETE /v1/voice/settings/dedicated-key` with the label typed back:
+ * swarm-api deletes the broker's dedicated key, and only that one, and
+ * answers the settings read again. Platform admins only.
+ */
+export async function deleteVoiceDedicatedKey(label: string): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_DEDICATED_KEY)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    fixtureVoiceKeyDeleted = true
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'DELETE', { label })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
   return r as Result<VoiceSettingsView>
 }

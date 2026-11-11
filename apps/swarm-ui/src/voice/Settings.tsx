@@ -31,17 +31,25 @@
  * THE KEY. Its status only: set or not, by whom and when. swarm-api never
  * serves the key, and the page keeps nothing else of the answer.
  *
+ * THE DEDICATED KEY (docs/design/llm-providers.md §4.4, §6.4). Its status,
+ * and for a platform admin (`dedicated_key.can_delete`) a Delete behind the
+ * typed confirmation: the key's label typed back enables "Delete key", which
+ * sends `DELETE {label}` once. The row moves only with the answer: a delete
+ * that fails says so in the dialog and leaves the row as it was.
+ *
  * Telemetry's timeline joins this section when its server lands (build plan
  * row L10); this page draws nothing for it.
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import {
+  deleteVoiceDedicatedKey,
   loadMe,
   loadVoiceCatalogue,
   loadVoiceSettings,
   saveVoiceSettings,
   type VoiceCatalogue,
+  type VoiceDedicatedKey,
   type VoiceSettingField,
   type VoiceSettingsView,
 } from '../api'
@@ -198,6 +206,113 @@ function KeyStatus({ view }: { view: VoiceSettingsView }) {
         <Tick tone="info" say="A one-time link to add the key is open">
           Link open · until {when(k.link.expires_at)}
         </Tick>
+      )}
+    </div>
+  )
+}
+
+/** The broker's state of the dedicated key, as a tick. */
+const KEY_STATE: Readonly<Record<string, { tone: Tone; text: string }>> = {
+  available: { tone: 'ok', text: 'Available' },
+  limited: { tone: 'warn', text: 'Limited' },
+  paused: { tone: 'idle', text: 'Paused' },
+  draining: { tone: 'warn', text: 'Draining' },
+  credit_gone: { tone: 'bad', text: 'Credit gone' },
+}
+
+/** The dedicated key's row, and its Delete behind the typed label (§4.4). */
+function DedicatedKey({ k, canEdit, onDeleted }: { k: VoiceDedicatedKey; canEdit: boolean; onDeleted: (view: VoiceSettingsView) => void }) {
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // A second click before the first answer re-renders must not send a second delete.
+  const sending = useRef(false)
+  const name = k.display_name ?? k.label ?? 'key'
+  const state = k.state !== null ? (KEY_STATE[k.state] ?? { tone: 'idle' as Tone, text: k.state }) : null
+  const label = k.label
+  const deletable = canEdit && k.can_delete && k.set === true && label !== null
+
+  const close = () => {
+    setOpen(false)
+    setTyped('')
+    setError(null)
+  }
+  const remove = async () => {
+    if (label === null || typed !== label || sending.current) return
+    sending.current = true
+    setBusy(true)
+    setError(null)
+    const r = await deleteVoiceDedicatedKey(label)
+    sending.current = false
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      close()
+      onDeleted(r.data)
+    } else if (r.status === 'error') {
+      setError(r.error.message)
+    }
+  }
+
+  return (
+    <div className="vset-key" data-dedicated-key={k.set === null ? 'unknown' : k.set ? 'set' : 'unset'}>
+      <span className="vset-key-name">
+        Dedicated key
+        <Why say="Voice it's own OpenAI key, the last tier after plans and shared keys. Held by the quota broker and never shown here." />
+      </span>
+      {k.set === true ? (
+        <span className="vset-switchrow">
+          <span className="vset-mono">{name}</span>
+          {state !== null && (
+            <Tick tone={state.tone} say={k.by && k.at ? `Added by ${k.by}, ${when(k.at)}` : state.text}>
+              {state.text}
+              {k.by ? ` · ${k.by}` : ''}
+              {k.at ? ` · ${when(k.at)}` : ''}
+            </Tick>
+          )}
+          {deletable && !open && <Btn onClick={() => setOpen(true)}>Delete</Btn>}
+        </span>
+      ) : k.set === false ? (
+        <Tick tone="idle" say="No dedicated key is stored">
+          Not set
+        </Tick>
+      ) : (
+        <Tick tone="idle" say="The quota broker could not say">
+          Unknown
+        </Tick>
+      )}
+      {open && deletable && (
+        <div className="vset-band is-bad" role="dialog" aria-label={`Delete API key ${name}`}>
+          <div className="vset-band-text">
+            <strong>Delete API key {name}</strong>
+            <span>
+              Revoke it at OpenAI too.
+              <Why say="The stored key is destroyed now. Sessions running on it keep the value they already read until their next renew, then move to the next tier or end. Deleting here does not revoke the key at the provider: a copy anywhere else keeps working until it is revoked there." />
+            </span>
+            <input
+              className="c-inp vset-mono"
+              aria-label={`Type ${label} to delete`}
+              placeholder={label}
+              autoComplete="off"
+              spellCheck={false}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+            {error !== null && (
+              <Tick tone="bad" say={error}>
+                Not deleted · {error}
+              </Tick>
+            )}
+          </div>
+          <div className="vset-band-acts">
+            <Btn onClick={close} disabled={busy}>
+              Cancel
+            </Btn>
+            <Btn primary onClick={() => void remove()} disabled={busy || typed !== label}>
+              Delete key
+            </Btn>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -447,6 +562,7 @@ export function VoiceSettings({ canEdit }: { canEdit: boolean }) {
             </div>
           </div>
           <KeyStatus view={view} />
+          <DedicatedKey k={view.dedicated_key} canEdit={canEdit} onDeleted={setView} />
         </Card>
 
         <Card
