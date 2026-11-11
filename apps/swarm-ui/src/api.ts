@@ -17882,6 +17882,18 @@ export const VOICE_TRACE_SESSION = '/v1/voice/trace/sessions/{session_id}'
 /** The stream event a finished turn sends to Talk while debug mode is on (voice/stream.py). */
 export const VOICE_TRACE_TURN = 'trace.turn'
 
+/** The stream event a spent Live key's held next tier sends to Talk (swarm-api voice/stream.py `TIER_REOPEN`). */
+export const VOICE_TIER_REOPEN = 'voice.tier.reopen'
+/** The tiers a reopen names (swarm-api voice/sessions.py `REOPEN_TIERS`): a name, never a key. */
+export const VOICE_TIERS = ['plan', 'api_key', 'voice_dedicated'] as const
+export type VoiceTier = (typeof VOICE_TIERS)[number]
+/** `voice.tier.reopen`: the tier the session's next start opens on. */
+export interface VoiceTierReopenEvent {
+  type: typeof VOICE_TIER_REOPEN
+  seq: number
+  tier: VoiceTier
+}
+
 /** One card or mock-up a turn drew, or tried to: `refused` is the masked reason it was not. */
 export interface VoiceTraceDrawn {
   kind: string
