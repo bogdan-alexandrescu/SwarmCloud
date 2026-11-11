@@ -36,6 +36,7 @@ from swarm_common.identity import Principal  # noqa: E402
 
 from swarm_api import setup_links as sl  # noqa: E402
 from swarm_api.auth import AuthContext  # noqa: E402
+from swarm_api.brokerclient import BrokerClient, StaticIdToken  # noqa: E402
 from swarm_api.deps import current_auth, get_context  # noqa: E402
 from swarm_api.errors import ApiError  # noqa: E402
 from swarm_api.routes import voice_settings as routes  # noqa: E402
@@ -279,3 +280,18 @@ def test_the_openai_key_status_is_unchanged_beside_it():
                           pool_answer={"account": None, "reason": vsettings.KEY_BUSY}))
 
     assert body["openai_key"] == status
+
+
+def test_the_client_reads_the_brokers_platform_wide_listing_with_no_tenant():
+    seen: list[dict] = []
+
+    def transport(method, url, *, headers, body=None, timeout=15.0):
+        seen.append({"method": method, "url": url, "body": body})
+        return 200, {"accounts": [], "tenant_id": None, "unreadable_documents": []}
+
+    client = BrokerClient(base_url="https://broker.internal", audience="https://broker.example",
+                          tokens=StaticIdToken(secrets.token_hex(16)), transport=transport)
+
+    assert client.voice_it_accounts()["accounts"] == []
+    assert seen == [{"method": "GET", "url": "https://broker.internal/v1/accounts",
+                     "body": None}]
