@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from swarm_api.attemptstate import entry_id_for, slot_id
 from swarm_api.repositories import repo_id_for
 
@@ -17,6 +19,7 @@ from .conftest import seed_task
 from .test_attemptstate import (  # noqa: F401 - fixtures
     ATTEMPT,
     LEASE,
+    OTHER_WORKER,
     POST_BODIES,
     TASK,
     Worker,
@@ -458,3 +461,146 @@ def test_a_swarm_api_ci_park_at_a_head_no_round_worked_from_starts_a_new_wait(cl
     wait = _ci_park(client, db, last=_last_ci(started, wait_started_at=started, rechecks=27),
                     head="e" * 40)
     assert wait["wait_started_at"] == wait["parked_at"] and wait["rechecks"] == 1
+
+
+# --------------------------------------------------------------------------
+# The `credential` usage kind (contract request 152): the account, source and
+# tier the attempt kept last, as the worker's direct path merges them
+# (`agent_worker.control.credential_fields`).
+# --------------------------------------------------------------------------
+
+#: Every combination the worker's `credential_fields` sends, and what lands.
+CREDENTIAL_WRITES = [
+    ({"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan"},
+     {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan"}),
+    ({"account_id": "research:key-b", "credential_source": "account_pool",
+      "credential_tier": "api_key"},
+     {"account_id": "research:key-b", "credential_source": "account_pool",
+      "credential_tier": "api_key"}),
+    ({"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": None},
+     {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": None}),
+    ({"account_id": None, "credential_source": "account_pool", "credential_tier": None},
+     {"account_id": None, "credential_source": "account_pool", "credential_tier": None}),
+    ({"account_id": None, "credential_source": "tenant_secret", "credential_tier": None},
+     {"account_id": None, "credential_source": "tenant_secret", "credential_tier": None}),
+    ({"credential_source": "tenant_secret"},
+     {"account_id": None, "credential_source": "tenant_secret", "credential_tier": None}),
+]
+
+
+@pytest.mark.parametrize("fields,stored", CREDENTIAL_WRITES)
+def test_credential_usage_writes_the_three_fields_as_the_direct_path_does(client, db, fields,
+                                                                           stored):
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs[f"attempts/{ATTEMPT}"] = {"attempt_id": ATTEMPT, "task_id": TASK,
+                                      "tenant_id": "eng", "generation": 1, "input_tokens": 7}
+    response = worker.post(client, "usage", {"kind": "credential", "fields": fields})
+    assert response.status_code == 200, response.text
+    attempt = db.docs[f"attempts/{ATTEMPT}"]
+    assert {k: attempt[k] for k in stored} == stored
+    # A merge: the spend already written stays, and nothing else is added.
+    assert attempt["input_tokens"] == 7
+    assert set(attempt) == {"attempt_id", "task_id", "tenant_id", "generation", "input_tokens",
+                            *stored}
+
+
+REFUSED_CREDENTIALS = [
+    {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan",
+     "key": "x"},
+    {"credential_source": "account_pool", "account_id": "eng:plan-a", "secret_name": "s"},
+    {"credential_source": "broker", "account_id": None, "credential_tier": None},
+    {"credential_source": None},
+    {"account_id": "eng:plan-a", "credential_tier": "plan"},
+    {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "team"},
+    {"account_id": None, "credential_source": "account_pool", "credential_tier": "plan"},
+    {"credential_source": "tenant_secret", "credential_tier": "api_key"},
+    {"account_id": "eng:plan-a", "credential_source": "tenant_secret"},
+    {"account_id": "", "credential_source": "account_pool"},
+    {"account_id": 7, "credential_source": "account_pool"},
+    {"account_id": "a" * 1000, "credential_source": "account_pool"},
+    {},
+]
+
+
+@pytest.mark.parametrize("fields", REFUSED_CREDENTIALS)
+def test_credential_usage_outside_the_frozen_shape_is_422_and_writes_nothing(client, db,
+                                                                              fields):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": fields})
+    assert response.status_code == 422, response.text
+    assert db.docs == before
+
+
+def test_a_stale_generations_credential_is_409_and_writes_nothing(client, db):
+    """The attempt's document names generation 2: a generation-1 worker is not
+    its current worker, and its report touches nothing."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs[f"attempts/{ATTEMPT}"] = {"attempt_id": ATTEMPT, "task_id": TASK,
+                                      "tenant_id": "eng", "generation": 2}
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "account_id": "eng:plan-a", "credential_source": "account_pool",
+        "credential_tier": "plan"}})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "attempt_fenced"
+    assert db.docs == before
+
+
+def test_a_credential_under_a_lease_another_generation_holds_is_409(client, db):
+    """No attempt document yet, and the lease moved on: not this tuple's."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs.pop(f"attempts/{ATTEMPT}", None)
+    db.docs[f"leases/{LEASE}"]["generation"] = 2
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}})
+    assert response.status_code == 409, response.text
+    assert db.docs == before
+
+
+def test_a_credential_without_a_proof_is_403_and_writes_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}}, sign=False)
+    assert response.status_code == 403, response.text
+    assert db.docs == before
+
+
+def test_another_tenants_worker_cannot_write_this_attempts_credential(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}}, token=OTHER_WORKER)
+    assert response.status_code == 401, response.text
+    assert db.docs == before
+
+
+def test_spend_cannot_carry_a_credential_field_nor_credential_a_spend(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    mixed = worker.post(client, "usage", {"kind": "spend", "fields": {
+        "input_tokens": 3, "account_id": "eng:plan-a"}})
+    assert mixed.status_code == 422 and db.docs == before
+    crossed = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret", "input_tokens": 3}})
+    assert crossed.status_code == 422 and db.docs == before
+
+
+def test_spend_usage_is_unchanged_by_the_credential_kind(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    ok = worker.post(client, "usage", {"kind": "spend", "fields": {
+        "input_tokens": 3, "output_tokens": 4, "cost_usd": 0.5}})
+    assert ok.status_code == 200, ok.text
+    attempt = db.docs[f"attempts/{ATTEMPT}"]
+    assert (attempt["input_tokens"], attempt["output_tokens"], attempt["cost_usd"]) == (3, 4, 0.5)
+    assert not {"account_id", "credential_source", "credential_tier"} & set(attempt)
