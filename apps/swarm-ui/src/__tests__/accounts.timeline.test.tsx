@@ -166,8 +166,9 @@ describe('which view the page opens on', () => {
   })
 
   it('keeps ?view= on the accounts address through the router, and drops it elsewhere', () => {
+    // Accounts is LLM Providers › Plans now (LP-U1): the view and the account ride there.
     window.location.hash = '#capacity/accounts?account=eng%3Ab&view=timeline'
-    expect(canonical(fromHash())).toBe('capacity/accounts?account=eng%3Ab&view=timeline')
+    expect(canonical(fromHash())).toBe('capacity/llm-providers/plans?account=eng%3Ab&view=timeline')
     window.location.hash = '#capacity/pools?view=timeline'
     expect(canonical(fromHash())).toBe('capacity/pools')
     window.location.hash = ''
@@ -308,10 +309,10 @@ describe('the Table / Timeline toggle', () => {
   it('switches to Timeline, writes it to the address and the browser, and reopens on it', async () => {
     const r = await mount(b3(Date.now()))
     const link = within(toggle()).getByRole('link', { name: 'Timeline' })
-    expect(link.getAttribute('href')).toBe('#capacity/accounts?view=timeline')
+    expect(link.getAttribute('href')).toBe('#capacity/llm-providers/plans?view=timeline')
     fireEvent.click(link)
     await waitFor(() => expect(document.querySelector('.acct-tl')).not.toBeNull(), WAIT)
-    expect(window.location.hash).toBe('#capacity/accounts?view=timeline')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?view=timeline')
     expect(window.localStorage.getItem(lanes.VIEW_KEY)).toBe('timeline')
     r.unmount()
     // A later visit with a bare address: the browser remembers.
@@ -473,7 +474,7 @@ describe('the Timeline', () => {
     await mount(b3(Date.now()))
     const open = document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!
     fireEvent.click(open)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?account=eng%3Aexample-team&view=timeline')
     const sheet = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('aside.acct-sheet')
       expect(d).not.toBeNull()
@@ -491,7 +492,7 @@ describe('the Timeline', () => {
     // The lanes stay drawn under the sheet, the opened one marked.
     expect(document.querySelector('.acct-tl-lane.is-open')?.getAttribute('data-account')).toBe('eng:example-team')
     fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }))
-    expect(window.location.hash).toBe('#capacity/accounts?view=timeline')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?view=timeline')
     await waitFor(() => expect(document.querySelector('.acct-sheet')).toBeNull(), WAIT)
     expect(document.querySelector('.acct-tl')).not.toBeNull()
   })
@@ -534,7 +535,7 @@ describe('the Timeline', () => {
     await mount(b3(Date.now()))
     await waitFor(() => expect(document.querySelector('.acct-tl')).not.toBeNull(), WAIT)
     fireEvent.click(document.querySelector<HTMLButtonElement>('.acct-tl-open[data-account="eng:example-team"]')!)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Aexample-team&view=timeline')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?account=eng%3Aexample-team&view=timeline')
   })
 
   it('writes ?view=timeline to the address when the Timeline is restored from the browser’s memory', async () => {
@@ -542,7 +543,7 @@ describe('the Timeline', () => {
     window.history.replaceState(null, '', '/#capacity/accounts')
     const before = window.history.length
     await mount(b3(Date.now()))
-    await waitFor(() => expect(window.location.hash).toBe('#capacity/accounts?view=timeline'), WAIT)
+    await waitFor(() => expect(window.location.hash).toBe('#capacity/llm-providers/plans?view=timeline'), WAIT)
     // Replaced, not pushed: Back does not land on the same page with a bare address.
     expect(window.history.length).toBe(before)
   })

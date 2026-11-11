@@ -574,6 +574,8 @@ export function CountNote({ children }: { children: ReactNode }) {
 export function Screen<T>({
   title,
   help,
+  info,
+  nav,
   load,
   summary,
   empty,
@@ -585,6 +587,15 @@ export function Screen<T>({
   title: string
   /** The screen's one `?`, after its title, when it explains the whole screen. See `PageHead`. */
   help?: TopicId | readonly TopicId[]
+  /** The page's (i), beside the title. Forwarded to `PageHead` as its `info`. */
+  info?: ReactNode
+  /**
+   * A strip drawn right under the head in EVERY read state -- loading, stale,
+   * failed, empty and ok -- such as a tab's sub-page links, which are the way
+   * off a page whose read failed and must not wait for its data (the owner's
+   * answer of 11 November 2026). Undimmed: it is not drawn from the read.
+   */
+  nav?: ReactNode
   load: () => Promise<Result<T>>
   /** The screen's count once data is in: a note over its first card (`CountNote`, #138). */
   summary?: (data: T) => ReactNode
@@ -868,7 +879,7 @@ export function Screen<T>({
           established. A per-screen copy would be a second opinion about the
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
-      <PageHead title={title} help={help}>
+      <PageHead title={title} help={help} info={info}>
         {/* An admin gate is not a read to renew: the panel says `admin only`
             (#138). The head keeps its height without it (`.c-phead`'s
             min-height, visual QA V064), so the title does not move. NOR IS
@@ -901,6 +912,8 @@ export function Screen<T>({
           />
         )}
       </PageHead>
+
+      {nav}
 
       <HiddenTabLine wasHiddenMs={awayMs} reading={awayMs !== null} />
 
