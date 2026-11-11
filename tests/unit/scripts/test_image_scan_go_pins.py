@@ -39,8 +39,10 @@ REFUSED = {
     # 1.16.4: go1.26.8, x/net v0.58.0; 1.16.7: go-jose 4.1.4 (CVE-2026-116587);
     # 1.17.1 is go1.26.10, x/net v0.62.0, go-jose 4.1.6.
     "TERRAFORM_VERSION": {"1.16.4", "1.16.7"},
-    # 0.75.0: go1.27.1, x/net v0.59.0 (0.74.0 failed earlier, #442); 0.76.1 is go1.27.3, x/net v0.60.0.
-    "TRIVY_VERSION": {"0.74.0", "0.75.0"},
+    # 0.75.0: go1.27.1, x/net v0.59.0 (0.74.0 failed earlier, #442); 0.76.1 is go1.27.3, x/net v0.60.0
+    # but go-jose 4.1.5 (CVE-2026-116587, refused once its acceptance expired 2026-11-11);
+    # 0.76.2 is go1.27.3, x/net v0.62.0, go-jose 4.1.6 (measured 2026-11-11).
+    "TRIVY_VERSION": {"0.74.0", "0.75.0", "0.76.1"},
     # gcloud-crc32c on go1.26.6 in 587.0.0; on go1.27.2 in 591.0.0.
     "GCLOUD_VERSION": {"587.0.0"},
     # gke-gcloud-auth-plugin 591.0.0: go1.27.1, x/net v0.59.0 (CVE-2026-78667,
