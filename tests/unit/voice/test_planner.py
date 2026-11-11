@@ -51,6 +51,7 @@ if _APP not in sys.path:
 
 from swarm_api.errors import ValidationFailed  # noqa: E402
 from swarm_api.voice import cards as vcards  # noqa: E402
+from swarm_api.voice import visuals as vvis  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
@@ -148,6 +149,7 @@ class World:
         self.broker_calls: list[tuple[str, dict]] = []
         self.api_requests: list[httpx.Request] = []
         self.cards: list[dict] = []
+        self.visuals: list[dict] = []
         self.tasks = [{"task_id": "t-" + secrets.token_hex(4), "title": "Fix the login redirect",
                        "state": "FAILED"}]
         self.plan: dict = {"calls": []}
@@ -204,6 +206,17 @@ class World:
             card_id = "vc_" + secrets.token_hex(16)
             self.cards.append({**checked, "card_id": card_id})
             return httpx.Response(201, json={"card": {**checked, "card_id": card_id, "version": 1}})
+        if request.method == "POST" and path == f"/v1/voice/sessions/{self.grant.session_id}/visuals":
+            # swarm-api's own frame check, so a refused mock-up is refused here too.
+            visual = json.loads(request.content)["visual"]
+            try:
+                _, parts = vvis.check_frames(visual["body"])
+            except ValidationFailed as exc:
+                return httpx.Response(422, json={"detail": str(exc)})
+            self.visuals.append(visual)
+            return httpx.Response(200, json={"visual": {
+                "visual_id": "vv_" + secrets.token_hex(16), "kind": "mockup", "version": 1,
+                "parts": parts, "lines": None}})
         return httpx.Response(404)
 
     def claude_binary(self) -> str:
@@ -365,6 +378,43 @@ def test_an_unknown_kind_is_refused_and_never_written(world):
     answers = json.loads(Path(str(world.dump) + ".results").read_text())
     assert answers[0]["result"]["isError"] is True
     assert not any(r.method == "POST" for r in world.api_requests)
+
+
+def _page(name: str) -> str:
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" '
+            'content="width=device-width, initial-scale=1"><title>' + name + '</title><style>'
+            'body{font-family:system-ui;margin:0}.hero{padding:64px}</style></head><body>'
+            '<section class="hero"><h1>' + name + '</h1><a href="#start">Start</a></section>'
+            '</body></html>')
+
+
+def test_three_versions_asked_for_are_three_frames_drawn(world):
+    frames = [{"label": n, "html": _page(n)} for n in ("Classic", "Bold", "Minimal")]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    # MUTATION: post each page's <meta charset> as written and swarm-api refuses the mock-up.
+    assert len(world.visuals) == 1 and result.frames_dropped == []
+    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == [
+        "Classic", "Bold", "Minimal"]
+    assert result.spoken == "Three versions are on screen. I drew 1 mock-up on screen."
+
+
+def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "The versions are on screen."}]]}
+    result = _delegate(world)
+    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == ["Classic", "Bold"]
+    # MUTATION: drop the frame without a word and the person hears of no missing version.
+    assert result.spoken.endswith(
+        "I drew 1 mock-up on screen. I drew two of the three versions; the third, Minimal, was "
+        "refused because it has a script tag, and a frame runs no code and loads nothing.")
+    assert result.frames_dropped[0]["dropped"][0]["n"] == 3
 
 
 def test_a_child_stopped_while_writing_its_results_leaves_the_last_whole_results(world):

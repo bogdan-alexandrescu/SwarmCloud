@@ -63,6 +63,14 @@ first. A grant writes only to its own session: any other session id is 403.
 `VoiceStore.put_card` validates against the catalogue again, so no write path
 bypasses it.
 
+A REFUSED WRITE IS LOGGED, never its body (`RefusalLogged`). The card write
+and every Voice it visual and note write run under a route class that logs a
+4xx at WARNING as its route, status, code, the field and the reason: the
+`ApiError`'s own message, or, for a body the request model refused, pydantic's
+location and message, never the input. Each line goes through `redact`, so
+nothing credential-shaped reaches the log either way. Before this, a refused
+mock-up left only the request log's status and the reason could not be read.
+
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
 project is read only when its tenant is the selected workspace and its person
@@ -135,16 +143,20 @@ fake), else the deployment's from SWARM_VOICE_URL, else none.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Callable, Coroutine
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
+from swarm_redaction import redact
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from ..errors import Conflict, ValidationFailed
+from ..errors import ApiError, Conflict, ValidationFailed
 from ..brokerclient import AccountPool
 from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
@@ -159,6 +171,49 @@ from ..voice import store as vstore
 from ..voice import stream as vstream
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
+log = logging.getLogger("swarm_api.voice.refused")
+
+#: A refusal's field and reason are cut to this many characters in the log.
+REFUSAL_LOG_MAX = 300
+
+
+def _for_log(value: Any) -> str:
+    return redact(str(value)).text.replace("\n", " ")[:REFUSAL_LOG_MAX]
+
+
+def log_refusal(route: str, status: int, code: str, field: Any, reason: Any) -> None:
+    """One WARNING line for a refused Voice it write: its route, status, code,
+    field and reason, each redacted. Never the body: callers pass the error's
+    own message or pydantic's location and message, not its input."""
+    log.warning("voice write refused route=%s status=%s code=%s field=%s reason=%s",
+                route, status, code, _for_log(field or "-"), _for_log(reason))
+
+
+class RefusalLogged(APIRoute):
+    """A write route whose refusals (4xx) are logged by `log_refusal`; the
+    answer itself is the app's exception handlers', unchanged."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+        route = self.path
+
+        async def logged(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                errors = list(exc.errors())
+                first = errors[0] if errors else {}
+                field = ".".join(str(part) for part in (first.get("loc") or ()))
+                log_refusal(route, 422, ValidationFailed.code, field, first.get("msg") or "invalid")
+                raise
+            except ApiError as exc:
+                if 400 <= exc.status_code < 500 and request.method != "GET":
+                    log_refusal(route, exc.status_code, exc.code, exc.detail.get("field"),
+                                exc.message)
+                raise
+
+        return logged
+
 
 #: A project or session id this service minted: `vp_`/`vs_` and 32 hex.
 _ID_MAX = 64
@@ -466,7 +521,6 @@ class WriteCard(BaseModel):
     card: dict[str, Any]
 
 
-@router.post("/sessions/{session_id}/cards")
 async def write_card(
     session_id: str,
     body: WriteCard,
@@ -490,6 +544,10 @@ async def write_card(
         vcards.write_card, vstore.VoiceStore(ctx.db, now=ctx.now), tenant_id=found.tenant_id,
         person=person, project_id=found.project_id, session_id=found.session_id, card=body.card)
     return {"card": card}
+
+
+router.add_api_route("/sessions/{session_id}/cards", write_card, methods=["POST"],
+                     route_class_override=RefusalLogged)
 
 
 def stream_timing(request: Request) -> dict[str, Any]:

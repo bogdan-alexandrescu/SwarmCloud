@@ -780,3 +780,59 @@ def test_a_mockup_drawn_again_drops_the_approval_of_its_old_frames(client, voice
     assert _approve(client, call, vid, "frame-1").status_code == 200
     again = _mockup(client, call, visual_id=vid).json()["visual"]
     assert again["version"] == 2 and again["approved"] is None
+
+
+# ---- a refused write is logged by its code, field and reason, never its body --
+
+
+def _refusals(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if r.name == "swarm_api.voice.refused" and r.levelname == "WARNING"]
+
+
+def test_a_refused_mockup_logs_its_code_field_and_reason_and_none_of_the_body(client, voice, caplog):
+    call = _start(client, voice)
+    marker = "hero-" + secrets.token_hex(6)
+    html = f'<h1>{marker}</h1><img src="https://images.example.com/{marker}.png">'
+    caplog.set_level("WARNING", logger="swarm_api.voice.refused")
+    refused = _mockup(client, call, frames=[{"id": "frame-1", "label": "One", "html": html}])
+    assert refused.status_code == 422
+    # MUTATION: leave the refusal to the request log and its reason cannot be read.
+    (line,) = _refusals(caplog)
+    assert "route=/v1/voice/sessions/{session_id}/visuals" in line and "status=422" in line
+    assert "code=validation_failed" in line and "field=frames[0].html" in line
+    assert "reason=frames[0].html names an address" in line
+    assert marker not in caplog.text and "images.example.com" not in caplog.text
+
+
+def test_a_body_the_request_model_refuses_logs_where_and_why_never_the_input(client, voice, caplog):
+    call = _start(client, voice)
+    title = "t-" + secrets.token_hex(80)
+    caplog.set_level("WARNING", logger="swarm_api.voice.refused")
+    assert _draw(client, call, title=title).status_code == 422
+    (line,) = _refusals(caplog)
+    assert "code=validation_failed" in line and "field=body.visual.title" in line
+    assert "at most 120 characters" in line and title not in caplog.text
+
+
+def test_a_refused_card_logs_its_field_and_reason_and_a_credential_never(client, voice, caplog):
+    call = _start(client, voice)
+    token = "ghp_" + secrets.token_hex(18)
+    card = {"kind": "mockup", "state": "proposed", "title": "Landing", "created_by": "planner",
+            "references": {}, "summary": f"key {token}",
+            "body": {"drawn_by": "planner", "frames": [{"label": "One", "html": "<p>a</p>"}]}}
+    caplog.set_level("WARNING", logger="swarm_api.voice.refused")
+    refused = client.post(f"/v1/voice/sessions/{call.session_id}/cards", json={"card": card},
+                          headers=_grant_headers(call))
+    assert refused.status_code == 422
+    (line,) = _refusals(caplog)
+    assert "route=/v1/voice/sessions/{session_id}/cards" in line
+    assert "field=body.frames[0].label" in line and "is not a field of this card" in line
+    assert token not in caplog.text and "<p>a</p>" not in caplog.text
+
+
+def test_a_drawn_mockup_logs_no_refusal(client, voice, caplog):
+    call = _start(client, voice)
+    caplog.set_level("WARNING", logger="swarm_api.voice.refused")
+    assert _mockup(client, call).status_code == 200
+    assert _refusals(caplog) == []
