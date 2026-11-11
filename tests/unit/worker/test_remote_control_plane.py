@@ -587,9 +587,10 @@ def test_a_transaction_helper_is_refused_rather_than_reaching_firestore(api_db, 
 
 #: `ControlPlane`'s public methods that never touch Firestore, which
 #: `RemoteControlPlane` inherits unchanged. `report_account_error` is a
-#: quota-broker call like `update_quota_state` (#2302).
+#: quota-broker call like `update_quota_state` (#2302), and so is
+#: `report_credit_exhausted` (the broker's `exhausted` route).
 _PURE = {"pin_verified_max_attempts", "startup_budget", "update_quota_state", "cancel_cause",
-         "report_account_error"}
+         "report_account_error", "report_credit_exhausted"}
 
 
 def test_every_public_control_plane_method_is_spoken_over_the_routes():
