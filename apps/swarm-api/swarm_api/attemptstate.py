@@ -56,6 +56,7 @@ from pydantic import AwareDatetime, Field
 from swarm_common.admission import AdmissionConfig, _snapshot, release_lease_in_transaction
 from swarm_common.config import Settings
 from swarm_common.models import (
+    CREDENTIAL_TIERS,
     Attempt,
     EndCause,
     Tenant,
@@ -211,15 +212,24 @@ WORKFLOW_ANCESTORS_MAX: int = BUILDS_ON_MAX_DEPTH
 
 #: The attempt document's usage fields a worker may write, by `kind` (§4.2):
 #: the frozen `Attempt`'s names, nothing else. `cpu_limit_source` takes the
-#: worker's `metrics.CPU_LIMIT_SOURCES`.
+#: worker's `metrics.CPU_LIMIT_SOURCES`. `credential` is request 152's three
+#: fields, as the worker's `control.credential_fields` sends them.
 USAGE_FIELDS: dict[str, tuple[str, ...]] = {
     "resource": ("peak_rss_bytes", "peak_disk_bytes", "oom_near_miss"),
     "cpu": ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores",
             "cpu_limit_source"),
     "spend": ("input_tokens", "output_tokens", "cache_read_input_tokens",
               "cache_creation_input_tokens", "cost_usd"),
+    "credential": ("account_id", "credential_source", "credential_tier"),
 }
 CPU_LIMIT_SOURCES = ("cgroup", "resource_class")
+#: `Attempt.credential_source`'s values (request 152; the worker's
+#: `control.CREDENTIAL_SOURCES`). Only `account_pool` names an account.
+CREDENTIAL_SOURCES = ("account_pool", "tenant_secret")
+#: The longest `Attempt.account_id` taken: the broker's `<tenant>:<label>`
+#: document id is far shorter, and Firestore's own field bound is not a
+#: reason to store a megabyte.
+ACCOUNT_ID_MAX = 256
 assert all(
     name in Attempt.__dataclass_fields__ for names in USAGE_FIELDS.values() for name in names
 )
@@ -337,7 +347,7 @@ class CheckpointBody(_Tuple):
 
 
 class UsageBody(_Tuple):
-    kind: Literal["resource", "cpu", "spend"]
+    kind: Literal["resource", "cpu", "spend", "credential"]
     fields: dict[str, Any]
 
 
@@ -536,6 +546,36 @@ def fence_reason(
     if task.get("current_lease_id") not in (None, attempt.lease_id):
         return "task points at a different lease"
     return None
+
+
+def _credential_doc(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Request 152's three fields as the worker's direct path merges them
+    (`control.credential_fields`): all three, always, the absent ones None.
+
+    Held to the frozen `Attempt`'s shape and refused otherwise rather than
+    written wrong: a source of `CREDENTIAL_SOURCES`; an account only under
+    `account_pool`, a non-empty id of at most `ACCOUNT_ID_MAX`; a tier of
+    `CREDENTIAL_TIERS` and only beside an account. An account id and two
+    words: nothing here can hold a key, a secret's name or a token.
+    """
+    source = fields.get("credential_source")
+    if source not in CREDENTIAL_SOURCES:
+        raise ValidationFailed(f"credential_source is one of {', '.join(CREDENTIAL_SOURCES)}")
+    account_id = fields.get("account_id")
+    if account_id is not None:
+        if (not isinstance(account_id, str) or not account_id
+                or len(account_id) > ACCOUNT_ID_MAX):
+            raise ValidationFailed(
+                f"account_id is null or a string of 1 to {ACCOUNT_ID_MAX} characters")
+        if source != "account_pool":
+            raise ValidationFailed("account_id is written only under account_pool")
+    tier = fields.get("credential_tier")
+    if tier is not None:
+        if tier not in CREDENTIAL_TIERS:
+            raise ValidationFailed(f"credential_tier is null or one of {', '.join(CREDENTIAL_TIERS)}")
+        if account_id is None:
+            raise ValidationFailed("credential_tier is written only beside an account_id")
+    return {"account_id": account_id, "credential_source": source, "credential_tier": tier}
 
 
 def _lease_is_this_tuples(lease: Mapping[str, Any] | None, attempt: AttemptTuple) -> bool:
@@ -1379,7 +1419,8 @@ class AttemptState:
         return self._run(_apply)
 
     def usage(self, call: Call) -> dict[str, Any]:
-        """`record_resource_usage`, `record_cpu_usage`, `record_spend`: named
+        """`record_resource_usage`, `record_cpu_usage`, `record_spend` and the
+        credential `record_spend` sends after it (request 152): named
         fields only, typed as the frozen `Attempt` types them. `cost_usd` is
         the runner's figure, as the direct path stores it: swarm-api holds no
         price table to recompute it from (§4.2 asked for one "where a price
@@ -1391,24 +1432,27 @@ class AttemptState:
         if unknown:
             raise ValidationFailed(f"{body.kind} usage takes only {', '.join(allowed)}")
         doc: dict[str, Any] = {}
-        for key, value in body.fields.items():
-            if key == "oom_near_miss":
-                if not isinstance(value, bool):
-                    raise ValidationFailed("oom_near_miss must be a boolean")
-                doc[key] = value
-            elif key == "cpu_limit_source":
-                if value not in CPU_LIMIT_SOURCES:
-                    raise ValidationFailed("cpu_limit_source must be cgroup or resource_class")
-                doc[key] = value
-            elif key in ("cost_usd", "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores",
-                         "cpu_limit_cores"):
-                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-                    raise ValidationFailed(f"{key} must be a non-negative number")
-                doc[key] = float(value)
-            else:
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ValidationFailed(f"{key} must be a non-negative integer")
-                doc[key] = value
+        if body.kind == "credential":
+            doc = _credential_doc(body.fields)
+        else:
+            for key, value in body.fields.items():
+                if key == "oom_near_miss":
+                    if not isinstance(value, bool):
+                        raise ValidationFailed("oom_near_miss must be a boolean")
+                    doc[key] = value
+                elif key == "cpu_limit_source":
+                    if value not in CPU_LIMIT_SOURCES:
+                        raise ValidationFailed("cpu_limit_source must be cgroup or resource_class")
+                    doc[key] = value
+                elif key in ("cost_usd", "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores",
+                             "cpu_limit_cores"):
+                    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative number")
+                    doc[key] = float(value)
+                else:
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative integer")
+                    doc[key] = value
         if body.kind == "cpu":
             if "cpu_limit_source" in doc and "cpu_limit_cores" not in doc:
                 raise ValidationFailed("cpu_limit_source is written only beside cpu_limit_cores")
