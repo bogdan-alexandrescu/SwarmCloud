@@ -75,8 +75,11 @@ def test_the_sized_fields_default_to_none():
 def test_the_sized_fields_are_the_last_of_the_class():
     names = [f.name for f in dataclasses.fields(Attempt)]
     # MUTATION: insert them beside `cpu_limit_cores` and every positional
-    # construction after it shifts.
-    assert tuple(names[-len(SIZED):]) == SIZED
+    # construction after it shifts. Only contract request 152's three fields,
+    # appended later, follow them.
+    later = ("account_id", "credential_source", "credential_tier")
+    assert tuple(names[-len(SIZED) - len(later):-len(later)]) == SIZED
+    assert tuple(names[-len(later):]) == later
 
 
 def test_a_plain_attempt_round_trips():

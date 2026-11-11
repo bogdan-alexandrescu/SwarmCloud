@@ -45,6 +45,7 @@ import { AdminSetupTeam } from './AdminSetupTeam'
 import { Banner, Button, Card } from './components'
 import { ChecklistFinish } from './consolefinish/ChecklistFinish'
 import { fixtureMoment, momentSetupState } from './consolefinish/moments'
+import { InfoTip } from './People'
 import { PageHead } from './Shell'
 import './styles/config.css'
 import './styles/onboarding.css'
@@ -140,10 +141,17 @@ function SetupFirstRunScreen({ now }: { now?: number }) {
 export function AdminSetupHealthScreen({ now }: { now?: number }) {
   return (
     <div className="ur-page asm-page">
-      <PageHead title="Health" />
-      <p className="ur-sub">
-        The hourly doctor’s checks, read-only, on the live deployment: the scheduled run’s findings, each with its repair. From a terminal, swarm doctor checks this machine and the deployment against the manifest. The install steps are on <a href="/admin/setup">Admin › Setup</a>.
-      </p>
+      {/* What the page shows, behind the (i) beside its title (the owner's
+          no-prose rule, 2026-11-05): the paragraph that stood under the head. */}
+      <PageHead
+        title="Health"
+        info={
+          <InfoTip
+            about="the Health page"
+            tip="The hourly doctor’s checks, read-only, on the live deployment: the scheduled run’s findings, each with its repair. From a terminal, swarm doctor checks this machine and the deployment against the manifest. The install steps are on Admin › Setup."
+          />
+        }
+      />
       <AdminSetupHealth now={now} />
     </div>
   )

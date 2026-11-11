@@ -32,7 +32,7 @@ import {
 import { workflowHref } from './agentlist'
 import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { StepPluginRow, UNREAD_STEP_PLUGINS, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
+import { StepPluginRow, UNREAD_STEP_PLUGINS, stepManagedPlan, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
 import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
@@ -54,6 +54,7 @@ import {
   requiredInputKeys,
   type DispatchStrategy,
   type RunnerProfile,
+  type StepManagedPlugins,
   type Workflow,
 } from './types'
 import './styles/submit.css'
@@ -289,6 +290,10 @@ interface StepDraft {
   /** The plugin picked in the step's sheet (PluginSheet.tsx), by name; absent
    *  or null is none. Sent as the step's `plugins` field (`stepPluginPlan`). */
   plugin?: StepPlugin | null
+  /** The step's managed plugins and the workspace defaults it turns off
+   *  (managed-plugins.md section 7); absent is none of either. Sent as the
+   *  step's `plugins` and `plugins_off` fields (`stepManagedPlan`). */
+  managed?: StepManagedPlugins | null
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -450,6 +455,15 @@ function planOf(
       }
       pluginField = planned.plugins
     }
+    // ITS MANAGED PLUGINS join the same field, by install id, with any
+    // overrides; the defaults it turns off go in `plugins_off`, as
+    // `swarm_api.plugins.merge_step_plugins` reads them.
+    const managed = stepManagedPlan(s.managed, s.plugin?.name ?? null, plugins ?? UNREAD_STEP_PLUGINS)
+    if (!managed.ok) {
+      problems.push({ key: s.key, stepId: id, kind: 'plugin', message: managed.message })
+      continue
+    }
+    if (Object.keys(managed.plugins).length > 0) pluginField = { ...(pluginField ?? {}), ...managed.plugins }
     const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
       step_id: id,
@@ -469,6 +483,7 @@ function planOf(
       // chose over the runner's default (#1435).
       ...(modelClass === undefined ? {} : { model_class: modelClass }),
       ...(pluginField === null ? {} : { plugins: pluginField }),
+      ...(managed.off.length === 0 ? {} : { plugins_off: managed.off }),
     })
   }
   return { problems, body }
@@ -600,8 +615,9 @@ function Form({ sources }: { sources: FormSources }) {
   const [sentKey, setSentKey] = useState<string | null>(null)
   // One providers read for the form, handed to every step's picker.
   const keys = useProviderKeys()
-  // The workspace's plugins and who is signed in, read once, on the first
-  // plugin sheet opened (PluginSheet.tsx), never before.
+  // The workspace's plugins, its managed plugins and its every-step
+  // defaults, read once, when a step first has a runner that runs an agent
+  // (PluginSheet.tsx), never before: its card draws the defaults as chips.
   const stepPlugins = useStepPlugins()
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
   // so `maxSteps` stays null and nothing here caps the form.
@@ -1218,10 +1234,12 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
       )}
       {/* THE STEP'S PLUGIN (docs/design/agent-plugins.md): one chip, or
           "+ Add a plugin", opening the guided sheet. Not on a step that waits
-          for a person: it runs no agent to load one. */}
+          for a person: it runs no agent to load one. The workspace's every-step
+          defaults are chips beside it, each switching off for this step. */}
       {chosen && step.profile !== AWAIT_INPUT_PROFILE && (
         <StepPluginRow stepId={step.id.trim() === '' ? 'this step' : step.id} profile={step.profile}
-          pick={step.plugin ?? null} ctx={plugins} onPick={(plugin) => onChange({ ...step, plugin })} />
+          pick={step.plugin ?? null} ctx={plugins} onPick={(plugin) => onChange({ ...step, plugin })}
+          managed={step.managed ?? null} onManaged={(managed) => onChange({ ...step, managed })} />
       )}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once

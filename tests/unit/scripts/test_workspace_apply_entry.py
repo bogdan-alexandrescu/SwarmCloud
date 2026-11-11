@@ -452,7 +452,7 @@ def _hostile_environment(tmp_path: Path) -> dict[str, str]:
         "NO_COLOR": "caller",
         "ARTIFACT_BUCKET": "someone-elses-bucket",
         "FIRESTORE_DATABASE": "(default)",
-        "GKE_CLUSTER": "agents-staging",
+        "GKE_CLUSTER": "peer-cluster",
         "SWARM_WORKSPACE_RETRY_DELAYS": "100000",
         random_name: secrets.token_hex(8),
     }

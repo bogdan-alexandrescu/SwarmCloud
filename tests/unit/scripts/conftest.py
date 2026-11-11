@@ -1,6 +1,6 @@
 """Wiring for the script tests in tests/unit/scripts.
 
-scripts/lib/common.sh has no default project, region or zone (DAYONE-DESAGA-2;
+scripts/lib/common.sh has no default project, region or zone (the Day One project-defaults lane;
 docs/design/generic-repository.md, section 2.2): sourcing it with any of them
 unset is an error. And once a project is named, it reads that deployment's
 never-touch list from config/<env>/deny-list.json and stops when it cannot
@@ -44,6 +44,8 @@ PLACEHOLDER_DEPLOYMENT = {
 
 #: The example list, written for a project under <config_dir>/<env>/ for each env.
 write_placeholder_deny_list = placeholder_deployment.write_deny_list
+#: The placeholder <env>.tfvars (allowed domain, platform owner), for a test whose script reads one.
+write_placeholder_tfvars = placeholder_deployment.write_tfvars
 
 
 def pytest_configure(config: pytest.Config) -> None:

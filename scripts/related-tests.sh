@@ -62,7 +62,7 @@
 # stdout: the related test files, repo-relative, one a line; then one command
 # a line. `--run` also runs those commands in turn and stops at the first red.
 #
-# TEST-OUTPUT (TOKEN-A, part of #2524, BGD 2026-10-27). 97% of the pool's
+# TEST-OUTPUT (TOKEN-A, part of #2524, the owner 2026-10-27). 97% of the pool's
 # tokens in 2026-10-20..27 were cache reads, and a whole test transcript in a
 # Bash result is re-read on every later turn. So with --run each run's full
 # output goes to a log, redacted (common.sh's redact: the artifacts outlive
@@ -80,7 +80,7 @@
 set -euo pipefail
 
 # This script touches no project: it reads the tree. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID. Not exported: the tests still run in the caller's environment.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR

@@ -182,6 +182,9 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/mcp/test_build_board_wire.py` | `_hook` | `skip_call` | bash is not installed |
 | `tests/unit/mcp/test_plugin_agents_and_workflows.py` | `_node` | `skip_call` | node is not installed; CI runs these |
 | `tests/unit/mcp/test_plugin_bridge_install.py` | `test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it` | `skipif` | network: CI sets SWARM_BRIDGE_INSTALL_REF to a pushed commit to install |
+| `tests/unit/mcp/test_plugin_portable.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
+| `tests/unit/mcp/test_plugin_user_config.py` | `test_nothing_in_the_manifest_names_this_repositorys_deployment` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
+| `tests/unit/mcp/test_plugin_version_guard.py` | `_hook` | `skip_call` | sh, bash or ps is not installed |
 | `tests/unit/mcp/test_remote_steps_bridge.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/mcp/test_sc_auto_watch.py` | `_hook` | `skip_call` | bash is not installed |
 | `tests/unit/mcp/test_sc_browser_pane.py` | `_claude` | `skip_call` | the claude CLI is not installed here; `claude plugin validate` and `claude plugin test` need it (CI's runner has none) |
@@ -257,6 +260,10 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_onboarding_docs_and_mockup.py` | `test_each_entry_variant_draws_the_checklist` | `skip_call` | {vid} not drawn |
 | `tests/unit/scripts/test_plan_guard_iam_classification.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_plan_guard_metric_replace.py` | `<module>` | `skipif` | jq is required |
+| `tests/unit/scripts/test_plugin_bundle_recipes.py` | `_require` | `skip_call` | {tool} is not installed here; CI runs this |
+| `tests/unit/scripts/test_plugin_bundle_recipes.py` | `test_each_recipe_starts_with_strict_mode_and_is_shellcheck_clean` | `skip_call` | shellcheck is not installed here; CI runs this |
+| `tests/unit/scripts/test_plugin_intake_image.py` | `test_a_change_to_the_job_rebuilds_the_image_and_nothing_else_does` | `skipif` | build-images.sh needs jq |
+| `tests/unit/scripts/test_plugin_intake_image.py` | `test_build_images_finds_the_intake_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_plugin_tag.py` | `<module>` | `skipif` | the steps read plugin.json with jq |
 | `tests/unit/scripts/test_pool_limit_units.py` | `<module>` | `skipif` | jq and bash are required |
 | `tests/unit/scripts/test_promotion_mark.py` | `<module>` | `skipif` | the scripts need bash and jq |
@@ -269,6 +276,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_register_tenant_workspace.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_related_tests.py` | `test_the_script_selects_one_swarm_api_routes_tests_and_none_of_the_workers` | `skip_call` | the budget route moved; pick another route |
 | `tests/unit/scripts/test_release_acceptance_job.py` | `test_the_acceptance_scripts_are_shellcheck_clean` | `skipif` | shellcheck is not installed here |
+| `tests/unit/scripts/test_release_apply_targeted_services.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_release_assemble.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_assemble.py` | `test_install_sh_is_posix_and_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_home.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
@@ -358,6 +366,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_memory_guard.py` | `test_a_real_sleep_grandchild_is_killed_and_only_it` | `skip_call` | no procfs |
 | `tests/unit/worker/test_merge_action.py` | `test_the_step_closes_what_close_merged_issues_sh_closes` | `skip_call` | bash and jq are required to run the script |
 | `tests/unit/worker/test_merge_verdict_runs_no_fix_agent.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_pluginload_runner.py` | `node` | `skip_call` | node is not installed here; CI runs these |
 | `tests/unit/worker/test_pr_body_console_links.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_pr_open_reread.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_base_after_main_merge.py` | `<module>` | `skipif` | git is not installed |
@@ -385,6 +394,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_publish_outcomes.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_after_merging_main.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_cli.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_publish_scan_stacked_branch_floor.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scans_a_clean_repository.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_to_pr.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_to_pr_own_moved_head.py` | `<module>` | `skipif` | git is not installed |

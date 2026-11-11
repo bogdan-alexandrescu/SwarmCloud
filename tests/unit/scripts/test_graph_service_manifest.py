@@ -11,7 +11,7 @@
     pod may hold a graph ticket), one peer, and from nothing else; TCP 8081,
     the stats port, from swarm-api's Direct VPC egress range and from the
     swarm-graph pods themselves (a replica reads its peers' /v1/stats/local,
-    BGD 2026-10-28), and from nothing else (docs/design/graph-answer-cache.md
+    The owner 2026-10-28), and from nothing else (docs/design/graph-answer-cache.md
     §5.3; lane CACHE-2-NETWORK). kubernetes/network_parity.py judges the
     policy with the same function the tests use;
   * swarm-api's way in: the internal load balancer `swarm-graph-stats` on the
@@ -217,7 +217,7 @@ def test_only_a_tenant_namespace_reaches_it_on_8080():
 
 
 def test_8081_is_admitted_only_from_swarm_api_and_the_graph_pods():
-    """§5.3 and BGD's 2026-10-28 rule: swarm-api's Direct VPC egress range for
+    """§5.3 and the owner's 2026-10-28 rule: swarm-api's Direct VPC egress range for
     GET /v1/stats, and the swarm-graph pods of this namespace for the peer
     fan-out to /v1/stats/local. Neither reaches 8080; no tenant reaches 8081."""
     admitted = _admitted(_policy())

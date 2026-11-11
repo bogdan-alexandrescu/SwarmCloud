@@ -52,6 +52,17 @@ and never written, never named in the manifest and never in `env`; the
 lifecycle hands it to the gate over ctl.sock (`agent_worker.cf_access`) and
 drops it. Its fields are registered for redaction like every other value.
 
+A MANAGED PLUGIN'S SECRETS ARE NEVER THE AGENT'S (docs/design/managed-plugins.md
+§6.2). swarm-api answers `plugin_secrets` too: each secret and file setting
+of the plugins the step's SIGNED set names, `{install_id, variable, kind,
+value}`. They are asked for even when the profile declares no slot
+(`release(plugins=True)`, `pluginload.wants_release`), held in this heap as
+`Released.plugins` and never written here, never in the manifest and never in
+`env`; the lifecycle hands them to `plugins.start`, whose loader writes each
+one 0600 under `private/plugin-secrets/<install_id>/` for that plugin's
+launcher alone (swarm-plugin-exec), and drops them. Each value is registered
+for redaction as the answer is parsed, like every other.
+
 REMOVED ON EVERY EXIT. `remove` deletes `private/secrets/` and is the first
 cleanup step after the runner is gone (`lifecycle.Worker._cleanup`).
 """
@@ -73,6 +84,7 @@ from swarm_common.profiles import RUNTIME_TOOLS, RunnerProfile, SecretSlot, tool
 
 from .children import ChildApiError, ChildSubmitFenced
 from .handoff import sign_headers
+from .pluginload import INSTALL_ID, VARIABLE
 
 #: swarm-api's purpose for this route (`swarm_api.routes.attempts_secrets.
 #: RELEASE_PURPOSE`), restated: this image does not carry swarm-api.
@@ -102,6 +114,8 @@ _STRUCTURED = ("basic_auth", "oauth_client")
 
 #: Why the release did not happen, as a word for the log and the park.
 NO_KEY = "no_attempt_key"
+#: The kinds swarm-api gives a plugin item (`attempts_secrets.PluginItem.answer`).
+PLUGIN_KINDS = ("plugin_secret", "plugin_file")
 UNREACHABLE = "swarm_api_unreachable"
 
 
@@ -136,6 +150,10 @@ class Released:
     #: Gate-slot items, held in this heap for the live gate and never written:
     #: `{name, slot, hosts, value}` each (module docstring). Emptied once handed over.
     gate: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    #: The signed set's plugin secrets and file contents, `(install_id,
+    #: variable) -> value` (`pluginload.Released`), held in this heap for
+    #: `plugins.start` and never written here. Emptied once handed over.
+    plugins: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
     #: None when swarm-api answered; else why not (NO_KEY, UNREACHABLE, a code).
     unreachable: str | None = None
     asked: bool = False
@@ -210,16 +228,19 @@ class SecretRelease:
         return f"/v1/attempts/{quote(self.cfg.attempt_id, safe='')}/secrets:release"
 
     def release(self, *, profile: RunnerProfile, inputs: Mapping[str, Any] | None,
-                private_dir: Path) -> Released:
+                private_dir: Path, plugins: bool = False) -> Released:
         """Ask once, write the files, return what the runner may see. Raises
-        only `SecretReleaseFenced`; every other failure is `unreachable`."""
+        only `SecretReleaseFenced`; every other failure is `unreachable`.
+        `plugins` is whether the step's signed plugin set names a secret or a
+        file swarm-api releases (`pluginload.wants_release`): asked for then
+        even with no slot, and held in `Released.plugins`."""
         if self.result is not None:
             return self.result
         slots = consumer_slots(profile, inputs)
         required = sorted(name for name, slot in slots.items() if slot.required)
         result = Released()
         self.result = result
-        if profile.worker_action is not None or not slots:
+        if profile.worker_action is not None or not (slots or plugins):
             return result
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
@@ -240,6 +261,8 @@ class SecretRelease:
         if not isinstance(items, list):
             return self._unreachable(result, "bad_answer", required)
         accepted = self._accept(items, slots)
+        plugin_items = payload.get("plugin_secrets")
+        result.plugins = self._accept_plugins(plugin_items if isinstance(plugin_items, list) else [])
         result.gate = [{"name": name, "slot": slot, "hosts": hosts, "value": value}
                        for name, slot, _, value, hosts in accepted if slot in GATE_SLOTS]
         accepted = [item for item in accepted if item[1] not in GATE_SLOTS]
@@ -250,6 +273,7 @@ class SecretRelease:
             result.delivered.clear()
             result.env.clear()
             result.gate.clear()
+            result.plugins.clear()
             return self._unreachable(result, f"write_failed:{type(exc).__name__}", required)
         filled = {slot for _, slot in result.delivered} | {item["slot"] for item in result.gate}
         result.missing_required = [slot for slot in required if slot not in filled]
@@ -258,6 +282,7 @@ class SecretRelease:
             "workspace secrets released",
             names=[name for name, _ in result.delivered],
             for_the_gate=[item["name"] for item in result.gate],
+            for_plugins=[f"{install_id}:{variable}" for install_id, variable in sorted(result.plugins)],
             withheld=[w.get("name") for w in withheld if isinstance(w, dict)],
             missing_required=result.missing_required,
         )
@@ -312,6 +337,38 @@ class SecretRelease:
             seen.add((name, slot))
             hosts = list(item["hosts"]) if slot in GATE_SLOTS else []
             out.append((name, slot, str(kind), value, hosts))
+        return out
+
+    def _accept_plugins(self, items: list[Any]) -> dict[tuple[str, str], str]:
+        """`(install_id, variable) -> value` for each plugin item in swarm-
+        api's shape. Every value is registered for redaction first, a refused
+        one included. Which plugin may read which is the loader's to decide:
+        it looks up only its signed entries' own variables."""
+        out: dict[tuple[str, str], str] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            install_id, variable, kind, value = (item.get("install_id"), item.get("variable"),
+                                                 item.get("kind"), item.get("value"))
+            if isinstance(value, str) and value:
+                self.log.register_secret(value)
+            reason = None
+            if not isinstance(install_id, str) or not INSTALL_ID.fullmatch(install_id):
+                reason = "install_id"
+            elif not isinstance(variable, str) or not VARIABLE.fullmatch(variable):
+                reason = "variable"
+            elif kind not in PLUGIN_KINDS:
+                reason = "kind"
+            elif not isinstance(value, str) or (kind == "plugin_secret" and not value):
+                reason = "value"
+            elif (install_id, variable) in out:
+                reason = "duplicate"
+            if reason:
+                self.log.warning("plugin secret refused by this worker",
+                                 install_id=install_id if isinstance(install_id, str)
+                                 and INSTALL_ID.fullmatch(install_id) else None, reason=reason)
+                continue
+            out[(install_id, variable)] = value
         return out
 
     def _write(self, accepted: list[tuple[str, str, str, str, list[str]]], private_dir: Path,

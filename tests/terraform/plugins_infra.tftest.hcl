@@ -250,6 +250,104 @@ run "the_bucket_keeps_a_week_of_deleted_copies_and_logs_access" {
   }
 }
 
+# The console's upload (Config > Plugins > Add plugin > Upload) is a browser
+# PUT to swarm-api's signed URL on this bucket, cross-origin: one CORS rule
+# admits the console's own origin, PUT only, with exactly the two headers the
+# URL is signed with. A deployment with no console plans no rule at all.
+run "the_console_may_put_to_its_signed_upload_url" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_frontend   = true
+    frontend_hostname = "swarm.example.test"
+  }
+
+  assert {
+    condition = (
+      length(google_storage_bucket.plugins.cors) == 1
+      && google_storage_bucket.plugins.cors[0].origin == tolist(["https://swarm.example.test"])
+      && google_storage_bucket.plugins.cors[0].method == tolist(["PUT"])
+      && toset(google_storage_bucket.plugins.cors[0].response_header) == toset(["Content-Type", "x-goog-content-length-range"])
+      && google_storage_bucket.plugins.cors[0].max_age_seconds <= 900
+    )
+    error_message = "the plugins bucket admits a cross-origin PUT from the console's own origin only, with the signed Content-Type and x-goog-content-length-range headers"
+  }
+}
+
+run "no_console_no_cors_rule" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = length(google_storage_bucket.plugins.cors) == 0
+    error_message = "without a console (enable_frontend off or no frontend_hostname) the plugins bucket carries no CORS rule"
+  }
+}
+
+# The intake's callback: the bucket announces staging/ finalizes on its own
+# topic, Cloud Storage's agent may publish there and nowhere else, and the push
+# reaches swarm-api's callback route with an OIDC token for the push audience
+# from the rollup sweeper -- the audience and account swarm-api is told to
+# admit, so the two sides cannot disagree.
+run "the_intake_report_reaches_swarm_api" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition = (
+      google_storage_notification.plugin_intake_reports.bucket == "example-project-swarm-plugins"
+      && google_storage_notification.plugin_intake_reports.object_name_prefix == "staging/"
+      && google_storage_notification.plugin_intake_reports.event_types == toset(["OBJECT_FINALIZE"])
+      && google_storage_notification.plugin_intake_reports.payload_format == "JSON_API_V1"
+      && google_storage_notification.plugin_intake_reports.custom_attributes["managed-by"] == "swarm-terraform"
+      && google_pubsub_topic.plugin_intake_reports.name == "swarm-plugin-intake-reports"
+      && google_pubsub_topic.plugin_intake_reports.labels["managed-by"] == "swarm-terraform"
+    )
+    error_message = "the plugins bucket announces OBJECT_FINALIZE under staging/ only, on its own managed-by topic"
+  }
+
+  assert {
+    condition = (
+      google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes.member == "serviceAccount:service-123456789012@gs-project-accounts.iam.gserviceaccount.com"
+      && google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes.role == "roles/pubsub.publisher"
+      && google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes.topic == "swarm-plugin-intake-reports"
+    )
+    error_message = "Cloud Storage's agent publishes to the intake reports topic, that topic only"
+  }
+
+  assert {
+    condition = (
+      google_pubsub_subscription.plugin_intake_reports.push_config[0].oidc_token[0].audience == "https://swarm-api.dev.swarm.internal"
+      && google_pubsub_subscription.plugin_intake_reports.push_config[0].oidc_token[0].service_account_email == module.scheduler.rollup_sweeper_email
+      && google_pubsub_subscription.plugin_intake_reports.labels["managed-by"] == "swarm-terraform"
+      && length(google_pubsub_subscription.plugin_intake_reports.dead_letter_policy) == 0
+    )
+    # The push endpoint is swarm-api's URL, unknown until apply, so its path
+    # is not asserted at plan.
+    error_message = "the push presents an OIDC token for swarm-api's push audience from the rollup sweeper, no dead letter"
+  }
+
+  assert {
+    condition = (
+      local.service_env["swarm-api"].SWARM_PLUGINS_BUCKET == "example-project-swarm-plugins"
+      && local.service_env["swarm-api"].SWARM_PLUGIN_INTAKE_JOB == "swarm-plugin-intake"
+      && local.service_env["swarm-api"].SWARM_PLUGIN_INTAKE_AUDIENCE == google_pubsub_subscription.plugin_intake_reports.push_config[0].oidc_token[0].audience
+      && local.service_env["swarm-api"].SWARM_PLUGIN_INTAKE_CALLERS == google_pubsub_subscription.plugin_intake_reports.push_config[0].oidc_token[0].service_account_email
+    )
+    error_message = "swarm-api is told the bucket, the job, and exactly the audience and account the push presents"
+  }
+}
+
 run "the_intake_job_has_no_egress_and_no_secret" {
   command = plan
 
@@ -304,9 +402,10 @@ run "the_intake_job_has_no_egress_and_no_secret" {
   assert {
     condition = (
       length(google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].volumes) == 0
+      && length(google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].containers[0].volume_mounts) == 0
       && toset([for e in google_cloud_run_v2_job.plugin_intake[0].template[0].template[0].containers[0].env : e.name]) == toset(["PLUGINS_BUCKET", "PLUGIN_MAX_PACKED_BYTES", "PLUGIN_MAX_UNPACKED_BYTES", "PLUGIN_MAX_FILES"])
     )
-    error_message = "the intake job mounts nothing and is told only the bucket and the caps"
+    error_message = "the intake job mounts nothing (it reads and writes the bucket through the API: a FUSE mount lists) and is told only the bucket and the caps"
   }
 
   assert {

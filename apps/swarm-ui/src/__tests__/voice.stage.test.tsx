@@ -4,13 +4,18 @@
 //     its tab, where it came from and its line range, its numbered lines;
 //   * a note's `lines` anchor bands its lines and carries its pin, and the pin
 //     opens the note's words;
+//   * a mock-up visual draws each of its frames in its own frame that allows
+//     nothing and fetches nothing, its approved frame carries a tick whose tip
+//     says who approved it and when, and Approve posts the frame to the
+//     approval route;
 //   * a read-back the gate holds is a card with what was heard, what will run,
 //     its clock, and Go and Not that, each posted to its read-back route;
 //   * on a phone (390) nothing is wider than the page and nothing pans: the
 //     lines wrap, the frame has no window of its own, the tabs wrap instead of
 //     scrolling with no bar, and the caption strip wraps its words.
 //
-// MUTATIONS: draw the body without the visual's first line number; drop the
+// MUTATIONS: draw a mock-up's frames as one document; drop sandbox="" or the
+// content policy; leave the tick off the approved frame; draw the body without the visual's first line number; drop the
 // band from a noted line; post Go to not-that; set the tabs back to
 // `overflow-x: auto` or the code back to `white-space: pre`; give the hold a
 // fixed 320px column on the phone.
@@ -18,6 +23,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import STAGE_CSS from '../styles/talk-stage.css?raw'
 import TALK_CSS from '../styles/talk-pane.css?raw'
 import STYLES from '../styles.css?raw'
@@ -475,5 +481,97 @@ describe('the stage applies the session stream live', () => {
     render(<Live sessionId={null} live={false} />)
     await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
     expect(FakeEventSource.all).toHaveLength(0)
+  })
+})
+
+describe('a mock-up visual', () => {
+  const MOCKUP = {
+    ...VISUAL,
+    visual_id: 'vv_shop',
+    kind: 'mockup',
+    title: 'The shop page',
+    version: 1,
+    source: null,
+    lines: null,
+    parts: [
+      { id: 'frame-1', label: 'Cards' },
+      { id: 'frame-2', label: 'List' },
+    ],
+    approved: { frame_id: 'frame-2', label: 'List', by: 'alice@example.com', via: 'voice', at: '2026-11-10T11:00:00Z' },
+  }
+  const FRAMES = [
+    { id: 'frame-1', label: 'Cards', html: '<h1>Cards view</h1>' },
+    { id: 'frame-2', label: 'List', html: '<h1>List view</h1>' },
+  ]
+  const FRAME_NOTE = { ...NOTE, note_id: 'vn_frame', visual_id: 'vv_shop', anchor: { type: 'part', part_id: 'frame-1' }, text: 'Bigger cards.' }
+
+  function answerMockup(approved: unknown) {
+    fetchMock.read.mockImplementation(async (target: { template: string }) => {
+      if (target.template === '/v1/voice/projects/{project_id}/visuals') return ok({ visuals: [{ ...MOCKUP, approved }] })
+      if (target.template === '/v1/voice/projects/{project_id}/visuals/{visual_id}') return ok({ visual: { ...MOCKUP, approved }, body: JSON.stringify({ frames: FRAMES }), notes: [FRAME_NOTE] })
+      if (target.template === '/v1/voice/sessions/{session_id}/readbacks/pending') return ok({ readback: null })
+      throw new Error(`no answer for ${target.template}`)
+    })
+  }
+
+  it('draws each frame in its own frame that allows nothing and fetches nothing', async () => {
+    answerMockup(MOCKUP.approved)
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const shown = await screen.findByRole('figure', { name: 'The shop page' })
+    const cards = within(shown).getByRole('group', { name: 'Cards' })
+    const list = within(shown).getByRole('group', { name: 'List' })
+    for (const [group, html] of [
+      [cards, FRAMES[0]!.html],
+      [list, FRAMES[1]!.html],
+    ] as const) {
+      const frames = group.querySelectorAll('iframe')
+      expect(frames).toHaveLength(1)
+      expect(frames[0]!.getAttribute('sandbox')).toBe('')
+      const doc = frames[0]!.getAttribute('srcdoc') ?? ''
+      expect(doc).toContain(html)
+      expect(doc).toContain("default-src 'none'")
+    }
+    // The note on a frame is pinned to that frame.
+    expect(within(cards).getByRole('button', { name: 'Note 1' })).toBeTruthy()
+    expect(within(list).queryByRole('button', { name: 'Note 1' })).toBeNull()
+  })
+
+  it("ticks the approved frame, its tip saying who approved it and when", async () => {
+    answerMockup(MOCKUP.approved)
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const list = await screen.findByRole('group', { name: 'List' })
+    const tick = within(list).getByRole('img', { name: 'Approved' })
+    expect(tick.closest('.c-tip-host')!.querySelector('[role="tooltip"]')!.textContent).toMatch(/alice@example\.com/)
+    expect(tick.closest('.c-tip-host')!.querySelector('[role="tooltip"]')!.textContent).toMatch(/2026|Nov|11/)
+    expect(within(screen.getByRole('group', { name: 'Cards' })).queryByRole('img', { name: 'Approved' })).toBeNull()
+  })
+
+  it("opens the approved tick's tip leftwards, so the frame's right edge does not clip it", async () => {
+    answerMockup(MOCKUP.approved)
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const list = await screen.findByRole('group', { name: 'List' })
+    const tip = within(list).getByRole('img', { name: 'Approved' }).closest('.c-tip-host')!.querySelector('[role="tooltip"]')!
+    const sheets = [COMPONENTS_CSS, STYLES, STAGE_CSS].join('\n')
+    const won = (prop: string): string | null => cascade(sheets, tip, prop, { width: 1440 }).winner?.value ?? null
+    expect(won('left')).toBe('auto')
+    expect(won('right')).toBe('0')
+  })
+
+  it('posts Approve on a frame to the approval route and ticks it', async () => {
+    answerMockup(null)
+    const mark = { frame_id: 'frame-1', label: 'Cards', by: 'alice@example.com', via: 'stage', at: '2026-11-10T11:05:00Z' }
+    fetchMock.write.mockResolvedValue(ok({ visual: { ...MOCKUP, approved: mark } }))
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const cards = await screen.findByRole('group', { name: 'Cards' })
+    expect(within(cards).queryByRole('img', { name: 'Approved' })).toBeNull()
+    await act(async () => {
+      fireEvent.click(within(cards).getByRole('button', { name: 'Approve' }))
+    })
+    expect(fetchMock.write).toHaveBeenCalledTimes(1)
+    const [target, method, body] = fetchMock.write.mock.calls[0]!
+    expect(target.url).toBe('/v1/voice/projects/vp_t/visuals/vv_shop/approval')
+    expect(method).toBe('POST')
+    expect(body).toEqual({ frame: 'frame-1', session_id: 'vs_t' })
+    expect(within(cards).getByRole('img', { name: 'Approved' })).toBeTruthy()
   })
 })

@@ -97,7 +97,7 @@ class FakeBroker:
         self.releases: list[str] = []
         self.unusable: list[str] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         self.assigns.append(provider)
         self.excludes.append(tuple(exclude))
         if self.assign_error is not None:
@@ -106,7 +106,7 @@ class FakeBroker:
             return self.outcomes.pop(0)
         return self.outcome
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         assert assignment_id, "a release must name the assignment it gives back"
         self.releases.append(account_id)
         self.unusable.append(unusable)
@@ -669,7 +669,7 @@ def test_a_refusal_after_an_unreadable_account_still_says_refused(
             raise gexc.PermissionDenied("Permission denied on secret")
 
     class RefusesSecondAsk(FakeBroker):
-        def assign(self, provider, *, exclude=()):
+        def assign(self, provider, *, exclude=(), **_kw):
             if self.assigns:
                 self.assigns.append(provider)
                 raise BrokerRefused("the quota broker refused this worker with 403")

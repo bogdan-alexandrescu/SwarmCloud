@@ -78,7 +78,15 @@
     "terraform/modules/firestore/backups.tf (the daily backup of `swarm`, #1818),",
     "checked the same way against the pinned provider 6.50.0: its attributes are",
     "database, id, name, project and retention, and its blocks daily_recurrence,",
-    "timeouts and weekly_recurrence -- no labels."
+    "timeouts and weekly_recurrence -- no labels.",
+    "",
+    "google_storage_notification was added on 2026-11-08 for",
+    "terraform/infra/plugins.tf (the plugins bucket's finalize notification that",
+    "carries the intake job's report to swarm-api), checked the same way against",
+    "the pinned provider 6.50.0: its attributes are bucket, custom_attributes,",
+    "event_types, id, notification_id, object_name_prefix, payload_format,",
+    "self_link and topic -- no labels. It carries managed-by=swarm-terraform as a",
+    "custom attribute on every message it sends."
   ],
   "types": [
     "google_cloud_scheduler_job",
@@ -121,6 +129,7 @@
     "google_service_account_key",
     "google_service_networking_connection",
     "google_storage_bucket_object",
+    "google_storage_notification",
     "local_file",
     "null_resource",
     "random_id",

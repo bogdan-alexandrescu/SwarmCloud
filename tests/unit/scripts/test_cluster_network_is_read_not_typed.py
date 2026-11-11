@@ -83,6 +83,7 @@ CONTEXT = "swarm-dev"
 CLUSTER_REF = f"gke_{PROJECT}_us-central1_swarm-autopilot"
 SOURCE = f"gke/{PROJECT}/us-central1/swarm-autopilot"
 
+
 #: The other team's clusters, as gcloud names their contexts in a kubeconfig:
 #: the never-touch cluster in our project (on the placeholder list), and their
 #: production in their own project (on no list of ours).
@@ -999,7 +1000,7 @@ BINDINGS = [
     ((), (f"serviceAccount:{WI_POOL}[swarm-tenant-other/swarm-worker]",),
      "roles/iam.workloadIdentityUser", False),
     # Through ANOTHER project's pool: not this cluster's identities.
-    ((), (f"serviceAccount:other-project.svc.id.goog[{NAMESPACE}/swarm-worker]",),
+    ((), (f"serviceAccount:example-shared-project.svc.id.goog[{NAMESPACE}/swarm-worker]",),
      "roles/iam.workloadIdentityUser", False),
     # The right principal under another ROLE: serviceAccountUser lets a
     # principal act as the GSA, it does not make the KSA authenticate as it.

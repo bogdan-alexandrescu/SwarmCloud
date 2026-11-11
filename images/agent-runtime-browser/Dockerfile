@@ -51,38 +51,25 @@ ARG BASE_IMAGE=agent-runtime-base-nocodex:latest
 # (finding 7). gstack-layers check fails the build when the closure differs
 # from either checked-in list. No Chromium is added: gstack's `browse` drives
 # the one below, through GSTACK_CHROMIUM_PATH, which the runner sets.
-# The GSTACK_* ARGs equal the base's (tests/unit/scripts/test_gstack_image.py).
+# The steps are the recipe images/plugin-bundler/recipes/gstack/build at the
+# base's pins (images/agent-runtime-base/bundled-plugins.json), run with
+# `--list browser --bun present`: the Bun the base has must be the pinned one.
+# Its .swarm-bundle.json describes the tree this image ends with, the browser
+# list laid over the base list, and the COPY below writes it over the base's
+# (docs/design/managed-plugins.md, section 1.4.2).
 FROM ${BASE_IMAGE} AS gstack-browser-build
 USER root
-ARG GSTACK_VERSION=1.92.55.0
-ARG GSTACK_SHA256=63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2
-ARG GSTACK_COMMIT=2512dd7624a474fee036326989ea0c6bb8470e69
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=images/plugin-bundler,target=/tmp/plugin-bundler \
     --mount=type=bind,source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py \
     --mount=type=bind,source=images/agent-runtime-base,target=/tmp/gstack-build/base \
     --mount=type=bind,source=images/agent-runtime-browser/gstack-browser-files.txt,target=/tmp/gstack-build/gstack-browser-files.txt \
-    scratch="$(mktemp -d)" \
- && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/gstack.tar.gz \
-      "file:///tmp/tool-mirror/github.com/garrytan/gstack/archive/refs/tags/v${GSTACK_VERSION}.tar.gz" \
- && echo "${GSTACK_SHA256}  /tmp/gstack.tar.gz" | sha256sum -c - \
- && test "$(gzip -dc /tmp/gstack.tar.gz | git get-tar-commit-id)" = "${GSTACK_COMMIT}" \
- && rm -rf /opt/swarm/plugins/gstack \
- && mkdir -p /opt/swarm/plugins/gstack "${scratch}/home" \
- && tar -xzf /tmp/gstack.tar.gz -C /opt/swarm/plugins/gstack --strip-components=1 \
- && test "$(cat /opt/swarm/plugins/gstack/VERSION)" = "${GSTACK_VERSION}" \
- && cd /opt/swarm/plugins/gstack \
- && HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
-    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
-      ./setup --host claude --no-browser \
- && python3 /tmp/gstack-build/base/gstack-layers check \
-      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+    /tmp/plugin-bundler/recipes/gstack/build \
+      --pins /tmp/gstack-build/base/bundled-plugins.json --mirror /tmp/tool-mirror \
+      --layers /tmp/gstack-build/base/gstack-layers --measure /tmp/gstack-build/gstack_packaging_measure.py \
       --base-list /tmp/gstack-build/base/gstack-base-files.txt \
       --browser-list /tmp/gstack-build/gstack-browser-files.txt \
- && python3 /tmp/gstack-build/base/gstack-layers stage \
-      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
-      --base-list /tmp/gstack-build/base/gstack-base-files.txt \
-      --browser-list /tmp/gstack-build/gstack-browser-files.txt --list browser --out /out/gstack \
- && rm -rf "${scratch}" /tmp/gstack.tar.gz
+      --list browser --bun present --out /out/gstack
 
 FROM ${BASE_IMAGE} AS runtime
 

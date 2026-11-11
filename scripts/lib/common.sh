@@ -14,7 +14,8 @@
 #      config/<env>/deny-list.json (deny_list_load). destroy.sh, purge-data.sh,
 #      configure-kubectl.sh and the guards all judge by it. A list that cannot
 #      be read refuses every guarded action; it is never treated as empty.
-#      PROJECT_ID, REGION and ZONE have no defaults; unset is an error.
+#      PROJECT_ID, REGION and ZONE have no defaults; an unset PROJECT_ID or
+#      REGION is an error. ZONE is optional: nothing here reads it.
 
 set -euo pipefail
 
@@ -189,7 +190,7 @@ load_env() {
   # fresh install, a new operator, a CI job that forgot the variable -- aimed
   # every script here at the shared project, the one that holds another team's
   # live cluster. An unset project is an error instead
-  # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
+  # (Day One plan, the project-defaults lane, R4). The live deployment's .env and
   # every workflow name it; .env.example says where to.
   #
   # A script that touches no project at all (a local check, a self-test)
@@ -203,10 +204,12 @@ load_env() {
   fi
   # NO DEFAULT for the region or the zone either, for the same reason: both are
   # this deployment's values (generic-repository design, section 2.2), and a
-  # default is a guess at somebody's deployment. The opt-out above covers them.
+  # default is a guess at somebody's deployment. The opt-out above covers the
+  # region. The zone is OPTIONAL: nothing in scripts/ or the workflows reads
+  # it, so it is not required here and stays empty when unset. A script that
+  # comes to need it must call `require_setting ZONE` itself.
   if [[ "${SWARM_NO_PROJECT:-}" != "1" ]]; then
     require_setting REGION
-    require_setting ZONE
   fi
   REGION="${REGION:-}"
   ZONE="${ZONE:-}"
@@ -666,7 +669,7 @@ guard_deny_json() {
 #
 #   * `destroy.sh --self-test`, the CI step that exists so the guard is verified
 #     on every run rather than before use. It failed with exit 3
-#     (github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/35959558515);
+#     (github.com/example-org/example-repo/actions/runs/35959558515);
 #   * the real assertion in `destroy.sh`, which means `make destroy` could not
 #     run AT ALL. It fails closed, so nothing was at risk of deletion -- the
 #     teardown path was simply dead, and the one check that tells an operator
@@ -1057,6 +1060,51 @@ tf_var_file() {
   printf '%s' "${file}"
 }
 
+# A value the deployment owns -- who its platform owner is, which domain it
+# admits, the prefix of its Kubernetes label keys -- is read from its own
+# <env>.tfvars, the object Terraform plans from, so a script and Terraform can
+# never hold two answers (docs/design/generic-repository.md, section 2). None is
+# written into code, and none is guessed: tf_var_file stops when the file
+# cannot be fetched. Only one-line assignments are read.
+#
+# deployment_setting NAME -> NAME's string value (`NAME = "value"`), or nothing.
+deployment_setting() {
+  local file
+  file="$(tf_var_file)" || return 1
+  sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"([^\"]*)\"[[:space:]]*(#.*)?$/\\1/p" "${file}" | tail -n 1
+}
+
+# deployment_list NAME -> NAME's strings (`NAME = ["a", "b"]`), one per line, or nothing.
+# A one-line list only: a list split over lines reads as nothing (so a script
+# that needs it refuses), and says why on stderr.
+deployment_list() {
+  local file line
+  file="$(tf_var_file)" || return 1
+  line="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\[(.*)\][[:space:]]*(#.*)?$/\\1/p" "${file}" | tail -n 1)"
+  if [[ -z "${line}" ]] && grep -qE "^[[:space:]]*$1[[:space:]]*=[[:space:]]*\[" "${file}"; then
+    err "$1 spans several lines in this deployment's tfvars; it is read from one line only, so it reads as empty"
+  fi
+  printf '%s\n' "${line}" | grep -oE '"[^"]+"' | tr -d '"' || true
+}
+
+# deployment_label_prefix -> the prefix of this deployment's Kubernetes label
+# keys: `label_prefix`, else swarm.<its first allowed domain> (design section
+# 3.3), which gives a deployment exactly the keys it already carries. Returns 1,
+# saying why, when neither is set: a guard never judges against a guessed key.
+deployment_label_prefix() {
+  local prefix domain
+  prefix="$(deployment_setting label_prefix)" || return 1
+  if [[ -z "${prefix}" ]]; then
+    domain="$(deployment_list allowed_domains | head -n 1)" || return 1
+    [[ -n "${domain}" ]] && prefix="swarm.${domain}"
+  fi
+  if [[ ! "${prefix}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+    err "this deployment's tfvars set neither label_prefix nor allowed_domains, so its label keys are unknown"
+    return 1
+  fi
+  printf '%s' "${prefix}"
+}
+
 # Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
 # shellcheck disable=SC2034  # consumed by the scripts that source this library
 TF_VAR_ARGS=()
@@ -1383,7 +1431,7 @@ auth_config() { printf 'header = "Authorization: Bearer %s"\n' "$1"; }
 #
 # THE *.run.app URL IS NOT THE ADDRESS OF THIS API. Measured 2026-09-22:
 #
-#   curl https://swarm-api-tonstldhta-uc.a.run.app/readyz              -> 404
+#   curl https://swarm-api-<hash>-uc.a.run.app/readyz                  -> 404
 #   curl -H 'Authorization: Bearer <id token>' .../readyz              -> 404
 #   curl .../v1/workflows  and  .../definitely-not-a-route             -> 404
 #
@@ -2870,7 +2918,7 @@ redact() {
   # value is in the marked span, so the s command puts it back.
   local v_ends='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
   # `$(cmd ...)`, `${NAME}` and `${{ expr }}` are kept only as a whole,
-  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; BGD,
+  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; the owner,
   # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
   # Up to three closing quotes before that end, for nested quoting, and a
   # `$(` whose line ends in a continuation is kept, as main kept both.
@@ -2885,6 +2933,24 @@ redact() {
   local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
   local m_glued="[];)}]${m_glued_tail}"
   local m_construct='[$](\([^()]{0,255}[^()]?\)|\{\{[^{}]{0,255}[^{}]?\}\})('"${m_glued_tail}"')?'
+  # A SECRET WITH SPACES INSIDE ONE QUOTED VALUE IS MASKED WHOLE (the owner,
+  # 6 November 2026; `swarm_redaction.rules._QUOTED_TAIL`). A value that opens
+  # with a double quote runs across blanks to the quote that closes it; a
+  # backslash escapes the character after it, so `\"` does not close it. The
+  # two expressions after the escaped-quote ones take such a value first and
+  # mark it with $keep, so the assignment rules below cannot take part of it.
+  # `Authorization: "Bearer ********"` keeps its house style (#260): when a
+  # quoted value under `authorization` is a scheme word and one run already
+  # holding the mask up to the closing quote, an expression before them puts
+  # $keep after the scheme word, and no run that crosses blanks crosses $keep.
+  # A value opened by an escaped quote runs across blanks to its next
+  # backslash. An unquoted value still ends at whitespace.
+  # A single-quoted value runs the same way to its closing `'` (the owner's
+  # pick 'single-quotes-too' on PR #3775; `_SINGLE_QUOTED_TAIL`), and a comma
+  # inside any quoted value, escaped quote or not, does not end it (the
+  # owner's pick 'span-commas' on PR #3775): only an unquoted value ends at one.
+  local m_quoted="(${m_glued}|\\\\.|[^\"[:space:]\\\\${keep}]|[[:blank:]])*"
+  local m_squoted="(\\\\.|[^'[:space:]\\\\${keep}]|[[:blank:]])*"
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -3132,8 +3198,13 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
+    -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2})?\\\\*\"${keep}?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws))([[:blank:]]+[^\"\\\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\\\,[:space:]]*(\\\\*\"|\$))/\\1${keep}\\5/Ig" \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[[:blank:]]*[^"\\[:space:]]([^"\\[:space:]'"${keep}"']|[[:blank:]])*/\1'"${keep}"'\7********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[[:blank:]]*[]0-9.)}]*[^]0-9.)}"\\[:space:]]([^"\\[:space:]'"${keep}"']|[[:blank:]])*/\1'"${keep}"'\5********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?")[[:blank:]]*('"${m_construct}"'|\\.|[^"[:space:]\\])'"${m_quoted}"'/\1'"${keep}"'\6********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?")[[:blank:]]*('"${m_construct}"'|\\.|[]0-9.)}]*[^]0-9.)}"[:space:]\\])'"${m_quoted}"'/\1'"${keep}"'\4********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?'"'"')[[:blank:]]*(\\.|[^'"'"'[:space:]\\])'"${m_squoted}"'/\1'"${keep}"'\6********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?'"'"')[[:blank:]]*(\\.|[]0-9.)}]*[^]0-9.)}'"'"'[:space:]\\])'"${m_squoted}"'/\1'"${keep}"'\4********/Ig' \
     -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[^",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e "s/${keep}//g"

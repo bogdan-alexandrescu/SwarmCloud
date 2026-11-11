@@ -86,15 +86,15 @@ class FakeBroker:
         self.statuses: list[str] = []
         self.readings: list[tuple[str, dict]] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         self.assigns.append(provider)
         return self.first
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         self.releases.append((account_id, unusable))
         return 0
 
-    def swap(self, assignment, *, provider, reason, exclude=()):
+    def swap(self, assignment, *, provider, reason, exclude=(), **_kw):
         self.swaps.append({"from": assignment.account_id, "reason": reason,
                            "exclude": tuple(exclude)})
         if self.on_swap is not None:
@@ -105,7 +105,7 @@ class FakeBroker:
             return NoAccount(reason="no_account_available")
         return self.swap_to.pop(0)
 
-    def hold_status(self, assignment):
+    def hold_status(self, assignment, **_kw):
         self.statuses.append(assignment.account_id)
         return {"held": True, "move": self.move if assignment.account_id == FIRST else None}
 
@@ -268,7 +268,7 @@ def test_an_exhausted_account_swaps_at_a_turn_boundary_and_the_run_continues(
              if (e.get("detail") or {}).get("swapped_from")]
     assert moved == [{"cause": "account_assigned", "account_id": SECOND,
                       "provider": "anthropic", "swapped_from": FIRST,
-                      "swap_reason": "exhausted"}]
+                      "swap_reason": "exhausted", "tier": "plan", "from_tier": "plan"}]
 
 
 def test_no_other_account_keeps_the_hold_and_parks_as_today(

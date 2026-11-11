@@ -189,13 +189,13 @@ def _mirror_repository(name: str, project: str, region: str) -> str:
     return done.stdout.strip()
 
 
-#: The live project's id, built at runtime so that this file names it in no
-#: literal the guard below would have to except.
-_LIVE_PROJECT = "-".join(("saga", "agents", "staging"))
+#: A project's own Artifact Registry repository: `<location>-docker.pkg.dev/<project>/`.
+#: Any project a Dockerfile named would be named there, so no project id is needed here.
+_PROJECT_REGISTRY = re.compile(r"\b[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]*/")
 
 
 def test_no_dockerfile_names_a_project() -> None:
-    """DAYONE-DESAGA-1 (design section 7): a Dockerfile that names the live
+    """The Day One project-defaults lane (design section 7): a Dockerfile that names the live
     project's mirror builds only where that project's registry is readable.
     No tracked Dockerfile names the project or a mirror repository, and every
     `ARG MIRROR_*` default is empty: scripts/build-images.sh passes the mirror
@@ -204,12 +204,12 @@ def test_no_dockerfile_names_a_project() -> None:
         ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
     ).stdout.split()
     assert sorted(tracked) == sorted(_rel(p) for p in DOCKERFILES), tracked
-    assert len(tracked) == 19, tracked  # 19 since apps/plugin-intake/Dockerfile (managed plugins lane 4, #2688)
+    assert len(tracked) == 20, tracked  # 20 since images/plugin-bundler/Dockerfile (managed plugins lane 14)
     hits = []
     for rel in tracked:
         text = (REPO / rel).read_text()
         for n, line in enumerate(text.splitlines(), 1):
-            if _LIVE_PROJECT in line or "swarm-mirror-" in line:
+            if _PROJECT_REGISTRY.search(line) or "swarm-mirror-" in line:
                 hits.append(f"{rel}:{n}: {line[:120]}")
         for m in re.finditer(r"^[ \t]*ARG[ \t]+(MIRROR_[A-Za-z0-9_]*)(=[^\n]*)?$", text, re.M):
             if m.group(2) not in (None, "="):
@@ -278,7 +278,7 @@ def test_every_checked_in_recipe_passes_the_mirrors_it_is_given(recipe: Path) ->
     arguments: build-images.sh gives it the project's mirrors as substitutions
     (recipe_mirror_subs), and its `docker build` must pass each one the
     Dockerfile declares, and the frontend as BUILDKIT_SYNTAX. Without them its
-    FROM lines would expand the empty defaults (DAYONE-DESAGA-1)."""
+    FROM lines would expand the empty defaults (the Day One project-defaults lane)."""
     dockerfile = recipe.parent / "Dockerfile"
     assert dockerfile.is_file(), f"{_rel(recipe)} has no Dockerfile beside it"
     text = recipe.read_text()

@@ -272,6 +272,35 @@ NESTED_VIEWS: dict[str, tuple[str, str]] = {
     "capacity/profiles": ("capacity/pools", "Capacity.tsx"),
 }
 
+# A TAB WHOSE PAGE ANOTHER FILE DRAWS (owner's pick, 2026-11-08): Voice it's
+# Settings and Telemetry are two routes onto one screen, which opens the tab
+# its route names (`tab="..."`) and draws that tab's page from its own module.
+# The screen has no heading of its own, so each route is held to the page
+# component it draws: the case passes the route's own tab, the screen renders
+# that component, and that component's heading is the tab's label.
+# Route -> the page component the screen draws for it.
+DELEGATED_PAGES: dict[str, str] = {
+    "voice/settings": "VoiceSettings",
+    "voice/telemetry": "VoiceTelemetry",
+}
+
+
+def _delegated_heading(route: str, component: str, app: str) -> str:
+    """The heading of the page `component` draws for `route` (DELEGATED_PAGES)."""
+    page = DELEGATED_PAGES[route]
+    tab = route.split("/", 1)[1]
+    assert re.search(
+        rf"case '{re.escape(route)}':\s*\n\s*return <{re.escape(component)}\b[^<>]*\btab=\"{re.escape(tab)}\"",
+        app,
+    ), f"#{route} must open {component} on its own tab (tab=\"{tab}\")"
+    path = _import_map(app)[component]
+    text = _read(path)
+    body = _component_body(text, component)
+    assert re.search(rf"<{re.escape(page)}\b", body), f"{component} does not draw {page}, the page #{route} names"
+    module = re.search(rf"import \{{[^}}]*\b{re.escape(page)}\b[^}}]*\}} from '\./([\w./]+)'", text)
+    assert module is not None, f"{component}'s file does not import {page} from a sibling module"
+    return _heading_of(page, {page: path.parent / f"{module.group(1)}.tsx"}, app)
+
 
 @pytest.mark.parametrize("route,label,component", ROUTES, ids=[r[0] for r in ROUTES])
 def test_the_heading_matches_the_tab_that_opens_it(
@@ -279,7 +308,10 @@ def test_the_heading_matches_the_tab_that_opens_it(
 ) -> None:
     """Click a tab, land on a page headed with that tab's own words."""
     app = _read(APP_TSX)
-    heading = _heading_of(component, _import_map(app), app)
+    if route in DELEGATED_PAGES:
+        heading = _delegated_heading(route, component, app)
+    else:
+        heading = _heading_of(component, _import_map(app), app)
     if route in NESTED_VIEWS:
         parent, strip_file = NESTED_VIEWS[route]
         parent_label = next(r[1] for r in ROUTES if r[0] == parent)

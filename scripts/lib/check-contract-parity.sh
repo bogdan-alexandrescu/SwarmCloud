@@ -26,7 +26,7 @@
 
 set -euo pipefail
 # This script touches no project: it reads the tree. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
@@ -107,7 +107,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
 from swarm_common.models import Tenant
-print(Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+print(Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
              created_at=datetime.now(timezone.utc)).secret_name("anthropic"))
 PY
 )"
@@ -240,7 +240,7 @@ fi
 # `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
 # states, the park reasons, the six provider states, the end causes and
 # the pool families, and the child-task fields and cancel class (requests 14,
-# 40, 41, item 9).
+# 40, 41, item 9), and the credential an attempt ran on (request 152, item 10).
 # It has to: the browser cannot import Python, and the alternative to a bundled
 # copy of a three-entry frozen catalogue is a request per render to learn
 # something that cannot change without a contract change.
@@ -668,6 +668,38 @@ else:
     else:
         emit("DRIFT", "Task.parent_*", "types.ts declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
 
+# -- 10. the credential an attempt ran on (contract request 152) ----------
+# Attempt.account_id, credential_source and credential_tier, restated on
+# AttemptRow, and the two tiers restated as the CredentialTier union, which
+# the field must be typed with: a field typed as a bare string would take a
+# tier the frozen module refuses.
+from swarm_common import models as frozen_models          # noqa: E402
+
+attempt_fields = set(f.name for f in dataclasses.fields(frozen_models.Attempt))
+run_on = ["account_id", "credential_source", "credential_tier"]
+row = re.search(r"export interface AttemptRow \{(.*?)\n\}", SRC, re.S)
+if row is None:
+    emit("MISSING", "AttemptRow.credential_*", "no export interface AttemptRow block")
+elif not set(run_on) <= attempt_fields:
+    emit("DRIFT", "AttemptRow.credential_*",
+         "the frozen Attempt lacks %s" % " ".join(sorted(set(run_on) - attempt_fields)))
+else:
+    declared = [c for c in run_on if re.search(r"\n\s*%s\??\s*:" % c, row.group(1))]
+    tier_typed = re.search(r"\n\s*credential_tier\??\s*:\s*CredentialTier\s*\|\s*null\s*\n", row.group(1))
+    if declared != run_on:
+        missing = [c for c in run_on if c not in declared]
+        emit("DRIFT", "AttemptRow.credential_*",
+             "types.ts declares %s of %s, missing %s"
+             % (" ".join(declared) or "none", " ".join(run_on), " ".join(missing)))
+    elif tier_typed is None:
+        emit("DRIFT", "AttemptRow.credential_*",
+             "credential_tier is not typed CredentialTier or null")
+    else:
+        emit("OK", "AttemptRow.credential_*", "types.ts declares %s" % " ".join(run_on))
+
+compare_set("CredentialTier", ts_union("CredentialTier"),
+            getattr(frozen_models, "CREDENTIAL_TIERS", ()), "export type union")
+
 outcomes_ts = Path(types_path).with_name("outcomes.ts")
 cause_union = None
 if outcomes_ts.is_file():
@@ -749,7 +781,7 @@ fi
 #       case of all: it agrees with the bug and makes the suite prove it.
 #
 # This is a STATIC scan of the repository and cannot see Firestore: a tenant
-# document that stores a namespace outside the prefix (u-bogdan's, 2026-10-11)
+# document that stores a namespace outside the prefix (u-owner's, 2026-10-11)
 # is caught at runtime instead, by `verified_namespace` in
 # apps/scheduler/scheduler/dispatch.py and apps/reconciler/reconciler/backends.py
 # (the `tenant_namespace_mismatch` log entry and alert), and on demand by
@@ -915,7 +947,7 @@ else:
 # it is a line comment in every language scanned here.
 #
 # apps/swarm-ui IS SCANNED LIKE EVERYTHING ELSE. Its display-only fixtures
-# carried `swarm-u-bogdan` and were reported ADVISORY from 2026-09-24 until the
+# carried `swarm-u-owner` and were reported ADVISORY from 2026-09-24 until the
 # 2026-10-11 stale-name audit renamed them; the advisory branch went with them,
 # so a browser fixture that restates a wrong prefix now fails like any other.
 # The apostrophe is BUILT, not written. This probe is a heredoc inside a

@@ -1,0 +1,361 @@
+# Lane 15 of the managed plugins plan (docs/design/managed-plugins.md section 17.1,
+# "Infrastructure and installer"; sections 1.4.2 and 15.2): terraform/infra/plugin-bundles.tf
+# grants the bundle build's account (terraform/bootstrap/plugin_bundler.tf
+# makes it) its five rights, makes the swarm-plugin-bundles repository and
+# the npm mirror the build installs gstack's dependencies through (Q19), and,
+# since the owner's change of 11 November 2026, the Cloud Run job
+# swarm-plugin-bundle, swarm-api's run of it and its log sink, and (the security
+# review of 11 November 2026) the job's own network, which reaches Google's APIs
+# and nothing else (terraform/bootstrap/plugin_bundle_runner.tf defines the role and the
+# deployer's actAs on the builder), all only with
+# builtins_managed "on", which swarm install renders for a fresh deployment
+# (swarm_install.tfvars.BUILTINS_MANAGED). The infra passes apply them with no prompt
+# and no step of their own; verify.plugins and swarm doctor's plugins.bundle-build
+# check that the builder may push only to swarm-plugin-bundles.
+version: 1
+entries:
+- id: sa.swarm-plugin-bundler
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-plugin-bundler@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/plugin_bundler.tf google_service_account.plugin_bundler (terraform/infra/plugin-bundles.tf
+    reads it once builtins_managed is on)
+  verify: the account exists; it holds no project role
+  explain: 'the bundle build of gstack and security-audit runs as it (section 1.4.2): no Firestore, no
+    Secret Manager, no GitHub, no tenants/ prefix'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/plugin_bundler.tf
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: bootstrap.pass-1
+  refs:
+    terraform:
+    - bootstrap/google_service_account.plugin_bundler
+    - infra/data.google_service_account.plugin_bundler
+- id: registry.plugin-bundles
+  kind: registry
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories describe ${name_prefix}-plugin-bundles --project=$P --location=$R
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.plugin_bundles, once builtins_managed
+    is on
+  verify: a Docker repository with immutable tags and no age cleanup
+  explain: every bundle image, <runner image name>:<bundle_id>, run by digest only (section 1.4.3); its
+    images are deleted only by the retention sweep
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.artifactregistry
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository.plugin_bundles
+- id: registry.mirror-npm
+  kind: registry
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories describe ${name_prefix}-mirror-npm --project=$P --location=$R
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.mirror_npm, mode=REMOTE_REPOSITORY,
+    once builtins_managed is on
+  verify: a remote repository of the npm registry
+  explain: the bundle build installs gstack's npm dependencies through it at the frozen bun.lock, never
+    straight from the public registry (owner, 9 November 2026, Q19)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.artifactregistry
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository.mirror_npm
+- id: iam-binding.plugin-bundler-reads
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P; gcloud artifacts repositories
+    get-iam-policy ${name_prefix}-mirror-npm --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_storage_bucket_iam_member.plugin_bundler_sources and
+    .plugin_bundler_tool_mirror, google_artifact_registry_repository_iam_member.plugin_bundler_release_images
+    and .plugin_bundler_npm
+  verify: the builder reads platform/sources/ only (get, conditioned), the one pinned Bun object of the build
+    mirror bucket (conditioned on its name), the platform repository and the npm mirror, read only
+  explain: the job reads the pinned source archive, Bun's pinned zip, the deployment's copies of the
+    release images and its dependencies through the npm mirror alone (section 1.4.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - bucket.plugins
+  - bucket.build-mirror
+  - registry.swarm
+  - registry.mirror-npm
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_storage_bucket_iam_member.plugin_bundler_sources
+    - infra/google_storage_bucket_iam_member.plugin_bundler_tool_mirror
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_release_images
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_npm
+- id: iam-binding.plugin-bundler-push
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundler_push
+  verify: the builder holds artifactregistry.writer on swarm-plugin-bundles and on no other repository
+  explain: push to one repository only, no delete, immutable tags (section 1.4.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - registry.plugin-bundles
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundler_push
+- id: iam-binding.plugin-bundles-pull
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundles_readers
+    and .plugin_bundles_pullers
+  verify: the control plane reads the bundle repository; each Terraform tenant's worker pulls without
+    enumerating (swarmImagePuller)
+  explain: a step whose bundle key names a ready bundle runs that bundle's image by digest (section 1.4.4);
+    the same two sides as the platform repository
+  guards: null
+  secret_entry: null
+  depends_on:
+  - registry.plugin-bundles
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundles_readers
+    - infra/google_artifact_registry_repository_iam_member.plugin_bundles_pullers
+- id: role.custom.swarmPluginBundleRunner
+  kind: custom-role
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam roles describe swarmPluginBundleRunner --project=$P
+  apply: terraform/bootstrap/plugin_bundle_runner.tf google_project_iam_custom_role.plugin_bundle_runner
+  verify: permissions == run.jobs.run, run.jobs.runWithOverrides and run.executions.get only
+  explain: what swarm-api may do to the bundle job (section 1.4.2), bound on the job swarm-plugin-bundle's own
+    IAM policy by terraform/infra/plugin-bundles.tf. No update, no cancel, no logs, no actAs, no Cloud Build.
+  guards: '#79: terraform/infra may not define or read a custom role'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/plugin_bundle_runner.tf
+  notes: on an existing deployment the owner applies it from a runbook, never a lane or CI
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.plugin_bundle_runner
+- id: iam-binding.deployer-acts-as-plugin-bundler
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts get-iam-policy swarm-plugin-bundler@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/plugin_bundle_runner.tf google_service_account_iam_member.deployer_acts_as_plugin_bundler
+  verify: the release deployer holds iam.serviceAccountUser on swarm-plugin-bundler, on that account only
+  explain: deploying a job that runs as an account needs actAs on it; swarm-api holds none (running a job checks
+    no actAs on its identity)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  evidence:
+  - terraform/bootstrap/plugin_bundle_runner.tf
+  notes: on an existing deployment the owner applies it from a runbook, never a lane or CI
+  refs:
+    terraform:
+    - bootstrap/google_service_account_iam_member.deployer_acts_as_plugin_bundler
+- id: network.plugin-bundle
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_network.plugin_bundle, once builtins_managed is on
+  verify: the bundle network exists with no router and no NAT
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_network.plugin_bundle
+- id: network.plugin-bundle-subnet
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_subnetwork.plugin_bundle, once builtins_managed is on
+  verify: the bundle subnetwork has Private Google Access and flow logs
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_subnetwork.plugin_bundle
+- id: network.fw-plugin-bundle-deny-egress
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_deny_egress, once builtins_managed is on
+  verify: all egress from the bundle network is denied
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_firewall.plugin_bundle_deny_egress
+- id: network.fw-plugin-bundle-allow-apis
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
+  apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_allow_google_apis, once builtins_managed is on
+  verify: HTTPS from the bundle job is admitted, reaching only Google APIs
+  explain: 'the bundle job runs upstream code: it reaches Google''s APIs through Private Google Access and nothing
+    else, no route to the internet (section 1.4.2)'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.compute
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_compute_firewall.plugin_bundle_allow_google_apis
+- id: job.swarm-plugin-bundle
+  kind: cloud-run-job
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud run jobs describe swarm-plugin-bundle --region=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_cloud_run_v2_job.plugin_bundle, once builtins_managed is on and
+    the release carries the swarm-plugin-bundler image
+  verify: the job runs as swarm-plugin-bundler, the bundler image by digest, one task, no retries, 3600 seconds
+  explain: one execution per Apply builds the bundled plugins and appends one layer per plugin to each release
+    image, with no container daemon (section 1.4.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-bundler
+  - iam-binding.deployer-acts-as-plugin-bundler
+  - image.swarm-plugin-bundler
+  - registry.plugin-bundles
+  - network.fw-plugin-bundle-deny-egress
+  - network.fw-plugin-bundle-allow-apis
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  - images/plugin-bundler/swarm-bundle
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_job.plugin_bundle
+- id: iam-binding.plugin-bundle-api-runs
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud run jobs get-iam-policy swarm-plugin-bundle --region=$R --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs
+  verify: swarm-api holds swarmPluginBundleRunner on the job swarm-plugin-bundle, and on nothing else
+  explain: swarm-api starts one execution per Apply with the bundle's arguments and reads that job's executions
+    (section 1.4.2); never a project-level grant
+  guards: null
+  secret_entry: null
+  depends_on:
+  - job.swarm-plugin-bundle
+  - role.custom.swarmPluginBundleRunner
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs
+- id: monitoring.plugin-bundle-log-routing
+  kind: monitoring
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud logging sinks describe swarm-plugin-bundle-logs --project=$P
+  apply: terraform/infra/plugin-bundles.tf google_logging_project_sink.plugin_bundle_logs, with the job and the
+    worker log bucket
+  verify: the filter names the job swarm-plugin-bundle alone and the destination is the swarm-worker-logs bucket
+  explain: the executions' logs, upstream output included, are copied to the platform's log bucket (they also stay in
+    the project's _Default bucket, where project-level log readers see them); the page shows a fixed code and the
+    execution's name, never the log (section 1.4.3)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - job.swarm-plugin-bundle
+  - bucket.worker-logs
+  evidence:
+  - terraform/infra/plugin-bundles.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_logging_project_sink.plugin_bundle_logs

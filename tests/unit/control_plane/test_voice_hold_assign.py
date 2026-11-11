@@ -202,7 +202,8 @@ def test_a_tasks_assignment_is_unchanged(client, accounts):
     body = client.post("/v1/accounts/assign", json={
         "provider": "anthropic", "task_id": "t-1", "attempt_id": "a-1"}).json()
     assert body["account_id"] == account_id
-    assert set(body) == {"account_id", "assignment_id", "secret", "account", "reason", "next_reset_at"}
+    assert set(body) == {"account_id", "assignment_id", "secret", "account", "reason", "next_reset_at",
+                         "tier"}
     assert body["secret"] == accounts.secret_for(accounts.get(account_id))
     assert token not in str(body)
     [hold] = accounts.get(account_id).holds

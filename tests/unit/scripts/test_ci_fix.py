@@ -275,7 +275,7 @@ def _run(fake, *args: str, stdin: str | None = None, **env: str) -> subprocess.C
         "CI_FIX_HEAD_BRANCH": BRANCH,
         "CI_FIX_HEAD_SHA": HEAD,
         "API_HOST": "swarm.example.test",
-        "SWARM_IMPERSONATE_SA": "swarm-ci-fixer@example.iam.gserviceaccount.com",
+        "SWARM_IMPERSONATE_SA": "swarm-ci-fixer@example-project.iam.gserviceaccount.com",
     }
     base.update(env)
     return subprocess.run(

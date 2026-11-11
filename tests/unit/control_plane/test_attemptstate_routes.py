@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from swarm_api.attemptstate import entry_id_for, slot_id
 from swarm_api.repositories import repo_id_for
 
@@ -17,6 +19,7 @@ from .conftest import seed_task
 from .test_attemptstate import (  # noqa: F401 - fixtures
     ATTEMPT,
     LEASE,
+    OTHER_WORKER,
     POST_BODIES,
     TASK,
     Worker,
@@ -53,6 +56,104 @@ def test_context_serves_the_grant_of_the_signed_submitter_and_repository(client,
     db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
     body = worker.get(client, "context").json()
     assert body["forge_grant"]["id"] == grant and body["forge_grant"]["mode"] == "write"
+
+
+def _extra_entry(repo: str, *, repo_id: str | None = None) -> dict:
+    """One `Task.additional_repositories` entry, in the contract's shape."""
+    return {"name": repo, "repo_id": repo_id or repo_id_for("eng", "acme", repo),
+            "repository": f"acme/{repo}", "repository_url": f"https://github.com/acme/{repo}",
+            "ref": "main", "commit": "7" * 40, "forge_credential": "git",
+            "forge_credential_source": "tenant", "size_kib": 10}
+
+
+def _grant_reads(db, monkeypatch) -> list[str]:
+    """Every `forge_grants/` document read from now on, by path."""
+    from .fakes import FakeDocumentRef
+
+    seen: list[str] = []
+    real = FakeDocumentRef.get
+
+    def get(self, *args, **kwargs):
+        if self.path.startswith("forge_grants/"):
+            seen.append(self.path)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeDocumentRef, "get", get)
+    return seen
+
+
+def test_context_serves_the_submitters_grant_on_each_signed_additional_repository(client, db):
+    """Live finding, 11 November 2026: `forge_grant` is the primary's alone, so
+    a switched workspace's worker read its additional repository's grant as
+    removed. Each is served beside it, keyed by its derived id; one with no
+    grant is absent."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker,
+           additional_repositories=[_extra_entry("gadgets"), _extra_entry("gizmos")])
+    granted = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "gadgets"))
+    db.docs[f"forge_grants/{granted}"] = {"tenant_id": "eng", "mode": "write"}
+    body = worker.get(client, "context").json()
+    assert body["additional_forge_grants"] == {granted: {"id": granted, "tenant_id": "eng",
+                                                         "mode": "write"}}
+
+
+def test_context_never_serves_another_tenants_or_persons_additional_grant(client, db):
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker, additional_repositories=[_extra_entry("gadgets")])
+    repo_id = repo_id_for("eng", "acme", "gadgets")
+    own = grant_id_for("eng", "alice@example.com", repo_id)
+    db.docs[f"forge_grants/{own}"] = {"tenant_id": "research", "mode": "write"}
+    other = grant_id_for("eng", "mallory@example.com", repo_id)
+    db.docs[f"forge_grants/{other}"] = {"tenant_id": "eng", "mode": "write"}
+    foreign = grant_id_for("research", "alice@example.com", repo_id_for("research", "acme",
+                                                                         "gadgets"))
+    db.docs[f"forge_grants/{foreign}"] = {"tenant_id": "research", "mode": "write"}
+    response = worker.get(client, "context")
+    assert response.json()["additional_forge_grants"] == {}
+    assert other not in response.text and foreign not in response.text
+
+
+def test_context_serves_no_grant_for_an_entry_whose_repo_id_is_not_its_repositorys(client, db):
+    """An entry naming one repository under another's id reaches nothing."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker, additional_repositories=[
+        _extra_entry("gadgets", repo_id=repo_id_for("eng", "acme", "secret-sauce"))])
+    for repo in ("gadgets", "secret-sauce"):
+        grant = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", repo))
+        db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
+    assert worker.get(client, "context").json()["additional_forge_grants"] == {}
+
+
+def test_context_serves_no_additional_grant_once_the_list_is_rewritten(client, db):
+    """The list is tenant-writable after signing: one that no longer verifies
+    serves no additional repository's grant."""
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    task = opened(client, db, worker, additional_repositories=[_extra_entry("gadgets")])
+    task["additional_repositories"] = [_extra_entry("gizmos")]
+    grant = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "gizmos"))
+    db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
+    assert worker.get(client, "context").json()["additional_forge_grants"] == {}
+
+
+def test_context_reads_no_extra_grant_for_a_task_without_additional_repositories(
+        client, db, monkeypatch):
+    from swarm_api.access import grant_id_for
+
+    worker = Worker()
+    opened(client, db, worker)
+    reads = _grant_reads(db, monkeypatch)
+    body = worker.get(client, "context").json()
+    assert body["additional_forge_grants"] == {}
+    primary = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "widgets"))
+    assert reads == [f"forge_grants/{primary}"]
 
 
 def test_context_serves_the_platforms_extra_repository_budget_and_nothing_else(client, db):
@@ -360,3 +461,146 @@ def test_a_swarm_api_ci_park_at_a_head_no_round_worked_from_starts_a_new_wait(cl
     wait = _ci_park(client, db, last=_last_ci(started, wait_started_at=started, rechecks=27),
                     head="e" * 40)
     assert wait["wait_started_at"] == wait["parked_at"] and wait["rechecks"] == 1
+
+
+# --------------------------------------------------------------------------
+# The `credential` usage kind (contract request 152): the account, source and
+# tier the attempt kept last, as the worker's direct path merges them
+# (`agent_worker.control.credential_fields`).
+# --------------------------------------------------------------------------
+
+#: Every combination the worker's `credential_fields` sends, and what lands.
+CREDENTIAL_WRITES = [
+    ({"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan"},
+     {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan"}),
+    ({"account_id": "research:key-b", "credential_source": "account_pool",
+      "credential_tier": "api_key"},
+     {"account_id": "research:key-b", "credential_source": "account_pool",
+      "credential_tier": "api_key"}),
+    ({"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": None},
+     {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": None}),
+    ({"account_id": None, "credential_source": "account_pool", "credential_tier": None},
+     {"account_id": None, "credential_source": "account_pool", "credential_tier": None}),
+    ({"account_id": None, "credential_source": "tenant_secret", "credential_tier": None},
+     {"account_id": None, "credential_source": "tenant_secret", "credential_tier": None}),
+    ({"credential_source": "tenant_secret"},
+     {"account_id": None, "credential_source": "tenant_secret", "credential_tier": None}),
+]
+
+
+@pytest.mark.parametrize("fields,stored", CREDENTIAL_WRITES)
+def test_credential_usage_writes_the_three_fields_as_the_direct_path_does(client, db, fields,
+                                                                           stored):
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs[f"attempts/{ATTEMPT}"] = {"attempt_id": ATTEMPT, "task_id": TASK,
+                                      "tenant_id": "eng", "generation": 1, "input_tokens": 7}
+    response = worker.post(client, "usage", {"kind": "credential", "fields": fields})
+    assert response.status_code == 200, response.text
+    attempt = db.docs[f"attempts/{ATTEMPT}"]
+    assert {k: attempt[k] for k in stored} == stored
+    # A merge: the spend already written stays, and nothing else is added.
+    assert attempt["input_tokens"] == 7
+    assert set(attempt) == {"attempt_id", "task_id", "tenant_id", "generation", "input_tokens",
+                            *stored}
+
+
+REFUSED_CREDENTIALS = [
+    {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "plan",
+     "key": "x"},
+    {"credential_source": "account_pool", "account_id": "eng:plan-a", "secret_name": "s"},
+    {"credential_source": "broker", "account_id": None, "credential_tier": None},
+    {"credential_source": None},
+    {"account_id": "eng:plan-a", "credential_tier": "plan"},
+    {"account_id": "eng:plan-a", "credential_source": "account_pool", "credential_tier": "team"},
+    {"account_id": None, "credential_source": "account_pool", "credential_tier": "plan"},
+    {"credential_source": "tenant_secret", "credential_tier": "api_key"},
+    {"account_id": "eng:plan-a", "credential_source": "tenant_secret"},
+    {"account_id": "", "credential_source": "account_pool"},
+    {"account_id": 7, "credential_source": "account_pool"},
+    {"account_id": "a" * 1000, "credential_source": "account_pool"},
+    {},
+]
+
+
+@pytest.mark.parametrize("fields", REFUSED_CREDENTIALS)
+def test_credential_usage_outside_the_frozen_shape_is_422_and_writes_nothing(client, db,
+                                                                              fields):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": fields})
+    assert response.status_code == 422, response.text
+    assert db.docs == before
+
+
+def test_a_stale_generations_credential_is_409_and_writes_nothing(client, db):
+    """The attempt's document names generation 2: a generation-1 worker is not
+    its current worker, and its report touches nothing."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs[f"attempts/{ATTEMPT}"] = {"attempt_id": ATTEMPT, "task_id": TASK,
+                                      "tenant_id": "eng", "generation": 2}
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "account_id": "eng:plan-a", "credential_source": "account_pool",
+        "credential_tier": "plan"}})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "attempt_fenced"
+    assert db.docs == before
+
+
+def test_a_credential_under_a_lease_another_generation_holds_is_409(client, db):
+    """No attempt document yet, and the lease moved on: not this tuple's."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs.pop(f"attempts/{ATTEMPT}", None)
+    db.docs[f"leases/{LEASE}"]["generation"] = 2
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}})
+    assert response.status_code == 409, response.text
+    assert db.docs == before
+
+
+def test_a_credential_without_a_proof_is_403_and_writes_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}}, sign=False)
+    assert response.status_code == 403, response.text
+    assert db.docs == before
+
+
+def test_another_tenants_worker_cannot_write_this_attempts_credential(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret"}}, token=OTHER_WORKER)
+    assert response.status_code == 401, response.text
+    assert db.docs == before
+
+
+def test_spend_cannot_carry_a_credential_field_nor_credential_a_spend(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    mixed = worker.post(client, "usage", {"kind": "spend", "fields": {
+        "input_tokens": 3, "account_id": "eng:plan-a"}})
+    assert mixed.status_code == 422 and db.docs == before
+    crossed = worker.post(client, "usage", {"kind": "credential", "fields": {
+        "credential_source": "tenant_secret", "input_tokens": 3}})
+    assert crossed.status_code == 422 and db.docs == before
+
+
+def test_spend_usage_is_unchanged_by_the_credential_kind(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    ok = worker.post(client, "usage", {"kind": "spend", "fields": {
+        "input_tokens": 3, "output_tokens": 4, "cost_usd": 0.5}})
+    assert ok.status_code == 200, ok.text
+    attempt = db.docs[f"attempts/{ATTEMPT}"]
+    assert (attempt["input_tokens"], attempt["output_tokens"], attempt["cost_usd"]) == (3, 4, 0.5)
+    assert not {"account_id", "credential_source", "credential_tier"} & set(attempt)

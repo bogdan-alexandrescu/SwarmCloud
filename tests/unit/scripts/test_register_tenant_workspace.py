@@ -39,13 +39,21 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .conftest import write_placeholder_deny_list
+from .conftest import placeholder_deployment, write_placeholder_deny_list, write_placeholder_tfvars
 
 REPO = Path(__file__).resolve().parents[3]
 REGISTER = REPO / "scripts" / "register-tenant.sh"
 GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
+
+
+def _tfvars() -> dict:
+    """The placeholder deployment's tfvars, with the render's label prefix: the
+    job reads its prefix from the deployment's tfvars (label_prefix)."""
+    return {**placeholder_deployment.TFVARS, "label_prefix": LABEL_PREFIX}
+
+
 DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
 #: Where every Python a run starts (the fake world on each of a run's ~130
 #: gcloud, kubectl and curl calls, kubernetes/render.py) keeps its bytecode.
@@ -59,7 +67,7 @@ PYCACHE = Path(tempfile.gettempdir()) / f"swarm-test-pycache-{os.getuid()}"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 _PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
 _PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
 _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
@@ -83,7 +91,7 @@ BUCKET = f"swarm-artifacts-{PROJECT}"
 SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
 TWIN = SLOT + "-refresh"
 #: The tenant's QA target credential secret (docs/design/visual-qa-any-app.md
-#: §2.1, §7 V-1/V-2): the deployer makes it for a PERSONAL workspace only (BGD,
+#: §2.1, §7 V-1/V-2): the deployer makes it for a PERSONAL workspace only (the owner,
 #: 2026-10-22), with swarm-api alone bound on it.
 QA = f"swarm-tenant-{TENANT}-qa"
 API = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
@@ -205,7 +213,7 @@ def _world() -> dict:
             RECONCILER: {"policy": {"version": 1}, "keys": [], "uid": str(uid + 1)},
         },
         "bucket_policy": {"version": 3, "etag": "BwX=", "bindings": [
-            {"role": "roles/storage.objectViewer", "members": ["serviceAccount:swarm-api@x.iam.gserviceaccount.com"]}]},
+            {"role": "roles/storage.objectViewer", "members": ["serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"]}]},
         "project_policy": {"version": 1, "bindings": []},
         "objects": {},
         "secrets": {},
@@ -255,6 +263,10 @@ class Job:
         config = tmp / "deploy-config"
         config.mkdir(mode=0o700, exist_ok=True)
         write_placeholder_deny_list(config, PROJECT, ["dev"])
+        # Beside it, the placeholder tfvars: the job reads its platform owner and
+        # its workspace label key's prefix from the deployment's, never a literal.
+        write_placeholder_tfvars(config, ["dev"], _tfvars())
+        self.config = config
         (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_", "KUBECONFIG", "BUILD_ID"))}
@@ -821,7 +833,7 @@ def test_a_guard_refusal_stops_the_run_as_needs_owner(job: Job) -> None:
     judges the kubeconfig's current one, refuses it by the shared deny-list,
     and the latch refuses everything after; the script records needs_owner.
     """
-    job.edit(lambda w: w.update(kube_current_context="gke_saga-agents-staging_us-central1-a_agents-staging"))
+    job.edit(lambda w: w.update(kube_current_context="gke_example-project_us-central1-a_peer-cluster"))
     proc = job.create()
     out = _out(proc)
     assert proc.returncode == STOPPED, out
@@ -1057,7 +1069,7 @@ def test_verify_finds_a_quota_whose_cpu_limit_cannot_hold_its_pods(job: Job, rea
 
 def _hand_applied_quota(world: dict) -> None:
     """kubernetes/render.py's flat defaults, as `kubernetes/apply.sh --tenant`
-    applied them by hand to u-bogdan's namespace (#2039)."""
+    applied them by hand to u-owner's namespace (#2039)."""
     hard = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
     hard.update({"pods": "100", "requests.cpu": "400", "limits.cpu": "800"})
 
@@ -1167,7 +1179,7 @@ def test_verify_of_a_migrated_record_needs_no_approval_and_allows_the_deployer(j
 
 
 def test_verify_of_a_migrated_record_does_not_require_the_legacy_ksa_binding(job: Job, ready_world: dict) -> None:
-    # A Terraform-made tenant (u-bogdan, W9) binds Workload Identity for
+    # A Terraform-made tenant (u-owner, W9) binds Workload Identity for
     # swarm-agent-worker only; the legacy swarm-worker is rendered only where
     # IAM binds it (kubernetes/README.md). Measured 2026-10-10: A9 failed
     # w-752763 on exactly this binding.
@@ -1197,7 +1209,7 @@ LEGACY_OBJECTS = (f"ServiceAccount/{NAMESPACE}/swarm-worker", f"RoleBinding/{NAM
 
 
 def _as_terraform_made(world: dict) -> None:
-    """u-bogdan's shape (W9, measured 2026-10-10 on w-752763): a migrated
+    """u-owner's shape (W9, measured 2026-10-10 on w-752763): a migrated
     record, no legacy swarm-worker binding and no legacy namespace objects."""
     fields = world["firestore"][f"workspaces/{TENANT}"]["fields"]
     fields.pop("decision")
@@ -1549,6 +1561,7 @@ def _deployment(tmp: Path) -> dict[str, str]:
     config = tmp / "deploy-config"
     config.mkdir(mode=0o700, exist_ok=True)
     write_placeholder_deny_list(config, PROJECT, ["dev"])
+    write_placeholder_tfvars(config, ["dev"], _tfvars())
     (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
     return {"PROJECT_ID": PROJECT, "REGION": "us-central1", "ZONE": "us-central1-a", "ENVIRONMENT": "dev",
             "SWARM_DEPLOY_CONFIG_DIR": str(config), "XDG_CACHE_HOME": str(tmp / "config-cache")}
@@ -1636,8 +1649,8 @@ def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str |
 RULES_FILE = REPO / "scripts" / "lib" / "workspace-calls.json"
 EXAMPLE_DENY_LIST = REPO / "scripts" / "lib" / "deny-list.example.json"
 #: Who alone approves a service workspace in this project (Q2 (a)): the
-#: image's, never the record's word.
-OWNER = json.loads(RULES_FILE.read_text()).get("platform_owner", {}).get(PROJECT, "")
+#: deployment's tfvars' platform_owner, never the record's word.
+OWNER = str(placeholder_deployment.TFVARS["platform_owner"])
 FRONT_DOOR = json.loads(RULES_FILE.read_text()).get("front_door_backend", "")
 ACCESSOR = "roles/iap.httpsResourceAccessor"
 
@@ -1830,7 +1843,7 @@ def _deny_listed_account() -> str:
 @pytest.mark.parametrize("principal,account", [
     (_deny_listed_account(), None),
     (f"swarm-api@{PROJECT}.iam.gserviceaccount.com", None),
-    ("reports-bot@other-project-1.iam.gserviceaccount.com", None),
+    ("reports-bot@example-shared-project.iam.gserviceaccount.com", None),
     (SERVICE, {}),
     (SERVICE, {"policy": {"version": 1}, "keys": [], "uid": SERVICE_UID, "disabled": True}),
 ], ids=["shared-deny-list", "platform-account", "another-project", "absent", "disabled"])
@@ -2032,8 +2045,8 @@ def test_a1_refuses_a_group_whose_tenant_is_someone_elses_before_any_write(job: 
 
 
 def test_a1_refuses_a_service_whose_id_is_a_persons(job: Job) -> None:
-    """`bogdan@<project>.iam.gserviceaccount.com` derives `u-bogdan`, the id
-    of bogdan@example.com's personal workspace: never adopted."""
+    """`owner@<project>.iam.gserviceaccount.com` derives `u-owner`, the id
+    of owner@example.com's personal workspace: never adopted."""
     world = _service_world()
     world["firestore"][f"tenants/{S_TENANT}"] = _tenant_doc("someone@example.com", "user")
     job.write(world)
@@ -2050,6 +2063,21 @@ def test_a1_fails_a_group_whose_directory_check_is_dated_in_the_future(job: Job)
     proc = job.create()
     assert proc.returncode == 1, _out(proc)
     assert _field(_rec(job, G_TENANT), "failure", "code") == "DIRECTORY_CHECK_STALE"
+    assert _changes(job.calls("gcloud")) == []
+
+
+def test_a_group_whose_configured_prefix_is_not_the_tfvars_one_stops_after_a1(job: Job) -> None:
+    """The guard wrote the namespace key from the deployment's tfvars; a job
+    whose fixed environment names another prefix would render A7 under a key
+    A9 and the deployer's scope policy do not read. Neither is guessed: the
+    run stops before A2, and nothing is made in the cluster."""
+    job.write(_group_world())
+    proc = job.create(env={**job.env, "SWARM_LABEL_PREFIX": "labels.example.net"})
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the configured label-key prefix is not the one this deployment's tfvars name" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
     assert _changes(job.calls("gcloud")) == []
 
 
@@ -2129,24 +2157,27 @@ def test_c10_admits_only_the_approved_account_on_the_api_backend(job: Job, tmp_p
         assert proc.returncode != 0 and ("rule C10" in proc.stderr or "rule C9" in proc.stderr), proc.stderr
 
 
-def test_the_platform_owner_pinned_in_the_image_is_the_environments() -> None:
-    """workspace-calls.json's platform_owner is what A1 holds a service
-    approval to; it must be the owner the environment's tfvars name, for every
-    environment of the project that names one."""
-    import re
+def test_the_image_names_no_platform_owner() -> None:
+    """The platform owner is a deployment value: the job reads it from the
+    deployment's own tfvars (ws_platform_owner), so the rules the image ships
+    name no person (docs/design/generic-repository.md, section 2)."""
+    assert "platform_owner" not in json.loads(RULES_FILE.read_text())
+    body = REGISTER.read_text().split("\nws_platform_owner() {\n", 1)[1].split("\n}\n", 1)[0]
+    assert "deployment_setting platform_owner" in body and "workspace-calls.json" not in body
 
-    owners = json.loads(RULES_FILE.read_text()).get("platform_owner", {})
-    seen = 0
-    for tfvars in sorted((REPO / "terraform" / "environments").glob("*/*.tfvars")):
-        text = tfvars.read_text()
-        project = re.search(r'^project_id\s*=\s*"([^"]+)"', text, re.M)
-        owner = re.search(r'^platform_owner\s*=\s*"([^"]*)"', text, re.M)
-        if project and owner and owner.group(1):
-            seen += 1
-            assert owners.get(project.group(1)) == owner.group(1).lower(), (tfvars, owners)
-    assert seen >= 1, "no environment names a platform_owner"
-    assert set(owners) <= {re.search(r'^project_id\s*=\s*"([^"]+)"', p.read_text(), re.M).group(1)
-                           for p in (REPO / "terraform" / "environments").glob("*/*.tfvars")}
+
+def test_a1_refuses_a_service_when_the_deployment_names_no_platform_owner(job: Job) -> None:
+    """A tfvars without platform_owner is no owner, never a guessed one: the
+    owner's own approval is refused, and nothing is written."""
+    write_placeholder_tfvars(job.config, ["dev"], {k: v for k, v in _tfvars().items() if k != "platform_owner"})
+    job.write(_service_world())
+    before = copy.deepcopy(_rec(job, S_TENANT))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1 and "WORKSPACE_APPROVAL_OWNER_ONLY" in proc.stderr, out
+    assert "no platform owner is configured" in proc.stderr, out
+    assert job.read().get("writes", []) == [], out
+    assert _rec(job, S_TENANT) == before
 
 
 def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> None:
@@ -2167,8 +2198,8 @@ def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> No
 @pytest.mark.parametrize("kind,principal,tenant", [
     ("group", "eng@example.com", "eng"),
     ("group", "smoke@example.com", "smoke"),
-    ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-9a0792"),
-], ids=["eng", "smoke", "u-or-9a0792"])
+    ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-ef6b39"),
+], ids=["eng", "smoke", "service"])
 def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_path: Path, kind: str,
                                                                  principal: str, tenant: str) -> None:
     record = tmp_path / "record.json"
@@ -2176,7 +2207,20 @@ def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_pa
     record.write_text(json.dumps({"name": f"projects/{PROJECT}/databases/swarm/documents/workspaces/{tenant}",
                                   "fields": fields}))
     job.init_guard()
-    done = subprocess.run([str(GUARD), "expect", "--record", str(record)], env=job.env,
+    guard = GUARD
+    if tenant not in json.loads(RULES_FILE.read_text())["terraform_tenants"]["dev"]:
+        # A service's tenant derives from its address, which names the
+        # placeholder project, so no environment pins it: the guard runs from a
+        # copy of lib/ whose rules declare it, beside the real apps/.
+        tree = tmp_path / "tree"
+        shutil.copytree(REPO / "scripts" / "lib", tree / "scripts" / "lib", symlinks=True)
+        (tree / "apps").symlink_to(REPO / "apps")
+        rules = tree / "scripts" / "lib" / "workspace-calls.json"
+        data = json.loads(rules.read_text())
+        data["terraform_tenants"]["dev"].append(tenant)
+        rules.write_text(json.dumps(data))
+        guard = tree / "scripts" / "lib" / "workspace-guard.sh"
+    done = subprocess.run([str(guard), "expect", "--record", str(record)], env=job.env,
                           capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode != 0 and "WORKSPACE_ID_TERRAFORM" in done.stderr, done.stderr
     assert json.loads(job.expect.read_text())["phase"] == "bootstrap", "an expectation was written"

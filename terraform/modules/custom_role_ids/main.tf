@@ -13,7 +13,9 @@
 # (terraform/bootstrap/qa_identity.tf, QI-IAM) and swarmFrontDoorReader
 # (terraform/bootstrap/workspace_deployer.tf, FRONT-DOOR-READ) and
 # swarmSpeechOperator (terraform/bootstrap/platform_service_accounts.tf, Voice
-# it's speech machine).
+# it's speech machine), and swarmPluginBundleRunner
+# (terraform/bootstrap/plugin_bundle_runner.tf, the managed plugins' bundle
+# job).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -117,5 +119,12 @@ locals {
     # terraform/infra/voice_speech.tf to swarm-api on the speech machine's
     # instance only, never on the project.
     speech_operator = "swarmSpeechOperator${local.role_suffix}"
+    # Defined by terraform/bootstrap/plugin_bundle_runner.tf (managed plugins,
+    # docs/design/managed-plugins.md section 1.4.2, the owner's change of 11
+    # November 2026): run.jobs.run, run.jobs.runWithOverrides and
+    # run.executions.get. Granted by terraform/infra/plugin-bundles.tf to
+    # swarm-api on the job swarm-plugin-bundle's own IAM policy only, never on
+    # the project.
+    plugin_bundle_runner = "swarmPluginBundleRunner${local.role_suffix}"
   }
 }

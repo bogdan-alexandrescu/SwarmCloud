@@ -38,6 +38,7 @@ import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
 import { SecretsActions, nameProblem, readersOf, ruleWords, scLine, type ActionsFormLink } from './SecretsActions'
 import { PageHead } from './Shell'
+import { InfoTip } from './People'
 import { AboutTip } from './Profile'
 import { timeAgo } from './types'
 import {
@@ -317,6 +318,9 @@ const SECRETS_TABS: readonly TabDef[] = [
   { key: SECRETS_LOGINS_VIEW, label: 'Browser logins' },
 ]
 const CATALOGUE_ROUTE = 'GET /v1/workspace/secrets/consumers'
+/** The Browser logins tab's (i), beside the page title: its lede before the no-prose rule. */
+const LOGINS_TIP =
+  'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. An agent names one to start signed in.'
 
 export function SecretsScreen({ view, token = null }: { view: string | null; token?: string | null }) {
   const at = parseSecretsView(view)
@@ -428,7 +432,14 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
     <div className="pk-page sec-page">
       {/* The head's Refresh and Add a secret are the secrets' own, so the
           logins tab, whose list is read by its own pane, offers neither. */}
-      <PageHead title="Secrets">
+      {/* The Browser logins tab's lede is its (i), beside the title (the
+          owner's no-prose rule, 2026-11-05). In a group workspace the pane
+          says where logins live instead, so an (i) promising "the sessions
+          you saved" would contradict it. */}
+      <PageHead
+        title="Secrets"
+        info={logins && (ov === null || isPersonalTenant(ov.tenant_id)) ? <InfoTip about="Browser logins" tip={LOGINS_TIP} /> : undefined}
+      >
         {!logins && <UrRefresh reads={[overview, repos]} ageOf={[overview]} />}
         {!logins && !formOpen && mayAdd && !first && (
           <Button kind="primary" size="sm" onClick={() => setWizard({ scope: at.scope, repo: repoId, consumer: null, dest: at.dest })}>
@@ -439,17 +450,7 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
       <Tabs tabs={SECRETS_TABS} current={logins ? SECRETS_LOGINS_VIEW : 'secrets'} label="Secrets" className="cfg-parts" onSelect={(k) => goView(k === SECRETS_LOGINS_VIEW ? `view=${SECRETS_LOGINS_VIEW}` : '')} />
       {logins ? (
-        <>
-          {/* In a group workspace the pane says where logins live instead, so
-              a lede promising "the sessions you saved" would contradict it. */}
-          {(ov === null || isPersonalTenant(ov.tenant_id)) && (
-            <p className="ur-sub">
-              The browser sessions you saved from a live browser in your workspace, by name and site, with when each
-              expires. An agent names one to start signed in.
-            </p>
-          )}
-          <BrowserLoginsPane tenantId={ov?.tenant_id || null} />
-        </>
+        <BrowserLoginsPane tenantId={ov?.tenant_id || null} />
       ) : formOpen ? (
         <OneTimeForm
           key={`${viewKey}#${again}`}
@@ -1140,7 +1141,7 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
       key: <>Subscription accounts</>,
       reads: 'the quota broker',
       state: <span className="sec-state">managed elsewhere</span>,
-      act: <AppLink address="capacity/accounts">Capacity › Accounts</AppLink>,
+      act: <AppLink address="capacity/llm-providers/plans">LLM Providers</AppLink>,
     }
   }
   // THE HINT NAMES THE BUTTONS THE TABLE DRAWS (config2-14): it read "Was

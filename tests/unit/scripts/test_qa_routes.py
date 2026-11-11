@@ -172,7 +172,7 @@ def test_the_budget_card_is_captured_on_its_three_by_id_agents():
     """BUDGET-FIXTURES (part of #2459): the agent's Budget card is drawn only
     for a budgeted agent, and no listed fixture task has a budget, so each of
     its three states is captured on an agent the fixture build answers BY ID
-    and keeps OFF THE LISTS (BGD, 2026-10-27): other tests pin every count."""
+    and keeps OFF THE LISTS (the owner, 2026-10-27): other tests pin every count."""
     routes = {r["id"]: r for _g, r in _all_routes()}
     tasks = _fixture_tasks()
     budget_tasks = _budget_fixture()
@@ -264,8 +264,8 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
 #: draw their body only for the person Voice it is open to, a platform admin
 #: until swarm-api's session routes say who (voice/Section.tsx `voiceItOpen`).
 ADMIN_ROUTES = (
-    "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "setup", "health", "people", "workspaces",
-    "voice-talk", "voice-projects", "voice-preferences",
+    "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "plugins", "setup", "health", "people", "workspaces",
+    "voice-talk", "voice-projects", "voice-preferences", "voice-settings", "voice-telemetry",
 )
 
 

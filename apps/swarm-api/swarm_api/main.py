@@ -28,6 +28,8 @@ from .access import AccessService, build_access
 from .auth import qa_origin_refused
 from .compression import GzipWholeResponses
 from .deps import AppContext, build_context
+from .judgment import settings_mac
+from .platformswitches import PlatformSwitches, install as install_platform_switches
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
 from .forgeperms import build_forge_permissions
@@ -76,6 +78,10 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    platform_switches,
+    plugin_bundles,
+    plugin_catalogue,
+    plugin_config,
     plugin_settings,
     qa_identity,
     qa_settings,
@@ -108,6 +114,7 @@ from .routes import voice
 from .routes import voice_readback
 from .routes import voice_settings
 from .routes import voice_telemetry
+from .routes import voice_trace
 from .routes import voice_visuals
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
@@ -185,6 +192,9 @@ UNCAPTURED_ROUTES = frozenset({
     # GitHub redeems for the App's key and secrets; the one-time link a
     # platform admin mints, in its answer; and the redemption, whose body is
     # the link's token and the value its form carries.
+    # A managed plugin's secret or file setting, with its one-time link
+    # (docs/design/managed-plugins.md section 6.2, lane 6).
+    plugin_config.SECRET_ROUTE,
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
@@ -404,6 +414,11 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         project_id=app.state.ctx.settings.project_id)
     # Multipart answers this instance holds at once (§4.3 step 3): a fifth is 429.
     app.state.answer_slots = threading.BoundedSemaphore(MAX_CONCURRENT_MULTIPART)
+    # The platform switches this instance's readers ask before the Terraform
+    # value (docs/design/managed-plugins.md section 11): read at most every
+    # half minute, so a console change needs no redeploy.
+    install_platform_switches(PlatformSwitches(
+        app.state.ctx.db, mac=settings_mac(app.state.ctx.settings), now=app.state.ctx.now))
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -457,6 +472,21 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's allowed agent plugins, from the platform's closed
     # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
     app.include_router(plugin_settings.router)
+    # The managed plugin catalogue (docs/design/managed-plugins.md, lane 5):
+    # installs, versions, updates and removal, platform and per workspace,
+    # and the intake job's callback; admins only, audited.
+    app.include_router(plugin_catalogue.router)
+    # Bundle builds of the plugins built into an image (managed-plugins.md
+    # lane 16): build status, Apply, Roll back and `swarm upgrade`'s rebuild,
+    # platform admins only, and Cloud Build's finish notification.
+    app.include_router(plugin_bundles.router)
+    # A managed plugin's settings, secrets and bindings, and the workspace's
+    # every-step defaults (managed-plugins.md lane 6): read by members,
+    # written by the workspace's owner or admin, audited.
+    app.include_router(plugin_config.router)
+    # The platform switches (work contracts, contract review) set from the
+    # console over their Terraform defaults: platform admins, audited.
+    app.include_router(platform_switches.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
@@ -644,6 +674,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # days and live, read by a Voice it person or an admin, a platform view
     # by an admin alone.
     app.include_router(voice_telemetry.router)
+    app.include_router(voice_trace.write_router)
+    app.include_router(voice_trace.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

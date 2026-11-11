@@ -196,6 +196,35 @@ def test_a_render_with_no_prefix_refuses_and_writes_nothing(name: str) -> None:
     assert UNSET in done.stderr
 
 
+#: The lint renders (`make lint`, security.yml, the worker's pre-publish
+#: checkov): no project, so offline (render.py OFFLINE_LABEL_PREFIX).
+OFFLINE_RENDERS = {
+    "policies": ["policies"],
+    "tenant": ["tenant", "--tenant", "lint"],
+    "job": ["job", "--tenant", "lint", "--profile", "browser", "--task", "t1", "--attempt", "a1",
+            "--lease", "l1", "--generation", "1"],
+}
+
+
+@pytest.mark.parametrize("name", sorted(OFFLINE_RENDERS))
+def test_an_offline_render_with_no_prefix_writes_the_placeholder_and_says_so(name: str) -> None:
+    done = subprocess.run([sys.executable, str(RENDER), *OFFLINE_RENDERS[name]], capture_output=True,
+                          text=True, env=_env(), timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    assert TOKEN not in done.stdout
+    assert "swarm.example.com/" in done.stdout
+    warning = [line for line in done.stderr.splitlines() if "no label-key prefix is configured" in line]
+    assert len(warning) == 1 and warning[0].startswith("# render: WARNING:"), done.stderr
+    # A configured prefix wins offline too, and nothing is said.
+    configured = subprocess.run([sys.executable, str(RENDER), *OFFLINE_RENDERS[name]], capture_output=True,
+                                text=True, env=_env(SWARM_LABEL_PREFIX="labels.example.net"), timeout=120,
+                                check=False)
+    assert configured.returncode == 0, configured.stderr
+    assert "swarm.example.com/" not in configured.stdout
+    assert "labels.example.net/" in configured.stdout
+    assert "no label-key prefix is configured" not in configured.stderr
+
+
 def test_the_admission_policy_matches_the_workspace_label_the_render_writes() -> None:
     """The scope policy's CEL and the tenant render's label are one key."""
     policies = _render("policies", SWARM_LABEL_PREFIX=PREFIX).stdout
@@ -273,16 +302,20 @@ def test_network_parity_reads_the_annotations_under_the_setting(monkeypatch: pyt
         f"labels.example.net/{name}" for name in ("pod-cidr", "service-cidr", "cluster-dns-ip", "node-local-dns-ip")]
 
 
-def test_register_tenant_reads_the_workspace_label_from_the_setting() -> None:
+def test_register_tenant_reads_the_workspace_label_from_the_expectation() -> None:
+    """A9 reads the key the guard wrote into the expectation from the deployment's
+    tfvars (namespace_label_key), and A7 renders under that key's prefix."""
     text = (REPO / "scripts" / "register-tenant.sh").read_text()
-    assert 'WS_NAMESPACE_LABEL="$(python3 "${REPO_ROOT}/kubernetes/label_prefix.py" --key workspace)"' in text
+    assert 'WS_NAMESPACE_LABEL="$(ws_expect namespace_label_key)"' in text
+    assert 'export SWARM_LABEL_PREFIX="${WS_NAMESPACE_LABEL%/workspace}"' in text
     assert not re.search(r'WS_NAMESPACE_LABEL="swarm\.', text)
 
 
-def test_the_guard_reads_the_workspace_label_from_the_setting() -> None:
+def test_the_guard_reads_the_workspace_label_from_the_expectation() -> None:
     text = (REPO / "scripts" / "lib" / "workspace-guard.sh").read_text()
     assert not re.search(r'^LABEL = "swarm\.', text, re.M)
-    assert "label_prefix.py" in text
+    assert '.get("namespace_label_key")' in text
+    assert 'label_key="$(deployment_label_prefix)/workspace"' in text
 
 
 def _guard_manifest_reader() -> str:
@@ -292,39 +325,46 @@ def _guard_manifest_reader() -> str:
     return text[start:text.index("\n'\n", start)]
 
 
-def _read_manifest(manifest: str, **setting: str) -> object:
-    done = subprocess.run([sys.executable, "-c", _guard_manifest_reader(), str(REPO)], input=manifest,
-                          capture_output=True, text=True, env=_env(**setting), timeout=60, check=True)
+def _read_manifest(tmp_path: Path, manifest: str, key: str | None) -> object:
+    """The reader's objects, with an expectation naming KEY (none: no key)."""
+    expectation = tmp_path / "expect.json"
+    expectation.write_text(json.dumps({} if key is None else {"namespace_label_key": key}))
+    env = {**_env(), "GUARD_EXPECTATION": str(expectation)}
+    done = subprocess.run([sys.executable, "-c", _guard_manifest_reader()], input=manifest,
+                          capture_output=True, text=True, env=env, timeout=60, check=True)
     return json.loads(done.stdout)
 
 
-def test_the_guard_reads_the_namespace_label_under_the_configured_prefix() -> None:
+def test_the_guard_reads_the_namespace_label_under_the_expectations_key(tmp_path: Path) -> None:
     namespace = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: swarm-tenant-research\n  labels:\n" \
                 "    {key}: w-1a2b3c\n"
     ours = namespace.format(key=f"{PREFIX}/workspace")
-    (obj,) = _read_manifest(ours, SWARM_ORG_DOMAIN=ORG_DOMAIN)
-    assert (obj["workspace_label"], obj["workspace_label_key"]) == ("w-1a2b3c", f"{PREFIX}/workspace")
+    (obj,) = _read_manifest(tmp_path, ours, f"{PREFIX}/workspace")
+    assert obj["workspace_label"] == "w-1a2b3c"
     # Another deployment's prefix: today's key is then a stranger's label.
-    (obj,) = _read_manifest(ours, SWARM_LABEL_PREFIX="labels.example.net")
-    assert (obj["workspace_label"], obj["workspace_label_key"]) == (None, "labels.example.net/workspace")
-    (obj,) = _read_manifest(namespace.format(key="labels.example.net/workspace"),
-                            SWARM_LABEL_PREFIX="labels.example.net")
+    (obj,) = _read_manifest(tmp_path, ours, "labels.example.net/workspace")
+    assert obj["workspace_label"] is None
+    (obj,) = _read_manifest(tmp_path, namespace.format(key="labels.example.net/workspace"),
+                            "labels.example.net/workspace")
     assert obj["workspace_label"] == "w-1a2b3c"
 
 
-def test_the_guard_refuses_a_labelled_manifest_when_no_prefix_is_configured() -> None:
+def test_the_guard_reads_no_label_when_the_expectation_names_no_key(tmp_path: Path) -> None:
+    """No key is guessed: the label is not read, so C7 admits no group or service Namespace."""
     namespace = f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: swarm-tenant-research\n  labels:\n" \
                 f"    {PREFIX}/workspace: w-1a2b3c\n"
-    assert _read_manifest(namespace) == {"error": UNSET}
-    assert _read_manifest(json.dumps({"kind": "Namespace", "metadata": {"name": "swarm-tenant-research"}})) \
-        == {"error": UNSET}
+    (obj,) = _read_manifest(tmp_path, namespace, None)
+    assert obj["workspace_label"] is None
 
 
 def test_register_tenant_stops_after_a1_when_no_prefix_is_configured() -> None:
-    """ws_load_names resolves the key before any write past A1, through the one rule."""
+    """ws_load_names resolves the prefix before any write past A1, through the one rule,
+    and refuses a configured prefix that is not the expectation's."""
     text = (REPO / "scripts" / "register-tenant.sh").read_text()
     load = text.index("ws_load_names() {")
-    resolved = text.index("kubernetes/label_prefix.py\" --key workspace)", load)
-    assert resolved < text.index("\n}\n", load)
+    end = text.index("\n}\n", load)
+    mismatch = text.index('|| die "the configured label-key prefix is not the one this deployment', load)
+    resolved = text.index('python3 "${REPO_ROOT}/kubernetes/label_prefix.py" >/dev/null', load)
+    assert mismatch < resolved < end
     assert "|| die \"the label-key prefix is not configured (above); nothing past A1 can run\"" in \
         text[resolved:resolved + 200]

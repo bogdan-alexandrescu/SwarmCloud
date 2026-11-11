@@ -63,6 +63,7 @@ from swarm_common.states import TaskState
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import questions as questions_mod
+from . import verdict as verdict_mod
 from .errors import InputUnavailable
 from .objectstore import ObjectStore
 
@@ -366,10 +367,16 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         "`built`, where the asker wrote it, the option label its branch implements "
         "(null: the answer changes nothing it builds). Read it "
         f"before you write verdict.json. In verdict.json, put in `{NEEDS_OWNER_KEY}` a "
-        "list of {task_id, step_id, question_index, question}, one for each UNANSWERED "
-        "question that must hold the merge: one whose answer could reverse a recorded "
-        "owner decision, one about IAM, secrets, tenant isolation, cost or the frozen "
-        "contract, and one the asker marked blocking. Put every other unanswered "
+        "list of references, one for each UNANSWERED "
+        "question that must hold the merge: each entry names the asking step's "
+        "`task_id` and the question's `question_index` exactly as the file gives them, "
+        "for example "
+        f'"{NEEDS_OWNER_KEY}": [{json.dumps(verdict_mod.NEEDS_OWNER_EXAMPLE)}], '
+        "with `note` optional free text beside the reference. Never write an entry as "
+        "a sentence alone: the merge step cannot read one, and holds on it until a "
+        "person says ready. A question belongs there when its answer could reverse a "
+        "recorded owner decision, when it is about IAM, secrets, tenant isolation, cost "
+        "or the frozen contract, or when the asker marked it blocking. Put every other unanswered "
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
         "is unanswered, nor once its answer picks an option other than its `built`; "

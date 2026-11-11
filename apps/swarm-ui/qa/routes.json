@@ -139,9 +139,9 @@
         "ready": "main h1"
       },
       {
-        "id": "accounts",
-        "address": "capacity/accounts",
-        "path": "/capacity/accounts",
+        "id": "llm-providers",
+        "address": "capacity/llm-providers",
+        "path": "/capacity/llm-providers/plans",
         "ready": "main h1"
       },
       {
@@ -212,6 +212,13 @@
         "persona": "platform-admin"
       },
       {
+        "id": "plugins",
+        "address": "admin/plugins",
+        "path": "/admin/plugins",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
         "id": "setup",
         "address": "admin/setup",
         "path": "/admin/setup",
@@ -257,6 +264,20 @@
         "id": "voice-preferences",
         "address": "voice/preferences",
         "path": "/voice/preferences",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-settings",
+        "address": "voice/settings",
+        "path": "/voice/settings",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-telemetry",
+        "address": "voice/telemetry",
+        "path": "/voice/telemetry",
         "ready": "main h1",
         "persona": "platform-admin"
       }

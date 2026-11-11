@@ -152,13 +152,18 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     },
     { key: 'catalogue', label: 'Runtimes', icon: 'runtimes', to: 'capacity/catalogue' },
     { key: 'holders', label: 'Holders', icon: 'holders', to: 'capacity/holders' },
+    // LLM PROVIDERS (LP-U1; docs/design/llm-providers.md §6.1, the owner's
+    // pick of 10 November 2026): Accounts became this row, Plans and API Keys
+    // its first two children, each its own address. App passes the row's tab
+    // as `llm-providers/<sub>` (`panelTab`), so the open sub-page is lit.
     {
-      key: 'accounts',
-      label: 'Accounts',
+      key: 'llm-providers',
+      label: 'LLM Providers',
       icon: 'accounts',
-      to: 'capacity/accounts',
+      to: 'capacity/llm-providers/plans',
       kids: [
-        { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
+        { key: 'llm-providers/plans', label: 'Plans', to: 'capacity/llm-providers/plans' },
+        { key: 'llm-providers/api-keys', label: 'API Keys', to: 'capacity/llm-providers/api-keys' },
         // ACCOUNT-HEALTH-PAGE (part of #2302): what went wrong on each account, after the list.
         { key: 'account-health', label: 'Account health', to: 'capacity/account-health' },
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
@@ -195,6 +200,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // status only, a platform admin's alone, so under Platform and never in
     // a workspace admin's `adminPagesFor`.
     { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
+    // MANAGED PLUGINS (part of #2688): the platform catalogue, a platform
+    // admin's alone, so under Platform and never in `adminPagesFor`'s
+    // workspace admin list (WORKSPACE_ADMIN_PAGE_KEYS).
+    { key: 'plugins', label: 'Plugins', icon: 'runtimes', to: 'admin/plugins' },
     // DAYONE-SETUP-UI-3 (part of #2688; day-one-plan §5.2): Setup and its
     // Health page, a platform admin's alone, so never in a workspace admin's
     // `adminPagesFor` and under Platform in the panel.
@@ -215,13 +224,28 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
   // VOICE IT (docs/design/voice-it.md §10, phase one): App.tsx SECTIONS'
-  // three tabs. The section's spine item is drawn only for the people Voice
-  // it is open to (`voiceItOpen`), so this panel is theirs alone.
+  // tabs. The section's spine item is drawn only for the people Voice it is
+  // open to (`voiceItOpen`), so this panel is theirs alone. Settings and
+  // Telemetry (owner's pick, 2026-11-08): each its own route; Telemetry is a
+  // platform admin's alone, so `voicePagesFor` leaves it out for anyone else.
   voice: [
     { key: 'talk', label: 'Talk', icon: 'voice', to: 'voice/talk' },
     { key: 'projects', label: 'Projects', icon: 'timeline', to: 'voice/projects' },
     { key: 'preferences', label: 'Preferences', icon: 'gear', to: 'voice/preferences' },
+    { key: 'settings', label: 'Settings', icon: 'runtimes', to: 'voice/settings' },
+    { key: 'telemetry', label: 'Telemetry', icon: 'counts', to: 'voice/telemetry', admin: true },
   ],
+}
+
+/**
+ * THE VOICE IT PAGES THIS PERSON IS SHOWN. Its `admin` pages (Telemetry, which
+ * reads swarm-api's platform telemetry view) are a platform admin's alone and
+ * left out for anyone else, so someone on a direct link to /voice/settings
+ * is not offered a page that would only refuse them. Unread (`null`) is not
+ * an admin: the entry is never drawn and then withdrawn.
+ */
+export function voicePagesFor(platformAdmin: boolean | null): readonly PanelPage[] {
+  return platformAdmin === true ? PANEL_PAGES.voice : PANEL_PAGES.voice.filter((p) => p.admin !== true)
 }
 
 /**
@@ -339,8 +363,9 @@ export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'P
 function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
-  if (section === 'capacity' && tab === 'quota') return 'accounts'
-  if (section === 'capacity' && tab === 'account-health') return 'accounts'
+  if (section === 'capacity' && tab === 'quota') return 'llm-providers'
+  if (section === 'capacity' && tab === 'account-health') return 'llm-providers'
+  if (section === 'capacity' && tab.split('/')[0] === 'llm-providers') return 'llm-providers'
   // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
   if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab
@@ -357,7 +382,8 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
   if (section === 'work' && row === 'agents') return { row, kid: agentTab }
-  return { row, kid: tab === '' ? page.kids[0]!.key : tab }
+  // A group's own tab (`llm-providers`, no sub-page named) is its first child.
+  return { row, kid: tab === '' || tab === row ? page.kids[0]!.key : tab }
 }
 
 /** The path an address is written as, for a link's `href`. */
@@ -1802,6 +1828,7 @@ export function SkyShell({
   // The same four in every workspace: People and roles, which a personal
   // workspace's Config left out (S1e), is the workspace page's tab now.
   const configPages = PANEL_PAGES.config
+  const voicePages = voicePagesFor(who === null ? null : who.principal.is_admin === true)
   // THE SETUP READ (proposal E): `GET /v1/onboarding`, once per workspace and
   // again on each Config page, so the strip a page draws is that visit's. The
   // spine's dot on Config and the panel's meter read the same answer.
@@ -2363,6 +2390,7 @@ export function SkyShell({
         adminPages={adminPages}
         adminOf={adminOf}
         configPages={configPages}
+        voicePages={voicePages}
         nav={nav}
         counts={counts}
         adminCounts={adminCounts}
@@ -2627,6 +2655,7 @@ export function SkyShell({
           agentTab={agentTab}
           adminPages={adminPages}
           configPages={configPages}
+          voicePages={voicePages}
           nav={nav}
           onExpand={() => {
             setFly(null)
@@ -3295,6 +3324,7 @@ function PanelPages({
   adminPages,
   adminOf = [],
   configPages,
+  voicePages,
   nav,
   counts,
   adminCounts = {},
@@ -3315,6 +3345,8 @@ function PanelPages({
   adminOf?: readonly string[]
   /** Config's pages (PANEL_PAGES.config). */
   configPages: readonly PanelPage[]
+  /** Voice it's pages (`voicePagesFor`). */
+  voicePages: readonly PanelPage[]
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
   /** The Admin rows' badges (`adminPanelCounts`, S1b, S1c). */
@@ -3439,7 +3471,7 @@ function PanelPages({
   // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE): someone who administers nothing,
   // on a direct link to an Admin page, gets the page's own refusal and no
   // list of pages they cannot use.
-  const rows = sec === 'admin' ? adminPages : sec === 'config' ? configPages : PANEL_PAGES[sec]
+  const rows = sec === 'admin' ? adminPages : sec === 'config' ? configPages : sec === 'voice' ? voicePages : PANEL_PAGES[sec]
   if (rows.length === 0) return null
   const title = PANEL_TITLE[sec]
   // A 404 is on no page, though its section is drawn (CH-14).
@@ -3723,6 +3755,7 @@ function Flyout({
   agentTab,
   adminPages,
   configPages,
+  voicePages,
   nav,
   onExpand,
   onEnter,
@@ -3736,6 +3769,8 @@ function Flyout({
   agentTab: AgentTab
   adminPages: readonly PanelPage[]
   configPages: readonly PanelPage[]
+  /** Voice it's pages (`voicePagesFor`). */
+  voicePages: readonly PanelPage[]
   nav: (to: string) => void
   /** Undo the collapse: the panel comes back and the flyout goes. */
   onExpand: () => void
@@ -3749,7 +3784,7 @@ function Flyout({
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
   // The Admin rows in the panel's group order (S1b), so the two never list them differently.
-  const rows = section === 'admin' ? adminGroups(adminPages).flatMap((g) => g.rows) : section === 'config' ? configPages : PANEL_PAGES[section]
+  const rows = section === 'admin' ? adminGroups(adminPages).flatMap((g) => g.rows) : section === 'config' ? configPages : section === 'voice' ? voicePages : PANEL_PAGES[section]
   if (rows.length === 0) return null
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.

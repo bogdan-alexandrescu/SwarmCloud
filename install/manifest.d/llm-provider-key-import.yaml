@@ -1,0 +1,31 @@
+# Lane llm-broker-import-grant (docs/design/llm-providers.md section 5.3, Q7;
+# owner answer of 10 November 2026, "Grant a conditioned read", in
+# terraform/bootstrap): the quota broker reads each workspace's own provider
+# key, swarm-tenant-<tenant>-anthropic and -openai, so
+# POST /v1/accounts/import-workspace-keys can copy it into the pool. A
+# conditioned secretAccessor grant to swarm-quota-broker in terraform/bootstrap,
+# which the owner applies: a project grant made by the release would need the
+# role on the CI deployer's grantable list, whose hasOnly() bounds neither
+# member nor condition.
+version: 1
+entries:
+- id: iam-binding.broker-workspace-key-reader
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:roles/secretmanager.secretAccessor AND bindings.members:swarm-quota-broker'
+  apply: terraform/bootstrap/broker_workspace_keys.tf resource "google_project_iam_member" "broker_workspace_key_reader"
+  verify: 'swarm-quota-broker alone, condition: versions of projects/<n>/secrets/swarm-tenant-{t}-anthropic or -openai, no -git- or -browser- part'
+  explain: Lets the quota broker's key import read each workspace's own provider key and copy it into the pool as that workspace's account; without it the import marks every workspace unreadable.
+  guards: NOT VERIFIED LIVE per file; lint with iamPolicies:lintPolicy before applying
+  secret_entry: secret written by scripts/create-secrets.sh as the workspace's provider key; read here, never written
+  depends_on:
+  - sa.swarm-quota-broker
+  evidence:
+  - terraform/bootstrap/broker_workspace_keys.tf:122-132
+  notes: 'Nothing in terraform/infra carries this read, so it has no order against a release; the import route answers unreadable until it is applied.'
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.broker_workspace_key_reader

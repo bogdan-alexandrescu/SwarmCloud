@@ -14,10 +14,10 @@
         "before": {
           "deleted": false,
           "description": "Start and inspect Cloud Run worker jobs.",
-          "id": "projects/saga-agents-staging/roles/swarmJobDispatcher",
-          "name": "projects/saga-agents-staging/roles/swarmJobDispatcher",
+          "id": "projects/example-project/roles/swarmJobDispatcher",
+          "name": "projects/example-project/roles/swarmJobDispatcher",
           "permissions": ["run.executions.get", "run.jobs.get", "run.jobs.runWithOverrides"],
-          "project": "saga-agents-staging",
+          "project": "example-project",
           "role_id": "swarmJobDispatcher",
           "stage": "GA",
           "title": "Swarm Job Dispatcher"
@@ -37,8 +37,8 @@
       "provider_name": "registry.terraform.io/hashicorp/google",
       "change": {
         "actions": ["no-op"],
-        "before": {"name": "swarm-api", "project": "saga-agents-staging"},
-        "after": {"name": "swarm-api", "project": "saga-agents-staging"},
+        "before": {"name": "swarm-api", "project": "example-project"},
+        "after": {"name": "swarm-api", "project": "example-project"},
         "after_unknown": {},
         "before_sensitive": {},
         "after_sensitive": {}

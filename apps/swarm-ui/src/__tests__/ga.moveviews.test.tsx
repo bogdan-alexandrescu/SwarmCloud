@@ -286,6 +286,24 @@ describe('Browser logins is a tab of Config › Secrets', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('the tab’s (i) sits beside the title, in the page head’s info slot, and no help line is drawn under the tabs (the owner’s pick, 2026-11-05)', async () => {
+    api()
+    window.history.replaceState(null, '', '/config/secrets?view=logins')
+    await mount()
+    await screen.findByRole('list', { name: /browser logins/i })
+    const head = document.querySelector('.c-phead .head') as HTMLElement
+    // MUTATION: draw the tab's lede as a paragraph under the tabs again -> fails.
+    const about = within(head).getByRole('button', { name: 'About Browser logins' })
+    expect(about.closest('.c-tip-host')?.previousElementSibling?.tagName).toBe('H1')
+    expect(visible(about.closest('.c-tip-host')?.querySelector('[role="tooltip"]') ?? null)).toBe(
+      'The browser sessions you saved from a live browser in your workspace, by name and site, with when each expires. An agent names one to start signed in.',
+    )
+    expect(document.querySelector('.sec-page > .ur-sub')).toBeNull()
+    // The Secrets tab has no such (i): it explains the logins only.
+    fireEvent.click(screen.getByRole('tab', { name: 'Secrets' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'About Browser logins' })).toBeNull())
+  })
+
   it('?view=logins opens the tab on arrival, and Revoke still works from it', async () => {
     const calls = api()
     window.history.replaceState(null, '', '/config/secrets?view=logins')

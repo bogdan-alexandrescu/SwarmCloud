@@ -79,7 +79,7 @@ def test_a_malformed_answer_is_refused() -> None:
 
 
 def test_own_speech_recorded_under_a_no_to_voice_it_renders_off() -> None:
-    chosen = {"enabled": True, "zone": "europe-west1-b", "image": IMAGES + "common-cu128-ubuntu-2204-v1"}
+    chosen = {"enabled": True, "zones": ["europe-west1-b"], "image": IMAGES + "common-cu128-ubuntu-2204-v1"}
     assert _infra("infra-2", voice_it={"enabled": False}, voice_speech=chosen)["voice_speech"] == {"enabled": False}
 
 

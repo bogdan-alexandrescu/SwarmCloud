@@ -206,7 +206,28 @@ class AccountPool(Protocol):
         added_by: str | None = None,
     ) -> dict[str, Any]: ...
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
+    def register_api_key(
+        self,
+        *,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        credential: str,
+        added_by: str,
+        share_with_voice_it: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def set_lending(
+        self,
+        account_id: str,
+        *,
+        lend_to: list[str] | None = None,
+        lends: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]: ...
 
     def set_model_classes(
         self, account_id: str, *, model_classes: list[str]
@@ -234,6 +255,12 @@ class AccountPool(Protocol):
     def finish_sign_in(
         self, *, state: str, code: str, expected_owner: str
     ) -> dict[str, Any]: ...
+
+    def begin_device_sign_in(
+        self, *, owner_tenant: str, label: str, lend_to: list[str]
+    ) -> dict[str, Any]: ...
+
+    def poll_device_sign_in(self, *, state: str, expected_owner: str) -> dict[str, Any]: ...
 
     def refresh(self, account_id: str) -> dict[str, Any]: ...
 
@@ -296,6 +323,8 @@ class AccountPool(Protocol):
     ) -> dict[str, Any]: ...
 
     def voice_pool(self, person: str) -> dict[str, Any]: ...
+
+    def voice_it_accounts(self) -> dict[str, Any]: ...
 
 
 def urllib_transport(
@@ -556,11 +585,68 @@ class BrokerClient:
             },
         )
 
-    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]:
+    def register_api_key(
+        self,
+        *,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        credential: str,
+        added_by: str,
+        share_with_voice_it: bool = False,
+    ) -> dict[str, Any]:
+        """A developer API key for the account pool (`anthropic-api` or
+        `openai-api`; docs/design/llm-providers.md §4.1), the broker's one
+        registration route. Always a POOL key (`voice_dedicated: false`, which
+        the broker would otherwise assume for an OpenAI key) owned by
+        `owner_tenant`, and sent with NO lend: a key is lent afterwards, with
+        its caps, through its lending route. `added_by` is the verified email
+        of the person who typed it. The broker checks the shape and asks the
+        vendor before storing anything; its refusal is a 422, raised here as
+        the caller's `ValidationFailed` by `_result`."""
+        return self._call(
+            "POST",
+            "/v1/accounts",
+            payload={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": provider,
+                # Taken as typed. `quota_broker.api_key.parse_api_key` is the
+                # one reader of a key's shape.
+                "credential": credential,
+                "added_by": added_by,
+                "voice_dedicated": False,
+                "share_with_voice_it": bool(share_with_voice_it),
+            },
+        )
+
+    def set_lending(
+        self,
+        account_id: str,
+        *,
+        lend_to: list[str] | None = None,
+        lends: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        # One or the other, never both: the broker refuses a body with both.
+        # `lends` carries each borrower's cap; a bare `lend_to` is today's body.
+        payload: dict[str, Any] = (
+            {"lends": {t: dict(c) for t, c in lends.items()}}
+            if lends is not None
+            else {"lend_to": list(lend_to or [])}
+        )
         return self._call(
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/lending",
-            payload={"lend_to": list(lend_to)},
+            payload=payload,
+        )
+
+    def set_per_workspace_max(
+        self, account_id: str, *, per_workspace_max: dict[str, int]
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/per-workspace-max",
+            payload={"per_workspace_max": dict(per_workspace_max)},
         )
 
     def set_model_classes(
@@ -638,6 +724,32 @@ class BrokerClient:
             "POST",
             "/v1/accounts/exchange",
             payload={"state": state, "code": code, "expected_owner": expected_owner},
+        )
+
+    def begin_device_sign_in(
+        self, *, owner_tenant: str, label: str, lend_to: list[str]
+    ) -> dict[str, Any]:
+        """Start a ChatGPT plan's device-code sign-in: the code to show, the
+        address to type it at and the state. The device id the vendor is
+        polled with stays in the broker and is never in this answer."""
+        return self._call(
+            "POST",
+            "/v1/accounts/device/start",
+            payload={
+                "owner_tenant": owner_tenant,
+                "label": label,
+                "provider": "openai",
+                "lend_to": lend_to,
+            },
+        )
+
+    def poll_device_sign_in(self, *, state: str, expected_owner: str) -> dict[str, Any]:
+        """Ask whether it was approved; the broker files the plan when it was.
+        `expected_owner` is `finish_sign_in`'s, with the same rule."""
+        return self._call(
+            "POST",
+            "/v1/accounts/device/poll",
+            payload={"state": state, "expected_owner": expected_owner},
         )
     def refresh(self, account_id: str) -> dict[str, Any]:
         return self._call(
@@ -735,6 +847,15 @@ class BrokerClient:
 
     def voice_pool(self, person: str) -> dict[str, Any]:
         return self._call("GET", "/v1/voice/pool", params={"person": person})
+
+    def voice_it_accounts(self) -> dict[str, Any]:
+        """The broker's PLATFORM-WIDE listing (`GET /v1/accounts` with no
+        tenant, which only this service may ask), for Voice it › Settings'
+        dedicated key and chain line: the Voice it pool is the deployment's,
+        not one workspace's. Its rows never carry a key; the caller reduces
+        them to a key's status and each tier's state and answers nothing
+        else, so no workspace's account is named to another."""
+        return self._call("GET", "/v1/accounts")
 
     # ----------------------------------------------------------------- plumbing
 

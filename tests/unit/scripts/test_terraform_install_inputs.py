@@ -36,10 +36,10 @@ PREREQUISITES = ROOT / "scripts" / "prerequisites.sh"
 # hosted domain, its tailnet and its two project-derived service tenants. A
 # default holding any of them configures a new install as the live one.
 LIVE_MARKERS = (
-    "saga-agents-staging",
-    "209012342332",
-    "saga.xyz",
-    "taile0bda9",
+    "example-project",
+    "123456789012",
+    "example.com",
+    "example-tailnet",
     "u-sw-c90291",
     "u-or-9a0792",
 )

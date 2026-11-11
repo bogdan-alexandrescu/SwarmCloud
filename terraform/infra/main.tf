@@ -393,12 +393,15 @@ module "cloud_run_api" {
       # worker jobs already run ALL_TRAFFIC, which is why they could reach the
       # broker and this could not.
       vpc_egress = "ALL_TRAFFIC"
-      # 80, UNCHANGED AT 2 vCPU (2026-11-06). The image runs ONE uvicorn
-      # process an instance (images/swarm-api/Dockerfile), so its Python work
-      # holds one core under the GIL and the second serves the threadpool,
-      # gRPC and TLS; raising this with the CPU count would pack more requests
-      # onto the same event loop. The doubled memory is headroom for the 80 it
-      # already carries (94% at 1 GiB). More instances, not more per instance,
+      # 80, UNCHANGED AT 2 vCPU (2026-11-06). The image runs var.api_workers
+      # uvicorn processes an instance (images/swarm-api/Dockerfile; 1 by
+      # default, 2 on dev since the owner's choice of 2026-11-10). With one,
+      # its Python work holds one core under the GIL and the second serves the
+      # threadpool, gRPC and TLS; with two the same 80 are spread over two
+      # event loops, which is the measured gain (82 -> 172 requests per second
+      # at 8 in flight), so this stays 80 either way. The doubled memory is
+      # headroom for the 80 it already carries (94% at 1 GiB) and for the
+      # second worker (~150 MB idle). More instances, not more per instance,
       # is how the 2026-11-06 pick adds capacity.
       concurrency = 80
       # 660s, NOT THE MODULE'S 300s (#2576). git_push_branch, git_fetch and

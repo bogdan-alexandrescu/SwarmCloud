@@ -7,11 +7,14 @@
 //   * the refusals are swarm_api.plugins.check_step's own words, in its order;
 //   * the pick reaches the submitted step as its own `plugins` field (the
 //     owner's pick on PR #3264), never as a work contract the console writes;
-//   * nothing is read until a sheet is opened.
+//   * nothing is read until a step has a runner that runs an agent (the
+//     managed-plugins builder, lane 10d: its card draws the workspace's
+//     every-step defaults, so the read moved from the first sheet opened).
 //
 // MUTATIONS, each of which turns a case red: offer a plugin the workspace has
 // not allowed; let a planner mode be picked; reword a refusal; send the pick
-// anywhere but the step's `plugins` field; read /v1/plugins on mount.
+// anywhere but the step's `plugins` field; read /v1/plugins before a step
+// has a runner.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -186,9 +189,9 @@ describe('the workflow builder', () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     const step = container.querySelector<HTMLElement>('.wfb-step')!
+    expect(gets, 'nothing is read before a step has a runner').toEqual([])
     fireEvent.change(step.querySelector<HTMLSelectElement>('select.sb-runner-select')!, { target: { value: 'claude-code' } })
     fireEvent.change(container.querySelector<HTMLElement>('.wfb-step')!.querySelector<HTMLTextAreaElement>('textarea')!, { target: { value: 'review the change' } })
-    expect(gets, 'nothing is read before a sheet opens').toEqual([])
 
     fireEvent.click(screen.getByRole('button', { name: /Add a plugin to/ }))
     const sheet = await screen.findByRole('dialog', {}, WAIT)
@@ -218,6 +221,7 @@ describe('the workflow builder', () => {
     await waitFor(() => expect(posts).toHaveLength(1), WAIT)
     expect('metadata' in (posts[0]!.steps as Array<Record<string, unknown>>)[0]!).toBe(false)
     expect('plugins' in (posts[0]!.steps as Array<Record<string, unknown>>)[0]!).toBe(false)
-    expect(gets).toEqual([])
+    expect('plugins_off' in (posts[0]!.steps as Array<Record<string, unknown>>)[0]!).toBe(false)
+    expect(gets, 'one read of the catalogue, when the step got its runner').toEqual(['/v1/plugins'])
   })
 })

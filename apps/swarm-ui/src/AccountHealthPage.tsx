@@ -82,9 +82,9 @@ import './styles/account-health.css'
  */
 export const ACCOUNT_HEALTH_POLL_MS = 60_000
 
-/** Where a row, a card or a fix opens the account: its side sheet on Accounts. */
+/** Where a row, a card or a fix opens the account: its side sheet on LLM Providers › Plans. */
 export function sheetHref(accountId: string): string {
-  return paneHref('capacity/accounts', { account: accountId })
+  return paneHref('capacity/llm-providers/plans', { account: accountId })
 }
 
 /**
@@ -500,7 +500,7 @@ function Tiles({ m }: { m: Model }) {
         </div>
         <small>{v.n === null ? 'not said' : `${v.free} free ${v.free === 1 ? 'slot' : 'slots'}`}</small>
         <div className="ah-acts">
-          <ButtonLink size="sm" href="#capacity/accounts">
+          <ButtonLink size="sm" href="#capacity/llm-providers/plans">
             Accounts
           </ButtonLink>
         </div>
@@ -602,7 +602,7 @@ function AccountList({ m }: { m: Model }) {
       {m.accounts.length === 0 ? (
         <p className="ah-empty-line">
           No accounts registered.{' '}
-          <ButtonLink size="sm" kind="primary" href="#capacity/accounts">
+          <ButtonLink size="sm" kind="primary" href="#capacity/llm-providers/plans">
             Add an account
           </ButtonLink>
         </p>
@@ -1132,7 +1132,7 @@ function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
             {v.free} free {v.free === 1 ? 'slot' : 'slots'}
           </>
         )}{' '}
-        <ButtonLink size="sm" href="#capacity/accounts">
+        <ButtonLink size="sm" href="#capacity/llm-providers/plans">
           Accounts
         </ButtonLink>
       </span>

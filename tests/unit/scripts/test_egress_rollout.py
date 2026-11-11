@@ -74,7 +74,7 @@ def _egress_manifest() -> str:
     """kubernetes/swarm-system/swarm-egress.yaml with every placeholder filled,
     as terraform/infra/egress.tf fills them (egress.tftest.hcl holds that
     rendering; this only needs plausible values)."""
-    config = json.dumps({"enabled": True, "tenants": ["u-bogdan"], "country": "us"})
+    config = json.dumps({"enabled": True, "tenants": ["u-owner"], "country": "us"})
     values = {
         "__SWARM_EGRESS_IMAGE__": IMAGE,
         "__EGRESS_KEY_VERSION__": f"projects/{PROJECT}/secrets/swarm-egress-key/versions/latest",
@@ -204,7 +204,7 @@ class Cluster:
             SWARM_TERRAFORM=str(self.bin / "terraform"),
             TF_DATA_DIR=str(self.tmp / "tfdata"),
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
-            # common.sh has no default project (DAYONE-DESAGA-2): name the one
+            # common.sh has no default project (the Day One project-defaults lane): name the one
             # CLUSTER_REF and the deny-list cases are built on.
             PROJECT_ID=PROJECT,
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
@@ -314,7 +314,7 @@ def test_enabled_without_a_manifest_is_a_failure(tmp_path):
 
 
 @pytest.mark.parametrize("how", ["flag", "context", "terraform"])
-def test_the_shared_agents_staging_cluster_is_refused_before_anything_is_written(tmp_path, how):
+def test_the_shared_peer_cluster_is_refused_before_anything_is_written(tmp_path, how):
     """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's live cluster (CLAUDE.md rule 2),
     refused by common.sh's deny-list whichever way it arrives."""
     cluster = Cluster(tmp_path)

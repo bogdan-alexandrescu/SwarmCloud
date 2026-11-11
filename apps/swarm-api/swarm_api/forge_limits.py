@@ -404,6 +404,21 @@ class _Headers:
 
 
 #: The swarm-api process's one ledger.
+#:
+#: PER PROCESS, AND NOT DIVIDED BY THE WORKER COUNT (owner's choice of two
+#: uvicorn workers on dev, 2026-11-10; `workers`). Unlike the semaphores and
+#: token buckets `workers` divides, this ledger counts nothing itself: every
+#: figure in it is GitHub's own `X-RateLimit-*`, a counter GitHub keeps per
+#: credential for every worker and every instance at once. A second worker
+#: reads the same remaining figure from its own answers and defers at the
+#: same 20%, so halving anything would be wrong -- halving the threshold
+#: would defer later, and there is no budget here to halve. What is not
+#: shared is a hold: a rate-limited answer in one worker holds the
+#: credential there, and the other worker learns of it from its own next
+#: answer, at most one extra refused call per worker per hold (the same one
+#: each of Cloud Run's instances already spends; nothing has ever shared it
+#: across them). Sharing it through Firestore would add a read to every
+#: background defer and a write to every GitHub answer for that one call.
 QUOTAS = QuotaLedger()
 
 

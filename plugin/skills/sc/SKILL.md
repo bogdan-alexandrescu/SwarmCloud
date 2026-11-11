@@ -391,6 +391,8 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
    | `awaiting_input` | STUCK only when an AWAITING_INPUT step is still parked more than two ticks (2 min) past its `expires_at`: the expiry sweep is not running | a wait inside its window, or just past it: listed under `awaiting_input`, below |
+   | `deploy_behind` | the deployment is behind the default branch, which has held a commit it lacks more than 60 min. The deployed commit is `GET /v1/version`'s `git_sha`, lifted to the newest successful release run on the default branch after it (an incremental build reuses unchanged images; `evidence.release_reaches` says so); behind is aged from the OLDEST commit it lacks. One item for the check, naming no task: report the deployed commit and its age, the commits behind, and the release run's conclusion and failed jobs; a field reading 'not read: ...' was NOT read -- say so, never "no failed jobs"; `next` is the release run | behind 60 min or less; a deployment that is current; a deployment GitHub does not know in this repository (built from another one: not compared). A read that fails is under `unchecked` as "not read", with its reason: say the deployment was NOT checked, never that it is current |
+   | `plugin_files_missing` | this session's sc plugin version folder, or its workflows/run.js, is gone (a plugin update removed the folder this session loaded): titled launches fail and the plugin's agent types are lost. One item for the session, naming no task; `next` is `type /reload-plugins in this session` | both present; a bridge started with no plugin root (`SWARM_SC_PLUGIN_ROOT` unset: the repo-local bridge, or one started by hand); another version folder beside it is never checked, since only a reload gives the session its agents back |
 
    `awaiting_input` (beside `flagged`, never inside it) lists the steps
    waiting for a member of their tenant to answer, as information and NOT as
@@ -937,6 +939,20 @@ sent as the step's `metadata.review_gate`; a malformed one is refused before
 anything is submitted. A step carrying `metadata` itself is refused, like
 every key outside the accepted list. Never add or drop a gate the spec did
 not name.
+
+A step's work contract is the step's `work_contract`, beside its
+`runner_profile`: the document swarm-api decodes, compiles and signs, and
+that contract review runs on. It is sent as the step's
+`metadata.work_contract`. Its shape is checked first against the frozen
+contract (an object, `schema` 1, each level closed to the contract's own
+keys, maps and lists where it has them); a malformed one is refused before
+anything is submitted, with a message naming the step and the field.
+swarm-api still checks every value -- the ids, the catalogues, the tenant,
+the limits against the step's -- and its 422 is reported in its own words.
+Never write, amend or drop a contract the spec did not carry.
+
+A step's `plugins` names the plugins it runs, `{install_id: {overrides?}}` or `{name: {mode, skills}}`, sent as given.
+A step's `plugins_off` lists the workspace's default plugins it does not load, by install id or name, sent as given.
 
 ### `runs`
 

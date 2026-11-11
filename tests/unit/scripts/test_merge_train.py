@@ -189,7 +189,7 @@ FAKE_PR_VIEW = """#!/usr/bin/env bash
 set -euo pipefail
 # gh pr view <N> --repo <R> --json mergeable --jq .mergeable, answered from
 # $FAKE_MERGEABLE_DIR/<N>: one answer per line, one line per read, the last
-# one repeated once they run out.
+# one repeated once they run out. An answer of 504 or 404 fails the read so.
 printf '%s\\n' "$*" >>"${FAKE_GH_LOG}"
 [[ "$1 $2" == "pr view" ]] || { echo "fake gh: unexpected: $*" >&2; exit 64; }
 n="$3"
@@ -201,7 +201,12 @@ reads=$((reads + 1))
 printf '%s' "${reads}" >"${count}"
 total="$(wc -l <"${answers}" | tr -d ' ')"
 [[ "${reads}" -le "${total}" ]] || reads="${total}"
-sed -n "${reads}p" "${answers}"
+answer="$(sed -n "${reads}p" "${answers}")"
+case "${answer}" in
+  504) echo "HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)" >&2; exit 1 ;;
+  404) echo "GraphQL: Could not resolve to a PullRequest with the number of ${n}. (repository.pullRequest)" >&2; exit 1 ;;
+esac
+printf '%s\\n' "${answer}"
 """
 
 
@@ -225,6 +230,7 @@ def _recheck(tmp_path: Path, answers: dict[int, list[str]], prs: Path = FIXTURES
                     "FAKE_GH_LOG": str(log),
                     "FAKE_MERGEABLE_DIR": str(mergeable_dir),
                     "MERGE_TRAIN_MERGEABLE_WAIT_SECONDS": "0",
+                    "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0",
                 })
     assert proc.returncode == 0, proc.stderr
     numbers = [line.split("\t")[0] for line in proc.stdout.splitlines() if line]
@@ -293,7 +299,7 @@ def test_the_tick_rechecks_unknown_mergeability_when_it_boards_from_the_pool():
     assert "--recheck-unknown" in start
 
 
-# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
+# CHECK-STUCK-2 (the owner, 2026-10-23, task_9e9080121b104370b079 Q0; part of
 # #2031): select reads a rollup check run as done the way `judge` does --
 # status COMPLETED, OR a conclusion together with a completedAt. GitHub left
 # PR 2006's `secret scan` IN_PROGRESS after giving it both; GitHub's own
@@ -420,7 +426,7 @@ def test_judge_red_on_a_failed_commit_status(tmp_path):
     assert failed == [("secret scan", "https://x/y")]
 
 
-# CHECK-RULE-2 (BGD, 2026-10-22, both answers): the judge decides a check by
+# CHECK-RULE-2 (the owner, 2026-10-22, both answers): the judge decides a check by
 # the latest run (highest id) of EACH event that ran it, as the worker's
 # merge step, swarm-api and auto-merge.yml's gate 5 do. The event is the one
 # that made the run's check suite, from `--workflow-runs` (the Actions runs at
@@ -478,7 +484,7 @@ def test_judge_a_check_nothing_requires_by_the_latest_run_of_each_event(tmp_path
     assert got == verdict, case
 
 
-# CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+# CHECK-STUCK (the owner, 2026-10-23, part of #2031): a check run that carries a
 # conclusion AND a completed_at is judged by its conclusion, whatever
 # `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
 # `conclusion: success` and a `completed_at`; its workflow run was completed.
@@ -1284,7 +1290,7 @@ def test_the_runbook_says_how_to_roll_back():
 # a red train: retry once, hold while main is red, else bisect
 # --------------------------------------------------------------------------
 #
-# BGD, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
+# The owner, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
 # 139 trains were red, mostly on checks known to fail at random ('format /
 # unit tests', 'swarm-ui typecheck / component tests', single shards), and 6
 # of 18 ejected pull requests later landed with no change. Keep the train and
@@ -1924,3 +1930,319 @@ def test_a_train_that_cannot_be_read_stops_the_tick(tmp_path):
     # starts a second train while the first is still open.
     assert proc.returncode != 0
     assert "could not read train #203" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Every other read a tick makes is retried like the list (gh_read).
+# ---------------------------------------------------------------------------
+# 6 November 2026, 12:45Z to 13:00Z: four ticks in a row died on a GitHub read
+# (a 504, an i/o timeout, twice an empty reply), and nothing re-ticked for 75
+# minutes. Each read below answers wrongly once, then well: it is read once
+# more and the tick goes on; a not-found answer is read once and not again.
+# A fake `gh` in front of RED_FAKE_GH answers the faults FAKE_FAULTS lists.
+
+FAULTY_GH = r'''#!{python}
+import json, os, sys
+
+args = sys.argv[1:]
+path = os.environ["FAKE_FAULTS"]
+with open(path) as fh:
+    faults = json.load(fh)
+with open(path + ".log", "a") as fh:
+    fh.write(json.dumps(args) + "\n")
+SAID = {
+    "504": "HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)",
+    "timeout": 'Post "https://api.github.com/graphql": dial tcp 192.0.2.1:443: i/o timeout',
+    "eof": "unexpected end of JSON input",
+    "404": "HTTP 404: Not Found (https://api.github.com/repos/example)",
+    "merged": "GraphQL: Pull request is already merged (mergePullRequest)",
+}
+inner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gh-inner")
+# The first fault whose words are all among the arguments: `skip` calls pass
+# first, then each `fail` answer once, then `serve` (JSON) or the fake behind.
+fault = next((f for f in faults if all(w in args for w in f["words"])), None)
+if fault is not None:
+    if fault.get("skip", 0) > 0:
+        fault["skip"] -= 1
+    elif fault.get("fail"):
+        how = fault["fail"].pop(0)
+        with open(path, "w") as fh:
+            json.dump(faults, fh)
+        if how == "lost":
+            import subprocess
+            subprocess.run([inner, *args], stdout=subprocess.DEVNULL, check=True)
+            how = "504"
+        print(SAID[how], file=sys.stderr)
+        sys.exit(1)
+    elif "serve" in fault:
+        print(json.dumps(fault["serve"]))
+        sys.exit(0)
+    with open(path, "w") as fh:
+        json.dump(faults, fh)
+os.execv(inner, [inner, *args])
+'''
+
+
+def _faulty(t: RedTick, faults: list[dict]) -> Path:
+    """Puts FAULTY_GH in front of t's fake; returns the faults file (its
+    `.log` holds every call, the faulted ones too)."""
+    inner = t.bin / "gh-inner"
+    if not inner.exists():
+        (t.bin / "gh").rename(inner)
+    wrapper = t.bin / "gh"
+    wrapper.write_text(FAULTY_GH.replace("{python}", sys.executable))
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
+    path = t.tmp / "faults.json"
+    path.write_text(json.dumps(faults))
+    t.env = {**t.env, "FAKE_FAULTS": str(path), "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0"}
+    return path
+
+
+def _calls(faults: Path, words: list[str]) -> int:
+    log = Path(str(faults) + ".log")
+    lines = log.read_text().splitlines() if log.exists() else []
+    return sum(1 for line in lines if all(w in json.loads(line) for w in words))
+
+
+def _api(path: str) -> str:
+    return f"repos/{THIS_REPO}/{path}"
+
+
+def _green_train(t: RedTick) -> None:
+    t.world["checks"][t.head] = _at(REQUIRED_TICK)
+
+
+def _green_train_ran_twice(t: RedTick) -> None:
+    """A check that ran twice at the head: the tick reads the Actions runs."""
+    _green_train(t)
+    again = dict(t.world["checks"][t.head]["check_runs"][0], id=1, check_suite={"id": 1})
+    t.world["checks"][t.head]["check_runs"].append(again)
+
+
+def _first_red(t: RedTick) -> None:
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+
+
+def _red_past_the_age_limit(t: RedTick) -> None:
+    t.state["started"] = str(int(time.time()) - 6 * 3600)
+    _first_red(t)
+
+
+def _red_while_main_is_red(t: RedTick) -> None:
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t, [UNIT, SHARD])
+    _main(t, REQUIRED_TICK, [UNIT])
+
+
+def _after_a_hold(t: RedTick) -> None:
+    _held_train(t, 10, [UNIT])
+    _main(t, [*REQUIRED_TICK, UNIT], [SHARD])
+
+
+#: The deploy hold's four reads, answered for a build in progress on main and
+#: no deploy since long ago, so a green train holds.
+BUILD_RUN, RELEASE_RUN = 7001, 7002
+
+
+def _hold_serves(t: RedTick) -> list[dict]:
+    return [
+        {"words": [_api("actions/workflows/application.yml/runs?branch=main&event=push&per_page=1")],
+         "serve": {"workflow_runs": [{"id": BUILD_RUN, "head_sha": t.main}]}},
+        {"words": [_api(f"actions/runs/{BUILD_RUN}/jobs?per_page=100")],
+         "serve": {"jobs": [{"name": "build images", "status": "in_progress"}]}},
+        {"words": [_api("actions/workflows/release.yml/runs?branch=main&per_page=10")],
+         "serve": {"workflow_runs": [{"id": RELEASE_RUN, "status": "completed",
+                                      "created_at": "2026-11-01T00:00:00Z"}]}},
+        {"words": [_api(f"actions/runs/{RELEASE_RUN}/jobs?per_page=100")],
+         "serve": {"jobs": [{"name": "deploy (prod)", "conclusion": "success",
+                             "completed_at": "2026-11-01T01:00:00Z"}]}},
+    ]
+
+
+def _faults_for(t: RedTick, words: list[str], fail: list[str], skip: int = 0) -> list[dict]:
+    """The fault on `words`; a deploy hold read also gets the hold's other
+    reads answered, so the read faulted is made at all."""
+    serves = _hold_serves(t) if any("jobs" in w or ".yml" in w for w in words) else []
+    mine = [f for f in serves if f["words"] == words]
+    rest = [f for f in serves if f["words"] != words]
+    fault = {"words": words, "fail": fail, "skip": skip}
+    if mine:
+        fault["serve"] = mine[0]["serve"]
+    return [fault, *rest]
+
+
+def _head_runs(t: RedTick) -> list[str]:
+    return [_api(f"actions/runs?head_sha={t.head}&per_page=100")]
+
+
+#: (read, scenario, its words given the tick, calls it makes with no fault,
+#: calls skipped before the fault).
+TICK_READS = [
+    ("main's rules", _green_train, lambda t: [_api("rules/branches/main")], 1, 0),
+    ("main's branch protection", _green_train, lambda t: [_api("branches/main")], 1, 0),
+    ("the check runs at the train head", _green_train,
+     lambda t: [_api(f"commits/{t.head}/check-runs?per_page=100")], 1, 0),
+    ("the statuses at the train head", _green_train,
+     lambda t: [_api(f"commits/{t.head}/status?per_page=100")], 1, 0),
+    ("the Actions runs at the train head", _green_train_ran_twice, _head_runs, 1, 0),
+    ("main's application.yml runs", _green_train,
+     lambda t: [_api("actions/workflows/application.yml/runs?branch=main&event=push&per_page=1")], 1, 0),
+    ("the jobs of main's build", _green_train,
+     lambda t: [_api(f"actions/runs/{BUILD_RUN}/jobs?per_page=100")], 1, 0),
+    ("main's release.yml runs", _green_train,
+     lambda t: [_api("actions/workflows/release.yml/runs?branch=main&per_page=10")], 1, 0),
+    ("the jobs of main's release", _green_train,
+     lambda t: [_api(f"actions/runs/{RELEASE_RUN}/jobs?per_page=100")], 1, 0),
+    ("rule 1's runs still running", _first_red, _head_runs, 2, 0),
+    ("rule 1's runs past the age limit", _red_past_the_age_limit, _head_runs, 2, 0),
+    ("rule 1's runs to re-run", _first_red, _head_runs, 2, 1),
+    ("main's head commit", _red_while_main_is_red, lambda t: [_api("commits/main")], 1, 0),
+    ("the check runs on main", _red_while_main_is_red,
+     lambda t: [_api(f"commits/{t.main}/check-runs?per_page=100")], 1, 0),
+    ("the statuses on main", _red_while_main_is_red,
+     lambda t: [_api(f"commits/{t.main}/status?per_page=100")], 1, 0),
+    ("the Actions runs on main", _red_while_main_is_red,
+     lambda t: [_api(f"actions/runs?head_sha={t.main}&per_page=100")], 1, 0),
+    ("the closed trains", _after_a_hold, lambda t: ["pr", "list", "closed"], 1, 0),
+]
+
+
+def _tick_reads_ids(rows):
+    return [row[0] for row in rows]
+
+
+def _set_up_read(red_tick, scenario, words_of, fail: list[str], skip: int):
+    t = red_tick([101, 102])
+    scenario(t)
+    words = words_of(t)
+    return t, words, _faulty(t, _faults_for(t, words, fail, skip))
+
+
+@pytest.mark.parametrize(("read", "scenario", "words_of", "normal", "skip"), TICK_READS,
+                         ids=_tick_reads_ids(TICK_READS))
+def test_a_tick_read_that_answers_504_once_is_read_once_more_and_the_tick_goes_on(
+        red_tick, read, scenario, words_of, normal, skip):
+    t, words, faults = _set_up_read(red_tick, scenario, words_of, ["504"], skip)
+    t.run(train_open=scenario is not _after_a_hold)
+    # MUTATION: read it with a bare `gh api` / `gh pr list` -> read once, and
+    # the tick dies or decides on nothing read, as four did at 12:45Z.
+    assert _calls(faults, words) == normal + 1, read
+
+
+@pytest.mark.parametrize(("read", "scenario", "words_of", "normal", "skip"), TICK_READS,
+                         ids=_tick_reads_ids(TICK_READS))
+def test_a_tick_read_that_answers_not_found_is_not_read_again(
+        red_tick, read, scenario, words_of, normal, skip):
+    t, words, faults = _set_up_read(red_tick, scenario, words_of, ["404", "404", "404"], skip)
+    try:
+        t.run(train_open=scenario is not _after_a_hold)
+    except AssertionError:
+        pass  # Main's rules, protection and a train head's checks must be read.
+    # MUTATION: retry every failure -> a refusal is asked three times.
+    assert _calls(faults, words) == normal, read
+
+
+def test_the_tick_s_outcome_survives_one_timeout_on_each_read_it_decides_on(red_tick):
+    """Each read through gh_read decides as if it never failed."""
+    t = red_tick([101, 102])
+    _green_train(t)
+    faults = _faulty(t, [{"words": [_api(f"commits/{t.head}/check-runs?per_page=100")],
+                          "fail": ["timeout"]},
+                         {"words": [_api(f"commits/{t.head}/status?per_page=100")],
+                          "fail": ["eof"]},
+                         {"words": [_api("rules/branches/main")], "fail": ["504"]}])
+    t.run()
+    assert t.after.get("merged") == [101, 102]
+    assert _calls(faults, [_api("rules/branches/main")]) == 2
+
+
+def test_a_green_train_holds_for_main_s_build_after_a_504_on_each_hold_read(red_tick):
+    t = red_tick([101, 102])
+    _green_train(t)
+    faults = _hold_serves(t)
+    for fault in faults:
+        fault["fail"] = ["504"]
+    path = _faulty(t, faults)
+    out = t.run()
+    # MUTATION: read the hold's runs with a bare `gh api` -> "could not read
+    # ...: not holding", and the merge cancels main's build.
+    assert "holding the merge so main's build" in out, out
+    assert not t.after.get("merged")
+    assert all(_calls(path, f["words"]) == 2 for f in faults)
+
+
+def test_a_red_train_is_held_while_main_is_red_after_a_504_on_main_s_commit(red_tick):
+    t = red_tick([101, 102])
+    _red_while_main_is_red(t)
+    _faulty(t, [{"words": [_api("commits/main")], "fail": ["504"]}])
+    t.run()
+    # MUTATION: a bare read of main's commit -> "could not read main's
+    # checks", and a train red only because main is bisects and ejects.
+    assert t.comments().startswith(f"Held: main is red on {UNIT}\n")
+    assert not t.ejected()
+
+
+def test_a_merge_github_refuses_after_a_lost_reply_is_read_again_through_a_504(red_tick):
+    t = red_tick([101])
+    _green_train(t)
+    view = ["pr", "view", "101", "state"]
+    faults = _faulty(t, [{"words": ["pr", "merge", "101"], "fail": ["504", "merged"]},
+                         {"words": view, "fail": ["504"], "serve": {"state": "MERGED"}}])
+    out = t.run()
+    # MUTATION: a bare read after the refusal -> "GitHub refused to merge
+    # #101", and a merge that landed is reported as a train stopped part-way.
+    assert "had merged although GitHub's reply to an earlier attempt was lost" in out
+    assert _calls(faults, view) == 2
+
+
+def _tell_with_faults(tmp_path: Path, fail: list[str]):
+    t = RedTick(tmp_path, [101])
+    comments = {n: _api(f"issues/{n}/comments") for n in (105, 107, 113)}
+    faults = _faulty(t, [{"words": [w], "fail": fail if n == 105 else [], "serve": []}
+                         for n, w in comments.items()])
+    world = {**t.world, "open": []}
+    (t.tmp / "world.json").write_text(json.dumps(world))
+    (t.tmp / "gh.log").write_text("")
+    env = {"PATH": f"{t.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(t.tmp),
+           "GH_REPO": THIS_REPO, "GH_TOKEN": "fake-" + secrets.token_hex(4),
+           "APP_TOKEN": "fake-" + secrets.token_hex(4), "RUN_URL": "https://example.invalid/run/42",
+           "FAKE_WORLD": str(t.tmp / "world.json"), "FAKE_GH_LOG": str(t.tmp / "gh.log"), **t.env}
+    proc = subprocess.run([str(SCRIPT), "tell", "--prs", str(FIXTURES / "prs.json")], env=env,
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert proc.returncode == 0, proc.stderr
+    told = json.loads((t.tmp / "world.json").read_text()).get("comments", {})
+    return told, _calls(faults, [comments[105]]), proc
+
+
+def test_a_thread_s_comments_that_answer_504_once_are_read_again_and_it_is_told(tmp_path):
+    told, reads, proc = _tell_with_faults(tmp_path, ["504"])
+    # MUTATION: a bare comments read -> "could not read #105's comments", and
+    # 105 is never told why it does not board.
+    assert "105" in told, proc.stderr
+    assert reads == 2
+    assert "reading #105's comments failed transiently" in proc.stderr
+
+
+def test_a_thread_s_comments_that_are_not_found_are_not_read_again(tmp_path):
+    told, reads, proc = _tell_with_faults(tmp_path, ["404", "404", "404"])
+    assert "105" not in told
+    assert reads == 1
+    assert "could not read #105's comments" in proc.stderr
+
+
+def test_a_mergeability_read_that_answers_504_once_is_read_again(tmp_path):
+    numbers, reads, proc = _recheck(tmp_path, {106: ["504", "MERGEABLE"]})
+    # MUTATION: a bare read -> a 504 counts as UNKNOWN, read again after a
+    # wait; with one read left it would be left out of the train.
+    assert numbers == ["101", "106", "114", "120"], proc.stderr
+    assert len(reads) == 2
+    assert "reading the mergeability of #106 failed transiently" in proc.stderr
+
+
+def test_a_mergeability_read_that_is_not_found_is_not_retried_by_gh_read(tmp_path):
+    numbers, reads, proc = _recheck(tmp_path, {106: ["404"]})
+    assert numbers == ["101", "114", "120"]
+    # One read per MERGEABLE_READS round (three), never gh_read's retries too.
+    assert len(reads) == 3
+    assert "failed transiently" not in proc.stderr

@@ -204,6 +204,23 @@ describe('what the prose meter counts', () => {
     expect(measure(root).words).toBe(1)
   })
 
+  it("does not count the rail: the nav's labels are the same on every page", () => {
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<div class="sk-side"><nav class="sk-spine"><a href="#c">Capacity</a></nav>' +
+      '<nav class="sk-panel"><a href="#p">LLM Providers ›</a> <a href="#q">Plans</a></nav></div>' +
+      '<main><h1>Pools</h1></main>'
+    const m = measure(root)
+    expect(m.words).toBe(1)
+    expect(m.arrows).toBe(0)
+  })
+
+  it("does not count the visually hidden words a screen reader is given", () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<b>Swarm</b> <span class="sk-vh">4 waiting for approval</span>'
+    expect(measure(root).words).toBe(1)
+  })
+
   it('counts a text link with an arrow as an action that should be a button, and a button not', () => {
     const root = document.createElement('div')
     root.innerHTML =

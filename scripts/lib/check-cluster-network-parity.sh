@@ -44,7 +44,7 @@ set -euo pipefail
 
 # With no gcloud credentials this touches no project: it skips, and the
 # shell job runs it that way. It says so, so common.sh (no default project,
-# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID, and it requires one
+# the Day One project-defaults lane) does not stop on an unset PROJECT_ID, and it requires one
 # below, once it has credentials and before it reaches for a cluster.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR

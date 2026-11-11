@@ -15,7 +15,8 @@ the worker identity, the slots, the namespace and its quota from the record
 | `team.workspace` | the job ran to `ready` (identity, slots, namespace, quota, its own A9 check) | 32 |
 | `team.namespace` | the namespace exists and holds `swarm-spec-verify-keys` | 31 |
 | `team.git-link` | the team's `-git` slot has an enabled version, filled through a one-time console link, never the terminal | CLAUDE.md |
-| `team.pool-account` | a Claude pool account is owned by or lent to the team | review-fix 1 |
+| `team.providers` | the plans / keys / both answer is in the install state, asked once | llm-providers.md §7 |
+| `team.pool-account` | what that answer chose is owned by or lent to the team: a Claude plan, an Anthropic key, or one of each | review-fix 1, §7 |
 | `team.smoke` | a smoke agent ran on the team and SUCCEEDED | |
 
 **The verify keys are the installer's to apply.** The job's identity holds no
@@ -48,6 +49,30 @@ on. For the first team those are stage 12's accounts, added in Admin › Setup
 and owned by the first team; for any later team, an account lent to it in
 Admin › People. The wait says which.
 
+**Plans, API keys, or both** (docs/design/llm-providers.md §7, Q10). Before
+anything is registered the verb asks "Which will agents run on: plans, API
+keys, or both?" and records the answer in the install state
+(`outputs["llm_providers"]`, through the verb's context, which saves it to the
+state bucket); a re-run that finds it recorded never asks again, and one that
+finds none asks once. The pool-account gate checks that choice on the team's
+`GET /v1/accounts` rows: `plans` waits for an AVAILABLE Anthropic plan in the
+workspace pool, `keys` for an AVAILABLE Anthropic key owned by or lent to the
+team, `both` for one of each, so a team on keys alone finishes and an operator
+who meant both is not let through on one. Only Anthropic counts, because the
+smoke agent is `claude-code`, whose chain is Anthropic plans then Anthropic
+keys (§5.3). **A key is never typed here** (the terminal keeps scrollback and
+may be recorded): the wait opens, and the summary prints, Capacity › LLM
+Providers › API Keys, where the console's one-step form takes it.
+
+**The summary** prints the choice and each chain of §5.3 with what the team has
+registered now, read from the same `GET /v1/accounts` (which, for the team,
+includes its own Voice-it-only accounts) and, when Voice it is on,
+`GET /v1/voice/pool`; it flags a chain with nothing registered of a kind the
+operator chose, names the tier the smoke agent's attempt ran on
+(`credential_tier`, contract request 152), and, with Voice it on, says where
+its dedicated key goes (`tfvars.voice_it_summary`). A read that fails is said
+in its line and never fails a team whose smoke is green.
+
 **`swarm team repair <team>` applies one team's tenant render again**
 (DAYONE-TEAM-REPAIR; `TeamRepair`). `swarm doctor` names it for a team whose
 namespace lacks what the render holds (the dispatcher RBAC, rbac.dispatcher-role).
@@ -73,7 +98,7 @@ from typing import Any, Protocol, TextIO
 
 from swarm_common.identity import tenant_id_for_group, tenant_id_for_user
 
-from . import steps
+from . import steps, tfvars
 from .events import Events
 from .exitcodes import MET, UNMET, WAITING
 from .waits import Clock, WaitSpec, wait_until
@@ -134,6 +159,54 @@ POOL_ACCOUNT_WAIT = WaitSpec(
     look_at="Admin › Setup › Claude pool accounts (the first team), or Admin › People › lend (any later team)",
     interval_s=15,
 )
+#: The install state's key for the plans / keys / both answer (llm-providers.md
+#: §7, Q10): `{"choice": "plans" | "keys" | "both"}`.
+LLM_PROVIDERS = "llm_providers"
+PLANS = "plans"
+KEYS = "keys"
+BOTH = "both"
+CHOICES = (PLANS, KEYS, BOTH)
+LLM_PROVIDERS_QUESTION = "Which will agents run on: plans, API keys, or both? Type plans, keys or both"
+#: What an answer may be typed as, after case and spacing are folded.
+ANSWERS = {"plans": PLANS, "plan": PLANS, "keys": KEYS, "key": KEYS, "api keys": KEYS, "api key": KEYS,
+           "both": BOTH}
+#: An answer that is none of them is asked again, up to this many answers in all.
+CHOICE_TRIES = 3
+CHOICE_WORDS = {PLANS: "plans", KEYS: "API keys", BOTH: "plans and API keys (both)"}
+
+#: The kinds of `account_to_api`'s `kind` (the broker, §3), and what each answer needs.
+PLAN = "plan"
+#: A metered developer key (§3).
+METERED = "api_key"
+NEEDS = {PLANS: (PLAN,), KEYS: (METERED,), BOTH: (PLAN, METERED)}
+#: The broker's pools (`accounts.POOL_WORKSPACE`, `POOL_VOICE_IT`).
+POOL_WORKSPACE = "workspace"
+POOL_VOICE_IT = "voice-it"
+#: The vendor the smoke agent runs on: `claude-code`'s chain (§5.3).
+SMOKE_VENDOR = "anthropic"
+
+#: Capacity › LLM Providers › API Keys (design §6.1), where the console's
+#: one-step key form is. The one-time key link itself is swarm-api's (lane
+#: LP-A1); the installer only names the page.
+API_KEYS_PAGE = "/capacity/llm-providers/api-keys"
+
+#: The chains of §5.3: (name, vendor, pool, the kinds its tiers take, whether
+#: the dedicated Voice it key is its last tier). The Voice it ones are listed
+#: only when Voice it is on.
+CHAINS: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
+    ("claude-code", "anthropic", POOL_WORKSPACE, (PLAN, METERED), False),
+    ("browser", "anthropic", POOL_WORKSPACE, (METERED,), False),
+    ("codex", "openai", POOL_WORKSPACE, (PLAN, METERED), False),
+)
+VOICE_CHAINS: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
+    ("Voice it Live", "openai", POOL_VOICE_IT, (METERED,), True),
+    ("Voice it conversation", "openai", POOL_VOICE_IT, (PLAN, METERED), True),
+    ("Voice it planner", "anthropic", POOL_VOICE_IT, (PLAN, METERED), False),
+)
+#: How the summary names the tier the smoke agent's attempt kept
+#: (`Attempt.credential_tier`, `credential_source`, request 152).
+TIER_WORDS = {PLAN: "a plan", METERED: "an API key"}
+
 SMOKE_WAIT = WaitSpec(
     reason="the team's smoke agent to finish",
     expected="1 to 5 min",
@@ -171,6 +244,12 @@ class TeamApi(Protocol):
     def team_git_link(self, team: str, owner: str) -> Mapping[str, Any]: ...
 
     def pool_accounts(self, team: str) -> Sequence[Mapping[str, Any]]: ...
+
+    def summary_accounts(self, team: str) -> Sequence[Mapping[str, Any]]: ...
+
+    def voice_pool(self) -> Mapping[str, Any]: ...
+
+    def smoke_attempts(self, team: str, task_id: str) -> Sequence[Mapping[str, Any]]: ...
 
     def start_smoke(self, team: str) -> str: ...
 
@@ -261,6 +340,99 @@ def probe_explanation(result: Mapping[str, Any]) -> str:
             "swarm doctor names which.")
 
 
+def account_kind(row: Mapping[str, Any]) -> str:
+    """`plan` or `api_key`: the row's `kind`, else from its provider (`*-api` is a key)."""
+    kind = row.get("kind")
+    if kind in (PLAN, METERED):
+        return str(kind)
+    return METERED if str(row.get("provider") or "").endswith("-api") else PLAN
+
+
+def account_vendor(row: Mapping[str, Any]) -> str:
+    """The row's `vendor`, else its provider without `-api`; a row with
+    neither is a Claude plan, as every account was before §3."""
+    provider = str(row.get("provider") or "")
+    return str(row.get("vendor") or provider.removesuffix("-api") or "anthropic")
+
+
+def account_pools(row: Mapping[str, Any]) -> tuple[str, ...]:
+    pools = row.get("pools")
+    return tuple(str(p) for p in pools) if isinstance(pools, (list, tuple)) else (POOL_WORKSPACE,)
+
+
+def serves_team(row: Mapping[str, Any], team: str) -> bool:
+    """Owned by or lent to `team` (`lend_to`, or a capped lend in `lends`).
+    A row naming no owner is the team's own listing's, as the broker scopes it."""
+    owner = row.get("owner_tenant")
+    if owner is None:
+        return True
+    lends = row.get("lends")
+    return (owner == team or team in (row.get("lend_to") or ())
+            or (isinstance(lends, Mapping) and team in lends))
+
+
+def usable_kinds(rows: Sequence[Mapping[str, Any]], team: str) -> set[str]:
+    """The kinds the team's smoke agent could run on now: AVAILABLE, Anthropic,
+    in the workspace pool, owned by or lent to the team."""
+    return {account_kind(r) for r in rows
+            if str(r.get("state") or "").upper() == "AVAILABLE" and account_vendor(r) == SMOKE_VENDOR
+            and POOL_WORKSPACE in account_pools(r) and serves_team(r, team)}
+
+
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def chain_line(chain: tuple[str, str, str, tuple[str, ...], bool], rows: Sequence[Mapping[str, Any]],
+               team: str, choice: str, voice: Mapping[str, Any] | None = None) -> str:
+    """One chain of §5.3 with what is registered for it now, flagged when a
+    kind the operator chose has nothing."""
+    name, vendor, pool, kinds, dedicated_tier = chain
+    mine = [r for r in rows if account_vendor(r) == vendor and pool in account_pools(r)
+            and (pool != POOL_WORKSPACE or serves_team(r, team))]
+    plans = [r for r in mine if account_kind(r) == PLAN]
+    keys = [r for r in mine if account_kind(r) == METERED and not r.get("voice_dedicated")]
+    dedicated = dedicated_tier and any(r.get("voice_dedicated") and account_kind(r) == METERED for r in mine)
+    if name == "Voice it Live":
+        counts = ("no key" if not keys and not dedicated else
+                  f"{_count(len(keys), 'shared key')}, " + ("the dedicated key" if dedicated else "no dedicated key"))
+        account = (voice or {}).get("account") if isinstance(voice, Mapping) else None
+        if isinstance(account, Mapping):
+            counts += f"; the next session leases {account.get('display_name') or account.get('label')}"
+        elif isinstance(voice, Mapping) and voice.get("reason"):
+            counts += f" ({voice.get('reason')})"
+    else:
+        parts = []
+        if PLAN in kinds:
+            parts.append(_count(len(plans), "plan"))
+        if METERED in kinds:
+            parts.append(_count(len(keys), "key"))
+        if dedicated:
+            parts.append("the dedicated key")
+        counts = ", ".join(parts)
+    missing = []
+    if PLAN in kinds and PLAN in NEEDS[choice] and not plans:
+        missing.append("no plan")
+    if METERED in kinds and METERED in NEEDS[choice] and not keys and not dedicated:
+        missing.append("no key")
+    flag = f"  <- nothing registered of the kind chosen: {', '.join(missing)}" if missing else ""
+    return f"  {name}: {counts}{flag}"
+
+
+def smoke_tier_words(attempts: Sequence[Mapping[str, Any]]) -> str:
+    """The tier the smoke agent's last attempt kept, in words."""
+    rows = [a for a in attempts if isinstance(a, Mapping)]
+    if not rows:
+        return "a tier no attempt recorded"
+    last = max(rows, key=lambda a: a.get("attempt") if isinstance(a.get("attempt"), int) else 0)
+    tier = last.get("credential_tier")
+    if tier in TIER_WORDS:
+        return TIER_WORDS[str(tier)]
+    if last.get("credential_source") == "tenant_secret":
+        return "the team's own provider secret"
+    return "a tier the attempt did not record"
+
+
 @dataclass
 class TeamAdd:
     api: TeamApi
@@ -276,6 +448,13 @@ class TeamAdd:
     #: The command a give-up tells the person to run again.
     resume: str = RESUME
     open_page: Callable[..., None] = steps.open_page
+    #: The verb's context (`steps.infra.VerbContext`): `state`, the install
+    #: state the plans / keys / both answer is read from, and `save(change)`,
+    #: which records it in the state bucket.
+    ctx: Any = None
+    #: Asks one plain question and returns the answer; the terminal by default.
+    #: Never a key: only the plans / keys / both question is ever asked.
+    ask: Callable[[str], str] | None = None
 
     def say(self, line: str) -> None:
         self.out.write(line + "\n")
@@ -287,7 +466,57 @@ class TeamAdd:
     def wait(self, step: str, spec: WaitSpec, check: Callable[[], str]) -> None:
         wait_until(step, spec, check, clock=self.clock, events=self.events, resume=self.resume)
 
+    def _terminal_ask(self, question: str) -> str:
+        from .secret_entry import DevTty, NoTerminal
+
+        try:
+            terminal = DevTty.open()
+        except NoTerminal:
+            raise TeamError(f"{question!r} needs an answer typed in a terminal; nothing was recorded. In your own "
+                            f"terminal run: {self.resume}") from None
+        try:
+            terminal.write(f"{question}: ")
+            return terminal.read_line()
+        finally:
+            terminal.close()
+
     # -- the steps ---------------------------------------------------------
+
+    def recorded_choice(self) -> str | None:
+        """The plans / keys / both answer in the install state, or None while unanswered."""
+        if self.ctx is None:
+            raise TeamError("swarm team add has no install state to read or record the plans / keys / both "
+                            "answer in; run swarm install --status")
+        found = self.ctx.state.outputs.get(LLM_PROVIDERS)
+        if found is None:
+            return None
+        choice = found.get("choice") if isinstance(found, Mapping) else None
+        if choice not in CHOICES:
+            raise TeamError(f"the install state's {LLM_PROVIDERS} is {found!r}, not one of plans, keys or both; "
+                            "nothing was asked")
+        return str(choice)
+
+    def choose(self) -> str:
+        """Asked once: a recorded answer stands, so a resumed install never asks again."""
+        recorded = self.recorded_choice()
+        if recorded is not None:
+            self.events.emit("step_done", step="team.providers", state=MET, detail=f"{recorded} (recorded)")
+            return recorded
+        ask = self.ask or self._terminal_ask
+        asked = LLM_PROVIDERS_QUESTION
+        for _ in range(CHOICE_TRIES):
+            answer = " ".join(ask(asked).strip().lower().split())
+            choice = ANSWERS.get(answer)
+            if choice is not None:
+                def record(state: Any, chosen: str = choice) -> None:
+                    state.outputs[LLM_PROVIDERS] = {"choice": chosen}
+
+                self.ctx.save(record)
+                self.events.emit("step_done", step="team.providers", state=MET, detail=choice)
+                return choice
+            asked = f"{answer!r} is not plans, keys or both. {LLM_PROVIDERS_QUESTION}"
+        raise TeamError(f"no plans, keys or both after {CHOICE_TRIES} answers; nothing was recorded. "
+                        f"Run {self.resume} again.")
 
     def probe(self, group: str) -> None:
         """Lesson 20: before anything is registered, swarm-api's own group
@@ -385,33 +614,52 @@ class TeamAdd:
         self.wait("team.git-link", spec, check)
         self.events.emit("step_done", step="team.git-link", state=MET, detail=f"{secret} has a value")
 
-    def await_pool_account(self, team: str, *, first_team: bool) -> None:
+    def await_pool_account(self, team: str, *, first_team: bool, choice: str = PLANS) -> None:
+        """The gate checks the operator's choice (llm-providers.md §7): `plans`
+        a Claude plan, `keys` an Anthropic key, `both` one of each, each owned
+        by or lent to the team."""
         if first_team:
-            how = ("this is the first team, so its accounts are stage 12's: add them in "
-                   "Admin › Setup › Claude pool accounts (they are owned by this team)")
-            where = SETUP_PAGE
+            plan_how = ("this is the first team, so its accounts are stage 12's: add them in "
+                        "Admin › Setup › Claude pool accounts (they are owned by this team)")
+            plan_where = SETUP_PAGE
+            key_how = ("add an Anthropic API key owned by this team in Capacity › LLM Providers › API Keys, "
+                       "with the console's one-step form")
         else:
-            how = "lend one of the pool's accounts to this team in Admin › People"
-            where = PEOPLE_PAGE
+            plan_how = "lend one of the pool's accounts to this team in Admin › People"
+            plan_where = PEOPLE_PAGE
+            key_how = "lend an Anthropic API key to this team, with its caps, in Capacity › LLM Providers › API Keys"
+        what = {PLAN: ("a Claude plan", plan_how, plan_where), METERED: ("an Anthropic API key", key_how, API_KEYS_PAGE)}
+        needs = NEEDS[choice]
+        how = "; and ".join(what[k][1] for k in needs)
+        reason = (POOL_ACCOUNT_WAIT.reason if needs == (PLAN,) else
+                  " and ".join(what[k][0] for k in needs) + (" each" if len(needs) > 1 else "")
+                  + " owned by or lent to the team")
 
-        opened: list[bool] = []
+        opened: set[str] = set()
 
         def check() -> str:
-            accounts = self.api.pool_accounts(team)
-            if [a for a in accounts if str(a.get("state") or "").upper() == "AVAILABLE"]:
+            usable = usable_kinds(self.api.pool_accounts(team), team)
+            missing = [k for k in needs if k not in usable]
+            if not missing:
                 return MET
-            if not opened:
-                # Only when there is none yet: the page is where the person adds or lends one.
-                opened.append(True)
-                self.page(where, f"The smoke agent starts once a Claude pool account is owned by or lent to "
-                                 f"{team}; {how}.")
+            for kind in missing:
+                if kind in opened:
+                    continue
+                # Only while there is none yet: the page is where the person adds or lends one.
+                opened.add(kind)
+                name, kind_how, where = what[kind]
+                never = " The key is never typed here." if kind == METERED else ""
+                self.page(where, f"The smoke agent starts once {name} is owned by or lent to {team}; "
+                                 f"{kind_how}.{never}")
             return WAITING
 
-        spec = WaitSpec(reason=f"{POOL_ACCOUNT_WAIT.reason} ({how})", expected=POOL_ACCOUNT_WAIT.expected,
+        spec = WaitSpec(reason=f"{reason} ({how})", expected=POOL_ACCOUNT_WAIT.expected,
                         expected_s=POOL_ACCOUNT_WAIT.expected_s, bound_s=POOL_ACCOUNT_WAIT.bound_s,
-                        look_at=POOL_ACCOUNT_WAIT.look_at, interval_s=POOL_ACCOUNT_WAIT.interval_s)
+                        look_at=POOL_ACCOUNT_WAIT.look_at + ("; Capacity › LLM Providers › API Keys"
+                                                             if METERED in needs else ""),
+                        interval_s=POOL_ACCOUNT_WAIT.interval_s)
         self.wait("team.pool-account", spec, check)
-        self.events.emit("step_done", step="team.pool-account", state=MET)
+        self.events.emit("step_done", step="team.pool-account", state=MET, detail=choice)
 
     def smoke(self, team: str) -> str:
         task_id = self.api.start_smoke(team)
@@ -437,10 +685,44 @@ class TeamAdd:
         self.events.emit("step_done", step="team.smoke", state=MET, detail=f"task {task_id} SUCCEEDED")
         return task_id
 
+    def summary(self, team: str, choice: str, task_id: str) -> None:
+        """The choice, each chain of §5.3 with what it has now (flagged when a
+        chosen kind has nothing), Voice it's line, the smoke's tier and, for a
+        keys answer, the console page where a key goes. Informational: a read
+        that fails says so and never fails the team."""
+        self.say(f"Agents run on: {CHOICE_WORDS[choice]}")
+        voice_on = bool(tfvars.voice_it_chosen(self.ctx.state))
+        try:
+            rows = [r for r in self.api.summary_accounts(team) if isinstance(r, Mapping)]
+        except Exception as exc:  # noqa: BLE001 - the summary must still print the rest
+            rows = None
+            self.say(f"  could not read the accounts ({type(exc).__name__}); Capacity › LLM Providers shows them")
+        voice: Mapping[str, Any] | None = None
+        if voice_on:
+            try:
+                voice = self.api.voice_pool()
+            except Exception as exc:  # noqa: BLE001
+                self.say(f"  could not read the Voice it pool ({type(exc).__name__})")
+        if rows is not None:
+            for chain in CHAINS + (VOICE_CHAINS if voice_on else ()):
+                self.say(chain_line(chain, rows, team, choice, voice))
+        line = tfvars.voice_it_summary(self.ctx.state, self.console)
+        if line:
+            self.say(line)
+        try:
+            tier = smoke_tier_words(self.api.smoke_attempts(team, task_id))
+        except Exception as exc:  # noqa: BLE001
+            tier = f"a tier that could not be read ({type(exc).__name__})"
+        self.say(f"The smoke agent {task_id} ran on {tier}.")
+        if METERED in NEEDS[choice]:
+            self.say("API keys go in through the console's one-step form, never typed here: "
+                     f"{self.console}{API_KEYS_PAGE}")
+
     # -- the whole -------------------------------------------------------------
 
     def run(self, group: str, *, display_name: str | None = None, first_admin: str | None = None,
             git_owner: str | None = None) -> dict[str, Any]:
+        choice = self.choose()
         self.probe(group)
         caller = self.api.caller().strip().lower()
         if not caller:
@@ -453,10 +735,11 @@ class TeamAdd:
         self.await_workspace(workspace_id)
         self.namespace(team)
         self.git_link(team, (git_owner or first_admin or caller).strip().lower(), caller=caller)
-        self.await_pool_account(team, first_team=first_team)
+        self.await_pool_account(team, first_team=first_team, choice=choice)
         task_id = self.smoke(team)
         self.say(f"Team {team} is ready: namespace {namespace_of(team)}, quota, verify keys, worker identity, "
                  f"its GitHub credential ({git_secret_of(team)}), slots, and a green smoke agent ({task_id}).")
+        self.summary(team, choice, task_id)
         return {"team": team, "workspace": workspace_id, "smoke_task": task_id}
 
 
@@ -693,6 +976,18 @@ class SwarmApi:
     def pool_accounts(self, team: str) -> Sequence[Mapping[str, Any]]:
         found = self._client(team).request("GET", "/v1/accounts") or {}
         return [a for a in found.get("accounts") or () if isinstance(a, Mapping)]
+
+    def summary_accounts(self, team: str) -> Sequence[Mapping[str, Any]]:
+        # The team's listing, with its own Voice-it-only accounts (routes/accounts.py).
+        return self.pool_accounts(team)
+
+    def voice_pool(self) -> Mapping[str, Any]:
+        # The account the caller's next Voice it session would lease, never leased (routes/voice.py).
+        return self._client().request("GET", "/v1/voice/pool") or {}
+
+    def smoke_attempts(self, team: str, task_id: str) -> Sequence[Mapping[str, Any]]:
+        found = self._client(team).request("GET", f"/v1/tasks/{task_id}/attempts") or {}
+        return [a for a in found.get("attempts") or () if isinstance(a, Mapping)]
 
     def start_smoke(self, team: str) -> str:
         task = self._client(team).dispatch(prompt=SMOKE_PROMPT, runner_profile=SMOKE_PROFILE,

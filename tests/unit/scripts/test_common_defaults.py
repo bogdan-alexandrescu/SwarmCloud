@@ -4,8 +4,11 @@
 REGION and ZONE to the live region. A default is what a fresh install inherits
 when the operator forgets a `.env`: every script quietly aims at somebody's
 deployment, possibly the shared project that holds another team's live cluster.
-An unset project, region or zone is now an error that names the variable
-(docs/design/generic-repository.md, section 2.2).
+An unset project or region is now an error that names the variable
+(docs/design/generic-repository.md, section 2.2). The zone has no default
+either, but nothing in scripts/ or the workflows reads it, so sourcing
+common.sh does not require it: ZONE stays empty, and a script that comes to
+need it calls `require_setting ZONE` itself.
 
 The never-touch list is no longer keyed by a project id written here: it is
 read from the deployment's own config object (test_shared_deny_list.py holds
@@ -94,12 +97,33 @@ def test_unset_region_is_an_error_that_names_it(tmp_path: Path) -> None:
     assert "REGION is not set" in proc.stderr, proc.stderr
 
 
-def test_unset_zone_is_an_error_that_names_it(tmp_path: Path) -> None:
+def test_unset_zone_does_not_stop_a_script_and_stays_empty(tmp_path: Path) -> None:
+    # Nothing reads ZONE, and requiring it when common.sh was sourced stopped
+    # every image build on main (no workflow sets it). It is optional, with no
+    # default: an unset zone is empty, never a guessed one.
+    # MUTATION: put back `require_setting ZONE` in load_env and this fails with
+    # "ZONE is not set"; give ZONE a default and the empty check fails.
     _write_list(tmp_path)
-    proc = _source(tmp_path, 'echo "reached ${ZONE}"', PROJECT_ID=PROJECT, REGION="example-region")
+    proc = _source(tmp_path, 'printf "reached [%s]" "${ZONE}"', PROJECT_ID=PROJECT, REGION="example-region")
+    assert "ZONE is not set" not in proc.stderr, proc.stderr
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "reached []", proc.stdout
+
+
+def test_unset_project_stops_a_script_even_with_region_and_zone(tmp_path: Path) -> None:
+    proc = _source(tmp_path, "echo reached", REGION="example-region", ZONE="example-zone")
     assert proc.returncode != 0, proc.stdout
     assert "reached" not in proc.stdout
-    assert "ZONE is not set" in proc.stderr, proc.stderr
+    assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
+
+
+def test_unset_region_stops_a_script_with_zone_unset_too(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    proc = _source(tmp_path, "echo reached", PROJECT_ID=PROJECT)
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout
+    assert "REGION is not set" in proc.stderr, proc.stderr
+    assert "ZONE is not set" not in proc.stderr, proc.stderr
 
 
 def test_no_default_region_or_zone_is_written() -> None:
@@ -166,7 +190,7 @@ def test_dev_loop_sets_its_project_before_sourcing() -> None:
 
 #: What CI runs with no PROJECT_ID (application.yml's shell and quick-checks
 #: jobs, security.yml's checks and trivy jobs): each touches no project, says
-#: so with SWARM_NO_PROJECT=1, and must get past common.sh (DAYONE-DESAGA-2B).
+#: so with SWARM_NO_PROJECT=1, and must get past common.sh (the Day One project-defaults lane).
 #: The guards' self-tests prove themselves against the placeholder list
 #: (deny_list_use_example). destroy.sh's is not here: its fixture still names
 #: the old literal's resources, which lane 3 replaces (see the PR body).
@@ -226,3 +250,31 @@ def test_empty_deny_list_expansions_are_guarded() -> None:
             if bare.search(line) and not guarded:
                 offenders.append(f"{path.relative_to(REPO)}:{n}")
     assert not offenders
+
+
+def test_a_list_written_over_several_lines_reads_as_empty_and_says_why(tmp_path: Path) -> None:
+    # deployment_list reads a one-line `NAME = [...]` only. A list split over
+    # lines reads as empty, so a script that needs it refuses (fail-closed);
+    # the operator is told why rather than left with "names no domain".
+    # MUTATION: drop the note and this fails.
+    _write_list(tmp_path)
+    tfvars = tmp_path / "config" / "dev" / "dev.tfvars"
+    tfvars.write_text('allowed_domains = [\n  "example.com",\n]\n')
+    tfvars.chmod(0o600)
+    proc = _source(tmp_path, 'printf "[%s]" "$(deployment_list allowed_domains)"', PROJECT_ID=PROJECT,
+                   REGION="example-region", ZONE="example-zone")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "[]", proc.stdout
+    assert "allowed_domains spans several lines" in proc.stderr, proc.stderr
+
+
+def test_a_list_on_one_line_is_read_without_a_note(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    tfvars = tmp_path / "config" / "dev" / "dev.tfvars"
+    tfvars.write_text('allowed_domains = ["example.com", "example.org"] # two\n')
+    tfvars.chmod(0o600)
+    proc = _source(tmp_path, 'deployment_list allowed_domains', PROJECT_ID=PROJECT,
+                   REGION="example-region", ZONE="example-zone")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["example.com", "example.org"]
+    assert "spans several lines" not in proc.stderr, proc.stderr

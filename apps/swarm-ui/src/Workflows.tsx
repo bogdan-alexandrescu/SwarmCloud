@@ -1502,6 +1502,7 @@ export function WorkflowCard({
                 detail={picked !== null && narrow && !(page && arrival) ? inspector(picked, () => closePanel(picked)) : null}
                 filter={view === 'table' ? tableFilter : null}
                 onClearFilter={onClearFilter}
+                reload={reload}
               />
             </div>
             {picked !== null && !narrow && (
@@ -2154,6 +2155,7 @@ function stepRows(
       const row: StepRowModel = {
         step,
         taskId,
+        task: state.kind === 'state' ? state.task : null,
         look: rowLook(state),
         times,
         ran: f.ran,
@@ -2220,11 +2222,14 @@ function WorkflowSteps({
   filter = null,
   onClearFilter,
   title = null,
+  reload,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   classes: ResourceClasses | null
   usage: UsageRead
+  /** Read the page again, after a person answers a fix loop in the table. */
+  reload: () => void
   /** The table's head-row title, where it sits under the Graph. */
   title?: string | null
   view: Exclude<WorkflowView, 'graph' | 'changes'>
@@ -2274,6 +2279,7 @@ function WorkflowSteps({
           rows={rows}
           picked={picked}
           onPick={onPick}
+          onChanged={reload}
           detail={detail}
           title={title}
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
@@ -6753,6 +6759,7 @@ function Board({
             onPick={pickStep}
             filter={view === 'table' ? focus.filter : null}
             onClearFilter={focus.onClearFilter}
+            reload={reload}
           />
         </div>
       )}

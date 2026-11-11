@@ -496,7 +496,7 @@ describe('G5-23: format and wording', () => {
   it('puts the chosen account in the address, and opens the account the address names', async () => {
     await accountsScreen([account('eng:a', 'alpha'), account('eng:b', 'bravo')])
     fireEvent.click(listItem('bravo').querySelector('.acct-open')!)
-    expect(window.location.hash).toBe('#capacity/accounts?account=eng%3Ab')
+    expect(window.location.hash).toBe('#capacity/llm-providers/plans?account=eng%3Ab')
     document.body.innerHTML = ''
     window.history.replaceState(null, '', '/capacity/accounts?account=eng%3Ab')
     await accountsScreen([account('eng:a', 'alpha'), account('eng:b', 'bravo')])
@@ -518,8 +518,9 @@ describe('G5-23: format and wording', () => {
   it('keeps tenant and account on their addresses through the router', () => {
     window.location.hash = '#capacity/holders?pool=global&tenant=eng&x=1'
     expect(canonical(fromHash())).toBe('capacity/holders?pool=global&tenant=eng')
+    // Accounts is LLM Providers › Plans now (LP-U1): the account rides there.
     window.location.hash = '#capacity/accounts?account=eng%3Ab'
-    expect(canonical(fromHash())).toBe('capacity/accounts?account=eng%3Ab')
+    expect(canonical(fromHash())).toBe('capacity/llm-providers/plans?account=eng%3Ab')
     // Control: a key a pane does not read is still dropped.
     window.location.hash = '#capacity/pools?tenant=eng'
     expect(canonical(fromHash())).toBe('capacity/pools')

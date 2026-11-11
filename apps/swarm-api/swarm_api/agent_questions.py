@@ -956,10 +956,11 @@ OPEN_QUESTIONS_SCAN = 2000
 
 
 def open_question_tasks(
-    db: Any, tenant_id: str, submitted_by: str, session: str, since: datetime,
+    db: Any, tenant_id: str, submitted_by: str, session: str | None, since: datetime,
 ) -> tuple[list[Any], bool]:
     """`(tasks, complete)`: `submitted_by`'s tasks in `tenant_id`, tagged with
-    the Claude Code `session`, that ended at or after `since` with at least
+    the Claude Code `session` (any session or none when it is None: Voice it's
+    planner has no Claude Code session), that ended at or after `since` with at least
     one question the worker validated (`result_summary.questions`) and no
     stored answer for it (`metadata.owner_answers`), newest end first.
 
@@ -989,7 +990,7 @@ def open_question_tasks(
             continue
         if task.state not in TERMINAL_STATES:
             continue
-        if claude_session_of(task, masking_for(task, warm=False)) != session:
+        if session is not None and claude_session_of(task, masking_for(task, warm=False)) != session:
             continue
         # The questions file is not read here: the worker's digests say
         # which question each index asks now (`unanswered_indices`).

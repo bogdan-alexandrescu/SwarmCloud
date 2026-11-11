@@ -1,6 +1,6 @@
 """Every release rebuilds each image that upgrades OS packages (owner decision
 2026-10-14: "force a fresh apt layer", on every release). Main's own build
-reuses such a digest while its inputs are unchanged (BGD, 2026-11-06): the
+reuses such a digest while its inputs are unchanged (the owner, 2026-11-06): the
 release rebuilds every one of them whatever main did, so main's refresh was
 never promoted and only made the release wait (test_build_images_fast.py).
 
@@ -71,7 +71,7 @@ UPGRADES = {
     "agent-runtime-base", "agent-runtime-base-nocodex", "swarm-api", "swarm-scheduler",
     "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "swarm-egress",
     "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks", "swarm-voice",
-    "swarm-speech", "workspace-apply",
+    "swarm-speech", "swarm-plugin-intake", "swarm-plugin-bundler", "workspace-apply",
 }
 # agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
 # by digest, as the indexer is.

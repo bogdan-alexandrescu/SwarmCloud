@@ -43,6 +43,19 @@ THE ACCOUNT is the Voice it pool's ChatGPT plan, leased for the session with
 the plan's one writer: this module never refreshes a token, and a 401 only
 asks the lease for a fresh one (`Credential.refused`).
 
+ON A KEY (docs/design/llm-providers.md §5.3). The text lease says it can run
+on a key (accountlease `key_tier`), so the broker walks the pool's plans, then
+the OpenAI keys shared with Voice it, then the dedicated Voice it key, and
+names the tier. A lease on a key (`Bearer.kind == KEY_KIND`) talks to the
+developer Responses wire (`DeveloperApi`: `POST api.openai.com/v1/responses`,
+the key as `Authorization` alone, no Codex header, the same streamed answer);
+a plan keeps the wire above. A plan at its usage limit, or a key OpenAI
+answers with a spent code (accountlease.SPENT_CODES: its credit gone, or
+rate-limited), MOVES the session to the next tier (accountlease
+`VoiceBroker.move`) and the same turn is asked again there; with no tier left
+the refusal stands as before. The plan's windows from the refusal are
+reported first, so the broker's walk sees the plan is spent.
+
 DELEGATION works as on the Live path (§3.3). With a planner, the model is
 offered one `delegate` tool; a turn that asks for a plan comes back as that
 call, becomes `Planner.delegate` over the conversation so far with the
@@ -69,8 +82,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Proto
 
 import httpx
 
-from .accountlease import CAPABILITY_TEXT
-from .credential import Bearer, Credential, CredentialError
+from .accountlease import CAPABILITY_TEXT, SPENT_CODES, TIERS, VoicePoolRefused
+from .credential import KEY_KIND, Bearer, Credential, CredentialError
 from .grant import SessionGrant
 from .live import (DELEGATE_INSTRUCTIONS, INSTRUCTIONS, LeasedCredential, LiveError, LiveRefused,
                    SessionExists, openai_error)
@@ -81,6 +94,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("swarm_voice.textchat")
 
 CODEX_BASE = "https://chatgpt.com/backend-api/codex"
+#: The developer Responses wire, for a text lease on an OpenAI developer key.
+DEVELOPER_BASE = "https://api.openai.com/v1"
 #: The Codex CLI version the models route requires (`client_version`).
 CLIENT_VERSION = "0.147.0"
 #: Used in this order, the first the plan lists; a plan that lists none of
@@ -115,8 +130,7 @@ TEXT_INSTRUCTIONS = INSTRUCTIONS + (
 )
 #: Added when a planner is configured: the text path's way to delegate.
 TEXT_DELEGATE_INSTRUCTIONS = DELEGATE_INSTRUCTIONS.replace(
-    "delegate it, say a few words while you wait, then speak the result you are given and "
-    "point at the card on screen",
+    "delegate it, say a few words while you wait, then speak the result you are given",
     "call the delegate tool with what they asked for, and nothing else; the planner's "
     "answer is given to the person for you",
 )
@@ -151,6 +165,8 @@ class UsageLimited(LiveError):
 
     def __init__(self, resets_at: str | None) -> None:
         self.resets_at = resets_at
+        #: The plan's windows the refusal's headers carried, for the broker.
+        self.windows: dict[str, dict[str, Any]] = {}
         super().__init__("the ChatGPT plan's usage limit is reached"
                          + (f" until {resets_at}" if resets_at else ""))
 
@@ -337,48 +353,105 @@ class CodexApi:
         items. Raises UsageLimited, CodexRefused (with the status; 401 among
         them) or LiveError."""
         headers = {**build_headers(bearer, session_id), "Accept": "text/event-stream"}
-        answer = CodexAnswer()
         try:
             async with self._http.stream("POST", f"{self._base}/responses", json=body, headers=headers,
                                          timeout=REQUEST_SECONDS) as response:
-                answer.windows = quota_windows(response.headers)
-                if response.status_code != 200:
-                    raw = await response.aread()
-                    try:
-                        parsed = json.loads(raw) if len(raw) <= 16 * 1024 else None
-                    except ValueError:
-                        parsed = None
-                    limited = _usage_limit(parsed, response.headers)
-                    if limited is not None:
-                        raise limited
-                    code, kind = openai_error(raw)
-                    raise CodexRefused("the text turn", response.status_code, code, kind)
-                texts: list[str] = []
-                async for event in _events(response):
-                    kind_ = event.get("type")
-                    if kind_ == "response.output_item.done" and isinstance(event.get("item"), dict):
-                        item = event["item"]
-                        if item.get("type") == "message" and item.get("role", "assistant") == "assistant":
-                            texts.append(_item_text(item))
-                        elif item.get("type") == "function_call" and item.get("name") == DELEGATE_TOOL_NAME:
-                            answer.delegation = _delegation_request(item.get("arguments"))
-                    elif kind_ in ("response.failed", "error"):
-                        failure = event.get("response", {}).get("error") if kind_ == "response.failed" \
-                            and isinstance(event.get("response"), dict) else event.get("error", event)
-                        limited = _usage_limit(failure, response.headers)
-                        if limited is not None:
-                            raise limited
-                        code, kind = openai_error(json.dumps({"error": failure if isinstance(failure, dict) else {}}))
-                        raise CodexRefused("the text turn", None, code, kind)
-                    elif kind_ == "response.completed" and isinstance(event.get("response"), dict):
-                        usage = event["response"].get("usage")
-                        if isinstance(usage, dict):
-                            answer.usage = {k: v for k, v in usage.items()
-                                            if isinstance(v, (int, float)) and not isinstance(v, bool)}
-                answer.text = "\n".join(t.strip() for t in texts if t.strip())
-                return answer
+                return await _answer(response)
         except httpx.HTTPError as exc:
             raise LiveError(f"the ChatGPT plan could not be reached ({type(exc).__name__})") from None
+
+
+async def _answer(response: httpx.Response) -> CodexAnswer:
+    """A streamed Responses answer, on either wire: the reply from its
+    `output_item.done` items, the delegation, the usage and (on the plan) the
+    windows. Raises UsageLimited, CodexRefused or LiveError."""
+    answer = CodexAnswer()
+    answer.windows = quota_windows(response.headers)
+    if response.status_code != 200:
+        raw = await response.aread()
+        try:
+            parsed = json.loads(raw) if len(raw) <= 16 * 1024 else None
+        except ValueError:
+            parsed = None
+        limited = _usage_limit(parsed, response.headers)
+        if limited is not None:
+            limited.windows = answer.windows
+            raise limited
+        code, kind = openai_error(raw)
+        raise CodexRefused("the text turn", response.status_code, code, kind)
+    texts: list[str] = []
+    async for event in _events(response):
+        kind_ = event.get("type")
+        if kind_ == "response.output_item.done" and isinstance(event.get("item"), dict):
+            item = event["item"]
+            if item.get("type") == "message" and item.get("role", "assistant") == "assistant":
+                texts.append(_item_text(item))
+            elif item.get("type") == "function_call" and item.get("name") == DELEGATE_TOOL_NAME:
+                answer.delegation = _delegation_request(item.get("arguments"))
+        elif kind_ in ("response.failed", "error"):
+            failure = event.get("response", {}).get("error") if kind_ == "response.failed" \
+                and isinstance(event.get("response"), dict) else event.get("error", event)
+            limited = _usage_limit(failure, response.headers)
+            if limited is not None:
+                limited.windows = answer.windows
+                raise limited
+            code, kind = openai_error(json.dumps({"error": failure if isinstance(failure, dict) else {}}))
+            raise CodexRefused("the text turn", None, code, kind)
+        elif kind_ == "response.completed" and isinstance(event.get("response"), dict):
+            usage = event["response"].get("usage")
+            if isinstance(usage, dict):
+                answer.usage = {k: v for k, v in usage.items()
+                                if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    answer.text = "\n".join(t.strip() for t in texts if t.strip())
+    return answer
+
+
+def build_key_body(*, model: str, instructions: str, turns: list[tuple[str, str]],
+                   tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """The developer Responses body: the plan's, less `include` (nothing here
+    reads reasoning back, and a model with no reasoning refuses it)."""
+    body = build_body(model=model, instructions=instructions, turns=turns, tools=tools)
+    body.pop("include", None)
+    return body
+
+
+class DeveloperApi:
+    """The developer Responses wire (`api.openai.com/v1`), for a text lease on
+    an OpenAI developer key: the key as `Authorization` alone (`Bearer.headers`
+    sends no account id beside a key), no Codex headers, the same streamed
+    answer. A key carries no usage windows; its spend is the broker's to read."""
+
+    def __init__(self, http: httpx.AsyncClient, *, base_url: str = DEVELOPER_BASE) -> None:
+        self._http = http
+        self._base = base_url.rstrip("/")
+
+    async def models(self, bearer: Bearer, session_id: str) -> list[str]:
+        """The model ids the key's organisation serves, in the order listed."""
+        try:
+            response = await self._http.get(f"{self._base}/models", headers=bearer.headers(),
+                                            timeout=_MODELS_SECONDS)
+        except httpx.HTTPError as exc:
+            raise LiveError(f"the OpenAI key's models could not be listed ({type(exc).__name__})") from None
+        if response.status_code != 200:
+            code, kind = openai_error(response.content)
+            raise CodexRefused("the key's model list", response.status_code, code, kind)
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        listed = body.get("data") if isinstance(body, dict) else None
+        return [m["id"] for m in listed or () if isinstance(m, dict) and isinstance(m.get("id"), str)]
+
+    async def respond(self, bearer: Bearer, *, session_id: str, body: dict[str, Any]) -> CodexAnswer:
+        """One streamed developer Responses call. Raises CodexRefused (a 429
+        with `insufficient_quota` is a key whose credit is gone) or LiveError."""
+        headers = {**bearer.headers(), "Accept": "text/event-stream"}
+        try:
+            async with self._http.stream("POST", f"{self._base}/responses", json=body, headers=headers,
+                                         timeout=REQUEST_SECONDS) as response:
+                return await _answer(response)
+        except httpx.HTTPError as exc:
+            raise LiveError(f"the OpenAI key could not be reached ({type(exc).__name__})") from None
 
 
 def _delegation_request(arguments: Any) -> str:
@@ -398,6 +471,8 @@ class TextLeases(Protocol):
                     capability: str = ...) -> LeasedCredential: ...
 
     async def call(self, path: str, payload: dict) -> tuple[int, Any]: ...
+
+    async def move(self, spent: LeasedCredential, *, person: str) -> LeasedCredential: ...
 
 
 @dataclass
@@ -441,6 +516,11 @@ class TextSession:
         return f"TextSession(voice_id={self.voice_id!r}, turns={len(self.turns)})"
 
     @property
+    def tier(self) -> str | None:
+        """The tier the session's account serves from (accountlease.TIERS)."""
+        return getattr(self._credential, "tier", None)
+
+    @property
     def usage_seconds(self) -> int:
         return int(max(0.0, self._clock() - self.started_at))
 
@@ -450,8 +530,11 @@ class TextSessions:
 
     def __init__(self, api: CodexApi, *, leases: TextLeases, planner: "Planner | None" = None,
                  clock: Callable[[], float] = time.monotonic, idle_seconds: float = IDLE_SECONDS,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 keys: DeveloperApi | None = None) -> None:
         self.api = api
+        #: The developer Responses wire, for a lease on a key (over the plan wire's client).
+        self.keys = keys or DeveloperApi(api._http)  # noqa: SLF001
         self._leases = leases
         self._planner = planner
         self._clock = clock
@@ -487,7 +570,7 @@ class TextSessions:
                                   clock=self._clock, planner_model=planner_model)
             self._held[voice_id] = session
             session.idle_task = asyncio.create_task(self._watch_idle(session), name=f"voice-text-idle-{voice_id}")
-            log.info("voice session %s: text conversation started on the ChatGPT plan", voice_id)
+            log.info("voice session %s: text conversation started on the %s tier", voice_id, session.tier)
             return session
         finally:
             self._starting.discard(voice_id)
@@ -501,10 +584,14 @@ class TextSessions:
                 return
             await self._sleep(max(wait, 1.0))
 
+    def _wire(self, bearer: Bearer) -> "CodexApi | DeveloperApi":
+        """The developer Responses wire for a key, the plan's for a plan."""
+        return self.keys if bearer.kind == KEY_KIND else self.api
+
     async def _model(self, session: TextSession, bearer: Bearer) -> str:
         if session.model is None:
             try:
-                listed = await self.api.models(bearer, session.voice_id)
+                listed = await self._wire(bearer).models(bearer, session.voice_id)
             except LiveError as exc:
                 log.warning("voice session %s: the plan's models were not listed (%s); using %s",
                             session.voice_id, type(exc).__name__, PREFERRED_MODELS[0])
@@ -519,15 +606,54 @@ class TextSessions:
         for attempt in (1, 2):
             bearer = await credential.bearer()
             model = await self._model(session, bearer)
-            body = build_body(model=model, instructions=self.instructions, turns=turns,
-                              tools=[delegate_tool()] if self._planner is not None else None)
+            build = build_key_body if bearer.kind == KEY_KIND else build_body
+            body = build(model=model, instructions=self.instructions, turns=turns,
+                         tools=[delegate_tool()] if self._planner is not None else None)
             try:
-                return await self.api.respond(bearer, session_id=session.voice_id, body=body)
+                return await self._wire(bearer).respond(bearer, session_id=session.voice_id, body=body)
             except CodexRefused as exc:
                 if exc.status != 401 or attempt == 2:
                     raise
                 await credential.refused()
         raise AssertionError("unreachable")
+
+    async def _walk(self, session: TextSession, turns: list[tuple[str, str]]) -> CodexAnswer:
+        """`_respond`, moved down the chain while the account is spent (§5.3):
+        a plan's usage limit or a key's spent code moves the session to the
+        next tier and asks again; with none left the refusal stands."""
+        for _ in TIERS:
+            try:
+                answer = await self._respond(session, turns)
+            except UsageLimited as exc:
+                await self._report(session, exc.windows)
+                if not await self._move(session, "usage_limit"):
+                    raise
+                continue
+            except CodexRefused as exc:
+                if exc.code not in SPENT_CODES or not await self._move(session, exc.code):
+                    raise
+                continue
+            await self._report(session, answer.windows)
+            return answer
+        return await self._respond(session, turns)
+
+    async def _move(self, session: TextSession, why: str) -> bool:
+        """Lease the next tier for `session` and give the spent account back;
+        False when the broker has none to offer."""
+        spent = session._credential
+        try:
+            moved = await self._leases.move(spent, person=session.person)
+        except (VoicePoolRefused, CredentialError) as exc:
+            log.info("voice session %s: no tier after %s (%s): %s", session.voice_id, session.tier, why,
+                     exc.reason if isinstance(exc, VoicePoolRefused) else type(exc).__name__)
+            return False
+        moved.start_renewing()
+        session._credential = moved
+        session.model = None
+        await spent.release()
+        log.info("voice session %s: text conversation moved to the %s tier (%s)", session.voice_id,
+                 session.tier, why)
+        return True
 
     async def turn(self, voice_id: str, text: str) -> TurnReply:
         """Answer one turn of the person's. Raises TextSessionEnded, UsageLimited,
@@ -543,8 +669,7 @@ class TextSessions:
                 raise TextSessionEnded(voice_id)
             session.last_turn_at = self._clock()
             turns = [*session.turns, ("person", text)]
-            answer = await self._respond(session, turns)
-            await self._report(session, answer.windows)
+            answer = await self._walk(session, turns)
             turn_id = "vt_" + secrets.token_hex(12)
             cards: list[dict[str, Any]] = []
             if answer.delegation is not None and self._planner is not None:

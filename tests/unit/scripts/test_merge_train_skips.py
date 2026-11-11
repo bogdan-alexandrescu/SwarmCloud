@@ -32,9 +32,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
-GH_REPO = "bogdan-alexandrescu/SwarmCloud"
-RUN_URL = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/42000000001"
-FAILED_URL = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/41842863519/job/7"
+GH_REPO = "example-org/example-repo"
+RUN_URL = "https://github.com/example-org/example-repo/actions/runs/42000000001"
+FAILED_URL = "https://github.com/example-org/example-repo/actions/runs/41842863519/job/7"
 
 FAKE_GH = """#!/usr/bin/env bash
 set -euo pipefail
@@ -116,7 +116,8 @@ class Train:
         env = dict(os.environ)
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "RUN_URL": RUN_URL, "FAKE_GH_LOG": str(self.log),
-                    "FAKE_COMMENTS": str(self.comments)})
+                    "FAKE_COMMENTS": str(self.comments),
+                    "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0"})
         env.pop("GITHUB_STEP_SUMMARY", None)
         proc = subprocess.run(["bash", str(SCRIPT), "tell", "--prs", str(path)],
                               capture_output=True, text=True, timeout=60, check=False, env=env)
@@ -244,3 +245,18 @@ def test_a_closing_keyword_refusal_is_told_once_but_a_read_that_could_not_tell_i
     assert re.search(r'"\$\{rc\}" -eq 2 && "\$\{dry\}" != "true"', guards), guards
     assert "tell_skip " in guards and "closing-references" in guards
     assert 'guards_pass "${n}" "${sha}" "${dry}"' in _function("start_train")
+
+
+def test_a_review_not_yet_refusal_is_told_under_its_own_reason():
+    """check-closing-references.sh refuses a pull request carrying
+    `review-not-yet` (owner decision, 9 November 2026), and marks its refusal
+    with `<!-- review-not-yet -->`. The train tells that under its own reason
+    and says what clears it. MUTATION: tell it as a closing keyword, and the
+    author is told to edit a body that is not the problem."""
+    guards = _function("guards_pass")
+    assert re.search(r'grep -qxF -- "<!-- review-not-yet -->" "\$\{refusal\}"', guards), guards
+    assert re.search(r'tell_skip "\$\{number\}" "\$\{head\}" review-not-yet', guards), guards
+    tell = _function("tell_skip")
+    clears = tell[tell.index("review-not-yet)"):]
+    clears = clears[:clears.index(";;")]
+    assert "a later review that says MERGE" in clears and "A CI fix does not" in clears

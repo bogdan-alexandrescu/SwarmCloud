@@ -3,7 +3,7 @@
 
 Against a fake swarm-api on an `httpx.MockTransport`, this holds that:
 
-* the five tools are strict schemas, and the planner is offered them beside the
+* the visual tools are strict schemas, and the planner is offered them beside the
   catalogue's draws, the read tools and `speak`;
 * `show_file`, `show_diff` and `show_log` send swarm-api a source and never a
   body, on the visual write the grant reaches, with the grant's headers;
@@ -97,10 +97,11 @@ def _run(coro):
 # ---- the schemas ------------------------------------------------------------
 
 
-def test_the_five_tools_are_strict_schemas():
+def test_the_visual_tools_are_strict_schemas():
     schemas = tools_visual.tool_schemas()
     assert [s["name"] for s in schemas] == list(tools_visual.NAMES) == [
-        "show_file", "show_diff", "show_log", "add_note", "notes_to_work"]
+        "show_file", "show_diff", "show_log", "show_mockup", "approve_mockup",
+        "approved_mockups", "add_note", "notes_to_work"]
 
     def closed(schema: dict[str, Any], path: str) -> None:
         if "properties" in schema:

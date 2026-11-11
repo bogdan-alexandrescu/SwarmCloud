@@ -24,7 +24,7 @@
 #     --samples times, --interval seconds apart, on the swarm's own cluster
 #     (`swarm-autopilot`). Through `kc` (kubectl_bin: never an old client off
 #     PATH), and only after assert_kube_context has refused any context that is
-#     not ours -- agents-staging, the other team's cluster in the same project,
+#     not ours -- peer-cluster, the other team's cluster in the same project,
 #     is on common.sh's deny-list and is never pointed at. `top` reads the
 #     metrics API; nothing is created, patched or deleted. --no-pods skips it.
 #
@@ -178,7 +178,7 @@ TOP_ARGS=()
 if [[ "${SAMPLES}" -gt 0 ]]; then
   step "Sampling ${RC_CLASS} pods on ${GKE_CLUSTER}: ${SAMPLES} sample(s), ${INTERVAL} s apart"
   # Refuses any context that is not the swarm's own cluster, including one
-  # renamed to look like it but ending in a deny-listed name (agents-staging).
+  # renamed to look like it but ending in a deny-listed name (peer-cluster).
   assert_kube_context
   CONTEXT="$(kube_current_context)"
   : >"${TOP}"

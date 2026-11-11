@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from .client import SwarmError, _run
+from .client import SwarmError, _run, send_user_agent
 from .invocation import terminal_command
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -203,7 +203,7 @@ def _metadata_available(timeout: float = 0.3) -> bool:
     """
     if os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"):
         return True
-    request = urllib.request.Request(f"{_METADATA}/", headers={"Metadata-Flavor": "Google"})
+    request = send_user_agent(urllib.request.Request(f"{_METADATA}/", headers={"Metadata-Flavor": "Google"}))
     try:
         with urllib.request.urlopen(request, timeout=timeout):
             return True
@@ -357,11 +357,11 @@ def id_token_for(audience: str, *, tier: Tier) -> str:
         return os.environ["SWARM_ID_TOKEN"].strip()
 
     if tier is Tier.METADATA:
-        request = urllib.request.Request(
+        request = send_user_agent(urllib.request.Request(
             f"{_METADATA}/instance/service_accounts/default/identity"
             f"?audience={urllib.parse.quote(audience, safe='')}&format=full",
             headers={"Metadata-Flavor": "Google"},
-        )
+        ))
         with urllib.request.urlopen(request, timeout=10) as response:
             return response.read().decode().strip()
 

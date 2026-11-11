@@ -1058,11 +1058,36 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
     )
 
 
+#: The prefix an OFFLINE render's keys carry when none is configured: the
+#: placeholder organisation's (example.com is reserved, so it is no
+#: deployment's). Offline is `policies`, `tenant` or `job` with no `--project`:
+#: the lint callers (`make lint`, security.yml, the worker's pre-publish
+#: checkov), whose identities already name OFFLINE_PROJECT, which is no
+#: project. A render given a project is one a cluster may receive, and with
+#: no prefix configured it refuses: a guessed key is no key the live policies
+#: match. The renderer says so on stderr, as it does for OFFLINE_NETWORK.
+OFFLINE_LABEL_PREFIX = "swarm.example.com"
+#: Set by main(): whether this render is offline, and whether it said so yet.
+_OFFLINE = {"render": False, "warned": False}
+
+
 def label_prefix() -> str:
-    """The configured label-key prefix (label_prefix.py), or a RenderError."""
+    """The configured label-key prefix (label_prefix.py), OFFLINE_LABEL_PREFIX
+    for an offline render that has none, or a RenderError."""
     try:
         return _label_prefix.label_prefix()
     except _label_prefix.LabelPrefixError as exc:
+        if _OFFLINE["render"] and str(exc) == _label_prefix.UNSET:
+            if not _OFFLINE["warned"]:
+                _OFFLINE["warned"] = True
+                print(
+                    f"# render: WARNING: no label-key prefix is configured, so this offline render "
+                    f"(no --project) writes its keys under {OFFLINE_LABEL_PREFIX}. Fine for lint; "
+                    "wrong for a cluster, whose renders name a project and refuse without a prefix.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return OFFLINE_LABEL_PREFIX
         raise RenderError(f"render: {exc}") from None
 
 
@@ -1956,6 +1981,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    # An offline render (see OFFLINE_LABEL_PREFIX): one that names no project.
+    _OFFLINE["render"] = args.command in ("policies", "tenant", "job") and not str(getattr(args, "project", "") or "")
 
     if args.command == "tenant":
         require_cluster_inputs(tenant, args)

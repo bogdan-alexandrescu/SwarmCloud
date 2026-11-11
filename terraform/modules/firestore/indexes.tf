@@ -355,6 +355,20 @@ locals {
       ]
     }
 
+    # An account's attempts, newest first (contract request 152, accepted
+    # 9 November 2026; docs/design/llm-providers.md §8.2 and §8.3):
+    #   attempts where account_id == A order by created_at DESC
+    # `account_id` is the pool account the attempt kept last. An equality on
+    # one field and an order on another is served only by a composite index.
+    "attempts-account-created" = {
+      collection  = "attempts"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "account_id", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     # ---- event stream, across every task, scoped to a tenant ----------------
     "events-tenant-at" = {
       collection  = "events"

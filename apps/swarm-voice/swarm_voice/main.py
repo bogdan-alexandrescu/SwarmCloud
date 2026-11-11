@@ -40,18 +40,38 @@ Routes:
   paths"). A text start carries no offer: swarm-voice leases the pool's
   ChatGPT plan (`capability: text`), holds the conversation (textchat.py) and
   answers `201 {voice_session_id, mode: "text"}`, with no SDP; the pool
-  refusals are the same. A Live start answers with `mode: "live"` beside the
+  refusals have the same status and codes, but name the plan, never the key
+  (TEXT_POOL_REFUSALS). Every pool refusal also carries the broker's
+  `reason` and the `capability` leased (`live` or `text`). A Live start answers with `mode: "live"` beside the
   fields above.
-* `POST /internal/sessions/{voice_session_id}/turns` -- one turn of a text
-  conversation: `{"text": <1..4000 chars>}` -> `200 {"turn_id", "reply",
-  "cards"}`, `cards` being what the planner drew when the turn delegated. 404
-  for a session this process holds no text conversation for (a Live one, an
-  ended one, one lost to a restart); 429 `{"code": "usage_limit_reached",
-  "message", "resets_at"}` when the plan's usage limit refused it; 502 as a
-  start's. The text is never logged.
+  `mode: "speech"` is our own speech engine (docs/design/voice-it-own-speech.md
+  §4.1, §10.2): no offer either (one is 422), and its conversation is the fast
+  Claude front (claudefront.FrontSessions), never textchat.py's: a speech
+  start builds no text session. The front holds one Claude account of the
+  person's workspace pool for the session and runs on `conversation_model`
+  (Voice it › Settings', else VOICE_FRONT_MODEL); it answers
+  `201 {voice_session_id, mode: "speech"}`. When no account is free, nothing
+  is held and the answer is 409 `{"code": "voice_front_refused", "message"}`:
+  swarm-api then falls the session back to text mode and starts it as text.
+* `POST /internal/sessions/{voice_session_id}/turns` -- one turn, routed by the
+  session's mode: `{"text": <1..4000 chars>}` -> `200 {"turn_id", "reply",
+  "cards"}`. A speech session's turn is its fast front's, never textchat's,
+  and adds `delegation_id` when the front handed it to the planner (whose
+  answer is read at `/delegations/{id}`); a text session's `cards` are what
+  the planner drew when the turn delegated. 404 for a session this process
+  holds no text or speech conversation for (a Live one, an ended one, one lost
+  to a restart); 429 `{"code": "usage_limit_reached", "message",
+  "resets_at"}` when the plan's usage limit refused it; 502 as a start's, and
+  when a front's child is down past its one re-lease. The text is never
+  logged.
 * `POST /internal/sessions/{voice_session_id}/end` -- closes the GPT-Live
   session and its sideband, which stops OpenAI's per-second billing, or ends
-  the text conversation and gives its plan back.
+  the text conversation and gives its plan back, or ends the fast front and
+  releases its Claude account.
+* `POST /internal/sessions/{voice_session_id}/readback` -- readback.py's: a
+  go swarm-api heard re-sends the call held for that read-back.
+* `GET /delegations/{delegation_id}[?wait=<seconds>]` -- claudefront.py's: a
+  front's delegation, and once done the planner's spoken sentences and cards.
   `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
   this process does not hold.
 * `GET /healthz` -- counts only.
@@ -79,6 +99,20 @@ Configuration, read once at start (never at import):
   draws cards as the session's person through the session grant. Unset, no
   session offers delegation. Each turn runs Claude Code (`CLAUDE_CODE_BIN`,
   `claude` on PATH) on a pool lease; a full pool is a spoken refusal.
+  The same address is where a Live session's event sink (`ReopenSink`) tells
+  swarm-api the next tier a spent key's reopen holds; unset, no sink is wired
+  and a spent Live key ends the talk after live.REOPEN_SECONDS.
+
+THE REOPEN REACHES THE CONSOLE (docs/design/llm-providers.md §5.3, the owner,
+11 November 2026). live.py emits `voice.tier.reopen` ({tier}) through the
+session's event sink when a spent key's next tier is held. `ReopenSink` is
+that sink: it posts the tier to swarm-api's
+`POST /v1/voice/sessions/{session_id}/reopen` exactly as the planner reaches
+swarm-api (tools_read.SwarmApi: this service's ID token and the session's
+grant, a route on the grant's write list), and swarm-api puts it on the
+session's stream. Every other event the sink is handed -- the sideband's
+transcripts among them -- is dropped here unread: nothing else leaves, and the
+tier is a name, never a key.
 """
 
 from __future__ import annotations
@@ -93,13 +127,19 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
-from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
-from .claudefront import FRONT_MODELS
+from . import readback
+from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
+                           build_broker)
+from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
+                          delegations_router)
+from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
+from . import tools_read
+from .live import MAX_OFFER_BYTES, REOPEN_EVENT, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
 from .planner import build_planner
+from .plannerlease import FRONT_HOLDER, PlannerAccounts
 from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
 
 log = logging.getLogger("swarm_voice")
@@ -112,9 +152,10 @@ CallerCheck = Callable[[str], Awaitable[str]]
 class StartRequest(BaseModel):
     voice_session_id: str = Field(pattern=VOICE_ID)
     person: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
-    #: `live` (a GPT-Live session from `offer`) or `text` (the plan's text
-    #: conversation, no offer). swarm-api picks it from the Voice it pool.
-    mode: Literal["live", "text"] = "live"
+    #: `live` (a GPT-Live session from `offer`), `text` (the plan's text
+    #: conversation, no offer) or `speech` (own speech's fast Claude front, no
+    #: offer). swarm-api picks it from Voice it › Settings' engine.
+    mode: Literal["live", "text", "speech"] = "live"
     offer: str | None = Field(default=None, min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
     #: The session grant and its project (grant.py). A SecretStr with no
     #: constraint, so neither its repr nor a validation error carries it: its
@@ -139,6 +180,11 @@ class StartRequest(BaseModel):
     #: curated list (claudefront.FRONT_MODELS) is accepted; absent, the front
     #: keeps VOICE_FRONT_MODEL.
     conversation_model: str | None = Field(default=None, max_length=64)
+
+    #: Voice it › Settings' debug mode, read by swarm-api at the start: True
+    #: traces each planner turn of this session to swarm-api (trace.py);
+    #: absent or False, nothing is traced.
+    debug: bool = False
 
     @field_validator("conversation_model")
     @classmethod
@@ -179,6 +225,20 @@ POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
 }
 POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
                         "Voice it has no OpenAI API key in its pool yet, so this conversation can't start.")
+#: A text start leases the Voice it pool's ChatGPT plan (accountlease
+#: CAPABILITY_TEXT), never the OpenAI key, so its refusals name the plan
+#: (live QA, 9 November 2026: a text start was told the key was in use).
+TEXT_POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
+    NOT_IN_POOL: (403, "voice_pool_refused",
+                  "Voice it's plan account isn't available to you, so this conversation can't start."),
+    NONE_AVAILABLE: (409, "voice_pool_busy",
+                     "No Voice it plan account is free for a text session; try again in a few minutes."),
+}
+TEXT_POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
+                             "Voice it has no plan account in its pool yet, so this conversation can't start.")
+#: A speech start whose fast front found no Claude account (claudefront.FrontRefused):
+#: swarm-api's text fallback (swarm_api.voice.sessions.FRONT_REFUSED_CODE).
+FRONT_REFUSED = "voice_front_refused"
 
 
 def openai_refusal(exc: LiveRefused) -> JSONResponse:
@@ -188,9 +248,15 @@ def openai_refusal(exc: LiveRefused) -> JSONResponse:
         "openai_code": exc.code, "openai_type": exc.type})
 
 
-def pool_refusal(reason: str) -> JSONResponse:
-    status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
-    return JSONResponse(status_code=status, content={"code": code, "message": message})
+def pool_refusal(reason: str, *, capability: str = CAPABILITY) -> JSONResponse:
+    """The refusal for a lease the Voice it pool refused: `reason` is the
+    broker's, `capability` what was leased (`live`, the key; `text`, the plan)."""
+    if capability == CAPABILITY_TEXT:
+        status, code, message = TEXT_POOL_REFUSALS.get(reason, TEXT_POOL_REFUSED_DEFAULT)
+    else:
+        status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
+    return JSONResponse(status_code=status, content={"code": code, "message": message,
+                                                     "reason": reason, "capability": capability})
 
 
 def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
@@ -223,6 +289,62 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
     return check
 
 
+#: swarm-api's route for a held next tier (swarm_api/routes/voice.py
+#: `tier_reopen`), on the session grant's write list.
+REOPEN_ROUTE = "/v1/voice/sessions/{session_id}/reopen"
+
+
+class ReopenSink:
+    """A Live session's event sink: tells swarm-api, through the session's
+    grant, the tier a spent key's reopen holds (see THE REOPEN REACHES THE
+    CONSOLE). Any other event is dropped unread."""
+
+    def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens) -> None:
+        self._http = http
+        self._base = api_base
+        self._id_tokens = id_tokens
+        #: The sessions whose events this sink is handed (`bind`).
+        self._sessions: Sessions | None = None
+
+    def bind(self, sessions: Sessions) -> None:
+        self._sessions = sessions
+
+    def _grant(self, voice_id: str) -> SessionGrant | None:
+        if self._sessions is None:
+            return None
+        session = self._sessions.get(voice_id) \
+            or self._sessions._awaiting.get(voice_id)  # noqa: SLF001 -- a spent session that already ended
+        return session.grant if session is not None else None
+
+    async def __call__(self, voice_id: str, event: dict[str, Any]) -> None:
+        if event.get("type") != REOPEN_EVENT:
+            return
+        tier = event.get("tier")
+        grant = self._grant(voice_id)
+        if not isinstance(tier, str) or grant is None:
+            log.info("voice session %s: no grant, so swarm-api is not told of the next tier", voice_id)
+            return
+        api = tools_read.SwarmApi.for_session(self._http, base_url=self._base, id_tokens=self._id_tokens,
+                                              grant=grant)
+        try:
+            await api._call("POST", REOPEN_ROUTE, REOPEN_ROUTE.format(session_id=grant.session_id),  # noqa: SLF001
+                            json_body={"tier": tier})
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: swarm-api was not told of the %s tier: %s", voice_id, tier, exc)
+            return
+        log.info("voice session %s: swarm-api was told of the %s tier", voice_id, tier)
+
+
+def build_reopen_sink(http: Any) -> ReopenSink | None:
+    """The sink from SWARM_API_URL (and SWARM_API_AUDIENCE, else the URL), the
+    planner's own address; None when it is unset."""
+    base = os.environ.get("SWARM_API_URL", "").strip()
+    if not base:
+        return None
+    audience = os.environ.get("SWARM_API_AUDIENCE", "").strip() or base
+    return ReopenSink(http, api_base=base, id_tokens=tools_read.google_id_tokens(audience))
+
+
 def build_sessions(http: Any) -> Sessions:
     # Every session's account is leased from the quota broker's Voice it pool;
     # without QUOTA_BROKER_URL this raises and the process does not start.
@@ -230,7 +352,13 @@ def build_sessions(http: Any) -> Sessions:
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
     # Each planner turn leases its Claude account through the same broker client.
-    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
+    # A spent key's next tier reaches swarm-api the same way (ReopenSink).
+    sink = build_reopen_sink(http)
+    sessions = Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases),
+                        on_event=sink)
+    if sink is not None:
+        sink.bind(sessions)
+    return sessions
 
 
 def build_texts(http: Any, sessions: Sessions) -> TextSessions:
@@ -238,6 +366,14 @@ def build_texts(http: Any, sessions: Sessions) -> TextSessions:
     and planner: a text turn delegates exactly as a Live one does."""
     return TextSessions(CodexApi(http), leases=sessions._leases,  # noqa: SLF001 -- one broker client
                         planner=sessions._planner)  # noqa: SLF001 -- one planner
+
+
+def build_fronts(sessions: Sessions) -> FrontSessions:
+    """Own speech's fast fronts (claudefront.py), on the Live sessions' broker
+    client, holding each session's Claude account as the front, and on their
+    planner: a front's delegation reaches the same planner."""
+    return FrontSessions(accounts=PlannerAccounts(sessions._leases, holder=FRONT_HOLDER),  # noqa: SLF001
+                         planner=sessions._planner)  # noqa: SLF001 -- one planner
 
 
 def build_caller_check() -> CallerCheck:
@@ -254,7 +390,7 @@ def usage_limited(exc: UsageLimited) -> JSONResponse:
 
 
 def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck | None = None,
-               texts: TextSessions | None = None) -> FastAPI:
+               texts: TextSessions | None = None, fronts: FrontSessions | None = None) -> FastAPI:
     """The app. With no arguments (uvicorn's `--factory`), everything is built from
     the environment when the app starts, never at import."""
 
@@ -268,6 +404,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             app.state.sessions = build_sessions(http)
             if app.state.texts is None:
                 app.state.texts = build_texts(http, app.state.sessions)
+            if app.state.fronts is None:
+                app.state.fronts = build_fronts(app.state.sessions)
         if app.state.verify_caller is None:
             app.state.verify_caller = build_caller_check()
         try:
@@ -277,6 +415,9 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             await app.state.sessions.end_all()
             if app.state.texts is not None:
                 await app.state.texts.end_all()
+            if app.state.fronts is not None:
+                # Each front holds a Claude account: released, not left to the TTL.
+                await app.state.fronts.end_all()
             if http is not None:
                 await http.aclose()
 
@@ -284,6 +425,13 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     app.state.sessions = sessions
     app.state.verify_caller = verify_caller
     app.state.texts = texts
+    app.state.fronts = fronts
+
+    def held_elsewhere(voice_id: str, *, but: str) -> bool:
+        """Whether another of the three conversations holds this voice id."""
+        held = {"live": app.state.sessions, "text": app.state.texts, "speech": app.state.fronts}
+        return any(kind != but and found is not None and found.get(voice_id) is not None
+                   for kind, found in held.items())
 
     async def caller(request: Request) -> str:
         header = request.headers.get("authorization", "")
@@ -298,16 +446,18 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     @app.post("/internal/sessions", status_code=201)
     async def start(body: StartRequest, _caller: str = Depends(caller)) -> Any:
         grant = session_grant(body)
+        if body.mode == "speech":
+            return await start_speech(body, grant)
         if body.mode == "text":
             return await start_text(body, grant)
         if body.offer is None:
             raise HTTPException(422, "a live session needs the browser's SDP offer")
-        if app.state.texts is not None and app.state.texts.get(body.voice_session_id) is not None:
+        if held_elsewhere(body.voice_session_id, but="live"):
             raise HTTPException(409, "this voice session already has a live session")
         try:
             session = await app.state.sessions.start(
                 body.voice_session_id, person=body.person, offer=body.offer, grant=grant,
-                planner_model=body.planner_model)
+                planner_model=body.planner_model, debug=body.debug)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
@@ -329,20 +479,63 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(503, "this swarm-voice holds no text conversations")
         try:
             session = await texts.start(body.voice_session_id, person=body.person, grant=grant,
-                                        exists=lambda voice_id: app.state.sessions.get(voice_id) is not None,
+                                        exists=lambda voice_id: held_elsewhere(voice_id, but="text"),
                                         planner_model=body.planner_model)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
             log.info("voice session %s: the Voice it pool leased no plan (%s)", body.voice_session_id, exc.reason)
-            return pool_refusal(exc.reason)
+            return pool_refusal(exc.reason, capability=CAPABILITY_TEXT)
         except CredentialError as exc:
             log.warning("voice session %s: text start failed: %s", body.voice_session_id, exc)
             raise HTTPException(502, str(exc)) from None
         return JSONResponse(status_code=201, content={"voice_session_id": session.voice_id, "mode": "text"})
 
+    async def start_speech(body: StartRequest, grant: Any) -> Any:
+        """The fast front, never textchat: a speech start builds no text session."""
+        fronts_ = app.state.fronts
+        if fronts_ is None:
+            raise HTTPException(503, "this swarm-voice holds no speech conversations")
+        if body.offer is not None:
+            raise HTTPException(422, "a speech session takes no SDP offer")
+        try:
+            session = await fronts_.start(body.voice_session_id, person=body.person, grant=grant,
+                                          exists=lambda voice_id: held_elsewhere(voice_id, but="speech"),
+                                          planner_model=body.planner_model,
+                                          conversation_model=body.conversation_model,
+                                          debug=body.debug)
+        except FrontExists:
+            raise HTTPException(409, "this voice session already has a live session") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except FrontRefused as exc:
+            log.info("voice session %s: no fast front (%s); swarm-api falls back to text",
+                     body.voice_session_id, exc.reason)
+            return JSONResponse(status_code=409, content={
+                "code": FRONT_REFUSED,
+                "message": "No Claude account is free for Voice it's voice, so this talk continues as text."})
+        return JSONResponse(status_code=201, content={"voice_session_id": session.voice_id, "mode": "speech"})
+
+    async def speech_turn(voice_session_id: str, text: str) -> Any:
+        try:
+            answered = await app.state.fronts.turn(voice_session_id, text)
+        except FrontSessionEnded:
+            raise HTTPException(404, "no such speech conversation") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except FrontDown:
+            log.warning("voice session %s: the fast front is down", voice_session_id)
+            raise HTTPException(502, "the fast front is down") from None
+        said = {"turn_id": answered.turn_id, "reply": answered.reply, "cards": list(answered.cards)}
+        if answered.delegation_id:
+            said["delegation_id"] = answered.delegation_id
+        return said
+
     @app.post("/internal/sessions/{voice_session_id}/turns")
     async def turn(voice_session_id: str, body: TurnRequest, _caller: str = Depends(caller)) -> Any:
+        # By the session's mode: a speech session's turn is its front's alone.
+        if app.state.fronts is not None and app.state.fronts.get(voice_session_id) is not None:
+            return await speech_turn(voice_session_id, body.text)
         texts = app.state.texts
         if texts is None:
             raise HTTPException(404, "no such text conversation")
@@ -365,6 +558,12 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
 
     @app.post("/internal/sessions/{voice_session_id}/end")
     async def end(voice_session_id: str, _caller: str = Depends(caller)) -> dict:
+        fronts_ = app.state.fronts
+        if fronts_ is not None and fronts_.get(voice_session_id) is not None:
+            front = await fronts_.end(voice_session_id)
+            if front is not None:
+                return {"voice_session_id": voice_session_id, "ended": True,
+                        "usage_seconds": front.usage_seconds, "reason": front.reason}
         texts = app.state.texts
         if texts is not None and texts.get(voice_session_id) is not None:
             ended = await texts.end(voice_session_id)
@@ -386,7 +585,15 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
         sessions_ = app.state.sessions
         counts = sessions_.counts() if sessions_ is not None else {"sessions": 0, "attached": 0}
         texts_ = app.state.texts
-        return JSONResponse({**counts, **(texts_.counts() if texts_ is not None else {"text_sessions": 0})})
+        fronts_ = app.state.fronts
+        return JSONResponse({**counts, **(texts_.counts() if texts_ is not None else {"text_sessions": 0}),
+                             **(fronts_.counts() if fronts_ is not None
+                                else {"front_sessions": 0, "front_delegations": 0})})
+
+    # The read-back gate's go (readback.py) and the fronts' delegations
+    # (claudefront.py), both behind the same caller check.
+    app.include_router(readback.router)
+    app.include_router(delegations_router(lambda: app.state.fronts, caller))
 
     return app
 

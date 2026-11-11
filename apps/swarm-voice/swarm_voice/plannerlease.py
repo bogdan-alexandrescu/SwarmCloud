@@ -25,6 +25,15 @@ agent_worker/accountlease.py's):
   or give back any hold stamped with that voice session. A renewal's
   credential is not read: the turn keeps the token it started with.
 
+THE FALLBACK ORDER (docs/design/llm-providers.md §5.3). The assign says it
+can run on a key (`key_tier`), so the broker walks the person's workspace's
+plans, then the Anthropic keys shared with Voice it, and names the `tier` it
+granted; there is no tier 3 (Q2): with both spent the planner refuses, as it
+does today. A lease on a key hands its token over as `claudeturn.ApiKey`, so
+the turn's Claude Code is given ANTHROPIC_API_KEY in place of the plan's
+token. `move` gives a spent account back and assigns again with it excluded,
+which is the walk minus that account.
+
 A FULL POOL IS A REFUSAL, NEVER A WAIT: `PoolFull` carries the broker's reason
 and the voice says it. A swarm-voice that dies holds nothing for long: the
 hold lapses on the broker's TTL, which a turn (planner.TURN_SECONDS) never
@@ -44,7 +53,8 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator
 from urllib.parse import quote
 
-from .accountlease import VoiceBroker
+from .accountlease import TIER_PLAN, VoiceBroker, tier_of
+from .claudeturn import ApiKey
 from .credential import Bearer, CredentialError
 
 log = logging.getLogger("swarm_voice.plannerlease")
@@ -89,6 +99,10 @@ class PlannerLease:
     voice_session_id: str
     bearer: Bearer
     released: bool = False
+    #: The tier the broker granted (accountlease.TIERS), None when it named none.
+    tier: str | None = None
+    #: The accounts this turn already left as spent, which a move passes over.
+    excluded: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         return f"PlannerLease(account_id={self.account_id!r}, voice_session_id={self.voice_session_id!r})"
@@ -110,7 +124,9 @@ class PlannerAccounts:
         """Hold one account. `exclude` names accounts this session already
         held and could not use (the broker never offers them again)."""
         payload: dict[str, Any] = {"provider": PROVIDER, "holder": self.holder, "person": person,
-                                   "voice_session_id": voice_session_id}
+                                   "voice_session_id": voice_session_id,
+                                   # claudeturn.py sets ANTHROPIC_API_KEY for a key (§5.3).
+                                   "key_tier": True}
         if exclude:
             payload["exclude"] = list(exclude)
         status, body = await self._broker.call("/v1/accounts/assign", payload)
@@ -122,14 +138,30 @@ class PlannerAccounts:
             raise PoolFull(str(body.get("reason") or NO_ACCOUNT_AVAILABLE), nxt if isinstance(nxt, str) else None)
         cred = body.get("credential")
         token = cred.get("access_token") if isinstance(cred, dict) else None
+        tier = tier_of(body)
+        # Anything but a plan is a key: its token is Claude Code's ANTHROPIC_API_KEY.
+        value = ApiKey(token) if isinstance(token, str) and token and tier not in (None, TIER_PLAN) else token
         lease = PlannerLease(account_id=str(body["account_id"]), assignment_id=str(body["assignment_id"]),
-                             voice_session_id=voice_session_id, bearer=Bearer(token or ""))
+                             voice_session_id=voice_session_id, bearer=Bearer(value or ""), tier=tier,
+                             excluded=tuple(exclude))
         if not isinstance(token, str) or not token:
             # Held but unusable: give it back at once, so the account does not
             # count an agent that never ran.
             await self.release(lease)
             raise LeaseFailed("the quota broker's planner lease carried no credential")
         return lease
+
+    async def move(self, spent: PlannerLease, *, person: str) -> PlannerLease:
+        """The next tier for a turn whose account is spent: `spent` given back,
+        then an assign with it, and every account the turn left before it,
+        excluded (§5.3), so a turn never bounces back onto a spent account. Raises PoolFull when nothing is
+        left; the planner's chain has no tier 3 (Q2)."""
+        await self.release(spent)
+        moved = await self.assign(person=person, voice_session_id=spent.voice_session_id,
+                                  exclude=(*spent.excluded, spent.account_id))
+        log.info("voice session %s: the %s moved from the %s tier to the %s tier", spent.voice_session_id,
+                 self.holder, spent.tier, moved.tier)
+        return moved
 
     def _hold_path(self, lease: PlannerLease, verb: str) -> str:
         return f"/v1/voice/lease/{quote(lease.account_id, safe='')}/{verb}"
@@ -167,15 +199,61 @@ class PlannerAccounts:
                 log.warning("voice session %s: planner lease renewal failed: %s", lease.voice_session_id, exc)
 
     @contextlib.asynccontextmanager
-    async def lease(self, *, person: str, voice_session_id: str) -> AsyncIterator[PlannerLease]:
+    async def lease(self, *, person: str, voice_session_id: str) -> AsyncIterator["PlannerHold"]:
         """Hold one account for the body of the `async with`, renewed while it
-        runs and released in a finally, whatever the turn did."""
-        held = await self.assign(person=person, voice_session_id=voice_session_id)
-        renewer = asyncio.create_task(self._renew_loop(held), name=f"planner-lease-{voice_session_id}")
+        runs and released in a finally, whatever the turn did. A turn whose
+        account is spent moves the hold on (`PlannerHold.move`); whichever
+        account holds it at the end is the one released."""
+        hold = PlannerHold(self, person, await self.assign(person=person, voice_session_id=voice_session_id))
         try:
-            yield held
+            yield hold
         finally:
-            renewer.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await renewer
-            await self.release(held)
+            await hold.close()
+
+
+class PlannerHold:
+    """The account one turn holds now, renewed while it is held. `move` takes
+    the turn to the next tier (§5.3); the renewal follows the account."""
+
+    def __init__(self, accounts: PlannerAccounts, person: str, held: PlannerLease) -> None:
+        self._accounts = accounts
+        self._person = person
+        self.current = held
+        self._renewer = self._renew(held)
+
+    def _renew(self, held: PlannerLease) -> asyncio.Task:
+        return asyncio.create_task(self._accounts._renew_loop(held),  # noqa: SLF001
+                                   name=f"planner-lease-{held.voice_session_id}")
+
+    @property
+    def bearer(self) -> Bearer:
+        return self.current.bearer
+
+    @property
+    def tier(self) -> str | None:
+        return self.current.tier
+
+    @property
+    def account_id(self) -> str:
+        return self.current.account_id
+
+    async def _stop(self) -> None:
+        self._renewer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await self._renewer
+
+    async def move(self) -> PlannerLease:
+        """Give the spent account back and hold the next tier's. Raises PoolFull
+        when the chain has nothing left (no tier 3, Q2): the spent account is
+        given back either way."""
+        await self._stop()
+        self.current = await self._accounts.move(self.current, person=self._person)
+        self._renewer = self._renew(self.current)
+        return self.current
+
+    async def close(self) -> None:
+        await self._stop()
+        await self._accounts.release(self.current)
+
+    def __repr__(self) -> str:
+        return f"PlannerHold({self.current!r})"

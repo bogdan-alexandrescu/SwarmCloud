@@ -62,7 +62,7 @@ RELAY_TEMPLATE = KUBERNETES / "swarm-system" / "swarm-live.yaml"
 #: The placeholder organisation's label-key prefix, which kubernetes/apply.sh
 #: fills over the template's __LABEL_PREFIX__ (kubernetes/label_prefix.py).
 LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
-TARGET = "decision-api-staging.taile0bda9.ts.net"
+TARGET = "decision-api.example-tailnet.ts.net"
 POD_LABEL = {"swarm-judge": "internal"}
 APP = {"app.kubernetes.io/name": "decision-api-egress"}
 FORWARD_PORT = 8443
@@ -124,9 +124,10 @@ def test_the_template_has_four_placeholders_and_terraform_fills_every_one():
     assert '"__SWARM_API_EGRESS_CIDR__", local.decision_api_swarm_api_cidr' in tf
     # swarm-api's range is the one the relay's and the graph's policies admit.
     assert re.search(r"^\s*decision_api_swarm_api_cidr\s*=\s*var\.subnet_cidr$", tf, re.M)
-    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
+    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet
+    # (its value is the deployment's, so it is matched by shape, not restated).
     tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
-    assert f'tailscale_egress_target = "{TARGET}"' in tfvars
+    assert re.search(r'^tailscale_egress_target = "[a-z0-9.-]+\.ts\.net"$', tfvars, re.M)
 
 
 def test_everything_is_in_swarm_system_labelled_and_holds_no_rbac_or_secret():

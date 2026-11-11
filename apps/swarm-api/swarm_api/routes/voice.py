@@ -1,9 +1,14 @@
 """Voice it session routes (docs/design/voice-it.md §3.6, §3.7, §10 phase 1).
 
     POST /v1/voice/sessions                   {offer_sdp?, project_id?}
-        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only)}
+        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only),
+            fallback: {from, reason} (a speech session that became text)}
+    POST /v1/voice/sessions                   {offer_sdp, session_id}
+        -> the same, with `tier`: the reopen of a live Live session (below)
+    POST /v1/voice/sessions/{session_id}/reopen  {tier}   (swarm-voice's grant only)
+        -> {session_id, tier}
     POST /v1/voice/sessions/{session_id}/turns  {text}
-        -> {turn_id, reply, cards}
+        -> {turn_id, reply, cards, delegation_id (speech, when delegated)}
     POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
 
@@ -45,7 +50,8 @@ against, with each kind as a strict `draw_<kind>` tool for the planner. The
 stream takes NO tenant guard: `EventSource` sends no header, so the tenant is
 the one the session document names, answered only when it is one the caller
 belongs to on this request; another tenant's session, another person's, and a
-missing one are the same 404. It ends itself before 600 seconds, under the
+missing one are the same 404. Each connect to a live session writes its
+`heartbeat_at`, so an open tab never reads as abandoned. It ends itself before 600 seconds, under the
 660-second request timeout, and the browser resumes from `Last-Event-ID`; once
 the session has ended and everything is sent, a reconnect is 204.
 
@@ -60,6 +66,14 @@ the session's person, with the `voice_audit` row every grant request writes
 first. A grant writes only to its own session: any other session id is 403.
 `VoiceStore.put_card` validates against the catalogue again, so no write path
 bypasses it.
+
+A REFUSED WRITE IS LOGGED, never its body (`RefusalLogged`). The card write
+and every Voice it visual and note write run under a route class that logs a
+4xx at WARNING as its route, status, code, the field and the reason: the
+`ApiError`'s own message, or, for a body the request model refused, pydantic's
+location and message, never the input. Each line goes through `redact`, so
+nothing credential-shaped reaches the log either way. Before this, a refused
+mock-up left only the request log's status and the reason could not be read.
 
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
@@ -96,22 +110,46 @@ broker's Voice it pool itself, and its pool refusals (403, or 409
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 
-THE MODE AND THE TURNS (owner, 4 November 2026: "both paths"; voice/
-sessions.py, `pick_mode`). The start asks the broker what the Voice it pool
-holds: with an OpenAI API key the session is `live` (GPT-Live, today's path:
-`offer_sdp` is required and `answer_sdp` comes back); with none it is `text`,
-on the pool's ChatGPT plan, which serves text but not Live: no SDP, any
-offer sent is dropped unread, and the browser posts each spoken turn to
-`/turns` as `{"text": 1..4000 characters}`, answered `{turn_id, reply,
-cards}`. A turn passes the same guards as every Voice it action -- the
+THE ENGINE AND THE TURNS (docs/design/voice-it-own-speech.md §4.1, §10.2;
+voice/sessions.py, `pick_engine`). The start takes no engine and no mode: the
+body is `{offer_sdp?, project_id?}` and anything else is 422. It reads Voice
+it › Settings once: own speech (the default) is a `speech` session, the fast
+Claude front at swarm-voice and the speech machine brought to RUNNING, with
+no SDP and no OpenAI pool asked; GPT-Live is `live`, today's path
+(`offer_sdp` is required and `answer_sdp` comes back), and with no OpenAI API
+key in the Voice it pool it is `text`, with `fallback: {from: "gpt-live",
+reason: "no_openai_key"}`. An own-speech session that cannot start becomes
+`text`, with `fallback: {from: "own", reason}` (`speech_not_deployed`,
+`front_refused`, `no_l4`, `not_ready`). Any offer a
+text or speech start is sent is dropped unread. The browser posts each turn
+of a text or speech session to `/turns` as `{"text": 1..4000 characters}`,
+answered `{turn_id, reply, cards}` (and `delegation_id` when the front
+delegated). A turn passes the same guards as every Voice it action -- the
 person on the Voice it list (403), the console's selected workspace through
 `tenant_scope`, the session the caller's own there (else the same 404) --
 and is 409 `conflict` (`voice_session_not_live`) on a session that is not a
-live text one; the plan's usage limit is 429 `rate_limited` with
+live text or speech one; the plan's usage limit is 429 `rate_limited` with
 `detail.resets_at`. It is not on the grant's lists (voice/grant.py): the
 session grant is what swarm-voice's planner acts with during the turn, and
 never what posts one. The person's text is never logged: it rides in the
 body alone, and nothing here writes it anywhere.
+
+THE SPEECH ROUTES (voice_speech.py: the audio socket and the machine's
+sweep) are mounted on this module's `router`, beside the Voice it routes,
+with their own paths and their own admission. Stop on a speech session also
+stops the machine. The machine's lifecycle is `app.state.speech_machine`
+when one is set (a test's), else voice_speech's `machine_for`, and none
+while SWARM_SPEECH_* leave the engine undeployed.
+
+THE REOPEN (docs/design/llm-providers.md §5.3; voice/sessions.py THE REOPEN).
+When a Live key's credit is gone, swarm-voice holds the next tier and posts
+`{tier}` to `/reopen` with the session grant; the route takes no other caller
+(403) and only the grant's own live session, records the hold and puts
+`voice.tier.reopen` on the session's stream. The console then starts the same
+session again with a fresh offer and `session_id`: accepted only for the
+session's own person in the selected workspace while a reopen is held, and
+409 `conflict` otherwise, as a second start always was. A reopen takes no
+engine from Settings: it is Live by definition.
 
 swarm-voice's client is `app.state.voice_client` when one is set (a test's
 fake), else the deployment's from SWARM_VOICE_URL, else none.
@@ -119,16 +157,20 @@ fake), else the deployment's from SWARM_VOICE_URL, else none.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Callable, Coroutine
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
+from swarm_redaction import redact
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from ..errors import Conflict, ValidationFailed
+from ..errors import ApiError, Conflict, ValidationFailed
 from ..brokerclient import AccountPool
 from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
@@ -138,10 +180,54 @@ from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
+from ..voice import settings as vsettings
 from ..voice import store as vstore
 from ..voice import stream as vstream
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
+log = logging.getLogger("swarm_api.voice.refused")
+
+#: A refusal's field and reason are cut to this many characters in the log.
+REFUSAL_LOG_MAX = 300
+
+
+def _for_log(value: Any) -> str:
+    return redact(str(value)).text.replace("\n", " ")[:REFUSAL_LOG_MAX]
+
+
+def log_refusal(route: str, status: int, code: str, field: Any, reason: Any) -> None:
+    """One WARNING line for a refused Voice it write: its route, status, code,
+    field and reason, each redacted. Never the body: callers pass the error's
+    own message or pydantic's location and message, not its input."""
+    log.warning("voice write refused route=%s status=%s code=%s field=%s reason=%s",
+                route, status, code, _for_log(field or "-"), _for_log(reason))
+
+
+class RefusalLogged(APIRoute):
+    """A write route whose refusals (4xx) are logged by `log_refusal`; the
+    answer itself is the app's exception handlers', unchanged."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+        route = self.path
+
+        async def logged(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                errors = list(exc.errors())
+                first = errors[0] if errors else {}
+                field = ".".join(str(part) for part in (first.get("loc") or ()))
+                log_refusal(route, 422, ValidationFailed.code, field, first.get("msg") or "invalid")
+                raise
+            except ApiError as exc:
+                if 400 <= exc.status_code < 500 and request.method != "GET":
+                    log_refusal(route, exc.status_code, exc.code, exc.detail.get("field"),
+                                exc.message)
+                raise
+
+        return logged
+
 
 #: A project or session id this service minted: `vp_`/`vs_` and 32 hex.
 _ID_MAX = 64
@@ -151,10 +237,19 @@ class StartSession(BaseModel):
     #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
-    #: Required for a Live session; a text session (no OpenAI API key in the
-    #: Voice it pool) has no WebRTC and drops it unread.
+    #: Required for a Live session (Settings name GPT-Live); a speech or text
+    #: session has no WebRTC and drops it unread. No engine is taken here.
     offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
     project_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
+    #: The live Live session to start again on its held next tier (the reopen).
+    session_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
+
+
+class TierReopen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The tier's name (sessions.REOPEN_TIERS), never a key.
+    tier: str = Field(min_length=1, max_length=32)
 
 
 class TextTurn(BaseModel):
@@ -180,13 +275,23 @@ def allowed_person(auth: AuthContext = Depends(current_auth),
     return auth.email.strip().lower()
 
 
-def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
+def speech_machine(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    """The speech machine's lifecycle, or None when the engine is not
+    deployed here (SWARM_SPEECH_* empty)."""
+    if not rvs.speech_config(request.app).enabled:
+        return None
+    machine = getattr(request.app.state, "speech_machine", None)
+    return machine if machine is not None else rvs.machine_for(request.app, ctx)
+
+
+def _service(ctx: AppContext, client: Any, machine: Any = None) -> vs.VoiceSessions:
     if client is None:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             now=ctx.now,
-                            class_models=ctx.settings.worker_class_models)
+                            class_models=ctx.settings.worker_class_models,
+                            machine=machine)
 
 
 #: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
@@ -235,19 +340,65 @@ async def start_session(
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
     pool: AccountPool = Depends(account_pool),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client)
+    service = _service(ctx, client, machine)
+    if body.session_id is not None:
+        # The reopen: Live by definition, so Settings' engine is not read.
+        _check_id(body.session_id, "vs_", "session_id")
+        if body.project_id is not None:
+            raise ValidationFailed("a reopen names its session, not a project", detail={"field": "project_id"})
+        if body.offer_sdp is None or not body.offer_sdp.startswith("v=0"):
+            raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
+        offer = body.offer_sdp
+        return await run_in_threadpool(lambda: service.reopen(
+            tenant_id=tenant_id, person=person, session_id=body.session_id, offer=offer))
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
-    mode = await run_in_threadpool(vs.pick_mode, pool, person)
-    if mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
+    # Settings' engine, read once: no engine is ever taken from the caller.
+    chosen = (await run_in_threadpool(vsettings.VoiceSettings(ctx.db, now=ctx.now).read))["settings"]
+    pick = await run_in_threadpool(
+        lambda: vs.pick_engine(chosen, pool, person, speech_deployed=machine is not None))
+    if pick.mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
         raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
 
     def _start() -> dict:
         return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp or "",
-                             project_id=body.project_id, mode=mode)
+                             project_id=body.project_id, mode=pick.mode, fallback=pick.fallback,
+                             chosen=chosen)
 
     return await run_in_threadpool(_start)
+
+
+@router.post("/sessions/{session_id}/reopen")
+async def tier_reopen(
+    session_id: str,
+    body: TierReopen,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+) -> dict:
+    """swarm-voice's held next tier for its own session (the reopen)."""
+    if auth.via != vgrant.VIA:
+        raise vgrant.RouteNotGranted("only swarm-voice tells a Voice it session its next tier")
+    if auth.voice_session != session_id:
+        raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
+    _check_id(session_id, "vs_", "session_id")
+    if body.tier not in vs.REOPEN_TIERS:
+        raise ValidationFailed("tier is not a Voice it tier", detail={"field": "tier"})
+    person = auth.email.strip().lower()
+
+    def _hold() -> dict:
+        found = vstream.find_session(ctx.db, person=person, session_id=session_id,
+                                     tenants=frozenset({auth.tenant_id}))
+        _service(ctx, client).hold_reopen(tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+                            session_id=found.session_id, tier=body.tier)
+        vstore.VoiceStore(ctx.db, now=ctx.now).append_event(
+            tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+            session_id=found.session_id, event={"type": vs.REOPEN_EVENT, "tier": body.tier})
+        return {"session_id": found.session_id, "tier": body.tier}
+
+    return await run_in_threadpool(_hold)
 
 
 @router.post("/sessions/{session_id}/turns")
@@ -274,8 +425,9 @@ async def end_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
-    service = _service(ctx, client)
+    service = _service(ctx, client, machine)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
         service.end, tenant_id=tenant_id, person=person, session_id=session_id)
@@ -433,7 +585,6 @@ class WriteCard(BaseModel):
     card: dict[str, Any]
 
 
-@router.post("/sessions/{session_id}/cards")
 async def write_card(
     session_id: str,
     body: WriteCard,
@@ -459,6 +610,10 @@ async def write_card(
     return {"card": card}
 
 
+router.add_api_route("/sessions/{session_id}/cards", write_card, methods=["POST"],
+                     route_class_override=RefusalLogged)
+
+
 def stream_timing(request: Request) -> dict[str, Any]:
     """`app.state.voice_stream_timing` when one is set (a test's fake clock
     and sleep), else the real ones."""
@@ -482,6 +637,11 @@ async def session_events(
         tenants=vstream.tenants_of(auth))
     stream = vstream.CardStream(vstore.VoiceStore(ctx.db, now=ctx.now), ctx.db,
                                 found=found, person=person, after=start_after, **timing)
+    if found.state == vs.LIVE:
+        # Each connect (about every nine minutes) keeps an open tab's session
+        # from reading as abandoned (sessions.LIVE_STALE_SECONDS).
+        await run_in_threadpool(vs.record_heartbeat, ctx.db, project_id=found.project_id,
+                                session_id=found.session_id, now=ctx.now())
     if found.state == vs.ENDED and not await run_in_threadpool(stream.pending):
         # Ended and fully sent: 204 tells EventSource not to reconnect.
         return Response(status_code=204)
@@ -515,3 +675,19 @@ async def read_ledger(
     return await run_in_threadpool(
         _ledger(ctx, prefs, request).compute, tenant_id=tenant_id, person=person,
         session_id=session_id)
+
+
+# --------------------------------------------------------------------------
+# The speech routes (docs/design/voice-it-own-speech.md §14 row L6)
+# --------------------------------------------------------------------------
+
+# voice_speech's routes carry their own full paths (the audio socket under
+# /v1/voice, the sweep under /v1/internal), already resolved when they were
+# declared, so they join this router's list as they are and keep them; main.py
+# includes `router` alone. Not `include_router`: FastAPI nests an included
+# router lazily, and the route inventories read this router's routes flat.
+# Imported last: voice_speech imports voice_readback, which imports
+# `allowed_person` from this module.
+from . import voice_speech as rvs  # noqa: E402
+
+router.routes.extend(rvs.router.routes)

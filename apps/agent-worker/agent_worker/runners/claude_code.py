@@ -913,6 +913,98 @@ def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
     }
 
 
+#: THE MANAGED PLUGINS (docs/design/managed-plugins.md section 4, lane 8;
+#: `agent_worker.pluginload`). The worker installs each plugin of the signed
+#: set under `private/plugins/<install_id>` and hands this runner the load
+#: file's PATH (`pluginload.LOAD_ENV`, restated so the runner never imports
+#: the worker's install code; tests/unit/worker/test_pluginload_runner.py
+#: holds them equal): per plugin its folder, its manifest name, the
+#: `userConfig` options (a sensitive one only as a placeholder) and the skills
+#: the step turned off.
+PLUGIN_LOAD_ENV = "SWARM_PLUGIN_LOAD"
+#: The folder of the launcher's per-plugin env files (`pluginload.ENV_DIR_ENV`,
+#: restated). Every wrapped hook and server command is the launcher, which
+#: finds its plugin's file only through this variable, and the CLI's
+#: environment is built from scratch (`cliagent.run_cli_agent`), so the
+#: runner hands it on when a managed plugin loads. A directory, never a value;
+#: the launcher drops it (`SWARM_*`) from the plugin's own process. Measured
+#: 11 November 2026: without it every managed hook ran nothing and exited 1,
+#: and no run was recorded (docs/design/managed-plugins.md section 16).
+PLUGIN_ENV_DIR_ENV = "SWARM_PLUGIN_ENV_DIR"
+PLUGIN_DIR_FLAG = "--plugin-dir"
+#: At most eight plugins per step (managed-plugins.md section 13).
+MAX_MANAGED_PLUGINS = 8
+MAX_PLUGIN_LOAD_BYTES = 256 * 1024
+_PLUGIN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_PLUGIN_SKILL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PLUGIN_OPTION = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+#: The owner's answer to Q14 (8 November 2026): a managed Jev plugin replaces
+#: the built-in gate for its step, so the step never runs both. Manifest
+#: name -> the built-in gate modes it replaces.
+MANAGED_JEV_REPLACES = {
+    "jev-belay": ("belay",),
+    "jev-enforce": ("enforce-stop", "enforce-edit"),
+}
+
+
+def managed_plugins(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    """The worker's load file's plugins, each checked: a folder that exists
+    under the load file's own folder, a manifest name, options and disabled
+    skills of the shapes the worker writes. Anything else is left out, and
+    no file means none."""
+    environ = os.environ if environ is None else environ
+    raw = (environ.get(PLUGIN_LOAD_ENV) or "").strip()
+    if not raw:
+        return []
+    path = Path(raw)
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_PLUGIN_LOAD_BYTES:
+            return []
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    plugins = document.get("plugins") if isinstance(document, dict) else None
+    root = path.parent.resolve()
+    out: list[dict[str, Any]] = []
+    for item in plugins if isinstance(plugins, list) else ():
+        if not isinstance(item, dict) or len(out) >= MAX_MANAGED_PLUGINS:
+            continue
+        name, folder = item.get("name"), item.get("dir")
+        if not isinstance(name, str) or not _PLUGIN_NAME.match(name) or not isinstance(folder, str):
+            continue
+        resolved = Path(folder).resolve()
+        if root not in resolved.parents or not (resolved / ".claude-plugin" / "plugin.json").is_file():
+            continue
+        options = item.get("options") if isinstance(item.get("options"), dict) else {}
+        disabled = item.get("disabled_skills") if isinstance(item.get("disabled_skills"), list) else []
+        out.append({
+            "name": name, "dir": str(resolved),
+            "options": {k: v for k, v in options.items()
+                        if isinstance(k, str) and _PLUGIN_OPTION.match(k)
+                        and isinstance(v, (str, int, float, bool, list))},
+            "disabled_skills": [d for d in disabled if isinstance(d, str) and _PLUGIN_SKILL.match(d)],
+            "adapter": item.get("adapter") is True,
+        })
+    return out
+
+
+def plugin_dir_args(plugins: list[dict[str, Any]]) -> list[str]:
+    """`--plugin-dir <folder>` per managed plugin: every component loads,
+    hooks, skills, commands, agents and MCP servers (spike section 1)."""
+    out: list[str] = []
+    for plugin in plugins:
+        out += [PLUGIN_DIR_FLAG, plugin["dir"]]
+    return out
+
+
+def replaced_gates(plugins: list[dict[str, Any]]) -> set[str]:
+    """The built-in gate modes a managed Jev plugin of this step replaces:
+    only one whose adapter got the TypeSafe key (the load file's `adapter`).
+    A keyless managed copy fails open, so the built-in gate keeps running."""
+    return {mode for p in plugins if p.get("adapter") is True
+            for mode in MANAGED_JEV_REPLACES.get(p["name"], ())}
+
+
 #: The first sentence of the live-browser note, per selection.
 BROWSER_TOOL_LEAD = {
     "auto": (
@@ -1330,20 +1422,41 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
                 }
             ],
         })
+    managed = managed_plugins()
+    if managed:
+        # The managed plugins (managed-plugins.md section 4.3, spike sections
+        # 2 and 5): their `userConfig` from this file, the only place the CLI
+        # takes it without a keychain (a sensitive field is a placeholder; the
+        # launcher supplies the value), and each skill the step turned off as
+        # a deny rule. A plugin hook runs in addition to these settings' own
+        # hooks, never instead.
+        settings["pluginConfigs"] = {f"{p['name']}@inline": {"options": dict(p["options"])}
+                                     for p in managed if p["options"]}
+        denied = [f"Skill({p['name']}:{skill})" for p in managed for skill in p["disabled_skills"]]
+        if denied:
+            settings.setdefault("permissions", {}).setdefault("deny", []).extend(denied)
+    replaced = replaced_gates(managed)
     gates = jev_gates_config()
     if gates:
         # JEV-LANES: the workspace turned `quality_gates.jev` on and the worker
         # read its key. Both Stop hooks in one entry, so both run on every
         # stop; jev-enforce's edit hook only records the edit (`end` mode).
+        # A managed jev-belay or jev-enforce of this step replaces its gate
+        # (the owner's answer to Q14): the managed copy runs, the baked one
+        # does not -- only when the managed copy's adapter has the key; a
+        # keyless one fails open, so the baked gate stays.
         settings["env"][JEV_ENFORCE_MODE_ENV] = "end"
-        settings["hooks"]["Stop"] = [{"hooks": [
-            _jev_gate_hook(gates, "belay", JEV_BELAY_TIMEOUT),
-            _jev_gate_hook(gates, "enforce-stop", JEV_ENFORCE_TIMEOUT),
-        ]}]
-        post_tool_use.append({
-            "matcher": JEV_ENFORCE_EDIT_MATCHER,
-            "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
-        })
+        stop_hooks = [hook for mode, hook in (
+            ("belay", _jev_gate_hook(gates, "belay", JEV_BELAY_TIMEOUT)),
+            ("enforce-stop", _jev_gate_hook(gates, "enforce-stop", JEV_ENFORCE_TIMEOUT)),
+        ) if mode not in replaced]
+        if stop_hooks:
+            settings["hooks"]["Stop"] = [{"hooks": stop_hooks}]
+        if "enforce-edit" not in replaced:
+            post_tool_use.append({
+                "matcher": JEV_ENFORCE_EDIT_MATCHER,
+                "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
+            })
     if question_bridge.enabled(os.environ):
         # The question bridge, behind its switch, which the worker sets for
         # a plugin step alone (`question_bridge`;
@@ -2198,6 +2311,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
+    # The managed plugins, after the runner's own `--settings` and
+    # `--mcp-config` (managed-plugins.md section 4.2 step 5).
+    managed = managed_plugins()
+    extra += plugin_dir_args(managed)
+    env_dir = os.environ.get(PLUGIN_ENV_DIR_ENV, "").strip()
+    if managed and env_dir:
+        env[PLUGIN_ENV_DIR_ENV] = env_dir
     # When each switched-on tool helps, at the system prompt's weight and in
     # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
     moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
