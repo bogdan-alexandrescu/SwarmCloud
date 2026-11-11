@@ -26,6 +26,12 @@
       "resources": [],
       "outputs": ["swarm_live_manifest"]
     },
+    "swarm-plugin-bundler": {
+      "resources": [
+        "google_cloud_run_v2_job.plugin_bundle"
+      ],
+      "outputs": []
+    },
     "swarm-plugin-intake": {
       "resources": [
         "google_cloud_run_v2_job.plugin_intake"

@@ -1451,11 +1451,14 @@ run "the_speech_machines_project_roles_are_grantable" {
   }
 }
 
-# terraform/infra/plugin-bundles.tf (managed plugins' bundle build, lane 15 of
-# managed-plugins.md section 17.1) grants swarm-plugin-bundler its log writes
-# on the project, only with builtins_managed "on" -- so it is planned on here,
-# and the grant is held to exist, not passed over an empty count.
-run "the_plugin_bundlers_project_role_is_grantable" {
+# terraform/infra/plugin-bundles.tf (managed plugins' bundle job,
+# managed-plugins.md section 1.4.2) writes nothing to the project's IAM policy:
+# the builder's project-level log writer went with the owner's change of 11
+# November 2026 (a Cloud Run job's output reaches Cloud Logging without one),
+# and swarm-api's one grant is a custom role on the job's own policy. Planned
+# with builtins_managed "on", so the inventory run below sees the file switched
+# on and finds no project grant there to account for.
+run "the_plugin_bundle_job_writes_no_project_grant" {
   command = plan
 
   module {
@@ -1480,14 +1483,16 @@ run "the_plugin_bundlers_project_role_is_grantable" {
       "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-plugin-bundler"     = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
     }
   }
 
   assert {
-    condition = length(google_project_iam_member.plugin_bundler_logs) == 1 && alltrue([
-      for k, g in google_project_iam_member.plugin_bundler_logs : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
-    ])
-    error_message = "terraform/infra/plugin-bundles.tf grants swarm-plugin-bundler a log-write role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+    condition = (
+      length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 1
+      && length(google_artifact_registry_repository_iam_member.plugin_bundler_push) == 1
+    )
+    error_message = "with builtins_managed on and the bundler image, the bundle job's grants are planned: on the job's own policy and the bundle repository, never the project"
   }
 }
 
