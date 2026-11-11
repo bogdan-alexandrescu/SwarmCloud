@@ -199,15 +199,61 @@ class PlannerAccounts:
                 log.warning("voice session %s: planner lease renewal failed: %s", lease.voice_session_id, exc)
 
     @contextlib.asynccontextmanager
-    async def lease(self, *, person: str, voice_session_id: str) -> AsyncIterator[PlannerLease]:
+    async def lease(self, *, person: str, voice_session_id: str) -> AsyncIterator["PlannerHold"]:
         """Hold one account for the body of the `async with`, renewed while it
-        runs and released in a finally, whatever the turn did."""
-        held = await self.assign(person=person, voice_session_id=voice_session_id)
-        renewer = asyncio.create_task(self._renew_loop(held), name=f"planner-lease-{voice_session_id}")
+        runs and released in a finally, whatever the turn did. A turn whose
+        account is spent moves the hold on (`PlannerHold.move`); whichever
+        account holds it at the end is the one released."""
+        hold = PlannerHold(self, person, await self.assign(person=person, voice_session_id=voice_session_id))
         try:
-            yield held
+            yield hold
         finally:
-            renewer.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await renewer
-            await self.release(held)
+            await hold.close()
+
+
+class PlannerHold:
+    """The account one turn holds now, renewed while it is held. `move` takes
+    the turn to the next tier (§5.3); the renewal follows the account."""
+
+    def __init__(self, accounts: PlannerAccounts, person: str, held: PlannerLease) -> None:
+        self._accounts = accounts
+        self._person = person
+        self.current = held
+        self._renewer = self._renew(held)
+
+    def _renew(self, held: PlannerLease) -> asyncio.Task:
+        return asyncio.create_task(self._accounts._renew_loop(held),  # noqa: SLF001
+                                   name=f"planner-lease-{held.voice_session_id}")
+
+    @property
+    def bearer(self) -> Bearer:
+        return self.current.bearer
+
+    @property
+    def tier(self) -> str | None:
+        return self.current.tier
+
+    @property
+    def account_id(self) -> str:
+        return self.current.account_id
+
+    async def _stop(self) -> None:
+        self._renewer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await self._renewer
+
+    async def move(self) -> PlannerLease:
+        """Give the spent account back and hold the next tier's. Raises PoolFull
+        when the chain has nothing left (no tier 3, Q2): the spent account is
+        given back either way."""
+        await self._stop()
+        self.current = await self._accounts.move(self.current, person=self._person)
+        self._renewer = self._renew(self.current)
+        return self.current
+
+    async def close(self) -> None:
+        await self._stop()
+        await self._accounts.release(self.current)
+
+    def __repr__(self) -> str:
+        return f"PlannerHold({self.current!r})"
