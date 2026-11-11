@@ -146,10 +146,11 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 
 from .credential import Credential, CredentialError
 from . import readback as vreadback
+from . import trace as vtrace
 from .grant import SessionGrant
 
 if TYPE_CHECKING:
-    from .planner import Planner
+    from .planner import Planner, TurnResult
 
 log = logging.getLogger("swarm_voice.live")
 #: The websockets library logs every handshake header at DEBUG, the bearer among
@@ -650,6 +651,10 @@ class LiveSession:
         self._turns: set[asyncio.Task] = set()
         #: The planner model read at this session's start; None keeps the pin.
         self.planner_model: str | None = None
+        #: Debug mode's trace (trace.py), set at the start only when swarm-api's
+        #: start body said `debug: true`; None counts and sends nothing.
+        self.trace: vtrace.SessionTrace | None = None
+        self._trace_writes: set[asyncio.Task] = set()
 
     @property
     def transcript(self) -> list[tuple[str, str]]:
@@ -747,6 +752,8 @@ class LiveSession:
                     elif kind == DELEGATION_CREATED:
                         # A handoff ends what the person was saying: the planner and
                         # the read-back gate hear it whole, the gate first.
+                        if self.trace is not None:
+                            self.trace.note("handoffs")
                         self._end_utterances()
                         if self._planner is not None:
                             self._delegated(event)
@@ -791,6 +798,10 @@ class LiveSession:
         read-back gate; of an item already heard in part (an utterance ended by
         a gap), only the rest of the final is new."""
         text = _final_text(event)[:TRANSCRIPT_SEGMENT_MAX]
+        if self.trace is not None and speaker == "person":
+            self.trace.note("finals")
+            if not text.strip():
+                self.trace.note("empty_finals")
         if not text:
             return
         key = _segment_key(event)
@@ -832,6 +843,11 @@ class LiveSession:
             # an item is ended by the next item, the gaps, a final or a handoff.
             self._end_utterances(unkeyed_only=True)
         segment = self._open_segment(speaker, key)
+        if self.trace is not None and speaker == "person":
+            self.trace.note("pieces")
+            if segment is None and any(s.speaker == "voice" and not s.final for s in self._segments):
+                # The person starts again while the voice's own line is still arriving.
+                self.trace.note("barge_ins")
         if segment is None:
             if speaker == "person":
                 # A new item, or the person again after the voice: what was open is whole.
@@ -945,11 +961,22 @@ class LiveSession:
             if not request:
                 # Nothing to plan from: a turn would read the inbox and report "nothing".
                 await self._say(delegation_id, SAY_ASK_AGAIN)
+                self._traced(transcript, request, None, SAY_ASK_AGAIN)
                 return
         result = await self._planner.delegate(person=self.person, grant=self.grant,
                                               transcript=transcript, delegation_id=delegation_id,
                                               model=self.planner_model, request=request or None)
         await self._say(delegation_id, result.spoken)
+        self._traced(transcript, request, result, result.spoken)
+
+    def _traced(self, transcript: list[tuple[str, str]], request: str,
+                result: "TurnResult | None", told: str) -> None:
+        """With debug mode on, send this finished turn's trace beside it
+        (trace.py); the turn never waits for it and never sees it fail."""
+        if self.trace is None or self._planner is None:
+            return
+        body = self.trace.turn(transcript=transcript, handoff=request or None, result=result, told=told)
+        vtrace.spawn(self._planner.write_trace(self.grant, body), self._trace_writes)
 
     async def _say(self, delegation_id: str, spoken: str) -> None:
         """Send `spoken` back as the delegation's commentary, unless the session ended."""
@@ -1059,7 +1086,8 @@ class Sessions:
             await asyncio.gather(*list(self._releases), return_exceptions=True)
 
     async def start(self, voice_id: str, *, person: str, offer: str,
-                    grant: SessionGrant | None = None, planner_model: str | None = None) -> LiveSession:
+                    grant: SessionGrant | None = None, planner_model: str | None = None,
+                    debug: bool = False) -> LiveSession:
         """Lease a Voice it pool account for `person`, create the GPT-Live session for
         `offer` on it, attach its sideband, and hold it. Raises SessionExists,
         accountlease.VoicePoolRefused (nothing started), CredentialError or LiveError;
@@ -1094,6 +1122,8 @@ class Sessions:
                     session.answer = answer
                     session.grant = grant
                     session.planner_model = planner_model
+                    if debug:
+                        session.trace = vtrace.SessionTrace(vtrace.ENGINE_LIVE, clock=session._clock)
                     # Attached BEFORE the answer goes back: a session this process cannot end
                     # must never be handed to a browser to start talking (and billing) on.
                     stage = "the sideband"

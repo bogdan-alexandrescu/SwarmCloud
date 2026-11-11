@@ -109,6 +109,23 @@ DRAWN_VISUALS = {tools_visual.SHOW_MOCKUP: ("mock-up", "mock-ups"),
                  tools_visual.SHOW_LOG: ("log view", "log views")}
 
 
+#: `TurnResult.error` for a turn that ran out of time (trace.py's `timeout`).
+TIMED_OUT = "the turn ran out of time"
+#: What debug mode's trace calls each drawn visual (trace.py; DRAWN_VISUALS' tools).
+VISUAL_KINDS = {tools_visual.SHOW_MOCKUP: "mockup", tools_visual.SHOW_FILE: "file",
+                tools_visual.SHOW_DIFF: "diff", tools_visual.SHOW_LOG: "log"}
+#: A read's target: its arguments that name a thing, never what it returned.
+READ_TARGET_KEYS = ("task_id", "workflow_id", "run_id", "schedule_id", "repo_id", "item_id",
+                    "finding_id", "step", "status", "query")
+
+
+def read_target(args: dict[str, Any]) -> str | None:
+    """The read's target for the trace, e.g. "task_id=t_1"; None for a list."""
+    named = [f"{k}={str(args[k])[:80]}" for k in READ_TARGET_KEYS
+             if isinstance(args.get(k), (str, int)) and not isinstance(args.get(k), bool)]
+    return ", ".join(named) or None
+
+
 @dataclass
 class TurnResult:
     """What one delegation produced. Holds no secret."""
@@ -131,6 +148,11 @@ class TurnResult:
     transcript: list[dict[str, Any]] = field(default_factory=list)
     #: Why the turn could not run or finish, for the log; None when it did.
     error: str | None = None
+    #: Debug mode's trace (trace.py): each card or mock-up drawn, {kind, title,
+    #: frames?}, or refused, {kind, title, refused: the reason}.
+    drawn: list[dict[str, Any]] = field(default_factory=list)
+    #: Debug mode's trace: each read, {tool, target}; never what it returned.
+    read_targets: list[dict[str, Any]] = field(default_factory=list)
 
 
 def drew(result: "TurnResult") -> str:
@@ -165,6 +187,21 @@ def _scrub_all(value: Any, known: tuple[str, ...]) -> Any:
     return value
 
 
+def _title(args: dict[str, Any]) -> str | None:
+    title = args.get("title")
+    return title[:200] if isinstance(title, str) else None
+
+
+def _visual_drawn(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """A drawn visual for the trace: its kind, title and, for a mock-up, its
+    frames' labels (never their HTML)."""
+    drawn: dict[str, Any] = {"kind": VISUAL_KINDS[name], "title": _title(args)}
+    if name == tools_visual.SHOW_MOCKUP and isinstance(args.get("frames"), list):
+        drawn["frames"] = [str(f.get("label"))[:200] for f in args["frames"]
+                           if isinstance(f, dict) and isinstance(f.get("label"), str)]
+    return drawn
+
+
 def _card_from(kind: str, args: dict[str, Any], known: tuple[str, ...]) -> dict[str, Any]:
     """The card a `draw_<kind>` call asks for, as swarm-api's write path takes it.
     The project, session, version and time are swarm-api's to set."""
@@ -197,6 +234,13 @@ class Planner:
         self._locks.pop(session_id, None)
         self._acts.pop(session_id, None)
 
+    async def write_trace(self, grant: SessionGrant | None, body: dict[str, Any]) -> bool:
+        """Send one debug turn's trace to swarm-api (trace.py); never raises."""
+        from . import trace
+
+        return await trace.send(self._http, base_url=self._api_base, id_tokens=self._id_tokens,
+                                grant=grant, body=body)
+
     def ledger(self, session_id: str) -> actledger.ActLedger:
         return self._acts.setdefault(session_id, actledger.ActLedger())
 
@@ -224,7 +268,7 @@ class Planner:
                     self._turn_seconds)
             except asyncio.TimeoutError:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
-                result.spoken, result.error = _failed(result), "the turn ran out of time"
+                result.spoken, result.error = _failed(result), TIMED_OUT
                 return result
 
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
@@ -318,7 +362,12 @@ class Planner:
                 body = await tools_visual.run_visual_tool(api, name, _scrub_all(args, known))
             except (tools_read.BadInput, tools_read.ApiRefused) as exc:
                 result.refused.append(name)
+                if name in VISUAL_KINDS:
+                    result.drawn.append({"kind": VISUAL_KINDS[name], "title": _title(args),
+                                         "refused": str(exc)})
                 return str(exc), True, None
+            if name in VISUAL_KINDS and isinstance(body, dict) and body.get("visual_id"):
+                result.drawn.append(_visual_drawn(name, args))
             result.visuals.append({"tool": name, **{k: body.get(k) for k in (
                 "visual_id", "note_id", "work") if isinstance(body, dict) and body.get(k)}})
             return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
@@ -335,6 +384,7 @@ class Planner:
             return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
         if tools_read.is_read_tool(name):
             result.reads.append(name)
+            result.read_targets.append({"tool": name, "target": read_target(args)})
             try:
                 body = await tools_read.run_read_tool(api, name, args)
             except tools_read.BadInput as exc:
@@ -345,21 +395,28 @@ class Planner:
         kind = name[len(DRAW_PREFIX):] if name.startswith(DRAW_PREFIX) else ""
         if not kind or kind not in kinds:
             result.refused.append(name)
+            result.drawn.append({"kind": (kind or name)[:64], "title": _title(args),
+                                 "refused": "not a card kind in the catalogue or a tool offered this turn"})
             log.warning("voice session %s: planner called an unknown kind or tool; refused",
                         api.session_id)
             return (f"refused: {name[:64]!r} is not a card kind in the catalogue or a tool offered "
                     "this turn; nothing was drawn"), True, None
         if len(result.cards) >= MAX_CARDS:
             result.refused.append(name)
+            result.drawn.append({"kind": kind, "title": _title(args),
+                                 "refused": f"a turn draws at most {MAX_CARDS} cards"})
             return f"refused: a turn draws at most {MAX_CARDS} cards", True, None
         try:
             written = await api.write_card(_card_from(kind, args, known))
         except tools_read.ApiRefused as exc:
             result.refused.append(name)
+            result.drawn.append({"kind": kind, "title": _title(args), "refused": str(exc)})
             log.warning("voice session %s: a %s card was not written: %s", api.session_id, kind, exc)
             return f"the card was not written: {exc}", True, None
         card = written.get("card") if isinstance(written.get("card"), dict) else written
         result.cards.append({"kind": kind, "card_id": card.get("card_id"), "title": card.get("title")})
+        result.drawn.append({"kind": kind, "title": card.get("title") if isinstance(card.get("title"), str)
+                             else _title(args)})
         return prompts.as_text({"written": True, "card_id": card.get("card_id"),
                                 "version": card.get("version")}), False, None
 

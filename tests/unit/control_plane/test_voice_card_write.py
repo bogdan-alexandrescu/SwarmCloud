@@ -55,6 +55,8 @@ def test_the_write_list_is_the_card_route_alone_and_apart_from_the_reads(client)
         ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
         # voice-it.md §3.9: the planner's answer act tool (swarm_voice/tools_act.py).
         ("POST", "/v1/tasks/{task_id}/answers"),
+        # Debug mode's trace of a planner turn (routes/voice_trace.py).
+        ("POST", "/v1/voice/sessions/{session_id}/trace"),
     })
     assert not vg.WRITE_ROUTES & vg.ALLOWED_ROUTES
     assert all(method == "GET" for method, _ in vg.ALLOWED_ROUTES)

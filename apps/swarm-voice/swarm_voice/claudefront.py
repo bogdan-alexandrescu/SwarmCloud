@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from . import claudeturn, prompts
+from . import trace as vtrace
 from .credential import CredentialError
 from .grant import SessionGrant
 from .plannerlease import FRONT_HOLDER, LeaseFailed, PlannerAccounts, PlannerLease, PoolFull
@@ -171,6 +172,8 @@ class Delegation:
     cards: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Debug mode only (trace.py): when the final that asked for it arrived.
+    heard_at: float | None = None
 
     def __repr__(self) -> str:
         return f"Delegation(id={self.delegation_id!r}, state={self.state!r})"
@@ -226,6 +229,10 @@ class FrontSession:
         self.delegated: str | None = None
         #: Token counts by model: the front's pin and the planner's.
         self.usage: dict[str, dict[str, int]] = {}
+        #: Debug mode's trace (trace.py), set at the start only when swarm-api's
+        #: start body said `debug: true`; None counts and sends nothing.
+        self.trace: vtrace.SessionTrace | None = None
+        self.trace_writes: set[asyncio.Task] = set()
 
     @property
     def front_model(self) -> str:
@@ -292,7 +299,7 @@ class FrontSessions:
     async def start(self, voice_id: str, *, person: str, grant: SessionGrant | None = None,
                     exists: Callable[[str], bool] = lambda _id: False,
                     planner_model: str | None = None,
-                    conversation_model: str | None = None) -> FrontSession:
+                    conversation_model: str | None = None, debug: bool = False) -> FrontSession:
         """Hold one Claude account for the session and start its warm child on
         `conversation_model`, else the front's pin. Raises ValueError for an
         id outside FRONT_MODELS, SessionExists, or FrontRefused; nothing is
@@ -306,6 +313,8 @@ class FrontSessions:
             claude = self._claude if conversation_model is None else self._claude.with_model(conversation_model)
             session = FrontSession(voice_id, person=person, grant=grant, clock=self._clock,
                                    planner_model=planner_model, claude=claude)
+            if debug:
+                session.trace = vtrace.SessionTrace(vtrace.ENGINE_OWN, clock=self._clock)
             try:
                 await self._attach(session, exclude=())
             except (PoolFull, CredentialError, OSError) as exc:
@@ -392,6 +401,10 @@ class FrontSessions:
         if session is None or session.ended:
             raise FrontSessionEnded(voice_id)
         text = text.strip()
+        if session.trace is not None:
+            session.trace.note("finals")
+            if not text:
+                session.trace.note("empty_finals")
         if not 1 <= len(text) <= MAX_TURN_CHARS:
             raise ValueError(f"a turn is 1 to {MAX_TURN_CHARS} characters")
         async with session.lock:
@@ -469,6 +482,9 @@ class FrontSessions:
             if len(session.queue) >= MAX_WAITING:
                 return SAY_BUSY, True
             delegation = Delegation("vd_" + secrets.token_hex(12), session.voice_id, request[:MAX_TURN_CHARS])
+            if session.trace is not None:
+                session.trace.note("handoffs")
+                delegation.heard_at = session.trace.last_piece_at
             session.delegations[delegation.delegation_id] = delegation
             session.queue.append(delegation)
             session.delegated = delegation.delegation_id
@@ -483,6 +499,8 @@ class FrontSessions:
         while session.queue and not session.ended:
             delegation = session.queue.popleft()
             session.running, delegation.state = delegation, "running"
+            given = self._given(session, delegation)
+            result: "TurnResult | None" = None
             try:
                 result = await self._delegate(session, delegation)
                 delegation.spoken, delegation.cards = result.spoken, list(result.cards)
@@ -502,14 +520,32 @@ class FrontSessions:
                 session.running = None
                 delegation.done.set()
                 self._trim(session)
+                if delegation.state in ("done", "failed"):
+                    self._traced(session, delegation, given, result)
             log.info("voice session %s: delegation %s %s (%d card(s))", session.voice_id,
                      delegation.delegation_id, delegation.state, len(delegation.cards))
 
+    @staticmethod
+    def _given(session: FrontSession, delegation: Delegation) -> list[tuple[str, str]]:
+        """The transcript the planner is given for `delegation`."""
+        return [*session.turns, ("person", delegation.request)] if delegation.request else list(session.turns)
+
     async def _delegate(self, session: FrontSession, delegation: Delegation) -> "TurnResult":
         assert self._planner is not None
-        transcript = [*session.turns, ("person", delegation.request)] if delegation.request else list(session.turns)
-        return await self._planner.delegate(person=session.person, grant=session.grant, transcript=transcript,
+        return await self._planner.delegate(person=session.person, grant=session.grant,
+                                            transcript=self._given(session, delegation),
                                             delegation_id=delegation.delegation_id, model=session.planner_model)
+
+    def _traced(self, session: FrontSession, delegation: Delegation, given: list[tuple[str, str]],
+                result: "TurnResult | None") -> None:
+        """With debug mode on, send this finished delegation's trace beside it
+        (trace.py); swarm-api's wait on the delegation never sees it, nor its failure."""
+        if session.trace is None or self._planner is None:
+            return
+        body = session.trace.turn(transcript=given, handoff=delegation.request or None, result=result,
+                                  told=delegation.spoken, heard_at=delegation.heard_at,
+                                  none=vtrace.NONE_ERROR if result is None else None)
+        vtrace.spawn(self._planner.write_trace(session.grant, body), session.trace_writes)
 
     @staticmethod
     def _trim(session: FrontSession) -> None:

@@ -155,6 +155,10 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # voice-it.md §3.9: the planner's answer act tool (swarm_voice/tools_act.py),
     # the owner's pick of 6 November 2026. The route's own rule decides who answers.
     ("POST", "/v1/tasks/{task_id}/answers"),
+    # Debug mode's trace (voice/trace.py, the owner, 10 November 2026): each
+    # planner turn of a session started with debug on; the route refuses any
+    # caller that did not come through a grant.
+    ("POST", "/v1/voice/sessions/{session_id}/trace"),
 })
 
 

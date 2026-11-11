@@ -2,7 +2,7 @@
 
     voice_settings/platform
         {engine, machine, stt_model, tts_model, tts_voice, conversation_model,
-         planner_model, idle, zone, version, updated_by, updated_at,
+         planner_model, idle, zone, debug, version, updated_by, updated_at,
          applied: {machine, stt_model, tts_model, idle, zone, image, at}}
 
 ONE DOCUMENT for the deployment: one speech machine serves it. A missing
@@ -34,6 +34,16 @@ start body hands swarm-voice and swarm-voice keeps for that session. A change
 reaches the next session, never one already running. A document that never
 set it gives None, and swarm-voice keeps VOICE_PLANNER_MODEL (voice.tf's
 `local.runner_models.fable`), which is the same class as the default.
+
+DEBUG MODE (the owner, 10 November 2026: "Trace on Telemetry"). `debug` is
+the one setting that is not a catalogue name: a boolean, default False, so a
+fresh deployment traces nothing. It is written by the same people, through
+the same versioned PATCH and with the same `voice_audit` row as every other
+field, and refused 422 unless it is true or false. Like the planner model it
+is read once, at a session's start (`VoiceSettings.session_debug`), and the
+start body carries `debug: true` only when it is on; swarm-voice then sends
+each planner turn's trace to swarm-api (voice/trace.py). A change reaches the
+next session, never one already running.
 
 THE OPENAI KEY'S STATUS (§10.3) is `{set, by, at}` and never the key: `set`
 from the quota broker's Voice it pool (an `openai-api` account), `by` and `at`
@@ -69,6 +79,9 @@ AUDIT_CHANGED = "voice_settings_changed"
 
 #: What a start applies to the stopped machine (§4.2 step 1, §11.4).
 MACHINE_FIELDS: tuple[str, ...] = ("machine", "stt_model", "tts_model", "idle", "zone")
+
+#: Debug mode's field: a boolean beside the catalogue's names, default off.
+DEBUG = "debug"
 
 #: The broker's provider for an OpenAI developer API key
 #: (`quota_broker.openai_api_key.PROVIDER`).
@@ -118,12 +131,17 @@ def pending(chosen: Mapping[str, str], applied: Mapping[str, Any] | None) -> lis
     return [f for f in MACHINE_FIELDS if applied.get(f) != chosen.get(f)]
 
 
+def debug_on(data: Mapping[str, Any]) -> bool:
+    """Debug mode as stored; anything but a stored True is off."""
+    return data.get(DEBUG) is True
+
+
 def view(data: Mapping[str, Any], zones: tuple[str, ...]) -> dict[str, Any]:
     chosen = effective(data, zones)
     applied = _applied(data)
     version = data.get("version")
     return {
-        "settings": chosen,
+        "settings": {**chosen, DEBUG: debug_on(data)},
         "version": version if isinstance(version, int) and not isinstance(version, bool) else 0,
         "updated_by": data.get("updated_by") if isinstance(data.get("updated_by"), str) else None,
         "updated_at": _iso(data.get("updated_at")),
@@ -198,6 +216,11 @@ class VoiceSettings:
             return None
         return cat.planner_pin(stored, class_models)
 
+    def session_debug(self) -> bool:
+        """Whether a session starting now is traced: read once, at its start."""
+        snap = self._ref().get()
+        return debug_on((snap.to_dict() or {}) if snap.exists else {})
+
     def update(self, *, changes: Mapping[str, Any], version: Any, by: str) -> dict[str, Any]:
         """Write `changes` made against `version`, with its audit row, in one
         transaction; 422 for a name the catalogue lacks, 409 for a stale version."""
@@ -215,8 +238,14 @@ class VoiceSettings:
             if version != current_version:
                 raise Conflict("the settings changed since they were read; read them again",
                                detail={"field": "version", "version": current_version})
-            before = effective(data, zones)
-            checked = check_changes(changes, before, zones)
+            before: dict[str, Any] = {**effective(data, zones), DEBUG: debug_on(data)}
+            names = {f: v for f, v in changes.items() if f != DEBUG}
+            checked: dict[str, Any] = check_changes(names, before, zones) \
+                if names or DEBUG not in changes else {}
+            if DEBUG in changes:
+                if not isinstance(changes[DEBUG], bool):
+                    raise _refuse(DEBUG, "debug is true or false")
+                checked[DEBUG] = changes[DEBUG]
             now = self._now()
             written = {**data, **checked, "version": current_version + 1,
                        "updated_by": by, "updated_at": now}
@@ -308,11 +337,13 @@ def key_status(pool_answer: Mapping[str, Any] | None, links: Iterable[Mapping[st
 __all__ = [
     "AUDIT_CHANGED",
     "COLLECTION",
+    "DEBUG",
     "DOCUMENT",
     "KEY_PROVIDER",
     "MACHINE_FIELDS",
     "VoiceSettings",
     "check_changes",
+    "debug_on",
     "effective",
     "key_links",
     "key_status",
