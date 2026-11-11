@@ -79,6 +79,7 @@ from .routes import (
     people,
     platform,
     platform_switches,
+    plugin_bundles,
     plugin_catalogue,
     plugin_config,
     plugin_settings,
@@ -475,6 +476,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # installs, versions, updates and removal, platform and per workspace,
     # and the intake job's callback; admins only, audited.
     app.include_router(plugin_catalogue.router)
+    # Bundle builds of the plugins built into an image (managed-plugins.md
+    # lane 16): build status, Apply, Roll back and `swarm upgrade`'s rebuild,
+    # platform admins only, and Cloud Build's finish notification.
+    app.include_router(plugin_bundles.router)
     # A managed plugin's settings, secrets and bindings, and the workspace's
     # every-step defaults (managed-plugins.md lane 6): read by members,
     # written by the workspace's owner or admin, audited.

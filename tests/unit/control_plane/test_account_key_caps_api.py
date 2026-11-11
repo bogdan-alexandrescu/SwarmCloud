@@ -25,14 +25,14 @@ from .test_account_api import FakePool, _recording_transport, account
 class CapsPool(FakePool):
     """`FakePool`, with the broker's caps routes."""
 
-    def set_lending(self, account_id: str, *, lend_to: list[str], lends=None) -> dict:
-        self.calls.append(("set_lending", account_id, tuple(lend_to), lends))
+    def set_lending(self, account_id: str, *, lend_to: list[str] | None = None, lends=None) -> dict:
+        self.calls.append(("set_lending", account_id, tuple(lend_to or ()), lends))
         self._maybe_fail()
         if lends is not None:
             self.accounts[account_id]["lends"] = dict(lends)
             self.accounts[account_id]["lend_to"] = sorted(lends)
         else:
-            self.accounts[account_id]["lend_to"] = list(lend_to)
+            self.accounts[account_id]["lend_to"] = list(lend_to or [])
         return {"account": dict(self.accounts[account_id])}
 
     def set_spend_cap(self, account_id: str, *, monthly_spend_cap_usd) -> dict:

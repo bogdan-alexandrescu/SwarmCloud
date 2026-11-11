@@ -310,7 +310,7 @@ def _worker(artifacts: Path) -> Any:
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        ws=SimpleNamespace(artifacts=artifacts), _security_review={},
+        ws=SimpleNamespace(artifacts=artifacts), _security_review={}, _plugins=None,
         _task={"step_id": STEP}, cfg=SimpleNamespace(task_id=TASK),
         _scrub=lambda value: value, log=_Log(),
         _not_uploaded_causes={}, _skip_causes={}, _verdict_unreadable=False,
@@ -343,7 +343,7 @@ def test_the_worker_records_the_derived_verdict(tmp_path, monkeypatch, skill):
 
     artifacts = tmp_path / "artifacts"
     _audit(artifacts, [_finding("confirmed", "high")])
-    monkeypatch.setattr(lifecycle.security_review_mod, "install_dir", lambda _c: skill.parent.parent)
+    monkeypatch.setattr(lifecycle.security_review_mod, "install_dir", lambda: skill.parent.parent)
     real = sr.finish
     monkeypatch.setattr(lifecycle.security_review_mod, "finish",
                         lambda *a, **k: real(*a, **k, node="/usr/bin/node", run=Validators()))

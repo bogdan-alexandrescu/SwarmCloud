@@ -19,8 +19,14 @@
 #     the file and holds that nothing there names the old build service);
 #   * the job swarm-plugin-bundle plans only with the switch on and the
 #     bundler image's digest; it runs as the builder, the bundler image by
-#     digest, one task, no retries, 3600 seconds, no network, its whole
-#     configuration in its fixed command, ending `--`;
+#     digest, one task, no retries, 3600 seconds, its whole configuration in
+#     its fixed command, ending `--`;
+#   * the job reaches Google's APIs and nothing else (the security review of
+#     11 November 2026): every packet leaves through its own network,
+#     swarm-plugin-bundle, which is neither the swarm network nor the intake
+#     network and has no router and no Cloud NAT; its subnetwork has Private
+#     Google Access and flow logs; its egress firewall admits TCP 443 from the
+#     job's tag and denies everything else; all of it only with the switch on;
 #   * swarm-api's one binding on the job is swarmPluginBundleRunner (the role
 #     terraform/bootstrap defines, bootstrap's plugin_bundle_runner.tftest.hcl);
 #   * the job's logs go to the platform's log bucket, filtered to that job;
@@ -82,6 +88,10 @@ run "off_by_default_plans_nothing" {
       && length(google_logging_project_sink.plugin_bundle_logs) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundles_readers) == 0
       && length(google_artifact_registry_repository_iam_member.plugin_bundles_pullers) == 0
+      && length(google_compute_network.plugin_bundle) == 0
+      && length(google_compute_subnetwork.plugin_bundle) == 0
+      && length(google_compute_firewall.plugin_bundle_deny_egress) == 0
+      && length(google_compute_firewall.plugin_bundle_allow_google_apis) == 0
     )
     error_message = "builtins_managed off (the default) plans nothing in plugin-bundles.tf: nothing costs money or grants access before the switch"
   }
@@ -257,8 +267,12 @@ run "off_plans_no_job_even_with_the_bundler_image" {
       length(google_cloud_run_v2_job.plugin_bundle) == 0
       && length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 0
       && length(google_logging_project_sink.plugin_bundle_logs) == 0
+      && length(google_compute_network.plugin_bundle) == 0
+      && length(google_compute_subnetwork.plugin_bundle) == 0
+      && length(google_compute_firewall.plugin_bundle_deny_egress) == 0
+      && length(google_compute_firewall.plugin_bundle_allow_google_apis) == 0
     )
-    error_message = "with builtins_managed off the job is not planned, whatever image the release carries"
+    error_message = "with builtins_managed off neither the job nor its network is planned, whatever image the release carries"
   }
 }
 
@@ -323,10 +337,9 @@ run "the_job_runs_as_the_builder_and_swarm_api_may_only_run_it" {
       && google_cloud_run_v2_job.plugin_bundle[0].template[0].parallelism == 1
       && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].max_retries == 0
       && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].timeout == "3600s"
-      && length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access) == 0
       && length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].containers[0].env) == 0
     )
-    error_message = "one task, parallelism 1, no retries, a 3600-second agent timeout, no VPC access and no environment (managed-plugins.md section 1.4.2)"
+    error_message = "one task, parallelism 1, no retries, a 3600-second agent timeout and no environment (managed-plugins.md section 1.4.2)"
   }
 
   assert {
@@ -358,6 +371,137 @@ run "the_job_runs_as_the_builder_and_swarm_api_may_only_run_it" {
       && startswith(google_logging_project_sink.plugin_bundle_logs[0].description, "managed-by=swarm-terraform")
     )
     error_message = "the job's executions' logs, and only those, go to the platform's log bucket"
+  }
+}
+
+# The job runs upstream code (gstack's ./setup, bun install, security-audit's
+# tests): every packet it sends leaves through its own network, which reaches
+# Google's APIs through Private Google Access and nothing else.
+run "the_job_reaches_googles_apis_through_its_own_network_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    builtins_managed = "on"
+    image_refs = merge(var.image_refs, {
+      "swarm-plugin-bundler" = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    })
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access) == 1
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access[0].egress == "ALL_TRAFFIC"
+      && length(google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access[0].network_interfaces) == 1
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access[0].network_interfaces[0].tags == tolist(["swarm-plugin-bundle"])
+      && google_cloud_run_v2_job.plugin_bundle[0].template[0].template[0].vpc_access[0].connector == null
+    )
+    error_message = "the job sends ALL its traffic through Direct VPC egress, one interface, tagged swarm-plugin-bundle, no connector"
+  }
+
+  assert {
+    condition = (
+      google_compute_network.plugin_bundle[0].name == "swarm-plugin-bundle"
+      && google_compute_network.plugin_bundle[0].auto_create_subnetworks == false
+      && google_compute_subnetwork.plugin_bundle[0].name == "swarm-plugin-bundle"
+      && google_compute_subnetwork.plugin_bundle[0].region == "us-central1"
+      && google_compute_subnetwork.plugin_bundle[0].ip_cidr_range == "10.250.0.64/26"
+      && google_compute_network.plugin_bundle[0].name != module.network.network_name
+      && google_compute_network.plugin_bundle[0].name != google_compute_network.plugin_intake.name
+      && google_compute_subnetwork.plugin_bundle[0].name != module.network.subnetwork_name
+      && google_compute_subnetwork.plugin_bundle[0].name != google_compute_subnetwork.plugin_intake.name
+    )
+    error_message = "the job's network is its own, swarm-plugin-bundle, custom-mode, one /26 in the region; never the swarm network nor the intake network"
+  }
+
+  # No router and no Cloud NAT on it: the root declares no router, NAT or route
+  # at all, and the one router of any module is the swarm network's.
+  assert {
+    condition = (
+      length(google_compute_network.plugin_bundle) == 1
+      && length(regexall("resource\\s+\"google_compute_(router|router_nat|route)\"", join("\n", [for f in fileset("../../terraform/infra", "*.tf") : file("../../terraform/infra/${f}")]))) == 0
+      && length(regexall("resource\\s+\"google_compute_router\"", join("\n", [for f in fileset("../../terraform/modules", "**/*.tf") : file("../../terraform/modules/${f}")]))) == 1
+      && length(regexall("resource\\s+\"google_compute_router\"\\s+\"this\"\\s+\\{\n(?:[^\n]*\n){0,6}?\\s*network\\s+=\\s+google_compute_network\\.this\\.id\n", file("../../terraform/modules/network/main.tf"))) == 1
+    )
+    error_message = "nothing gives the bundle network a router, a Cloud NAT or a route out: the one router is the swarm network's own"
+  }
+
+  assert {
+    condition = (
+      google_compute_subnetwork.plugin_bundle[0].private_ip_google_access == true
+      && google_compute_subnetwork.plugin_bundle[0].log_config[0].aggregation_interval == "INTERVAL_10_MIN"
+      && google_compute_subnetwork.plugin_bundle[0].log_config[0].flow_sampling == 1
+      && google_compute_subnetwork.plugin_bundle[0].log_config[0].metadata == "INCLUDE_ALL_METADATA"
+    )
+    error_message = "the subnetwork has Private Google Access (its one way to Artifact Registry and Cloud Storage) and flow logs, as the intake subnetwork has"
+  }
+
+  assert {
+    condition = (
+      google_compute_firewall.plugin_bundle_allow_google_apis[0].network == "swarm-plugin-bundle"
+      && google_compute_firewall.plugin_bundle_allow_google_apis[0].direction == "EGRESS"
+      && google_compute_firewall.plugin_bundle_allow_google_apis[0].target_tags == toset(["swarm-plugin-bundle"])
+      && length(google_compute_firewall.plugin_bundle_allow_google_apis[0].allow) == 1
+      && one(google_compute_firewall.plugin_bundle_allow_google_apis[0].allow).protocol == "tcp"
+      && one(google_compute_firewall.plugin_bundle_allow_google_apis[0].allow).ports == tolist(["443"])
+      && length(google_compute_firewall.plugin_bundle_allow_google_apis[0].deny) == 0
+    )
+    error_message = "the one allow is TCP 443 from the job's tag (Google's APIs: with no NAT, nothing else answers)"
+  }
+
+  assert {
+    condition = (
+      google_compute_firewall.plugin_bundle_deny_egress[0].network == "swarm-plugin-bundle"
+      && google_compute_firewall.plugin_bundle_deny_egress[0].direction == "EGRESS"
+      && google_compute_firewall.plugin_bundle_deny_egress[0].destination_ranges == toset(["0.0.0.0/0"])
+      && try(length(google_compute_firewall.plugin_bundle_deny_egress[0].target_tags), 0) == 0
+      && length(google_compute_firewall.plugin_bundle_deny_egress[0].allow) == 0
+      && one(google_compute_firewall.plugin_bundle_deny_egress[0].deny).protocol == "all"
+      && google_compute_firewall.plugin_bundle_allow_google_apis[0].priority < google_compute_firewall.plugin_bundle_deny_egress[0].priority
+    )
+    error_message = "everything else leaving the bundle network is denied, below the HTTPS allow"
+  }
+
+  # The compute network types take no labels (scripts/lib/unlabelable-types.json):
+  # each carries managed-by=swarm-terraform in its description.
+  assert {
+    condition = alltrue([
+      for d in [
+        google_compute_network.plugin_bundle[0].description,
+        google_compute_subnetwork.plugin_bundle[0].description,
+        google_compute_firewall.plugin_bundle_deny_egress[0].description,
+        google_compute_firewall.plugin_bundle_allow_google_apis[0].description,
+      ] : startswith(d, "managed-by=swarm-terraform;")
+    ]) && google_cloud_run_v2_job.plugin_bundle[0].labels["managed-by"] == "swarm-terraform"
+    error_message = "every resource of the bundle network carries managed-by=swarm-terraform"
+  }
+}
+
+# With the switch on and no bundler image yet, the network is made, so it is in
+# place before the job's first deploy, as the intake network is.
+run "the_network_waits_only_for_the_switch" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    builtins_managed = "on"
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_job.plugin_bundle) == 0
+      && length(google_compute_network.plugin_bundle) == 1
+      && length(google_compute_subnetwork.plugin_bundle) == 1
+      && length(google_compute_firewall.plugin_bundle_deny_egress) == 1
+      && length(google_compute_firewall.plugin_bundle_allow_google_apis) == 1
+    )
+    error_message = "with the switch on, the bundle network, its subnetwork and its two firewalls are planned before the bundler image exists"
   }
 }
 

@@ -1,36 +1,21 @@
-/* CAPACITY › LLM PROVIDERS › PLANS (LlmPlans.tsx; the owner's pick of
-   10 November 2026, "Tables and a side sheet"). Tokens only, so light and dark
-   follow the console; at phone width each row stacks and nothing is wider
-   than the viewport. */
+/* CAPACITY › LLM PROVIDERS › PLANS (LlmPlans.tsx): the plans as cards, the
+   owner's ask of 11 November 2026, built from the cards direction's mock-up
+   (lp-cards.css on mockups/llm-providers-cards). Tokens only, so light and
+   dark follow the console; at phone width the cards take one column and
+   nothing is wider than the viewport.
+
+   READABLE TYPE (the owner's ask: "the font here is super small"): no text on
+   a card is below --t-body; the plan's name is --t-lead and the quota left is
+   --t-figure, the card's largest figures. The `.lpc-` rules below write no
+   other step; llmplans.test.tsx holds them to it. */
 
 .llp-page { position: relative; min-width: 0; }
 .llp-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .llp-dim { color: var(--text-dim); font-weight: 400; }
 .llp-grow { flex: 1 1 auto; }
-.llp-num { font-variant-numeric: tabular-nums; }
 .llp-page .mono { font-size: var(--t-micro); }
 
 .llp-bar1 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
-
-/* the table */
-.llp-tablewrap { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow-x: auto; }
-.llp-table { width: 100%; border-collapse: collapse; font-size: var(--t-micro); }
-.llp-table th, .llp-table td { padding: 7px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line-soft); }
-.llp-table thead th { background: var(--surface-2); color: var(--text-dim); font-weight: 600; white-space: nowrap; }
-.llp-group th { background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); color: var(--text); font-weight: 600; padding: 5px 8px; }
-.llp-row td { padding-top: 9px; padding-bottom: 9px; }
-.llp-row:hover td { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
-.llp-row.is-sel td { background: var(--sk-acs); }
-.llp-row.is-sel td:first-child { box-shadow: inset 3px 0 0 var(--sk-ac); }
-.llp-act { text-align: right; width: 1%; white-space: nowrap; }
-.llp-acts { display: inline-flex; gap: 6px; }
-
-.llp-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 300px; }
-.llp-name { font-weight: 600; font-size: var(--t-body); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.llp-meta { display: flex; flex-wrap: wrap; gap: 0 10px; color: var(--text-dim); min-width: 0; }
-.llp-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.llp-label.is-lead { color: var(--text); font-weight: 600; font-size: var(--t-body); }
-.llp-classes { color: var(--text-faint); }
 
 .llp-st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 600; }
 .llp-st > i { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-faint); }
@@ -49,19 +34,13 @@
 .llp-over.is-full .llp-bar > b { background: var(--s-bad); }
 .llp-over.is-full .llp-over-n { color: var(--s-bad); }
 
-.llp-voice { display: inline-flex; height: 20px; align-items: center; padding: 0 7px; border-radius: 10px; font-weight: 600; white-space: nowrap; color: var(--warn-ink, var(--warn)); background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
-
-.llp-lend td { padding-top: 4px; padding-bottom: 4px; color: var(--text-dim); }
-.llp-lend-who { display: inline-flex; align-items: center; gap: 8px; padding-left: 14px; }
-.llp-lend-arm { width: 12px; height: 10px; border-left: 1px solid var(--text-faint); border-bottom: 1px solid var(--text-faint); margin-top: -8px; flex: none; }
-
 .llp-err { margin: 0; color: var(--s-bad); font-size: var(--t-micro); white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .llp-note { margin: 0; font-size: var(--t-micro); color: var(--text-dim); }
 
 .llp-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 28px 20px; border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); }
 .llp-empty h2 { margin: 0; font-size: var(--t-body); display: inline-flex; align-items: center; gap: 4px; }
 
-/* the side sheet: the table stays in view on its left */
+/* the side sheet: the cards stay in view on its left */
 .llp-scrim { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 10%, transparent); z-index: 60; }
 .llp-sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); box-sizing: border-box; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--ctl-shadow-pop, -8px 0 24px rgba(0, 0, 0, 0.25)); z-index: 61; display: flex; flex-direction: column; }
 .llp-sheet-head { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
@@ -80,6 +59,10 @@
 .llp-in.mono { font-family: var(--mono); font-size: var(--t-micro); }
 .llp-in:focus { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
 .llp-in-n { width: 96px; }
+.llp-f-row { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-start; }
+.llp-f-row > .llp-f { flex: 1 1 160px; }
+.llp-mini .llp-in { min-width: 0; max-width: 100%; }
+.llp-lent { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
 .llp-seg { height: 32px; max-width: 100%; }
 .llp-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .llp-btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -110,30 +93,64 @@
 .llp-kv dt { color: var(--text-faint); }
 .llp-kv dd { margin: 0; overflow-wrap: anywhere; }
 
-/* PHONE: each row stacks into a record; the sheet takes the whole width. */
+/* the cards, grouped by vendor */
+.lpc-groups { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.lpc-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.lpc-group-h { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 650; color: var(--text); }
+.lpc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 12px; align-items: start; min-width: 0; }
+.lpc-card { position: relative; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 100%; padding: 14px 16px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.lpc-card.is-owned { cursor: pointer; }
+.lpc-card.is-owned:hover { border-color: color-mix(in srgb, var(--sk-ac) 40%, var(--line)); }
+.lpc-card.is-sel { border-color: var(--sk-ac); box-shadow: 0 0 0 1px var(--sk-ac); }
+.lpc-card.is-paused, .lpc-card.is-draining { background: color-mix(in srgb, var(--s-park) 4%, var(--surface)); }
+.lpc-card.is-reauth_required { border-left: 3px solid var(--s-bad); }
+.lpc-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.lpc-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.lpc-title { font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpc-sub { display: flex; flex-wrap: wrap; gap: 0 10px; min-width: 0; font-size: var(--t-body); color: var(--text-dim); }
+.lpc-sub > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpc-head .llp-st { font-size: var(--t-body); padding-top: 2px; }
+.lpc-mono, .llp-page .lpc-card .mono { font-family: var(--mono); font-size: var(--t-body); font-weight: 400; }
+.lpc-dim { color: var(--text-dim); font-weight: 400; }
+.lpc-num { font-variant-numeric: tabular-nums; }
+.lpc-num.is-bad { color: var(--s-bad); font-weight: 650; }
+
+/* the quota left: the card's largest figures, each with its bar and next reset */
+.lpc-quota { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; min-width: 0; }
+.lpc-q { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lpc-q-l { font-size: var(--t-body); color: var(--text-dim); font-weight: 600; }
+.lpc-q-v { font-size: var(--t-body); color: var(--text-dim); white-space: nowrap; }
+.lpc-q-n { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+.lpc-q-unk { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; color: var(--text-dim); }
+.lpc-q.is-projected .lpc-q-n { color: var(--text-dim); }
+.lpc-q.is-bad .lpc-q-n { color: var(--s-bad); }
+.lpc-qbar { display: block; height: 6px; border-radius: 3px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-soft); overflow: hidden; }
+.lpc-qbar > b { display: block; height: 100%; background: var(--sk-ac); border-radius: 3px; }
+.lpc-q.is-bad .lpc-qbar > b { background: var(--s-bad); }
+.lpc-q.is-projected .lpc-qbar > b { background: repeating-linear-gradient(135deg, var(--sk-ac) 0 4px, color-mix(in srgb, var(--sk-ac) 45%, transparent) 4px 7px); }
+.lpc-q.is-off .lpc-qbar { background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, var(--line-soft) 4px 6px); }
+.lpc-q-at { font-size: var(--t-body); color: var(--text-dim); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.lpc-q-time { color: var(--text); }
+.lpc-q-ic { margin-right: 4px; }
+
+/* state, holders, Voice it, lends */
+.lpc-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-width: 0; font-size: var(--t-body); }
+.lpc-voice { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--r-pill, 10px); font-size: var(--t-body); font-weight: 600; white-space: nowrap; color: var(--info-ink, var(--info)); background: color-mix(in srgb, var(--info) 14%, transparent); }
+.lpc-lends { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 0; padding-top: 8px; border-top: 1px dashed var(--line); font-size: var(--t-body); color: var(--text-dim); min-width: 0; }
+.lpc-lends-l { font-weight: 600; }
+.lpc-lend { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.lpc-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.lpc-foot .c-btn { font-size: var(--t-body); }
+.lpc-card .llp-err { font-size: var(--t-body); }
+
+/* PHONE: one column; the sheet takes the whole width. */
 @media (max-width: 720px) {
-  .llp-tablewrap { overflow-x: visible; }
-  .llp-table, .llp-table tbody, .llp-table tr, .llp-table td, .llp-table th { display: block; width: auto; }
-  .llp-table thead { display: none; }
-  .llp-row { display: grid !important; grid-template-columns: 1fr 1fr 1fr; gap: 8px 12px; padding: 10px 12px; border-top: 1px solid var(--line-soft); align-items: start; }
-  .llp-row td { border: 0; padding: 0 !important; min-width: 0; }
-  .llp-row td:first-child { grid-column: 1 / 3; grid-row: 1; }
-  .llp-row td.llp-act { grid-column: 3; grid-row: 1; text-align: right; white-space: normal; }
-  .llp-acts { flex-wrap: wrap; justify-content: flex-end; }
-  .llp-row td[data-l]:not([data-l=''])::before { content: attr(data-l); display: block; font-size: var(--t-micro); color: var(--text-faint); margin-bottom: 2px; }
-  .llp-who, .llp-name { max-width: 100%; white-space: normal; }
-  .llp-meta > span { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
-  .llp-over { min-width: 0; }
-  .llp-lend { display: flex !important; align-items: center; gap: 4px 14px; padding: 6px 12px 6px 22px; }
-  .llp-lend td { border: 0; padding: 0 !important; background: none; }
-  .llp-lend td.llp-act { margin-left: auto; width: auto; }
-  .llp-lend-who { padding-left: 0; }
+  .lpc-grid { grid-template-columns: minmax(0, 1fr); }
+  .lpc-card { padding: 12px; }
   .llp-sheet { width: 100vw; border-left: 0; }
 }
 
-/* SHEET OPEN on a wide screen: the table steps aside rather than under, the minor columns fold. */
+/* SHEET OPEN on a wide screen: the cards step aside rather than under. */
 @media (min-width: 1100px) {
   .llp-page.has-sheet { padding-right: 448px; }
-  .llp-page.has-sheet .llp-opt { display: none; }
-  .llp-page.has-sheet .llp-classes { display: none; }
 }

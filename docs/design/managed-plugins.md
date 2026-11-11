@@ -305,8 +305,17 @@ with `builtins_managed` on, as every bundle resource is:
   `CLOUD_RUN_TASK_COUNT` is `1` (an agent with a higher index exits 0 having done nothing), and keeps its own deadline
   whatever timeout the call set. Arguments do not need to be trusted: they can only name pinned sources the intake
   already checked and release images the deployment already holds, and swarm-api checks the result (below).
-* **Its network.** No VPC connector: it reaches Artifact Registry and Cloud Storage over Google's APIs and nothing
-  else it needs; the mirrors are Artifact Registry repositories.
+* **Its network.** The job runs upstream code (gstack's `./setup`, `bun install`, security-audit's tests), and a Cloud
+  Run job with no VPC access has direct internet egress, from which that code could send the builder's token out or
+  fetch code the admin never reviewed (the security review of 11 November 2026). So every packet it sends leaves
+  through its own network, `<name_prefix>-plugin-bundle` (`vpc_access` with `egress = "ALL_TRAFFIC"`), built as the
+  intake network is (§2.2) and neither that network nor the swarm network: no router and no Cloud NAT, Private Google
+  Access on its subnetwork, an egress firewall that admits TCP 443 from the job's tag and denies the rest, and flow
+  logs. It can therefore reach Google's APIs and nothing else: Artifact Registry (`<region>-docker.pkg.dev`, where the
+  release images, the bundle repository and the npm mirror `<region>-npm.pkg.dev` are) and Cloud Storage, through
+  Private Google Access on the default domains; not the internet, the cluster or the internal services. Google's APIs
+  answer for every project, so this network alone does not stop a request to another project's resource; a VPC
+  Service Controls perimeter would, and the deployment has none.
 
 **What swarm-api holds, and what it cannot do (review finding 1).** One custom role, `swarmPluginBundleRunner`
 (`run.jobs.run` and `run.jobs.runWithOverrides`, the two Cloud Run checks a run carrying arguments passes, and
@@ -368,7 +377,9 @@ project. **Logs:** the job writes to stdout and stderr, which Cloud Run collects
 needs no log-write role; project-wide log write was needed only because Cloud Build refuses a build as a
 user-specified account that cannot write its log. Narrower still, and part of the same Terraform: a log sink with the
 filter `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-plugin-bundle"` routes the executions' logs
-to the platform's own log bucket (`terraform/infra/log_bucket.tf`), where only the platform's readers see them. That
+to the platform's own log bucket (`terraform/infra/log_bucket.tf`). The sink copies them: they also stay in the
+project's `_Default` bucket at its own retention, where anyone holding a project-level log read role sees them, so
+upstream output is not confined to the platform's readers. That
 stdout reaches Cloud Logging with no role on the runtime account is not verified live here; the first execution in a
 deployment is the proof, and if it is wrong the fallback is the old project-level `roles/logging.logWriter` row, the
 owner's call.
@@ -421,6 +432,9 @@ Cloud Build).
   diff is shown. Nothing is built before an admin asks; nothing is current before the build passes.
 * **Apply** on a bundled install writes a **bundle** record and runs one execution of the job `swarm-plugin-bundle`
   (§1.4.2) instead of moving `current_version` (a Cloud Build build until the owner's change of 11 November 2026).
+  The catalogue's own Apply route does this itself: for a bundled install it delegates to the bundle route's start
+  (one code path, the same diff check, `202` and the bundle's status), so the console keeps one Apply button and
+  nothing can reach the old move-at-once path (the owner's pick on Q21).
   `plugin_bundles/{bundle_id}` (swarm-api only, MAC'd, request P6): the bundle key (every bundled install's
   `version_id`, source sha256 and recipe digest: a bundle carries **both** bundled plugins, because one step may load
   both and runs on one image), the base (the release image digests it appended to), the execution's name, the time

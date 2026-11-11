@@ -66,6 +66,9 @@ class FakeBucket:
         self.reports: dict[str, bytes] = {}
         self.staged: dict[str, bytes] = {}
         self.pinned: dict[str, bytes] = {}
+        #: Kept source archives (a bundled install's candidate), and each write.
+        self.kept: dict[str, bytes] = {}
+        self.kept_writes: list[str] = []
         self.cleaned: list[str] = []
         self.signed: list[tuple[str, str, int, int]] = []
 
@@ -98,6 +101,16 @@ class FakeBucket:
         if object_name in self.pinned:
             return hashlib.sha256(self.pinned[object_name]).hexdigest() == sha256
         self.pinned[object_name] = self.staged[intake_id]
+        return True
+
+    def keep_source(self, intake_id: str, object_name: str, sha256: str) -> bool:
+        if object_name in self.kept:
+            return hashlib.sha256(self.kept[object_name]).hexdigest() == sha256
+        data = self.quarantine.get(intake_id)
+        if data is None or hashlib.sha256(data).hexdigest() != sha256:
+            return False
+        self.kept[object_name] = data
+        self.kept_writes.append(object_name)
         return True
 
     def clean(self, intake_id: str) -> None:

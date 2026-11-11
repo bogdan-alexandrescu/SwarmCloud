@@ -22,6 +22,31 @@ WHAT WAS MEASURED, AND WHERE
   route's answer was NOT captured live from here: `parse_usage` reads exactly
   those names and refuses anything else, so a shape change fails in one place
   and leaves the previous reading standing.
+* The DEVICE-CODE sign-in, read from the same codex CLI (codex-cli 0.154.0 in
+  agent-runtime-base, its musl binary under
+  `@openai/codex-linux-x64/vendor/.../bin/codex`, with `strings`, on
+  2026-11-11): `codex login --help` lists `--device-auth`, and the binary's
+  own sign-in hint says "On a remote or headless machine? Use `codex login
+  --device-auth` instead." Its module is `login/src/device_code_auth.rs`;
+  beside it are the base `https://auth.openai.com/api/accounts`, the paths
+  `/deviceauth/usercode` and `/deviceauth/token`, the page `/codex/device`,
+  the redirect `/deviceauth/callback`, the field names `client_id`,
+  `device_auth_id`, `user_code` (and `usercode`), `interval`,
+  `authorization_code`, `code_challenge` and `code_verifier`, and the
+  sentences "device code request failed with status", "device auth failed
+  with status", "device auth timed out after 15 minutes", "device code login
+  is not enabled for this Codex server" and the person's instructions "Open
+  this link in your browser and sign in to your account ... Enter this
+  one-time code (expires in 15 minutes)". So: a JSON POST of the client id to
+  `usercode` answers a device id, the code to show and a poll interval; a
+  JSON POST of the device id and the code to `token` answers, once the person
+  has approved, an authorization code and the PKCE verifier the VENDOR made;
+  that code is redeemed at `/oauth/token` with the `deviceauth/callback`
+  redirect, exactly as a PKCE code is. Which statuses mean "not yet" is not
+  readable from the strings: 403 and 404 are taken as pending, as codex's
+  source treats them, and every other status is an error naming its number
+  (so a change fails loudly, never as a plan filed wrong). Nothing here was
+  run against the vendor from this sandbox.
 * swarm-voice's "Sign in with ChatGPT" refresh (apps/swarm-voice/.../credential.py):
   a FORM POST with `grant_type`, `client_id` and `refresh_token`, the rotated
   refresh token stored before the access token is used, refreshes serialised.
@@ -42,6 +67,10 @@ THE RULES THIS MODULE HOLDS
   account is marked `reauth needed` and only a new sign-in clears it.
 * No token is ever logged, raised or returned: errors carry a status only,
   because an error body can quote the request.
+* A device sign-in's device id never leaves the broker: it is held in the
+  pending sign-in record keyed by `state`, and dropped when the plan is
+  filed or the sign-in expires. The browser sees the code to type, the
+  address and the state, nothing else.
 """
 
 from __future__ import annotations
@@ -51,7 +80,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urlencode
 
 from .accounts import WindowReading
@@ -72,6 +101,19 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 #: (`sc account add --provider openai`).
 REDIRECT_URI = "http://localhost:1455/auth/callback"
 SCOPES = "openid profile email offline_access"
+
+#: The device-code sign-in (`codex login --device-auth`, read from the codex
+#: binary): where the code is asked for and polled, the page the person types
+#: it on, and the redirect its authorization code is redeemed with.
+DEVICE_API_BASE = f"{ISSUER}/api/accounts"
+DEVICE_USERCODE_ENDPOINT = f"{DEVICE_API_BASE}/deviceauth/usercode"
+DEVICE_TOKEN_ENDPOINT = f"{DEVICE_API_BASE}/deviceauth/token"
+DEVICE_VERIFICATION_URI = f"{ISSUER}/codex/device"
+DEVICE_REDIRECT_URI = f"{ISSUER}/deviceauth/callback"
+#: codex's own poll interval when the vendor names none, in seconds.
+DEVICE_DEFAULT_INTERVAL = 5
+#: The statuses the token route answers while the person has not approved.
+_DEVICE_PENDING = (403, 404)
 
 #: Where plan traffic goes (the Responses wire), and the usage route codex
 #: itself reads its plan's windows from.
@@ -136,6 +178,14 @@ class PlanTokenEndpoint(Protocol):
     def redeem(
         self, *, code: str, verifier: str, redirect_uri: str, state: str = ""
     ) -> dict[str, Any]: ...
+
+    def start_device(self) -> dict[str, Any]: ...
+
+    def poll_device(self, *, device_auth_id: str, user_code: str) -> dict[str, Any] | None: ...
+
+
+#: A JSON POST: (url, body) -> (status, parsed answer). Injected in tests.
+JsonPost = Callable[[str, dict[str, str]], tuple[int, Any]]
 
 
 def is_plan_payload(payload: str) -> bool:
@@ -359,9 +409,16 @@ def build_authorize_url(*, state: str, code_challenge: str) -> str:
 class HttpPlanTokenEndpoint:
     """The real endpoint. Injected so tests never make a network call."""
 
-    def __init__(self, url: str = TOKEN_ENDPOINT, client_id: str = CODEX_CLIENT_ID) -> None:
+    def __init__(
+        self,
+        url: str = TOKEN_ENDPOINT,
+        client_id: str = CODEX_CLIENT_ID,
+        *,
+        json_post: JsonPost | None = None,
+    ) -> None:
         self._url = url
         self._client_id = client_id
+        self._json_post = json_post or _http_json_post
 
     def _post(self, form: dict[str, str], *, refresh: bool) -> dict[str, Any]:
         import urllib.error
@@ -419,6 +476,81 @@ class HttpPlanTokenEndpoint:
             },
             refresh=False,
         )
+
+    def start_device(self) -> dict[str, Any]:
+        """Ask for a device code: {device_auth_id, user_code, interval}.
+
+        The device id is the broker's to hold; only the user code is shown.
+        """
+        status, data = self._json_post(DEVICE_USERCODE_ENDPOINT, {"client_id": self._client_id})
+        if status == 404:
+            raise CredentialError(
+                "device code sign-in is not enabled for ChatGPT plans right now; "
+                "use `sc account add --provider openai` instead"
+            )
+        if status != 200 or not isinstance(data, dict):
+            raise CredentialError(f"the ChatGPT device sign-in returned {status}")
+        device_auth_id = str(data.get("device_auth_id") or "")
+        user_code = str(data.get("user_code") or data.get("usercode") or "")
+        if not device_auth_id or not user_code:
+            raise CredentialError("the ChatGPT device sign-in answered with no code")
+        return {
+            "device_auth_id": device_auth_id,
+            "user_code": user_code,
+            "interval": _interval(data.get("interval")),
+        }
+
+    def poll_device(self, *, device_auth_id: str, user_code: str) -> dict[str, Any] | None:
+        """None while the person has not approved; once they have, the
+        authorization code and the vendor's PKCE verifier to redeem it with."""
+        status, data = self._json_post(
+            DEVICE_TOKEN_ENDPOINT, {"device_auth_id": device_auth_id, "user_code": user_code}
+        )
+        if status in _DEVICE_PENDING:
+            return None
+        if status != 200 or not isinstance(data, dict):
+            raise CredentialError(f"the ChatGPT device sign-in returned {status}")
+        code = str(data.get("authorization_code") or "")
+        verifier = str(data.get("code_verifier") or "")
+        if not code or not verifier:
+            raise CredentialError("the ChatGPT device sign-in answered with no code")
+        return {"authorization_code": code, "code_verifier": verifier}
+
+
+def _interval(raw: Any) -> int:
+    # codex reads it as a string of seconds; a number is taken too.
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEVICE_DEFAULT_INTERVAL
+    return seconds if 1 <= seconds <= 60 else DEVICE_DEFAULT_INTERVAL
+
+
+def _http_json_post(url: str, body: dict[str, str]) -> tuple[int, Any]:
+    """POST JSON; (status, parsed answer). An error's body is parsed for the
+    caller to read its shape, never quoted into a message or a log."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    except urllib.error.URLError as exc:
+        raise CredentialError(
+            f"could not reach the ChatGPT device sign-in: {type(exc.reason).__name__}"
+        ) from None
+    try:
+        return status, json.loads(raw.decode("utf-8")) if raw else {}
+    except ValueError:
+        return status, {}
 
 
 # -- usage ---------------------------------------------------------------------

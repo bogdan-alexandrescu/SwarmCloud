@@ -2881,6 +2881,23 @@ export interface AgentRun {
 }
 
 /**
+ * The attempt's credential fields (contract request 152), as the attempt card's
+ * Plan / API key chip reads them. A tier the contract does not name and an
+ * empty account id read as not recorded (null), never as a guess; a field the
+ * API did not serve stays absent (an older API).
+ */
+export function normaliseAttemptCredential(a: AttemptRow): AttemptRow {
+  const out = { ...a }
+  if ('credential_tier' in a) {
+    out.credential_tier = a.credential_tier === 'plan' || a.credential_tier === 'api_key' ? a.credential_tier : null
+  }
+  if ('account_id' in a) {
+    out.account_id = typeof a.account_id === 'string' && a.account_id.trim() !== '' ? a.account_id : null
+  }
+  return out
+}
+
+/**
  * THE MASKED INPUT IS NOT PART OF THIS READ (PR #210 re-review). It was a
  * fifth read in the `Promise.all` below, so the whole drawer -- the task's
  * state, its events, its attempts -- waited on `/v1/tasks/{id}/input`, and a
@@ -2911,8 +2928,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   // the attempt card reads it off its own row. Absent on an older API.
   const withAccounts = (d: { attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }) =>
     d.accounts_by_attempt === undefined
-      ? d.attempts
-      : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
+      ? d.attempts.map(normaliseAttemptCredential)
+      : d.attempts.map((a) => ({ ...normaliseAttemptCredential(a), account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading') return task
   // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
@@ -7422,13 +7439,32 @@ export async function finishAccountSignIn(body: {
   }
 }
 
-/** `PUT /v1/accounts/{id}/lending`. The whole list, not a delta. */
+/**
+ * `PUT /v1/accounts/{id}/lending`. The whole set, not a delta: a list is
+ * today's bare `lend_to` (a borrower already lent keeps its cap), a map is
+ * `lends`, each borrowing workspace with its agents cap (§4.6, Q7).
+ */
 export async function setAccountLending(
   accountId: string,
-  lendTo: string[],
+  lendTo: string[] | Record<string, number>,
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
-  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
+  const body = Array.isArray(lendTo)
+    ? { lend_to: lendTo }
+    : { lends: Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n }])) }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', body)
+}
+
+/**
+ * `PUT /v1/accounts/{id}/per-workspace-max` (§4.6, Q6): at most this many of
+ * the plan's agents at once may be one workspace's, the owner's or a
+ * borrower's. The whole map; `{}` clears every cap. Owner only.
+ */
+export async function setAccountPerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixturePerWorkspaceMax(accountId, caps)
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', {
+    per_workspace_max: caps,
+  })
 }
 
 /**
@@ -7445,7 +7481,21 @@ export async function setAccountLending(
  * `blocked_by`, `next_eligible_at`, `max_agents`, the organisation and the
  * duplicate marks), typed in accountsPool.ts.
  */
-export type ServedAccount = Account & PoolFields & { model_classes?: string[] }
+export type ServedAccount = Account & PoolFields & { model_classes?: string[] } & PlanCaps
+
+/** One lend's cap as the broker serves it (§4.6, Q7); `cap_set` false is a lend carried over from `lend_to`. */
+export type LendCap = { max_agents: number; monthly_spend_cap_usd: number | null; cap_set: boolean }
+
+/**
+ * A plan's caps as served: each lend's cap, each workspace's per-workspace
+ * cap (Q6), and, on the owner's own rows, each borrower's live holders --
+ * `null` when swarm-api could not read them, absent from an older one.
+ */
+export type PlanCaps = {
+  lends?: Record<string, LendCap>
+  per_workspace_max?: Record<string, number>
+  lend_holders?: Record<string, number> | null
+}
 
 /**
  * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
@@ -8347,11 +8397,21 @@ async function fixtureFinishSignIn(body: {
   }
 }
 
-async function fixtureLending(accountId: string, lendTo: string[]): Promise<Result<unknown>> {
+async function fixtureLending(accountId: string, lendTo: string[] | Record<string, number>): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 180))
+  const borrowers = Array.isArray(lendTo) ? lendTo : Object.keys(lendTo)
+  const lends = Array.isArray(lendTo)
+    ? null
+    : Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n, monthly_spend_cap_usd: null, cap_set: true }]))
   fixtureAccounts = fixtureAccounts.map((a) =>
-    a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
+    a.account_id === accountId ? { ...a, lend_to: borrowers, ...(lends !== null ? { lends } : {}) } : a,
   )
+  return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixturePerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? { ...a, per_workspace_max: { ...caps } } : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
@@ -17389,6 +17449,8 @@ export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsag
 export const VOICE_SETTINGS = '/v1/voice/settings'
 /** Every name a setting may take: the page offers these and nothing else. */
 export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+/** `DELETE {label}`: the dedicated key, its label typed back. Platform admins only. */
+export const VOICE_DEDICATED_KEY = '/v1/voice/settings/dedicated-key'
 
 /** The fields a write may name (speech_catalogue.FIELDS). */
 export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
@@ -17413,6 +17475,19 @@ export interface VoiceKeyStatus {
   link: { open: boolean; expires_at: string | null }
 }
 
+/** The dedicated Voice it key's status (`dedicated_key`): never the key or its secret. */
+export interface VoiceDedicatedKey {
+  /** null when the quota broker could not say. */
+  set: boolean | null
+  label: string | null
+  display_name: string | null
+  by: string | null
+  at: string | null
+  state: string | null
+  /** Whether the reader may delete it: a platform admin, while it is set. */
+  can_delete: boolean
+}
+
 export interface VoiceSettingsView {
   settings: Record<VoiceSettingField, string>
   /** Debug mode (`settings.debug`): each session that starts with it on keeps a turn-by-turn trace. */
@@ -17425,6 +17500,7 @@ export interface VoiceSettingsView {
   /** The machine fields the next start changes. */
   pending: VoiceSettingField[]
   openai_key: VoiceKeyStatus
+  dedicated_key: VoiceDedicatedKey
 }
 
 const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -17471,6 +17547,7 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
   const a = objOf(d.applied)
   const k = objOf(d.openai_key) ?? {}
   const link = objOf(k.link) ?? {}
+  const dk = objOf(d.dedicated_key) ?? {}
   return {
     settings,
     debug: s.debug === true,
@@ -17484,6 +17561,15 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
       by: strOf(k.by),
       at: strOf(k.at),
       link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+    dedicated_key: {
+      set: typeof dk.set === 'boolean' ? dk.set : null,
+      label: strOf(dk.label),
+      display_name: strOf(dk.display_name),
+      by: strOf(dk.by),
+      at: strOf(dk.at),
+      state: strOf(dk.state),
+      can_delete: dk.can_delete === true,
     },
   }
 }
@@ -17519,6 +17605,7 @@ function fixtureVoiceCatalogue(): unknown {
 }
 
 let fixtureVoiceSaved: { settings: Record<string, string>; debug: boolean; version: number; updated_at: string } | null = null
+let fixtureVoiceKeyDeleted = false
 
 function fixtureVoiceSettings(): unknown {
   const settings = fixtureVoiceSaved?.settings ?? {
@@ -17534,6 +17621,9 @@ function fixtureVoiceSettings(): unknown {
     applied,
     pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
     openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+    dedicated_key: fixtureVoiceKeyDeleted
+      ? { set: false, label: null, display_name: null, by: null, at: null, state: null, can_delete: false }
+      : { set: true, label: 'voice-openai', display_name: null, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), state: 'available', can_delete: fixtureIsAdmin },
   }
 }
 
@@ -17585,6 +17675,24 @@ export async function saveVoiceSettings(version: number, changes: VoiceSettingsC
     return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
   }
   const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/**
+ * `DELETE /v1/voice/settings/dedicated-key` with the label typed back:
+ * swarm-api deletes the broker's dedicated key, and only that one, and
+ * answers the settings read again. Platform admins only.
+ */
+export async function deleteVoiceDedicatedKey(label: string): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_DEDICATED_KEY)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    fixtureVoiceKeyDeleted = true
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'DELETE', { label })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
   return r as Result<VoiceSettingsView>
 }
@@ -18120,6 +18228,18 @@ export const VOICE_TRACE_SESSION = '/v1/voice/trace/sessions/{session_id}'
 /** The stream event a finished turn sends to Talk while debug mode is on (voice/stream.py). */
 export const VOICE_TRACE_TURN = 'trace.turn'
 
+/** The stream event a spent Live key's held next tier sends to Talk (swarm-api voice/stream.py `TIER_REOPEN`). */
+export const VOICE_TIER_REOPEN = 'voice.tier.reopen'
+/** The tiers a reopen names (swarm-api voice/sessions.py `REOPEN_TIERS`): a name, never a key. */
+export const VOICE_TIERS = ['plan', 'api_key', 'voice_dedicated'] as const
+export type VoiceTier = (typeof VOICE_TIERS)[number]
+/** `voice.tier.reopen`: the tier the session's next start opens on. */
+export interface VoiceTierReopenEvent {
+  type: typeof VOICE_TIER_REOPEN
+  seq: number
+  tier: VoiceTier
+}
+
 /** One card or mock-up a turn drew, or tried to: `refused` is the masked reason it was not. */
 export interface VoiceTraceDrawn {
   kind: string
@@ -18146,6 +18266,8 @@ export interface VoiceTraceTurn {
   none_code: string | null
   told: VoiceTraceText
   events: Record<string, number>
+  /** The credential tier that served the turn (`plan`, `api_key`, `voice_dedicated`), only when the server sends one. */
+  tier?: string
 }
 
 /** One traced session in the list. */
@@ -18219,6 +18341,7 @@ export function normVoiceTraceTurn(raw: unknown): VoiceTraceTurn {
     none_code: telStr(o.none_code),
     told: traceTexts(o.told),
     events: traceCounts(o.events),
+    ...(typeof o.tier === 'string' ? { tier: o.tier } : {}),
   }
 }
 

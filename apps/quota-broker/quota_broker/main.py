@@ -66,6 +66,7 @@ from .accounts import (
     HOLD_LOG_RETENTION,
     MAX_AGENTS_BEFORE_READING,
     SWAP_DRAIN,
+    SWAP_EXHAUSTED,
     SWAP_PLAN_AVAILABLE,
     SWAP_REASONS,
     SWAP_UNUSABLE,
@@ -81,6 +82,7 @@ from .accounts import (
     lends_from_firestore,
     lend_spend_from_firestore,
     month_spend_from_firestore,
+    next_spend_month,
     soonest,
     spend_cap_from_firestore,
     spend_month,
@@ -292,6 +294,17 @@ class AccountExchange(StrictModel):
     #: (swarm-api) must send it and it must equal the pending sign-in's owner;
     #: see `finish_account_authorization`. Optional in the schema only so that
     #: its absence is refused as a 403 that names it, not as a bare 422.
+    expected_owner: str | None = Field(default=None, max_length=128)
+
+
+class AccountDevicePoll(StrictModel):
+    """Ask whether a device-code sign-in was approved, by its state.
+
+    No code here: the device id the vendor is polled with stays in the
+    pending record. `expected_owner` is `AccountExchange`'s, with its rule.
+    """
+
+    state: str = Field(min_length=8, max_length=256)
     expected_owner: str | None = Field(default=None, max_length=128)
 
 
@@ -532,6 +545,19 @@ class _AttemptHold(StrictModel):
     assignment_id: str = Field(min_length=1, max_length=128)
     task_id: str = Field(min_length=1, max_length=128)
     attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class AccountHoldStatus(_AttemptHold):
+    """A holder's per-turn status read: the proof, and on a KEY the running
+    spend (§4.6).
+
+    `cost_usd` is the attempt's estimate of what has run on this hold so far,
+    the same figure the hold's close will carry, bounded as a release's and a
+    swap's are. On a key it is recorded on the hold (`Hold.running_cost_usd`)
+    and counted toward the month cap and a borrower's lend cap before the
+    hold closes. Ignored on a plan's hold: a plan's price is flat."""
+
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
 
 
 class WindowIn(StrictModel):
@@ -1062,6 +1088,22 @@ def account_to_api(
             "limited_until": _iso(getattr(account, "limited_until", None)),
             "window": getattr(account, "limited_window", None),
         })
+    # A KEY'S OWN MARKS (§5.1, §5.2): credit gone, or the month's spend --
+    # closed and running (`Account.spent`) -- at its cap. `choose()` skips
+    # both (`Account.has_headroom`), so the verdict says so with its reason,
+    # for every reader, and no reader re-derives it.
+    if api_key.is_key(account.provider):
+        exhausted_at = getattr(account, "exhausted_at", None)
+        if isinstance(exhausted_at, datetime):
+            blocked_by.append({"reason": CAP_EXHAUSTED, "exhausted_at": exhausted_at.isoformat()})
+        over = getattr(account, "is_over_spend_cap", None)
+        if callable(over) and over(now):
+            blocked_by.append({
+                "reason": CAP_SPEND,
+                "monthly_spend_cap_usd": account.monthly_spend_cap_usd,
+                "spent_usd": round(account.spent(now), 6),
+                "clears_at": next_spend_month(now).isoformat(),
+            })
     max_agents = getattr(account, "max_agents", None)
     live_holds = getattr(account, "live_holds", None)
     if isinstance(max_agents, int) and callable(live_holds):
@@ -1225,7 +1267,10 @@ def account_to_api(
         and not [b for b in blocked_by if not b.get("advisory")],
         #: What refuses it: each window under its floor (`used`, the `floor`
         #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
-        #: every slot is taken. Empty when nothing does.
+        #: every slot is taken; on a key, `reason` `exhausted` (credit gone,
+        #: with `exhausted_at`) or `spend_cap` (the month's spend, closed and
+        #: running, at `monthly_spend_cap_usd`, with `spent_usd` and when it
+        #: `clears_at`). Empty when nothing does.
         "blocked_by": blocked_by,
         #: When a window that blocks it clears, or null when no window does --
         #: a full account frees when an agent on it finishes, which no clock
@@ -2490,6 +2535,93 @@ def renew_voice_hold(
     return _apply(transaction)
 
 
+def record_running_spend(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    cost_usd: float,
+    now: datetime,
+) -> tuple[dict[str, Any], Hold] | None:
+    """Record a KEY holder's running spend on its hold, in one transaction
+    (§4.6). (the account document as written, the hold), or None when the
+    caller holds no live hold there: proved again inside the transaction, so
+    a hold released or fenced since `_holder` read it is never written.
+
+    The stored figure only rises: two reads crossing in flight never lower
+    what the caps count. A plan's hold is answered unchanged; its price is
+    flat. Nothing else on the document moves, so `assigned` and every other
+    hold are written back as they were read."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[dict[str, Any], Hold] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        held = _attempt_hold(
+            data, now, assignment_id=assignment_id, tenant_id=tenant_id,
+            task_id=task_id, attempt_id=attempt_id,
+        )
+        if held is None:
+            return None
+        if not api_key.is_key(data.get("provider")):
+            return data, held
+        figure = max(held.running_cost_usd or 0.0, round(cost_usd, 6))
+        if figure == held.running_cost_usd:
+            return data, held
+        holds = list(holds_from_firestore(data.get("holds")))
+        updated = replace(held, running_cost_usd=figure)
+        holds = [updated if h == held else h for h in holds]
+        payload = _hold_payload(holds)
+        txn.update(ref, payload)
+        return {**data, **payload}, updated
+
+    return _apply(transaction)
+
+
+def _raw_spend_reached(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The spend cap a KEY holder has reached on a raw document, by name
+    (`CAP_SPEND` for the key's month cap, `CAP_LEND_SPEND` for a borrower's
+    lend), or None. The spend is `_raw_tenant_refusal`'s, closed and running,
+    so the holder that took it over is answered `move` at its next turn
+    boundary (§4.6), not when it ends. A figure nobody can read moves nobody:
+    the next grant is refused on it anyway."""
+    if not api_key.is_key(data.get("provider")):
+        return None
+    owner = data.get("owner_tenant")
+    month = spend_month(now)
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        lent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner), key=True)
+            if isinstance(owner, str) and owner
+            else {}
+        )
+    except ValueError:
+        return None
+    if cap is not None and spent + _running_spend(live) >= cap:
+        return CAP_SPEND
+    lend = lends.get(tenant_id) if tenant_id != owner else None
+    if lend is not None and lend.monthly_spend_cap_usd is not None and (
+        lent.get(tenant_id, 0.0) + _running_spend(live, tenant_id)
+        >= lend.monthly_spend_cap_usd
+    ):
+        return CAP_LEND_SPEND
+    return None
+
+
 class PoolInUse(Exception):
     """A pool cannot be removed while the account holds a lease of it."""
 
@@ -2584,6 +2716,10 @@ def _raw_tenant_refusal(
     `max_agents` and spend cap (Q7). A malformed cap or spend is a refusal,
     as a malformed `max_agents` is no room: a figure nobody can read must not
     read as no limit.
+
+    THE SPEND IS `Account.spent`'s: the closed holds' and the live holds'
+    running spend (`Hold.running_cost_usd`), so a long attempt reaches the
+    cap before it ends (§4.6).
     """
     owner = data.get("owner_tenant")
     is_key = api_key.is_key(data.get("provider"))
@@ -2593,7 +2729,12 @@ def _raw_tenant_refusal(
     try:
         cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
         spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
-        lend_spent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        spent += _running_spend(live)
+        lend_spent = dict(lend_spend_from_firestore(data.get("lend_spend")).get(month, {}))
+        if tenant_id != owner:
+            lend_spent[tenant_id] = lend_spent.get(tenant_id, 0.0) + _running_spend(
+                live, tenant_id
+            )
         lends = (
             lends_from_firestore(data.get("lends"), owner_tenant=str(owner or ""), key=is_key)
             if isinstance(owner, str) and owner
@@ -2616,6 +2757,16 @@ def _raw_tenant_refusal(
         ):
             return CAP_LEND_SPEND
     return None
+
+
+def _running_spend(live: list[Hold], tenant_id: str | None = None) -> float:
+    """The live holds' running spend (`Hold.running_cost_usd`), all of them
+    or one workspace's: what `Account.spent` adds to the closed spend."""
+    return sum(
+        h.running_cost_usd or 0.0
+        for h in live
+        if tenant_id is None or h.tenant_id == tenant_id
+    )
 
 
 def _spend_payload(
@@ -4078,6 +4229,9 @@ def create_app(
         body: RateLimitReport = Body(default_factory=RateLimitReport),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        key_provider = provider.strip().lower()
+        if key_provider in API_KEY_PROVIDERS:
+            return _key_credit_gone(request, authorization, key_provider, tenant_id, body)
         name = _known_provider(provider)
         _authorize(request, authorization, tenant_id)
         scope = _account_scope(request, name, tenant_id, body, HEALTH_EXHAUSTED)
@@ -4093,6 +4247,60 @@ def create_app(
         request.app.state.metrics.reports.labels(provider=name, kind="exhausted").inc()
         request.app.state.metrics.observe(state)
         return _scoped_answer(state, scope)
+
+    def _key_credit_gone(
+        request: Request,
+        authorization: str | None,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport,
+    ) -> dict[str, Any]:
+        """A key holder's credit-gone report under the key's OWN provider
+        (§5.2): `anthropic-api` or `openai-api`, for a held account of that
+        provider, and nothing else.
+
+        Marked `exhausted_at` by the health record's `exhausted` kind
+        (`AccountStore.record_health`), which a Resume or the hourly probe
+        clears -- and NOT a rate limit: no `limited_until`, because credit
+        gone does not reset by itself. The tenant's AIMD target is not
+        touched; the answer reads the key's vendor's, as it stands.
+
+        REFUSED (422), as every key provider was before: a report that names
+        no account, one whose account is not a key of this provider, and one
+        whose hold proof is stale -- a key provider has no tenant-level
+        reading to fall back on, so an unproven report counts for nothing.
+        """
+        _authorize(request, authorization, tenant_id)
+        ref = body.account
+        held = (
+            _held_report_account(request, tenant_id, provider, ref)
+            if ref is not None
+            else None
+        )
+        if held is None:
+            if ref is not None:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerValidationError(
+                f"a report under {provider} names a held account of that provider"
+            )
+        account, hold = held
+        request.app.state.account_store.record_health(
+            account.account_id,
+            HEALTH_EXHAUSTED,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        log.warning(
+            "a key's credit is gone; it is skipped until a Resume or the hourly probe",
+            extra={"account_id": account.account_id, "tenant_id": tenant_id,
+                   "provider": provider},
+        )
+        vendor = VENDOR_OF.get(provider, provider)
+        state = request.app.state.broker.current(vendor, tenant_id)
+        request.app.state.metrics.reports.labels(provider=provider, kind="exhausted").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, SCOPE_ACCOUNT)
 
     @app.post("/v1/quota/{provider}/{tenant_id}/account-error")
     def report_account_error(
@@ -5241,6 +5449,265 @@ def create_app(
             "expires_at": credential.expires_at.isoformat(),
             "note": "stored write-only; no route in this service returns key material",
         }
+
+    # ------------------------------------------------------------------
+    # A ChatGPT plan from a browser, with a device code
+    # ------------------------------------------------------------------
+    #
+    # The plan's PKCE sign-in redirects to the signing-in machine, so a
+    # browser cannot finish it. The codex CLI's `--device-auth` flow shows a
+    # one-time code to type on the vendor's page instead (openai_plan's
+    # docstring says what was read and where). The DEVICE ID the vendor is
+    # polled with is held here, in the pending record keyed by `state`, and
+    # never answered: the browser sees the code to type, the address and the
+    # state. A poll is the exchange's twin -- the same caller rule, the same
+    # owner check before anything is spent, the same filing.
+
+    #: How long a claimed poll keeps others off the vendor, so two polls of
+    #: one approved sign-in cannot both redeem it, and a poll that died
+    #: mid-way does not wedge the sign-in.
+    DEVICE_CLAIM = timedelta(seconds=60)
+
+    def _device_caller(request: Request, authorization: str | None, claimed: str | None) -> str:
+        """Who is polling: `finish_account_authorization`'s rule, unchanged."""
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        claimed = (claimed or "").strip()
+        if is_platform:
+            if not claimed:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="missing_expected_owner"
+                ).inc()
+                raise BrokerAuthError(
+                    "a platform caller must send expected_owner, the tenant it "
+                    "checked the person to be; without it this sign-in cannot "
+                    "be tied to whoever is polling it"
+                )
+            return claimed
+        caller = str(caller_tenant or "")
+        if claimed and claimed != caller:
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError("caller may not poll a sign-in for another tenant")
+        return caller
+
+    def _claim_device_poll(db: Any, ref: Any, now: datetime) -> dict[str, Any] | None:
+        """The pending record, claimed for this poll in one transaction, or
+        None when another poll holds it or it was filed meanwhile."""
+        from google.cloud import firestore
+
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any] | None:
+            snap = _txn_snapshot(txn.get(ref))
+            if not getattr(snap, "exists", False):
+                return None
+            data = snap.to_dict() or {}
+            if data.get("filed_account_id"):
+                return None
+            held = data.get("claimed_at")
+            if isinstance(held, datetime) and now - _aware_utc(held) < DEVICE_CLAIM:
+                return None
+            txn.update(ref, {"claimed_at": now})
+            return data
+
+        return _apply(transaction)
+
+    def _filed_answer(
+        account: Any, organisation: Organisation | None, expires_at: str | None
+    ) -> dict[str, Any]:
+        return {
+            "status": "filed",
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": expires_at,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    @app.post("/v1/accounts/device/start")
+    def begin_device_authorization(
+        request: Request,
+        body: AccountAuthorize,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        pool_store = _accounts(request)
+        try:
+            validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                refuse_plan_label(body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if _account_provider(body.provider) != openai_plan.PROVIDER:
+            raise BrokerValidationError(
+                "only a ChatGPT plan signs in with a device code; a Claude "
+                "subscription uses the sign-in that shows a code to paste"
+            )
+        try:
+            device = request.app.state.plan_token_endpoint.start_device()
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        state = new_state()
+        request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
+            {
+                "state": state,
+                "kind": "device",
+                "device_auth_id": device["device_auth_id"],
+                "user_code": device["user_code"],
+                "interval": int(device["interval"]),
+                "owner_tenant": body.owner_tenant,
+                "label": body.label,
+                "provider": openai_plan.PROVIDER,
+                "lend_to": list(body.lend_to),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return {
+            "state": state,
+            "user_code": device["user_code"],
+            "verification_uri": openai_plan.DEVICE_VERIFICATION_URI,
+            "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            "interval_seconds": int(device["interval"]),
+            "provider": openai_plan.PROVIDER,
+        }
+
+    @app.post("/v1/accounts/device/poll")
+    def poll_device_authorization(
+        request: Request,
+        body: AccountDevicePoll,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        caller = _device_caller(request, authorization, body.expected_owner)
+        store = _accounts(request)
+        secrets_store = getattr(request.app.state, "secret_store", None)
+        if secrets_store is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        db = request.app.state.broker.db
+        ref = db.collection(PENDING_AUTH).document(body.state)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            # Expired and dropped, or never started: either way there is
+            # nothing to poll, and saying which would tell a stranger which
+            # states exist.
+            return {"status": "expired"}
+        pending = snap.to_dict() or {}
+        if pending.get("kind") != "device":
+            raise BrokerValidationError(
+                "this sign-in shows a code to paste, not a device code; finish it there"
+            )
+
+        # THE OWNER CHECK, before the vendor is asked and before anything is
+        # changed: a refused caller spends nothing and leaves the sign-in for
+        # its owner, as `finish_account_authorization` does.
+        owner = str(pending.get("owner_tenant") or "")
+        if not owner or caller != owner:
+            from fastapi.responses import JSONResponse
+
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": SIGN_IN_OWNER_MISMATCH,
+                    "message": (
+                        "this sign-in was started by a different tenant; only "
+                        "that tenant can finish it. Press Add plan to start "
+                        "your own."
+                    ),
+                },
+            )
+
+        filed = str(pending.get("filed_account_id") or "")
+        if filed:
+            account = store.get(filed)
+            if account is not None:
+                recorded = (
+                    Organisation(
+                        identity=account.organisation_id,
+                        name=account.organisation_name,
+                        plan=account.organisation_plan,
+                    )
+                    if account.organisation_id
+                    else None
+                )
+                return _filed_answer(account, recorded, pending.get("expires_at"))
+            return {"status": "expired"}
+
+        now = datetime.now(timezone.utc)
+        started = pending.get("created_at")
+        if isinstance(started, datetime) and now - _aware_utc(started) > PENDING_TTL:
+            ref.delete()
+            return {"status": "expired"}
+
+        interval = int(pending.get("interval") or openai_plan.DEVICE_DEFAULT_INTERVAL)
+        claimed = _claim_device_poll(db, ref, now)
+        if claimed is None:
+            # Another poll holds it, or filed it a moment ago: the next poll
+            # reads the outcome.
+            return {"status": "pending", "interval_seconds": interval}
+
+        endpoint = request.app.state.plan_token_endpoint
+        try:
+            approved = endpoint.poll_device(
+                device_auth_id=str(claimed.get("device_auth_id") or ""),
+                user_code=str(claimed.get("user_code") or ""),
+            )
+        except CredentialError as exc:
+            ref.update({"claimed_at": None})
+            raise BrokerValidationError(str(exc)) from None
+        if approved is None:
+            ref.update({"claimed_at": None})
+            return {"status": "pending", "interval_seconds": interval}
+
+        # Approved: the vendor's code is single-use, so whatever happens now
+        # the device sign-in is spent. A failure drops the record and says to
+        # start again; success files the plan exactly as a PKCE sign-in does.
+        try:
+            payload = endpoint.redeem(
+                code=approved["authorization_code"],
+                verifier=approved["code_verifier"],
+                redirect_uri=openai_plan.DEVICE_REDIRECT_URI,
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            ref.delete()
+            raise BrokerValidationError(f"{exc} Press Add plan to start again.") from None
+        try:
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets_store,
+                owner_tenant=owner,
+                label=str(claimed.get("label") or ""),
+                provider=openai_plan.PROVIDER,
+                lend_to=list(claimed.get("lend_to") or ()),
+                credential_payload=openai_plan.serialise_plan(credential),
+                access_token=openai_plan.published_value(credential),
+                organisation=credential.organisation,
+            )
+        except Exception:
+            ref.delete()
+            raise
+        expires_at = credential.expires_at.isoformat()
+        # The record stays, without the device id, so a second poll finds the
+        # plan filed instead of starting anything; it ages out with the rest.
+        ref.set(
+            {
+                "state": body.state,
+                "kind": "device",
+                "owner_tenant": owner,
+                "provider": openai_plan.PROVIDER,
+                "filed_account_id": account.account_id,
+                "expires_at": expires_at,
+                "created_at": claimed.get("created_at") or now,
+                "filed_at": now,
+            }
+        )
+        return _filed_answer(account, credential.organisation, expires_at)
 
     @app.post("/v1/accounts", status_code=201)
     def register_account(
@@ -6782,7 +7249,7 @@ def create_app(
     def account_hold_status(
         request: Request,
         account_id: str,
-        body: _AttemptHold,
+        body: AccountHoldStatus,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         """Whether the caller's hold must move (S14). One cheap read.
@@ -6791,10 +7258,41 @@ def create_app(
         the mark a drain wrote on the hold, or `drain` for an account that is
         DRAINING whatever its holds say. A POST, so the assignment id is in a
         body rather than in a URL an access log keeps.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`,
+        recorded on its hold in one transaction (`record_running_spend`), so
+        the key's month cap and a borrower's lend cap count a long attempt
+        before it ends. A key whose spend, closed and running, has reached
+        either cap answers `move` `exhausted`: the worker checkpoints and
+        swaps at this turn boundary, and the swap closes the hold with its
+        `cost_usd`, counted once.
         """
         tenant_id, data, hold = _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        if body.cost_usd is not None and api_key.is_key(data.get("provider")):
+            recorded = record_running_spend(
+                request.app.state.broker.db,
+                account_id,
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+                cost_usd=body.cost_usd,
+                now=now,
+            )
+            if recorded is None:
+                # Released or fenced between the proof and the write.
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                )
+            data, hold = recorded
         state = data.get("state")
         move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        if move is None and _raw_spend_reached(
+            data, _live_holds(data, now), tenant_id, now
+        ) is not None:
+            move = SWAP_EXHAUSTED
         if move is None:
             move = _plan_available(request, tenant_id, data, hold)
         return {"account_id": account_id, "held": True, "move": move, "state": state}

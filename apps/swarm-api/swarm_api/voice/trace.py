@@ -4,7 +4,8 @@ is on (the owner, 10 November 2026: "Trace on Telemetry").
     voice_traces/{session}              tenant_id, person, project_id, session_id,
                                         engine, started_at, updated_at, turns,
                                         cards, refused, events
-    voice_traces/{session}/turns/{n}    one planner turn, as `check_turn` keeps it
+    voice_traces/{session}/turns/{n}    one planner turn, as `check_turn` keeps it,
+                                        with the tier it ran on
 
 WHY. On 10 November the GPT voice engine told the person "there is a card on
 screen" while the planner had drawn nothing, and finding out why took reading
@@ -25,6 +26,14 @@ stores (cards.py, visuals.py, readback.py), before it is written. A read is
 its tool's name and target, never what it returned. Counts are whole numbers;
 anything else in the body is refused 422, so nothing the body names but this
 module does not know is ever stored.
+
+THE TIER. Each turn keeps the tier its planner ran on (the owner, 11 November
+2026: "store and show the tier"), as swarm-voice sends it beside the engine:
+one of the broker's tier names (`TIERS`), or absent. Absent is kept as None
+and served as None, "not recorded", for a turn whose planner never finished
+and for every turn kept before the field was; it is never read as a plan,
+since a plan is only one of the three tiers and guessing it would show a key's
+turn as a plan's. Any other value is refused 422, as every other field is.
 
 DELETED WITH THE SESSION. Deleting a Voice it project deletes its sessions'
 documents (store.VoiceStore.delete_project), and with them each session's
@@ -47,6 +56,11 @@ from swarm_redaction import redact
 
 from ..errors import NotFound, ValidationFailed
 from . import store as vstore
+from .settings import CHAIN_TIERS
+
+#: The tiers a turn names: the broker's tier names (`quota_broker.accounts.TIERS`),
+#: as the Voice it chain line already restates them (settings.CHAIN_TIERS).
+TIERS: tuple[str, ...] = CHAIN_TIERS
 
 COLLECTION = "voice_traces"
 TURNS = "turns"
@@ -143,9 +157,11 @@ def _read(value: Any, n: int) -> dict[str, Any]:
             "target": _mask_or_none(value.get("target"), f"{field}.target", MAX_TITLE)}
 
 
-def check_turn(turn: Any) -> dict[str, Any]:
-    """The turn as it is kept: every text masked, every count a whole number;
-    422 naming the field otherwise."""
+def check_turn(turn: Any, tier: Any = None) -> dict[str, Any]:
+    """The turn as it is kept: every text masked, every count a whole number,
+    `tier` one of TIERS or None (not recorded); 422 naming the field otherwise."""
+    if tier is not None and (not isinstance(tier, str) or tier not in TIERS):
+        raise _refuse("tier", f"tier is null or one of {', '.join(TIERS)}")
     if not isinstance(turn, Mapping):
         raise _refuse("turn", "turn is an object")
     n = turn.get("n")
@@ -174,20 +190,21 @@ def check_turn(turn: Any) -> dict[str, Any]:
         "none": none,
         "told": mask(turn.get("told", ""), "turn.told"),
         "events": _counts(turn.get("events", {}), "turn.events", TURN_EVENTS),
+        "tier": tier,
     }
 
 
 def stream_event(turn: Mapping[str, Any]) -> dict[str, Any]:
     """Talk's one small line for a kept turn: its number, the cards drawn and
     refused (kind and masked title; a refusal's masked reason) and the
-    no-cards code."""
+    no-cards code, and the tier the turn ran on (None: not recorded)."""
     drawn = [d for d in turn["drawn"] if "refused" not in d]
     refused = [d for d in turn["drawn"] if "refused" in d]
     return {"type": TRACE_TURN, "n": turn["n"],
             "drawn": [{"kind": d["kind"], "title": d["title"]} for d in drawn],
             "refused": [{"kind": d["kind"], "title": d["title"], "reason": d["refused"]}
                         for d in refused],
-            "none": turn["none"]}
+            "none": turn["none"], "tier": turn.get("tier")}
 
 
 def _iso(value: Any) -> str | None:
@@ -215,12 +232,12 @@ class Trace:
 
     def record(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
                engine: Any, session_events: Any, turn: Any,
-               started_at: datetime | None) -> dict[str, Any]:
+               started_at: datetime | None, tier: Any = None) -> dict[str, Any]:
         """Keep one finished turn and the session's counts; the kept turn."""
         if engine not in ENGINES:
             raise _refuse("engine", f"engine is one of {', '.join(ENGINES)}")
         events = _counts(session_events, "session_events", SESSION_EVENTS)
-        kept = check_turn(turn)
+        kept = check_turn(turn, tier)
         now = self._now()
         ref = _ref(self._db, session_id)
         snap = ref.get()
@@ -301,7 +318,8 @@ def _pieces(text: Any) -> list[str]:
 
 def served_turn(row: Mapping[str, Any]) -> dict[str, Any]:
     """A kept turn in the console's TraceTurn shape (snake_case): `read` as
-    "tool: target" strings, `none` as the plain sentence beside its code."""
+    "tool: target" strings, `none` as the plain sentence beside its code,
+    `tier` the tier's name or None for a turn that recorded none."""
     code = row.get("none")
     reads: Iterable[Mapping[str, Any]] = row.get("read") or []
     return {
@@ -318,6 +336,7 @@ def served_turn(row: Mapping[str, Any]) -> dict[str, Any]:
         "none_code": code,
         "told": _pieces(row.get("told")),
         "events": dict(row.get("events") or {}),
+        "tier": row.get("tier") if row.get("tier") in TIERS else None,
     }
 
 
@@ -326,6 +345,7 @@ __all__ = [
     "ENGINES",
     "NONE_CODES",
     "SESSION_EVENTS",
+    "TIERS",
     "TRACE_TURN",
     "TURNS",
     "TURN_EVENTS",
