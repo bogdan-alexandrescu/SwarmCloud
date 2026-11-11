@@ -384,7 +384,7 @@ def test_the_lease_is_heartbeaten_while_the_account_broker_answers(
     seen: list[tuple[object, object]] = []
 
     class SlowBroker(FakeBroker):
-        def hold_status(self, assignment):
+        def hold_status(self, assignment, **_kw):
             if not seen:
                 before = db.doc("leases/lease_1").get("heartbeat_at")
                 time.sleep(2.5)

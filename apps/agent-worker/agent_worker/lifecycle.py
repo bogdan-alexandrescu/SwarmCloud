@@ -198,9 +198,14 @@ from .accountlease import (
     BrokerUnavailable,
     NoAccount,
     NoAccountAvailable,
+    SOURCE_ACCOUNT_POOL,
+    SOURCE_TENANT_OWN,
+    SWAP_PLAN_AVAILABLE,
     ReadingForwarder,
     credential_env_from_account,
+    spend_figure,
     takes_account,
+    takes_key,
 )
 from .checkpoint import (
     ARCHIVE_NAME,
@@ -323,6 +328,7 @@ from .runners import question_bridge
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_ERROR_KINDS,
+    OUTCOME_CREDIT_EXHAUSTED,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
     QUESTION_ANSWER_FILE_ENV,
@@ -1319,6 +1325,21 @@ class Worker:
         # Why the runner was asked to stop at its turn boundary when it was not
         # a drain: the broker marked the held account `reauth_required`.
         self._move_why: str | None = None
+        # The hold-status `move` that stopped the runner when it was not a
+        # drain's: `plan_available`, a key holder asked back to a plan (Q1).
+        self._move_asked: str | None = None
+        # The attempt's `total_cost_usd` when the held account's hold began:
+        # what ran on THIS hold is the total since (`_hold_spend`), the figure
+        # its release, swap and hold-status read carry (§4.6).
+        self._hold_spend_base = 0.0
+        # The key whose credit-gone answer this attempt already reported
+        # (`_report_credit_exhausted`): its 429 is not reported again as a
+        # rate limit.
+        self._credit_reported: str | None = None
+        # The credential the attempt KEPT LAST (contract request 152), written
+        # beside its spend (`_record_spend`): `account_id`, `credential_source`,
+        # `credential_tier`. None until the pool decided either way.
+        self._credential_kept: dict[str, Any] | None = None
         # THE ACCOUNT MID-RUN (S13-S15), for an attempt that holds one. The
         # session id the runner's stream named, kept to `--resume` it under
         # another account and NEVER logged (it is registered as a secret);
@@ -1955,7 +1976,8 @@ class Worker:
                 reset_at=quota.reset_at,
                 # The pool account the runner was refused on, when it held
                 # one (#2302): the 429 is that account's, not the tenant's.
-                account=self._account,
+                # Not a key whose credit is gone: that went as `exhausted`.
+                account=self._quota_account(),
                 message=quota.detail,
             )
             if decision.park or attempt_number > MAX_IN_WORKER_RETRIES:
@@ -11286,6 +11308,12 @@ class Worker:
             return None
         if self._account_broker is None:
             return self._decline_pool("no_broker_configured", profile.provider)
+        # A profile that takes its vendor's plan may also run on its vendor's
+        # key (`key_tier`, §5.3). A profile that declares the key alone
+        # (`browser`) still runs on the tenant secret: the scheduler's
+        # admission expects the pool only where the plan token is declared
+        # (`scheduler.credentials`), and the two must agree.
+        key_tier = takes_key(profile.provider, profile.secrets)
         if not takes_account(profile.provider, profile.secrets):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
@@ -11309,8 +11337,10 @@ class Worker:
         cause = POOL_UNANSWERED[0]
         for ask in range(1, POOL_ASKS + 1):
             try:
+                # `key_tier` when the profile declares its vendor's key
+                # variable (§5.3): the broker walks the plans, then the keys.
                 outcome = self._account_broker.assign(
-                    provider, exclude=tuple(self._account_rejected)
+                    provider, exclude=tuple(self._account_rejected), key_tier=key_tier
                 )
             except BrokerRefused as exc:
                 # REFUSE, DO NOT CARRY ON. A 401/403/404 means the pool is
@@ -11374,10 +11404,13 @@ class Worker:
 
         self._account = outcome
         self._account_released = False
+        self._hold_began()
+        self._keep_credential(outcome)
         self.log.info(
             "account assigned from the pool",
             account_id=outcome.account_id,
             provider=provider,
+            tier=outcome.tier,
             # Whether this tenant borrowed it. Worth a field of its own: a
             # deployment leaning on borrowed capacity looks healthy right up to
             # the day the lender revokes the loan.
@@ -11389,6 +11422,9 @@ class Worker:
                 "cause": "account_assigned",
                 "account_id": outcome.account_id,
                 "provider": provider,
+                # The tier the broker answered (§5.3, §5.4): `plan` or
+                # `api_key`. Never the key, nor its secret's name.
+                "tier": outcome.tier,
             },
         )
         return outcome
@@ -11541,8 +11577,22 @@ class Worker:
             self._turns_checked = turns
             if self._account_broker is None or self._account is None or move.exists():
                 return
-            status = self._account_broker.hold_status(self._account)
-            if status.get("move"):
+            status = self._account_broker.hold_status(
+                self._account, cost_usd=self._hold_spend()
+            )
+            if status.get("move") == SWAP_PLAN_AVAILABLE:
+                # BACK TO A PLAN (Q1, §5.3): this attempt holds a key and a
+                # plan would take it now. Stopped at the next turn boundary
+                # like a drain, then swapped to the plans alone; if the plan
+                # filled in between, it restarts on the same key.
+                self._move_asked = SWAP_PLAN_AVAILABLE
+                move.write_text(json.dumps({"reason": SWAP_PLAN_AVAILABLE}))
+                self.log.info(
+                    "a plan is free for this attempt; the agent moves back to it "
+                    "at its next turn boundary",
+                    account_id=self._account.account_id,
+                )
+            elif status.get("move"):
                 move.write_text(json.dumps({"reason": str(status["move"])}))
                 self.log.warning(
                     "this attempt's account is draining; the agent moves to another "
@@ -11593,10 +11643,18 @@ class Worker:
         stopped_for = data.get("stopped_for")
         just_swapped, self._just_swapped = self._just_swapped, False
         why, self._move_why = self._move_why, None
+        asked, self._move_asked = self._move_asked, None
+        if data.get("outcome") == OUTCOME_CREDIT_EXHAUSTED:
+            # The KEY's credit is gone (§5.2): reported as the key's, so the
+            # broker skips it until it is resumed, then the attempt moves on
+            # as for any spent account. A plan's answer stays a rate limit.
+            self._report_credit_exhausted()
         reason: str | None = None
         if stopped_for == STOP_DRAIN and why is not None:
             # Stopped for a dead credential, not a drain (`_watch_account`).
             reason = SWAP_UNUSABLE
+        elif stopped_for == STOP_DRAIN and asked == SWAP_PLAN_AVAILABLE:
+            reason = SWAP_PLAN_AVAILABLE
         elif stopped_for == STOP_DRAIN:
             why = None
             reason = SWAP_DRAIN
@@ -11609,9 +11667,10 @@ class Worker:
             self.ws.credential_path.unlink(missing_ok=True)
         if reason is None:
             return None
-        if why is not None:
+        if why is not None or reason == SWAP_PLAN_AVAILABLE:
             # A dead credential moves with or without a session: one that
-            # named none restarts from the prompt in the same workspace.
+            # named none restarts from the prompt in the same workspace. So
+            # does a move back to a plan, which was stopped on purpose.
             return self._swap_account(reason, why=why)
         if self._session_id is None:
             # Nothing to resume. A rate limit goes the way it always went; a
@@ -11729,6 +11788,11 @@ class Worker:
                 why=why,
             )
             self._checkpoint("account-move")
+        elif reason == SWAP_PLAN_AVAILABLE:
+            # A move between tiers is checkpoint, then swap (§5.5, invariants
+            # 4 and 8): a worker lost mid-move resumes from here.
+            self._checkpoint("account-move")
+        key_tier = takes_key(profile.provider, profile.secrets)
         for _ in range(MAX_ACCOUNT_TRIES):
             try:
                 outcome = self._account_broker.swap(
@@ -11736,6 +11800,8 @@ class Worker:
                     provider=provider,
                     reason=reason,
                     exclude=tuple(self._account_rejected),
+                    key_tier=key_tier,
+                    cost_usd=self._hold_spend() if current.is_key else None,
                 )
             except (BrokerRefused, BrokerUnavailable) as exc:
                 self.log.warning(
@@ -11753,10 +11819,16 @@ class Worker:
                     dead=why is not None,
                 )
             if isinstance(outcome, NoAccount):
+                if reason == SWAP_PLAN_AVAILABLE:
+                    # The plan filled in between: the broker left the hold on
+                    # the key, so the run resumes on it, as it was.
+                    return self._stay_on_key(current, outcome)
                 return self._cannot_swap(reason, current, outcome, dead=why is not None)
             self._swaps += 1
             self._account = outcome
             self._account_released = False
+            self._hold_began()
+            self._keep_credential(outcome)
             self._emit_swapped(current, outcome, reason)
             if why is not None:
                 self._emit_moved(current, outcome, why)
@@ -11784,6 +11856,94 @@ class Worker:
         # Every account it moved to was unreadable: give the last one back as
         # such and park, as a fresh attempt does (`_pool_credential_env`).
         return self._cannot_swap(SWAP_UNUSABLE, current, NoAccount(reason=ACCOUNT_UNREADABLE))
+
+    def _stay_on_key(self, current: Assignment, outcome: NoAccount) -> dict[str, str]:
+        """A move back to a plan that found none free: resume on the key held.
+
+        The broker's swap is one transaction and left the hold where it was
+        (§5.3: never two, never none), so nothing is given back. The runner
+        was stopped at a turn boundary; it restarts with `--resume` on the
+        same key's environment.
+        """
+        self.log.info(
+            "the plan filled before this attempt could move back to it; carrying "
+            "on on the key it holds",
+            account_id=current.account_id,
+            pool_reason=outcome.reason,
+        )
+        self._resume_session = self._session_id
+        self._resume_reason = RESUME_MOVED
+        self._readings = None
+        self._turns_checked = 0
+        self._channel_seen = None
+        _stream, move = self._account_channel_paths()
+        move.unlink(missing_ok=True)
+        return self._build_child_env()
+
+    def _hold_began(self) -> None:
+        """Mark the attempt's spend at the start of the hold just taken."""
+        self._hold_spend_base = self._spend_total()
+
+    def _spend_total(self) -> float:
+        cost = self._spend.get("total_cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            return 0.0
+        return float(cost)
+
+    def _hold_spend(self) -> float | None:
+        """What has run on the held account's hold so far, by the attempt's
+        own `cost_usd` estimate (§4.6, Q5), or None when nothing has: the
+        figure the hold's close carries, and a key holder's hold-status read
+        carries while it runs."""
+        return spend_figure(self._spend_total() - self._hold_spend_base)
+
+    def _keep_credential(self, account: Assignment | None) -> None:
+        """The credential this attempt now runs on, for its record (request 152)."""
+        if account is None:
+            self._credential_kept = {
+                "account_id": None,
+                "credential_source": SOURCE_TENANT_OWN,
+                "credential_tier": None,
+            }
+            return
+        self._credential_kept = {
+            "account_id": account.account_id,
+            "credential_source": SOURCE_ACCOUNT_POOL,
+            "credential_tier": account.tier,
+        }
+
+    def _report_credit_exhausted(self) -> None:
+        """The held KEY's credit is gone (§5.2): say so to the broker, naming it.
+
+        Only for a key: a plan's `insufficient_quota` is its window, which the
+        rate-limit report already carries. Reported to the broker's
+        `exhausted` route under the key's own provider, with the hold's proof,
+        so the broker marks that key `exhausted_at` and the next lease moves
+        on; the tenant's own quota is not the key's. Never raises.
+        """
+        account = self._account
+        if account is None or not account.is_key:
+            return
+        if self._credit_reported == account.account_id:
+            return
+        self._credit_reported = account.account_id
+        self.log.warning(
+            "the held API key's credit is gone; reporting it exhausted",
+            account_id=account.account_id,
+        )
+        self.control.report_credit_exhausted(
+            provider=account.provider,
+            account=account,
+            message="the provider answered that this key's credit is gone",
+        )
+
+    def _quota_account(self) -> Assignment | None:
+        """The held account a runner's 429 names, or None when there is none
+        -- or when it was the key's credit, already reported as such."""
+        account = self._account
+        if account is not None and self._credit_reported == account.account_id:
+            return None
+        return account
 
     def _cannot_swap(
         self, reason: str, current: Assignment, outcome: NoAccount, *, dead: bool = False
@@ -11828,6 +11988,8 @@ class Worker:
             from_account_id=left.account_id,
             account_id=taken.account_id,
             reason=reason,
+            tier=taken.tier,
+            from_tier=left.tier,
         )
         # The summary's record of it (SWAP-RUNS): after which run, and when.
         self._swap_log.append({
@@ -11846,6 +12008,10 @@ class Worker:
                     "provider": self.cfg.provider,
                     "swapped_from": left.account_id,
                     "swap_reason": reason,
+                    # The tiers on either side (§5.4): a move from a plan to a
+                    # key, or back, is one line on the attempt's timeline.
+                    "tier": taken.tier,
+                    "from_tier": left.tier,
                 },
             )
         except Exception as exc:
@@ -11891,6 +12057,7 @@ class Worker:
         not answer parks instead (`POOL_UNANSWERED`). Announced either way.
         """
         self._account_declined = cause
+        self._keep_credential(None)
         self._emit_pool_declined(cause, provider, then="tenant_secret")
         return None
 
@@ -11953,7 +12120,9 @@ class Worker:
                 payload,
                 secret_env_names=profile.secrets,
                 secret_name=account.secret,
-                provider=profile.provider or "anthropic",
+                # The ACCOUNT's provider: a key fills its key variable, a plan
+                # its token, whatever the profile's own provider is named.
+                provider=account.provider or profile.provider or "anthropic",
             )
         except Exception as exc:
             raise AccountUnreadable(
@@ -12002,6 +12171,7 @@ class Worker:
         self._account_rejected.append(account.account_id)
         self._account = None
         self._account_released = False
+        self._credential_kept = None
         self._give_back(account, unusable=exc.detail)
 
     def _give_back(self, account: Assignment, *, unusable: str = "") -> None:
@@ -12020,7 +12190,11 @@ class Worker:
             return
         try:
             self._account_broker.release(
-                account.account_id, account.assignment_id, unusable=unusable
+                account.account_id,
+                account.assignment_id,
+                unusable=unusable,
+                # What ran on this hold (§4.6): a key's close meters it.
+                cost_usd=self._hold_spend() if account.is_key else None,
             )
             self.log.info(
                 "account released",
@@ -12678,7 +12852,7 @@ class Worker:
                 state=state,
                 retry_after_seconds=decision.wait_seconds,
                 reset_at=decision.next_eligible_at,
-                account=self._account if from_runner else None,
+                account=self._quota_account() if from_runner else None,
                 message=str(decision.detail.get("signal_detail") or ""),
             )
         # `source` is where the signal was OBSERVED (the runner's 429, the
@@ -18755,9 +18929,15 @@ class Worker:
         accounting write failed, and this runs on the teardown path where the
         lease is about to be released either way.
         """
-        if self._writes_forbidden or not self._spend or self._spend == self._spend_recorded:
+        kept = self._credential_kept
+        if self._writes_forbidden or (not self._spend and kept is None):
             return
         snapshot = dict(self._spend)
+        if kept is not None:
+            # Request 152: the credential the attempt KEPT LAST, beside spend.
+            snapshot["credential"] = dict(kept)
+        if snapshot == self._spend_recorded:
+            return
         try:
             self.control.record_spend(snapshot)
         except Exception as exc:

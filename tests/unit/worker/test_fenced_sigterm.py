@@ -699,7 +699,7 @@ class _SpentPool:
         self.assigns = 0
         self.releases = 0
 
-    def assign(self, provider: Any, *, exclude: Any = ()) -> NoAccount:
+    def assign(self, provider: Any, *, exclude: Any = (), **_kw: Any) -> NoAccount:
         self.assigns += 1
         return NoAccount(reason="no_account_available")
 

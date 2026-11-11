@@ -94,19 +94,19 @@ class FakeBroker:
         self.swaps: list[dict] = []
         self.readings: list[tuple[str, dict]] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         self.assigns.append(provider)
         return self.outcome
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         self.releases.append((account_id, unusable))
         return 0
 
-    def swap(self, assignment, *, provider, reason, exclude=()):
+    def swap(self, assignment, *, provider, reason, exclude=(), **_kw):
         self.swaps.append({"from": assignment.account_id, "reason": reason})
         return NoAccount(reason=NO_ACCOUNT_AVAILABLE)
 
-    def hold_status(self, assignment):
+    def hold_status(self, assignment, **_kw):
         return {"held": True, "move": None}
 
     def report_reading(self, assignment, windows):
