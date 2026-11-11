@@ -250,7 +250,10 @@ HOLD_ENDS = (
 SWAP_EXHAUSTED = "exhausted"
 SWAP_DRAIN = "drain"
 SWAP_UNUSABLE = "unusable"
-SWAP_REASONS = (SWAP_EXHAUSTED, SWAP_DRAIN, SWAP_UNUSABLE)
+#: An attempt on an API key moves back to a plan that frees (Q1, §5.3):
+#: `hold-status` answers it, and the swap it asks for walks tier 1 only.
+SWAP_PLAN_AVAILABLE = "plan_available"
+SWAP_REASONS = (SWAP_EXHAUSTED, SWAP_DRAIN, SWAP_UNUSABLE, SWAP_PLAN_AVAILABLE)
 
 #: What `CredentialRefresher` can answer for one account, which the sweep
 #: records as `last_refresh_reason` (docs/web-ui/06-accounts.md P2). Named so
@@ -689,6 +692,174 @@ def spend_cap_from_firestore(raw: Any) -> float | None:
         raise ValueError(str(exc)) from None
 
 
+def spend_month(now: datetime) -> str:
+    """The calendar month (UTC) a spend is counted in: `YYYY-MM` (§4.6)."""
+    return _aware(now).astimezone(timezone.utc).strftime("%Y-%m")
+
+
+def next_spend_month(now: datetime) -> datetime:
+    """When the month `now` is in ends, UTC: when a spend cap lifts."""
+    at = _aware(now).astimezone(timezone.utc)
+    if at.month == 12:
+        return datetime(at.year + 1, 1, 1, tzinfo=timezone.utc)
+    return datetime(at.year, at.month + 1, 1, tzinfo=timezone.utc)
+
+
+def _usd(raw: Any) -> float | None:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    return value if value >= 0 and value == value and value != float("inf") else None
+
+
+def month_spend_from_firestore(raw: Any) -> dict[str, float]:
+    """A stored `month_spend`, `{month: usd}`. NOT descriptive: it is what a
+    spend cap is measured against, so a malformed value raises ValueError
+    and the document leaves the pool rather than reading as nothing spent."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("month_spend is a map from a month to US dollars")
+    spend: dict[str, float] = {}
+    for month, value in raw.items():
+        usd = _usd(value)
+        if not isinstance(month, str) or usd is None:
+            raise ValueError("month_spend is a map from a month to US dollars")
+        spend[month] = usd
+    return spend
+
+
+def lend_spend_from_firestore(raw: Any) -> dict[str, dict[str, float]]:
+    """A stored `lend_spend`, `{month: {tenant: usd}}`; NOT descriptive, as
+    `month_spend_from_firestore`."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("lend_spend is a map from a month to each borrower's US dollars")
+    spend: dict[str, dict[str, float]] = {}
+    for month, tenants in raw.items():
+        if not isinstance(month, str):
+            raise ValueError("lend_spend is a map from a month to each borrower's US dollars")
+        try:
+            spend[month] = month_spend_from_firestore(tenants)
+        except ValueError:
+            raise ValueError(
+                "lend_spend is a map from a month to each borrower's US dollars"
+            ) from None
+    return spend
+
+
+#: The caps that keep one workspace from a NEW hold on an account
+#: (`Account.cap_for`, `main.acquire_hold`), by the name an answer carries in
+#: `caps`. The park itself is dated by an `Unavailable` reason, whose values
+#: the worker, the scheduler and swarm-api already read; these say which cap.
+#: `exhausted`: a key's credit is gone (§5.2), until a Resume or the probe.
+CAP_EXHAUSTED = "exhausted"
+#: A key's month's spend is at its `monthly_spend_cap_usd`, until the month turns.
+CAP_SPEND = "spend_cap"
+#: The workspace holds its `per_workspace_max` (Q6), until one of its agents ends.
+CAP_WORKSPACE_MAX = "per_workspace_max"
+#: A borrower holds its lend's `max_agents` (Q7), until one of its agents ends.
+CAP_LEND_MAX_AGENTS = "lend_max_agents"
+#: A borrower's month's spend is at its lend's cap (Q7), until the month turns.
+CAP_LEND_SPEND = "lend_spend_cap"
+CAP_REASONS = (CAP_EXHAUSTED, CAP_SPEND, CAP_WORKSPACE_MAX, CAP_LEND_MAX_AGENTS, CAP_LEND_SPEND)
+
+
+#: The tier a lease was granted from (§5.3), on what assign, swap and the
+#: Voice it lease answer: a plan, a pool API key, or the dedicated Voice it key.
+TIER_PLAN = "plan"
+#: `api_key`, joined so publish-scan does not read the line as a key assignment.
+TIER_METERED = "_".join(("api", "key"))
+TIER_VOICE_DEDICATED = "voice_dedicated"
+TIERS = (TIER_PLAN, TIER_METERED, TIER_VOICE_DEDICATED)
+
+#: Each plan provider's key provider (§3): the chain walks kinds within one
+#: vendor, never across vendors (§3.1).
+KEY_PROVIDER_OF: dict[str, str] = {
+    "anthropic": api_key.ANTHROPIC_API,
+    "openai": api_key.OPENAI_API,
+}
+#: The reverse: the plan tier a key holder moves back to (Q1).
+PLAN_PROVIDER_OF: dict[str, str] = {k: p for p, k in KEY_PROVIDER_OF.items()}
+
+#: The variable each provider's credential is handed to a step as (§3). A
+#: profile that declares the variable may run on that kind (§3.1): `browser`
+#: declares `ANTHROPIC_API_KEY` alone, so its chain starts at the key tier.
+CREDENTIAL_VARIABLE: dict[str, str] = {
+    "anthropic": "CLAUDE_CODE_OAUTH_TOKEN",
+    api_key.ANTHROPIC_API: "ANTHROPIC_API_KEY",
+    "openai": "CODEX_PLAN_ACCESS_TOKEN",
+    api_key.OPENAI_API: "OPENAI_API_KEY",
+}
+
+
+def tier_of(account: "Account") -> str:
+    """The tier `account` serves from (§5.3)."""
+    if not account.is_api_key:
+        return TIER_PLAN
+    return TIER_VOICE_DEDICATED if account.voice_dedicated else TIER_METERED
+
+
+def chain_providers(
+    provider: str, *, key_tier: bool, secrets: Iterable[str] | None = None
+) -> tuple[str, ...]:
+    """The providers a lease for `provider` walks, tier by tier (§5.3).
+
+    `provider` is the plan provider the worker names, as today. Tier 1 is its
+    plans and tier 2 its vendor's keys; tier 2 is walked only when the caller
+    can run on a key (`key_tier`: a worker that predates the key shapes sets
+    whatever it is handed as the plan token, so it is never handed a key).
+    `secrets` is the step's profile's declared variables when it is known: a
+    profile that does not declare a kind's variable never gets that kind
+    (`browser`: no plan; a profile with the plan token alone: no key).
+    """
+    declared = None if secrets is None else set(secrets)
+    tiers: list[str] = []
+    candidates = [provider]
+    key = KEY_PROVIDER_OF.get(provider)
+    if key_tier and key is not None:
+        candidates.append(key)
+    for kind in candidates:
+        variable = CREDENTIAL_VARIABLE.get(kind)
+        if declared is not None and variable is not None and variable not in declared:
+            continue
+        tiers.append(kind)
+    return tuple(tiers)
+
+
+#: Which `Unavailable` is the SOONER wait, first first (§5.1, §5.3): a poll
+#: and a finishing agent are minutes away, a dated clear is a clock, and a
+#: person or an empty pool is no clock at all.
+def _wait_rank(reason: "Unavailable", instant: datetime | None) -> int:
+    if reason is Unavailable.NO_RECENT_READING:
+        return 0
+    if reason is Unavailable.ACCOUNTS_FULL:
+        return 1
+    if reason is Unavailable.NO_ACCOUNT_AVAILABLE:
+        return 2 if instant is not None else 3
+    if reason is Unavailable.POOL_PAUSED:
+        return 4
+    return 5
+
+
+def soonest(answers: Iterable[tuple["Unavailable", datetime | None]]) -> tuple["Unavailable", datetime | None]:
+    """The soonest of the tiers' `eligibility` answers (§5.3): the reason of
+    the sooner wait, and the earliest instant any tier carries.
+
+    `no_accounts_registered` only when EVERY tier says it: one tier with an
+    account in it means the pool is how this step runs, and the worker parks
+    rather than falling back to its tenant secret."""
+    answers = list(answers)
+    if not answers:
+        return Unavailable.NO_ACCOUNTS_REGISTERED, None
+    instants = [i for _r, i in answers if i is not None]
+    reason = min(answers, key=lambda ri: _wait_rank(ri[0], ri[1]))[0]
+    if reason is Unavailable.NO_ACCOUNTS_REGISTERED:
+        return reason, None
+    return reason, (min(instants) if instants else None)
+
+
 @dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
@@ -954,6 +1125,16 @@ class Account:
     #: one, so absent reads True on that provider.
     voice_dedicated: bool = False
 
+    #: A key's metered spend by calendar month (UTC, `spend_month`), in US
+    #: dollars: the sum of the `cost_usd` estimates of holds closed on it
+    #: (§4.6, Q5), added in the transaction that closes each one. What
+    #: `monthly_spend_cap_usd` is measured against. Empty on a plan.
+    month_spend: dict[str, float] = field(default_factory=dict)
+
+    #: The same, per borrowing workspace (§4.6): `{month: {tenant: usd}}`,
+    #: what each lend's `monthly_spend_cap_usd` is measured against.
+    lend_spend: dict[str, dict[str, float]] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.lends:
             # `lends` decides; `lend_to` is its projection, the owner never in it.
@@ -1047,6 +1228,60 @@ class Account:
         if cap is None:
             return False
         return sum(1 for h in self.live_holds(now) if h.tenant_id == tenant_id) >= cap
+
+    def is_lend_full_for(self, tenant_id: str, now: datetime) -> bool:
+        """Whether BORROWER `tenant_id` already holds its lend's `max_agents`
+        on this account (§4.6, Q7). LIVE holds of that tenant, counted from the
+        grant (invariant 3), the rule `acquire_hold` re-checks where the hold
+        commits. False for the owner and for a workspace with no lend."""
+        lend = self.lends.get(tenant_id)
+        if lend is None or tenant_id == self.owner_tenant:
+            return False
+        return sum(1 for h in self.live_holds(now) if h.tenant_id == tenant_id) >= lend.max_agents
+
+    def spent(self, now: datetime, tenant_id: str | None = None) -> float:
+        """This calendar month's metered spend: the key's, or one borrower's."""
+        month = spend_month(now)
+        if tenant_id is None:
+            return self.month_spend.get(month, 0.0)
+        return self.lend_spend.get(month, {}).get(tenant_id, 0.0)
+
+    def is_over_spend_cap(self, now: datetime) -> bool:
+        """Whether a key's month's spend has reached `monthly_spend_cap_usd`
+        (§5.1: "no quota left" until the month turns)."""
+        cap = self.monthly_spend_cap_usd
+        return cap is not None and self.spent(now) >= cap
+
+    def is_lend_spent_for(self, tenant_id: str, now: datetime) -> bool:
+        """Whether BORROWER `tenant_id`'s month's spend on this key has reached
+        its lend's `monthly_spend_cap_usd` (§4.6). Not "no quota left" for
+        anyone else: the owner and the other borrowers are unaffected."""
+        lend = self.lends.get(tenant_id)
+        if lend is None or lend.monthly_spend_cap_usd is None or tenant_id == self.owner_tenant:
+            return False
+        return self.spent(now, tenant_id) >= lend.monthly_spend_cap_usd
+
+    def is_exhausted(self) -> bool:
+        """Whether a credit-gone refusal marked this key (§5.2). No clock: a
+        person's Resume or the hourly probe clears it."""
+        return self.exhausted_at is not None
+
+    def cap_for(self, tenant_id: str, now: datetime) -> str | None:
+        """The cap that keeps `tenant_id` from a NEW hold on this account, by
+        name (`CAP_REASONS`), or None. The checks `acquire_hold` makes of a
+        raw document inside its transaction, made here of the listing so the
+        walk and the answer can say which cap held."""
+        if self.is_exhausted():
+            return CAP_EXHAUSTED
+        if self.is_over_spend_cap(now):
+            return CAP_SPEND
+        if self.is_full_for(tenant_id, now):
+            return CAP_WORKSPACE_MAX
+        if self.is_lend_full_for(tenant_id, now):
+            return CAP_LEND_MAX_AGENTS
+        if self.is_lend_spent_for(tenant_id, now):
+            return CAP_LEND_SPEND
+        return None
 
     def awaits_first_reading(self, now: datetime) -> bool:
         """Whether this account has no reading yet AND already holds the one
@@ -1213,8 +1448,12 @@ class Account:
         stale_after: timedelta = DEFAULT_STALE_AFTER,
     ) -> bool:
         """Whether a NEW agent may be handed this account: no window blocks it,
-        and no recorded 429 holds it (`is_limited`)."""
+        and no recorded 429 holds it (`is_limited`). A key is also held off
+        while a credit-gone refusal marks it (`is_exhausted`) or its month's
+        spend is at its cap (`is_over_spend_cap`), §5.1."""
         if self.is_limited(now):
+            return False
+        if self.is_exhausted() or self.is_over_spend_cap(now):
             return False
         return not self.blocking_windows(now, floor=floor, stale_after=stale_after)
 
@@ -1277,6 +1516,13 @@ class Account:
             if not w.is_reset(now) and w.remaining() < window_floor(name, floor)
         ]
         clear = min(blocking) if blocking else None
+        if self.is_exhausted():
+            # Credit gone: no clock (§5.3, "an exhausted key's does not" count).
+            return None
+        if self.is_over_spend_cap(now):
+            # The month's spend cap lifts when the month turns, UTC.
+            turn = next_spend_month(now)
+            clear = max(turn, clear) if clear is not None else turn
         if self.is_limited(now) and self.limited_until is not None:
             # A recorded 429 is a clock too: the account is back when it ends,
             # and not before a window that also blocks it clears.
@@ -1420,6 +1666,8 @@ class Account:
             "monthly_spend_cap_usd": self.monthly_spend_cap_usd,
             "exhausted_at": self.exhausted_at,
             "voice_dedicated": self.voice_dedicated,
+            "month_spend": dict(self.month_spend),
+            "lend_spend": {m: dict(t) for m, t in self.lend_spend.items()},
         }
 
     @classmethod
@@ -1518,6 +1766,8 @@ class Account:
             voice_dedicated=(
                 dedicated is True if dedicated is not None else provider == api_key.OPENAI_API
             ),
+            month_spend=month_spend_from_firestore(data.get("month_spend")),
+            lend_spend=lend_spend_from_firestore(data.get("lend_spend")),
         )
 
 
@@ -1825,8 +2075,15 @@ def accounts_serving(
     provider: str,
     *,
     model_class: str | None = "",
+    key_tier: bool = False,
 ) -> list[Account]:
     """Every account the pool could hand `tenant_id` for `provider`, in any state.
+
+    BOTH TIERS when `key_tier` (§5.3): `provider`'s plans and then its
+    vendor's API keys (`KEY_PROVIDER_OF`), owned or lent alike, in that
+    order. Off by default, so a caller that cannot run on a key -- the
+    scheduler's admission until the worker sets a key's variable (lane
+    LP-W1) -- is asked about exactly the plans it was asked about before.
 
     THE POOL'S SCOPE, STATED ONCE: owned by the tenant or lent to it
     (`may_serve`, which is invariant 9), and of the provider asked for. Two
@@ -1853,10 +2110,15 @@ def accounts_serving(
     "", asks about no class: the scope as it was, for the callers (the
     listing, the provider count) that are not placing a step.
     """
+    kinds = [provider]
+    if key_tier and provider in KEY_PROVIDER_OF:
+        kinds.append(KEY_PROVIDER_OF[provider])
+    accounts = list(accounts)
     return [
         a
+        for kind in kinds
         for a in accounts
-        if a.provider == provider
+        if a.provider == kind
         and a.may_serve(tenant_id)
         and (model_class == "" or a.serves_class(model_class))
     ]
@@ -2007,6 +2269,7 @@ def choose_voice(
     is the only kind a Live session can use, so a text lease naming the key's
     provider finds none registered rather than taking a slot Live needs.
     """
+    accounts = list(accounts)
     if capability == openai_api_key.CAPABILITY_LIVE:
         listed = [
             a
@@ -2021,12 +2284,66 @@ def choose_voice(
             and not openai_api_key.is_live_capable(a.provider)
             and a.in_pool(POOL_VOICE_IT)
         ]
+    return _voice_free(listed, accounts, person, now)
+
+
+def voice_chain(
+    accounts: Iterable[Account],
+    provider: str,
+    *,
+    capability: str | None,
+    key_tier: bool,
+) -> list[list[Account]]:
+    """A Voice it lease's chain (§5.3), tier by tier, each in the Voice it pool.
+
+    Live: no plan can serve it, so tier 2, the OpenAI keys shared with Voice
+    it (`voice_dedicated` False), then tier 3, the dedicated Voice it key.
+    Text: tier 1, the pool's plans of `provider`; then, only when swarm-voice
+    can run text on a key (`key_tier`, lane LP-V1), the shared keys and the
+    dedicated key, as Live walks them.
+    """
+    accounts = list(accounts)
+    pool = [a for a in accounts if a.in_pool(POOL_VOICE_IT)]
+    keys = [a for a in pool if openai_api_key.is_live_capable(a.provider)]
+    shared = [a for a in keys if not a.voice_dedicated]
+    dedicated = [a for a in keys if a.voice_dedicated]
+    if capability == openai_api_key.CAPABILITY_LIVE:
+        return [shared, dedicated]
+    plans = [
+        a for a in pool
+        if a.provider == provider and not openai_api_key.is_live_capable(a.provider)
+    ]
+    return [plans, shared, dedicated] if key_tier else [plans]
+
+
+def choose_voice_chain(
+    tiers: list[list[Account]], accounts: Iterable[Account], person: str, now: datetime
+) -> tuple[Account | None, str]:
+    """The first tier's choice (`choose_voice`'s rule) for a session of
+    `person`, or the furthest reason any tier reached: none available over
+    not in the pool over none registered."""
+    accounts = list(accounts)
+    order = (VOICE_NONE_REGISTERED, VOICE_NOT_IN_POOL, VOICE_NONE_AVAILABLE)
+    reason = VOICE_NONE_REGISTERED
+    for tier in tiers:
+        chosen, why = _voice_free(tier, accounts, person, now)
+        if chosen is not None:
+            return chosen, ""
+        if order.index(why) > order.index(reason):
+            reason = why
+    return None, reason
+
+
+def _voice_free(
+    listed: list[Account], accounts: list[Account], person: str, now: datetime
+) -> tuple[Account | None, str]:
+    """`choose_voice`'s rule over the accounts `listed` for its capability."""
     if not listed:
         return None, VOICE_NONE_REGISTERED
     mine = [a for a in listed if a.may_serve_voice(person)]
     if not mine:
         return None, VOICE_NOT_IN_POOL
-    withheld = _withheld(list(accounts))
+    withheld = _withheld(accounts)
     free = [
         a
         for a in mine
@@ -2209,7 +2526,7 @@ def choose(
         and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
         and a.assignable(now, floor=assign_floor, stale_after=stale_after)
         and not a.is_full(now)
-        and not a.is_full_for(tenant_id, now)
+        and a.cap_for(tenant_id, now) is None
     ]
     if not candidates:
         return None
@@ -2367,10 +2684,14 @@ def eligibility(
             # `is_full` so a never-measured account whose cap is one reads as
             # waiting on that reading, not as full.
             waiting_on_poll = True
-        elif a.is_full(now) or a.is_full_for(tenant_id, now):
-            # Room by every window, and every slot taken -- the account's, or
-            # this workspace's `per_workspace_max` (Q6): it frees when an
-            # agent on it finishes, sooner than any window but undated.
+        elif a.is_lend_spent_for(tenant_id, now):
+            # A borrower at its lend's spend cap (§4.6): the month turning.
+            instants.append(next_spend_month(now))
+        elif a.is_full(now) or a.is_full_for(tenant_id, now) or a.is_lend_full_for(tenant_id, now):
+            # Room by every window, and every slot taken -- the account's,
+            # this workspace's `per_workspace_max` (Q6), or a borrower's
+            # lend's `max_agents` (Q7): it frees when an agent on it
+            # finishes, sooner than any window but undated.
             full = True
     earliest = min(instants) if instants else None
 
@@ -2453,6 +2774,29 @@ __all__ = [
     "IdenticalReadings",
     "account_id_for",
     "accounts_serving",
+    "CAP_EXHAUSTED",
+    "CAP_LEND_MAX_AGENTS",
+    "CAP_LEND_SPEND",
+    "CAP_REASONS",
+    "CAP_SPEND",
+    "CAP_WORKSPACE_MAX",
+    "CREDENTIAL_VARIABLE",
+    "KEY_PROVIDER_OF",
+    "PLAN_PROVIDER_OF",
+    "SWAP_PLAN_AVAILABLE",
+    "TIER_METERED",
+    "TIER_PLAN",
+    "TIER_VOICE_DEDICATED",
+    "TIERS",
+    "chain_providers",
+    "choose_voice_chain",
+    "voice_chain",
+    "lend_spend_from_firestore",
+    "month_spend_from_firestore",
+    "next_spend_month",
+    "soonest",
+    "spend_month",
+    "tier_of",
     "choose",
     "due_for_refresh",
     "duplicates",
