@@ -289,6 +289,83 @@ def test_a_slot_that_is_not_the_submitters_reads_as_no_grant(api_db, opener):
     assert refusal is not None and "removed" in refusal
 
 
+EXTRA_REPO = "gadgets"
+EXTRA_URL = f"https://github.com/{OWNER}/{EXTRA_REPO}"
+EXTRA_REPO_ID = indexrun.repo_id_for(TENANT, OWNER, EXTRA_REPO)
+
+
+def _extra_entry() -> dict[str, Any]:
+    """One signed `Task.additional_repositories` entry: read-only, pinned, the
+    submitter's own slot."""
+    return {
+        "name": EXTRA_REPO, "repo_id": EXTRA_REPO_ID, "repository": f"{OWNER}/{EXTRA_REPO}",
+        "repository_url": EXTRA_URL, "ref": "main", "commit": _sha(7),
+        "forge_credential": f"git-u-{_user_hex(SUBMITTER)}",
+        "forge_credential_source": "person", "size_kib": 10,
+    }
+
+
+def _extra_grant(db: ApiFirestore, *, tenant: str = TENANT, email: str = SUBMITTER,
+                 mode: str = "write") -> str:
+    """The grant of `email` on the additional repository, at its derived id; the id."""
+    hashed = _user_hex(email)
+    grant_id = f"{TENANT}__{hashed}__{EXTRA_REPO_ID}"
+    db.docs[f"forge_grants/{grant_id}"] = {
+        "tenant_id": tenant, "user_hash": hashed, "repo_id": EXTRA_REPO_ID, "mode": mode}
+    return grant_id
+
+
+def _extra_refusal(state: StateCall) -> str | None:
+    """`lifecycle._additional_grant_refusal`'s call for the entry."""
+    return worker_secrets.grant_refusal(state, tenant_id=TENANT,
+                                        suffix=_extra_entry()["forge_credential"],
+                                        repository_url=EXTRA_URL, write=False,
+                                        submitted_by=SUBMITTER)
+
+
+def test_an_additional_repositorys_active_grant_passes_through_the_routes(api_db, opener):
+    """Live finding, 11 November 2026: on a switched workspace the context
+    served the primary's grant alone, so the additional repository's active
+    grant read as removed and the step failed before its agent started."""
+    state = _opened(api_db, opener, additional_repositories=[_extra_entry()])
+    _grant(api_db)
+    _extra_grant(api_db)
+    assert _extra_refusal(state) is None
+
+
+def test_a_deleted_additional_grant_still_reads_as_removed_through_the_routes(api_db, opener):
+    state = _opened(api_db, opener, additional_repositories=[_extra_entry()])
+    _grant(api_db)
+    refusal = _extra_refusal(state)
+    assert refusal is not None and "removed" in refusal and EXTRA_REPO_ID in refusal
+
+
+def test_another_tenants_or_persons_additional_grant_is_never_accepted(api_db, opener):
+    state = _opened(api_db, opener, additional_repositories=[_extra_entry()])
+    _extra_grant(api_db, tenant="research")
+    assert "removed" in (_extra_refusal(state) or "")
+    del api_db.docs[f"forge_grants/{TENANT}__{_user_hex(SUBMITTER)}__{EXTRA_REPO_ID}"]
+    _extra_grant(api_db, email="mallory@example.com")
+    assert "removed" in (_extra_refusal(state) or "")
+
+
+def test_an_older_swarm_api_with_no_map_still_reads_the_additional_grant_as_removed(
+        api_db, opener, monkeypatch):
+    """A swarm-api that predates `additional_forge_grants`: today's answer,
+    never a silent pass."""
+    state = _opened(api_db, opener, additional_repositories=[_extra_entry()])
+    _grant(api_db)
+    _extra_grant(api_db)
+    served = indexrun.route_context
+    monkeypatch.setattr(indexrun, "route_context", lambda s: {
+        k: v for k, v in served(s).items() if k != "additional_forge_grants"})
+    assert "removed" in (_extra_refusal(state) or "")
+    # The primary's grant is still `forge_grant`'s, as before the map.
+    assert worker_secrets.grant_refusal(state, tenant_id=TENANT, suffix=_grant(api_db),
+                                        repository_url=URL, write=True,
+                                        submitted_by=SUBMITTER) is None
+
+
 # ---------------------------------------------------------------------------
 # jevkey: which TypeSafe keys are set
 # ---------------------------------------------------------------------------
