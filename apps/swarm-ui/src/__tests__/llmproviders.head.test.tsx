@@ -110,7 +110,7 @@ describe('LLM Providers › Plans: the strip and the (i) in every read state', (
     api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadAccountsBoard.mockResolvedValue(board([acct('a'), acct('b')]))
     render(<LlmProvidersScreen sub="plans" />)
-    await screen.findByRole('table', { name: 'Plans' }, WAIT)
+    await screen.findByRole('region', { name: 'Plans' }, WAIT)
     oneStripOneInfo()
   })
 })

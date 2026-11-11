@@ -119,7 +119,7 @@ function win(c: HTMLElement, key: 'five_hour' | 'seven_day') {
 }
 
 /** The account list as served, with `caps` on one plan. */
-function withCaps(label: string, caps: Partial<ServedAccount>): void {
+function withCaps(label: string, caps: Partial<ServedAccount> & { pools?: string[] }): void {
   spies.loadAccountsBoard.mockImplementation(async () => {
     const r = (await realLoad()) as Result<AccountsBoard> & { status: 'ok' }
     const accounts = r.data.page.accounts.map((a) => (a.label === label ? { ...a, ...caps } : a))
@@ -187,10 +187,10 @@ describe('Plans: the cards', () => {
     const w7 = win(card('primary'), 'seven_day')
     // MUTATION: drop the reset and these are empty.
     expect(w5.at).toBe(expectedAt(five))
-    expect(w5.until).toBe('in 2h 10m')
+    expect(w5.until).toBe('(2h 10m)')
     expect(w7.at).toBe(expectedAt(seven))
     expect(w7.at).toMatch(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d\d:\d\d$/)
-    expect(w7.until).toBe('in 3d 5h')
+    expect(w7.until).toBe('(3d 5h)')
     expect(w5.value).toBe('75% left')
   })
 
@@ -208,7 +208,7 @@ describe('Plans: the cards', () => {
       const w = win(card('primary'), k)
       // MUTATION: read a missing reading as 0% used and these say 100% left.
       expect(w.value).toBe('unknown')
-      expect(w.at).toBe('reset unknown')
+      expect(w.at).toBe('unknown')
       expect(w.el.querySelector('.lpc-qbar > b')).toBeNull()
     }
     cleanup()
@@ -218,7 +218,7 @@ describe('Plans: the cards', () => {
     await openPlans()
     // A window past its reset has refilled: projected, never current; no next reset was served.
     expect(win(card('primary'), 'five_hour').value).toBe('~100% left')
-    expect(win(card('primary'), 'five_hour').at).toBe('reset unknown')
+    expect(win(card('primary'), 'five_hour').at).toBe('unknown')
     expect(win(card('primary'), 'seven_day').value).toBe('unknown')
   })
 
@@ -228,13 +228,13 @@ describe('Plans: the cards', () => {
     expect(text(card('primary').querySelector('.llp-st'))).toBe('Available')
     expect(text(card('weekly-burn').querySelector('.llp-st'))).toBe('Paused')
     expect(text(card('retired-laptop').querySelector('.llp-st'))).toBe('Sign-in needed')
-    expect(text(card('primary').querySelector('.lpc-agents'))).toBe('2 / 6 agents')
-    expect(text(card('full-six').querySelector('.lpc-agents'))).toBe('6 / 6 agents')
+    expect(text(card('primary').querySelector('.lpc-agents'))).toBe('2/6 agents')
+    expect(text(card('full-six').querySelector('.lpc-agents'))).toBe('6/6 agents')
     expect(text(card('full-six').querySelector('.lpc-voice'))).toBe('Voice it')
     expect(card('primary').querySelector('.lpc-voice')).toBeNull()
     const lends = card('full-six').querySelector('.lpc-lends')!
     // MUTATION: drop the lends line and the card says nothing of who borrows it.
-    expect(text(lends)).toBe('Lent smoke 3 / 2')
+    expect(text(lends)).toBe('Lent smoke 3/2')
     expect(lends.querySelector('.lpc-num.is-bad')).not.toBeNull()
     expect(card('primary').querySelector('.lpc-lends')).toBeNull()
   })
@@ -256,9 +256,12 @@ describe('Plans: the cards', () => {
     for (const c of cards) {
       const names = within(c).queryAllByRole('button').map((b) => b.textContent)
       const label = c.getAttribute('aria-label')!
+      // A plan lent to this workspace is its owner's to manage: its card carries no control.
+      const owned = c.getAttribute('data-plan')!.startsWith('u-owner:')
       // MUTATION: put a button on each lend line and full-six carries three.
-      expect(names, label).toEqual(label === 'weekly-burn' ? ['Resume', 'Manage'] : ['Manage'])
+      expect(names, label).toEqual(!owned ? [] : label === 'weekly-burn' ? ['Resume', 'Manage'] : ['Manage'])
     }
+    expect(cards.some((c) => !c.getAttribute('data-plan')!.startsWith('u-owner:'))).toBe(true)
     expect(screen.queryByRole('button', { name: /Edit lend/ })).toBeNull()
   })
 
@@ -523,7 +526,7 @@ describe('Plans: the per-workspace caps', () => {
     expect((await within(s).findByRole('alert')).textContent).toContain('max_agents is above the limit')
     expect(api.setAccountPerWorkspaceMax).toHaveBeenCalledWith('u-owner:full-six', { smoke: 5 })
     expect(spies.loadAccountsBoard.mock.calls.length).toBe(reads)
-    expect(text(card('full-six').querySelector('.lpc-agents'))).toBe('6 / 6 agents')
+    expect(text(card('full-six').querySelector('.lpc-agents'))).toBe('6/6 agents')
     expect((within(s).getByRole('spinbutton', { name: 'smoke max agents' }) as HTMLInputElement).value).toBe('5')
   })
 })
@@ -541,7 +544,7 @@ describe('Plans: a control that fails', () => {
     // MUTATION: swallow the failure and the sheet says nothing.
     expect((await within(s).findByRole('alert')).textContent).toContain('max_agents is above the limit')
     expect(api.setAccountMaxAgents).toHaveBeenCalledTimes(1)
-    expect(text(card('primary').querySelector('.lpc-agents'))).toBe('2 / 6 agents')
+    expect(text(card('primary').querySelector('.lpc-agents'))).toBe('2/6 agents')
     expect(spies.loadAccountsBoard.mock.calls.length).toBe(reads)
     expect((within(s).getByRole('spinbutton', { name: 'Max agents' }) as HTMLInputElement).value).toBe('40')
   })
