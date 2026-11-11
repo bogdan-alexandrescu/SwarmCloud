@@ -22,12 +22,12 @@ from .test_docs_spec_amendments import _cited_symbol
 REPO = Path(__file__).resolve().parents[3]
 REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
-#: number -> (epic comment id, the frozen symbol the request changes).
+#: number -> (the epic box it was filed for, the frozen symbol the request changes).
 ENTRIES = {
-    58: ("5901303466", "apps/common/swarm_common/specsign.py", "canonical_step_spec"),
-    59: ("5901303857", "apps/common/swarm_common/specsign.py", "_encode"),
-    60: ("5944064436", "apps/common/swarm_common/profiles.py", "RunnerProfile.__post_init__"),
-    61: ("5895194106", "apps/common/swarm_common/profiles.py", "url_refusal"),
+    58: ("the security-review epic's box 53", "apps/common/swarm_common/specsign.py", "canonical_step_spec"),
+    59: ("the security-review epic's box 55", "apps/common/swarm_common/specsign.py", "_encode"),
+    60: ("the review-probe epic's box 87", "apps/common/swarm_common/profiles.py", "RunnerProfile.__post_init__"),
+    61: ("the security-review epic's box 42", "apps/common/swarm_common/profiles.py", "url_refusal"),
 }
 
 #: Entries the owner has since accepted, and the pull request applied: their
@@ -70,8 +70,8 @@ def test_each_finding_is_an_entry_in_the_house_shape(number: int):
     status = f"**Status:** {_APPLIED_STATUS}" if number in APPLIED else "**Status:** proposed"
     for part in (status, *SECTIONS):
         assert part in body, f"request {number} has no {part!r}"
-    comment, path, symbol = ENTRIES[number]
-    assert f"issuecomment-{comment}" in body, f"request {number} does not link its epic box"
+    box, path, symbol = ENTRIES[number]
+    assert box in body, f"request {number} does not name its epic box"
     assert f"`{path}::{symbol}`" in body, f"request {number} does not cite {path}::{symbol}"
     _cited_symbol(path, symbol)
 

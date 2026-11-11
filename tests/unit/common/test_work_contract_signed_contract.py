@@ -110,7 +110,7 @@ def test_older_formats_bytes_do_not_change(older):
 def test_the_request_is_marked_accepted_and_applied():
     text = REQUESTS.read_text()
     row = next(line for line in text.splitlines() if line.startswith("| 137 |"))
-    assert "ACCEPTED by the owner (BGD) 4 November 2026" in row and "APPLIED" in row
+    assert "ACCEPTED by the owner 4 November 2026" in row and "APPLIED" in row
     section = text.split("\n## 137. ", 1)[1].split("\n## ", 1)[0]
-    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner (BGD)")
+    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner")
     assert "digest-verified allowance list" in section

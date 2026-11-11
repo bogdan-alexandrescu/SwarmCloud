@@ -200,7 +200,7 @@ def test_requests_a_and_b_are_filed_as_accepted_and_applied():
         assert "FL-CONTRACT" in row and letter in row
         # "accepted by the owner" is the mark scripts/lib/check-frozen-contract.sh
         # looks for in an added line; without it the swarm_common diff is refused.
-        assert "ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10" in row and "APPLIED" in row
+        assert "ACCEPTED by the owner 2026-10-27 (Q1, Q2, Q10" in row and "APPLIED" in row
         assert re.search(rf"^## {number}\. .*\(FL-CONTRACT, {letter}\)$", text, re.M)
 
 
@@ -221,11 +221,11 @@ def test_request_c_is_accepted_and_applied():
     assert causes[-2] is EndCause.BUDGET_EXCEEDED
     row = _row("126")
     assert "fix loop request C" in row
-    assert "ACCEPTED by the owner (BGD) 2026-10-27" in row and "APPLIED" in row
+    assert "ACCEPTED by the owner 2026-10-27" in row and "APPLIED" in row
     assert "Not applied" not in row
     text = REQUESTS.read_text(encoding="utf-8")
     section = text.split("## 126. ", 1)[1].split("\n## ", 1)[0]
-    assert "**Status:** ACCEPTED by the owner (BGD) 2026-10-27" in section
+    assert "**Status:** ACCEPTED by the owner 2026-10-27" in section
 
 
 def test_the_console_names_the_new_end_cause():
