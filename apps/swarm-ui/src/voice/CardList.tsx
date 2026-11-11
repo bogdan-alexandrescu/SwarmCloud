@@ -53,10 +53,15 @@ export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
 /** The event debug mode adds: one finished planner turn, for Talk's turn line (swarm_api/voice/trace.py `TRACE_TURN`). */
 export const TRACE_EVENTS = ['trace.turn'] as const
 
+/** A spent Live key's next tier is held: Talk offers again (swarm_api/voice/stream.py `TIER_REOPEN`). */
+export const TIER_EVENTS = ['voice.tier.reopen'] as const
+
 /** Every event the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
-const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS]
+const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS, ...TIER_EVENTS]
 
 const IS_TRACE_EVENT: readonly string[] = TRACE_EVENTS
+
+const IS_TIER_EVENT: readonly string[] = TIER_EVENTS
 
 const IS_STAGE_EVENT: readonly string[] = STAGE_EVENTS
 
@@ -273,18 +278,21 @@ type Link = 'off' | 'open' | 'closed' | 'unsupported'
  * `onStageEvent` is handed the stream's visual, note and focus events
  * (`STAGE_EVENTS`) as they arrive: the Talk stage reads them from here
  * (Talk.tsx), so a live session holds one stream, not two. `onTraceEvent`
- * is handed debug mode's `trace.turn` events the same way, for Talk's turn line.
+ * is handed debug mode's `trace.turn` events the same way, for Talk's turn line,
+ * and `onTierEvent` the `voice.tier.reopen` events, for Talk's reopen.
  */
 export function CardList({
   sessionId,
   fixtures,
   onStageEvent,
   onTraceEvent,
+  onTierEvent,
 }: {
   sessionId: string | null
   fixtures?: readonly VoiceCard[]
   onStageEvent?: (ev: StreamEvent) => void
   onTraceEvent?: (ev: StreamEvent) => void
+  onTierEvent?: (ev: StreamEvent) => void
 }) {
   const [s, dispatch] = useReducer(reducer, EMPTY_LIST)
   const [link, setLink] = useState<Link>('off')
@@ -294,9 +302,11 @@ export function CardList({
   const shownFor = useRef<string | null>(null)
   const toStage = useRef(onStageEvent)
   const toTrace = useRef(onTraceEvent)
+  const toTier = useRef(onTierEvent)
   lastSeq.current = s.lastSeq
   toStage.current = onStageEvent
   toTrace.current = onTraceEvent
+  toTier.current = onTierEvent
 
   useEffect(() => {
     if (sessionId === null) {
@@ -319,6 +329,7 @@ export function CardList({
         // The stage's events go up to the stage; the list still counts their sequence, so a Reconnect repeats none.
         if (IS_STAGE_EVENT.includes(ev.type)) toStage.current?.(ev)
         if (IS_TRACE_EVENT.includes(ev.type)) toTrace.current?.(ev)
+        if (IS_TIER_EVENT.includes(ev.type)) toTier.current?.(ev)
         if (ev.type === 'card.upsert') {
           const kind = (ev.data.card as { kind?: unknown } | undefined)?.kind
           const name = typeof kind === 'string' ? kind : '(none)'
