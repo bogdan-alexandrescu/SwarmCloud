@@ -27,6 +27,7 @@ import importlib.util
 import io
 import json
 import secrets
+import sys
 import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -65,6 +66,9 @@ AUDIT_FILES = {"skills/security-audit/SKILL.md": b"---\nname: security-audit\n--
 _BUNDLER = Path(__file__).resolve().parents[3] / "images" / "plugin-bundler" / "swarm-bundle"
 _loader = importlib.machinery.SourceFileLoader("swarm_bundle_for_tests", str(_BUNDLER))
 swarm_bundle = importlib.util.module_from_spec(importlib.util.spec_from_loader(_loader.name, _loader))
+# A dataclass in the bundler resolves its annotations through sys.modules, so
+# the module is registered before it runs, as tests/unit/scripts/test_plugin_bundle_job.py does.
+sys.modules[_loader.name] = swarm_bundle
 _loader.exec_module(swarm_bundle)
 
 
