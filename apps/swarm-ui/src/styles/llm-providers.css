@@ -66,17 +66,17 @@
 .llp-sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); box-sizing: border-box; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--ctl-shadow-pop, -8px 0 24px rgba(0, 0, 0, 0.25)); z-index: 61; display: flex; flex-direction: column; }
 .llp-sheet-head { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
 .llp-sheet-t { flex: 1 1 auto; min-width: 0; }
-.llp-sheet-t h2 { margin: 0; font-size: 16px; line-height: 1.3; overflow-wrap: anywhere; }
+.llp-sheet-t h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); overflow-wrap: anywhere; }
 .llp-sheet-t h2:focus { outline: none; }
 .llp-sheet-sub { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: var(--t-micro); color: var(--text-dim); align-items: center; }
 .llp-sheet-body { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 14px; }
 .llp-sheet-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface); }
 .llp-ss { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-.llp-ss h3 { margin: 0; font-size: var(--t-micro); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
-.llp-ss-aside { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.llp-ss h3 { margin: 0; font-size: var(--t-micro); font-family: var(--mono); color: var(--text-faint); display: flex; align-items: center; gap: 4px; }
+.llp-ss-aside { margin-left: auto; }
 .llp-f { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .llp-f-l { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); display: inline-flex; align-items: center; gap: 4px; }
-.llp-in { height: 32px; padding: 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl, 6px); background: var(--bg); color: var(--text); font: var(--t-body) var(--font); min-width: 0; width: 100%; box-sizing: border-box; }
+.llp-in { height: 32px; padding: 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl, 6px); background: var(--bg); color: var(--text); font: var(--t-body)/var(--lh-body) var(--font); min-width: 0; width: 100%; box-sizing: border-box; }
 .llp-in.mono { font-family: var(--mono); font-size: var(--t-micro); }
 .llp-in:focus { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
 .llp-in-n { width: 96px; }
@@ -91,7 +91,7 @@
 .llp-mini { border-collapse: collapse; font-size: var(--t-micro); width: 100%; }
 .llp-mini td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .llp-mini td:last-child { text-align: right; }
-.llp-sw { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; padding: 0; color: var(--text); font: var(--t-body) var(--font); cursor: pointer; align-self: flex-start; }
+.llp-sw { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; padding: 0; color: var(--text); font: var(--t-body)/var(--lh-body) var(--font); cursor: pointer; align-self: flex-start; }
 .llp-sw > i { width: 30px; height: 18px; border-radius: 9px; background: color-mix(in srgb, var(--text) 22%, transparent); position: relative; flex: none; transition: background 0.15s; }
 .llp-sw > i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: left 0.15s; }
 .llp-sw.is-on > i { background: var(--sk-ac); }
@@ -120,7 +120,7 @@
   .llp-row td:first-child { grid-column: 1 / 3; grid-row: 1; }
   .llp-row td.llp-act { grid-column: 3; grid-row: 1; text-align: right; white-space: normal; }
   .llp-acts { flex-wrap: wrap; justify-content: flex-end; }
-  .llp-row td[data-l]:not([data-l=''])::before { content: attr(data-l); display: block; font-size: 11px; color: var(--text-faint); margin-bottom: 2px; }
+  .llp-row td[data-l]:not([data-l=''])::before { content: attr(data-l); display: block; font-size: var(--t-micro); color: var(--text-faint); margin-bottom: 2px; }
   .llp-who, .llp-name { max-width: 100%; white-space: normal; }
   .llp-meta > span { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .llp-over { min-width: 0; }
