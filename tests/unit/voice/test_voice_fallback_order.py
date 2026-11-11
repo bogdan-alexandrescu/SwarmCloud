@@ -542,6 +542,7 @@ def test_live_reopens_on_the_next_tier_when_its_keys_credit_is_gone_and_the_sess
         # What the person said carries over, and so do the trace and its turn count.
         assert second.transcript == first.transcript
         assert second.trace is first.trace
+        second._planner = planner  # noqa: SLF001
         second._traced([("person", "again")], "and this", None, "Done.")  # noqa: SLF001
         await _until(lambda: len(planner.traces) == 2)
         assert planner.traces[1]["tier"] == al.TIER_VOICE_KEY and planner.traces[1]["turn"]["n"] == 2

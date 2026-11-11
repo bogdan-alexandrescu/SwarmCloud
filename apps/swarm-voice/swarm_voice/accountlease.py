@@ -22,12 +22,27 @@ THE BROKER'S ROUTES (artifacts interface, apps/quota-broker):
   `capability: text` (a text conversation, textchat.py) asks for the Voice it
   pool's ChatGPT plan and is answered with its access token and plan account
   id, `{"access_token", "account_id"}`, the same credential the broker served
-  the plan before Live needed a key.
+  the plan before Live needed a key; with `key_tier` it walks on to a key.
+  Every grant names its `tier`.
 * `POST /v1/voice/lease/{account_id}/renew` `{"assignment_id",
   "voice_session_id"}` -> `{"expires_at", "credential": {...}}` with a FRESH
   access token; 404/409 when the hold is gone.
 * `POST /v1/voice/lease/{account_id}/release` (same body) -> `{"released"}`,
   idempotent.
+
+THE FALLBACK ORDER (docs/design/llm-providers.md §5.3). The broker walks each
+lease down its chain and answers the `tier` it granted (`TIER_PLAN`,
+`TIER_KEY`, `TIER_VOICE_KEY`): Live walks the OpenAI keys shared with Voice it,
+then the dedicated Voice it key; text walks the pool's plans first, then the
+same two, because a text lease says it can run on a key (`key_tier`, since
+textchat.py speaks the developer Responses wire). A session whose account is
+spent (a key's credit gone, a plan at its limit, a renewal refused) MOVES
+(`VoiceBroker.move`): it leases again while it still holds the spent account,
+so the broker's walk passes over it, and gives the spent one back once the
+next tier holds the session. The voice lease names no `exclude` (the broker's
+`VoiceLease` refuses one), so a broker that answers the spent account again
+has nothing further to offer: the move is refused and the extra hold given
+straight back.
 
 The hold's TTL is ten minutes and swarm-voice renews every four
 (`RENEW_SECONDS`), so a swarm-voice that dies leaves a hold that expires on its
@@ -72,8 +87,20 @@ PROVIDER = "openai"
 CAPABILITY = "live"
 #: What a text conversation leases its account for (textchat.py): the ChatGPT
 #: plan's Responses wire, which serves text on the plan but refuses Live (owner,
-#: 4 November 2026: "both paths"). The broker offers a plan for it, never a key.
+#: 4 November 2026: "both paths"). The broker offers the pool's plans first,
+#: then the keys (`key_tier`, §5.3), which textchat.py serves on the developer
+#: Responses wire.
 CAPABILITY_TEXT = "text"
+#: The tiers the broker answers (quota_broker.accounts.tier_of, §5.3): a
+#: plan, a key shared with Voice it, the dedicated Voice it key.
+TIER_PLAN = "plan"
+TIER_KEY = "api_key"
+TIER_VOICE_KEY = "voice_dedicated"
+TIERS = (TIER_PLAN, TIER_KEY, TIER_VOICE_KEY)
+#: OpenAI's codes for a key that cannot serve now: its credit is gone
+#: (`insufficient_quota`; the broker's own word is `credit_balance_exhausted`)
+#: or it is rate-limited. Either moves the session to the next tier (§5.2).
+SPENT_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted", "rate_limit_exceeded"})
 #: The broker's voice hold lives ten minutes; renewing every four leaves two
 #: renewals' slack before it lapses, and each renewal brings a fresh token.
 RENEW_SECONDS = 240.0
@@ -98,6 +125,12 @@ class VoicePoolRefused(Exception):
 
 class HoldGone(CredentialError):
     """The broker no longer holds this session's lease (expired or released)."""
+
+
+def tier_of(body: Any) -> str | None:
+    """The tier a broker answer names, None when it names none this module knows."""
+    tier = body.get("tier") if isinstance(body, dict) else None
+    return tier if tier in TIERS else None
 
 
 def _credential(body: Any) -> Bearer:
@@ -168,9 +201,14 @@ class VoiceBroker:
         or CredentialError."""
         if capability not in (CAPABILITY, CAPABILITY_TEXT):
             raise CredentialError(f"no Voice it lease is asked for {capability!r}")
-        status, body = await self._post("/v1/voice/lease", {
-            "person": person, "voice_session_id": voice_session_id, "provider": PROVIDER,
-            "capability": capability})
+        payload: dict[str, Any] = {"person": person, "voice_session_id": voice_session_id,
+                                   "provider": PROVIDER, "capability": capability}
+        if capability == CAPABILITY_TEXT:
+            # textchat.py runs text on a key too (the developer Responses wire),
+            # so the broker walks on past the plans (§5.3). Live sends nothing:
+            # a key is the only kind it has ever run on.
+            payload["key_tier"] = True
+        status, body = await self._post("/v1/voice/lease", payload)
         if status != 200 or not isinstance(body, dict):
             # The status only: an error body may quote the request.
             raise CredentialError(f"the quota broker refused the voice lease (HTTP {status})")
@@ -181,7 +219,23 @@ class VoiceBroker:
         bearer = _credential(body)
         return PoolCredential(self, account_id=str(body["account_id"]), assignment_id=str(body["assignment_id"]),
                               voice_session_id=voice_session_id, bearer=bearer,
-                              label=str(body.get("label") or ""))
+                              label=str(body.get("label") or ""), tier=tier_of(body),
+                              capability=capability)
+
+    async def move(self, spent: "PoolCredential", *, person: str) -> "PoolCredential":
+        """The next tier for a session whose account is spent (§5.3): a new
+        lease taken WHILE `spent` is still held, so the broker's walk passes
+        over it. The caller gives `spent` back once the new account holds the
+        session. A broker that answers the spent account again has no other to
+        offer: that hold is given back and VoicePoolRefused raised."""
+        moved = await self.lease(person=person, voice_session_id=spent.voice_session_id,
+                                 capability=spent.capability)
+        if moved.account_id == spent.account_id:
+            await moved.release()
+            raise VoicePoolRefused(NONE_AVAILABLE)
+        log.info("voice session %s: moved from the %s tier to the %s tier", spent.voice_session_id,
+                 spent.tier, moved.tier)
+        return moved
 
     async def renew(self, account_id: str, assignment_id: str, voice_session_id: str) -> Bearer:
         status, body = await self._post(f"/v1/voice/lease/{quote(account_id, safe='')}/renew", {
@@ -209,12 +263,19 @@ class PoolCredential:
     when the session ends."""
 
     def __init__(self, broker: VoiceBroker, *, account_id: str, assignment_id: str,
-                 voice_session_id: str, bearer: Bearer, label: str = "") -> None:
+                 voice_session_id: str, bearer: Bearer, label: str = "", tier: str | None = None,
+                 capability: str = CAPABILITY) -> None:
         self._broker = broker
         self.account_id = account_id
         self.assignment_id = assignment_id
         self.voice_session_id = voice_session_id
         self.label = label
+        #: The tier the broker granted (`TIERS`), None when it named none.
+        self.tier = tier
+        self.capability = capability
+        #: Called once when the broker refuses a renewal (the hold is gone):
+        #: the session moves to the next tier (live.py).
+        self.on_lost: Callable[[], None] | None = None
         self._bearer: Bearer | None = bearer
         self._renew_at = broker.now() + broker.renew_seconds
         self._lock = asyncio.Lock()
@@ -265,6 +326,8 @@ class PoolCredential:
             except HoldGone:
                 log.warning("voice session %s: the Voice it pool hold on %s is gone",
                             self.voice_session_id, self.account_id)
+                if self.on_lost is not None:
+                    self.on_lost()
                 return
             except CredentialError as exc:
                 # Retried on the next tick; the hold's TTL is longer than two ticks.

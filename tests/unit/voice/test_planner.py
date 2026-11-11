@@ -270,7 +270,7 @@ def test_a_turn_leases_one_account_draws_one_card_speaks_two_sentences_and_relea
     assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-1/release"]
     assign = world.broker_calls[0][1]
     assert assign == {"provider": "anthropic", "holder": "voice-planner", "person": PERSON,
-                      "voice_session_id": world.grant.session_id}
+                      "voice_session_id": world.grant.session_id, "key_tier": True}
     release = world.broker_calls[1][1]
     assert release["voice_session_id"] == world.grant.session_id and release["assignment_id"].startswith("as-")
 

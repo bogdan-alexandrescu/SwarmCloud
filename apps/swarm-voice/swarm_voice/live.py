@@ -69,6 +69,22 @@ swarm-api, a process shutdown (`Sessions.end_all`), and a sideband that drops
 duration limit, or the browser's own `session.close` on the data channel -- is
 forgotten when its `session.closed` arrives.
 
+THE NEXT TIER (docs/design/llm-providers.md §5.3). The session records the
+tier its key serves from (`LiveSession.tier`, the broker's answer), and each
+debug trace turn names it beside the engine. When the key's credit is gone
+mid-session -- the sideband's `error` carries a spent code
+(accountlease.SPENT_CODES), or the broker refuses the hold's renewal -- the
+session leases the next tier (accountlease `VoiceBroker.move`) while it still
+holds the spent key, and tells swarm-api through the event sink
+(`REOPEN_EVENT`, with the new tier and nothing else). A GPT-Live session is
+bound to the browser's SDP, so the reopen is the next start of the same voice
+session with a fresh offer: it creates the Live session on the next tier's
+key, carries the transcript, the grant, the planner model and the trace over,
+closes the spent Live session and gives its key back. If OpenAI ends the spent
+session first, the next tier stays held for the reopen for REOPEN_SECONDS and
+is then given back. With no next tier nothing is told and the session ends
+as it did before.
+
 DELEGATION (phase two, §3.3). With a planner (planner.py), each session is
 created with `delegation: {"type": "client"}` and its voice is told to delegate.
 On the sideband, `session.delegation.created` names a delegation id and no task
@@ -144,6 +160,7 @@ import httpx
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import InvalidStatus, WebSocketException
 
+from .accountlease import SPENT_CODES, VoicePoolRefused
 from .credential import Credential, CredentialError
 from . import readback as vreadback
 from . import trace as vtrace
@@ -161,6 +178,11 @@ _ws_log.setLevel(logging.INFO)
 OPENAI_API = "https://api.openai.com"
 OPENAI_WS = "wss://api.openai.com"
 MODEL = "gpt-live-1"
+#: What the event sink is told when a session's next tier is held and the
+#: browser should offer again (the next start of the same voice session).
+REOPEN_EVENT = "voice.tier.reopen"
+#: How long a next tier is held for a reopen after the spent session ended.
+REOPEN_SECONDS = 60.0
 #: How long one attach try may take to see the session confirmed (CONFIRMS_PREFIX);
 #: inside a start, also no longer than what is left of START_SECONDS.
 ATTACH_SECONDS = 10.0
@@ -357,12 +379,17 @@ class LeasedCredential(Credential, Protocol):
 
     async def release(self) -> None: ...
 
+    #: The tier it was granted on (accountlease.TIERS), None when none was named.
+    tier: str | None
+
 
 class Leases(Protocol):
     """Where a session's credential comes from: the quota broker's Voice it pool
     (accountlease.VoiceBroker). Raises accountlease.VoicePoolRefused when it leases none."""
 
     async def lease(self, *, person: str, voice_session_id: str) -> LeasedCredential: ...
+
+    async def move(self, spent: LeasedCredential, *, person: str) -> LeasedCredential: ...
 
 
 EventSink = Callable[[str, dict], Awaitable[None]]
@@ -655,6 +682,24 @@ class LiveSession:
         #: start body said `debug: true`; None counts and sends nothing.
         self.trace: vtrace.SessionTrace | None = None
         self._trace_writes: set[asyncio.Task] = set()
+        #: Told when the key is spent (Sessions moves the session to the next tier).
+        self.on_spent: Callable[["LiveSession"], None] | None = None
+        #: The next tier's credential, held for the reopen once the key is spent.
+        self.next_credential: LeasedCredential | None = None
+        #: Set once a reopen has replaced this session (its forget is its own only).
+        self.replaced = False
+        #: Whether a move to the next tier is in flight.
+        self.moving = False
+
+    @property
+    def tier(self) -> str | None:
+        """The tier this session's key serves from (accountlease.TIERS)."""
+        return getattr(self._credential, "tier", None)
+
+    @property
+    def reopen_pending(self) -> bool:
+        """Whether the next tier is held and the browser was told to offer again."""
+        return self.next_credential is not None
 
     @property
     def transcript(self) -> list[tuple[str, str]]:
@@ -761,6 +806,8 @@ class LiveSession:
                         # The error's code only: its message may quote what was sent.
                         error = event.get("error") if isinstance(event.get("error"), dict) else {}
                         log.warning("voice session %s: sideband error %s", self.voice_id, error.get("code", "unknown"))
+                        if error.get("code") in SPENT_CODES and self.on_spent is not None:
+                            self.on_spent(self)
                     if self._on_event is not None:
                         try:
                             await self._on_event(self.voice_id, event)
@@ -976,6 +1023,8 @@ class LiveSession:
         if self.trace is None or self._planner is None:
             return
         body = self.trace.turn(transcript=transcript, handoff=request or None, result=result, told=told)
+        # The tier beside the engine: which kind of account served the turn (§5.4).
+        body["tier"] = self.tier
         vtrace.spawn(self._planner.write_trace(self.grant, body), self._trace_writes)
 
     async def _say(self, delegation_id: str, spoken: str) -> None:
@@ -1053,6 +1102,11 @@ class Sessions:
         self._live: dict[str, LiveSession] = {}
         self._starting: set[str] = set()
         self._releases: set[asyncio.Task] = set()
+        #: Sessions whose spent Live session ended before the reopen came, by
+        #: voice id, each holding its next tier (`next_credential`).
+        self._awaiting: dict[str, LiveSession] = {}
+        self._expiries: dict[str, asyncio.TimerHandle] = {}
+        self._moves: set[asyncio.Task] = set()
 
     def get(self, voice_id: str) -> LiveSession | None:
         return self._live.get(voice_id)
@@ -1061,17 +1115,75 @@ class Sessions:
         return {"sessions": len(self._live), "attached": sum(1 for s in self._live.values() if s.attached)}
 
     def _forget(self, session: LiveSession) -> None:
-        # The grant dies with the session (§3.6): an ended session presents none.
-        session.grant = None
         session.cancel_turns()
-        self.holds.forget(session.voice_id)
-        if self._planner is not None:
-            self._planner.forget(session.voice_id)
         if self._live.get(session.voice_id) is session:
             del self._live[session.voice_id]
         # The Voice it pool account goes back with the session: an end, a
         # shutdown, or OpenAI's own `session.closed` on the sideband.
         self._release(session._credential)
+        if session.replaced:
+            # A reopen took its place: the voice session lives on in the new one.
+            session.grant = None
+            return
+        if session.next_credential is not None:
+            # The spent session ended before the browser offered again: its
+            # next tier waits for the reopen, for REOPEN_SECONDS at most.
+            self._awaiting[session.voice_id] = session
+            self._expiries[session.voice_id] = asyncio.get_running_loop().call_later(
+                REOPEN_SECONDS, self._expire, session.voice_id)
+            return
+        self._ended(session)
+
+    def _ended(self, session: LiveSession) -> None:
+        # The grant dies with the session (§3.6): an ended session presents none.
+        session.grant = None
+        self.holds.forget(session.voice_id)
+        if self._planner is not None:
+            self._planner.forget(session.voice_id)
+
+    def _expire(self, voice_id: str) -> None:
+        """No reopen came: the next tier goes back and the voice session ends."""
+        self._expiries.pop(voice_id, None)
+        session = self._awaiting.pop(voice_id, None)
+        if session is None:
+            return
+        log.info("voice session %s: no reopen within %.0f s; the next tier is given back", voice_id,
+                 REOPEN_SECONDS)
+        held, session.next_credential = session.next_credential, None
+        if held is not None:
+            self._release(held)
+        self._ended(session)
+
+    def _spent(self, session: LiveSession) -> None:
+        """The session's key is spent: lease the next tier beside it (§5.3)."""
+        if session.next_credential is not None or session.replaced or session.moving:
+            return
+        session.moving = True
+        task = asyncio.get_running_loop().create_task(self._move(session), name="voice-tier-move")
+        self._moves.add(task)
+        task.add_done_callback(self._moves.discard)
+
+    async def _move(self, session: LiveSession) -> None:
+        try:
+            moved = await self._leases.move(session._credential, person=session.person)
+        except (VoicePoolRefused, CredentialError) as exc:
+            log.info("voice session %s: no tier after %s: %s", session.voice_id, session.tier,
+                     exc.reason if isinstance(exc, VoicePoolRefused) else type(exc).__name__)
+            return
+        finally:
+            session.moving = False
+        if session.ended and self._awaiting.get(session.voice_id) is not session:
+            # Ended for good while the lease was taken: nothing to reopen.
+            self._release(moved)
+            return
+        moved.start_renewing()
+        session.next_credential = moved
+        log.info("voice session %s: the %s tier is held for the reopen", session.voice_id, moved.tier)
+        if self._on_event is not None:
+            try:
+                await self._on_event(session.voice_id, {"type": REOPEN_EVENT, "tier": moved.tier})
+            except Exception as exc:  # noqa: BLE001 - a sink's failure never fails the move
+                log.warning("voice session %s: event sink failed: %s", session.voice_id, type(exc).__name__)
 
     def _release(self, credential: LeasedCredential) -> asyncio.Task:
         task = asyncio.get_running_loop().create_task(credential.release(),
@@ -1097,7 +1209,12 @@ class Sessions:
         RELEASE_WAIT_SECONDS for the release: swarm-api must have this answer
         before its START_TIMEOUT_SECONDS, or it shows the person "could not be
         reached" in place of the refusal (see THE START HAS ONE DEADLINE)."""
-        if voice_id in self._live or voice_id in self._starting:
+        if voice_id in self._starting:
+            raise SessionExists(voice_id)
+        spent = self._awaiting.get(voice_id) or self._live.get(voice_id)
+        if spent is not None and spent.next_credential is not None:
+            return await self._reopen(spent, offer=offer, grant=grant, planner_model=planner_model)
+        if voice_id in self._live:
             raise SessionExists(voice_id)
         self._starting.add(voice_id)
         credential: LeasedCredential | None = None
@@ -1109,17 +1226,8 @@ class Sessions:
                 async with asyncio.timeout_at(deadline) as bound:
                     credential = await self._leases.lease(person=person, voice_session_id=voice_id)
                     credential.start_renewing()
-                    config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS + TURN_INSTRUCTIONS}
-                    if self._planner is not None:
-                        config = {"model": MODEL,
-                                  "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS + TURN_INSTRUCTIONS,
-                                  "delegation": {"type": "client"}}
                     stage = "the create"
-                    live_id, answer = await self.api.create(credential, offer, config)
-                    session = LiveSession(voice_id, live_id, credential, self.api,
-                                          on_event=self._on_event, on_closed=self._forget,
-                                          person=person, planner=self._planner, finals=self._finals)
-                    session.answer = answer
+                    session = await self._create(voice_id, person, credential, offer)
                     session.grant = grant
                     session.planner_model = planner_model
                     if debug:
@@ -1134,7 +1242,8 @@ class Sessions:
                 raise LiveError(f"the Live start did not finish within {START_SECONDS:g} s "
                                 f"(at {stage})") from None
             self._live[voice_id] = session
-            log.info("voice session %s: live session %s attached", voice_id, live_id)
+            log.info("voice session %s: live session %s attached on the %s tier", voice_id, session.live_id,
+                     session.tier)
             credential = None  # held by the session now; released when it is forgotten
             return session
         except BaseException:
@@ -1146,10 +1255,77 @@ class Sessions:
         finally:
             self._starting.discard(voice_id)
 
+    def _config(self) -> dict[str, Any]:
+        if self._planner is None:
+            return {"model": MODEL, "instructions": INSTRUCTIONS + TURN_INSTRUCTIONS}
+        return {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS + TURN_INSTRUCTIONS,
+                "delegation": {"type": "client"}}
+
+    async def _create(self, voice_id: str, person: str, credential: LeasedCredential, offer: str) -> LiveSession:
+        """The GPT-Live session for `offer` on `credential`, not yet attached."""
+        live_id, answer = await self.api.create(credential, offer, self._config())
+        session = LiveSession(voice_id, live_id, credential, self.api,
+                              on_event=self._on_event, on_closed=self._forget,
+                              person=person, planner=self._planner, finals=self._finals)
+        session.answer = answer
+        session.on_spent = self._spent
+        if hasattr(credential, "on_lost"):
+            # A renewal the broker refuses is a spent key too (§5.3).
+            credential.on_lost = lambda: self._spent(session)
+        return session
+
+    async def _reopen(self, spent: LiveSession, *, offer: str, grant: SessionGrant | None,
+                      planner_model: str | None) -> LiveSession:
+        """Reopen Live for `spent`'s voice session on its next tier (§5.3): the
+        new Live session takes the browser's fresh offer on the next tier's key
+        and carries the conversation over; the spent session is closed and its
+        key given back. A failed reopen keeps the next tier held for a retry."""
+        voice_id = spent.voice_id
+        credential = spent.next_credential
+        assert credential is not None
+        self._starting.add(voice_id)
+        try:
+            deadline = asyncio.get_running_loop().time() + START_SECONDS
+            async with asyncio.timeout_at(deadline):
+                session = await self._create(voice_id, spent.person, credential, offer)
+                session.grant = grant if grant is not None else spent.grant
+                session.planner_model = planner_model if planner_model is not None else spent.planner_model
+                session.trace = spent.trace
+                session._segments = list(spent._segments)
+                await session.attach(deadline - ATTACH_RESERVE_SECONDS)
+        finally:
+            self._starting.discard(voice_id)
+        spent.next_credential = None
+        spent.replaced = True
+        timer = self._expiries.pop(voice_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._awaiting.pop(voice_id, None)
+        self._live[voice_id] = session
+        log.info("voice session %s: live reopened as %s on the %s tier", voice_id, session.live_id, session.tier)
+        if not spent.ended:
+            try:
+                await spent.end(self._grace)
+            except (LiveError, CredentialError) as exc:
+                log.warning("voice session %s: the spent live session did not close: %s", voice_id, exc)
+        self._forget(spent)
+        return session
+
     async def end(self, voice_id: str) -> LiveSession | None:
         session = self._live.get(voice_id)
         if session is None:
-            return None
+            waiting = self._awaiting.get(voice_id)
+            if waiting is not None:
+                timer = self._expiries.get(voice_id)
+                if timer is not None:
+                    timer.cancel()
+                self._expire(voice_id)
+                await self.drain_releases()
+            return waiting
+        # An end is the person's: a next tier held for a reopen goes back with it.
+        held, session.next_credential = session.next_credential, None
+        if held is not None:
+            self._release(held)
         # Forgotten only once it has ended: an end that raised (the re-attach failed)
         # leaves the session held, so swarm-api's retry can still close it and stop
         # its per-second billing.
@@ -1161,6 +1337,10 @@ class Sessions:
 
     async def end_all(self) -> None:
         """Close every session: a shutdown must not leave one billing with no sideband."""
+        for task in list(self._moves):
+            task.cancel()
+        for voice_id in list(self._awaiting):
+            await self.end(voice_id)
         for voice_id in list(self._live):
             try:
                 await self.end(voice_id)
