@@ -247,7 +247,7 @@ function Quota({ a, k, name, now }: { a: Plan; k: string; name: string; now: num
         </span>
         {upcoming ? (
           <span title={`${name}: resets ${localAt(resets, now)}, ${inTime(resets, now)}`}>
-            <span className="lpc-q-time">{localAt(resets, now)}</span> <span className="lpc-q-in">({humaniseUntil(resets - now)})</span>
+            <span className="lpc-q-time">{localAt(resets, now)}</span> <span className="lpc-q-in">in {humaniseUntil(resets - now).replace(' ', '')}</span>
           </span>
         ) : (
           <span className="lpc-q-time" title={`${name}: next reset not served`}>

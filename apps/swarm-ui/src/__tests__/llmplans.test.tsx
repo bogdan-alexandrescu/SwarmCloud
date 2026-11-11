@@ -187,10 +187,10 @@ describe('Plans: the cards', () => {
     const w7 = win(card('primary'), 'seven_day')
     // MUTATION: drop the reset and these are empty.
     expect(w5.at).toBe(expectedAt(five))
-    expect(w5.until).toBe('(2h 10m)')
+    expect(w5.until).toBe('in 2h10m')
     expect(w7.at).toBe(expectedAt(seven))
     expect(w7.at).toMatch(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d\d:\d\d$/)
-    expect(w7.until).toBe('(3d 5h)')
+    expect(w7.until).toBe('in 3d5h')
     expect(w5.value).toBe('75% left')
   })
 
