@@ -75,7 +75,7 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str = NEW,
     from swarm_install.steps import preflight
     from swarm_install.verbs import install
 
-    seen: dict[str, Any] = {"flows": [], "fetched": []}
+    seen: dict[str, Any] = {"ran": [], "fetched": []}
     local = tmp_path / "state.json"
     store = StateStore(project=PROJECT, environment="prod", local=local)
     state = InstallState(project=PROJECT, environment="prod", release=release, region="us-central1")
@@ -119,22 +119,22 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str = NEW,
 
     class Flow:
         def __init__(self, **kw: Any) -> None:
-            seen["flows"].append(kw)
             self.store = kw["store"]
 
         def run(self, target: str, *, allow_downgrade: bool = False) -> ExitCode:
             # What the upgrade's infra pass would render, read from the state it runs on.
             seen["rendered"] = tfvars.builtins_managed(self.store.load())
-            seen["target"] = target
+            seen["ran"].append(target)
             return ExitCode.OK
 
     monkeypatch.setattr(verb, "Upgrade", Flow)
-    seen["store"] = store
+    # A fresh store on every read: one StateStore caches the state it last saw.
+    seen["store"] = lambda: StateStore(project=PROJECT, environment="prod", local=local)
     return seen
 
 
 def _choice(seen: dict[str, Any]) -> Any:
-    return seen["store"].load().outputs.get(tfvars.BUILTINS_MANAGED_CHOICE_KEY)
+    return seen["store"]().load().outputs.get(tfvars.BUILTINS_MANAGED_CHOICE_KEY)
 
 
 def test_the_flag_is_on_or_off_and_optional() -> None:
@@ -151,8 +151,8 @@ def test_on_the_running_release_the_flag_records_the_choice_and_infra_renders_it
     seen = live(tmp_path, monkeypatch)
     assert verb.run(args_for("--project", PROJECT, "--builtins-managed", value)) == ExitCode.OK
     assert _choice(seen) == value
-    assert _rendered(seen["store"].load()) == value
-    assert seen["flows"] == [], "no release to upgrade to: the switch alone is recorded"
+    assert tfvars.builtins_managed(seen["store"]().load()) == value
+    assert seen["ran"] == [], "no release to upgrade to: the switch alone is recorded"
     out = capsys.readouterr().out
     assert f"builtins_managed {value}" in out and "next infra pass" in out
 
@@ -161,7 +161,7 @@ def test_with_an_upgrade_the_choice_is_recorded_before_its_infra_pass(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen = live(tmp_path, monkeypatch, release=OLD)
     assert verb.run(args_for("--to", NEW, "--project", PROJECT, "--builtins-managed", "on")) == ExitCode.OK
-    assert seen["target"] == NEW and seen["rendered"] == "on"
+    assert seen["ran"] == [NEW] and seen["rendered"] == "on"
     assert (NEW, "images.json") in seen["fetched"], "the release checked is the one the upgrade puts live"
 
 
@@ -170,7 +170,7 @@ def test_on_without_a_bundler_image_is_refused_with_its_fixed_code(
     seen = live(tmp_path, monkeypatch, images={NEW: WITHOUT_BUNDLER})
     assert verb.run(args_for("--project", PROJECT, "--builtins-managed", "on")) == ExitCode.REFUSED
     assert verb.NO_BUNDLER in capsys.readouterr().err
-    assert _choice(seen) is None and seen["flows"] == []
+    assert _choice(seen) is None and seen["ran"] == []
 
 
 def test_on_is_refused_for_an_upgrade_to_a_release_without_a_bundler_image(
@@ -178,7 +178,7 @@ def test_on_is_refused_for_an_upgrade_to_a_release_without_a_bundler_image(
     seen = live(tmp_path, monkeypatch, release=OLD, images={NEW: WITHOUT_BUNDLER, OLD: WITH_BUNDLER})
     assert verb.run(args_for("--to", NEW, "--project", PROJECT, "--builtins-managed", "on")) == ExitCode.REFUSED
     assert verb.NO_BUNDLER in capsys.readouterr().err
-    assert _choice(seen) is None and seen["flows"] == []
+    assert _choice(seen) is None and seen["ran"] == []
 
 
 def test_the_bundler_check_is_upgrades_own() -> None:
@@ -209,7 +209,7 @@ def test_an_install_still_running_is_left_to_day_one(
     assert verb.run(args_for("--project", PROJECT, "--builtins-managed", "off")) == ExitCode.REFUSED
     assert verb.NOT_INSTALLED in capsys.readouterr().err
     assert _choice(seen) is None
-    assert tfvars.builtins_managed(seen["store"].load()) == "on"
+    assert tfvars.builtins_managed(seen["store"]().load()) == "on"
 
 
 def test_a_resumed_run_keeps_the_recorded_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,9 +219,9 @@ def test_a_resumed_run_keeps_the_recorded_choice(tmp_path: Path, monkeypatch: py
     def mid_upgrade(state: InstallState) -> None:
         state.outputs[up.UPGRADE_KEY] = {"to": NEW, "from": OLD, "done": [up.DRAIN], "failed": up.INFRA}
 
-    seen["store"].update(mid_upgrade)
+    seen["store"]().update(mid_upgrade)
     assert verb.run(args_for("--to", NEW, "--project", PROJECT)) == ExitCode.OK
-    assert seen["rendered"] == "on" and _choice(seen) == "on"
+    assert seen["ran"] == [NEW, NEW] and seen["rendered"] == "on" and _choice(seen) == "on"
 
 
 def test_the_flag_rides_the_reexec_into_the_targets_engine() -> None:
