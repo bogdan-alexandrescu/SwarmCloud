@@ -576,17 +576,19 @@ tenants = {
     capacity_units  = 8
   }
 
-  # u-bogdan IS NO LONGER HERE (lane W9 of #847, 2026-10-09). It was the
-  # owner's personal fallback tenant -- `u-<local part>`, which a caller in no
-  # registered group resolves to -- declared here so a laptop smoke run had
-  # jobs to dispatch to. Owner decision WD3, 2026-10-08: a person's workspace is
-  # made by the workspace job (scripts/register-tenant.sh --workspace) and
-  # lives outside Terraform state, and terraform/infra/variables.tf refuses a
-  # person in this map. Its account, secret, documents, jobs and grants are
-  # FORGOTTEN, not destroyed, by terraform/infra/removed.tf and
-  # terraform/bootstrap/removed.tf, and belong to the record
-  # `workspaces/u-bogdan` (`migrated = true`; docs/workspaces.md §3.3). Do not
-  # add it back: a person here would be planned again, in a public file.
+  # THE OWNER'S PERSONAL TENANT IS NO LONGER HERE (lane W9 of #847,
+  # 2026-10-09). It was the owner's fallback tenant -- `u-<local part>`, which a
+  # caller in no registered group resolves to -- declared here so a laptop smoke
+  # run had jobs to dispatch to. Owner decision WD3, 2026-10-08: a person's
+  # workspace is made by the workspace job (scripts/register-tenant.sh
+  # --workspace) and lives outside Terraform state, and
+  # terraform/infra/variables.tf refuses a person in this map. Its account,
+  # secret, documents, jobs and grants were FORGOTTEN, not destroyed, by
+  # `moved`/`removed` blocks in terraform/infra and terraform/bootstrap (deleted
+  # on 2026-11-11, once neither state held their addresses), and belong to the
+  # record `workspaces/u-<local part>` (`migrated = true`; docs/workspaces.md
+  # §3.3). Do not add it back: a person here would be planned again, in a public
+  # file.
 }
 
 # allUsers lets the caller's ID token REACH the app, which is the only component

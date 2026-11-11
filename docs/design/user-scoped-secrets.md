@@ -383,9 +383,10 @@ wider than that, and holds every other `secretAccessor` on a `-git-u-`
 condition to swarm-api (`forge_refresh_reader`). The change that removes it
 also turns that run into "no tenant worker holds `secretAccessor` on a
 `-git-u-` name". Destroying the binding will need no `removed` block; the
-one `removed` pair that names `forge_slot_reader` is W9's
-(`terraform/bootstrap/removed.tf`), which forgets u-member's personal grant
-with `destroy = false` and is unchanged.
+one `removed` pair that named `forge_slot_reader` was W9's
+(`terraform/bootstrap/removed.tf`), which forgot u-member's personal grant
+with `destroy = false` and was deleted on 2026-11-11, once the state held none
+of its addresses.
 
 A personal tenant's worker (`u-<user>`) still reads its own slots, through
 the binding the workspace job makes (docs/workspaces.md, A6). That account is
