@@ -670,6 +670,22 @@ describe('Plans: Add plan chooses its vendor', () => {
     expect(api.setAccountMaxAgents).toHaveBeenCalledWith('u-owner:chat', 3)
   })
 
+  it('says max agents was not set when the filed answer names no plan', async () => {
+    spies.pollDeviceSignIn.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { status: 'filed', account: null, expires_at: null } })
+    const add = await openAdd()
+    fireEvent.click(within(add).getByRole('radio', { name: 'ChatGPT' }))
+    fireEvent.change(within(add).getByRole('textbox', { name: 'Label' }), { target: { value: 'chat' } })
+    fireEvent.change(within(add).getByRole('spinbutton', { name: 'Max agents' }), { target: { value: '3' } })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fireEvent.click(within(add).getByRole('button', { name: 'Start sign-in' }))
+    await tick()
+    await tick(7000)
+    expect(within(add).getByRole('alert').textContent).toBe('Plan chat added; max agents not set: the platform did not name the plan')
+    expect(api.setAccountMaxAgents).not.toHaveBeenCalled()
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+  })
+
   it('says the code expired, stops polling, and starts again on the button', async () => {
     spies.pollDeviceSignIn.mockResolvedValue(EXPIRED)
     const add = await started()

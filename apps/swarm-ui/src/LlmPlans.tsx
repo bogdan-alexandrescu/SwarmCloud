@@ -1064,9 +1064,12 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
   }
 
   /** The plan is added: its max agents set when changed, then the sheet closes and the list reloads. */
-  const added = async (id: string | null) => {
-    if (maxN !== DEFAULT_MAX_AGENTS && id !== null) {
-      const refused = failed(await setAccountMaxAgents(id, maxN))
+  const added = async (account: { account_id: string } | null | undefined) => {
+    if (maxN !== DEFAULT_MAX_AGENTS) {
+      const refused =
+        account?.account_id === undefined
+          ? { kind: 'server_error' as const, httpStatus: 200, code: null, message: 'the platform did not name the plan' }
+          : failed(await setAccountMaxAgents(account.account_id, maxN))
       if (refused !== null) {
         setBusy(false)
         setError({ ...refused, message: `Plan ${clean} added; max agents not set: ${refused.message}` })
@@ -1086,7 +1089,7 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
       setError(failed(r))
       return
     }
-    await added(r.data.account.account_id)
+    await added(r.data.account)
   }
 
   // The run below outlives renders; it files with the max agents on screen when the plan lands.
@@ -1138,7 +1141,7 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
       if (r.data.status === 'filed') {
         live = false
         setBusy(true)
-        await addedNow.current(r.data.account?.account_id ?? null)
+        await addedNow.current(r.data.account)
       } else if (r.data.status === 'expired' || late) {
         setExpired(true)
       } else {
