@@ -86,6 +86,14 @@ function rows(task: Task, ask: StepNeeds['plugin_ask'], qs: { index: number; que
 }
 
 const cards = () => screen.queryByRole('complementary', { name: 'Plugin steps parked on a question' })
+const header = () => screen.getByRole('button', { name: /^Needs you/ })
+
+/** Renders the strip and opens it: it starts collapsed, its rows and cards in its body. */
+function show(ui: JSX.Element) {
+  const r = render(ui)
+  fireEvent.click(header())
+  return r
+}
 
 beforeEach(() => {
   for (const f of Object.values(api)) f.mockReset()
@@ -93,7 +101,7 @@ beforeEach(() => {
 
 describe("a plugin step's question row", () => {
   it('names the plugin, the mode, the skill that asked as not known, and the time left of its 24 hours', () => {
-    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended'))} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended'))} approvals={[]} />)
     const row = screen.getByRole('listitem')
     const line = row.querySelector('.ny-plugin')!
     expect(line.textContent).toContain('gstack · Unattended')
@@ -103,7 +111,7 @@ describe("a plugin step's question row", () => {
   })
 
   it('names the skill that asked when the list read served it, on the row and on its card', () => {
-    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(), 'gstack:office-hours'))} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(), 'gstack:office-hours'))} approvals={[]} />)
     const line = screen.getByRole('listitem').querySelector('.ny-plugin')!
     expect(line.textContent).toContain('asked by gstack:office-hours')
     expect(line.textContent).not.toContain('not known')
@@ -115,20 +123,20 @@ describe("a plugin step's question row", () => {
   })
 
   it('keeps the plain row for a question whose step served no plugin_ask, and draws no card', () => {
-    render(<NeedsYou items={rows(stepTask('t_plain'), null)} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_plain'), null)} approvals={[]} />)
     expect(screen.getByRole('listitem').textContent).not.toContain('gstack')
     expect(cards()).toBeNull()
   })
 
   it('says the time left is not known when the wait served no clock, never 0', () => {
-    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', { asked_at: null, expires_at: null }))} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', { asked_at: null, expires_at: null }))} approvals={[]} />)
     const text = screen.getByRole('listitem').textContent ?? ''
     expect(text).toContain('time left not known')
     expect(text).not.toMatch(/\b0 (h|min)\b/)
   })
 
   it('says the time is up once the wait has passed', () => {
-    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(-60_000)))} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(-60_000)))} approvals={[]} />)
     expect(screen.getByRole('listitem').textContent).toContain('time is up')
   })
 })
@@ -139,7 +147,7 @@ describe('the parked plugin steps beside the list', () => {
       { index: 0, question: 'Which layout?' },
       { index: 1, question: 'Which font?' },
     ])
-    render(<NeedsYou items={items} approvals={[]} />)
+    show(<NeedsYou items={items} approvals={[]} />)
     const side = cards()!
     expect(side).toBeTruthy()
     expect(within(side).getByRole('heading').textContent).toMatch(/Plugin steps parked\s*1/)
@@ -160,7 +168,7 @@ describe('the parked plugin steps beside the list', () => {
   })
 
   it("opens a designer step's interview as its full page, and links its run beside it", () => {
-    render(<NeedsYou items={rows(stepTask('t_design'), pluginAsk('designer'), [{ index: 0, question: 'Which layout?', recommended: 'Cards' }])} approvals={[]} />)
+    show(<NeedsYou items={rows(stepTask('t_design'), pluginAsk('designer'), [{ index: 0, question: 'Which layout?', recommended: 'Cards' }])} approvals={[]} />)
     const card = within(cards()!).getByRole('article')
     expect(card.textContent).toContain('Designer')
     const open = within(card).getByRole('link', { name: /Open the interview/ })
@@ -170,19 +178,27 @@ describe('the parked plugin steps beside the list', () => {
     expect(screen.getByRole('listitem').textContent).toContain('gstack · Designer')
   })
 
-  it('hides the cards when a chip picks a kind other than questions', () => {
-    const failed: NeedItem = { kind: 'failed', task: runTask({ id: 'f1', state: 'FAILED', workflow_id: null, step_id: null }), title: 'agent f1', why: 'no' }
-    render(<NeedsYou items={[...rows(stepTask('t_review'), pluginAsk('unattended')), failed]} approvals={[]} />)
-    expect(cards()).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Failed: 1$/ }))
+  it('hides the cards while the strip is collapsed, and shows them once it is opened', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended'))} approvals={[]} />)
     expect(cards()).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^Question: 1$/ }))
+    fireEvent.click(header())
+    expect(cards()).toBeTruthy()
+  })
+
+  it('hides the cards when "N more" picks a kind other than questions, and shows them once folded and opened again', () => {
+    const failed = (id: string): NeedItem => ({ kind: 'failed', task: runTask({ id, state: 'FAILED', workflow_id: null, step_id: null }), title: `agent ${id}`, why: 'no' })
+    show(<NeedsYou items={[...rows(stepTask('t_review'), pluginAsk('unattended')), failed('f1'), failed('f2'), failed('f3')]} approvals={[]} />)
+    expect(cards()).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '1 more failed' }))
+    expect(cards()).toBeNull()
+    fireEvent.click(header())
+    fireEvent.click(header())
     expect(cards()).toBeTruthy()
   })
 
   it('draws a card for every parked plugin step in the read, past the ten the per-task reads stopped at', () => {
     const items = Array.from({ length: 12 }, (_, i) => rows(stepTask(`t_${i}`, { step_id: `step_${i}` }), pluginAsk('unattended'))).flat()
-    render(<NeedsYou items={items} approvals={[]} />)
+    show(<NeedsYou items={items} approvals={[]} />)
     expect(within(cards()!).getAllByRole('article')).toHaveLength(12)
     expect(api.loadTask).not.toHaveBeenCalled()
   })
