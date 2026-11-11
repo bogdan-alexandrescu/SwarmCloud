@@ -10,10 +10,16 @@ release worker image, and only when:
     WORKER_IMAGE_REFS names for the runner image), is `ready`;
   * its output for the runner image is a digest under that repository.
 
-Anything else refuses the dispatch `plugin_bundle_missing`, with its reason in
-the message, before any backend is asked. The code is a platform refusal, so
-the drain gives the lease back in the same write and parks the task
-PLATFORM_REFUSED: no pod, no attempt spent, no pool count held.
+Anything else refuses the step `plugin_bundle_missing`, with its reason in
+the message, and is asked twice (the owner's pick on #3880, "pre-lease-too"):
+
+  * by admission, BEFORE the lease transaction: the task parks
+    PLATFORM_REFUSED from READY with no lease ever taken, no attempt spent and
+    no pool count reserved, backed off as the failed-dispatch park is;
+  * by the router at dispatch, before any backend is asked, for a bundle that
+    went away between admission and the lease: the code is a platform
+    refusal, so the drain gives the lease back in the same write and parks
+    the task PLATFORM_REFUSED.
 
 A step with no bundle key is dispatched exactly as today, and nothing the
 caller submits names an image (invariant 10): the digest comes only from the
@@ -22,7 +28,9 @@ bundle record the key selects.
 MUTATIONS: return `image_uri` for a step with a key (the bundle test fails);
 drop the repository check (the outside-the-repository test fails); drop the
 `ready` check (the building test fails); drop `plugin_bundle_missing` from
-PLATFORM_REFUSAL_CODES (the drain test finds an attempt spent).
+PLATFORM_REFUSAL_CODES (the dispatch-time drain test finds an attempt
+spent); drop the admission check in `_prepare_admission` (the pre-lease drain
+test finds a lease document).
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -328,8 +336,16 @@ def test_the_reader_selects_by_key_digest(db):
 # --- the drain: a refusal holds nothing ---------------------------------------------
 
 
-def test_a_refused_step_parks_and_holds_no_capacity(db):
-    start = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
+class _Backend:
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def dispatch(self, **_kw: Any) -> str:
+        self.asked.append("dispatch")
+        return "execution"
+
+
+def _drain(db, settings, bundles, backend: _Backend, start: datetime, **task: Any):
     from scheduler.loop import Scheduler
     from scheduler.metrics import SchedulerMetrics
     from scheduler.store import SchedulerStore
@@ -338,25 +354,86 @@ def test_a_refused_step_parks_and_holds_no_capacity(db):
     seed_pool(db, "global", hard_limit=5)
     seed_task(db, task_id="task_bundle", tenant_id="eng", created_at=start)
     db.docs["tasks/task_bundle"]["metadata"] = {"dispatch": {"plugins": {"bundle": KEY}}}
-    asked: list[str] = []
-
-    class _Backend:
-        def dispatch(self, **_kw: Any) -> str:
-            asked.append("dispatch")
-            return "execution"
-
-    settings = scheduler_settings(plugin_bundle_repository="")
+    db.docs["tasks/task_bundle"].update(task)
     scheduler = Scheduler(
         settings=settings,
         store=SchedulerStore(db, now=lambda: start),
-        router=BackendRouter(cloud_run=_Backend(), gke=_Backend(), settings=settings,
-                             bundles=_Bundles(_record())),
+        router=BackendRouter(cloud_run=backend, gke=backend, settings=settings, bundles=bundles),
         metrics=SchedulerMetrics(),
         now=lambda: start,
     )
-    report = scheduler.drain()
+    return scheduler.drain()
 
-    assert asked == [], "no backend is asked for a refused step"
+
+def test_a_missing_bundle_parks_before_any_lease_is_taken(db):
+    start = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
+    backend = _Backend()
+    report = _drain(db, scheduler_settings(plugin_bundle_repository=""), _Bundles(_record()),
+                    backend, start)
+
+    assert backend.asked == [], "no backend is asked for a refused step"
+    stored = db.docs["tasks/task_bundle"]
+    assert stored["state"] == TaskState.PARKED.value, report.to_dict()
+    assert stored["park_reason"] == ParkReason.PLATFORM_REFUSED.value
+    assert stored["attempt_count"] == 0, "a missing bundle spends no attempt"
+    assert stored["last_error"] == PLUGIN_BUNDLE_MISSING
+    assert stored["platform_refusals"] == 1
+    assert stored["next_eligible_at"] == start + timedelta(seconds=30)
+    assert stored.get("current_lease_id") is None
+    assert [p for p in db.docs if p.startswith("leases/")] == [], "admission never leased it"
+    assert [p for p in db.docs if p.startswith("attempts/")] == []
+    assert db.docs["pools/global"]["active"] == 0, "nothing was reserved"
+    assert report.platform_refused == 1
+
+
+def test_a_second_pre_lease_refusal_doubles_the_backoff(db):
+    start = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
+    _drain(db, scheduler_settings(plugin_bundle_repository=""), _Bundles(), _Backend(), start,
+           platform_refusals=1)
+
+    stored = db.docs["tasks/task_bundle"]
+    assert stored["platform_refusals"] == 2
+    assert stored["next_eligible_at"] == start + timedelta(seconds=60)
+
+
+@pytest.fixture
+def on_gke(monkeypatch):
+    """The drain's profile (`mock`) resolved to GKE, the backend a bundle runs on,
+    with the live base and the bundle output named for its image."""
+    import scheduler.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "resolve_backend", lambda _profile: Backend.GKE_AUTOPILOT)
+    image = RUNNER_PROFILES["mock"].image
+    base = f"{REGISTRY}/swarm-images/{image}@{_digest()}"
+    record = _record(base={image: base}, outputs={image: f"{REPOSITORY}/{image}@{_digest()}"})
+    return _settings(worker_image_refs={image: base}), record
+
+
+def test_a_ready_bundle_passes_admission_and_runs(db, on_gke):
+    settings, record = on_gke
+    start = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
+    backend = _Backend()
+    bundles = _Bundles(record)
+    report = _drain(db, settings, bundles, backend, start)
+
+    assert backend.asked == ["dispatch"], report.to_dict()
+    assert bundles.asked == [KEY_SHA256, KEY_SHA256], "asked before the lease and at dispatch"
+    assert db.docs["tasks/task_bundle"]["state"] != TaskState.PARKED.value
+
+
+def test_a_bundle_gone_between_admission_and_dispatch_gives_the_lease_back(db, on_gke):
+    settings, record = on_gke
+    start = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
+    backend = _Backend()
+
+    class _GoneAfterAdmission(_Bundles):
+        def __call__(self, key_sha256: str) -> list[dict[str, Any]]:
+            found = super().__call__(key_sha256)
+            return found if len(self.asked) == 1 else []
+
+    report = _drain(db, settings, _GoneAfterAdmission(record), backend, start)
+
+    assert backend.asked == [], "no backend is asked for a refused step"
     stored = db.docs["tasks/task_bundle"]
     assert stored["state"] == TaskState.PARKED.value, report.to_dict()
     assert stored["park_reason"] == ParkReason.PLATFORM_REFUSED.value

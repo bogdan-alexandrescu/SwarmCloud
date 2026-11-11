@@ -104,7 +104,7 @@ from .dispatch import PLATFORM_REFUSAL_CODES, BackendRouter, DispatchError, live
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import GuardedWrite, ParentEnd, SchedulerStore
+from .store import GuardedWrite, ParentEnd, SchedulerStore, platform_refusal_backoff
 
 log = logging.getLogger(__name__)
 
@@ -892,7 +892,9 @@ class DrainReport:
     #: MANUAL_PAUSE parks returned to READY once what paused them cleared.
     promoted_manual_pauses: int = 0
     #: Failed dispatches the platform refused, parked PLATFORM_REFUSED with no
-    #: attempt spent (contract request 123).
+    #: attempt spent (contract request 123), and steps admission parked the
+    #: same way before their lease (a missing plugin bundle, which also
+    #: counts in `parked`).
     platform_refused: int = 0
     #: PLATFORM_REFUSED parks returned to READY once `next_eligible_at` passed.
     promoted_platform_refusals: int = 0
@@ -1856,6 +1858,24 @@ class Scheduler:
                 return None
 
         backend = resolve_backend(profile)
+        # THE PLUGIN BUNDLE, ASKED BEFORE THE LEASE (docs/design/managed-plugins.md
+        # §1.4.4; the owner's pick on #3880, "pre-lease-too"). A step whose
+        # signed plugin set carries a bundle key that has no ready bundle
+        # image parks PLATFORM_REFUSED here, from READY, before the
+        # reservation transaction: it holds nothing (invariant 1), nothing is
+        # reserved (2), nothing leased for concurrency to count (3), and no
+        # attempt is spent. Its backoff is the failed-dispatch park's
+        # (`platform_refusal_backoff`), and the promotion sweep returns it to
+        # READY as it does that one. The router asks again at dispatch, for a
+        # bundle that went away between here and the lease. A step with no
+        # bundle key reads nothing and goes on exactly as before.
+        try:
+            self._router.plugin_bundle_image(task=task, profile=profile, backend=backend)
+        except DispatchError as exc:
+            if exc.code not in PLATFORM_REFUSAL_CODES:
+                raise
+            self._park_refused_before_lease(task, exc, backend, report, now)
+            return None
         # THE SIZE IS PINNED HERE, BEFORE THE LEASE (docs/design/runner-sizes.md
         # §4.4, SIZES-SCHED-2). The units the transaction charges, the size the
         # attempt records and the pod the GKE renderer builds are this one
@@ -2217,6 +2237,52 @@ class Scheduler:
             report.parked += 1
         else:
             self._count_stale(outcome, report)
+
+    def _park_refused_before_lease(self, task: Task, exc: DispatchError, backend: Backend,
+                                   report: DrainReport, now: datetime) -> None:
+        """Park a READY task PLATFORM_REFUSED for a refusal admission saw first.
+
+        The same park the failed-dispatch path writes (`last_error` the code,
+        `platform_refusals` + 1, `next_eligible_at` backed off), without the
+        lease, the attempt or the pool count it would have taken. The
+        refusal's message goes to the log only, as `_dispatch_leased` keeps it.
+        """
+        refusals = task.platform_refusals + 1
+        backoff = platform_refusal_backoff(refusals)
+        outcome = self._store.park(
+            task,
+            ParkReason.PLATFORM_REFUSED,
+            next_eligible_at=now + backoff,
+            platform_refusals=refusals,
+            last_error=exc.code,
+            detail={
+                "code": exc.code,
+                "platform_refusals": refusals,
+                "retry_in_seconds": int(backoff.total_seconds()),
+                "attempt_spent": False,
+                "from_state": TaskState.READY.value,
+            },
+        )
+        self._metrics.platform_refusals.labels(code=exc.code).inc()
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return
+        self._metrics.parked.labels(reason=ParkReason.PLATFORM_REFUSED.value).inc()
+        report.parked += 1
+        report.platform_refused += 1
+        log.error(
+            "platform refused admission task=%s backend=%s code=%s parks=%s%s: %s",
+            task.id,
+            backend.value,
+            exc.code,
+            refusals,
+            (
+                f" (past {PLATFORM_REFUSED_MAX_PARKS}: trouble, stays parked)"
+                if refusals > PLATFORM_REFUSED_MAX_PARKS
+                else ""
+            ),
+            exc,
+        )
 
     def _fail_unrunnable(
         self, task: Task, credential: CredentialAnswer, report: DrainReport,

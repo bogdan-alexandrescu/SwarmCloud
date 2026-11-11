@@ -804,13 +804,21 @@ class SchedulerStore:
 
     def park(self, task: Task, reason: ParkReason, *, next_eligible_at: datetime | None = None,
              detail: dict[str, Any] | None = None,
-             blocked_by: list[dict[str, Any]] | None = None) -> GuardedWrite:
+             blocked_by: list[dict[str, Any]] | None = None,
+             platform_refusals: int | None = None,
+             last_error: str | None = None) -> GuardedWrite:
         """READY -> PARKED, guarded on the state read.
 
         `blocked_by`, when given, is written as the task's `blocked_by`, in the
         shape a worker's park writes it (`lifecycle._park_no_account`): what
         `loop.account_park_provider` reads to know a park waits on the account
         pool, and what swarm-api's waiting line reads (#2222).
+
+        `platform_refusals` and `last_error`, when given, are written as the
+        task's: a PLATFORM_REFUSED park made before any lease (a missing
+        plugin bundle, `loop._prepare_admission`) counts its refusals and
+        names its code as the failed-dispatch park does, so its backoff
+        doubles the same way. The guard makes the count the one read + 1.
         """
         assert_transition(task.state, TaskState.PARKED)
         patch: dict[str, Any] = {
@@ -822,6 +830,10 @@ class SchedulerStore:
             patch["next_eligible_at"] = next_eligible_at
         if blocked_by is not None:
             patch["blocked_by"] = blocked_by
+        if platform_refusals is not None:
+            patch["platform_refusals"] = platform_refusals
+        if last_error is not None:
+            patch["last_error"] = last_error[:1000]
         outcome = self._write_if_unchanged("park", task, patch)
         if outcome.applied:
             self.append_event(task, EventType.PARKED, {"reason": reason.value, **(detail or {})})

@@ -4005,6 +4005,30 @@ class BackendRouter:
             code="backend_unresolved",
         )
 
+    def plugin_bundle_image(self, *, task: Task, profile: RunnerProfile,
+                            backend: Backend) -> str | None:
+        """The bundle image a step runs, None for a step with no bundle key.
+
+        A step whose signed plugin set carries a bundle key runs the ready
+        bundle's digest (docs/design/managed-plugins.md §1.4.4); one that
+        cannot raises DispatchError `plugin_bundle_missing`, a platform
+        refusal. Asked twice per admitted step: by admission BEFORE the
+        lease transaction, so a step whose bundle is missing parks holding
+        nothing and is never leased (invariants 1-3), and by `dispatch`
+        after it, for a bundle that went away in between. A step with no key
+        reads nothing.
+        """
+        key = bundle_key_of(task)
+        if key is None:
+            return None
+        if backend is Backend.CLOUD_RUN_JOB:
+            # A Cloud Run Job's image is on the Job, shared by every
+            # execution of its tenant and profile, and an execution override
+            # cannot change it: rewriting it here would race every other
+            # execution of the Job.
+            raise _bundle_missing("backend_runs_release_image", task, profile)
+        return bundle_image(self._settings, profile, task, key, self._bundles)
+
     def dispatch(
         self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend,
         sized: Sized | None = None,
@@ -4029,23 +4053,14 @@ class BackendRouter:
                 "Job: the forwarder is reachable only from GKE (lane JUDGE-GKE)",
                 code=TYPESAFE_JUDGE_NEEDS_GKE,
             )
-        # THE PLUGIN BUNDLE IMAGE (docs/design/managed-plugins.md §1.4.4). A
-        # step whose signed plugin set carries a bundle key runs the ready
-        # bundle's digest; one that cannot is refused `plugin_bundle_missing`
-        # HERE, before any backend is asked, and the drain gives the lease
-        # back in the same write (a platform refusal: PARKED, no attempt
-        # spent, no pool held). A step with no key reads nothing and is
-        # dispatched below exactly as before.
-        key = bundle_key_of(task)
-        image = None
-        if key is not None:
-            if backend is Backend.CLOUD_RUN_JOB:
-                # A Cloud Run Job's image is on the Job, shared by every
-                # execution of its tenant and profile, and an execution
-                # override cannot change it: rewriting it here would race
-                # every other execution of the Job.
-                raise _bundle_missing("backend_runs_release_image", task, profile)
-            image = bundle_image(self._settings, profile, task, key, self._bundles)
+        # THE PLUGIN BUNDLE IMAGE (docs/design/managed-plugins.md §1.4.4),
+        # asked AGAIN here though admission already asked it before the lease
+        # (`loop._prepare_admission`): the bundle can stop being ready, or a
+        # release upgrade move the live base, between the two. One that
+        # cannot run is refused `plugin_bundle_missing` HERE, before any
+        # backend is asked, and the drain gives the lease back in the same
+        # write (a platform refusal: PARKED, no attempt spent, no pool held).
+        image = self.plugin_bundle_image(task=task, profile=profile, backend=backend)
         dispatcher = self.for_backend(backend)
         # THE PINNED SIZE GOES ONLY TO A DISPATCHER THAT RENDERS IT (SIZES-SCHED-2):
         # the GKE renderer sizes each pod from it. A Cloud Run Job's resources
