@@ -1215,10 +1215,6 @@ ACCOUNT_HEALTH_SPANS = ("last_1h", "last_24h", "last_7d")
 ACCOUNT_HOLD_DEADLINE = "latest_hold_deadline"
 
 
-class AccountLending(StrictModel):
-    lend_to: list[str] = Field(default_factory=list, max_length=50)
-
-
 class AccountStateChange(StrictModel):
     #: AVAILABLE | PAUSED | DRAINING | REAUTH_REQUIRED. Deliberately not an enum
     #: here: the broker owns the state machine and answers an unknown value with

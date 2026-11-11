@@ -155,6 +155,29 @@ def test_a_lend_with_no_whole_number_cap_is_refused_before_the_broker(client, po
     assert pool.calls == []
 
 
+@pytest.mark.parametrize("value", [True, "2", 2.5])
+def test_a_lend_cap_that_is_not_a_whole_number_is_refused_in_the_brokers_words(client, pool, value):
+    response = _put(client, LENDING, "eng:primary", {"lends": {"research": {"max_agents": value}}})
+
+    assert response.status_code == 422, response.text
+    words = "the lend to research: an account's max_agents is a whole number"
+    assert response.json()["message"] == words
+    assert pool.calls == []
+    with pytest.raises(broker_accounts.AccountError, match=words):
+        broker_accounts.validate_lends({"research": {"max_agents": value}}, owner_tenant="eng", key=False)
+
+
+def test_a_lend_with_a_null_cap_is_refused_in_the_brokers_words(client, pool):
+    response = _put(client, LENDING, "eng:primary", {"lends": {"research": {"max_agents": None}}})
+
+    assert response.status_code == 422, response.text
+    words = "the lend to research carries no cap; every lend sets max_agents"
+    assert response.json()["message"] == words
+    assert pool.calls == []
+    with pytest.raises(broker_accounts.AccountError, match=words):
+        broker_accounts.validate_lends({"research": {"max_agents": None}}, owner_tenant="eng", key=False)
+
+
 def test_a_lend_to_the_owner_itself_is_refused_in_the_brokers_words(client, pool):
     response = _put(client, LENDING, "eng:primary", {"lends": {"eng": {"max_agents": 1}}})
 
@@ -219,6 +242,18 @@ def test_a_per_workspace_cap_out_of_range_is_refused_before_the_broker(client, p
     assert response.json()["message"].startswith("per_workspace_max for research: an account's max_agents is 1 to")
     assert pool.calls == []
     with pytest.raises(broker_accounts.AccountError, match="per_workspace_max for research: an account's max_agents"):
+        broker_accounts.validate_per_workspace_max({"research": value})
+
+
+@pytest.mark.parametrize("value", [True, "2", 2.5, None])
+def test_a_per_workspace_cap_that_is_not_a_whole_number_is_refused_in_the_brokers_words(client, pool, value):
+    response = _put(client, PER_WORKSPACE, "eng:primary", {"per_workspace_max": {"research": value}})
+
+    assert response.status_code == 422, response.text
+    words = "per_workspace_max for research: an account's max_agents is a whole number"
+    assert response.json()["message"] == words
+    assert pool.calls == []
+    with pytest.raises(broker_accounts.AccountError, match=words):
         broker_accounts.validate_per_workspace_max({"research": value})
 
 

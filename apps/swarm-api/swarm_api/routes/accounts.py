@@ -643,11 +643,12 @@ def refresh_account(
 
 class LendCap(StrictModel):
     """One lend's cap (docs/design/llm-providers.md §4.6, Q7): `max_agents`
-    always, `monthly_spend_cap_usd` on a key only. Strict, so `true` or `"2"`
-    is refused as not a number rather than coerced; the range is
-    `_checked_lends`, and the plan/key rule on the spend cap is the broker's."""
+    always, `monthly_spend_cap_usd` on a key only. `max_agents` is taken as
+    sent, so `true`, `"2"` or `2.5` is refused by `_checked_lends` in the
+    broker's words ("is a whole number") rather than coerced or refused in
+    pydantic's; the plan/key rule on the spend cap is the broker's."""
 
-    max_agents: StrictInt
+    max_agents: Any
     monthly_spend_cap_usd: StrictFloat | StrictInt | None = None
 
 
@@ -662,8 +663,10 @@ class AccountLending(StrictModel):
     lends: dict[str, LendCap] | None = Field(default=None, max_length=50)
 
 
-def _max_agents_words(value: int) -> str | None:
+def _max_agents_words(value: Any) -> str | None:
     """`quota_broker.accounts.validate_max_agents`'s refusal for `value`, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "an account's max_agents is a whole number"
     if 1 <= value <= MAX_AGENTS_LIMIT:
         return None
     return (
@@ -684,6 +687,8 @@ def _checked_lends(body: AccountLending) -> dict[str, dict[str, Any]] | None:
     for tenant, cap in body.lends.items():
         if not tenant:
             raise ValidationFailed("a lend names its borrowing workspace")
+        if cap.max_agents is None:
+            raise ValidationFailed(f"the lend to {tenant} carries no cap; every lend sets max_agents")
         words = _max_agents_words(cap.max_agents)
         if words is not None:
             raise ValidationFailed(f"the lend to {tenant}: {words}")
@@ -814,9 +819,10 @@ class AccountPerWorkspaceMax(StrictModel):
     """Each workspace's cap on the agents it holds on an account (Q6), the
     owner's and each borrower's. REQUIRED, so an empty body is refused rather
     than read as "no caps"; `{}` clears every cap. 51: the owner and the
-    broker's 50 lends."""
+    broker's 50 lends. Each number is taken as sent and refused by
+    `_max_agents_words` in the broker's words, not coerced."""
 
-    per_workspace_max: dict[str, StrictInt] = Field(max_length=51)
+    per_workspace_max: dict[str, Any] = Field(max_length=51)
 
 
 @router.put("/{account_id}/per-workspace-max")
