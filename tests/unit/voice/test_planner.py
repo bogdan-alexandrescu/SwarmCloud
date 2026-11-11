@@ -415,6 +415,8 @@ def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
         "I drew 1 mock-up on screen. I drew two of the three versions; the third, Minimal, was "
         "refused because it has a script tag, and a frame runs no code and loads nothing.")
     assert result.frames_dropped[0]["dropped"][0]["n"] == 3
+    assert result.drawn == [{"kind": "mockup", "title": "The landing page",
+                             "frames": ["Classic", "Bold"]}]
 
 
 def test_a_child_stopped_while_writing_its_results_leaves_the_last_whole_results(world):

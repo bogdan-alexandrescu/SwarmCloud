@@ -434,6 +434,10 @@ class Planner:
                 return str(exc), True, None
             if name in VISUAL_KINDS and isinstance(body, dict) and body.get("visual_id"):
                 result.drawn.append(_visual_drawn(name, args))
+                if isinstance(body.get("frames"), list) and "frames" in result.drawn[-1]:
+                    # The frames swarm-api drew, so a frame left out is not traced as drawn.
+                    result.drawn[-1]["frames"] = [str(f.get("label"))[:200] for f in body["frames"]
+                                                  if isinstance(f, dict)]
                 if body.get("dropped"):
                     self._frames_dropped(api, result, args, len(body.get("frames") or []),
                                          body["dropped"])
