@@ -392,7 +392,7 @@ export function ClaudeAccountStepBody({ step, reload }: { step: OnboardingStep; 
             <p className="ur-small">Loan requested</p>
           ) : (
             <span className="ob-acts">
-              <ButtonLink size="sm" href={addressToPath('capacity/accounts')}>
+              <ButtonLink size="sm" href={addressToPath('capacity/llm-providers/plans')}>
                 Add key
               </ButtonLink>
               <Button size="sm" disabled={posting} onClick={() => void loan()}>

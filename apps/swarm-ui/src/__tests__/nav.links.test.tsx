@@ -93,6 +93,9 @@ function links(): { file: string; hash: string }[] {
   return found
 }
 
+/** Retired addresses the router lands on their new page on purpose, old to new. */
+const REDIRECTED: Readonly<Record<string, string>> = { 'capacity/accounts': 'capacity/llm-providers/plans' }
+
 /** `fromHash` reads `window.location.hash`, so the hash is set and it is called. */
 function resolve(hash: string) {
   window.location.hash = `#${hash}`
@@ -163,7 +166,14 @@ describe('internal navigation links', () => {
       // itself resolved to exactly what it names; a mistyped one
       // (`running/recent/faild`) falls back to the plain list, is rewritten,
       // and is still reported here.
+      //
+      // ONE DOCUMENTED REDIRECT IS NOT A DEAD LINK: Accounts became Capacity ›
+      // LLM Providers (docs/design/llm-providers.md §6.1), and the brief keeps
+      // `capacity/accounts` landing on Plans with its `?account=`. The links
+      // still spelled the old way are rewritten by a later lane; anything else
+      // that is rewritten is still reported.
       const want = canonical(r)
+      if (REDIRECTED[l.hash] === want) continue
       if (want !== l.hash) dead.push(`${l.file}: #${l.hash} -> #${want}`)
     }
     expect(dead, 'these named a pane that does not exist and fell back to the first one').toEqual([])

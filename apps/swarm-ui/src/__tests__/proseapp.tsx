@@ -11,7 +11,11 @@
 // WHAT IS COUNTED. The same words prose.budget.test.tsx counts: the
 // whitespace-separated tokens of the document's text with
 // `[data-help-description]`, `<style>` and `<script>` taken out. The whole
-// document, not `main`: the rail and the page head are what a reader sees too.
+// document, not `main`: the page head is what a reader sees too. The rail
+// (`.sk-side`: the spine and the panel of pages) is left out (the owner's
+// pick, 2026-11-10, PR #3801): it is the nav's labels, the same on every
+// page, so renaming a tab moved every page's count at once and measured no
+// page's prose.
 // And a second number: the links whose visible text carries an arrow (→ or ›),
 // an action drawn as a text link where the rule wants a button.
 //
@@ -109,16 +113,17 @@ const ARROW = /[→›]/
 
 /**
  * What a reader sees of `root`: the help copy, the stylesheets and the scripts
- * taken out, and the content a page shows rather than says
+ * taken out, the content a page shows rather than says
  * (`[data-prose-content]`: the lines of a file, diff or log Voice it's stage
- * draws, which are the planner's, not the console's explanatory prose). The
- * visually hidden words (`.sk-vh`) are out too: they are a screen reader's,
- * not the surface's -- the phone menu button's "4 waiting for approval" is
- * its accessible description, drawn as the badge's digit.
+ * draws, which are the planner's, not the console's explanatory prose), the
+ * rail (`.sk-side`), whose labels are the nav's, not the page's, and the
+ * visually hidden words (`.sk-vh`): they are a screen reader's, not the
+ * surface's -- the phone menu button's "4 waiting for approval" is its
+ * accessible description, drawn as the badge's digit.
  */
 export function measure(root: HTMLElement): Measure {
   const clone = root.cloneNode(true) as HTMLElement
-  for (const el of [...clone.querySelectorAll('[data-help-description], [data-prose-content], .sk-vh, style, script')]) el.remove()
+  for (const el of [...clone.querySelectorAll('[data-help-description], [data-prose-content], .sk-side, .sk-vh, style, script')]) el.remove()
   const tokens = (clone.textContent ?? '').split(/\s+/).filter(Boolean)
   const arrowLinks = [...clone.querySelectorAll('a, [role="link"]')]
     .map((a) => (a.textContent ?? '').replace(/\s+/g, ' ').trim())
@@ -304,8 +309,9 @@ export function proseGroup(group: string): void {
             `${now.words} words, ${now.arrows} arrows now`,
         )
 
-        // A page that drew nothing would pass any comparison: the shell alone
-        // is over this, so a screen that stopped rendering fails here instead.
+        // A page that drew nothing would pass any comparison: every page draws
+        // over this without the rail (the fewest, voice/telemetry, 25 on
+        // 2026-11-10), so a screen that stopped rendering fails here instead.
         expect(now.words, `${page.key} rendered almost nothing`).toBeGreaterThan(20)
         const up = proseDelta(page.key, was, now)
         expect(up, up.join('\n')).toEqual([])
