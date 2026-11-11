@@ -110,6 +110,7 @@ from ..judgment import settings_mac
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
 from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
+from ..voice import settings as vsettings
 from ..setup_github import (
     GitHubSetupApi,
     ManifestFlow,
@@ -1703,14 +1704,18 @@ def mint_link(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """One route, five kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
 
     `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
-    minting admin's own: `owner` must be the caller, and the account is filed
-    under the caller's own resolved workspace, recorded now so the redeem
-    cannot be pointed at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
+    minting admin's own: `owner` must be the caller. A first key is filed
+    under the caller's own resolved workspace; a key that replaces the
+    dedicated Voice it key under that key's owner workspace, as the broker's
+    account says, so an admin of another workspace replaces it rather than
+    adding a second. Either is recorded now so the redeem cannot be pointed
+    at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
 
     For one person (decision 7) a pool account is owned by the installer's
     personal workspace and its link is the installer's alone, and the
@@ -1725,7 +1730,8 @@ def mint_link(
         raise ValidationFailed(f"provider, workspace and share_with_voice_it are an "
                                f"{sl.API_ACCOUNT} link's; a {body.kind} link takes none")
     if body.kind == sl.VOICE_API_KEY:
-        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links,
+                                    pool=pool)
     engine = record.read_engine()
     personal = None
     if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
@@ -1782,16 +1788,32 @@ def mint_link(
 
 
 def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
-                         links: sl.SetupLinks) -> dict:
+                         links: sl.SetupLinks, pool: AccountPool) -> dict:
     """A `voice-api-key` link, for the minting platform admin alone.
 
     `admin_auth` has already refused anyone but a platform admin. The owner
     named in the body must BE that admin: a link another person could open
-    would let the key be pasted by someone the console never asked."""
+    would let the key be pasted by someone the console never asked.
+
+    The workspace the key is filed under is the dedicated key's owner when
+    the broker's platform-wide listing names one (a replace), else the
+    admin's own (a first key). A listing that could not be read mints
+    nothing (503): filing a replace under the admin's workspace would add a
+    second dedicated key instead of replacing the one there is."""
     if caller.auth is None or owner != caller.email.strip().lower():
         raise Forbidden("a Voice it API key link is for the platform admin who makes it; "
                         "name yourself as its owner")
-    tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    try:
+        listing = pool.voice_it_accounts()
+    except Exception as exc:  # noqa: BLE001 -- the class name only
+        log.warning("the broker could not be read for a Voice it key link (%s)",
+                    type(exc).__name__)
+        raise UpstreamUnavailable("the account pool could not say whether Voice it has a "
+                                  "dedicated key; no link was made, try again") from None
+    dedicated = vsettings.dedicated_account(listing)
+    replaced = dedicated.get("owner_tenant") if dedicated is not None else None
+    tenant_id = (replaced if isinstance(replaced, str) and replaced
+                 else ctx.submissions.tenant_for(caller.auth).tenant_id)
     token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
                              tenant_id=tenant_id)
     path = sl.FORMS[body.kind].format(token=token)
