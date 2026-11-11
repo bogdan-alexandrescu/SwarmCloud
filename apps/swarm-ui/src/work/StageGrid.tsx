@@ -70,7 +70,9 @@ export interface GridColumn {
    * What the column's header says: its label, or nothing when the label is a
    * step id and every step under it is named by its own stage -- a lane of bare
    * names (implement, review, fix) is one column, and heading it `implement`
-   * named one of its five steps as the feature of all of them.
+   * named one of its five steps as the feature of all of them. A stage of one
+   * step alone in its column (`implement` before a fan-out) is the same: its
+   * row already says `implement`, and a header saying it again read as a feature.
    */
   readonly heading: string
 }
@@ -200,11 +202,11 @@ export function stageGridOf(steps: readonly WorkflowStep[]): StageGridShape {
     }
     return { ...st, cells }
   })
-  // A column a step's id opened, holding further steps that each name their own stage (a lane of bare
-  // names), has no heading: its stages name every step in it.
+  // A column a step's id opened, every step of which names its own stage (a lane of bare names, or one
+  // step alone in its stage), has no heading: its stages name every step in it.
   const stageNamed = columns.map((col, c) => {
     const ids = full.flatMap((st) => (st.cells[c] ? [{ id: st.cells[c]!, stage: st.label }] : []))
-    return col.byId && ids.length > 1 && ids.every((x) => x.id === x.stage)
+    return col.byId && ids.length > 0 && ids.every((x) => x.id === x.stage)
   })
   return {
     columns: columns.map((col, c) => ({ key: col.key, label: col.label, heading: stageNamed[c] ? '' : col.label })),
@@ -264,11 +266,11 @@ export function chipKindOf(state: StepState): ChipKind {
   if (s === 'FAILED' || s === 'DEAD_LETTERED') return 'failed'
   if (s === 'CANCELLED') return 'stopped'
   if (CONCURRENCY_STATES.has(s)) return 'running'
-  // A STEP PARKED BEHIND ITS DEPENDENCIES IS DRAWN AND COUNTED WAITING (the
-  // owner's pick, PR #3298, 2026-11-05): it waits on an earlier step as a step
-  // not started does, so the chip draws the waiting mark and the stage tally
-  // and the page head count it waiting. Any other park is parked.
-  if (s === 'PARKED') return isDependencyPark(state.task) ? 'waiting' : 'parked'
+  // EVERY PARKED STEP IS DRAWN AND COUNTED PARKED (the graph review, replacing
+  // PR #3298's pick): a step parked on its parents, a quota window or a retry
+  // backoff is not waiting for a person, so it draws the park mark its card
+  // shows and the tallies say what it waits on by its park reason (parkWordOf).
+  if (s === 'PARKED') return 'parked'
   return 'waiting'
 }
 
@@ -318,9 +320,12 @@ export function chipTimeOf(state: StepState, now: number): string | null {
   return spanLabel(ms < 60_000 ? ms : Math.round(ms / 60_000) * 60_000)
 }
 
-/** A step parked only because a step it depends on has not finished. */
-function isDependencyPark(t: Task): boolean {
-  return t.state === 'PARKED' && t.park_reason === 'DEPENDENCY_INCOMPLETE'
+/** What a parked task waits on, by its park reason, in the console's words (the step card's). */
+function parkWordOf(t: Task): string {
+  const r = t.park_reason
+  if (!r) return 'no reason recorded'
+  // A reason this build does not know is printed verbatim (StatePill's rule).
+  return Object.prototype.hasOwnProperty.call(PARK_WORD, r) ? PARK_WORD[r as ParkReason] : r
 }
 
 /** Why a waiting step waits, in the console's words; null for a step that does not wait. */
@@ -328,14 +333,7 @@ function waitWordOf(state: StepState): string | null {
   // A step not started yet: its chip line's sentence already says what it starts after, with the files.
   if (state.kind !== 'state') return null
   const t = state.task
-  // Drawn waiting, so said waiting: `waiting on a step`, not `parked: …`.
-  if (isDependencyPark(t)) return PARK_WORD.DEPENDENCY_INCOMPLETE
-  if (t.state === 'PARKED') {
-    const r = t.park_reason
-    if (!r) return 'parked, no reason recorded'
-    // A reason this build does not know is printed verbatim (StatePill's rule).
-    return Object.prototype.hasOwnProperty.call(PARK_WORD, r) ? `parked: ${PARK_WORD[r as ParkReason]}` : `parked: ${r}`
-  }
+  if (t.state === 'PARKED') return t.park_reason ? `parked: ${parkWordOf(t)}` : 'parked, no reason recorded'
   if (t.state === 'QUEUED') return 'in line'
   if (t.state === 'READY') return 'waiting for a slot'
   return null
@@ -344,7 +342,6 @@ function waitWordOf(state: StepState): string | null {
 function stateWordOf(state: StepState, kind: ChipKind): string {
   if (state.kind === 'unknown') return 'state not known: its agent was not in the read'
   if (state.kind === 'unstarted') return 'not started'
-  if (state.kind === 'state' && isDependencyPark(state.task)) return 'waiting'
   if (kind === 'waiting' || kind === 'parked') return state.state.toLowerCase()
   return state.state.toLowerCase().replace('_', '-')
 }
@@ -395,7 +392,7 @@ export interface StageTally {
   readonly running: number
   /** Not started, queued, ready, or parked behind its dependencies. */
   readonly waiting: number
-  /** Parked for any reason but its dependencies: drawn with the parked mark, so counted parked. */
+  /** Parked, for any reason: drawn with the parked mark, so counted parked. */
   readonly parked: number
   readonly stopped: number
   /** Steps whose task was not in the read: the tally is short by exactly this many. */
@@ -415,13 +412,24 @@ export function tallyOf(kinds: readonly ChipKind[]): StageTally {
   }
 }
 
-function tallySentence(t: StageTally): string {
+/**
+ * What the parked steps wait on, by park reason, in the order first met:
+ * `waiting on a step` for one reason, `2 waiting on a step, 1 provider quota`
+ * for several. Empty when nothing is parked.
+ */
+export function parkReasonsOf(tasks: readonly Task[]): string {
+  const n = new Map<string, number>()
+  for (const t of tasks) if (t.state === 'PARKED') n.set(parkWordOf(t), (n.get(parkWordOf(t)) ?? 0) + 1)
+  return [...n].map(([word, k]) => (n.size === 1 ? word : `${k} ${word}`)).join(', ')
+}
+
+function tallySentence(t: StageTally, parkedOn: string): string {
   const parts = [
     `${t.done} done`,
     `${t.failed} failed`,
     `${t.running} running`,
     `${t.waiting} waiting`,
-    t.parked > 0 ? `${t.parked} parked` : null,
+    t.parked > 0 ? `${t.parked} parked${parkedOn ? `: ${parkedOn}` : ''}` : null,
     t.stopped > 0 ? `${t.stopped} cancelled` : null,
     t.unknown > 0 ? `${t.unknown} not known` : null,
   ]
@@ -609,8 +617,9 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
           const chips = st.cells.map((id) => (id === null ? null : chipOf(stepById.get(id)!, st.label, taskById, asking, now)))
           // Each chip's line, once: its sentence goes into the tooltip, its parts onto the chip.
           const lines = st.cells.map((id) => (id === null ? null : chipLineOf(shape, lin, id)))
-          const tally = tallyOf(chips.filter((c): c is Chip => c !== null).map((c) => c.kind))
-          const sentence = tallySentence(tally)
+          const present = chips.filter((c): c is Chip => c !== null)
+          const tally = tallyOf(present.map((c) => c.kind))
+          const sentence = tallySentence(tally, parkReasonsOf(present.flatMap((c) => (c.state.kind === 'state' ? [c.state.task] : []))))
           // The gap above this row holds the connectors' lanes from the stage above (gapPx).
           const gapAbove = st.index > 0 ? { marginTop: gapPx(lanes.count[st.index - 1] ?? 0) - GAP_PX } : undefined
           const counts = (
