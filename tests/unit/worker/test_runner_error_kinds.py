@@ -278,18 +278,18 @@ class _Broker:
         self.swaps: list[str] = []
         self.releases: list[tuple[str, str]] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         return self.first
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         self.releases.append((account_id, unusable))
         return 0
 
-    def swap(self, assignment, *, provider, reason, exclude=()):
+    def swap(self, assignment, *, provider, reason, exclude=(), **_kw):
         self.swaps.append(reason)
         return NoAccount(reason="no_account_available")
 
-    def hold_status(self, assignment):
+    def hold_status(self, assignment, **_kw):
         return {"held": True, "move": None}
 
     def report_reading(self, assignment, windows):
