@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Banner, Button, Dash, EmptyState, LoadingState, Table, TypedConfirm, type Column } from '../components'
 import { read, route, write } from '../fetch'
 import { formatDateTime } from '../timezone'
+import { TRACK_PROJECTS, TRACK_WORK, trackMock, TrackWork } from './TrackMock' // MOCK-HOOK
 
 /** The person's projects in the selected workspace, newest first. */
 export const VOICE_PROJECTS = '/v1/voice/projects'
@@ -156,6 +157,7 @@ export function VoiceProjects() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (trackMock()) return setProjects(newestFirst(TRACK_PROJECTS)) // MOCK-HOOK
     let live = true
     void read<unknown>(route(VOICE_PROJECTS), () => false).then((r) => {
       if (!live) return
@@ -238,6 +240,7 @@ export function VoiceProjects() {
           <b>{p.title}</b>
         ),
     },
+    ...(trackMock() ? [{ key: 'work', head: 'Work', cell: (p: VoiceProject) => (p.project_id in TRACK_WORK ? <TrackWork id={p.project_id} /> : <Dash why="Nothing started" />) }] : []), // MOCK-HOOK
     ...(servesLastSession
       ? [{ key: 'last_session', head: 'Last session', cell: (p: VoiceProject) => <When at={p.last_session_at} why="No session recorded" /> }]
       : []),

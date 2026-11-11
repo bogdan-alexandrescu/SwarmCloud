@@ -35,6 +35,7 @@ import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
 import { VoiceProjects } from './Projects'
 import { VoiceSettings } from './Settings'
 import { TalkPane } from './Talk'
+import { TalkTrack, trackMock } from './TrackMock' // MOCK-HOOK
 import { VoiceTelemetry } from './Telemetry'
 
 /**
@@ -99,7 +100,7 @@ export function VoiceTalkScreen() {
     <>
       <PageHead title="Talk" />
       <Gate>
-        <TalkPane />
+        {/* MOCK-HOOK */ trackMock() ? <TalkTrack /> : <TalkPane />}
       </Gate>
     </>
   )

@@ -1,0 +1,112 @@
+[
+ {
+  "name": "track-ask",
+  "file": "frames/track-ask.png",
+  "dark": "frames/dark/track-ask.png",
+  "html": "frames/track-ask.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "ask",
+  "caption": "Right after the person asks for three versions of the bakery's landing page: the voice says it is handing the ask on, the orb is thinking, and the activity timeline beside the talk has its first row, the planner, working for 5 seconds. The one-line working card under the reply says the planner is thinking.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-handed",
+  "file": "frames/track-handed.png",
+  "dark": "frames/dark/track-handed.png",
+  "html": "frames/track-handed.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "handed",
+  "caption": "The planner's row is done at 0:09 and the three hand-offs are nested under it: two implementation agents and one workflow, each with its state, a short progress line, its own elapsed time and a bar on the shared time axis. The orb wears a dot for each of them. Each row opens that agent's or workflow's console page.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-working-collapsed",
+  "file": "frames/track-working-collapsed.png",
+  "dark": "frames/dark/track-working-collapsed.png",
+  "html": "frames/track-working-collapsed.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "working-collapsed",
+  "caption": "A little later, at 0:38: the person asked for the order button near the top, the voice said it passed that on, and now, before its next reply, the conversation shows one working card: a live dot, what Voice it is doing now, and the elapsed time. One line, collapsed by default. The rows have moved on (Warm & rustic is on 2 of 4).",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-working-open",
+  "file": "frames/track-working-open.png",
+  "dark": "frames/dark/track-working-open.png",
+  "html": "frames/track-working-open.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "working-open",
+  "caption": "The same card opened: every action and update so far, each with its time, newest at the bottom (read the project, asked the planner, agents started, the rustic hero drawn, the aside passed on, a workflow step done), and the live line for what is happening now. The rows beside it agree with the log.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-paused",
+  "file": "frames/track-paused.png",
+  "dark": "frames/dark/track-paused.png",
+  "html": "frames/track-paused.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "paused",
+  "caption": "A slim band at the top of Talk: Paused, how long, the money saved so far, an (i) for what the pause is, the spoken word \u201cresume\u201d the browser listens for, and a Resume button. The timeline goes on underneath: the voice session's lane turns striped from 0:41, where it paused, and the agents keep moving.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-resumed",
+  "file": "frames/track-resumed.png",
+  "dark": "frames/dark/track-resumed.png",
+  "html": "frames/track-resumed.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "resumed",
+  "caption": "The work is ready, so the voice is back: it says what was delivered and asks which to take forward; the conversation shows its newest lines. The three landing-page versions sit side by side on the Stage, their words readable at Stage size. Every row in the timeline is done, the planner still at 0:09. The session lane shows talk, the pause and talk again, with what the pause saved.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-failed-agent",
+  "file": "frames/track-failed-agent.png",
+  "dark": "frames/dark/track-failed-agent.png",
+  "html": "frames/track-failed-agent.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "failed-agent",
+  "caption": "The clean and modern agent stopped. Its row is red with a Retry button, and its reason opens in a tooltip beside the timeline, level with the row, so neither that row nor the next is hidden. Its place on the Stage holds a failed slot with its own Retry, beside the two versions that did arrive.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-ended",
+  "file": "frames/track-ended.png",
+  "dark": "frames/dark/track-ended.png",
+  "html": "frames/track-ended.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "ended",
+  "caption": "After End session, a short band confirms the session ended and the work is kept in the project, with Projects and Resume buttons. The conversation ends on the voice's last line, in full. The timeline and the Stage stay as they were.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-projects",
+  "file": "frames/track-projects.png",
+  "dark": "frames/dark/track-projects.png",
+  "html": "frames/track-projects.html",
+  "screen": "Voice it > Projects (?voiceactivity=track)",
+  "state": "projects",
+  "caption": "Voice it > Projects lists the bakery's project first, with a Work column saying where its agents stand, and the Resume button that opens Talk on it again.",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "track-paused-390",
+  "file": "frames/track-paused-390.png",
+  "dark": "frames/dark/track-paused-390.png",
+  "html": "frames/track-paused-390.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "paused-390",
+  "caption": "On a phone (390 wide), paused: the band stays pinned at the top with the time, the saving, the \u201cresume\u201d word and Resume; the conversation keeps its newest lines in a short scroller, the working card under it, and the whole roster (planner, two agents, the workflow) fits the screen under it.",
+  "viewport": "390x844"
+ },
+ {
+  "name": "track-handed-390",
+  "file": "frames/track-handed-390.png",
+  "dark": "frames/dark/track-handed-390.png",
+  "html": "frames/track-handed-390.html",
+  "screen": "Voice it > Talk (?voiceactivity=track)",
+  "state": "handed-390",
+  "caption": "On a phone (390 wide), the agents just handed the work: the newest line of the talk, the working card, then the timeline with the planner and all three hand-offs, each progress on one line, all on one screen. The mic follows the timeline.",
+  "viewport": "390x844"
+ }
+]

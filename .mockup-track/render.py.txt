@@ -1,0 +1,75 @@
+import re, sys, json, hashlib, os
+from pathlib import Path
+from swarm_browser import live
+OUT = Path(os.environ["SWARM_ARTIFACTS_DIR"]) / "track-fixed"
+SERIALIZE = """() => {
+  const css = [];
+  for (const sh of document.styleSheets) { try { css.push([...sh.cssRules].map(r => r.cssText).join('\\n')); } catch (e) {} }
+  const c = document.documentElement.cloneNode(true);
+  c.removeAttribute('data-theme');
+  c.querySelectorAll('script, link[rel=stylesheet], link[rel=modulepreload], style').forEach(e => e.remove());
+  const st = document.createElement('style'); st.textContent = css.join('\\n'); c.querySelector('head').appendChild(st);
+  return '<!doctype html>' + c.outerHTML;
+}"""
+THEME = ("<script>var t=new URLSearchParams(location.search).get('theme');"
+         "if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);</script>")
+FONT = re.compile(r'url\("?(/[^)"]+\.(?:woff2?|ttf|otf))"?\)')
+MEASURE = r"""() => {
+ const R = e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)]; };
+ const m = {};
+ const sc = document.querySelector('.ctl-scroll'); if (sc) m.ctlScroll = [sc.scrollHeight, sc.clientHeight];
+ m.docScroll = [document.documentElement.scrollHeight, innerHeight, document.documentElement.scrollWidth, innerWidth];
+ const wide = []; document.querySelectorAll('body *').forEach(e => { const r = e.getBoundingClientRect(); if (r.width && r.right > innerWidth + 0.5) wide.push(e.className && e.className.baseVal === undefined ? (e.tagName + '.' + e.className).slice(0,60) : e.tagName); });
+ m.wide = wide.slice(0, 8);
+ const ln = document.querySelector('.vtk-lines'); if (ln) { m.lines = { rect: R(ln), st: ln.scrollTop, sh: ln.scrollHeight, ch: ln.clientHeight }; const kids=[...ln.querySelectorAll(':scope > *')]; m.lines.items = kids.map(k => [k.textContent.slice(0,40), R(k)]); }
+ m.rows = [...document.querySelectorAll('.vtk-row-open')].map(e => [e.textContent.slice(0,70), R(e)]);
+ m.doing = [...document.querySelectorAll('.vtk-row-doing')].map(e => [e.textContent.slice(0,50), Math.round(e.getBoundingClientRect().height), getComputedStyle(e).lineHeight]);
+ const tips = [...document.querySelectorAll('.c-tip')].filter(t => getComputedStyle(t).visibility !== 'hidden' && getComputedStyle(t).display !== 'none' && t.getBoundingClientRect().width > 0);
+ m.tips = tips.map(t => [t.textContent.slice(0,60), R(t)]);
+ m.rowMain = [...document.querySelectorAll('.vtk-row-main')].map(e => [e.textContent.slice(0,30), R(e)]);
+ const fixed = [...document.querySelectorAll('body *')].filter(e => { const p = getComputedStyle(e).position; return (p==='fixed'||p==='sticky') && e.getBoundingClientRect().height>0; });
+ m.fixed = fixed.map(e => [(e.tagName+'.'+e.className).slice(0,50), R(e)]);
+ const iframes = [...document.querySelectorAll('iframe')]; m.iframes = iframes.map(f => R(f));
+ return m;
+}"""
+IFR = r"""() => { let min = 99, n = 0, low = []; document.querySelectorAll('body *').forEach(e => { if (![...e.childNodes].some(c => c.nodeType===3 && c.textContent.trim())) return; const fs = parseFloat(getComputedStyle(e).fontSize); n++; if (fs < min) min = fs; if (fs < 12) low.push(e.textContent.slice(0,30)); }); return {min, n, low: low.slice(0,5), sh: document.documentElement.scrollHeight, ch: innerHeight}; }"""
+BASE = "http://127.0.0.1:5173"
+DESK = [("track-ask","ask"),("track-handed","handed"),("track-working-collapsed","working-collapsed"),("track-working-open","working-open"),("track-paused","paused"),("track-resumed","resumed"),("track-failed-agent","failed-agent"),("track-ended","ended"),("track-projects",None)]
+PHONE = [("track-paused-390","paused"),("track-handed-390","handed")]
+dev, theme = sys.argv[1], sys.argv[2]
+only = sys.argv[3].split(",") if len(sys.argv) > 3 else None
+frames = DESK if dev == "desktop" else PHONE
+vp = "1440x900" if dev == "desktop" else "390x844"
+(OUT/"frames"/"dark").mkdir(parents=True, exist_ok=True); (OUT/"assets").mkdir(exist_ok=True)
+pw, br, ctx = live()
+pg = ctx.new_page()
+res = {}
+fonts = set()
+try:
+  for name, st in frames:
+    if only and name not in only: continue
+    url = f"{BASE}/voice/talk?voiceactivity=track&vstate={st}" if st else f"{BASE}/voice/projects?voiceactivity=track"
+    pg.goto(url); pg.evaluate("document.cookie='swarm_qa_persona=platform-admin; path=/'"); pg.goto(url); pg.wait_for_timeout(1600)
+    if name == "track-failed-agent": pg.focus('[data-why]')
+    pg.wait_for_timeout(500)
+    m = pg.evaluate(MEASURE)
+    m["inner"] = pg.evaluate("[innerWidth, innerHeight]")
+    m["iframeText"] = []
+    for fr in pg.frames[1:]:
+      try: m["iframeText"].append(fr.evaluate(IFR))
+      except Exception as e: m["iframeText"].append(str(e)[:80])
+    png = OUT/"frames"/("dark/" if theme=="dark" else "")/f"{name}.png"
+    pg.screenshot(path=str(png))
+    m["md5"] = hashlib.md5(png.read_bytes()).hexdigest()
+    if theme == "light":
+      html = pg.evaluate(SERIALIZE); fonts.update(FONT.findall(html))
+      html = FONT.sub(lambda mm: f'url("../assets/{mm.group(1).rsplit("/", 1)[-1]}")', html)
+      meta = f'<meta name="mockup-viewport" content="{vp}">'
+      (OUT/"frames"/f"{name}.html").write_text(html.replace("<head>", "<head>"+meta+THEME, 1))
+    res[name] = m
+  for f in fonts:
+    import urllib.request; (OUT/"assets"/f.rsplit("/",1)[-1]).write_bytes(urllib.request.urlopen(BASE + f).read())
+finally:
+  pg.close(); pw.stop()
+Path(os.environ["TMPDIR"], "r", f"m-{dev}-{theme}.json").write_text(json.dumps(res, indent=1))
+print("fonts", len(fonts), "frames", len(res))

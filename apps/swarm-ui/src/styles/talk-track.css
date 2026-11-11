@@ -1,0 +1,205 @@
+/* MOCK-HOOK FILE
+   VOICE IT, TALK: the activity-timeline direction (voice/TrackMock.tsx,
+   ?voiceactivity=track). Console tokens only, mixed with transparency for
+   glass, as talk-pane.css does. */
+
+/* ---- the page: the conversation on the left, the timeline beside it -------- */
+.vt.vtk {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); align-items: start;
+  grid-template-areas: "hud hud" "talk track" "mic track"; grid-template-rows: auto auto 1fr;
+}
+/* row-gap 10px, not 14px: with the Stage up the page sat 1px taller than its scroller and drew a page scrollbar. */
+.vt.vtk.has-frames { grid-template-areas: "hud hud" "stage stage" "talk track" "mic track"; grid-template-rows: auto auto auto 1fr; row-gap: 10px; }
+.vt.vtk.has-band { grid-template-areas: "band band" "hud hud" "talk track" "mic track"; grid-template-rows: auto auto auto 1fr; }
+.vt.vtk.has-band.has-frames { grid-template-areas: "band band" "hud hud" "stage stage" "talk track" "mic track"; grid-template-rows: auto auto auto auto 1fr; }
+.vtk-stage { grid-area: stage; }
+.vtk-stage .vts-frame { max-height: none; }
+.vtk-stage .vts-mockups { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; }
+.vtk-project { color: var(--text-dim); font-size: var(--t-meta); padding-left: 10px; margin-left: 4px; border-left: 1px solid var(--line-soft); }
+.vtk-project.is-only { padding-left: 0; margin-left: 0; border-left: 0; }
+.vtk-time { font-variant-numeric: tabular-nums; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; }
+
+/* ---- the paused band: slim, the top edge of Talk --------------------------- */
+.vtk-band {
+  grid-area: band; position: sticky; top: 0; z-index: 3;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-width: 0; padding: 6px 8px 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--paused) 45%, var(--line-soft)); border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--paused) 12%, var(--surface));
+}
+.vtk-band.is-ended { border-color: var(--line-soft); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.vtk-band-word { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); font-size: var(--t-body); }
+.vtk-band-word .vtk-pause-ic { fill: var(--paused); }
+.vtk-band-fact { font-size: var(--t-meta); color: var(--text-dim); }
+.vtk-band-fact.is-saved { color: var(--text); font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.vtk-band-acts { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.vtk-say { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: var(--r-pill); font-size: var(--t-meta);
+  color: var(--text); border: 1px dashed color-mix(in srgb, var(--paused) 55%, var(--line)); cursor: default; }
+.vtk-say:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---- the voice and the conversation ---------------------------------------- */
+.vtk-talk { grid-area: talk; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.vt.vtk.has-frames .vtk-talk { grid-template-columns: 120px minmax(0, 1fr); align-items: center; }
+.vtk-core { display: flex; justify-content: center; min-width: 0; }
+.vtk-subs { display: flex; flex-direction: column; gap: 10px; }
+.vtk-subs .vt-captions { gap: 6px; }
+.vt.vtk .vtk-lines { max-height: 22em; }
+/* Pinned to the newest line: a reversed column starts at its end, with no script and in a saved frame too. */
+.vt.vtk .vtk-lines { flex-direction: column-reverse; }
+/* The talk's own scrollers draw a thin scrollbar in the theme's ink, never the native light-grey one on a dark card. */
+.vt.vtk .vtk-lines, .vtk-steps-scroll { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 28%, transparent) transparent; }
+
+.vtk-orb { margin: 0; position: relative; width: 100%; max-width: 200px; aspect-ratio: 1; color: var(--info); }
+.vtk-orb svg { display: block; width: 100%; height: auto; aspect-ratio: 1; overflow: visible; }
+.vtk-orb-glow { fill: color-mix(in srgb, currentColor 10%, transparent); stroke: currentColor; stroke-width: 10; opacity: 0.25; }
+.vtk-orb-base { fill: none; stroke: currentColor; stroke-opacity: 0.25; stroke-width: 1; }
+.vtk-orb-still { fill: none; stroke: currentColor; stroke-width: 2; stroke-opacity: 0.75; }
+.vtk-orb.is-thinking .vtk-orb-still { stroke-dasharray: 30 14; transform-origin: 100px 100px; animation: vtk-spin 5s linear infinite; }
+@keyframes vtk-spin { to { transform: rotate(360deg); } }
+.vtk-orb.is-working .vtk-orb-still { stroke-dasharray: 4 7; }
+.vtk-orb.is-paused { color: var(--paused); }
+.vtk-orb.is-paused .vtk-orb-glow { opacity: 0.1; }
+.vtk-orb.is-paused .vtk-orb-still { stroke-opacity: 0.45; }
+.vtk-orb.is-idle { color: var(--text-faint); }
+.vtk-orb.is-idle .vtk-orb-glow { opacity: 0; }
+.vtk-orb-wave { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.vtk-orb-orbit { fill: none; stroke: var(--text-faint); stroke-opacity: 0.6; stroke-dasharray: 2 5; }
+.vtk-orb-sat { stroke: var(--bg); stroke-width: 2; fill: var(--info); }
+.vtk-orb-sat.is-workflow { fill: var(--paused); }
+.vtk-orb.is-paused .vtk-orb-sat { fill: var(--info); }
+.vtk-orb-sat.is-done { fill: var(--ok); }
+.vtk-orb-sat.is-failed { fill: var(--bad); }
+.vtk-orb-word { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 5px;
+  font-size: var(--t-body); font-weight: 600; color: var(--text); }
+.vtk-orb svg.vtk-pause-ic { width: 16px; height: 16px; fill: var(--paused); }
+@media (prefers-reduced-motion: reduce) { .vtk-orb.is-thinking .vtk-orb-still { animation: none; } }
+
+/* ---- the working card: one line, or the steps under it ---------------------- */
+.vtk-work { border: 1px solid var(--vt-glass-line); border-left: 3px solid var(--info); border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--info) 6%, var(--vt-glass)); min-width: 0; }
+.vt.vtk.is-paused .vtk-work { border-left-color: var(--paused); }
+.vtk-work-line { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: auto 76px minmax(0, 1fr) auto auto auto;
+  align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.vtk-work-line:hover { background: var(--vt-glass-dim); }
+.vtk-work-line:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; border-radius: var(--r-card); }
+.vtk-cap-who { font-size: var(--t-meta); font-weight: 600; color: var(--info-ink, var(--text)); }
+.vtk-work-now { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtk-work-voice { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-meta); color: var(--text-dim); }
+.vtk-work-voice .vtk-pause-ic { width: 12px; height: 12px; fill: var(--paused); }
+.vtk-chev { color: var(--text-dim); transition: transform 160ms ease; }
+.vtk-chev.is-open { transform: rotate(180deg); }
+.vtk-live { width: 8px; height: 8px; border-radius: 50%; background: var(--info); box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 60%, transparent);
+  animation: vtk-pulse 1.6s ease-out infinite; flex: none; }
+.vt.vtk.is-paused .vtk-work .vtk-live { background: var(--info); }
+@keyframes vtk-pulse { 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .vtk-live { animation: none; } }
+/* The log scrolls in a reversed column, so it opens on its newest line (the card's point), in a saved frame too;
+   10em keeps the page within the viewport now that the log runs past the aside. */
+.vtk-steps-scroll { display: flex; flex-direction: column-reverse; border-top: 1px solid var(--vt-glass-line); max-height: 10em; overflow-y: auto; }
+.vtk-steps { list-style: none; margin: 0; padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 3px; }
+.vtk-step { display: grid; grid-template-columns: 40px auto minmax(0, 1fr); align-items: center; gap: 8px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.vtk-step-at { font-variant-numeric: tabular-nums; color: var(--text-dim); text-align: right; }
+.vtk-step-text { min-width: 0; overflow-wrap: anywhere; }
+.vtk-step.is-now .vtk-step-text { font-weight: 600; }
+.vtk-step.is-now .vtk-live { justify-self: center; }
+
+/* ---- the activity timeline ---------------------------------------------------- */
+.vtk-track { grid-area: track; align-self: stretch; min-width: 0; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 12px 14px; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.vtk-track-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.vtk-track-title { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--text); }
+.vtk-counts { display: inline-flex; flex-wrap: wrap; gap: 10px; font-size: var(--t-meta); color: var(--text-dim); }
+.vtk-time.is-total { margin-left: auto; }
+
+/* The axis and every bar share one inset, so a span lines up with its tick. */
+.vtk-axis, .vtk-span { position: relative; margin-left: 10px; margin-right: 10px; }
+.vtk-axis { height: 16px; border-bottom: 1px solid var(--line-soft); }
+.vtk-tick { position: absolute; bottom: 2px; transform: translateX(-50%); font-size: var(--t-micro); line-height: var(--lh-micro);
+  font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.vtk-tick:first-child { transform: none; }
+.vtk-nowline { position: absolute; top: 14px; bottom: -6px; width: 2px; margin-left: -1px; background: var(--info); border-radius: 1px; }
+
+.vtk-lane { display: flex; flex-direction: column; gap: 4px; padding: 6px 0 8px; border-bottom: 1px dashed var(--line-soft); }
+.vtk-lane-head { display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: var(--t-meta); }
+.vtk-saved { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); padding: 0 7px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.vtk-saved:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+.vtk-span { display: block; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.vtk-span.is-lane { height: 10px; border-radius: 5px; }
+.vtk-span-bar { position: absolute; top: 0; bottom: 0; min-width: 4px; border-radius: inherit; background: var(--text-faint); }
+.vtk-span-bar.is-live { background: var(--info); }
+.vtk-span-bar.is-ok { background: color-mix(in srgb, var(--ok) 70%, var(--text-faint)); }
+.vtk-span-bar.is-bad { background: var(--bad); }
+.vtk-span-bar.is-talk { background: var(--info); }
+.vtk-span-bar.is-paused { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--paused) 70%, transparent) 0 4px,
+  color-mix(in srgb, var(--paused) 25%, transparent) 4px 8px); }
+.vtk-span-bar.is-open { box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 0%, transparent), 4px 0 10px -2px var(--info); }
+.vtk-span-bar.is-paused.is-open { box-shadow: 4px 0 10px -2px var(--paused); }
+
+.vtk-rows, .vtk-kids { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.vtk-kids { margin-left: 17px; padding-left: 10px; border-left: 1px solid var(--line-soft); }
+.vtk-row-main { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+.vtk-row-open { all: unset; box-sizing: border-box; flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px;
+  padding: 7px 0 9px; border-radius: var(--r-card); cursor: pointer; }
+.vtk-row-open:hover { background: var(--vt-glass-dim); }
+.vtk-row-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.vtk-row-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 10px; }
+.vtk-row-name { font-size: var(--t-body); font-weight: 600; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtk-lane .vtk-row-name { font-size: var(--t-meta); }
+.vtk-kind { font-size: var(--t-micro); line-height: var(--lh-micro); padding: 1px 6px; border-radius: var(--r-pill); color: var(--text-dim);
+  border: 1px solid var(--line-soft); white-space: nowrap; }
+.vtk-kind.is-workflow { border-color: color-mix(in srgb, var(--paused) 45%, var(--line-soft)); }
+.vtk-row-head .vtk-time { margin-left: auto; }
+.vtk-row-doing { padding: 0 10px 0 32px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.vtk-row.is-failed > .vtk-row-main .vtk-row-doing { color: var(--bad-ink, var(--text)); }
+.vtk-row-acts { display: inline-flex; align-items: center; gap: 2px; padding-top: 4px; }
+.vtk-row.is-failed > .vtk-row-main { border-radius: var(--r-card); background: color-mix(in srgb, var(--bad) 7%, transparent); }
+
+/* A failed row's reason opens beside the timeline, level with its row, so it hides neither that row nor the next.
+   The timeline (its backdrop-filter) is the tooltip's box; nothing between them is positioned. */
+@media (min-width: 761px) {
+  .vtk-row-acts > .c-tip-host { position: static; }
+  .vtk-row-acts > .c-tip-host > .c-tip { top: auto; left: auto; right: calc(100% + 10px); margin-top: -4px; white-space: normal; }
+}
+
+/* A version that failed holds its place on the stage. */
+.vtk-frame-hole { border: 1px dashed color-mix(in srgb, var(--bad) 45%, var(--line)); border-radius: 4px;
+  background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--bad) 5%, transparent) 8px 16px); }
+
+/* ---- phone: one column, the timeline under the conversation ------------------- */
+@media (max-width: 760px) {
+  /* The mic follows the timeline, in the flow: pinned to the bottom edge it would cover the timeline's rows, and
+     above it, it pushed the last row (the workflow) under the fold. */
+  .vt.vtk { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "hud" "talk" "track" "mic"; gap: 10px; padding: 10px 10px 12px; }
+  .vt.vtk.has-frames { grid-template-areas: "hud" "stage" "talk" "track" "mic"; }
+  .vt.vtk.has-band { grid-template-areas: "band" "hud" "talk" "track" "mic"; }
+  .vt.vtk.has-band.has-frames { grid-template-areas: "band" "hud" "stage" "talk" "track" "mic"; }
+  /* Tighter rows, so the planner and all three hand-offs fit one phone screen. */
+  .vtk-track { gap: 4px; padding: 10px 8px 12px; scroll-margin-top: 8px; }
+  .vtk-lane { padding: 4px 0 6px; }
+  .vtk-row-open { gap: 3px; padding: 5px 0 6px; }
+  .vtk-row-doing { padding-left: 30px; }
+  .vt.vtk .vt-mic { position: static; }
+  .vt.vtk.has-band .vtk-track { scroll-margin-top: 108px; }
+  .vtk-stage .vts-mockups { grid-template-columns: minmax(0, 1fr); }
+  .vtk-talk, .vt.vtk.has-frames .vtk-talk { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  /* The hud and the working card carry the state; the conversation keeps its newest lines in view. */
+  .vtk-core { display: none; }
+  .vt.vtk .vtk-lines { max-height: 5.2em; }
+  .vtk-band { top: 4px; padding: 6px 6px 6px 10px; gap: 4px 10px; }
+  .vtk-band-acts { margin-left: auto; }
+  .vtk-project { display: none; }
+  .vtk-work-line { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+  .vtk-work-line .vtk-cap-who, .vtk-work-voice { display: none; }
+}
+
+/* The captions band sits in the talk row's own grid, not the pane's. */
+.vtk-talk > .vt-subs-band { grid-area: auto; }
+/* A nested row's bar keeps the axis' inset, whatever its indent (the kids' margin, padding and line: 28px). */
+.vtk-kids .vtk-span { margin-left: -18px; }
+/* Beside the stage the orb is small: its word goes under it, clear of the wave. */
+.vt.vtk.has-frames .vtk-orb { aspect-ratio: auto; max-width: 110px; }
+.vt.vtk.has-frames .vtk-orb-word { position: static; margin-top: 4px; font-size: var(--t-meta); }
