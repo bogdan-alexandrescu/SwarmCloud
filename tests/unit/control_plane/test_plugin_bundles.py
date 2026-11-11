@@ -239,7 +239,8 @@ def _plugin_layer(tmp: Path, name: str, install_id: str, source_sha256: str, rec
     return _tar(entries + list(extra))
 
 
-def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, extra: list = (), tree: str | None = None,
+def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, foreign_diff_ids: bool = False,
+                 extra: list = (), tree: str | None = None,
                  audit: Mapping[str, bytes] | None = None, source: Mapping[str, str] | None = None) -> None:
     """Do what the job does for `bundle_id` from its recorded arguments, then
     end its execution well. Each keyword spoils one thing a check refuses."""
@@ -266,7 +267,12 @@ def _push_bundle(w, bundle_id: str, *, foreign_base: bool = False, extra: list =
             other = gzip.compress(_tar([("etc", "d", None), ("etc/os-release", "f", b"not the release")]), mtime=0)
             BLOBS[_sha(other)] = other
             digests = [_sha(other)]
-        _put_image(f"{REPOSITORY}/{image}", bundle_id, layers, layer_digests=digests)
+        diff_ids = None
+        if foreign_diff_ids:
+            # The release's base layer blobs, but a config that says the
+            # first of them unpacks to something else.
+            diff_ids = [_digest("not the release")] + [_sha(raw) for raw in layers[1:]]
+        _put_image(f"{REPOSITORY}/{image}", bundle_id, layers, diff_ids=diff_ids, layer_digests=digests)
     for name, execution in w["jobs"].executions.items():
         if name == record["execution"]:
             execution.update({"completionTime": "2026-11-11T00:00:00Z", "succeededCount": 1})
@@ -654,6 +660,7 @@ def test_a_passing_check_moves_current_version_and_records_the_digest_it_checked
 
 @pytest.mark.parametrize("spoil, check", [
     ({"foreign_base": True}, "base_layers"),
+    ({"foreign_diff_ids": True}, "base_diff_ids"),
     ({"extra": [("opt/swarm/plugins/security-audit/skills/x", "f", b"x")]}, "layer_path"),
     ({"extra": [("opt/swarm/elsewhere", "f", b"x")]}, "layer_path"),
     ({"extra": [("opt/swarm/plugins/gstack/../../../etc/passwd", "f", b"x")]}, "layer_path"),
@@ -677,6 +684,55 @@ def test_each_failed_layer_check_leaves_current_version_and_records_its_code(wor
     assert _built(w, bundle_id)["refusal"] == {"code": "bundle_check_failed", "check": check}
     assert _built(w, bundle_id)["outputs"] is None
     assert _current(w) == before
+
+
+@pytest.mark.parametrize("cap, value, extra, check", [
+    # 64 KiB of one byte, a few hundred bytes gzipped, past a 32 KiB cap:
+    # the total unpacked is capped, not only each file or the transfer.
+    ("LAYER_UNPACKED_CAP", 32 * 1024, [("opt/swarm/plugins/gstack/pad", "f", b"\0" * (64 * 1024))],
+     "layer_too_large"),
+    ("LAYER_MEMBERS_CAP", 20, [(f"opt/swarm/plugins/gstack/m{n}", "f", b"") for n in range(30)],
+     "layer_too_many_members"),
+])
+def test_a_layer_past_a_read_cap_is_refused_with_its_code_and_moves_nothing(world, monkeypatch, cap, value,
+                                                                             extra, check):
+    w = world
+    monkeypatch.setattr(pb, cap, value)
+    before = _current(w)
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, bundle_id, extra=extra)
+    answer = _status(w, bundle_id).json()
+    assert answer["state"] == "failed"
+    assert _built(w, bundle_id)["refusal"] == {"code": "bundle_check_failed", "check": check}
+    assert answer["refusal"]["check"] == check
+    assert _built(w, bundle_id)["outputs"] is None
+    assert _current(w) == before
+
+
+def test_a_layer_at_the_read_caps_is_read(world, monkeypatch):
+    """The caps refuse only past them: the bundle above them passes with
+    each cap set to what its largest layer actually holds."""
+    w = world
+    bundle_id = _apply(w, w["versions"][(GSTACK, "2.0")]["version_id"]).json()["bundle_id"]
+    seen: list[tuple[int, int]] = []
+    real = pb.read_layer
+
+    def measuring(handle, plugin, media_type, diff_id):
+        data = handle.read()
+        raw = gzip.decompress(data)
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            seen.append((len(raw), len(tar.getmembers())))
+        return real(io.BytesIO(data), plugin, media_type, diff_id)
+
+    monkeypatch.setattr(pb, "read_layer", measuring)
+    _push_bundle(w, bundle_id)
+    assert _status(w, bundle_id).json()["state"] == "ready"
+    monkeypatch.setattr(pb, "read_layer", real)
+    monkeypatch.setattr(pb, "LAYER_UNPACKED_CAP", max(size for size, _ in seen))
+    monkeypatch.setattr(pb, "LAYER_MEMBERS_CAP", max(count for _, count in seen))
+    again = _apply(w, w["versions"][(GSTACK, "1.0")]["version_id"]).json()["bundle_id"]
+    _push_bundle(w, again)
+    assert _status(w, again).json()["state"] == "ready"
 
 
 # --- Roll back --------------------------------------------------------------------------
