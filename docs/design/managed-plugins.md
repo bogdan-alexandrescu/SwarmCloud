@@ -432,6 +432,9 @@ Cloud Build).
   diff is shown. Nothing is built before an admin asks; nothing is current before the build passes.
 * **Apply** on a bundled install writes a **bundle** record and runs one execution of the job `swarm-plugin-bundle`
   (§1.4.2) instead of moving `current_version` (a Cloud Build build until the owner's change of 11 November 2026).
+  The catalogue's own Apply route does this itself: for a bundled install it delegates to the bundle route's start
+  (one code path, the same diff check, `202` and the bundle's status), so the console keeps one Apply button and
+  nothing can reach the old move-at-once path (the owner's pick on Q21).
   `plugin_bundles/{bundle_id}` (swarm-api only, MAC'd, request P6): the bundle key (every bundled install's
   `version_id`, source sha256 and recipe digest: a bundle carries **both** bundled plugins, because one step may load
   both and runs on one image), the base (the release image digests it appended to), the execution's name, the time
