@@ -268,7 +268,7 @@ export const KEYBOARD_GROUPS: readonly KeyboardGroup[] = [
   },
   {
     name: 'accounts',
-    routes: ['capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'],
+    routes: ['capacity/llm-providers', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'],
     stopFloor: 90,
     helps: 6,
   },

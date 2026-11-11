@@ -835,6 +835,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # newer, so the plugin's findings are accepted in .trivyignore.yaml until a
 # fixed build ships. Measured with `go version -m` and `trivy rootfs` over the
 # unpacked .debs.
+# Not moved on 2026-11-11 for CVE-2026-111943 (crypto/x509, fixed in Go 1.26.10
+# / 1.27.3): 592.0.0 and 593.0.0, the newest in that index and in the rapid
+# channel's components-2.json (gcloud-crc32c build 20261016073856), both ship
+# gcloud-crc32c on go1.27.2, read from the binary's build info after each
+# .deb's SHA256 matched the index. No Google build carries the fixed Go yet.
 # The plugin moved alone to 592.0.0 on 2026-11-06 (GKE_PLUGIN_VERSION): Google's
 # index lists it, and its binary, read with `go version -m` after the index's
 # SHA256 matched, is go1.27.3 with golang.org/x/net v0.61.0, which fixes
@@ -1036,13 +1041,14 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # over the downloaded file.
 #
 # trivy 0.76.2 (2026-11-05), the newest release, built with go1.27.3,
-# golang.org/x/net v0.62.0 and go-jose 4.1.6, which fix CVE-2026-78667,
-# CVE-2026-78669 and CVE-2026-116587 (0.75.0 was go1.27.1, x/net v0.59.0;
-# 0.76.1 still linked go-jose 4.1.5). Measured 2026-11-11 with the binary's
-# build info and `trivy rootfs --scanners vuln --severity HIGH,CRITICAL
-# --ignore-unfixed` over it after the checksum matched: clean. 0.75.0 had
-# scanned clean on 2026-10-06 (see INSTALL_TOFU and INSTALL_TFLINT above for
-# the scan and why 0.74.0 could not ship). It is the
+# golang.org/x/net v0.62.0 and go-jose v4.1.6, which fixes CVE-2026-116587
+# (HIGH, JWK parsing DoS) that 0.76.1's go-jose 4.1.5 carried; its
+# .trivyignore.yaml acceptance expired on 2026-11-11 and the image scan refused
+# every runtime image on it. Read on 2026-11-11 from the binary's embedded build
+# info after the checksum matched, and from the tag's go.mod. 0.76.1 had fixed
+# CVE-2026-78667 and CVE-2026-78669 (go1.27.3, x/net v0.60.0; 0.75.0 was
+# go1.27.1, x/net v0.59.0). 0.75.0 had scanned clean on 2026-10-06 (see INSTALL_TOFU and
+# INSTALL_TFLINT above for the scan and why 0.74.0 could not ship). It is the
 # agent's scanner, not the gate's: CI and the release pin their own trivy in
 # .github/workflows. Checksum from
 # https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_checksums.txt

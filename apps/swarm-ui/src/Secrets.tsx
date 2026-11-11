@@ -1141,7 +1141,7 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
       key: <>Subscription accounts</>,
       reads: 'the quota broker',
       state: <span className="sec-state">managed elsewhere</span>,
-      act: <AppLink address="capacity/accounts">Capacity › Accounts</AppLink>,
+      act: <AppLink address="capacity/llm-providers/plans">LLM Providers</AppLink>,
     }
   }
   // THE HINT NAMES THE BUTTONS THE TABLE DRAWS (config2-14): it read "Was
