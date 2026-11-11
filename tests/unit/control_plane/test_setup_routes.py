@@ -223,6 +223,17 @@ class FakePool:
         self.accounts.append(account)
         return {"account": account, "expires_at": None}
 
+    def register_api_key(self, *, owner_tenant, label, provider, credential, added_by,
+                         share_with_voice_it=False):
+        self.registered.append({"owner_tenant": owner_tenant, "label": label,
+                                "provider": provider, "credential": credential,
+                                "added_by": added_by,
+                                "share_with_voice_it": share_with_voice_it})
+        account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
+                   "label": label, "provider": provider, "kind": "api_key"}
+        self.accounts.append(account)
+        return {"account": account, "expires_at": None}
+
     def begin_sign_in(self, *, owner_tenant, label, provider, lend_to):
         state = secrets.token_urlsafe(32)
         self.begun.append({"owner_tenant": owner_tenant, "label": label, "state": state})

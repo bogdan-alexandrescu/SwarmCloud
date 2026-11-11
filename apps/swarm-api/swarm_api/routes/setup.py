@@ -1658,12 +1658,28 @@ def start_verify_runs(
 
 
 class LinkCreate(StrictModel):
-    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key"]
+    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key", "api-key"]
     #: The pool account's label, the add-on's name; for `team-git`, the team;
-    #: for `voice-api-key`, the label the key's account gets in the Voice it pool.
+    #: for `voice-api-key`, the label the key's account gets in the Voice it pool;
+    #: for `api-key`, the label the key's account gets in the account pool.
     label: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
     #: The person the link is for: their verified email opens it.
     owner: str = Field(min_length=3, max_length=320)
+    #: `api-key` only, and required there: the vendor (`sl.API_KEY_PROVIDERS`).
+    provider: Literal["anthropic-api", "openai-api"] | None = None
+    #: `api-key` only: the workspace that will own the key. Unset: the minting
+    #: admin's own workspace. Recorded at mint; the redeem never names one.
+    workspace: str | None = Field(default=None, min_length=1, max_length=64,
+                                  pattern=r"^[a-z0-9][a-z0-9-]*$")
+    #: `api-key` only: the key also serves Voice it (§4.6), a platform admin's
+    #: choice, which minting already requires.
+    share_with_voice_it: bool = False
+
+
+#: The fixed reason an `api-key` redeem the broker refused is answered with
+#: (the established `validation_failed` code, its `detail.reason`; a new 4xx
+#: code would ship report-only behind `swarm_api.refusals`).
+API_KEY_REFUSED = "api_key_refused"
 
 
 def _is_member(directory: MembershipResolver | None, email: str, group: str) -> bool:
@@ -1688,7 +1704,7 @@ def mint_link(
     github: GitHubSetupApi = Depends(setup_github_api),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
-    """One route, four kinds (review finding 21). The token is in this answer
+    """One route, five kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
 
     `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
@@ -1703,6 +1719,11 @@ def mint_link(
     tenant_id: str | None = None
     team_id: str | None = None
     progress_path: str | None = None
+    if body.kind == sl.API_ACCOUNT:
+        return _mint_api_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+    if body.provider is not None or body.workspace is not None or body.share_with_voice_it:
+        raise ValidationFailed(f"provider, workspace and share_with_voice_it are an "
+                               f"{sl.API_ACCOUNT} link's; a {body.kind} link takes none")
     if body.kind == sl.VOICE_API_KEY:
         return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
     engine = record.read_engine()
@@ -1781,10 +1802,46 @@ def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, c
             "expires_at": link["expires_at"].isoformat()}
 
 
+def _mint_api_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
+                       links: sl.SetupLinks) -> dict:
+    """An `api-key` link (docs/design/llm-providers.md §4.1), for the person
+    named, often the one who holds the vendor account.
+
+    `admin_auth` has already refused anyone but a platform admin. The owning
+    workspace is fixed HERE, from the body's `workspace` (which must exist) or
+    the admin's own, and stored on the link: the redeem takes no workspace, so
+    a link minted for one workspace cannot file a key under another
+    (invariant 9). It lasts ten minutes (`sl.API_KEY_TTL`)."""
+    if body.provider is None:
+        raise ValidationFailed(f"an {sl.API_ACCOUNT} link names its vendor: provider is one of "
+                               + ", ".join(sl.API_KEY_PROVIDERS))
+    if body.workspace is not None:
+        if ctx.submissions.workspaces.get(body.workspace) is None:
+            raise NotFound(f"no workspace {body.workspace!r}")
+        tenant_id = body.workspace
+    elif caller.auth is not None:
+        tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    else:
+        raise ValidationFailed(f"name the workspace that will own the key: an {sl.API_ACCOUNT} "
+                               "link needs one")
+    token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
+                             tenant_id=tenant_id,
+                             extra={"provider": body.provider,
+                                    "share_with_voice_it": body.share_with_voice_it})
+    path = sl.FORMS[body.kind].format(token=token)
+    base = console_origin(ctx.settings.console_url)
+    log.info("minted a setup link kind=%s label=%s provider=%s", body.kind, body.label,
+             body.provider)
+    return {"kind": body.kind, "label": body.label, "owner": owner, "tenant": tenant_id,
+            "provider": body.provider, "share_with_voice_it": body.share_with_voice_it,
+            "url": f"{base}{path}" if base else None, "path": path,
+            "expires_at": link["expires_at"].isoformat()}
+
+
 class LinkRedeem(StrictModel):
     token: str = Field(min_length=16, max_length=128)
-    #: The team git slot's, the add-on's or the Voice it API key's value, for
-    #: those kinds only. Write-only: no answer, log line or document carries it.
+    #: The team git slot's, the add-on's, the Voice it API key's or the API
+    #: key's value, for those kinds only. Write-only: no answer, log line or document carries it.
     value: str | None = Field(default=None, min_length=1, max_length=16384)
 
 
@@ -1818,7 +1875,16 @@ def redeem_link(
 
     The two refusals that keep the link unused, the 409 and the missing
     value's 422, carry its `expires_at` (ISO 8601, universal time) so the
-    page shows the time left. Only the named person reaches them (`peek`
+    page shows the time left.
+
+    `api-key` is opened by the person it names, with its value, which is
+    forwarded once to the broker's API key registration under the workspace
+    the link recorded. The link is consumed BEFORE the forward, so two racing
+    submits reach the broker at most once; a key the broker refuses (its shape,
+    or the vendor's answer) or a broker that does not answer REOPENS it, and
+    the refusal is a 422 with `detail.reason` `api_key_refused`.
+
+    Only the named person reaches them (`peek`
     checks the owner first); the 404 for a used, expired or unknown link
     stays one answer with no expiry, so a probe learns nothing."""
     peeked = links.peek(body.token, email=auth.email)
@@ -1826,6 +1892,9 @@ def redeem_link(
     if kind == sl.VOICE_API_KEY:
         return _redeem_voice_key(body, auth, links=links, pool=pool)
     expires_at = peeked["expires_at"].astimezone(timezone.utc).isoformat()
+    if kind == sl.API_ACCOUNT:
+        return _redeem_api_key(body, auth, peeked, expires_at=expires_at, links=links,
+                               pool=pool)
     if kind == sl.POOL_ACCOUNT:
         tenant_id = str(peeked.get("tenant_id") or "")
         state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
@@ -1889,6 +1958,50 @@ def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLin
     return {"kind": sl.VOICE_API_KEY, "label": label, "tenant": tenant_id,
             "account_id": account_id or f"{tenant_id}:{label}",
             "provider": VOICE_API_KEY_PROVIDER, "pool": "voice-it", "written": True}
+
+
+def _redeem_api_key(body: LinkRedeem, auth: AuthContext, peeked: dict[str, Any], *,
+                    expires_at: str, links: sl.SetupLinks, pool: AccountPool) -> dict:
+    """Forward a developer API key to the broker, once, and keep nothing.
+
+    The value is in this frame alone: not logged, not in the link's record, not
+    in the answer, and not in a refusal (the broker's sentences never quote a
+    key, and the sentence is scrubbed of it all the same). What is logged and
+    answered is the link's kind, label, vendor and workspace."""
+    if body.value is None:
+        raise ValidationFailed(f"an {sl.API_ACCOUNT} link is opened with its key; the link is "
+                               "still unused, open it again with the key",
+                               detail={"expires_at": expires_at})
+    provider = str(peeked.get("provider") or "")
+    if provider not in sl.API_KEY_PROVIDERS or not peeked.get("tenant_id"):
+        # A record no mint of this kind writes: refused as a dead link.
+        raise sl.LinkInvalid("this link is not valid: ask the admin for a new one")
+    link = links.redeem(body.token, email=auth.email)
+    label = str(link.get("label") or "")
+    tenant_id = str(link.get("tenant_id") or "")
+    value = body.value.strip()
+    try:
+        result = pool.register_api_key(
+            owner_tenant=tenant_id, label=label, provider=provider, credential=value,
+            added_by=auth.email, share_with_voice_it=bool(link.get("share_with_voice_it")))
+    except Exception as exc:
+        reopened = links.reopen(body.token, used_at=link["used_at"])
+        log.info("a setup link's key was not added kind=%s label=%s provider=%s code=%s "
+                 "reopened=%s", sl.API_ACCOUNT, label, provider,
+                 getattr(exc, "code", type(exc).__name__), reopened)
+        if isinstance(exc, ValidationFailed):
+            why = exc.message.replace(value, "[the key]") if value else exc.message
+            raise ValidationFailed(
+                f"the key was not added: {why}. The link is still unused; open it again "
+                "with the right key",
+                detail={"reason": API_KEY_REFUSED, "expires_at": expires_at}) from None
+        raise
+    account = result.get("account") if isinstance(result, dict) else None
+    account_id = (account or {}).get("account_id") if isinstance(account, dict) else None
+    log.info("a setup link registered its account kind=%s label=%s provider=%s tenant=%s",
+             sl.API_ACCOUNT, label, provider, tenant_id)
+    return {"kind": sl.API_ACCOUNT, "label": label, "tenant": tenant_id, "provider": provider,
+            "account_id": account_id or f"{tenant_id}:{label}", "written": True}
 
 
 # --------------------------------------------------------------------------
