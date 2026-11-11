@@ -54,6 +54,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { handoffOf, humanReady, needsYou, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { LiveThumb, browserTabPath, showsLiveThumb } from './LiveThumb'
+import { WorkListsMock, homeworkApprovals, homeworkMock, homeworkStats, homeworkTasks } from './HomeWorkLists' // MOCK-HOOK
 import { doneCount, SetupCard, stepRequired } from './Onboarding'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
@@ -300,9 +301,10 @@ export function HomeScreen({ now: fixedNow }: { now?: number } = {}) {
     [reload],
   )
 
-  const mine = listOf(tasksR, (d) => d.tasks)
+  const mock = homeworkMock() === 'lists' // MOCK-HOOK
+  const mine = mock ? homeworkTasks(now) : listOf(tasksR, (d) => d.tasks) // MOCK-HOOK
   const profile = dataOf(profileR)
-  const approvals = listOf(approvalsR, (d) => d.approvals)
+  const approvals = mock ? homeworkApprovals(now) : listOf(approvalsR, (d) => d.approvals) // MOCK-HOOK
   const peopleDoc = dataOf(peopleR) as PeopleDoc | ScopedPeopleDoc | null
   // A refusal (a member, 403) or a workspace admin's scoped read: nothing here
   // is theirs to decide, so Requests is not drawn. Any other failure is a
@@ -418,7 +420,11 @@ export function HomeScreen({ now: fixedNow }: { now?: number } = {}) {
               </p>
             )}
           </Card>
-          <YourWork running={running} waiting={waiting} now={now} />
+          {mock ? ( // MOCK-HOOK
+            <WorkListsMock head={(_n, action) => <Head title="Your work" why="Your agents and workflows in progress. A browser agent shows its live browser, small; press it to watch." action={action} />} /> // MOCK-HOOK
+          ) : ( // MOCK-HOOK
+            <YourWork running={running} waiting={waiting} now={now} /> // MOCK-HOOK
+          )} {/* MOCK-HOOK */}
           <RecentlyFinished mine={mine} now={now} />
         </div>
         <aside className="hm-col hm-rail">
@@ -1011,7 +1017,8 @@ function YourWorkspaces({ profile, round }: { profile: Profile | null; round: nu
 
 /** The acting workspace in three numbers, for whoever lands here: Overview has the rest. */
 function WorkspaceGlance({ round }: { round: number }) {
-  const stats: Stats | null = dataOf(useLoad(readStats, round))
+  const read: Stats | null = dataOf(useLoad(readStats, round)) // MOCK-HOOK
+  const stats = homeworkMock() === 'lists' ? homeworkStats(read) : read // MOCK-HOOK
   const by = stats?.tasks_by_state ?? null
   const sum = (ks: readonly string[]) => (by === null ? null : ks.reduce((n, k) => n + (by[k] ?? 0), 0))
   const failed = sum([...FAILED])
