@@ -232,3 +232,141 @@ def test_an_app_that_is_not_installed_is_rejected():
             key=forge.parse_app_key(app_secret_payload(11)), owner="acme", repo="widgets",
             permissions={"pull_requests": "write"}, transport=fake,
         )
+
+
+# -- #3223: the token read again on the client's first 401 -------------------
+#
+# swarm-api's forge refresh replaces a person's token and GitHub ends the one
+# it replaced. MUTATIONS: drop the 401 branch in `_send_once` -- the resend
+# tests see one request. Drop the once-only flag -- the second-401 tests see
+# the reader called twice. Read again on any 4xx -- the 403/404 cases call it.
+
+
+class _Reader:
+    def __init__(self, *values: str) -> None:
+        self.values = list(values)
+        self.calls = 0
+
+    def __call__(self) -> str:
+        self.calls += 1
+        return self.values.pop(0)
+
+
+def _answers(*answers):
+    pending = list(answers)
+    return lambda _seen: pending.pop(0) if len(pending) > 1 else pending[0]
+
+
+def _bearer(seen) -> str:
+    return seen.headers["Authorization"].removeprefix("Bearer ")
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "POST"])
+def test_a_first_401_reads_the_token_again_and_resends_once(method):
+    first, second = fresh_token(), fresh_token()
+    fake = FakeGitHub()
+    path = "/repos/acme/widgets/pulls/1/merge"
+    fake.route(method, path, _answers((401, {}, {"message": "Bad credentials"}),
+                                      (200, {}, {"merged": True})))
+    fake.route("GET", "/repos/acme/widgets", (200, {}, {"id": 1}))
+    reader = _Reader(second)
+    client = forge.PinnedForgeClient(token=first, transport=fake, read_again=reader)
+    response = client.request(method, path, payload={"sha": "a"} if method != "GET" else None)
+    assert response.status == 200
+    assert reader.calls == 1
+    sent = fake.calls(method, path)
+    assert [_bearer(s) for s in sent] == [first, second]
+    assert sent[0].body == sent[1].body
+    # Every later request carries the token read again.
+    client.get("/repos/acme/widgets")
+    assert _bearer(fake.calls("GET", "/repos/acme/widgets")[0]) == second
+    assert reader.calls == 1
+    assert first not in repr(client) and second not in repr(client)
+
+
+def test_a_401_on_the_resend_is_answered_and_the_token_is_not_read_a_third_time():
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets", (401, {}, {"message": "Bad credentials"}))
+    reader = _Reader(fresh_token(), fresh_token())
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake, read_again=reader)
+    with pytest.raises(forge.ForgeAnswered) as raised:
+        client.get_ok("/repos/acme/widgets")
+    assert raised.value.status == 401
+    assert reader.calls == 1
+    assert len(fake.calls("GET", "/repos/acme/widgets")) == 2
+    # A later 401 is answered too, without reading again or resending.
+    assert client.get("/repos/acme/widgets").status == 401
+    assert reader.calls == 1
+    assert len(fake.calls("GET", "/repos/acme/widgets")) == 3
+
+
+def test_a_401_after_a_successful_re_read_is_answered_as_it_is():
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets",
+               _answers((401, {}, {}), (200, {}, {"id": 1}), (401, {}, {})))
+    reader = _Reader(fresh_token(), fresh_token())
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake, read_again=reader)
+    assert client.get("/repos/acme/widgets").status == 200
+    assert client.get("/repos/acme/widgets").status == 401
+    assert reader.calls == 1
+
+
+@pytest.mark.parametrize("status", [403, 404, 422])
+def test_any_other_refusal_never_reads_the_token_again(status):
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets", (status, {}, {"message": "no"}))
+    reader = _Reader(fresh_token())
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake, read_again=reader)
+    assert client.get("/repos/acme/widgets").status == status
+    assert reader.calls == 0
+    assert len(fake.calls("GET", "/repos/acme/widgets")) == 1
+
+
+def test_a_5xx_never_reads_the_token_again():
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets", (502, {}, {"message": "Bad Gateway"}))
+    reader = _Reader(fresh_token())
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake, read_again=reader)
+    with pytest.raises(forge.ForgeUnavailable):
+        client.get("/repos/acme/widgets")
+    assert reader.calls == 0
+
+
+def test_without_a_reader_a_401_is_answered_as_before():
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets", (401, {}, {"message": "Bad credentials"}))
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake)
+    assert client.get("/repos/acme/widgets").status == 401
+    assert len(fake.calls("GET", "/repos/acme/widgets")) == 1
+
+
+@pytest.mark.parametrize("fails", ["raises", "empty"])
+def test_a_re_read_that_fails_leaves_the_401_and_never_shows_a_value(fails):
+    fake = FakeGitHub()
+    fake.route("GET", "/repos/acme/widgets", (401, {}, {"message": "Bad credentials"}))
+    leaked = fresh_token()
+
+    def reader() -> str:
+        if fails == "raises":
+            raise RuntimeError(f"unreadable {leaked}")
+        return ""
+
+    client = forge.PinnedForgeClient(token=fresh_token(), transport=fake, read_again=reader)
+    with pytest.raises(forge.ForgeAnswered) as raised:
+        client.get_ok("/repos/acme/widgets")
+    assert raised.value.status == 401
+    assert leaked not in str(raised.value)
+    assert len(fake.calls("GET", "/repos/acme/widgets")) == 1
+
+
+def test_paginate_reads_the_token_again_too():
+    first, second = fresh_token(), fresh_token()
+    fake = FakeGitHub()
+    path = "/repos/acme/widgets/pulls/1/files"
+    fake.route("GET", path, _answers((401, {}, {"message": "Bad credentials"}),
+                                     (200, {}, [{"filename": "a"}])))
+    reader = _Reader(second)
+    client = forge.PinnedForgeClient(token=first, transport=fake, read_again=reader)
+    assert client.paginate(path) == [{"filename": "a"}]
+    assert [_bearer(s) for s in fake.calls("GET", path)] == [first, second]
+    assert reader.calls == 1
