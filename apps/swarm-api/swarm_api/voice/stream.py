@@ -6,7 +6,9 @@ as server-sent events (docs/design/voice-it.md §3.5, §3.7, §10 phase 2).
         `meter.update`, the stage's `visual.upsert`, `note.upsert` and
         `focus` (visuals.py), and, while debug mode is on, `trace.turn`
         (trace.py), and `voice.tier.reopen` (a spent Live key's next tier,
-        sessions.py THE REOPEN), each with `id: <seq>`
+        sessions.py THE REOPEN), the work feed's `work.step`,
+        `work.delegation`, `roster.update` and `paused` (workfeed.py), each
+        with `id: <seq>`
 
 FIRESTORE IS THE MEETING POINT, NOT A RELAY. Every event is stored before it
 is sent (`store.VoiceStore.append_event`, numbered from the session's
@@ -43,8 +45,12 @@ credential-shaped string). The stage's events are cut again to what the
 visual and note reads serve (`visuals.visual_view`, `visuals.note_view`; a
 focus is its visual id, anchor and caption), and a reopen is its tier's
 name and nothing else (REOPEN_TIERS: never a key or an account), so a visual's frame names its
-body's key, never the body, and a field a writer added is never sent. Logs
-name session ids and sequence numbers only.
+body's key, never the body, and a field a writer added is never sent. The
+work feed's four are cut to their whitelists (WORK_TYPES): a step is its
+phrase from the fixed table, its method, its class and its ids; a delegation
+its id and state; a roster row its kind, id, state and counts; a pause its
+voice state and cause. A row that does not fit is skipped, never sent in
+part. Logs name session ids and sequence numbers only.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ from . import sessions as vs
 from . import store as vstore
 from . import trace as vtrace
 from . import visuals as vvis
+from . import workfeed as vwork
 
 log = logging.getLogger(__name__)
 
@@ -77,8 +84,11 @@ METER_UPDATE = "meter.update"
 STAGE_TYPES = (vvis.VISUAL_UPSERT, vvis.NOTE_UPSERT, vvis.FOCUS)
 #: A spent Live key's next tier is held: the console offers again (sessions.py).
 TIER_REOPEN = vs.REOPEN_EVENT
+#: The work feed's (§3.12.5, §3.12.6, §3.12.7): each framed through its
+#: whitelist in `work_payload`, never as stored.
+WORK_TYPES = (vwork.WORK_STEP, vwork.WORK_DELEGATION, vwork.ROSTER_UPDATE, vwork.PAUSED)
 EVENT_TYPES = (vcards.CARD_UPSERT, vcards.CARD_REMOVE, SESSION_STATE, METER_UPDATE,
-               *STAGE_TYPES, vtrace.TRACE_TURN, TIER_REOPEN)
+               *STAGE_TYPES, vtrace.TRACE_TURN, TIER_REOPEN, *WORK_TYPES)
 
 #: What a `session.state` event may say.
 VOICE_STATES = ("listening", "thinking", "speaking", "working", "ended")
@@ -201,6 +211,20 @@ def stage_payload(event: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def work_payload(event: dict[str, Any]) -> dict[str, Any] | None:
+    """A work feed event cut to its whitelist, or None when it does not fit."""
+    kind = event.get("type")
+    if kind == vwork.WORK_STEP:
+        return vwork.step_payload(event)
+    if kind == vwork.WORK_DELEGATION:
+        return vwork.delegation_payload(event)
+    if kind == vwork.ROSTER_UPDATE:
+        return vwork.roster_payload(event)
+    if kind == vwork.PAUSED:
+        return vwork.paused_payload(event, states=vs.VOICE_REPORTS, causes=vs.REOPEN_CAUSES)
+    return None
+
+
 def frame(event: dict[str, Any], *, session_id: str) -> str | None:
     """One stored event as an SSE frame, or None when it is not one the
     stream carries (logged by sequence)."""
@@ -232,6 +256,12 @@ def frame(event: dict[str, Any], *, session_id: str) -> str | None:
             log.warning("voice stream skipped a tier reopen session=%s seq=%s", session_id, seq)
             return None
         data = {"type": kind, "seq": seq, "at": event.get("at"), "tier": event["tier"]}
+    elif kind in WORK_TYPES:
+        work = work_payload(event)
+        if work is None:
+            log.warning("voice stream skipped a work event session=%s seq=%s", session_id, seq)
+            return None
+        data = {"type": kind, "seq": seq, "at": event.get("at"), **work}
     elif kind in STAGE_TYPES:
         payload = stage_payload(event)
         if payload is None:
