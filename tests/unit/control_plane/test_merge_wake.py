@@ -731,7 +731,9 @@ def test_a_no_change_round_waits_while_the_accepted_re_runs_attempt_is_in_progre
     """#3006 (PR #2973, 22ef10c2): an accepted run-level re-run past
     RERUN_SETTLE_SECONDS whose run is still re-running a fan-in gate's needs
     holds the tick; once the run has completed, or its status cannot be read
-    (None: the read answers 404), the window alone decides, as before."""
+    (None: the read answers 404), the window alone decides: the re-run has
+    answered, and after the no_change round the head is asked once more,
+    the second of RERUNS_PER_HEAD_MAX (#3080)."""
     _round_ended_at_head(db, github, no_change=True)
     (failing,) = [c["id"] for c in github.check_runs[HEAD] if c["name"] == CHECK]
     record = db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY]
@@ -744,14 +746,15 @@ def test_a_no_change_round_waits_while_the_accepted_re_runs_attempt_is_in_progre
 
     body = _tick(wake_client).json()
 
-    assert github.reruns == [] and github.run_reruns == []
     assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
     if status == "in_progress":
+        assert github.reruns == [] and github.run_reruns == []
         assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
-        assert mergewake.WAKE_MARKER not in _wait(db)
     else:
-        assert body["report"]["woken"] == 1, body
-        assert _wait(db)["wake_reason"] == "fix_round_ended"
+        assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+        assert len(github.reruns) + len(github.run_reruns) == 1
+        assert len(_fix_record(db)[mergewake.RERUNS_KEY]) == mergewake.RERUNS_PER_HEAD_MAX
 
 
 def test_a_round_that_ended_at_the_red_head_with_changes_asks_no_re_run(db, wake_client, github):
