@@ -59,10 +59,18 @@ What runs is fixed by the platform:
   `apps/agent-worker/agent_worker/testservices.py::POSTGRES_SETTINGS`: small
   memory (`shared_buffers=64MB`, `max_connections=50`) and no durability
   (`fsync=off`), because the data is thrown away;
-* no extension package beside the server's own (`postgresql-16`). A schema,
-  an extension your tests `CREATE EXTENSION`, or seed data is created by your
-  own fixtures or migrations, exactly as they would against an empty
-  database in CI;
+* one extension package beside the server's own: **pgvector**
+  (`postgresql-16-pgvector`, from the same PGDG archive, at least 0.8.7).
+  The owner asked for it on 2026-11-12 (#2442): a project's branch API whose
+  migrations run `CREATE EXTENSION vector` must be able to run against this
+  server, and without the package that statement fails. It is installed, not
+  enabled, and not declared: `.swarm/test-services.toml` still names only a
+  version and databases (invariant 10). Your migrations or fixtures create
+  it, connecting as `postgres`, the `trust` superuser, exactly as they would
+  against an empty database in CI; a schema and seed data are yours too.
+  Any other extension package is not there. trivy does not track PGDG's
+  packages, so the image scan under-reports findings in the server and in
+  pgvector rather than over-reporting them;
 * inside the runner's existing memory and CPU: nothing is added to the pod,
   and the kernel's OOM killer is told to take the database before the agent.
 

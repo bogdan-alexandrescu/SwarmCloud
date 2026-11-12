@@ -255,6 +255,28 @@ def test_a_step_without_the_secret_runs_the_cli_keyless_and_says_so(tmp_path, ca
     assert argv == ["review", "--agent"]
     assert "--api-key" not in argv
     assert "coderabbit-api-key" in err and "files" in err
+    # MUTATION: drop claude-code-large from the hint -- a large lane's admin grants only claude-code.
+    assert "profile:claude-code " in err and "profile:claude-code-large" in err, err
+
+
+def test_the_docs_map_coderabbit_api_key_and_name_the_large_profiles_own_grant() -> None:
+    """The owner's 2026-11-12 comment on #2442: the key they hold is called
+    CODERABBIT_API_KEY, and claude-code-large lanes must review too."""
+    from swarm_api.workspace_secrets import NAME_PATTERN
+
+    launcher = _launcher()
+    body = " ".join(DOC.read_text().split("## CodeRabbit", 1)[1].split("\n## ", 1)[0].split())
+    # The upper-case name cannot be a workspace secret; the launcher's can.
+    assert not NAME_PATTERN.fullmatch("CODERABBIT_API_KEY")
+    assert NAME_PATTERN.fullmatch(launcher.SECRET_NAME)
+    # MUTATION: delete the CODERABBIT_API_KEY paragraph -- this fails.
+    assert f"**`CODERABBIT_API_KEY` is `{launcher.SECRET_NAME}`.**" in body
+    assert "NAME_PATTERN" in body and "one-time link `/sc` mints" in body
+    assert "never in a brief" in body
+    # MUTATION: drop profile:claude-code-large from the grant step -- this fails.
+    assert "`profile:claude-code-large`" in body
+    assert "**`claude-code-large` is its own profile**" in body and "own grant in slot `files`" in body
+    assert "claude-code-large" in RUNNER_PROFILES
 
 
 def test_the_cli_environment_carries_no_manifest_and_switches_off_updates(tmp_path, capsys) -> None:
@@ -334,7 +356,7 @@ def _item(name: str, value: str) -> dict[str, Any]:
             "version": "projects/p/secrets/s/versions/1"}
 
 
-@pytest.mark.parametrize("profile", ["claude-code", "codex", "claude-code-browser"])
+@pytest.mark.parametrize("profile", ["claude-code", "claude-code-large", "codex", "claude-code-browser"])
 def test_a_granted_key_reaches_the_cli_and_is_redacted(tmp_path, capsys, profile) -> None:
     key = fake_key()
     released, log = _release(tmp_path, [_item("coderabbit-api-key", key)], profile)

@@ -84,6 +84,7 @@ release of either, and the same findings.
 | `docker` | **29.9.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket; go1.26.10 fixes CVE-2026-78667 and -78669 |
 | `trivy` | **0.76.2** | yes | newest; go-jose 4.1.6 fixes CVE-2026-116587 (0.76.1 had 4.1.5); go1.27.3 and x/net 0.62.0 (0.76.1's go1.27.3 and x/net 0.60.0 fixed CVE-2026-78667 and -78669; 0.74.0 had grpc 1.82.1) |
 | `coderabbit` | **0.9.1** | yes | the release the vendor's installer binds Linux to; checksum from its signed `SHA256SUMS`; 91.1 MiB on disk; nothing in it trivy can analyse (2026-10-26). Fetched from `cli.coderabbit.ai`, not the tool mirror; its key is a workspace secret ([worker-images.md](worker-images.md#coderabbit)) |
+| `pgvector` | **0.8.7** | yes | a floor, not a pin: PGDG's `postgresql-16-pgvector` beside the test services' PostgreSQL 16, which floats with `APT_REFRESH` as the server does; the build refuses anything older than `PGVECTOR_MIN_VERSION` (0.8.7-1.pgdg12+2 was bookworm-pgdg's on 2026-11-12) and a package without `vector.control`. A branch's migrations `CREATE EXTENSION vector` against the worker's server (#2442, the owner, 2026-11-12); trivy does not track PGDG's packages ([test-services.md](test-services.md#the-catalogue-postgresql-16-one-entry)) |
 | `tofu` | **1.13.1** | **no** | no release scans clean (2026-10-09): x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
 | `tflint` | **0.64.0** | **no** | no release scans clean (2026-10-09): Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
 

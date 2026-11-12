@@ -113,6 +113,19 @@ PGDG_KEY_FINGERPRINT = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
 PGDG_KEYRING = "/usr/share/keyrings/pgdg.gpg"
 PGDG_SOURCE = "/etc/apt/sources.list.d/pgdg.list"
 
+#: pgvector, from PGDG beside the server (the owner's 2026-11-12 comment on
+#: #2442): a branch's API whose migrations run `CREATE EXTENSION vector` must
+#: run against the worker's server. The extension is a control file and a
+#: library the server loads, so the build checks the control file.
+PGVECTOR_PACKAGE = 'postgresql-${POSTGRES_MAJOR}-pgvector'
+PG_SHARE = "/usr/share/postgresql"
+PGVECTOR_CONTROL = PG_SHARE + "/{major}/extension/vector.control"
+
+#: The agent's `swarm-handoff`, in the base image so that `compare` and
+#: `serve` run on claude-code and claude-code-large too (#2442, 2026-11-12).
+BROWSER_DOCKERFILE = REPO / "images" / "agent-runtime-browser" / "Dockerfile"
+HANDOFF_COPY = "--chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff"
+
 
 # --------------------------------------------------------------------------- #
 # A small Dockerfile reader: stages, logical instructions, preceding comments.
@@ -372,7 +385,11 @@ def _fake_tools(bin_dir: Path, names: list[str], pg_major: str = POSTGRES_MAJOR)
 
 
 def _run_smoke(
-    tmp_path: Path, present: list[str], holds: dict[str, str], pg_major: str = POSTGRES_MAJOR
+    tmp_path: Path,
+    present: list[str],
+    holds: dict[str, str],
+    pg_major: str = POSTGRES_MAJOR,
+    pgvector: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _fake_tools(bin_dir, present, pg_major)
@@ -380,6 +397,15 @@ def _run_smoke(
     # the holds the case sets.
     values = {name: _arg_value(ins) for name, ins in _arg_defaults(_runtime_stage()).items()}
     script = _substitute_args(_shell_text(_smoke_step()), {**values, **holds})
+    # pgvector's control file, under a private share directory standing in for
+    # the server's (the step checks a file, not a program).
+    share = tmp_path / "share"
+    assert PGVECTOR_CONTROL.format(major=POSTGRES_MAJOR) in script, "the smoke step must check pgvector"
+    script = script.replace(PG_SHARE + "/", f"{share}/")
+    if pgvector:
+        control = share / Path(PGVECTOR_CONTROL.format(major=POSTGRES_MAJOR)).relative_to(PG_SHARE)
+        control.parent.mkdir(parents=True, exist_ok=True)
+        control.write_text("default_version = '0.8.7'\n")
     # The stand-ins first, then ONLY the plumbing the step itself uses, linked
     # into a private directory. Putting /usr/bin on PATH would let a runner's own
     # gh, kubectl, make or docker satisfy the check, and the missing-tool case
@@ -649,6 +675,7 @@ DOC_ROWS = {
     "trivy": "TRIVY_VERSION",
     "shellcheck": "SHELLCHECK_VERSION",
     "docker": "DOCKER_CLI_VERSION",
+    "pgvector": "PGVECTOR_MIN_VERSION",
 }
 
 
@@ -909,3 +936,82 @@ def test_the_build_creates_no_cluster_and_starts_no_server() -> None:
     # The snakeoil pair ssl-cert generates at install is the same in every
     # pull; the loopback-only service uses no TLS, so neither ships.
     assert "rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem" in text
+
+
+# --------------------------------------------------------------------------- #
+# pgvector beside the server, and swarm-handoff in the base image (#2442,
+# the owner's comment of 2026-11-12).
+# --------------------------------------------------------------------------- #
+
+
+def test_pgvector_installs_from_pgdg_in_the_server_layer_at_a_floor() -> None:
+    text = _flat(_apt_layer())
+    server = text.find('apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}"')
+    vector = text.find(f'apt-get install --no-install-recommends -y "{PGVECTOR_PACKAGE}"')
+    floor = text.find(
+        f'dpkg --compare-versions "$(dpkg-query -W -f=\'${{Version}}\' "{PGVECTOR_PACKAGE}")" '
+        'ge "${PGVECTOR_MIN_VERSION}"'
+    )
+    control = text.find('test -f "' + PGVECTOR_CONTROL.format(major="${POSTGRES_MAJOR}") + '"')
+    removed = text.find(f"rm -f {PGDG_SOURCE} {PGDG_KEYRING}")
+    # MUTATION: drop the pgvector install -- CREATE EXTENSION vector fails on every step.
+    # MUTATION: drop the control-file `test -f` -- a package that moved the file ships unnoticed.
+    assert -1 not in (server, vector, floor, control, removed), (server, vector, floor, control, removed)
+    # MUTATION: install pgvector after the PGDG source is removed -- apt cannot find it.
+    assert server < vector < floor < removed and vector < control < removed, text
+    args = _arg_defaults(_runtime_stage())
+    minimum = _arg_value(args["PGVECTOR_MIN_VERSION"])
+    # MUTATION: set PGVECTOR_MIN_VERSION to 0.8 -- an older release than the one measured ships.
+    assert re.fullmatch(r"0\.8\.\d+", minimum), minimum
+    # pgvector never installs in a RUN of its own: APT_REFRESH must rebuild it with the server.
+    owners = [i.index for i in _runtime_stage() if i.keyword == "RUN" and "-pgvector" in _shell_text(i)]
+    assert owners == [_apt_layer().index], owners
+
+
+def test_the_pgvector_comment_says_why_and_what_the_scan_misses() -> None:
+    # The block sits above the layer's ARGs, so it is the first ARG's comments.
+    stage = _runtime_stage()
+    layer = _apt_layer().index
+    first = layer
+    while stage[first - 1 - stage[0].index].keyword == "ARG":
+        first -= 1
+    block = [c for i in stage if first <= i.index <= layer for c in i.comments]
+    comments = " ".join(" ".join(block).split())
+    # MUTATION: delete the comment block on pgvector -- this fails.
+    assert "CREATE EXTENSION vector" in comments, comments[-400:]
+    assert "2026-11-12" in comments
+    assert re.search(r"trivy[^.]*does not track[^.]*pgvector|pgvector[^.]*trivy[^.]*does not track", comments), (
+        "the comment must say trivy does not track PGDG's pgvector"
+    )
+
+
+def test_the_smoke_step_fails_the_build_without_pgvectors_control_file(tmp_path: Path) -> None:
+    holds = _holds("0", "0")
+    expected = _expected_tools(holds)
+    ok = _run_smoke(tmp_path / "ok", expected, holds)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "pgvector: vector.control" in ok.stdout, ok.stdout
+    # MUTATION: drop the control-file check from the smoke step -- this passes the build.
+    gone = _run_smoke(tmp_path / "gone", expected, holds, pgvector=False)
+    assert gone.returncode != 0, f"the build passed without pgvector:\n{gone.stdout}"
+    assert "pgvector" in gone.stderr, gone.stderr
+
+
+def test_swarm_handoff_is_copied_into_the_base_image_root_owned_and_read_only() -> None:
+    stage = _runtime_stage()
+    copies = [i for i in stage if i.keyword == "COPY" and "swarm-handoff" in i.body]
+    # MUTATION: leave the COPY in the browser image only -- claude-code-large has no compare.
+    assert [c.body for c in copies] == [HANDOFF_COPY], [c.body for c in copies]
+    assert copies[0].index < _smoke_step().index
+    # COPY --chmod without --chown leaves the file root-owned; 0555 is writable by no uid.
+    assert "--chown" not in copies[0].body
+    assert "compare" in " ".join(copies[0].comments) and "claude-code-large" in " ".join(copies[0].comments)
+
+
+def test_the_browser_image_inherits_swarm_handoff_rather_than_copying_it() -> None:
+    browser = BROWSER_DOCKERFILE.read_text()
+    code = "\n".join(ln for ln in browser.splitlines() if not ln.lstrip().startswith("#"))
+    # MUTATION: copy swarm-handoff into the browser image again -- two sources of one file.
+    assert "swarm-handoff /usr/local/bin/swarm-handoff" not in code
+    assert re.search(r"^ARG BASE_IMAGE=agent-runtime-base", code, flags=re.M), "the browser image is built FROM base"
+    assert re.search(r"^FROM \$\{BASE_IMAGE\} AS runtime$", code, flags=re.M), code[:400]
