@@ -253,6 +253,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `_stuck` | `skip_call` | bash and jq are required |
 | `tests/unit/scripts/test_make_logs_pem_order.py` | `<module>` | `skipif` | make and bash are both required |
 | `tests/unit/scripts/test_merge_train.py` | `_need` | `skip_call` | {tool} is required |
+| `tests/unit/scripts/test_merge_train_gather.py` | `_need` | `skip_call` | {tool} is required |
 | `tests/unit/scripts/test_merge_train_skips.py` | `_need` | `skip_call` | {tool} is required |
 | `tests/unit/scripts/test_migrate_index_interval.py` | `<module>` | `skipif` | migrate-index-interval.sh needs bash and jq |
 | `tests/unit/scripts/test_no_live_literals.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
