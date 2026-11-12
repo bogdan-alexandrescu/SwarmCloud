@@ -32,7 +32,7 @@ a re-test. So direct stays the default and each workspace owner opts in.
 | what | `scripts/merge-train.sh`, a GitHub Actions workflow | `swarm_api.mergetrain`, run by SwarmCloud |
 | repositories | THIS repository only | any repository registered in a workspace |
 | credential | the merge App's token | the workspace's own forge credential (`swarm-tenant-<t>-git`), as the merge step uses |
-| when | on its own schedule, for `ready`-labelled PRs | when a merge step in a `train` workspace has its PR green and ready |
+| when | on its triggers, for `ready`-labelled PRs, and started by swarm-api's merge wake tick once a parked step's gathering deadline passes (§2.1) | when a merge step in a `train` workspace has its PR green and ready |
 | status | stays, for this repository's own CI, until migrated | the general product feature |
 
 The platform train ports the repository-level train's rules: select, judge,
@@ -47,6 +47,88 @@ can be retired. That migration is a separate decision.
 description in the lane brief, and its test cases were rebuilt from that
 description (`tests/unit/control_plane/test_merge_train_rules.py`). When
 PR 1294 is on main, compare its cases with that file.
+
+### 2.1 The repository-level train boards on time
+
+**The live finding (12 November 2026).** A lane's pull request was green and
+labelled `ready` at 02:56Z. The gather ("6 ready or 20 minutes",
+`gather_waits` in `scripts/merge-train.sh`) said it boards at the latest at
+03:15:35Z. But the train runs only when `.github/workflows/merge-train.yml`
+is triggered: its `*/5` schedule, the `workflow_run` of application,
+security and auto-merge, or `workflow_dispatch`. From 03:10Z to 07:57Z
+GitHub ran almost none of the scheduled ticks and no other workflow
+finished, so nothing boarded it until 07:59Z. GitHub's schedule is best
+effort; it had already run only every four to seven hours on 2026-11-03. A
+lone ready pull request must never depend on it. The owner picked "Fix:
+board on time".
+
+**What starts the train now.** swarm-api's per-tenant merge wake tick
+(`swarm_api.trainboard`, every minute) looks at the tenant's merge steps
+parked on their repository's train. Those are CI_PENDING parks with
+`merge_train_waiting` whose signed target is not a workspace train. For each
+repository it checks, cheapest first:
+
+1. The train is on (`vars.MERGE_TRAIN`, exactly `on`). If it is off, a
+   dispatch would start a *dry run* train, so nothing is dispatched.
+2. The gathering deadline has passed: the oldest ready pull request of the
+   parks has been `ready` for the window. "Ready since" is read as the
+   script reads it, from the time `ready` was last added in the pull
+   request's issue events. A label taken off after that time means the pull
+   request is not ready.
+3. No merge-train run is queued or in progress. If one is, the pull request
+   boards on that run.
+
+If all three hold, the tick starts **one** `workflow_dispatch` of
+`merge-train.yml` on the repository's default branch, with no inputs. That
+run is a tick like a scheduled one: the gathering rule does not change, and
+the run reads every pull request afresh.
+
+**Where the window is read from: one place.** The gather's defaults (6 pull
+requests, 20 minutes) are stated once, in
+`apps/swarm-api/swarm_api/merge_train_gather.json`. `scripts/merge-train.sh`
+reads its defaults from that file in `gather_knobs_valid`, used only by
+`tick` and `gather`; auto-merge.yml runs `judge` from a checkout of
+`scripts/` alone and never needs it. The swarm-api image installs only
+swarm-api's package, which is why the file lives there. A repository that
+sets `vars.MERGE_TRAIN_MAX_WAIT_MINUTES` has merge-train.yml hand that value
+to the script instead. The tick reads the same variable, so both use the
+same window. `MERGE_TRAIN_MIN_PRS` does not move the deadline: once that
+many are ready, any tick boards them, and the dispatch remains the backstop.
+
+**At most one dispatch per repository per window.** Before the tick
+dispatches, it claims the repository's document in `merge_train_boards`
+(one per tenant and repository) in a Firestore transaction. The claim is
+refused if another dispatch was claimed less than a window ago (never less
+than five minutes, the schedule's own period). This means two ticks, or two
+replicas, never both dispatch.
+
+**A refused dispatch** writes one line that names the reason (for example,
+the 403 naming `actions: write`, a missing workflow's 404, or a 422) and
+backs off:
+
+- A refusal of the credential or the route keeps its claim and is recorded
+  with it, so the repository is not asked again for a window.
+- A rate limit holds the tenant's tick until GitHub's reset, as every other
+  read of the tick does.
+- An unreachable GitHub releases the claim, so the next tick asks again.
+
+None of these fail the tick for any other park.
+
+**The permission it needs.** The request is `POST
+/repos/<owner>/<repo>/actions/workflows/merge-train.yml/dispatches`. A
+fine-grained token or a GitHub App installation needs *Actions: Read and
+write*; a classic token needs `repo`. The tenant's `-git` credential already
+holds *Actions: Read and write* for re-running failed jobs (docs/multi-tenancy.md,
+"What the forge credential must be allowed"), so this widens nothing.
+It also reads issue events (*Issues: Read*), the workflow's runs (*Actions:
+Read*) and the two variables (*Variables: Read*). A variable it cannot read
+falls back to the train off or to the default window.
+
+**Invariants.** A parked step still holds no lease, no pool count and no
+execution (1, 3). Nothing here admits, reserves or runs an agent: the only
+writes are the board document and the one dispatch. The repository is the
+agent's own `repository_url`, and the token is that tenant's own (9). No
+caller picks the repository, the workflow, the ref or the token (10).
 
 ## 3. The setting
 

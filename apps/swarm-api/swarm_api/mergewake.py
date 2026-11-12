@@ -44,6 +44,14 @@ tenant's tick and holds it (`forge_limits.sweep_key`) until the reset GitHub
 named: on 2026-10-17 every park was asked again every minute while GitHub
 refused, ~25-50 refused calls a minute that kept the window at zero.
 
+A PARK ON THE REPOSITORY'S MERGE TRAIN BOARDS ON TIME (12 November 2026).
+A `merge_train_waiting` park whose step is not a workspace train's is
+never read for CI. It is handed to `trainboard.board_on_time` after the
+loop. Once its gathering deadline has passed with no merge-train run, that
+starts one `workflow_dispatch` of the repository's merge-train workflow, at
+most once per repository per window (docs/merge-trains.md §2.1). The park
+itself is not written.
+
 WHAT IS WRITTEN. When nothing the park waits on is still pending -- the
 checks green or red, the head moved, the pull request closed or merged --
 `merge_wait.wake_requested_at` and `merge_wait.wake_reason`, in a
@@ -334,6 +342,7 @@ from swarm_rollup import is_fix_round_step
 
 from . import gitidentity
 from . import handoffbranches
+from . import trainboard
 from .auth import AuthContext
 from .cifix import (
     BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_plain_continuation, live_pr_writer,
@@ -405,6 +414,7 @@ from .validation import (
     MERGE_ON_VERDICT,
     MERGE_FIX_ROUNDS_KEY,
     MERGE_FIX_ROUNDS_MAX,
+    MERGE_MODE_TRAIN,
     MERGE_TARGET_FIELD,
     MERGE_WAIT_METADATA_KEY,
     RUNTIME_METADATA_KEY,
@@ -599,6 +609,9 @@ class WakeReport:
     #: The finished workflows' hand-off branches (`handoffbranches`), when
     #: this tick swept them.
     branches: handoffbranches.SweepReport | None = None
+    #: The repository merge train started on time (`trainboard`), when a
+    #: park on it was past, or still inside, its gathering deadline.
+    boards: trainboard.BoardReport | None = None
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -619,6 +632,7 @@ class WakeReport:
                                 "waiting": self.owner_waiting}} if self.owner_visited else {}),
             **({"branches": self.branches.to_api()}
                if self.branches is not None and self.branches.workflows else {}),
+            **({"train_boards": self.boards.to_api()} if self.boards else {}),
         }
 
     def fail(self, task_id: str, code: str) -> None:
@@ -2523,6 +2537,15 @@ def wake_owner_holds(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
     return halted
 
 
+def _repository_train_park(doc: Mapping[str, Any]) -> bool:
+    """A `merge_train_waiting` park on the repository's own GitHub merge
+    train: a step whose signed target is not a workspace train (TRAIN-WS,
+    `merge_target.merge_mode`), as `agent_worker.merge._on_repository_train`
+    tells them apart."""
+    block = _mapping(_mapping(doc.get("metadata")).get(DISPATCH_METADATA_KEY))
+    return _mapping(block.get(MERGE_TARGET_FIELD)).get("merge_mode") != MERGE_MODE_TRAIN
+
+
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
     """Not read in the last CI_READ_SECONDS. A `checked_at` in the future is
     ignored: the document is tenant-writable, and that would stop the reads."""
@@ -2567,6 +2590,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
     # a tick, only for a base that requires `merge-train`, and with the
     # tenant's own token (invariant 9).
     trains: dict[str, bool] = {}
+    # Parks on the repository's GitHub merge train: (the pull request, when
+    # it parked), for `trainboard.board_on_time` after the loop.
+    boarding: list[tuple[IssueRef, Any]] = []
     try:
         for doc in docs[:limit]:
             # The query filtered on it; asked again, so a task of another
@@ -2580,8 +2606,15 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                 continue
             if wait.get("code") in (MERGE_SLOT_WAIT, MERGE_TRAIN_WAITING):
                 # Waiting for the merge slot or the merge train, not for CI:
-                # the release, or the train coordinator, wakes it.
+                # the release, or the train coordinator, wakes it. A park on
+                # the repository's own GitHub merge train is gathered for
+                # `trainboard`, which starts the train once its deadline
+                # passes (board on time, 12 November 2026).
                 report.skipped += 1
+                if wait.get("code") == MERGE_TRAIN_WAITING and _repository_train_park(doc):
+                    target = _target(doc, wait)
+                    if target is not None:
+                        boarding.append((target[0], wait.get("parked_at")))
                 continue
             if not _due(wait, now):
                 report.skipped += 1
@@ -2721,6 +2754,27 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                        {"checked_at": now, WAKE_MARKER: now, "wake_reason": reason, **patch}):
                 report.woken += 1
                 log.info("merge wake %s tenant=%s: %s", task_id, tenant_id, reason)
+        # The repository merge train, started once a park's gathering
+        # deadline has passed with no train run (`trainboard`), under the
+        # same hold; never what fails the tick.
+        if boarding:
+
+            def board_token() -> str:
+                nonlocal token
+                if not token:
+                    token = ctx.forge_tokens.token_for(tenant)
+                return token
+
+            def board_train_on(ref: IssueRef) -> bool:
+                if ref.repository not in trains:
+                    trains[ref.repository] = _train_on(writer, ref, board_token())
+                return trains[ref.repository]
+
+            boards, halted = trainboard.board_on_time(
+                ctx, tenant, tenant_id, boarding, train_on=board_train_on,
+                token_for=board_token, sweep=sweep, halted=halted)
+            if boards:
+                report.boards = boards
         # The owner-question holds (MERGE-OUTSIDE-ENDS, #2441) and the
         # release waits (§3.8, AU-7), under the same hold.
         halted = wake_owner_holds(ctx, tenant, tenant_id, limit=limit, report=report,
