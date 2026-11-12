@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -136,7 +137,7 @@ import {
 import { errorHeading, route, type ApiError, type Result } from './fetch'
 import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { STATE_MARK, StateMark } from './marks'
-import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
+import { Button, Chip, NamedMark, ProgressBar, Segmented, TOOLTIP_DELAY_MS, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun, earlierAttemptRan } from './StopRun'
 import { StepCard } from './StepCard'
@@ -197,7 +198,7 @@ import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
 import { finishedQuestionsOf, listNeedItems, workflowNeedItems } from './work/listNeeds'
 import { QuestionsCard, questionCount } from './QuestionsCard'
 import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed } from './work/NeedsYou'
-import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
+import { StageGrid, chipKindOf, chipTimeOf, parkReasonsOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
 import { LineageStrip, lineageOf } from './work/Lineage'
 import { WorkflowNeedsCard, WorkflowQuestions, jumpToQuestions } from './WorkflowQuestions'
 import {
@@ -6905,7 +6906,9 @@ function WorkflowHead({
   now: number
 }) {
   const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
-  const tally = tallyOf(workflow.steps.map((s) => chipKindOf(stepState(s, taskById))))
+  const states = workflow.steps.map((s) => stepState(s, taskById))
+  const tally = tallyOf(states.map(chipKindOf))
+  const stepTasks = states.flatMap((st) => (st.kind === 'state' ? [st.task] : []))
   const browsers = liveSteps(workflow, taskById).length
   const age = workflowAge(workflow, now)
   const pr = workflowPullRequest(workflow, taskById)
@@ -6949,14 +6952,15 @@ function WorkflowHead({
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
       </p>
-      <p className="wfp-tally" aria-label="Steps by state">
+      {/* Positioned, so the parked count's tooltip hangs from this line (ParkedCount). */}
+      <p className="wfp-tally" aria-label="Steps by state" style={{ position: 'relative' }}>
         {TALLY_PARTS.map((p) => (
           <span key={p.key} className={`wfp-t is-${p.key}`}>
             <span aria-hidden>{p.glyph}</span> {tally[p.key]} {p.word}
           </span>
         ))}
         {/* A step is counted as its chip draws it (tallyOf): parked behind its dependencies counts waiting, any other park parked. */}
-        {tally.parked > 0 && <span className="wfp-t is-parked">{tally.parked} parked</span>}
+        {tally.parked > 0 && <ParkedCount count={tally.parked} reasons={parkReasonsOf(stepTasks)} />}
         {tally.stopped > 0 && <span className="wfp-t is-stopped">{tally.stopped} cancelled</span>}
         {tally.unknown > 0 && (
           <span className="wfp-t is-unknown" title="Steps whose task this read did not hold">
@@ -6970,6 +6974,52 @@ function WorkflowHead({
       <WorkflowFacts workflow={workflow} taskById={taskById} started={utcStamp(workflow.created_at, now)} now={now} />
       {asked && quiet.length > 0 && <FinishedQuestions workflow={workflow} taskById={taskById} quiet={quiet} />}
     </div>
+  )
+}
+
+/**
+ * THE CENSUS NAMES WHAT ITS PARKED STEPS WAIT ON (the owner's answer, 11
+ * November 2026: "Name the reasons in the census"): the count still reads
+ * `2 parked`, and its tooltip, on hover and on keyboard focus, says
+ * `2 parked: 1 waiting on a step, 1 provider quota`, the stage grid's own
+ * words (`parkReasonsOf`). The tooltip hangs from the tally's line, not the
+ * count, so at 390px it is never wider than the line it sits under.
+ */
+function ParkedCount({ count, reasons }: { count: number; reasons: string }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const show = (now: boolean) => {
+    clearTimeout(timer.current)
+    if (now) setOpen(true)
+    else timer.current = setTimeout(() => setOpen(true), TOOLTIP_DELAY_MS)
+  }
+  const hide = () => {
+    clearTimeout(timer.current)
+    setOpen(false)
+  }
+  useEffect(() => () => clearTimeout(timer.current), [])
+  return (
+    <>
+      <span
+        className="wfp-t is-parked"
+        tabIndex={0}
+        aria-describedby={id}
+        onMouseEnter={() => show(false)}
+        onMouseLeave={hide}
+        onFocus={() => show(true)}
+        onBlur={hide}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') hide()
+        }}
+      >
+        {count} parked
+      </span>
+      {/* `data-help-description`: help, not surface prose, so the prose ratchet does not count it. */}
+      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open} style={{ maxWidth: 'min(240px, 100%)' }}>
+        {count} parked{reasons ? `: ${reasons}` : ''}
+      </span>
+    </>
   )
 }
 
