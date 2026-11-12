@@ -884,10 +884,11 @@ costs two owner-reviewed plans per tenant.
 **Option (b): migrate, with a plan that never destroys anything.** This is
 W9's pattern, per tenant, one tenant per pull request:
 
-1. Remove the key from `dev.tfvars`. In `terraform/infra/removed.tf` and
-   `terraform/bootstrap/removed.tf`, `moved` each of its instances to an
+1. Remove the key from `dev.tfvars`. In a `removed.tf` in `terraform/infra`
+   and in `terraform/bootstrap`, `moved` each of its instances to an
    address nothing declares, then `removed { lifecycle { destroy = false } }`
-   that address. Terraform 1.16 refuses an instance key in `removed`, which
+   that address. Once every state has applied them, delete the blocks: W9's
+   were deleted on 2026-11-11, when no state held their addresses. Terraform 1.16 refuses an instance key in `removed`, which
    W9 checked on 2026-10-09. For `eng` and `smoke` this includes the
    `frontend_iap_members`-made bindings only if they are the tenant's.
    `domain:example.com` stays.

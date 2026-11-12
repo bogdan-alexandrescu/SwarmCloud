@@ -34,7 +34,7 @@ variables {
   project_id  = "example-project"
   environment = "dev"
 
-  # dev.tfvars' two Terraform tenants. u-pat is not one (removed.tf, lane
+  # dev.tfvars' two Terraform tenants. u-pat is not one (forgotten by lane
   # W9): its worker is a job-made workspace's, switched by the list.
   tenants = {
     eng = {

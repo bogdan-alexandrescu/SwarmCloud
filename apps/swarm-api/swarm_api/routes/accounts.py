@@ -826,6 +826,36 @@ def set_lending(
     return _own_answer(pool.set_lending(account_id, lends=lends), tenant_id)
 
 
+class AccountSpendCap(StrictModel):
+    """An API key's monthly spend cap in US dollars, or null for none (§4.6).
+
+    Declared here, beside the one route that takes it. Required, so an empty
+    body is not read as "clear". What a cap may be (above 0, the ceiling) and
+    that a plan has none are the broker's: its 422 reaches the caller.
+    """
+
+    monthly_spend_cap_usd: StrictFloat | StrictInt | None
+
+
+@router.put("/{account_id}/spend-cap")
+def set_spend_cap(
+    account_id: str,
+    body: AccountSpendCap,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """An API key's monthly spend cap. Owner only, as lending is.
+
+    Metered by the broker from the workers' `cost_usd` estimates (Q5); a key
+    at its cap takes no new agent. Lowering it closes no hold.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    cap = None if body.monthly_spend_cap_usd is None else float(body.monthly_spend_cap_usd)
+    return _own_answer(pool.set_spend_cap(account_id, monthly_spend_cap_usd=cap), tenant_id)
+
+
 class AccountModelClasses(StrictModel):
     """The model classes an account serves (owner decision R5). Empty: every class.
 

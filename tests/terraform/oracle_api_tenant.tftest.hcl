@@ -112,8 +112,7 @@ run "bootstrap_admits_oracle_api_and_grants_on_its_worker" {
 }
 
 # 2. terraform/infra over dev.tfvars' tenants. The map is written out because
-# terraform cannot decode a tfvars file; u_pat_removed.tftest.hcl holds the
-# file's keys to the same four.
+# terraform cannot decode a tfvars file.
 run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
   command = plan
 

@@ -222,6 +222,10 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("account model classes", "PUT", f"/v1/accounts/{ACCOUNT}/model-classes",
      {"model_classes": []}),
     ("account max agents", "PUT", f"/v1/accounts/{ACCOUNT}/max-agents", {"max_agents": 3}),
+    ("account spend cap", "PUT", f"/v1/accounts/{ACCOUNT}/spend-cap",
+     {"monthly_spend_cap_usd": 50}),
+    ("account per-workspace max", "PUT", f"/v1/accounts/{ACCOUNT}/per-workspace-max",
+     {"per_workspace_max": {"eng": 2}}),
     ("account state", "PUT", f"/v1/accounts/{ACCOUNT}/state", {"state": "PAUSED"}),
     ("account delete", "DELETE", f"/v1/accounts/{ACCOUNT}", None),
 ]

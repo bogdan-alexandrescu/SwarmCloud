@@ -3,8 +3,9 @@
 # resources Terraform made (docs/workspaces.md §3.3; lane W9 of #847).
 #
 # WHY. u-owner's account, grants, secrets, jobs and documents were made by
-# Terraform and are forgotten from its state by terraform/{infra,bootstrap}/
-# removed.tf, without being destroyed. From then on nothing knows the tenant is
+# Terraform and were forgotten from its state, without being destroyed, by
+# `removed` blocks in terraform/{infra,bootstrap} (deleted on 2026-11-11, once
+# neither state held their addresses). From then on nothing knows the tenant is
 # a workspace unless `workspaces/u-owner` says so, and the submission gate
 # (§5) refuses every tenant whose record is not `ready`. The workspace job
 # cannot write it: it would try to CREATE what already exists. So this writes

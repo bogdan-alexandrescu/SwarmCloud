@@ -16,8 +16,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-api@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-api"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: account exists with managed-by=swarm-terraform in its description
   explain: 'Created by terraform/infra applying modules/iam (in this agent''s territory because terraform/modules/iam
     is in scope), named/used throughout terraform/bootstrap by string (module.service_account_ids.platform),
@@ -31,7 +31,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:50
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
     the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
@@ -50,8 +49,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-quota-broker@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-quota-broker"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: account exists; holds swarmSecretLister only once grant_broker_secret_lister is applied from
     this root
   explain: 'Owns provider quota state; the target of platform_roles.tf''s broker_secret_lister grant.
@@ -61,7 +60,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:50
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
     the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
@@ -80,8 +78,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-reconciler@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-reconciler"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: account exists
   explain: 'The only identity permitted to delete executions and GC Job resources (CONTRACT.md). Holds
     swarmJobReaper/swarmGkeReaper, granted by terraform/infra using role ids this root defines. ALSO:
@@ -91,7 +89,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:50
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
     the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
@@ -110,8 +107,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-scheduler@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-scheduler"],
     applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: account exists
   explain: 'Admits work and dispatches executions; cannot delete infrastructure (CONTRACT.md invariant
     3: concurrency counts from LEASED, enforced by role design not by this account alone). ALSO: Admits
@@ -120,7 +117,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:50
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
     the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
@@ -139,8 +135,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-tick@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/platform_service_accounts.tf:62 google_service_account.tick, applied by terraform/bootstrap
     (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam). On the live deployment
-    it is adopted by the import block gated on adopt_from_infra_states and forgotten by terraform/infra/removed.tf
-    (destroy = false).
+    it was adopted by the import block gated on adopt_from_infra_states and forgotten by a removed block in terraform/infra
+    (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: holds NO project role at all; its only authority is run.invoker on two specific Cloud Run services,
     granted at the service resource (not visible in this root)
   explain: 'Separate OIDC identity Cloud Scheduler/Pub/Sub push present when calling the control plane.
@@ -152,7 +148,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:62
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
     the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
@@ -171,8 +166,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-verify@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:71 google_service_account.verify, applied by
     terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (infra). On the
-    live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten by
-    terraform/infra/removed.tf (destroy = false).
+    live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten by
+    a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: the verify Cloud Run job runs as this identity and can call swarm-api, read Firestore, read
     Cloud Run, read the artifacts bucket
   explain: Runs the in-VPC verification gate (acceptance/smoke) as a non-domain identity; ALLOWED_USERS
@@ -181,7 +176,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:71
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   refs:
     terraform:
@@ -200,8 +194,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-schedule-tick@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:80 google_service_account.schedule_tick, applied
     by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: the schedule-tick scheduler job's call to POST /v1/admin/schedules/tick succeeds as this identity
   explain: Its own identity (not the rollup sweeper's) because it reads due schedules across every tenant,
     a different reach than the sweeper's per-tenant routes; swarm-api admits it to SCHEDULE_TICK_ROUTES
@@ -211,7 +205,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:80
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   refs:
     terraform:
@@ -230,8 +223,8 @@ entries:
   check: gcloud iam service-accounts describe swarm-rollup-sweeper@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/bootstrap/platform_service_accounts.tf:90 google_service_account.rollup_sweeper, applied
     by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
-    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
-    by terraform/infra/removed.tf (destroy = false).
+    On the live deployment it was adopted by the import block gated on adopt_from_infra_states and forgotten
+    by a removed block in terraform/infra (destroy = false; the block was deleted on 2026-11-11, once the state held none of its addresses).
   verify: a workflow-rollup scheduler job's call to swarm-api succeeds as this identity
   explain: Separate from swarm-tick so swarm-api can admit this identity to the rollup/issue-run/stranded-pr/repo-index/merge-wake
     routes alone (auth.ROLLUP_SWEEPER_ROUTES), without widening the tick's reach.
@@ -239,7 +232,6 @@ entries:
   - api.iam
   evidence:
   - terraform/bootstrap/platform_service_accounts.tf:90
-  - terraform/infra/removed.tf
   - terraform/modules/service_account_ids/main.tf
   refs:
     terraform:
