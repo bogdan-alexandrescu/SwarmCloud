@@ -13,6 +13,9 @@ swarm_api/voice/projectstate.py, routes/voice_projects.py).
 * The last merge completes a project only when nothing runs, nothing is open
   and no card waits on the owner; two readers settle it once; a Reopen is not
   undone by the next read.
+* Every reader §3.13.2 names settles it: Projects' list and get, a session
+  start on the project and the follower's `{roster}` report; a check that
+  fails there does not refuse the start.
 * Another person's or another tenant's project is 404; a session grant is 403.
 
 Firestore is the in-memory fake; every token and grant is built at runtime.
@@ -33,7 +36,7 @@ from swarm_api.voice import sessions as vs
 from swarm_api.voice import store as vstore
 
 from .conftest import auth_header, seed_task
-from .test_voice_grant import _build, _grant_headers, _start
+from .test_voice_grant import OFFER, _build, _grant_headers, _start
 from .test_voice_sessions import FakeVoice
 
 STATE = "/v1/voice/projects/{project_id}/state"
@@ -434,6 +437,73 @@ def test_a_reopen_is_not_undone_by_the_next_read(db):
     _task(db, "t-next", "SUCCEEDED")
     _start_row(db, project_id, "agent", "t-next")
     assert _read(db, project_id)["state"] == "completed"
+
+
+def _history(db, project_id: str) -> list[tuple]:
+    return [(h["from"], h["to"], h["by"])
+            for h in _doc(db, project_id).get("state_history") or []]
+
+
+def test_projects_list_settles_every_project_it_reads(client, db, voice):
+    project_id = _merged(db)
+    response = client.get("/v1/voice/projects", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert _history(db, project_id) == [("in_progress", "completed", "merge")]
+
+
+def test_a_session_start_on_a_project_settles_its_merge(client, db, voice):
+    project_id = _merged(db)
+
+    response = client.post("/v1/voice/sessions",
+                           json={"offer_sdp": OFFER, "project_id": project_id},
+                           headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    assert _doc(db, project_id)["status"] == "completed"
+    assert _history(db, project_id) == [("in_progress", "completed", "merge")]
+
+
+def test_a_failed_merge_check_does_not_refuse_a_session_start(client, db, voice, monkeypatch):
+    project_id = _merged(db)
+
+    def _broken(self, **_kw):
+        raise RuntimeError("the roster read failed")
+
+    monkeypatch.setattr(vstate.ProjectStates, "settle", _broken)
+    response = client.post("/v1/voice/sessions",
+                           json={"offer_sdp": OFFER, "project_id": project_id},
+                           headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    assert _doc(db, project_id)["status"] == "active"
+
+
+def test_the_followers_roster_report_settles_the_sessions_project(client, db, voice):
+    call = _start(client, voice)
+    _task(db, "t-merged", "SUCCEEDED")
+    _start_row(db, call.project_id, "agent", "t-merged")
+    assert _doc(db, call.project_id)["status"] == "active"
+
+    response = client.post(f"/v1/voice/sessions/{call.session_id}/work",
+                           json={"roster": [{"kind": "agent", "id": "t-merged", "state": "done"}]},
+                           headers=_grant_headers(call))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["type"] == "roster.update"
+    assert _history(db, call.project_id) == [("in_progress", "completed", "merge")]
+
+
+def test_a_delegation_report_is_not_a_read_of_the_project(client, db, voice):
+    call = _start(client, voice)
+    _task(db, "t-merged", "SUCCEEDED")
+    _start_row(db, call.project_id, "agent", "t-merged")
+
+    response = client.post(f"/v1/voice/sessions/{call.session_id}/work",
+                           json={"delegation": {"delegation_id": "call_1", "state": "started"}},
+                           headers=_grant_headers(call))
+
+    assert response.status_code == 200, response.text
+    assert _doc(db, call.project_id)["status"] == "active"
 
 
 # --------------------------------------------------------------------------

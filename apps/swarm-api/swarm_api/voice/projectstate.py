@@ -29,7 +29,12 @@ WHO MOVES WHAT.
   moves to `completed` with `by: merge`. The move is a transaction that holds
   only while the state is still the one read, so two readers move it once.
   Each move out of `completed` records the done work it saw (`merge_seen`),
-  so a Reopen is not undone by the next read.
+  so a Reopen is not undone by the next read. Every reader §3.13.2 names
+  settles it (the owner's pick, 12 November 2026): Projects' list and get
+  (`VoiceStore._view`), and through `settle_on_read` a session start on the
+  project (`POST /v1/voice/sessions`), the follower's tick while a session
+  is live (its `{roster}` report on `POST .../sessions/{id}/work`), and, as
+  they land, a session's switch (P4) and the catch-up (P6).
 
 A PERSON'S CANCEL moves the project to `cancelled` first, then cancels each
 of its queued or running starts through the platform's own cancel for its
@@ -380,3 +385,19 @@ class ProjectStates:
             # Another reader settled it first: read what it wrote.
             return self._store._owned(tenant_id, person, project_id)
         return moved[0]
+
+
+def settle_on_read(db: Any, *, tenant_id: str, person: str, project_id: str,
+                   now: Callable[[], Any]) -> None:
+    """The merge check of a reader that is not Projects (§3.13.2): a session
+    start, the follower's tick, a switch, the catch-up. The read's own answer
+    does not wait on it: a project that is not this person's in this tenant
+    is left to the reader's own check (the same 404 there), and a check that
+    fails is logged by class name and leaves the state for the next read."""
+    try:
+        vstore.VoiceStore(db, now=now).get_project(
+            tenant_id=tenant_id, person=person, project_id=project_id)
+    except NotFound:
+        return
+    except Exception as exc:  # noqa: BLE001 - the next read settles it
+        log.warning("voice project merge check failed: %s", type(exc).__name__)
