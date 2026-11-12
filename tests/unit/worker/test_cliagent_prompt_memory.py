@@ -95,3 +95,66 @@ def test_old_space_is_capped_at_the_limit_less_one_and_a_half_gib(
     assert mib == (memory - GIB - GIB // 2) // MIB
     assert f"--max-old-space-size above {mib} " in line, line
     assert str(memory // MIB) not in line, line
+
+
+# THE LIVE-BROWSER POD (#3104). Its worker container holds the dev server the
+# browser renders, and its page compiles, inside this same limit: the line says
+# so, caps the dev server's Node heap at the line's own old-space figure, and
+# keeps it up while the browser renders -- stopped before tsc or the tests.
+# The signal is the one `claude_code.live_browser_refusal` reads: SWARM_HANDOFF,
+# which the lifecycle sets only for an attempt with a hand-off spool.
+# MUTATIONS: drop the live branch from `cliagent.budget_line`; cap the dev
+# server at another figure than old_space; tell the live agent to stop its dev
+# server while the browser renders.
+
+
+def _live_line(tmp_path, monkeypatch, memory: int) -> str:
+    from agent_worker.handoff import HANDOFF_ENV
+
+    spool = tmp_path / ".swarm-handoff"
+    spool.mkdir()
+    monkeypatch.setenv(HANDOFF_ENV, str(spool))
+    return _line(tmp_path, monkeypatch, memory)
+
+
+@pytest.mark.parametrize("memory", [8 * GIB, 5 * GIB])
+def test_the_live_line_says_the_dev_server_shares_this_containers_limit(
+    tmp_path, monkeypatch, memory
+):
+    line = _live_line(tmp_path, monkeypatch, memory)
+
+    assert "dev server and its page compiles share this container's limit" in line, line
+
+
+@pytest.mark.parametrize(("memory", "mib"), [(8 * GIB, 6656), (5 * GIB, 3584)])
+def test_the_live_line_caps_the_dev_servers_heap_at_old_space(tmp_path, monkeypatch, memory,
+                                                              mib):
+    line = _live_line(tmp_path, monkeypatch, memory)
+
+    assert f"NODE_OPTIONS=--max-old-space-size={mib} " in line, line
+    assert f"--max-old-space-size above {mib} " in line, line
+
+
+@pytest.mark.parametrize("memory", [8 * GIB, 5 * GIB])
+def test_the_live_line_keeps_the_dev_server_up_while_the_browser_renders(
+    tmp_path, monkeypatch, memory
+):
+    line = _live_line(tmp_path, monkeypatch, memory)
+
+    assert "keep it up while the browser renders" in line, line
+    assert "stop it before running tsc or the tests" in line, line
+    assert "Stop any dev server you started" not in line, line
+
+
+@pytest.mark.parametrize(("memory", "workers"), [(8 * GIB, 6), (5 * GIB, 3)])
+def test_the_line_without_a_live_browser_is_unchanged(tmp_path, monkeypatch, memory, workers):
+    from agent_worker.handoff import HANDOFF_ENV
+    from agent_worker.runners import cliagent
+
+    monkeypatch.delenv(HANDOFF_ENV, raising=False)
+    line = _line(tmp_path, monkeypatch, memory)
+
+    assert line == cliagent.budget_line(memory, workers), line
+    assert "Stop any dev server you started (next dev, uvicorn, postgres) before running " \
+        "tsc or the tests;" in line, line
+    assert "NODE_OPTIONS" not in line and "browser" not in line, line
