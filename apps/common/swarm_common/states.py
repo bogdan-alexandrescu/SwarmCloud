@@ -248,7 +248,7 @@ class ParkReason(str, Enum):
     #: SUCCEEDED / FAILED / CANCELLED, and moves it to HUMAN_REQUIRED with a
     #: `park_phase` when a person is needed -- a field write on a PARKED
     #: task, not a transition. Holds no capacity (invariant 1). Contract
-    #: request 125 (FL-CONTRACT, fix loop request B), accepted by BGD
+    #: request 125 (FL-CONTRACT, fix loop request B), accepted by the owner
     #: 2026-10-27 (Q2).
     FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
     #: The platform refused this task's dispatch -- a cluster admission
@@ -256,7 +256,7 @@ class ParkReason(str, Enum):
     #: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
     #: scheduler's failed-dispatch path with the lease released; promoted by
     #: the scheduler once `next_eligible_at` passes. Holds no capacity
-    #: (invariant 1). Contract request 123, accepted by BGD 2026-10-28.
+    #: (invariant 1). Contract request 123, accepted by the owner 2026-10-28.
     PLATFORM_REFUSED = "PLATFORM_REFUSED"
 
 
