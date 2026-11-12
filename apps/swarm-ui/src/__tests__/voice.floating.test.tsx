@@ -315,6 +315,10 @@ describe('the keyboard', () => {
     expect(f.setMuted).toHaveBeenCalledWith(true)
     fireEvent.keyDown(ring, { key: ' ', code: 'Space' })
     expect(f.hold).toHaveBeenCalledWith(true)
+    // Released on Stop, Space ends the hold and never presses Stop.
+    const stop = screen.getByRole('button', { name: 'Stop' })
+    expect(fireEvent.keyUp(stop, { key: ' ', code: 'Space' })).toBe(false)
+    expect(f.end).not.toHaveBeenCalled()
   })
 })
 

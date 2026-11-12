@@ -551,8 +551,11 @@ export function FloatingView({ held, go }: { held: VoiceSession; go: (to: string
       setMuted(!mic.muted)
     }
   }
+  // On push-to-talk a released Space is the hold's end, never a press of the button that has focus (Stop).
   const onKeyUp = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if ((e.code === 'Space' || e.key === ' ') && mic.held) hold(false)
+    if (!(e.code === 'Space' || e.key === ' ') || !ptt || typingIn(e.target)) return
+    e.preventDefault()
+    if (mic.held) hold(false)
   }
 
   const down = (e: ReactPointerEvent<HTMLButtonElement>) => {
