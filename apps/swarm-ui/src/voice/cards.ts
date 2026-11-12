@@ -24,6 +24,7 @@ export const CARD_STATES = [
   'failed',
   'cancelled',
   'dismissed',
+  'accepted',
 ] as const
 
 export type CardState = (typeof CARD_STATES)[number]
@@ -163,5 +164,12 @@ export const CARD_KINDS: readonly CardKindSpec[] = [
     fields: ['markdown', 'headings'],
     states: ['proposed', 'done'],
     actions: ['comment', 'open_full_size'],
+  },
+  {
+    kind: 'navigate',
+    label: 'Navigate',
+    fields: ['destination', 'object', 'why', 'accepted_by'],
+    states: ['proposed', 'accepted', 'done', 'dismissed'],
+    actions: ['open'],
   },
 ]

@@ -34,9 +34,10 @@ ROOT = Path(__file__).resolve().parents[3]
 CARDS_TS = ROOT / "apps" / "swarm-ui" / "src" / "voice" / "cards.ts"
 
 #: §4's table, in its order: the kinds the brief names; then voice-it-own-speech.md's
-#: `readback` (§7.2) and `spec` (§8.1).
+#: `readback` (§7.2) and `spec` (§8.1), and voice-it.md's `navigate` (§3.12.3).
 DESIGN_KINDS = ("work", "review", "proposal", "diagram", "mockup", "details_input",
-                "credential_input", "plan", "budget", "stop", "rescue", "readback", "spec")
+                "credential_input", "plan", "budget", "stop", "rescue", "readback", "spec",
+                "navigate")
 
 
 # ---- reading the console's list ---------------------------------------------
@@ -124,7 +125,7 @@ def test_every_card_carries_the_designs_envelope():
     assert {f.name for f in vcards.ENVELOPE if f.set_by == "server"} == {
         "project_id", "session_id", "version", "at"}
     assert vcards.STATES == ("proposed", "acting", "waiting", "done", "failed",
-                             "cancelled", "dismissed")
+                             "cancelled", "dismissed", "accepted")
 
 
 def test_each_kind_uses_only_common_states_and_has_actions():
