@@ -450,6 +450,9 @@ def dispatch_of(task: Task, masking: TaskMasking | None = None) -> dict[str, Any
     # every other task reads back exactly as it did before they existed.
     if block.get("builds_on"):
         out["builds_on"] = block["builds_on"]
+    # A step's own ref (#2895), only on the step that named one.
+    if block.get("step_ref") is True:
+        out["step_ref"] = True
     if isinstance(block.get("verdict_gate"), dict):
         out["verdict_gate"] = dict(block["verdict_gate"])
     # The step's empty-diff permission (2026-10-05), only when it was given.

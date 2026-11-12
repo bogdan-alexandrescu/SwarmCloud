@@ -345,6 +345,14 @@ class WorkflowStepCreate(StrictModel):
     #: instead of the workflow's `repository_ref` (#264). A step id, never a
     #: ref: the worker derives the branch from the upstream's task id.
     builds_on: str | None = Field(default=None, min_length=1, max_length=64)
+    #: The ref this step clones instead of the workflow's `repository_ref`
+    #: (#2895): a branch or tag name or a full sha of the workflow's own
+    #: `repository_url`. A repository coordinate, never an image or a command
+    #: (invariant 10). Stored as the step task's `repository_ref`; the rules
+    #: -- no abbreviated sha, not beside `builds_on` or `pr_role`, not under a
+    #: ref the workflow supplies or on a step `integrate` merges -- are in
+    #: `validation.check_step_repository_ref`.
+    repository_ref: str | None = Field(default=None, max_length=256)
     #: An empty diff is this step's result, not its failure (owner decision,
     #: 2026-10-05): the step ends SUCCEEDED with `result_summary.no_change`,
     #: and a later step that needs its change (its `swarm-work.patch`, its
