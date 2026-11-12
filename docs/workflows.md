@@ -1387,6 +1387,33 @@ reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
 gate. Contract change request 76 (docs/contract-change-requests.md) asks for
 a typed home.
 
+## A workflow's pull request and its checks, and the approvals that name it
+
+**Why it exists.** Home's workflow rows (PR #3901) draw a workflow's pull
+request with a checks dot, and say Review while an approval waits on the
+workflow. Neither fact was served: the workflow read named no CI state, and
+the plan, hold and merge approvals named their run, never its workflow. The
+owner picked serving both rather than drawing the number alone and leaving
+Review off Home.
+
+**The checks.** `GET /v1/workflows?ids=` and `GET /v1/workflows/{id}` serve
+`pull_request` on each workflow: the pull request the issue run that started
+it opened, with the run's last stored CI reading (`number`, `url`,
+`head_sha`, `checks` -- `green`, `pending`, `red` or `none` --
+`check_counts`, `checked_at`, `merged`). It is the reading the issue run's CI
+loop already wrote (`issueci`); the read calls nothing on GitHub, so a Home
+poll costs one bounded `in` query on `issue_runs.workflow_id` for every 30
+workflows, and no forge round trip. A workflow no issue run of the tenant
+started serves `pull_request: null`, and Home draws its number alone from
+the step results. The console draws the dot only when the served number is
+the step results' number: one pull request's reading is never put on another.
+
+**The approvals.** A plan or hold item and a merge record carry
+`subject.workflow_id`, the workflow their run started (null before it
+started one); an await-input or contract item already carried its step's.
+A merge record stored before this takes its run's on the inbox read, which
+reads the run anyway; the record is not rewritten.
+
 ## A `repository_ref` the forge does not have is refused at submission
 
 **Why it exists.** On 2026-10-29 workflow `wf_81c4f2da` was submitted with

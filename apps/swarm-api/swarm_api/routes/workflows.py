@@ -54,7 +54,7 @@ from ..codec import (
 from ..waiting_detail import build_waiting, waiting_row
 from ..task_accounts import accounts_for
 from ..errors import ApiError, Conflict, Forbidden, ValidationFailed
-from .. import refusals, roles
+from .. import refusals, roles, workflowpr
 from ..mcp_credentials import (
     McpCredentials,
     RowKeys,
@@ -676,10 +676,20 @@ def _by_ids(
         "rollup_report": report.to_api(),
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _with_pull_requests(ctx, tenant_id, payload["workflows"])
     _named(ctx, payload["workflows"], payload["tasks"])
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _with_pull_requests(ctx: AppContext, tenant_id: str, rows: list[dict]) -> None:
+    """`pull_request` on each workflow row: the pull request its issue run
+    opened, with the run's last CI reading (`workflowpr`, PR #3901), or null
+    when no issue run of the tenant started it. One bounded read for all."""
+    found = workflowpr.pull_requests(ctx.db, tenant_id, [str(r.get("workflow_id")) for r in rows])
+    for row in rows:
+        row["pull_request"] = found.get(str(row.get("workflow_id")))
 
 
 def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
@@ -782,6 +792,7 @@ def get_workflow(
             for t in tasks
         ],
     }
+    _with_pull_requests(ctx, tenant_id, [payload["workflow"]])
     _named(ctx, [payload["workflow"]], payload["tasks"])
     return payload
 

@@ -372,7 +372,7 @@ describe('Home opens on what waits on the signed-in person', () => {
     serve({ tasks: [], approvals: [], people: refused(403), role: null })
     render(<HomeScreen now={NOW} />)
     await waitFor(() => expect(screen.getByTestId('home-clear').textContent).toContain('Nothing waits on you'))
-    expect(screen.getByText('Nothing of yours is running.')).toBeTruthy()
+    expect(screen.getByText('Nothing running.')).toBeTruthy()
   })
 
   it('a count the console cannot know reads not known, never 0', async () => {
