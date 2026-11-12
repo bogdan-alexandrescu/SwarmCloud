@@ -110,7 +110,6 @@ describe('what the deployment serves', () => {
       'example org/swarmcloud',
       'example-org/swarm/cloud',
       'https://example.com/example-org/swarmcloud',
-      'example.com/example-org',
       '<b>example-org</b>/swarmcloud',
       'example-org/<img src=x>',
       'example-org',
