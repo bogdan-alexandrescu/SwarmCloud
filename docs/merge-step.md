@@ -1020,16 +1020,16 @@ CI-fix round:
   `merge_fix_rounds` says: that budget is about red CI and defaults to none,
   and a conflict nobody resolves is never mergeable at all. A round is
   **spent** when it failed or was refused (an `error` on its entry), was never
-  submitted (no task), or ended without pushing a head other than the one it
-  was given. A round whose task pushed a new head **moved the head** and is
+  submitted (no agent), or ended without pushing a head other than the one it
+  was given. A round whose agent pushed a new head **moved the head** and is
   not spent (#3073): it resolved its conflict, and a later conflict is the
   base moving again, a new conflict, not the round failing. Counting every
   round refused PR #3036, #3342 and `wf_76d8600f` `merge_conflict` after two
-  rounds that both succeeded. "Moved" rests on the round task's own record,
+  rounds that both succeeded. "Moved" rests on the round agent's own record,
   never on the tenant-writable `merge_fix` entry: the worker takes the head
-  from `_fix_round_heads` (the task read through the tenant-gated upstream
+  from `_fix_round_heads` (the agent read through the tenant-gated upstream
   read, its signed spec verified, its signed `continues` the branch's root),
-  the tick from the task read under the merge's tenant
+  the tick from the agent read under the merge's tenant
   (`mergewake._conflict_rounds_spent`, as `_pushed_by` reads it); one that
   cannot be read or verified is spent. Two rounds that could not resolve a
   conflict will not be helped by a third, a person's question;
