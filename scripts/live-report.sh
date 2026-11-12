@@ -28,7 +28,7 @@
 # OUR CLUSTER ONLY. The gate lines are read with a filter naming
 # resource.labels.cluster_name="${GKE_CLUSTER}" and the display container; the
 # script refuses to run when GKE_CLUSTER is on the shared deny-list, so it
-# never reads agents-staging (CLAUDE.md, rule 2). Nothing is written anywhere:
+# never reads peer-cluster (CLAUDE.md, rule 2). Nothing is written anywhere:
 # `gcloud logging read` and API GETs only.
 #
 # EXIT. 0 every target PASS, 1 any FAIL, 3 no FAIL but a target had no data,

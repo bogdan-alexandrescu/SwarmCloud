@@ -744,7 +744,7 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   and update across the whole database (`terraform/modules/tenancy/main.tf`,
   "the residual is real"). So a worker can write `workspaces/{id}` with
   `decision.by` set to the platform owner. A1's checks are of *who the record
-  names*: the image's `platform_owner`, and that address being `owner` in
+  names*: the deployment's `platform_owner`, and that address being `owner` in
   `admin_roles/` now. They are not proof that the owner acted. Once K1 is
   granted, the job would admit that record's service account at the front
   door. "The approval" in the list above therefore bounded nothing a worker
@@ -884,10 +884,11 @@ costs two owner-reviewed plans per tenant.
 **Option (b): migrate, with a plan that never destroys anything.** This is
 W9's pattern, per tenant, one tenant per pull request:
 
-1. Remove the key from `dev.tfvars`. In `terraform/infra/removed.tf` and
-   `terraform/bootstrap/removed.tf`, `moved` each of its instances to an
+1. Remove the key from `dev.tfvars`. In a `removed.tf` in `terraform/infra`
+   and in `terraform/bootstrap`, `moved` each of its instances to an
    address nothing declares, then `removed { lifecycle { destroy = false } }`
-   that address. Terraform 1.16 refuses an instance key in `removed`, which
+   that address. Once every state has applied them, delete the blocks: W9's
+   were deleted on 2026-11-11, when no state held their addresses. Terraform 1.16 refuses an instance key in `removed`, which
    W9 checked on 2026-10-09. For `eng` and `smoke` this includes the
    `frontend_iap_members`-made bindings only if they are the tenant's.
    `domain:example.com` stays.
@@ -1258,12 +1259,13 @@ reader can check it rather than trust it.
 
 **Where the code departs from §4**, each found by reading it:
 
-1. **The platform owner A1 checks is read from the guard's rules, not from
-   `entry.py`.** §4.3 put `PLATFORM_OWNER` in the image's fixed environment.
-   The job reads `platform_owner` from `scripts/lib/workspace-calls.json`,
-   keyed by project, and A1 also requires that email to be `owner` in
-   `admin_roles/` now (`ws_platform_owner`, `ws_is_owner`). Both ship in the
-   image the release builds, and nothing a caller sends can change either.
+1. **The platform owner A1 checks is read from the deployment's configuration,
+   not from `entry.py`.** §4.3 put `PLATFORM_OWNER` in the image's fixed
+   environment. The job reads `platform_owner` from the deployment's own
+   `<env>.tfvars` in its private configuration (`deployment_setting` in
+   `scripts/lib/common.sh`), and A1 also requires that email to be `owner` in
+   `admin_roles/` now (`ws_platform_owner`, `ws_is_owner`). Neither is the
+   job's environment, so nothing a caller sends can change either.
 2. **A service account is admitted by the unique id S1 recorded, not by its
    address alone.** GCP lets a deleted account be made again under the same
    address, so `apps/swarm-api/swarm_api/auth.py::Authenticator._admits_service`

@@ -1,6 +1,6 @@
 """`scripts/migrate-index-interval.sh` moves the stored old default, and only it.
 
-OWNER DECISION, BGD 2026-10-28 (#2524): "Index interval: a ONE-TIME
+OWNER DECISION, the owner 2026-10-28 (#2524): "Index interval: a ONE-TIME
 MIGRATION, not a read-time rule. Reads of min_change_interval_minutes stay
 literal." Every registration created before #2524 stored
 `index.min_change_interval_minutes = 30` (`repositories._index_defaults`);

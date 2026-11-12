@@ -413,7 +413,7 @@ def run_disarm(request, workflow: dict, tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "PR_NUMBER": PR,
             "GH_TOKEN": WORKFLOW_IDENTITY,
             "FAKE_GH_LOG": str(log),
@@ -604,7 +604,7 @@ def run_enable(enable_job: dict, tmp_path: Path, history: dict):
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
             "GIT_CONFIG_NOSYSTEM": "1",
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "PR_NUMBER": PR,
             "PR_TITLE": "A fact-style headline",
             "HEAD_SHA": history["labelled"],

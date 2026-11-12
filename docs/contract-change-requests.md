@@ -121,43 +121,44 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
 | 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
 | 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
-| 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by BGD 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
+| 114 | `CONTRACT.md` invariant 7: swarm-api alone starts with Cloud Run's startup CPU boost, the one recorded exception; every other Cloud Run service and every worker stays under invariant 7 as written (API-CPU-BOOST, part of #1816) | ACCEPTED by the owner 2026-10-23 (#1816 option (a)) and APPLIED by PR 2132; recorded here by lane FOLLOWUPS-1023 (part of #2150). The invariant's text is unchanged |
 | 115 | `models.py`: `Task.publish_to_pr`, the existing pull request a lane's commits are pushed onto instead of opening one, typed rather than carried in `metadata.dispatch` (PUBLISH-TO-PR, part of #2183) | open, REQUESTED 2026-10-24 by lane PUBLISH-TO-PR. Not applied, and not needed for the feature to work: the field ships in the signed `metadata.dispatch` block, as `strategy` and `continues` do |
-| 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by BGD 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
-| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by BGD (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
-| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it on a budget stop; the outcome ledger classes it `runner_error`, as its text fallback did |
-| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): `BudgetStore` signs every write and verifies every read for a tenant on the MAC cutover, and `judgment.WRITER_FIELDS` lists the block so the re-sign pass signs stored ones |
-| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
-| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
+| 116 | `specsign.py`: `SETTINGS_MAC_FIELDS` gains a `"qa"` block, `("flows_per_step",)`, so the workspace's QA batch size is signed like `merge` and `code_intelligence` (QA-TRIPWIRE-MAC, part of #2136) | ACCEPTED by the owner 2026-10-26 (answering QA-FLOWS-CAP's question, task_23a1c31d528e450187b8). Not applied: `apps/common/swarm_common/` is frozen and a lane does not edit it |
+| 117 | `profiles.py`: a `cf-access` secret slot on `claude-code-browser`, kind `oauth_client`, whose value the live gate sends as Cloudflare Access service-token headers to the hosts its grant lists and the agent never holds (CF-ACCESS-TOKEN, part of #2442) | ACCEPTED 2026-10-26 by the owner (requested by lane CF-ACCESS-TOKEN as 116, renumbered: QA-TRIPWIRE-MAC took 116 first) and APPLIED by the pull request that adds this line (lane CF-ACCESS-CONTRACT, part of #2442): `_CF_ACCESS_SLOT` beside `_FILES_SLOT`, declared on `claude-code-browser` only. A grant into `cf-access` is accepted with a host list and refused without one |
+| 118 | `models.py`: `EndCause.BUDGET_EXCEEDED`, a step the worker stopped because it spent its budget (BUDGET-CAP, part of #2459) | ACCEPTED by the owner 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it on a budget stop; the outcome ledger classes it `runner_error`, as its text fallback did |
+| 119 | `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS`, `("unit", "amount")`, so the workspace's per-agent budget is signed (BUDGET-CAP, part of #2459) | ACCEPTED by the owner 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): `BudgetStore` signs every write and verifies every read for a tenant on the MAC cutover, and `judgment.WRITER_FIELDS` lists the block so the re-sign pass signs stored ones |
+| 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by the owner 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
+| 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by the owner 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
-| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | ACCEPTED by the owner (BGD) 2026-10-28 (~11:10Z, after the eng Job-quota incident) and APPLIED 2026-10-28 by the pull request that adds this line (lane PLATFORM-REFUSED-APPLY, part of #1820): the enum member, the field, `PLATFORM_REFUSED_MAX_PARKS` and the edge LEASED -> PARKED. Per BGD's brief the backoff is 30 s doubling to at most 10 min (in the scheduler) and a task past the bound stays parked as trouble, never FAILED |
-| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
-| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
-| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
-| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
+| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | ACCEPTED by the owner 2026-10-28 (~11:10Z, after the eng Job-quota incident) and APPLIED 2026-10-28 by the pull request that adds this line (lane PLATFORM-REFUSED-APPLY, part of #1820): the enum member, the field, `PLATFORM_REFUSED_MAX_PARKS` and the edge LEASED -> PARKED. Per the owner's brief the backoff is 30 s doubling to at most 10 min (in the scheduler) and a task past the bound stays parked as trouble, never FAILED |
+| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
+| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
+| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
+| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; the owner: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for the owner, 2026-10-31) |
 | 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
-| 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
-| 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | ACCEPTED, APPLIED IN FULL: accepted by the owner (BGD) 2026-11-01 with one change, "Accept, but keep codex unavailable until the pool lanes land", and applied in part then (lane CODEX-CONTRACT-APPLY: the three secret names, `secrets_any_of=True` and the `terraform/infra/locals.tf` `secret_env` mirror). The owner chose on 2026-11-02 to turn codex on once every pool lane had merged (the codex runner on a plan, the worker leasing an openai plan, the quota broker leasing and refreshing openai accounts, swarm-api forwarding a sign-in's provider), and the pull request that adds this line (lane CODEX-AVAILABLE) applies the rest: `available=True` with no `disabled_reason`, the console fixture's availability, the delegate skill's sentence, the tests that pinned codex refused, and the scheduler's pool rule keyed to each provider's plan names (item 6) |
-| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
-| 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
-| 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
-| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
+| 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
+| 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | ACCEPTED, APPLIED IN FULL: accepted by the owner 2026-11-01 with one change, "Accept, but keep codex unavailable until the pool lanes land", and applied in part then (lane CODEX-CONTRACT-APPLY: the three secret names, `secrets_any_of=True` and the `terraform/infra/locals.tf` `secret_env` mirror). The owner chose on 2026-11-02 to turn codex on once every pool lane had merged (the codex runner on a plan, the worker leasing an openai plan, the quota broker leasing and refreshing openai accounts, swarm-api forwarding a sign-in's provider), and the pull request that adds this line (lane CODEX-AVAILABLE) applies the rest: `available=True` with no `disabled_reason`, the console fixture's availability, the delegate skill's sentence, the tests that pinned codex refused, and the scheduler's pool rule keyed to each provider's plan names (item 6) |
+| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
+| 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
+| 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (answering question 0 of PR 3095: merge as built on the current class, and file this request) |
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
-| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
-| 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
-| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
-| 139 | `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")`, so a workspace's every-step plugins and its plugin settings' digest are signed with the Allowed list (managed plugins P1, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): an absent key projects as null and a null added key is left out of the bytes, so every stored block still verifies; `plugins.PluginsStore.put` drops a planted value of either key |
-| 140 | `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1`, the bytes swarm-api MACs for a plugin install, version and intake, scope and tenant inside (managed plugins P2, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): every stored key covered but the MAC and the writer record |
-| 141 | `models.py`: `Tenant.plugin_secret_name(install_id, field)`, `swarm-tenant-<t>-plg-<16 hex>`, and the secret consumer kind `plugin` (managed plugins P3, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
-| 142 | `profiles.py`: `runtime_capabilities` `("claude_plugins", "node", "bun", "python3", "bash")` on the five claude-code profiles (managed plugins P4, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
-| 143 | `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review` (managed plugins P5, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
+| 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
+| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
+| 139 | `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")`, so a workspace's every-step plugins and its plugin settings' digest are signed with the Allowed list (managed plugins P1, part of #2688) | ACCEPTED by the owner 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): an absent key projects as null and a null added key is left out of the bytes, so every stored block still verifies; `plugins.PluginsStore.put` drops a planted value of either key |
+| 140 | `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1`, the bytes swarm-api MACs for a plugin install, version and intake, scope and tenant inside (managed plugins P2, part of #2688) | ACCEPTED by the owner 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): every stored key covered but the MAC and the writer record |
+| 141 | `models.py`: `Tenant.plugin_secret_name(install_id, field)`, `swarm-tenant-<t>-plg-<16 hex>`, and the secret consumer kind `plugin` (managed plugins P3, part of #2688) | ACCEPTED by the owner 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 142 | `profiles.py`: `runtime_capabilities` `("claude_plugins", "node", "bun", "python3", "bash")` on the five claude-code profiles (managed plugins P4, part of #2688) | ACCEPTED by the owner 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 143 | `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review` (managed plugins P5, part of #2688) | ACCEPTED by the owner 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
 | 145 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
-| 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
-| 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): BGD's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
+| 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
+| 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): the owner's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
 | 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10 by the pull request that adds this text: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. Not applied; the profile is unavailable until the cause is found and the owner re-applies it |
 | 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
+| 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -1287,7 +1288,7 @@ have:
 * stranded anything already queued against it — nothing was, which was checked,
   but the mechanism should not depend on that being true;
 * broken the catalogue entry that four existing `codex` task documents in
-  `saga-agents-staging` still name, making those runs unreadable rather than
+  `example-project` still name, making those runs unreadable rather than
   merely unrepeatable;
 * made re-enabling a revert rather than a word, for something explicitly asked
   for "for now".
@@ -1716,7 +1717,7 @@ only because this one was accepted, and each is filed as its own request:
 
 **Status: ACCEPTED — accepted by the owner on #184, 2026-09-25, as amended
 (four fields), and applied in PR #210.** The decision, in the owner's words
-([#184, 2026-09-25](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/184#issuecomment-5840698104)): "Contract request #15 is approved: typed
+(on the attempt-CPU contract issue, 2026-09-25): "Contract request #15 is approved: typed
 `Attempt` fields `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and
 `cpu_limit_cores`. They replace the interim heartbeat-event path." Raised
 2026-09-24 by the worker-broker lane, which measured CPU without it and
@@ -2730,7 +2731,7 @@ The single named set stays, held to the catalogue by its test.
 **Status: ACCEPTED by the owner on 2026-09-25 and applied the same day** (branch
 `lane/mock-inputs-contract`). This edits `apps/common/swarm_common/`, which is
 frozen, and is recorded here as such. The owner's comment on #142
-([issuecomment-5840939054](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/142#issuecomment-5840939054)):
+(the mock-inputs contract issue):
 "contract request 25 is accepted: `RunnerProfile.inputs` goes in the frozen
 catalogue and the API enforces it for every caller, not only the bridge." What
 was applied, and the one place it departs from the text below, is under
@@ -2739,7 +2740,7 @@ has NOT approved**: the field is typed `Mapping | None`, not the `Mapping` the
 request asked for, and for the two profiles left `None` the API does not
 enforce a declaration for every caller. It is recorded under *Amendment
 awaiting the owner* below, and the decision is
-[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218). A
+the runner-inputs decision issue. A
 second change awaits the owner's confirmation too: the bounded park is counted
 by the agent's `attempt_count`, not by the state-file counter the acceptance
 named, because a failed checkpoint lost that one. It is under *Fixed after the
@@ -2878,7 +2879,7 @@ have refused every agent they run, the smoke suite's GKE row included. The
 "What it would break" section above assumed an undeclared key is "ignored"
 today; for these two runners it is the work. So which keys they declare, with
 which bounds, is open, and it is the owner's to decide
-([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+(the runner-inputs decision issue):
 
 * `browser` reads `url`, `actions` (a list of objects, which `INPUT_KINDS` has
   no kind for), `timeout_ms`, `launch_timeout_ms`, `viewport_width`,
@@ -3000,7 +3001,7 @@ every offer to a profile not declared yet to a `payload` read in its runner.
 
 **Status: ACCEPTED — accepted by the owner on #184, 2026-09-26, and applied in
 PR #229.** The decision, in the owner's words
-([#184, 2026-09-26](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/184#issuecomment-5841716442)):
+(on the attempt-CPU contract issue, 2026-09-26):
 "Contract request #26 is accepted: typed `cpu_measured_at` and
 `cpu_limit_source` on Attempt." Recorded 2026-09-25 by the #184 follow-up
 lane (PR #210), which applied request #15. What was applied is under
@@ -3267,7 +3268,7 @@ one.
 
 **2026-09-29, after a security review: accept with changes.** The owner made
 four decisions, folded into this entry below and marked where they land:
-the account stays in `saga-agents-staging` as an accepted risk (**Who can
+the account stays in `example-project` as an accepted risk (**Who can
 mint the account's token**, below); a listed account's rights are narrowed
 to continuation-only (**5. Scope: continuation-only rights**); the deployer
 loses `roles/iam.workloadIdentityPoolAdmin` outright (#334) and, since an IAM
@@ -3365,13 +3366,13 @@ the operator's side.
 ### What is true today
 
 `.github/workflows/ci-fix.yml` (#273) federates as
-`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and submits a
+`swarm-ci-fix@example-project.iam.gserviceaccount.com` and submits a
 one-step `claude-code` workflow with `continues_task` set to the red swarm
 agent. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
 #273) looks the task up with `store.get_task(tenant_id, requested)` and answers
 "is not a task in your tenant" for another tenant's agent exactly as for a
 missing one. The `swarm/` pull requests belong to `eng`, which resolves from
-the Google group `eng@saga.xyz` (`terraform/environments/dev/dev.tfvars`,
+the Google group `eng@example.com` (`terraform/environments/dev/dev.tfvars`,
 `tenants.eng`, `directory_group = true`).
 
 So the fixer's account has to resolve to `eng`, and today there are exactly
@@ -3380,9 +3381,9 @@ two ways a caller does:
 - **Group membership.** `Authenticator._from_claims` asks Cloud Identity
   `groups_for(email, tenant_groups)`, puts the answers in `Principal.groups`,
   and the frozen `resolve_tenant` returns the first registered group the
-  caller is in. Adding the account to `eng@saga.xyz` would work, and the owner
+  caller is in. Adding the account to `eng@example.com` would work, and the owner
   rejected it: that group is a company group, and every grant it holds
-  anywhere in saga.xyz -- Drive, other GCP projects, other applications that
+  anywhere in example.com -- Drive, other GCP projects, other applications that
   authorise by it -- would go to a bot whose only job is to comment on pull
   requests and submit fix steps.
 - **Being the tenant's principal.** A `kind = "user"` tenant whose principal is
@@ -3390,7 +3391,7 @@ two ways a caller does:
   tenant of its own, not `eng`, so it owns none of the agents it must continue.
 
 Without either, the account is also refused before tenant resolution: its
-domain is `saga-agents-staging.iam.gserviceaccount.com`, not `saga.xyz`, so
+domain is `example-project.iam.gserviceaccount.com`, not `example.com`, so
 `assert_allowed_domain` answers 403 unless it is in `ALLOWED_USERS`. And if it
 were admitted through `ALLOWED_USERS`, `groups_for` would ask Cloud Identity
 about a service-account address on every request, a lookup that can only
@@ -3416,7 +3417,7 @@ and `dev.tfvars` would set, once #273's account exists:
 ```hcl
   eng = {
     ...
-    service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+    service_accounts = ["swarm-ci-fix@example-project.iam.gserviceaccount.com"]
   }
 ```
 
@@ -3917,7 +3918,7 @@ narrower way to fail than supplying nothing at all.
 
 ### What `tenant_principal` becomes for such a caller
 
-**The tenant's principal, not the caller's email**: `eng@saga.xyz` for the
+**The tenant's principal, not the caller's email**: `eng@example.com` for the
 fixer, exactly what a human member of `eng` gets from `_tenant_principal`.
 It has to be. `Service.tenant_for` passes it to `Store.ensure_tenant`, and
 `Service.scope_for` to `Store.assert_tenant_scope`, and both compare it with
@@ -3946,7 +3947,7 @@ continue are recorded the same way rather than only the first (decision 4,
 
 - **`Task.submitted_by` and `Workflow.submitted_by`** are already the verified
   email (`service.py` sets both from `ctx.email`), so a fixer agent already
-  carries `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com`, and the
+  carries `swarm-ci-fix@example-project.iam.gserviceaccount.com`, and the
   outcome ledger's `submitted_by` grouping separates the bot's agents from the
   humans' in `eng` with no further change. This covers submit AND continue --
   a continuation is a normal `Store.create_tasks` call for its one step agent,
@@ -4091,7 +4092,7 @@ account never falls through to `u-...`). The change grants it **no GCP IAM at
 all**: it does not touch the tenant's GSA, its secrets or its bucket, and the
 account's own roles stay exactly what #273's `ci_fix.tf` and
 `frontend_iap_members` give it. Compared with the rejected alternative
-(joining `eng@saga.xyz`), it gets none of that group's grants outside this
+(joining `eng@example.com`), it gets none of that group's grants outside this
 platform, and, after decision 2 below, far less than a member's grants inside
 it too.
 
@@ -4171,14 +4172,14 @@ performs says so too), so what it did is enumerable afterwards, after the
 fact. It is not other tenants, not the admin surface, not the provider key or
 forge token AS MATERIAL (#219 keeps both out of the workspace -- the
 exfiltration path above is through repository content the agent reads and
-reports, not through reading the credential itself), and not saga.xyz outside
+reports, not through reading the credential itself), and not example.com outside
 this platform.
 
 ### Who can mint the account's token
 
 **#273's `terraform/bootstrap/ci_fix.tf` binds `roles/iam.workloadIdentityUser`
 on the account to exactly one principalSet,**
-`attribute.job_workflow_ref/bogdan-alexandrescu/SwarmCloud/.github/workflows/ci-fix.yml@refs/heads/main`.
+`attribute.job_workflow_ref/example-org/example-repo/.github/workflows/ci-fix.yml@refs/heads/main`.
 GitHub sets `job_workflow_ref` from the workflow file the job actually runs,
 so another workflow -- in this repository on main, on another branch, or in a
 fork -- presents a different value and is refused; the pool provider's
@@ -4190,29 +4191,29 @@ this project:** minting a token that way means first getting a change to
 `ci-fix.yml` merged to `main`.
 
 **It is not a limit on the project's own IAM, and the first draft of this
-entry overstated it as one.** Measured on 2026-09-29 as bogdan@saga.xyz,
-`saga-agents-staging` IAM already lets several principals mint the account's
+entry overstated it as one.** Measured on 2026-09-29 as owner@example.com,
+`example-project` IAM already lets several principals mint the account's
 token without touching `ci-fix.yml` at all:
 
 - **`roles/iam.serviceAccountAdmin`** includes `iam.serviceAccounts.setIamPolicy`
   on every service account in the project, so a holder can bind
   `roles/iam.serviceAccountTokenCreator` on `swarm-ci-fix` to any principal,
   themselves included, and mint a token directly -- no workflow run, no WIF
-  pool involved. Held by: the deployer (`swarm-tf-deployer`), `bogdan@`,
-  `facu@`, `konstantin@`.
+  pool involved. Held by: the deployer (`swarm-tf-deployer`), `owner@`,
+  `admin@`, `admin-2@`.
 - **`roles/iam.workloadIdentityPoolAdmin`** can edit the pool provider's
   `attribute_condition` and attribute mapping, so a holder can widen the
   principalSet the binding above already trusts to admit a different
   workflow, ref or repository -- defeating the "only `ci-fix.yml` on `main`"
   guarantee from the inside rather than around it. Held by: the deployer,
-  `bogdan@`.
+  `owner@`.
 - **`roles/owner`** can do both of the above and everything else in the
-  project. Held by: `bogdan@`, `emanuel@`.
+  project. Held by: `owner@`, `admin-3@`.
 
 **The owner accepted this as a known risk on 2026-09-29, not as a gap for
 this PR to close.** Every principal listed already holds project-level trust
 for other reasons -- the deployer runs Terraform against this project;
-`bogdan@`, `facu@`, `konstantin@` and `emanuel@` administer it. What this PR
+`owner@`, `admin@`, `admin-2@` and `admin-3@` administer it. What this PR
 narrows is the ACCOUNT's own reach once a token is minted (decision 2,
 continuation-only rights, above) and the DEPLOYER's standing roles (next
 paragraph) -- not who else in the project could, in principle, mint the
@@ -4254,11 +4255,11 @@ but can no longer touch `swarm-ci-fix`'s IAM policy at all -- narrower than
 "scoped", closed for that one account specifically.
 
 **The residual, stated plainly: this narrows the deployer, not the humans
-who separately hold these roles.** `bogdan@`, `facu@` and `konstantin@` hold
+who separately hold these roles.** `owner@`, `admin@` and `admin-2@` hold
 `roles/iam.serviceAccountAdmin` as individually granted principals, not
 through the deployer, and neither #334 nor the per-account change above
-touches those grants. So after both land, **`facu@`, `konstantin@` and
-`emanuel@` (`roles/owner`) still can mint `swarm-ci-fix`'s token** --
+touches those grants. So after both land, **`admin@`, `admin-2@` and
+`admin-3@` (`roles/owner`) still can mint `swarm-ci-fix`'s token** --
 an accepted risk, for the reason given above: they already hold project-level
 trust for other reasons, and this entry narrows the account's own reach and
 the deployer's standing access, not every human administrator's.
@@ -4286,7 +4287,7 @@ the diff this entry's first draft posted.
 --- a/apps/common/swarm_common/identity.py
 +++ b/apps/common/swarm_common/identity.py
 @@ -8,12 +8,20 @@
- A TENANT IS A GOOGLE GROUP. `eng@saga.xyz` is one tenant whose members share a
+ A TENANT IS A GOOGLE GROUP. `eng@example.com` is one tenant whose members share a
  quota budget, provider keys and artifacts. A user in no mapped group falls back
  to a personal tenant so nobody is ever hard-blocked from the platform.
 +
@@ -4341,9 +4342,9 @@ the diff this entry's first draft posted.
 +    exactly the kind of repetition that lets one site be missed.
 +    """
 +
-+    email: str       # swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
++    email: str       # swarm-ci-fix@example-project.iam.gserviceaccount.com
 +    kind: str        # "group" | "user" -- the tenant's kind
-+    principal: str   # eng@saga.xyz -- the tenant's principal
++    principal: str   # eng@example.com -- the tenant's principal
 +    uid: str         # the account's OAuth2 unique id (the token's `sub`
 +                     # claim), from Terraform's
 +                     # data.google_service_account.unique_id -- pinned beside
@@ -4450,7 +4451,7 @@ member of that tenant's Google group"; that sentence changes to naming
 
 ### If it is declined
 
-The fixer's account can resolve to `eng` only by joining `eng@saga.xyz`, which
+The fixer's account can resolve to `eng` only by joining `eng@example.com`, which
 the owner has rejected, or not at all, in which case #273's continuation is
 refused with "is not a task in your tenant" on every red pull request and the
 fixer can only comment.
@@ -4465,28 +4466,28 @@ Unit, no credentials and no emulator:
     `principal.subject` both match the listing's `email`/`uid`, with
     `groups=()`, and to `tenant_id_for_user(principal)` when the listing
     tenant is `kind="user"`;
-  - `SWARM-CI-FIX@SAGA-AGENTS-STAGING.IAM.GSERVICEACCOUNT.COM` resolves the
+  - `SWARM-CI-FIX@EXAMPLE-PROJECT.IAM.GSERVICEACCOUNT.COM` resolves the
     same (case-insensitive on email; `uid` still matches exactly);
   - **an email match with a mismatched `uid` does NOT resolve to `eng`** --
     falls through exactly as an unlisted account would (the recreated-account
     case the `uid` pin exists for);
   - **`fullmatch`, not `match`:** an email with a trailing newline
-    (`"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\n"`) does not
+    (`"swarm-ci-fix@example-project.iam.gserviceaccount.com\n"`) does not
     match, where the earlier `.match()` with `$` in the pattern would have;
   - the listing wins over groups: the same account with
     `groups=("other@example.com",)` and `other@example.com` first in priority still
     resolves to `eng`;
   - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
-    `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
-    `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example`
+    `swarm-ci-fix@example-shared-project.iam.gserviceaccount.com` and
+    `swarm-ci-fix@example-project.iam.gserviceaccount.com.evil.example`
     each fall through to today's rule;
-  - a human address listed as a member (`bogdan@saga.xyz`) never matches;
+  - a human address listed as a member (`owner@example.com`) never matches;
   - an account listed under two tenants raises `AuthError`; listed twice
     under the same tenant (same `kind`/`principal`) resolves;
   - **a `TenantMember` with `kind="workspace"` (anything but `"group"` or
     `"user"`) raises `AuthError` from `resolve_tenant`** rather than
     resolving as `kind="user"`;
-  - `TenantMember(" Eng@Saga.xyz ".strip(), " GROUP ", ...)`-style
+  - `TenantMember(" Eng@Example.com ".strip(), " GROUP ", ...)`-style
     constructor arguments come out normalised once (`__post_init__`), so two
     `TenantMember`s built from differently-cased/whitespaced input compare
     equal on `email`/`kind`/`principal`;
@@ -4500,12 +4501,12 @@ Unit, no credentials and no emulator:
     today's answer (the file's current cases, unchanged, are this test).
 - a new `tests/unit/control_plane/test_tenant_service_accounts.py`
   (`Authenticator` with `StaticTokenVerifier`):
-  - a listed account gets `tenant_id="eng"`, `tenant_principal="eng@saga.xyz"`,
+  - a listed account gets `tenant_id="eng"`, `tenant_principal="eng@example.com"`,
     `is_admin=False`, `is_pool_admin=False`, `admin_unresolved=False`,
     `tenant_member=<its email>`, **`member_scope="continuation"`**;
   - a caller with no listing gets `member_scope=""`, including every case
     `test_group_resolution.py` already covers for a human;
-  - it is admitted with `allowed_domains=("saga.xyz",)` and empty
+  - it is admitted with `allowed_domains=("example.com",)` and empty
     `ALLOWED_USERS`, and an unlisted service account is still 403;
   - the `MembershipResolver` is a fake that raises `GroupLookupError` on any
     call, and `admin_groups` is non-empty: the listed account still
@@ -4534,7 +4535,7 @@ Unit, no credentials and no emulator:
   - **a duplicate listing (`tenant_member_for` raising `AuthError`) comes back
     401, not 500,** on both the bearer path and the IAP path -- the symmetric
     `try`/`except` decision 4 adds to `_authenticate_bearer`;
-  - `continues_task` naming an `eng` agent is accepted, naming a `u-bogdan`
+  - `continues_task` naming an `eng` agent is accepted, naming a `u-owner`
     agent is refused "is not a task in your tenant";
   - **`CONTINUATION_ROUTES` is swept against every route in every router the
     app includes, and extended in round 3 to a second assertion per
@@ -4626,7 +4627,7 @@ google_service_account.listed` is overridden with a mocked `unique_id` via
 `override_data` in the `.tftest.hcl` file, so these runs need no real GCP
 call. And one passing `run` asserting the rendered `TENANT_SERVICE_ACCOUNTS`
 equals
-`[{"email":"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com","kind":"group","principal":"eng@saga.xyz","uid":"<mocked>"}]`
+`[{"email":"swarm-ci-fix@example-project.iam.gserviceaccount.com","kind":"group","principal":"eng@example.com","uid":"<mocked>"}]`
 -- a **list**, revised from the object-keyed-by-email shape the first draft
 of this entry proposed (reviewer minor) -- and `[]` when no tenant lists one.
 
@@ -5032,7 +5033,7 @@ The rule, as written in the diff, now refuses, **in this order**:
   doubled `.`) -- added 2026-09-29 (minor, folded into this revision): the
   character-class check does not catch it, because `.` is itself allowed,
   and nothing downstream would otherwise notice a zero-length label;
-* a host with a label made only of hyphens (`http://---.com/`) -- added
+* a host with a label made only of hyphens (`http://---.example/`) -- added
   2026-09-29 (minor): the previous message for this case ("ends in a
   number") was wrong and confusing, since a hyphen is not a digit; it now
   says plainly that an all-hyphen label is not a valid domain label;
@@ -6606,7 +6607,7 @@ account holds `signer` on; every worker verifies the signature against the
 spec it fetched before it starts an agent or a worker action, and refuses a
 mismatch with a typed end cause; worker-action steps (`post-verdict` and
 `merge`, contract request 33) also verify the upstream specs they rely on.
-The key stays in the shared `saga-agents-staging` project (the owner's
+The key stays in the shared `example-project` project (the owner's
 decision, 2026-09-29, **not** a dedicated project), and workers trust every
 `ENABLED` version of it. Both are accepted residuals, stated honestly in **Key
 management** and **The threat model** rather than designed away: a project
@@ -7022,7 +7023,7 @@ close**, the workflow document).
 
   **This is not a boundary against the project itself, and the owner accepted
   that rather than designing it away (2026-09-29): the key stays in the shared
-  `saga-agents-staging` project** (CLAUDE.md rule 2 -- another team's project,
+  `example-project` project** (CLAUDE.md rule 2 -- another team's project,
   not a dedicated one). `roles/editor` on that project carries
   `iam.serviceAccounts.actAs` and `run.services.update`, so any project Owner
   or Editor -- not only this platform's operators -- can redeploy
@@ -7123,7 +7124,7 @@ close**, the workflow document).
   is one `AsymmetricSign` call at submission (one per step, decision 2), so the
   platform's submission rate is Cloud KMS's request rate for this key. The
   default Cloud KMS asymmetric-sign quota is per project and per region and is
-  shared with anything else in `saga-agents-staging` calling `AsymmetricSign`
+  shared with anything else in `example-project` calling `AsymmetricSign`
   in `us-central1` -- including, potentially, the other team's own use of KMS
   in that project. **Not verified here:** the project's current quota value,
   its current headroom against the other team's usage, and the platform's
@@ -7466,7 +7467,7 @@ exposure is otherwise unchanged
 * **Anyone who can sign -- an accepted residual, not a closed one (owner,
   2026-09-29).** `swarm-api`'s own account, which holds `signer`; the release
   deployer, which deploys the Cloud Run revision that runs as it; and, because
-  the key stays in the shared `saga-agents-staging` project rather than a
+  the key stays in the shared `example-project` project rather than a
   dedicated one, **any Owner or Editor of that project** -- `roles/editor`
   carries `iam.serviceAccounts.actAs` and `run.services.update`, enough to
   redeploy `swarm-api` running arbitrary code as its own service account, and
@@ -10053,7 +10054,7 @@ diff below, and the non-frozen half (the worker reads its input as
 specs keep verifying: no value with a canonical form changes its bytes, and
 no signer writes a float in either field (swarm-api's schemas declare both
 `int`). Was: proposed, filed 2026-10-09 for
-[#346 box 53](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303466)
+the security-review epic's box 53
 (the #353 security review), by the owner's decision of 2026-10-09 that the
 2026-10-09 epic triage's frozen-contract findings get requests, not edits.
 
@@ -10195,7 +10196,7 @@ reader of those fields has to keep doing so, and nothing tells it to.
 **Status:** ACCEPTED by the owner 2026-10-11, applied in this PR -- the
 diff below, and swarm-api's 422 message names the depth. Was: proposed, filed
 2026-10-09 for
-[#346 box 55](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303857)
+the security-review epic's box 55
 (the #353 security review), by the owner's decision of 2026-10-09.
 
 ### What is true today
@@ -10310,7 +10311,7 @@ the one action that runs as its own Cloud Run Job's service account, so
 applied as written, for every worker action.
 
 Filed 2026-10-09 as a proposal for
-[#453 box 87](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/453#issuecomment-5944064436)
+the review-probe epic's box 87
 (the #462 review probe: "tighten before any worker-action profile is
 enabled"), by the owner's decision of 2026-10-09.
 
@@ -10437,7 +10438,7 @@ worker identity would construct, dispatch and run.
 **Status:** ACCEPTED by the owner 2026-10-11, applied in this PR.
 
 Filed 2026-10-09 as a proposal for
-[#346 box 42](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5895194106)
+the security-review epic's box 42
 (the #345 security review, tracked in #349), by the owner's decision of
 2026-10-09.
 
@@ -10522,7 +10523,7 @@ for them alone.
 ## 62. `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI
 
 **Status:** proposed, filed 2026-10-10 by the merge-race lane (part of
-[#295](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/295)). A
+the merge-profile work). A
 request, not a change: nothing under `apps/common/swarm_common/` is edited
 by it, and the slot is built on `ParkReason.CI_PENDING` meanwhile.
 
@@ -14306,7 +14307,7 @@ which every standard agent pays for.
 
 ## 114. `CONTRACT.md` invariant 7: swarm-api's startup CPU boost, the one recorded exception (API-CPU-BOOST, part of #1816)
 
-**Status:** ACCEPTED by BGD on 2026-10-23 (~17:37Z; #1816 option (a)) and
+**Status:** ACCEPTED by the owner on 2026-10-23 (~17:37Z; #1816 option (a)) and
 APPLIED by PR 2132 (lane API-CPU-BOOST). Recorded here the same day by lane
 FOLLOWUPS-1023 (part of #2150), because PR 2132 asked for this entry and its
 file was outside that lane. This is an exception to invariant 7 for one
@@ -14382,7 +14383,7 @@ ships without it.
 ### What is true today
 
 A workflow spec or a single agent may name an existing pull request,
-`publish_to_pr: <N>` (BGD's approval of #2183, 2026-10-24). swarm-api checks
+`publish_to_pr: <N>` (the owner's approval of #2183, 2026-10-24). swarm-api checks
 it at submission (`swarm_api/publishtopr.py`) and stores what it checked in
 every step's `metadata.dispatch` as `publish_to_pr: {"number": N, "task_id":
 "<the task whose swarm/ branch is the pull request's head>"}`, inside the
@@ -14418,7 +14419,7 @@ branch must be a lane branch of the submitting tenant. **1-8** are untouched.
 
 ## 116. `specsign.py`: a `"qa"` block in `SETTINGS_MAC_FIELDS`, for the workspace's QA batch size (QA-TRIPWIRE-MAC, part of #2136)
 
-**Status:** ACCEPTED by BGD 2026-10-26, answering lane QA-FLOWS-CAP's
+**Status:** ACCEPTED by the owner 2026-10-26, answering lane QA-FLOWS-CAP's
 question ("Should a 'qa' MAC block be added to the frozen contract?",
 task_23a1c31d528e450187b8, answered 08:26Z: "Request a 'qa' block").
 Filed by lane QA-TRIPWIRE-MAC. Not applied: `apps/common/swarm_common/` is
@@ -14501,7 +14502,7 @@ integer, never a spec. **1-8** are untouched.
 
 ## 117. `profiles.py`: a `cf-access` secret slot on `claude-code-browser` (CF-ACCESS-TOKEN, part of #2442)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (filed by lane CF-ACCESS-TOKEN
+**Status:** ACCEPTED by the owner 2026-10-26 (filed by lane CF-ACCESS-TOKEN
 as 116 and renumbered, since QA-TRIPWIRE-MAC took 116 on main first). APPLIED by lane
 CF-ACCESS-CONTRACT (part of #2442), in the pull request that rewrote row 117
 of the index above: `_CF_ACCESS_SLOT` in `profiles.py`, worded as below, and
@@ -14516,7 +14517,7 @@ was filed against.
 
 ### What is true today
 
-BGD decided on 2026-10-26 that browser visual-QA agents reach a site behind
+The owner decided on 2026-10-26 that browser visual-QA agents reach a site behind
 Cloudflare Access with a Cloudflare Access service token
 (docs/runbooks/cf-access-service-token.md). The lane built every reader of
 it: swarm-api stores a host list on a grant into a host-scoped slot and signs
@@ -14571,7 +14572,7 @@ to that workspace's attempts, and held by its gate, never by the agent.
 the grant, signed by swarm-api. **1-8** are untouched.
 ## 118. `models.py`: `EndCause.BUDGET_EXCEEDED` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14579,7 +14580,7 @@ is the text as filed, the state before it was applied.
 **As applied (ledger), 2026-10-27, lane LEDGER-BUDGET-CLASS (part of #2459).**
 The outcome ledger classes the member as its own failure class,
 `budget_exceeded` ("budget exceeded"), after `publish_refused` and before
-`other` in `swarm_api.outcomes.FAILURE_CLASSES`, not as `runner_error`: BGD's
+`other` in `swarm_api.outcomes.FAILURE_CLASSES`, not as `runner_error`: the owner's
 decision, 2026-10-27 (~01:30Z), on the owner question of PR 2519
 (BUDGET-CONTRACT). `DERIVE_VERSION` is 11, so every stored day counted under
 10 is re-derived. No text rule was added (`CLASSIFIER_VERSION` stays 3): an
@@ -14588,7 +14589,7 @@ attempt with a null cause and a `budget_exceeded:` `last_error` still reads as
 
 ### What is true today
 
-BGD's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
+The owner's decision on #2459 (2026-10-26): at 100% of its budget the worker stops
 the agent at its next turn boundary, checkpoints, publishes what it has, and
 ends the step FAILED "with the end cause `budget_exceeded`". `EndCause` has
 no such member. Until it does, the worker
@@ -14632,7 +14633,7 @@ attempt's generation like every worker end. **2-4, 6-10** are untouched.
 
 ## 119. `specsign.py`: a `"budget"` block in `SETTINGS_MAC_FIELDS` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14693,7 +14694,7 @@ never a resource. **1-8** are untouched.
 
 ## 120. `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14735,7 +14736,7 @@ holds no capacity. **2-9** are untouched.
 
 ## 121. `states.py`: `EventType.BUDGET_WARNING` (BUDGET-CAP, part of #2459)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
+**Status:** ACCEPTED by the owner 2026-10-26 (~22:15Z, on PR 2466) and APPLIED
 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part
 of #2459). Requested 2026-10-26 by lane BUDGET-CAP. "What is true today" below
 is the text as filed, the state before it was applied.
@@ -14743,7 +14744,7 @@ is the text as filed, the state before it was applied.
 ### What is true today
 
 At 80% of its budget the worker records a `budget_warning` event the
-console can show (BGD, #2459). `EventType` has no such member, so it is
+console can show (the owner, #2459). `EventType` has no such member, so it is
 written as `running` with `detail: {cause: "budget_warning", percent, told,
 limit, used}`, as `account_assigned` rides on `running` (request 44).
 
@@ -14775,12 +14776,12 @@ asked for this entry in place of the edit; the edit waits for a decision.
 
 `apps/common/swarm_common/models.py`, `class Tenant`, field `principal`
 (line 832 on 2026-10-27) carries a trailing comment naming two examples:
-the deployment's real group `eng@saga.xyz`, and a fictional `alice@` on the
+the deployment's real `eng` group on the company's domain, and a fictional `alice@` on the
 same domain. The group stays. The person is fictional, and #1647's owner
 decision (2026-10-19) is that example data uses the RFC 2606 family: every
 other fictional `alice@` on that domain in `tests`, `docs`, `scripts` and
 `apps` has moved to `alice@example.com`, so this comment is the one place `grep -rnoiE
-'(alice|other|u-carol|u-eng|group)@saga\.xyz' tests docs scripts apps` still
+'(alice|other|u-carol|u-eng|group)@<the company's domain>' tests docs scripts apps` still
 finds in the code (with `tests/terraform/tenancy_worker_firestore.tftest.hcl`
 outside this lane's territory, noted on the PR).
 
@@ -14788,7 +14789,7 @@ outside this lane's territory, noted on the PR).
 
 The comment only, nothing a program reads:
 
-    principal: str                          # eng@saga.xyz | alice@example.com
+    principal: str                          # eng@<the company's domain> | alice@example.com
 
 ### What it would break if accepted
 
@@ -14806,7 +14807,7 @@ None is touched: a comment decides nothing.
 
 ## 123. `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals` (PLATFORM-REFUSED, part of #1820)
 
-**Status:** ACCEPTED by BGD 2026-10-28 (~11:10Z) and APPLIED 2026-10-28 by
+**Status:** ACCEPTED by the owner 2026-10-28 (~11:10Z) and APPLIED 2026-10-28 by
 the pull request that adds this status (lane PLATFORM-REFUSED-APPLY, part of
 #1820), after swarm-tenant-eng's Job quota (`count/jobs.batch` 240) filled
 with finished Jobs on 2026-10-28 ~09:30-11:15Z and 28 steps FAILED
@@ -14816,7 +14817,7 @@ with finished Jobs on 2026-10-28 ~09:30-11:15Z and 28 steps FAILED
 (the failed-dispatch path parks an agent it found LEASED; no other edge was
 needed: PARKED -> READY, CANCELLED and DEAD_LETTERED already existed).
 
-**Two points of "The scheduler, once applied" below were REPLACED by BGD's
+**Two points of "The scheduler, once applied" below were REPLACED by the owner's
 brief of 2026-10-28, which applies the standing rule of 2026-09-14 ("never
 fail workflows when quotas are reached. just pause them and resume them when
 new quota is refreshed"):**
@@ -14835,7 +14836,7 @@ The rest is as written: the lease is released in the parking transaction,
 dispatch resets it to 0, a sweep beside `_promote_scheduled_retries`
 (`_promote_platform_refusals`) promotes a due park, and each park counts in
 `swarm_scheduler_platform_refusals_total{code}`. The finished-Job TTL was
-shortened from 3600 s to 600 s by the same pull request (BGD, 2026-10-28).
+shortened from 3600 s to 600 s by the same pull request (the owner, 2026-10-28).
 
 The text below is the request as it was proposed. The precise codes it parks on are built without it
 (`apps/scheduler/scheduler/dispatch.py` `forbidden_code`); the design is
@@ -14937,7 +14938,7 @@ generation.
 
 ## 124. `profiles.py`: a `fix-loop` catalogue profile, `control_plane`, shipped unavailable (FL-CONTRACT, fix loop request A)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
+**Status:** ACCEPTED by the owner 2026-10-27 (Q1, Q2, Q10 of
 [docs/design/fix-loop.md](design/fix-loop.md) §9: the loop is its own
 control-plane step, named `fix-loop`) and APPLIED by the pull request that
 adds this line (lane FL-CONTRACT, part of #2509). "What is true today" below
@@ -14997,7 +14998,7 @@ and its class is never reserved. **6** and **7** are untouched: no pod.
 
 ## 125. `states.py`: `ParkReason.FIX_ROUNDS_RUNNING` (FL-CONTRACT, fix loop request B)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
+**Status:** ACCEPTED by the owner 2026-10-27 (Q1, Q2, Q10 of
 [docs/design/fix-loop.md](design/fix-loop.md) §9; Q2 (a) is this request)
 and APPLIED by the pull request that adds this line (lane FL-CONTRACT, part
 of #2509). "What is true today" below is the state before it was applied.
@@ -15062,10 +15063,10 @@ of their own, each with its own worker, and the loop's step waits parked.
 
 ## 126. `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126',
+**Status:** ACCEPTED by the owner 2026-10-27 ('accept-126',
 answering the question lane FL-CONTRACT put on PR 2570) and APPLIED
 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126,
-part of #2509). Requested 2026-10-27 by lane FL-CONTRACT, because BGD's Q3
+part of #2509). Requested 2026-10-27 by lane FL-CONTRACT, because the owner's Q3
 pick (c) did not decide whether the end is a new end cause or text under an
 existing one. Applied as written below: the member is appended after
 `BUDGET_EXCEEDED`, the outcome ledger classes it `fix_loop_exhausted`, its
@@ -15077,7 +15078,7 @@ below is the state before it was applied.
 
 ### What is true today
 
-BGD's Q3 (c) and §4.5 of the design end a loop FAILED `fix_loop_exhausted`:
+The owner's Q3 (c) and §4.5 of the design end a loop FAILED `fix_loop_exhausted`:
 when a person answers "stop", and when the park for a person passes 7 days.
 `EndCause` (`models.py`) has no such member. Its closest are
 `runner_error` (a runner failed, which is not what happened: every round
@@ -15104,7 +15105,7 @@ ledger's classes gain it in the same change, as request 118's
 ### If it is declined
 
 The loop ends FAILED with `last_error` beginning `fix_loop_exhausted:` under
-an existing end cause BGD picks, and every reader that wants to tell an
+an existing end cause the owner picks, and every reader that wants to tell an
 exhausted loop from a crash reads text, which is the defect request 23 was
 accepted to end.
 
@@ -15122,10 +15123,10 @@ field but its name and image by
 `tests/unit/common/test_claude_code_lightpanda.py`. Its `terraform/infra/locals.tf`
 mirror waits for the image: it lands in the same pull request once
 `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing
-image digest (CLD for BGD, 2026-10-31). Requested 2026-10-31 by
-lane LIGHTPANDA-ANALYSIS (part of #2688), answering BGD's ask of the same day
+image digest (CLD for the owner, 2026-10-31). Requested 2026-10-31 by
+lane LIGHTPANDA-ANALYSIS (part of #2688), answering the owner's ask of the same day
 to analyse Lightpanda as a runtime for browser agents and, if it adds value,
-design and build it. BGD said to go with the recommended options. This is
+design and build it. The owner said to go with the recommended options. This is
 decision B (2) of
 [`docs/design/lightpanda-runtime.md`](design/lightpanda-runtime.md) §5.
 
@@ -15318,7 +15319,7 @@ verify. **10** holds either way: one bool, never an image, a command or a
 resource. **1-8** are untouched.
 ## 129. `admission.py` / `models.py`: a lease takes 1 unit in each provider pool, whatever its size (LARGE-ONE-PROVIDER-SLOT, part of #2950)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the
+**Status:** ACCEPTED by the owner 2026-11-01 (~03:55Z, choosing the
 expected behaviour #2950 states) and APPLIED by lane LARGE-ONE-PROVIDER-SLOT
 (part of #2950), in the pull request that adds row 129 of the index above.
 
@@ -15412,7 +15413,7 @@ standard work against the provider's real session limit.
 
 ## 130. `profiles.py`: `codex` becomes available, on the tenant's key or a pool ChatGPT plan (CODEX-PLAN-CONTRACT, part of #2688)
 
-**Status:** ACCEPTED and APPLIED IN FULL. Accepted by the owner (BGD) on
+**Status:** ACCEPTED and APPLIED IN FULL. Accepted by the owner on
 2026-11-01 with one change: "Accept, but keep codex unavailable until the pool
 lanes land". The secrets change below was applied then (lane
 CODEX-CONTRACT-APPLY), with its `secret_env` mirror, and `available=False`
@@ -15424,7 +15425,7 @@ owner chose to turn codex on, and lane CODEX-AVAILABLE applied the rest:
 console's fixture availability, the delegate skill's sentence (with the
 plugin's version moved so the bridge's catalogue reaches a session), the tests
 that pinned codex refused (item 5), and the scheduler's half of item 6 (its
-pool rule keyed to each provider's plan names, as the worker's is). Requested 2026-11-01 by lane CODEX-PLAN-CONTRACT. The owner (BGD) asked on 2026-11-01 for the
+pool rule keyed to each provider's plan names, as the worker's is). Requested 2026-11-01 by lane CODEX-PLAN-CONTRACT. The owner asked on 2026-11-01 for the
 codex runner to run on ChatGPT plans from a shared pool, the way claude-code
 runs on the pool of Claude subscriptions, and accepted that this needs a
 contract request.
@@ -15503,7 +15504,7 @@ worker hands them to codex as `CODEX_PLAN_ACCESS_TOKEN` and
 `CODEX_PLAN_ACCOUNT_ID`. The sign-in is "Sign in with ChatGPT": OAuth with PKCE
 at `https://auth.openai.com`, the Codex CLI's public client; the plan's traffic
 goes to the Codex backend on the Responses wire and refuses some model names
-(measured by sagaxyz/ai-studio on a live ChatGPT Plus login, 2026-08-10).
+(measured by a peer application on a live ChatGPT Plus login, 2026-08-10).
 Measured here 2026-11-01: the codex CLI in the runtime image (`codex-cli
 0.154.0`) offers `codex login --with-api-key` and `codex login
 --with-access-token` (its help names `CODEX_ACCESS_TOKEN`), each reading stdin.
@@ -15640,7 +15641,7 @@ key the platform cannot dispatch either.
 
 ## 131. `models.py`: `Task.timeout_seconds_asked`, the timeout a spec asked for when swarm-api stored a lower one (TIMEOUT-ASKED-CONTRACT, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-11-01 -- "API records the ask"
+**Status:** ACCEPTED by the owner 2026-11-01 -- "API records the ask"
 -- and APPLIED by the pull request that adds this line (lane
 TIMEOUT-ASKED-APPLY, part of #2688), exactly as below: the field in
 `models.py`, `validation.timeout_asked` and the refused metadata key,
@@ -15650,7 +15651,7 @@ TIMEOUT-ASKED-APPLY, part of #2688), exactly as below: the field in
 tests of item 9; pinned by `tests/unit/control_plane/test_timeout_seconds_asked.py`.
 Requested 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT; that request's pull
 request edited nothing under `apps/common/swarm_common/`. The pre-publish gate lane (#2981, PR 2986, merged
-2026-11-01) asked who records a lowered timeout; the owner (BGD) answered "API
+2026-11-01) asked who records a lowered timeout; the owner answered "API
 records the ask". This entry is that answer as a contract change.
 
 ### What is true today
@@ -15829,7 +15830,7 @@ document's unlowered step, and only for workflow steps.
 
 ## 132. `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and current account (STORED-TASK-TOTALS, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-11-01 ("Accept") and APPLIED by
+**Status:** ACCEPTED by the owner 2026-11-01 ("Accept") and APPLIED by
 lane STORED-TASK-TOTALS (part of #2688), in the pull request that adds row
 132 of the index above. Drafted by lane LOAD-SPEED-TASKS-LIST as request 131;
 that number was taken the same day by `Task.timeout_seconds_asked`
@@ -15929,7 +15930,7 @@ and writes whole keeps them; the scheduler only patches task documents.
 
 ## 133. `profiles.py` / `models.py` / `specsign.py`: a turn cap, `RunnerProfile.max_turns` and `WorkflowStep.max_turns`, that the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524)
 
-**Status:** ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build";
+**Status:** ACCEPTED by the owner 2 November 2026 ("Accept and build";
 owner accepted 2 November 2026) and APPLIED 2026-11-02 by the pull request
 that adds this line (lane TURN-CAP-APPLIED, part of #2688), in the shape
 below: spec format 7, the four fields, swarm-api's resolution at every door,
@@ -15939,11 +15940,11 @@ REQUESTED 2026-10-28 by lane CONTRACT-MAXTURNS (PR 2682,
 filed there as 127). On 2026-11-02 the owner chose to finish that pull
 request, and lane CARRY-TURN-CAP carried it onto main and renumbered it:
 127 to 131 had been taken on main, and the open `Task.attempt_totals`
-request (stored agent totals) takes 132. BGD decided on 2026-10-28 (~22:20Z,
+request (stored agent totals) takes 132. The owner decided on 2026-10-28 (~22:20Z,
 answering question 2 of lane REVIEW-GATE-DEFAULT on PR 2678) that the cheap
 requirements check's turn cap is a field in the frozen runner-profile
 contract, not only a timeout and a prompt instruction. Not applied:
-`apps/common/swarm_common/` is frozen, and the shape below is BGD's to
+`apps/common/swarm_common/` is frozen, and the shape below is the owner's to
 accept. PR 2678 has merged, so main runs the interim: the issue run's
 `requirements-check` step (`swarm_api.issueruns._requirements_check`) runs
 on `claude-code` with `REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900` and a "use
@@ -16081,10 +16082,10 @@ and passes none for None.
 
 ### Who decided
 
-BGD, 2026-10-28 (~22:20Z): the turn cap is a contract field (question 2 of
+The owner, 2026-10-28 (~22:20Z): the turn cap is a contract field (question 2 of
 PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
 profile, rather than a profile field alone -- is this request's proposal
-and BGD's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
+and the owner's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
 main rather than drop it.
 
 ---
@@ -16092,7 +16093,7 @@ main rather than drop it.
 ## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
 
 **Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
-(task_98b46c02fd214e56a012) at the owner's instruction. BGD answered that
+(task_98b46c02fd214e56a012) at the owner's instruction. The owner answered that
 pull request's question 0 the same day: *merge this pull request as built,
 on the current builder class*, and file a frozen-contract change request for
 a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
@@ -16184,9 +16185,9 @@ a builder pod renders a 12-CPU request and limit and 16 GiB.
 
 ### Who decided
 
-BGD, 2026-11-03, on PR 3095: merge on the current class and file this
+The owner, 2026-11-03, on PR 3095: merge on the current class and file this
 request. Whether to accept it, and in which shape (the class, or the admin
-size alternative), is BGD's.
+size alternative), is the owner's.
 
 ---
 
@@ -16408,7 +16409,7 @@ container with a 12-core `cpu.max` sets `PYTEST_XDIST_AUTO_NUM_WORKERS` to
 
 ### Who decided
 
-BGD, 3 November 2026: merge the time-boxed, parallel guard check as built
+The owner, 3 November 2026: merge the time-boxed, parallel guard check as built
 and request a 12-CPU, 16 GiB builder class as a frozen-contract change
 (answering the publish check lane's question on builder machine size). The
 8-requested, 12-limit reading of "12 CPU", forced by Cloud Run's ceiling on
@@ -16417,11 +16418,11 @@ both are the owner's to accept.
 
 ## 136. A shared `workcontract.py`, a `"plugins"` settings block and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by
+**Status:** ACCEPTED by the owner 2026-11-03 and APPLIED 2026-11-03 by
 the pull request that adds this status (lane
 apply-contract-request-work-contract-plugins, part of #2688). Requested
 2026-11-03 by lane aq-work-contract, the work contract package of the owner's
-agent quality program (BGD, 3 November 2026). What reads it is listed under
+agent quality program (the owner, 3 November 2026). What reads it is listed under
 "What reads it"; none of those readers is built by the applying change.
 
 Applied exactly as worded:
@@ -16528,11 +16529,11 @@ moving A into `swarm_common` must leave that test green unchanged.
 ### Who decided
 
 Nobody yet: this is a request. The program's rule that a strict contract never
-silently degrades to advisory is the owner's (BGD, 3 November 2026).
+silently degrades to advisory is the owner's (3 November 2026).
 
 ## 137. `specsign.py`: the stored work contract is signed with the step, spec format 8 (WORK-CONTRACT-SIGNED, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key") and
+**Status:** ACCEPTED by the owner 4 November 2026 ("Sign the key") and
 APPLIED 2026-11-04 by the pull request that adds this section (lane
 work-contract-signed-metadata-key, part of #2688), on the plugins catalogue's
 pull request (PR 3156). Requested the same day by that pull request's red
@@ -16635,11 +16636,11 @@ contract before the agent runs.
 
 ### Who decided
 
-The owner (BGD), 4 November 2026: "Sign the key".
+The owner, 4 November 2026: "Sign the key".
 
 ## 138. `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED
+**Status:** ACCEPTED by the owner 4 November 2026 and APPLIED
 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)" (lane
 contract-review-signed-settings-applied): `SETTINGS_MAC_FIELDS` lists
 `"contract_review": ("enabled",)`, and everything under "What empties in
@@ -16770,11 +16771,11 @@ before the change verifies after it.
 ### Who decided
 
 Requested by the pull request that adds this section, on the owner's
-(BGD) answer of 4 November 2026 to its second question.
+answer of 4 November 2026 to its second question.
 
 ## 139. `profiles.py`: `pull_request` declared as a runner input of claude-code, codex and claude-code-review (PR-CONTEXT-INPUT, pull request #3470, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026, picking "declare"
+**Status:** ACCEPTED by the owner 6 November 2026, picking "declare"
 on pull request #3470's question, and APPLIED by that pull request.
 
 ### What is true today
@@ -16822,13 +16823,13 @@ holds the key to the worker module that reads it;
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, answering pull request #3470's question.
+The owner, 6 November 2026, answering pull request #3470's question.
 
 ---
 
 ## 140. `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")` (managed plugins P1, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five",
+**Status:** ACCEPTED by the owner 6 November 2026 ("accept all five",
 his answers to docs/design/managed-plugins.md section 18) and APPLIED
 2026-11-06 by the pull request that adds this section (lane
 managed-plugins-contract, part of #2688). Requested by
@@ -16906,13 +16907,13 @@ a planted default and that the block still verifies.
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+The owner, 6 November 2026, 02:43 UTC: "accept all five".
 
 ---
 
 ## 141. `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1` (managed plugins P2, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+**Status:** ACCEPTED by the owner 6 November 2026 ("accept all five")
 and APPLIED 2026-11-06 by the pull request that adds this section (lane
 managed-plugins-contract, part of #2688). Requested by
 docs/design/managed-plugins.md section 14, request P2.
@@ -16984,13 +16985,13 @@ timestamp).
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+The owner, 6 November 2026, 02:43 UTC: "accept all five".
 
 ---
 
 ## 142. `models.py`: `Tenant.plugin_secret_name(install_id, field)` and the secret consumer kind `plugin` (managed plugins P3, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+**Status:** ACCEPTED by the owner 6 November 2026 ("accept all five";
 secrets are per workspace only) and APPLIED 2026-11-06 by the pull request
 that adds this section (lane managed-plugins-contract, part of #2688).
 Requested by docs/design/managed-plugins.md section 14, request P3.
@@ -17038,13 +17039,13 @@ kinds.
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+The owner, 6 November 2026, 02:43 UTC: "accept all five".
 
 ---
 
 ## 143. `profiles.py`: `runtime_capabilities` on the five claude-code profiles (managed plugins P4, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+**Status:** ACCEPTED by the owner 6 November 2026 ("accept all five")
 and APPLIED 2026-11-06 by the pull request that adds this section (lane
 managed-plugins-contract, part of #2688). Requested by
 docs/design/managed-plugins.md section 14, request P4.
@@ -17085,13 +17086,13 @@ other profile is still empty.
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+The owner, 6 November 2026, 02:43 UTC: "accept all five".
 
 ---
 
 ## 144. `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1` (managed plugins P5, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+**Status:** ACCEPTED by the owner 6 November 2026 ("accept all five";
 a platform switch change is confirmed in a dialog) and APPLIED 2026-11-06 by
 the pull request that adds this section (lane managed-plugins-contract, part
 of #2688). Requested by docs/design/managed-plugins.md section 14, request
@@ -17136,12 +17137,12 @@ the ones before plus those requests 141 and 144 add.
 
 ### Who decided
 
-The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+The owner, 6 November 2026, 02:43 UTC: "accept all five".
 
 ## 145. `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH`, a `CANCELLED` end for a merge step a person pushed over (#2505, epic #2525)
 
 **Status:** REQUESTED 2026-11-05 by the pull request that adds this section,
-on the owner's decision of 2026-10-27 (BGD, issue triage, epic #2525): "A
+on the owner's decision of 2026-10-27 (issue triage, epic #2525): "A
 distinct non-failure end: superseded_by_person_push (not FAILED) when the
 committer is not the platform identity, so failure-review stops filing it; a
 foreign head from an unknown branch-mate still refuses. If the end cause is
@@ -17249,7 +17250,7 @@ the parity of the two modules' constants;
 
 ### Who decided
 
-The decision is the owner's (BGD), 2026-10-27, epic #2525; this request is
+The decision is the owner's, 2026-10-27, epic #2525; this request is
 filed by the pull request that adds it, for #2505, and awaits the owner's
 acceptance.
 
@@ -17257,7 +17258,7 @@ acceptance.
 
 ## 146. `admission.py`: a batched admission, `acquire_leases_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688)
 
-**Status:** ACCEPTED by the owner (BGD) 6 November 2026, answering question 0
+**Status:** ACCEPTED by the owner 6 November 2026, answering question 0
 of PR 3493 with "frozen-batch-function", and APPLIED by PR 3493, the pull
 request that adds this section. The option the owner rejected,
 "scheduler-copy", kept the batch in `SchedulerStore.acquire_leases`, which
@@ -17320,7 +17321,7 @@ single function's, and `before_writes` called before any write.
 
 ### Who decided
 
-The owner (BGD), 6 November 2026: "frozen-batch-function" on PR 3493.
+The owner, 6 November 2026: "frozen-batch-function" on PR 3493.
 
 ## 147. `config.py`: `ALLOWED_DOMAINS` has no default domain (generic repository, part of #2688)
 
@@ -17528,7 +17529,7 @@ Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
 section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
 
 **Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
-day: the revert was accepted by the owner (BGD) in advance, as the switch-on's own condition (revert at
+day: the revert was accepted by the owner in advance, as the switch-on's own condition (revert at
 once if the live acceptance check fails). The check could not run, because every claude-code submission
 of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
 unproven. The profile is unavailable again until that check can run and passes.
@@ -17800,3 +17801,58 @@ four kinds' bytes differ.
 ### Who decided
 
 The owner, 9 November 2026, answering the managed plugins design's Q20.
+
+## 154. `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner" (the repository move)
+
+**Status:** ACCEPTED by the owner 11 November 2026 and APPLIED 2026-11-11 by
+the pull request that adds this section (the repository move's cleanup of the
+contract history and the frozen contract). Requested by the move itself: the
+repository moves to a fresh public repository holding one commit of main's
+tree, so main may hold nothing that identifies a company, a person or a real
+deployment (CLAUDE.md rule 4).
+
+### What was true
+
+Five comment lines in the frozen contract recorded who accepted a contract
+request by the owner's initials. The deployment-values guard
+(`scripts/guards/deployment-values.sh --tree --mode enforce --patterns-secret`)
+reported each as a person's name:
+
+* `apps/common/swarm_common/profiles.py`, line 1160: the comment above the
+  `cf-access` secret slot (request 117);
+* `apps/common/swarm_common/profiles.py`, line 2023: the comment above
+  `claude-code-medium` (request 147);
+* `apps/common/swarm_common/profiles.py`, line 2318: the comment above
+  `fix-loop` (request 124);
+* `apps/common/swarm_common/states.py`, line 251: the docstring comment of
+  `ParkReason.FIX_ROUNDS_RUNNING` (request 125);
+* `apps/common/swarm_common/states.py`, line 259: the docstring comment of
+  `ParkReason.PLATFORM_REFUSED` (request 123).
+
+### The change
+
+Each line's initials become the role placeholder "the owner", the form the
+rest of this file and the placeholder set (`scripts/guards/placeholders.json`)
+use for a person. The request number, the date and every other word on each
+line stay.
+
+### What it would break if applied
+
+Nothing. All five lines are comments: no type, name, value, default, member
+or document shape moves, so no reader of the contract sees a different
+program. `git diff` of the two files shows five changed lines, each inside a
+`#` or `#:` comment.
+
+### If it had been declined
+
+The fresh public repository could not be cut from main: the guard counts the
+five lines, and the move needs that count to be zero.
+
+### Invariants
+
+None changes; nothing a program reads moved.
+
+### Who decided
+
+The owner, 11 November 2026, accepting the move's contract change for exactly
+these five lines: they take placeholders, with no change in behaviour.

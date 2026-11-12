@@ -8231,8 +8231,8 @@ class Worker:
         try:
             record = security_review_mod.finish(
                 ws.artifacts, task_id=self.cfg.task_id, step_id=str(task.get("step_id") or ""),
-                skill=security_review_mod.skill_dir(
-                    security_review_mod.install_dir(plugins_mod.CATALOGUE)),
+                skill=security_review_mod.skill_dir(security_review_mod.install_dir()),
+                started=self._plugins,
             )
         except security_review_mod.SecurityReviewInvalid as exc:
             message = str(self._scrub(str(exc)))

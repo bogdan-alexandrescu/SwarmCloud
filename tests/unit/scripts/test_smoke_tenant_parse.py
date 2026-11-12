@@ -67,15 +67,15 @@ def _real_response() -> dict:
     tenant = Tenant(
         tenant_id="u-sw-c90291",
         kind="user",
-        principal="swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+        principal="swarm-verify@example-project.iam.gserviceaccount.com",
         created_at=datetime(2026, 9, 21, 22, 44, 9, tzinfo=timezone.utc),
         display_name="Verification gate",
     )
     return {
         "tenant": tenant_to_api(tenant),
         "principal": {
-            "email": "swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
-            "domain": "saga-agents-staging.iam.gserviceaccount.com",
+            "email": "swarm-verify@example-project.iam.gserviceaccount.com",
+            "domain": "example-project.iam.gserviceaccount.com",
             "groups": [],
             "is_admin": False,
         },

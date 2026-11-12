@@ -1,6 +1,6 @@
 """A truncated test map never narrows what related-tests or the pre-publish gate select.
 
-The owner's agent quality program (BGD, 2026-11-03): a graph promoted with
+The owner's agent quality program (the owner, 2026-11-03): a graph promoted with
 its test maps cut (`truncated: symbol_test_map, file_test_map`) is carried
 since the incremental-carry fix, so a staged snapshot may name only part of
 a file's covering tests. scripts/lib/related_tests.py ADDS the graph's

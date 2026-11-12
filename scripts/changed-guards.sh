@@ -102,7 +102,7 @@ set -euo pipefail
 caller_env="$(compgen -e)"
 
 # This script touches no project: it reads the tree. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID. Not exported: the tests still run in the caller's environment.
 SWARM_NO_PROJECT=1
 

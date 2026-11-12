@@ -374,6 +374,11 @@ ADMIN_WRITES: frozenset[tuple[str, str]] = frozenset({
     # The join link and removing a platform membership (join-requests.md §4.6).
     ("PUT", "/v1/workspace/join-link"),
     ("DELETE", "/v1/workspace/members/person"),
+    # A plan's per-workspace caps (llm-providers.md §4.6; owner pick, #3851).
+    # Its lend caps ride `PUT .../lending` with `lends`, an admin write too,
+    # but the route also takes a bare `lend_to`, a member write, so the
+    # route stays at member here and the body decides in the route.
+    ("PUT", "/v1/accounts/{account_id}/per-workspace-max"),
 })
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
 

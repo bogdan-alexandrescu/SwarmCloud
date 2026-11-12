@@ -642,6 +642,8 @@ def _guard_env(tmp: Path, pin: dict | None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_")) and k != "KUBECONFIG"}
     env.update(placeholder_deployment.child_env(GUARD_PROJECT, "dev"))
+    # A service's expectation reads its label key's prefix from the deployment's tfvars.
+    placeholder_deployment.write_tfvars(Path(env["SWARM_DEPLOY_CONFIG_DIR"]), ["dev"])
     env.update(SWARM_ENV_FILE=str(tmp / "no.env"), PROJECT_ID=GUARD_PROJECT, REGION=placeholder_deployment.REGION,
                ENVIRONMENT="dev", FIRESTORE_DATABASE="swarm", GKE_CLUSTER="swarm-autopilot",
                GKE_LOCATION=placeholder_deployment.REGION, SWARM_CALL_GUARD=str(tmp / "expect.json"), NO_COLOR="1")

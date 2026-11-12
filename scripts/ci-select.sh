@@ -5,7 +5,7 @@
 #   scripts/ci-select.sh ui-pick   (SHARD, SHARDS, UI_TESTS, DURATIONS, SHARD_FILES, GITHUB_OUTPUT)
 #   scripts/ci-select.sh train-match --repo <owner/name> --sha <sha> [--github-output <file>] [--summary <file>]
 #
-# WHY (owner request, BGD 2026-11-06: "we really need to fix ci merges and
+# WHY (owner request, the owner 2026-11-06: "we really need to fix ci merges and
 # streamline the ci part, its the biggest bottleneck we have right now"; part
 # of #2688). One application.yml run was 27 jobs and 76 runner-minutes on a
 # pull request, 34 jobs on a push to main, about 200 runs a day, and
@@ -45,7 +45,7 @@
 set -euo pipefail
 
 # This script touches no project: it reads the tree and GitHub only. It says
-# so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on an
+# so, so common.sh (no default project, the Day One project-defaults lane) does not stop on an
 # unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR

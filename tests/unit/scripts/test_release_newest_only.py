@@ -1,6 +1,6 @@
 """Only the newest commit on main is built and released.
 
-BGD's decision, 2026-10-26 (08:1xZ), #2438: "Release only the newest". From
+The owner's decision, 2026-10-26 (08:1xZ), #2438: "Release only the newest". From
 2026-10-25 23:32Z to past 08:00Z nothing deployed. application.yml ran ONE
 CONCURRENCY GROUP PER COMMIT on main, never cancelled (the 2026-09-24 rule,
 docs/ci.md), so every merge queued a full run of about 25 jobs on the

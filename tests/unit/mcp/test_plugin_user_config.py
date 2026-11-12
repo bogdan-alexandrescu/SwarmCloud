@@ -23,7 +23,10 @@ imported, and the two are compared.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -240,11 +243,48 @@ def test_the_deployment_url_is_required_and_the_secret_is_sensitive():
     assert not options["oauth_client_secret"].get("required")
 
 
+def _guard():
+    """scripts/guards/deployment_values.py, which reads what is live: its shape
+    rules hold no value, its name layer is the private pattern list
+    (docs/design/generic-repository.md sections 1.4 and 4.5)."""
+    name = "swarm_guards_deployment_values"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, _REPO / "scripts" / "guards" / "deployment_values.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        # Registered first: a dataclass resolves its annotations through sys.modules.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _manifest_findings(entries: list) -> list[str]:
+    guard = _guard()
+    source = guard.Source(_MANIFEST.relative_to(_REPO).as_posix(), _MANIFEST.read_text(encoding="utf-8"))
+    allow = guard.Allow.load().screened(entries)
+    return [str(f) for f in guard.scan([source], allow, entries, archive_refs=False,
+                                       address=guard.repository_address(_REPO))]
+
+
+def test_nothing_in_the_manifest_has_a_deployments_shape():
+    """The defect in one line: the plugin must not ship pointing at the owner's
+    deployment. Offline: no project, host, address or bucket outside the placeholders."""
+    findings = _manifest_findings([])
+    assert not findings, "plugin.json: " + "; ".join(findings)
+
+
 def test_nothing_in_the_manifest_names_this_repositorys_deployment():
-    """The defect in one line: the plugin must not ship pointing at the owner's deployment."""
-    text = _MANIFEST.read_text()
-    for owned in ("saga.xyz", "saga-agents-staging", "209012342332"):
-        assert owned not in text, f"plugin.json names {owned}"
+    """The live deployment's domain, project and project number, from the
+    pattern list the guard reads; skipped when no list is given."""
+    guard = _guard()
+    path = os.environ.get(guard.LIST_FILE_VARIABLE)
+    text = Path(path).read_text(encoding="utf-8") if path else os.environ.get(guard.LIST_VARIABLE)
+    if not text or not text.strip():
+        pytest.skip("no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): "
+                    "nothing says what is live")
+    findings = _manifest_findings(guard.parse_list(text).entries)
+    assert not findings, "plugin.json: " + "; ".join(findings)
 
 
 def test_the_marketplace_no_longer_says_it_needs_this_repositorys_mcp_json():

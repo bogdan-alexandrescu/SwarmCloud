@@ -9,7 +9,7 @@
 #   ... [--project swarmcloud-releases]   (D23: had `swarmcloud` been taken)
 #
 # A publish is confirmed by a PERSON, one of two ways. At a terminal, by typing
-# V. Or, since BGD's "Move publishing into CI now" (2026-10-30, DAYONE-RELEASE-CI,
+# V. Or, since the owner's "Move publishing into CI now" (2026-10-30, DAYONE-RELEASE-CI,
 # which ends D22's "CI holds no grant in the release home"), by dispatching
 # .github/workflows/publish-release.yml with V and approving its `release`
 # environment: that run calls --bundle ... --ci, and the version typed into
@@ -79,7 +79,7 @@ set -euo pipefail
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # This script never touches PROJECT_ID's project: it works in the release home
 # its --project names. It says so, so common.sh (no default project, region or
-# zone, DAYONE-DESAGA-2) does not stop on an unset REGION or ZONE. PROJECT_ID
+# zone, the Day One project-defaults lane) does not stop on an unset REGION or ZONE. PROJECT_ID
 # still matters: it names the deployment whose never-touch list the release
 # home is checked against, below.
 SWARM_NO_PROJECT=1

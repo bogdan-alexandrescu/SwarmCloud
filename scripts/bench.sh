@@ -46,7 +46,7 @@
 
 set -euo pipefail
 # --self-test runs the offline checks and reaches no deployment: that mode touches no project and says so, so common.sh
-# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+# (no default project, the Day One project-defaults lane) does not stop on an unset PROJECT_ID.
 # Every other mode still needs one.
 for arg in "$@"; do
   [[ "${arg}" != "--self-test" ]] || SWARM_NO_PROJECT=1

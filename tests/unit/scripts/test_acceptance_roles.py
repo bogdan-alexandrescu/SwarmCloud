@@ -15,7 +15,7 @@ Held here, with no network and no credentials:
   actions, read from swarm_api rather than restated, and FAILs anything else;
 * the probe SKIPs, naming what is missing, until the owner has provisioned
   its identities, and never runs against the shared smoke tenant;
-* accept.yml runs it in the existing smoke job (BGD, 2026-10-28), through
+* accept.yml runs it in the existing smoke job (the owner, 2026-10-28), through
   verify-remote.sh, which carries its four settings into the execution;
 * the design records it as built.
 """
@@ -100,13 +100,13 @@ def _audit(*rows: dict) -> dict:
 
 
 def _default_set(to: str, frm: str, reason: str = REASON) -> dict:
-    return {"action": _api().default_set, "by": "qa-admin@example.iam.gserviceaccount.com",
+    return {"action": _api().default_set, "by": "qa-admin@example-project.iam.gserviceaccount.com",
             "at": "2026-10-28T19:00:01.123456+00:00",
             "detail": {"from": frm, "to": to, "via": "platform_admin", "reason": reason}}
 
 
 def _acted(at: str = "2026-10-28T19:00:01.123456+00:00", route: str = "/v1/workspace/roles/default") -> dict:
-    return {"action": _api().acted, "by": "qa-admin@example.iam.gserviceaccount.com",
+    return {"action": _api().acted, "by": "qa-admin@example-project.iam.gserviceaccount.com",
             "at": at, "detail": {"method": "PUT", "route": route, "path_params": {},
                                  "via": "platform_admin", "reach": "non_member"}}
 
@@ -191,8 +191,8 @@ def test_it_never_narrows_the_smoke_tenant_or_a_personal_one():
     """Every other acceptance group submits in smoke: a viewer default there
     would turn the whole suite red for the length of the probe."""
     full = {name: value for name, value in zip(SETTINGS, (
-        "roles-accept", "swarm-qa@p.iam.gserviceaccount.com",
-        "qa-admin@p.iam.gserviceaccount.com", "u-someone"))}
+        "roles-accept", "swarm-qa@example-project.iam.gserviceaccount.com",
+        "qa-admin@example-project.iam.gserviceaccount.com", "u-someone"))}
     assert _bash('roles_settings_problem && echo OK', **full).stdout.strip() == "OK"
     for tenant in ("smoke", "u-someone", "Eng"):
         proc = _bash("roles_settings_problem || echo REFUSED", **{**full, SETTINGS[0]: tenant})
@@ -239,15 +239,15 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     env = {"PATH": f"{_fake_gcloud(tmp_path)}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
            "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
-           SETTINGS[0]: "roles-accept", SETTINGS[1]: "swarm-qa@p.iam.gserviceaccount.com"}
-    env.update(placeholder_deployment.child_env("swarm-test-project"))
+           SETTINGS[0]: "roles-accept", SETTINGS[1]: "swarm-qa@example-project.iam.gserviceaccount.com",
+           **placeholder_deployment.child_env("swarm-test-project")}
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
     call = (tmp_path / "gcloud.calls").read_text()
     assert f"--args scripts/{TARGET}.sh" in call
     assert f"{SETTINGS[0]}=roles-accept" in call
-    assert f"{SETTINGS[1]}=swarm-qa@p.iam.gserviceaccount.com" in call
+    assert f"{SETTINGS[1]}=swarm-qa@example-project.iam.gserviceaccount.com" in call
     assert SETTINGS[2] not in call and SETTINGS[3] not in call
 
 
@@ -298,7 +298,7 @@ def test_acc_api_as_mints_the_id_token_inside_cloud_run_without_gcloud(tmp_path)
     curl.write_text(FAKE_CURL)
     curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
     access, id_token = secrets.token_hex(16), secrets.token_hex(16)
-    sa = "swarm-qa@p.iam.gserviceaccount.com"
+    sa = "swarm-qa@example-project.iam.gserviceaccount.com"
     script = (f'source "{REPO}/scripts/lib/common.sh"\nsource "{REPO}/scripts/acceptance/lib.sh"\n'
               f'acc_api_as {sa} roles-accept GET /workspace/roles "" "{tmp_path}/out"\n')
     env = {"PATH": str(bin_dir), "HOME": str(tmp_path), "NO_COLOR": "1", "TMPDIR": str(tmp_path),

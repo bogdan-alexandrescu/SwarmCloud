@@ -36,7 +36,7 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "check-pr-dependencies.sh"
 AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
 CI_DOC = REPO / "docs" / "ci.md"
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+THIS_REPO = "example-org/example-repo"
 SELF = 4242
 REFUSED = 2
 
@@ -296,7 +296,7 @@ def test_an_unclosed_fence_hides_the_rest_of_the_body(run_check):
 # Box 96 (#888): a dependency in ANOTHER repository is looked up there. A
 # bare #N stays this repository's.
 
-OTHER_REPO = "saga-org/saga-prompt-lab"
+OTHER_REPO = "example-org/peer-app"
 
 
 @pytest.mark.parametrize(

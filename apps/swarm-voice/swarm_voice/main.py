@@ -99,12 +99,51 @@ Configuration, read once at start (never at import):
   draws cards as the session's person through the session grant. Unset, no
   session offers delegation. Each turn runs Claude Code (`CLAUDE_CODE_BIN`,
   `claude` on PATH) on a pool lease; a full pool is a spoken refusal.
+  The same address is where a Live session's event sink (`ReopenSink`) tells
+  swarm-api the next tier a spent key's reopen holds; unset, no sink is wired
+  and a spent Live key ends the talk after live.REOPEN_SECONDS.
+
+THE REOPEN REACHES THE CONSOLE (docs/design/llm-providers.md §5.3, the owner,
+11 November 2026). live.py emits `voice.tier.reopen` ({tier}) through the
+session's event sink when a spent key's next tier is held. `ReopenSink` is
+that sink: it posts the tier to swarm-api's
+`POST /v1/voice/sessions/{session_id}/reopen` exactly as the planner reaches
+swarm-api (tools_read.SwarmApi: this service's ID token and the session's
+grant, a route on the grant's write list), and swarm-api puts it on the
+session's stream. Every other event the sink is handed -- the sideband's
+transcripts among them -- is dropped here unread: nothing else leaves, and the
+tier is a name, never a key.
+
+THE PAUSE AND THE REOPEN (docs/design/voice-it.md §3.12.7, the design's lane
+V2; the owner picked the automatic pause on 11 November 2026). live.py pauses
+a GPT-Live session after live.PAUSE_AFTER_SECONDS of silence with a delegation
+in flight, and `POST /internal/sessions/{voice_session_id}/reopen` opens it
+again by cause. Body: `{"offer": <SDP>, "cause": "result"|"speech"|"resume"|
+"tier", "brief": {...}?, "cards": [<one-liner>]?, "planner_model": <id>?}`;
+the brief (the project's, as the planner last saved it) and the open cards'
+one-liners are quoted data for the refreshed instructions (instructions.py),
+never configuration: the caller names a cause and nothing else that shapes the
+session. Answered `{voice_session_id, mode: "live", live_session_id, answer,
+cause}`; 404 for a session not held here (ended), 409 for one with nothing to
+reopen (open, or a reopen in flight), and the start's refusals otherwise.
+Authenticated as every `/internal/` route.
+
+The pause is armed only with `VOICE_PAUSE=on` (PAUSE_SWITCH): it closes the
+voice, and until swarm-api forwards the reopen and writes the paused state
+(lane V3) and the console reopens on `session.state` (lane V7), nothing could
+wake a paused session. Off, nothing pauses and nothing else changes.
+
+THE FOLLOWER HOOK. Each session's start and end runs `Followers.start` and
+`Followers.stop`, every registered pair in turn (lane V6 registers the roster's
+follower). With nothing registered they do nothing; a follower's failure is
+logged and never fails the start or the end.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -122,7 +161,10 @@ from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
+from . import tools_read
+from .instructions import ReopenContext
+from .live import (MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, REOPEN_EVENT, LiveApi, LiveError, LiveRefused,
+                   NotPaused, SessionEnded, SessionExists, Sessions)
 from .planner import build_planner
 from .plannerlease import FRONT_HOLDER, PlannerAccounts
 from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
@@ -132,6 +174,41 @@ log = logging.getLogger("swarm_voice")
 VOICE_ID = r"^[A-Za-z0-9_-]{8,128}$"
 
 CallerCheck = Callable[[str], Awaitable[str]]
+FollowerStart = Callable[[str, "SessionGrant | None"], Awaitable[None]]
+FollowerStop = Callable[[str], Awaitable[None]]
+
+#: The environment switch that arms the pause (see THE PAUSE AND THE REOPEN).
+PAUSE_SWITCH = "VOICE_PAUSE"
+#: The largest brief a reopen carries, as JSON (swarm-api keeps it under 64 KiB).
+REOPEN_BRIEF_MAX_BYTES = 64 * 1024
+#: The most open cards' one-liners a reopen carries, and the longest one.
+REOPEN_CARDS_MAX = 200
+REOPEN_CARD_MAX_CHARS = 600
+
+
+class Followers:
+    """The hook that starts and stops a voice session's follower (THE
+    FOLLOWER HOOK): a registry, empty until lane V6 registers its follower."""
+
+    def __init__(self) -> None:
+        self._pairs: list[tuple[FollowerStart, FollowerStop]] = []
+
+    def register(self, start: FollowerStart, stop: FollowerStop) -> None:
+        self._pairs.append((start, stop))
+
+    async def start(self, voice_id: str, grant: SessionGrant | None) -> None:
+        for begin, _ in list(self._pairs):
+            try:
+                await begin(voice_id, grant)
+            except Exception as exc:  # noqa: BLE001 - a follower never fails the session
+                log.warning("voice session %s: a follower did not start: %s", voice_id, type(exc).__name__)
+
+    async def stop(self, voice_id: str) -> None:
+        for _, halt in list(self._pairs):
+            try:
+                await halt(voice_id)
+            except Exception as exc:  # noqa: BLE001 - a follower never fails the end
+                log.warning("voice session %s: a follower did not stop: %s", voice_id, type(exc).__name__)
 
 
 class StartRequest(BaseModel):
@@ -176,6 +253,38 @@ class StartRequest(BaseModel):
     def _a_curated_model(cls, value: str | None) -> str | None:
         if value is not None and value not in FRONT_MODELS:
             raise ValueError("conversation_model must be one of the curated conversation models")
+        return value
+
+
+class ReopenRequest(BaseModel):
+    """A reopen of a held voice session (THE PAUSE AND THE REOPEN)."""
+
+    offer: str = Field(min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
+    cause: Literal["result", "speech", "resume", "tier"]
+    #: Quoted data for the refreshed instructions, never configuration.
+    brief: dict[str, Any] | None = None
+    cards: list[str] = Field(default_factory=list, max_length=REOPEN_CARDS_MAX)
+    planner_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("brief")
+    @classmethod
+    def _a_small_brief(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and len(json.dumps(value, default=str)) > REOPEN_BRIEF_MAX_BYTES:
+            raise ValueError("brief is an object of at most 64 KiB")
+        return value
+
+    @field_validator("cards")
+    @classmethod
+    def _short_cards(cls, value: list[str]) -> list[str]:
+        if any(len(card) > REOPEN_CARD_MAX_CHARS for card in value):
+            raise ValueError(f"each card's one-liner is at most {REOPEN_CARD_MAX_CHARS} characters")
+        return value
+
+    @field_validator("planner_model")
+    @classmethod
+    def _a_class_pin(cls, value: str | None) -> str | None:
+        if value is not None and not admitted_model(value):
+            raise ValueError("planner_model must be the id of one of the pool's model classes")
         return value
 
 
@@ -274,6 +383,62 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
     return check
 
 
+#: swarm-api's route for a held next tier (swarm_api/routes/voice.py
+#: `tier_reopen`), on the session grant's write list.
+REOPEN_ROUTE = "/v1/voice/sessions/{session_id}/reopen"
+
+
+class ReopenSink:
+    """A Live session's event sink: tells swarm-api, through the session's
+    grant, the tier a spent key's reopen holds (see THE REOPEN REACHES THE
+    CONSOLE). Any other event is dropped unread."""
+
+    def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens) -> None:
+        self._http = http
+        self._base = api_base
+        self._id_tokens = id_tokens
+        #: The sessions whose events this sink is handed (`bind`).
+        self._sessions: Sessions | None = None
+
+    def bind(self, sessions: Sessions) -> None:
+        self._sessions = sessions
+
+    def _grant(self, voice_id: str) -> SessionGrant | None:
+        if self._sessions is None:
+            return None
+        session = self._sessions.get(voice_id) \
+            or self._sessions._awaiting.get(voice_id)  # noqa: SLF001 -- a spent session that already ended
+        return session.grant if session is not None else None
+
+    async def __call__(self, voice_id: str, event: dict[str, Any]) -> None:
+        if event.get("type") != REOPEN_EVENT:
+            return
+        tier = event.get("tier")
+        grant = self._grant(voice_id)
+        if not isinstance(tier, str) or grant is None:
+            log.info("voice session %s: no grant, so swarm-api is not told of the next tier", voice_id)
+            return
+        api = tools_read.SwarmApi.for_session(self._http, base_url=self._base, id_tokens=self._id_tokens,
+                                              grant=grant)
+        try:
+            await api._call("POST", REOPEN_ROUTE, REOPEN_ROUTE.format(session_id=grant.session_id),  # noqa: SLF001
+                            json_body={"tier": tier})
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: swarm-api was not told of the %s tier: %s", voice_id, tier, exc)
+            return
+        log.info("voice session %s: swarm-api was told of the %s tier", voice_id, tier)
+
+
+def build_reopen_sink(http: Any) -> ReopenSink | None:
+    """The sink from SWARM_API_URL (and SWARM_API_AUDIENCE, else the URL), the
+    planner's own address; None when it is unset."""
+    base = os.environ.get("SWARM_API_URL", "").strip()
+    if not base:
+        return None
+    audience = os.environ.get("SWARM_API_AUDIENCE", "").strip() or base
+    return ReopenSink(http, api_base=base, id_tokens=tools_read.google_id_tokens(audience))
+
+
 def build_sessions(http: Any) -> Sessions:
     # Every session's account is leased from the quota broker's Voice it pool;
     # without QUOTA_BROKER_URL this raises and the process does not start.
@@ -281,7 +446,15 @@ def build_sessions(http: Any) -> Sessions:
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
     # Each planner turn leases its Claude account through the same broker client.
-    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
+    # A spent key's next tier reaches swarm-api the same way (ReopenSink).
+    sink = build_reopen_sink(http)
+    # THE PAUSE is armed only with VOICE_PAUSE=on, until the console can wake it.
+    pause = PAUSE_AFTER_SECONDS if os.environ.get(PAUSE_SWITCH, "").strip().lower() == "on" else None
+    sessions = Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases),
+                        on_event=sink, pause_after=pause)
+    if sink is not None:
+        sink.bind(sessions)
+    return sessions
 
 
 def build_texts(http: Any, sessions: Sessions) -> TextSessions:
@@ -313,7 +486,8 @@ def usage_limited(exc: UsageLimited) -> JSONResponse:
 
 
 def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck | None = None,
-               texts: TextSessions | None = None, fronts: FrontSessions | None = None) -> FastAPI:
+               texts: TextSessions | None = None, fronts: FrontSessions | None = None,
+               followers: Followers | None = None) -> FastAPI:
     """The app. With no arguments (uvicorn's `--factory`), everything is built from
     the environment when the app starts, never at import."""
 
@@ -349,6 +523,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     app.state.verify_caller = verify_caller
     app.state.texts = texts
     app.state.fronts = fronts
+    app.state.followers = followers if followers is not None else Followers()
 
     def held_elsewhere(voice_id: str, *, but: str) -> bool:
         """Whether another of the three conversations holds this voice id."""
@@ -369,6 +544,12 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     @app.post("/internal/sessions", status_code=201)
     async def start(body: StartRequest, _caller: str = Depends(caller)) -> Any:
         grant = session_grant(body)
+        answer = await start_mode(body, grant)
+        if getattr(answer, "status_code", 201) == 201:
+            await app.state.followers.start(body.voice_session_id, grant)
+        return answer
+
+    async def start_mode(body: StartRequest, grant: Any) -> Any:
         if body.mode == "speech":
             return await start_speech(body, grant)
         if body.mode == "text":
@@ -479,8 +660,36 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(502, str(exc)) from None
         return {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
 
+    @app.post("/internal/sessions/{voice_session_id}/reopen")
+    async def reopen(voice_session_id: str, body: ReopenRequest, _caller: str = Depends(caller)) -> Any:
+        try:
+            session = await app.state.sessions.reopen(
+                voice_session_id, offer=body.offer, cause=body.cause, planner_model=body.planner_model,
+                context=ReopenContext(brief=body.brief, cards=list(body.cards)))
+        except SessionEnded:
+            raise HTTPException(404, "no such live session: it has ended") from None
+        except NotPaused:
+            raise HTTPException(409, "this voice session has nothing to reopen") from None
+        except SessionExists:
+            raise HTTPException(409, "this voice session is already starting or reopening") from None
+        except VoicePoolRefused as exc:
+            return pool_refusal(exc.reason)
+        except LiveRefused as exc:
+            log.warning("voice session %s: reopen failed: %s", voice_session_id, exc)
+            return openai_refusal(exc)
+        except (CredentialError, LiveError) as exc:
+            log.warning("voice session %s: reopen failed: %s", voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return {"voice_session_id": session.voice_id, "mode": "live", "live_session_id": session.live_id,
+                "answer": session.answer, "cause": body.cause}
+
     @app.post("/internal/sessions/{voice_session_id}/end")
     async def end(voice_session_id: str, _caller: str = Depends(caller)) -> dict:
+        ended = await end_mode(voice_session_id)
+        await app.state.followers.stop(voice_session_id)
+        return ended
+
+    async def end_mode(voice_session_id: str) -> dict:
         fronts_ = app.state.fronts
         if fronts_ is not None and fronts_.get(voice_session_id) is not None:
             front = await fronts_.end(voice_session_id)
@@ -500,8 +709,10 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(502, str(exc)) from None
         if session is None:
             raise HTTPException(404, "no such live session")
+        # Every Live session's seconds: a pause and each reopen add one (§3.12.8).
         return {"voice_session_id": voice_session_id, "ended": session.ended,
-                "usage_seconds": session.usage_seconds, "reason": session.reason}
+                "usage_seconds": session.talk_seconds if session.usage_seconds is not None
+                or session.earlier_seconds else None, "reason": session.reason}
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:

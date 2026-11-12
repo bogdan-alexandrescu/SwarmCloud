@@ -89,7 +89,7 @@
 # worker onto swarm-api's attempt-signed state routes. Until then a worker
 # registered with `false` gets PermissionDenied on its first read. It does not
 # remove a grant an earlier run made; section 3 prints the command that does.
-#   scripts/register-tenant.sh --group eng@saga.xyz --worker-firestore-access false
+#   scripts/register-tenant.sh --group eng@example.com --worker-firestore-access false
 #
 # A person's workspace, from its approved record, under the call guard only --
 # the Cloud Run job swarm-workspace-apply runs this, through
@@ -214,7 +214,7 @@ esac
 #     four bindings this mode makes -- Workload Identity for the namespace's two
 #     KSAs, act-as for the scheduler and the reconciler -- unconditioned, and
 #     no user-managed key. The release deployer's grants are allowed only on a
-#     record marked `migrated` (u-bogdan, §3.3), whose account Terraform made.
+#     record marked `migrated` (u-owner, §3.3), whose account Terraform made.
 #
 # THE STEPS (§2.2, §4.2), each recorded on the record as `steps.<id>` when it
 # starts and ends, which is what the console's progress view reads:
@@ -234,14 +234,14 @@ esac
 #
 # --mode create runs A1-A9; --mode limits runs A1, A7 and A8 (a ceiling change:
 # the namespace quota and the documents, no IAM call), and A9 after them when
-# it is repairing a quota (below); --mode verify runs A1 and A9 (the u-bogdan
+# it is repairing a quota (below); --mode verify runs A1 and A9 (the u-owner
 # migration, and an admin's check from People).
 #
 # WHAT A1 ADMITS. create: a record in `approved`; or `failed` / `needs_owner`
 # with an admin's retry recorded AFTER the last run's claim; or `applying` whose
 # run is dead (claimed over an hour ago and never finished). limits: `ready`,
 # or `failed` when the recorded failure is A9 on the ResourceQuota alone -- a
-# namespace applied with other numbers than the record's, as u-bogdan's was by
+# namespace applied with other numbers than the record's, as u-owner's was by
 # hand on 2026-10-23 (#2039) -- which it repairs: A7, A8, then A9, and `ready`
 # only if A9 passes. verify: `ready` or `failed`. Every mode needs `decision.verdict == approved`
 # by an email that is an admin in admin_roles/ NOW (a revoked admin's approval
@@ -277,7 +277,7 @@ esac
 #            A6 makes the TEAM slot swarm-tenant-<g>-git and its -refresh twin,
 #            empty, the worker on the slot only; members' own slots are the
 #            credential broker's (Q6 (a)). A7 labels the namespace
-#            swarm.saga.xyz/workspace=<w-id>, the label the deployer's scope
+#            swarm.example.com/workspace=<w-id>, the label the deployer's scope
 #            policy admits it by. A8 writes kind=group and directory_group.
 #   service  a service account of THIS project (Q7 (a)), filed under its
 #            personal id. A1 refuses a decision or a retry by anyone but the
@@ -302,8 +302,10 @@ WS_GROUP_TENANT_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # A group's directory check is good for this long (§4.1, `directory`).
 WS_DIRECTORY_MAX_AGE=86400
 # The label A7 puts on a group's or a service's namespace (kubernetes/render.py
-# WORKSPACE_LABEL); A9 reads it back.
-WS_NAMESPACE_LABEL="swarm.saga.xyz/workspace"
+# WORKSPACE_LABEL); A9 reads it back. Its key is the deployment's,
+# <label prefix>/workspace, which the guard read from its tfvars into the
+# expectation (namespace_label_key; deployment_label_prefix in lib/common.sh).
+WS_NAMESPACE_LABEL=""
 # Lower-cased, as swarm-api stores a principal; narrow enough that an address
 # is safe in a Firestore document path and a jq string.
 WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
@@ -327,7 +329,7 @@ WS_DEFAULT_CAPACITY_UNITS=8
 # largest limit a record may hold, are scripts/lib/workspace-quota.json's, read
 # by ws_quota_constants below and by kubernetes/render.py (workspace_quota),
 # never stated here: a second copy in render.py's defaults is what failed
-# u-bogdan's workspace on 2026-10-23 (QUOTA-ONE, #2039, BGD's decision).
+# u-owner's workspace on 2026-10-23 (QUOTA-ONE, #2039, the owner's decision).
 WS_PODS_PER_AGENT=""
 WS_CPU_PER_AGENT=""
 WS_MEMORY_GI_PER_CPU=""
@@ -663,7 +665,7 @@ ws_admit() {
     *) printf 'WORKSPACE_KIND_UNKNOWN the record is of kind %s, which this build does not make' \
          "$(printf '%s' "${WS_KIND}" | tr -cd 'a-z0-9-' | cut -c1-32)"; return 0 ;;
   esac
-  # The migrated shortcut is a person's (u-bogdan, §3.3): no group or service
+  # The migrated shortcut is a person's (u-owner, §3.3): no group or service
   # workspace predates approval, so none skips it.
   if [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" && "${WS_KIND}" == "personal" ]]; then
     return 0
@@ -680,6 +682,9 @@ ws_admit() {
   # rules, K1 being the owner's to grant (until then S2 stops for them), the
   # page on every IAP SetIamPolicy, and swarm-api's inner gate.
   if [[ "${WS_KIND}" == "service" ]]; then
+    # Read only for a service: a person's or a group's approval never needs it.
+    # A tfvars that cannot be read is no owner, and no approval (said above).
+    [[ -n "${WS_PLATFORM_OWNER}" ]] || WS_PLATFORM_OWNER="$(ws_platform_owner)" || WS_PLATFORM_OWNER=""
     [[ -n "${WS_PLATFORM_OWNER}" ]] \
       || { printf 'WORKSPACE_APPROVAL_OWNER_ONLY no platform owner is configured for %s, so no service workspace can be approved' "${PROJECT_ID}"; return 0; }
     [[ "${WS_DECIDED_BY}" == "${WS_PLATFORM_OWNER}" ]] \
@@ -693,12 +698,15 @@ ws_admit() {
   return 0
 }
 
-# The platform owner for this project, from the rules in the image
-# (workspace-calls.json `platform_owner`): never the record, never the
-# environment, which an execution override can set.
+# The platform owner for this project: `platform_owner` in the deployment's own
+# <env>.tfvars (deployment_setting in lib/common.sh), the value Terraform gives
+# swarm-api as PLATFORM_OWNER. Never the record, never the environment, which
+# an execution override can set. Nothing read is no owner, and no service
+# workspace is approved (ws_approval).
 ws_platform_owner() {
-  jq -r --arg p "${PROJECT_ID}" '(.platform_owner // {})[$p] // "" | ascii_downcase' \
-    "${SWARM_LIB_DIR}/workspace-calls.json"
+  local owner
+  owner="$(deployment_setting platform_owner)" || return 1
+  printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]'
 }
 
 # True when EMAIL is the owner in admin_roles/ now.
@@ -800,6 +808,7 @@ ws_load_names() {
   WS_FORGE_SLOT="$(ws_expect forge_slot)"
   WS_FORGE_TWIN="$(ws_expect forge_slot_twin)"
   WS_LABEL="$(ws_expect namespace_label)"
+  WS_NAMESPACE_LABEL="$(ws_expect namespace_label_key)"
   WS_SERVICE="$(ws_expect service_principal)"
   WS_FRONT_DOOR="$(ws_expect front_door_backend)"
   WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"
@@ -846,8 +855,8 @@ ws_load_names() {
   # group's and a service's namespace its label; a service its front door.
   case "${WS_KIND}" in
     personal) needed+=(WS_FORGE_TWIN) ;;
-    group) needed+=(WS_FORGE_TWIN WS_LABEL) ;;
-    service) needed+=(WS_LABEL WS_FRONT_DOOR) ;;
+    group) needed+=(WS_FORGE_TWIN WS_LABEL WS_NAMESPACE_LABEL) ;;
+    service) needed+=(WS_LABEL WS_NAMESPACE_LABEL WS_FRONT_DOOR) ;;
   esac
   for name in "${needed[@]}"; do
     [[ -n "${!name}" ]] || die "the guard's expectation holds no ${name#WS_}; nothing past A1 can run"
@@ -1044,7 +1053,6 @@ ws_claim_write() {
 ws_claim() {
   step "A1 claim (${WORKSPACE_ID})"
   local query count reason
-  WS_PLATFORM_OWNER="$(ws_platform_owner)"
 
   # 1. The record, by the opaque id: the only read the guard allows yet.
   query="$(jq -nc --arg w "${WORKSPACE_ID}" '{structuredQuery: {
@@ -1244,8 +1252,8 @@ ws_a1_directory() {
 # tenants stay Terraform's, §4.7 Q8 (a)), and the tenant document must name
 # this principal and kind. Otherwise A2-A7 would reach that tenant's worker,
 # bucket grants, slot and namespace before A8 noticed (a group `eng@` of any
-# domain slugs to `eng`; a service account `bogdan@<project>.iam...` derives a
-# person's `u-bogdan`). A8 checks the same again; this is the check that comes
+# domain slugs to `eng`; a service account `owner@<project>.iam...` derives a
+# person's `u-owner`). A8 checks the same again; this is the check that comes
 # first.
 ws_a1_tenant_free() {
   local tkind
@@ -1586,7 +1594,7 @@ ws_a5() {
 # create-secrets.sh --stdin or the git-token route: never from here.
 #
 # A PERSON'S workspace also gets its QA target credential secret
-# swarm-tenant-<t>-qa (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; BGD
+# swarm-tenant-<t>-qa (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; the owner
 # 2026-10-22: the deployer job creates it), through the same qa_secret_ensure
 # the operator path's section 4b runs: empty, swarm-api alone as version adder
 # and accessor, never the worker. A group or a service gets none here: the
@@ -2350,7 +2358,14 @@ esac
 
 if [[ -n "${PRINCIPAL}" ]]; then
   DOMAIN="${PRINCIPAL##*@}"
-  ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-saga.xyz}"
+  # The deployment's own allowed domains: ALLOWED_DOMAINS as swarm-api has it,
+  # else allowed_domains in its tfvars (deployment_list in lib/common.sh). No
+  # domain is written here, and none is guessed.
+  if [[ -z "${ALLOWED_DOMAINS:-}" ]]; then
+    ALLOWED_DOMAINS="$(deployment_list allowed_domains | paste -sd, -)" || ALLOWED_DOMAINS=""
+  fi
+  [[ -n "${ALLOWED_DOMAINS}" ]] \
+    || die "neither ALLOWED_DOMAINS nor this deployment's tfvars name an allowed domain, so the principal cannot be checked"
   case ",${ALLOWED_DOMAINS}," in
     *",${DOMAIN},"*) ;;
     *) die "${PRINCIPAL} is outside the allowed hosted domain(s) (${ALLOWED_DOMAINS}); authentication would reject it anyway" ;;

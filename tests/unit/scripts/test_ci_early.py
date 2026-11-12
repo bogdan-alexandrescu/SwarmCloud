@@ -22,7 +22,7 @@ rule.
 WHY PUSH TRIGGERS AND NOT AN EARLY DRAFT PULL REQUEST. The merge step reads
 every run of a required check at the head commit and holds the check green
 only when the LATEST run of EACH event that ran it is green (merge.py
-`required_check_state`; BGD's decision of 2026-10-22, CHECK-RULE, part of
+`required_check_state`; the owner's decision of 2026-10-22, CHECK-RULE, part of
 #1999). A push run at the head is one more event whose latest run must be
 green: a red push run is never outvoted by a green pull_request run. A re-run
 replaces only the earlier runs of its own event, so a flake that passed on
@@ -131,7 +131,7 @@ def _run(run_id: int, event: str, conclusion: str | None, status: str = "complet
         ([_run(1, "push", "failure"), _run(2, "pull_request", "success")], "failed"),
         # The lane push's run passed; the pull request's run is red.
         ([_run(1, "push", "success"), _run(2, "pull_request", "failure")], "failed"),
-        # ONE event, a flake re-run green: the re-run replaces it (BGD,
+        # ONE event, a flake re-run green: the re-run replaces it (the owner,
         # 2026-10-22). Under the every-run rule this read "failed" (#1999).
         ([_run(1, "push", "failure"), _run(2, "push", "success")], "green"),
         # ONE event, green and then red: the latest is red.
@@ -141,7 +141,7 @@ def _run(run_id: int, event: str, conclusion: str | None, status: str = "complet
 )
 def test_the_merge_step_holds_each_event_s_latest_run_at_the_head(runs, state):
     """The property the push triggers rely on to keep "every required check
-    green at head" exact: CI-EARLY (owner, 2026-10-20) with BGD's latest run
+    green at head" exact: CI-EARLY (owner, 2026-10-20) with the owner's latest run
     per event (2026-10-22). MUTATION (merge.py): let the newest run of a name
     win whatever its event -> the push-red, pull_request-green case reads
     green. MUTATION: keep the every-run rule -> the re-run case reads failed."""

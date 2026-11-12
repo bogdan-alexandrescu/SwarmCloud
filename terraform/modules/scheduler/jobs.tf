@@ -150,8 +150,9 @@ module "service_account_ids" {
 
 # The account is terraform/bootstrap's (platform_service_accounts.tf,
 # DAYONE-BOOT-2, design Q7); this module reads it. The live account was
-# forgotten here, never destroyed (terraform/infra/removed.tf), and adopted by
-# bootstrap's gated import; its email and unique id did not change.
+# forgotten here, never destroyed (a `removed` block in terraform/infra, deleted
+# once the state held none of its addresses), and adopted by bootstrap's gated
+# import; its email and unique id did not change.
 data "google_service_account" "rollup_sweeper" {
   project    = var.project_id
   account_id = module.service_account_ids.rollup_sweeper_id
