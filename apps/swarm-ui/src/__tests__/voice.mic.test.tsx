@@ -31,6 +31,7 @@ vi.mock('../fetch', async (importOriginal) => ({
 }))
 
 import { TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 
 beforeEach(() => {
   fetchMock.write.mockImplementation(async (target: { url: string }) =>
@@ -57,7 +58,7 @@ describe('the mic', () => {
   })
 
   it('is open by default, and Mute turns the track off and keeps the session', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     expect(mic.enabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
@@ -71,7 +72,7 @@ describe('the mic', () => {
   })
 
   it('on push-to-talk enables the track only while Space is held', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     fireEvent.click(screen.getByRole('button', { name: 'Push to talk' }))
     expect(mic.enabled).toBe(false)
@@ -92,7 +93,7 @@ describe('the mic', () => {
   })
 
   it('on push-to-talk enables the track only while the Hold to talk button is pressed', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     fireEvent.click(screen.getByRole('button', { name: 'Push to talk' }))
     const hold = screen.getByRole('button', { name: 'Hold to talk' })
@@ -110,7 +111,7 @@ describe('the mic', () => {
     render(
       <>
         <input aria-label="Elsewhere" />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     await start()
@@ -135,7 +136,7 @@ describe('speech and the idle stop', () => {
     render(
       <>
         <Poller />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     const pc = await start()
@@ -169,7 +170,7 @@ describe('speech and the idle stop', () => {
     render(
       <>
         <Poller />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     const pc = await start()
