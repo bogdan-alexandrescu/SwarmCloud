@@ -133,6 +133,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # A spent Live key's next tier (llm-providers.md §5.3): swarm-voice says
     # which tier is held for the reopen, never an act of the person's.
     ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+    # The work feed (voice-it.md §3.12.5): a delegation's lifecycle and the
+    # roster's changed rows, a record of the session's work, never an act.
+    ("POST", "/v1/voice/sessions/{session_id}/work"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the
