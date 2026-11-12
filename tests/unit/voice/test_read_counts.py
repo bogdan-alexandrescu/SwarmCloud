@@ -183,8 +183,9 @@ def test_submitted_by_names_only_the_person_never_another(who):
 
 
 def test_no_read_or_page_of_it_crosses_the_grants_tenant():
-    api = FakeApi(_grant(), running=450)
+    api = FakeApi(_grant(), running=450, mine=450)
     answer = _read(api, "list_agents", _agents(state="RUNNING", submitted_by="me"))
+    assert answer["total"] == 450
     assert not any(r["task_id"].startswith("x-") for r in answer["tasks"])
     assert len(api.requests) > 1
     for request in api.requests:
@@ -206,5 +207,5 @@ def test_the_list_tools_schemas_offer_the_filters_and_not_a_tenant():
 def test_search_is_never_the_way_to_count():
     search = next(s for s in tools_read.tool_schemas() if s["name"] == "search")
     assert "never to count" in search["description"]
-    assert "never with `search`" in prompts.SYSTEM
+    assert "never count with `search`" in prompts.SYSTEM
     assert "`total`" in prompts.SYSTEM
