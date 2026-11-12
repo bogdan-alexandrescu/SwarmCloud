@@ -1195,7 +1195,7 @@ disagree, the code is quoted and this section says what changes.
 | **A session belongs to one project.** The session document lives at `voice_projects/{project}/sessions/{session}`; the grant names `<project>/<session>` in `X-Swarm-Voice-Session`; a card write takes its project from the grant's session; Resume hands one project id to Talk's next Start through the tab's session storage (`RESUME_KEY`), and a person has one live session (`voice_live`) | `sessions.py`, `grant.py` (`_SESSION_RE`), `routes/voice.py` (`write_card`), `Projects.tsx` (`resumeProject`, `takeResumedProject`) | Many projects ride one session without moving it: a home project and a current one (§3.13.5) |
 | **Proposal and mock-up cards are one line.** `CardList.tsx` draws `work`, `review`, `plan`, `budget`, `stop` and `details_input`; every other kind is `NamedOnly` (its title and summary: "later lanes"). The catalogue has **13** kinds; §4's table listed 11 until this change: `readback` and `spec` came from voice-it-own-speech.md | `apps/swarm-ui/src/voice/CardList.tsx` (`RENDERERS`, `NamedOnly`), `swarm_api/voice/cards.py` (`KINDS`) | A renderer for every kind, through one registry (§3.13.6, §3.13.7) |
 | **Nobody can act on a card.** `cards.py` names each kind's actions and `allows_action` answers them, but only its test calls it; swarm-api has no route for a person's card action. The one person action on a drawn design is the Stage's frame approval of a **visual** (`POST /v1/voice/projects/{project_id}/visuals/{visual_id}/approval`, person only) | `cards.py` (`allows_action`), `routes/voice_visuals.py` (`approve_visual`) | One route for a person's card actions (§3.13.8); the visual approval is its precedent (person only, project path, `session_id` in the body) |
-| **Mock-up frames run no script.** The Stage draws each frame in `<iframe sandbox="">` with a content security policy (`FRAME_POLICY`: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:`) | `voice/Stage.tsx` (`FRAME_POLICY`, `framed`) | §4's `sandbox="allow-scripts"` is not what was built; **the code is true** and §4 now says so |
+| **Mock-up frames run no script.** The Stage on `main` still draws each frame in `<iframe sandbox="">` with a content security policy (`FRAME_POLICY`: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:`) | `voice/Stage.tsx` (`FRAME_POLICY`, `framed`) | The owner picked scripts on 12 November 2026 (question 20): a frame becomes `<iframe sandbox="allow-scripts">` under a policy that lets inline scripts run and blocks every network request (§4). **The renderers lane (§3.13.9's C5) changes it**; until it lands, the Stage's no-script frame is what runs |
 | **The console has no Mermaid.** Its graph library is `vis-network` 10.1.2; it has a safe Markdown renderer, a code block and a diff block | `apps/swarm-ui/package.json`, `ArtifactViewer.tsx` (`Markdown`), `components/Code.tsx` (`CodeBlock`, `DiffBlock`, `parseDiff`) | The viewer's renderers reuse these; Mermaid stays Phase 2's unbuilt diagram lane (§10) |
 | **The picked viewer's mock-up** keys its viewers by a content type (`VIEWERS`), draws a type it does not know with a generic viewer from its fields, opens a second card beside the first, and puts each viewer's actions at its foot: Pick, Mix, Ask again on a proposal; Pick this page, Comment, Full size on a mock-up; Edit by voice, Full size, File issue on a diagram; Approve, Comment, Ask again on a wireframe or a document; Approve, Ask for changes, Comment on a diff; Rerun failed, File issue on test results | branch `mockups/voice-cards-viewer`, `apps/swarm-ui/src/voice/viewer/VoiceCardsViewer.tsx` (MOCK-HOOK code, never merged) | The registry below is that shape, held to swarm-api's catalogue |
 
@@ -1399,29 +1399,53 @@ the grant, writing only the grant's own session:
 | `list_projects(state?)` | The person's projects in the session's tenant: id, title, state, goal's first line, last session; at most 50 | `GET /v1/voice/sessions/{session_id}/projects` (read list) |
 | `switch_project(project_id)` | Makes it current, opening it if needed; a catch-up follows when §3.13.4 says so | `POST /v1/voice/sessions/{session_id}/projects` `{action: switch}` |
 | `start_project(title, goal)` | Creates a new project (`in_progress`, the goal as its brief), opens it and makes it current; the previous one stays open | `{action: start}` |
-| `take_side_request()` | Makes the person's standing **Side requests** project current, creating it on first use | `{action: side}` |
+| `take_side_request()` | Takes the next request outside every open project: the session's current project becomes none until a switch or a start, and nothing is created | `{action: side}` |
 | `set_project_state(state, why)` | §3.13.2 | `{action: state}` |
 
 A spoken name ("switch to the bakery one") is resolved by the planner over
 `list_projects`; two close matches draw a Details card with the candidates,
-never a guess. **Side requests** (question 18) is one project per person and
-workspace, flagged `standing: true`: it is never completed, cancelled or
-archived, is pinned at the top of Projects, and its brief keeps the side
-requests' `open` and `decided` like any other. Every card and start therefore
-still has a project, which is what the store, the ledger and the tag key on.
-A side request that grows ("this is really a project") is moved by
+never a guess.
+
+**Side requests** (question 18, answered 12 November 2026: "the session alone,
+with no project"). A request outside every open project belongs to the
+session and to no project; nothing is created for it, and no standing project
+holds it. While one is taken, the session's `current_project_id` is `null`,
+and each record carries it this way:
+
+* **The store:** a card is stored under the session,
+  `voice_projects/{home}/sessions/{session}/cards/{card}`, with
+  `project_id: null`; a turn under the session's `turns/{turn}` the same way.
+  No project document, brief or state is written; no brief change happens.
+* **The ledger:** the caps are unchanged. The spend counts against the
+  session's $100 and the day's $300 like any other; its start records
+  `voice_starts.project_id: null` with the session id, and the ledger reads
+  its work by the session's tag below, so it is in the session's spend and in
+  no project's.
+* **The tags:** what the start submits carries a new tag,
+  `voice-session:<session>`, and no `voice:<project>` tag, so no project's
+  work list counts it.
+* **The stream:** its events stay on the session's stream with `project_id:
+  null`; taking one appends `project.switch` with `to: null`, and Talk shows
+  its cards under "Side requests" in the switcher's filter.
+
+**Projects never lists it**: Projects reads project documents, and a side
+request has none. **A resumed project never shows it**: a project's cards,
+turns, brief and catch-up are read from that project, and a side request is
+in none. **It is found in the session's history**: the session's transcript,
+its cards and its stream events, read from the session under its home
+project. A side request that grows ("this is really a project") is moved by
 `start_project` plus the planner's next brief change; cards already drawn stay
-where they were drawn.
+in the session where they were drawn.
 
 **Where each record says which project it belongs to.**
 
 | Record | Project |
 |---|---|
-| A card | The envelope's `project_id` (already server-set): the session's current project when the card is first written; an update of an existing `card_id` keeps the card's own project, whatever is current. Stored under that project, `voice_projects/{project}/cards/{card}` |
-| A start | `voice_starts.project_id`, the current project when the act ran, and the tag `voice:<project>` on what it submits |
-| A turn | `voice_projects/{project}/turns/{turn}` under the current project when the turn began; a turn that switched records `switched_to` |
-| A brief change | The current project when the turn ends |
-| A stream event | Stays on the session's stream; every event carries `project_id`, so Talk can group and filter, and a switch appends `project.switch` (`{from, to, by}`) |
+| A card | The envelope's `project_id` (already server-set): the session's current project when the card is first written; an update of an existing `card_id` keeps the card's own project, whatever is current. Stored under that project, `voice_projects/{project}/cards/{card}`; a side request's card is `project_id: null`, stored under the session |
+| A start | `voice_starts.project_id`, the current project when the act ran, and the tag `voice:<project>` on what it submits; a side request's start is `null` with `voice-session:<session>` alone |
+| A turn | `voice_projects/{project}/turns/{turn}` under the current project when the turn began, or under the session for a side request; a turn that switched records `switched_to` |
+| A brief change | The current project when the turn ends; none for a side request |
+| A stream event | Stays on the session's stream; every event carries `project_id` (`null` for a side request), so Talk can group and filter, and a switch appends `project.switch` (`{from, to, by}`) |
 | The transcript | The session's, under the home project; each segment carries the current project id |
 | The ledger | Unchanged: $100 a session and $300 a day whatever the projects; a project's spend is read from its starts |
 
@@ -1457,7 +1481,7 @@ kind names one content type; several kinds may share one (a `spec` and a
 | Kind | Content | Fields (new kinds and new fields in bold) | Compact card | Viewer | Its own actions | Limits; what is sanitised |
 |---|---|---|---|---|---|---|
 | `proposal` | `options` | question, 2 to 4 options (label, gets right, costs, recommended, **`mockup_ref`**: a mock-up card and frame that shows the option), recommendation | The options as chips, the recommended one starred, Pick <recommended> | The options side by side, each with its mock-up thumbnail when it has one | pick, mix, ask_again | Text only; `mockup_ref` is a `vc_` id and a frame name of this project |
-| `mockup` | `frames` | drawn by, frames (name, html or blob key), **`viewport`** (desktop, phone), **`height`** | Scaled thumbnails of the pages, the picked one marked; "Review 3 pages" | One page at a time with page tabs, zoom, desktop or phone width, comment pins | pick_frame, comment | 12 frames of 200 KiB (`HTML_MAX`), larger as a blob; drawn only in `<iframe sandbox="">` under `FRAME_POLICY`: no script, no network, no form, no top navigation, no permission |
+| `mockup` | `frames` | drawn by, frames (name, html or blob key), **`viewport`** (desktop, phone), **`height`** | Scaled thumbnails of the pages, the picked one marked; "Review 3 pages" | One page at a time with page tabs, zoom, desktop or phone width, comment pins | pick_frame, comment | 12 frames of 200 KiB (`HTML_MAX`), larger as a blob; drawn only in `<iframe sandbox="allow-scripts">` under `FRAME_POLICY` (`default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'`): scripts run, with no `allow-same-origin`, no network, no form, no popup, no top navigation, no permission |
 | **`wireframe`** | `frames` | frames as a mock-up's, **`annotations`** (frame, point, text) | One thumbnail | As a mock-up, with the annotations shown as pins | approve, comment, ask_again | As a mock-up's; annotations are text |
 | `diagram` | `graph` | diagram type (architecture, **system**, flow, user flow, **product flow**, sequence, ER, state), graph (nodes with **`frame_ref`** for a product flow's screens, edges), source, blob key, repaired | The graph's outline | Pan and zoom, a node selected shows its label and edges; a product flow's nodes show their screens' thumbnails | edit_by_voice, file_issue_from_node | 200 nodes, 400 edges; labels are text. Architecture and system draw in `vis-network`; flows and state in the viewer's own layered drawing; sequence and ER as Mermaid source text until Phase 2's Mermaid lane renders them in its sandbox |
 | **`code`** | `code` | repository, path, ref, language, first line, text, **or** a reference to a file swarm-api reads (as `show_file` does) | Three lines | The console's `CodeBlock`, wrap on or off | comment, ask_again | 64 KiB, 2,000 lines; drawn as text, never as markup |
@@ -1476,8 +1500,8 @@ to the planner like any action, §3.13.8) and `dismiss`.
 
 **Sanitised everywhere.** Every string of every card still passes the shared
 redaction rules on write and is refused on a match (`credential_refusal`).
-No renderer builds markup from a card string: HTML exists only inside the
-sandboxed frame, Markdown goes through the console's own renderer, and
+No renderer builds markup from a card string: HTML, and any script in it,
+exists only inside the sandboxed frame (opaque origin, no network), Markdown goes through the console's own renderer, and
 diagrams are data drawn by the console. A body over a document's size goes
 to the tenant's prefix as a create-only blob and is read back as text.
 
@@ -1613,14 +1637,14 @@ whitelist, so a lane that writes a new event lists `stream.py`.
 | **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check, a person's Cancel and the list of running starts it cancels), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; a person's Cancel cancels each queued or running start of the project through its kind's cancel route (a fake platform client records the calls) and leaves one whose cancel fails listed as running; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
 | **P2. The brief has a shape and a bound, and the session context serves it** | `swarm_api/voice/brief.py` (new: the shape, the change merge, the bounds, the old `open` items), `swarm_api/routes/voice_context.py` (new: `GET .../context`, `POST .../brief`), `swarm_api/voice/grant.py` (the two routes, after V4), `swarm_api/main.py` (its include line, after P1), `tests/unit/control_plane/test_voice_brief.py` | P1 | A change merges once per `turn_id`; past a bound `open` is 422 and `decided` drops its oldest; a fake key built at runtime in a change is refused naming the field; a follow-up's old item reads as text | the bound (question 15) |
 | **P3. The planner reads its context and saves the brief after every turn** | `swarm_voice/planner.py` (the context read; `speak`'s `brief`; the turn record), `swarm_voice/prompts.py` (the brief's rules and the kind choice table, after V5), `swarm_voice/tools_read.py` (the context read), `tests/unit/voice/test_planner_brief.py` | P2 | With a fake swarm-api: every turn posts one change with its `turn_id`; a failed turn posts none; the system prompt's bytes do not change with the brief | no |
-| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; Side requests is created once | the cap and Side requests (questions 17, 18) |
-| **P5. The planner switches, opens and starts projects and takes side requests by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a side request goes to Side requests | no |
+| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; a request outside every open project is stored under the session with no project, and Projects never lists it | the cap (question 17); side requests answered 12 November 2026 (question 18) |
+| **P5. The planner switches, opens and starts projects and takes side requests by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a side request is taken with no project and creates none | no |
 | **P6. A resumed project opens with a catch-up from stored facts, which the owner can skip** | `swarm_api/voice/catchup.py` (new: the pack), `swarm_api/routes/voice_context.py` (`catchup` in the context, after P2), `swarm_voice/planner.py` (the first turn, after P5), `swarm_api/voice/preferences.py` (`catchup`: `always`, `changed`, `never`; default `changed`), `voice/Preferences.tsx` (its choice), `tests/unit/control_plane/test_voice_catchup.py`, `__tests__/voice.preferences.test.tsx` | P3, P5 | The pack holds only facts since the last session; `catchup: never` gives none and an unknown value is 422; Preferences draws the choice; ten minutes and nothing changed gives none; a skip still draws the card from the pack | the length (question 16) |
 | **C1. The catalogue names each kind's content, and the new kinds join on both sides** | `swarm_api/voice/cards.py` (`content`; `wireframe`, `code`, `diff`, `document`, `test_results`; diagram types; `mockup_ref`, `frame_ref`, `viewport`; `outcome`; `CATALOGUE_VERSION` 3; after V5), `apps/swarm-ui/src/voice/cards.ts`, `tests/unit/control_plane/test_voice_cards.py` | V5 | Red until both sides name the same kinds, contents and actions, and every content has a renderer or is `generic` | no |
 | **C2. The viewer opens any card full size, and the list draws compact cards from one registry** | `voice/viewer/registry.tsx` (new: `RENDERERS`, the generic viewer), `voice/viewer/Viewer.tsx` (new: the shell, beside, the action foot), `voice/CardList.tsx` (the compact cards, after V9), `styles/voice-viewer.css` (new), `__tests__/voice.viewer.test.tsx` | C1 | An unknown kind draws the generic viewer as text; the action foot shows only the kind's actions; Open beside keeps the first card | no (the pick is made; the code ports `mockups/voice-cards-viewer`) |
 | **C3. A person acts on a card through one route, and the action becomes the planner's next input** | `swarm_api/voice/cardactions.py` (new), `swarm_api/routes/voice_cards.py` (`/actions`; `/accept` through the shared rule; after V5), `swarm_api/voice/sessions.py` (the client's `input` call, after P4), `swarm_api/voice/grant.py` (the spoken `outcome` route, after P4), `swarm_api/voice/stream.py` (`card.action` in `EVENT_TYPES` and its payload whitelist, after P4), `tests/unit/control_plane/test_voice_card_actions.py` | C1, P4 | A grant is 403; an action frames one `card.action` event with its `project_id`; an old `card_version` is 409; a pick on a `done` proposal is 409; a retried `action_id` is one action; with no live session it stays `pending` | no; **one security review** (a person's actions and the grant) |
 | **C4. swarm-voice runs a person's actions as the next planner turn** | `swarm_voice/main.py` (`/internal/sessions/{id}/input`, after V2), `swarm_voice/planner.py` (actions as fenced input, after P6), `tests/unit/voice/test_card_action_turn.py` | C3, P6 | Two actions during a turn ride one next turn; each is marked consumed once; an action's text cannot change the system prompt | no |
-| **C5. Each content type has its renderer** | `voice/viewer/kinds/` (new: options, frames, graph, code, diff, markdown, tests), `__tests__/voice.viewer.kinds.test.tsx` | C2 | A frame's markup is `sandbox=""` with the policy and no other attribute grants anything; a document's `javascript:` link is text; a diff over its bound reads from the blob | no |
+| **C5. Each content type has its renderer** | `voice/viewer/kinds/` (new: options, frames, graph, code, diff, markdown, tests), `__tests__/voice.viewer.kinds.test.tsx` | C2 | A frame's markup is `sandbox="allow-scripts"` with the policy, never `allow-same-origin`, and a script inside it cannot reach the network; a document's `javascript:` link is text; a diff over its bound reads from the blob | no |
 | **C6. Projects shows the states and Talk the open projects** | `voice/Projects.tsx` (states, filter, tooltips, Resume into a live session), `voice/Talk.tsx` (the current project, the switcher, the caption line on a switch and on each action; after V7), `voice/CardList.tsx` (`STREAM_EVENTS`: `project.switch`, `card.action`; after C2), `__tests__/voice.projects.test.tsx` | P1, P4, C2, C3, P0 | Each state draws its tooltip line; a `project.switch` event draws the caption line; archived is hidden by default; Resume with a live session switches it and writes no `RESUME_KEY` | **mock-up** (P0) |
 | **P7. Projects, the catch-up, a switch and a picked card run end to end on a deployment** | none in the repository: a recorded session on the epic resuming a project with its catch-up, switching to a second, taking a side request, picking a proposal and a mock-up page, and the project states after a merge | everything | n/a | no |
 
@@ -1704,16 +1728,21 @@ limits and sanitising are §3.13.6's registry.
 
 **Rendering rules.**
 
-* **Mock-ups** (and wireframes) render only inside an `<iframe sandbox="">`:
-  no scripts, no `allow-same-origin`, so they run in an opaque origin that
-  cannot read the console's cookies or call its API, and no forms, popups, top
-  navigation or `allow` permissions (no mic, no camera). The page puts a
-  content security policy at the top of `srcdoc` (`FRAME_POLICY`:
-  `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src
-  data:`), so a frame cannot fetch or send anything. **Corrected 2026-11-11:**
-  this section said `sandbox="allow-scripts"`; what the Stage built
-  (`voice/Stage.tsx`) runs no script, and the viewer keeps that (question 20). This is the
-  sandboxed-frame pattern MCP Apps uses [18]. The HTML is read from swarm-api
+* **Mock-ups** (and wireframes) render only inside an
+  `<iframe sandbox="allow-scripts">`, so a mock-up can be a clickable
+  prototype: no `allow-same-origin`, so its scripts run in an opaque origin
+  that cannot read the console's cookies, storage or DOM or call its API, and
+  no `allow-forms`, `allow-popups` or `allow-top-navigation` and no `allow`
+  permissions (no mic, no camera). The page puts a content security policy at
+  the top of `srcdoc` (`FRAME_POLICY`: `default-src 'none'; script-src
+  'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:;
+  connect-src 'none'`), which lets inline scripts and styles run and blocks
+  every network request: no fetch, XHR, WebSocket, beacon, external script,
+  image or font, so a frame cannot fetch or send anything. **Answered 12
+  November 2026 (question 20):** the owner picked `allow-scripts`, still with
+  no `allow-same-origin` and no network. The Stage on `main` still draws
+  frames with `sandbox=""` and no script; the renderers lane (§3.13.9's C5)
+  changes it. This is the sandboxed-frame pattern MCP Apps uses [18]. The HTML is read from swarm-api
   as text, never served as HTML, which keeps `ArtifactViewer.tsx`'s rule that
   no screen builds HTML from artifact bytes.
 * **Real-product mock-ups** follow the owner's mock-up practice: real console
@@ -2131,16 +2160,21 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     or the whole catch-up spoken.
 17. **How many projects one session holds open (§3.13.5):** six, the least
     used closing first (recommended); three; or no cap below Projects' 50.
-18. **Where side requests go (§3.13.5):** one standing Side requests project per
-    person and workspace (recommended); each side request its own small
-    project; or the session alone, with no project.
-19. **Whether a comment starts a planner turn (§3.13.8):** comments ride the
-    next turn, and Send on the viewer sends them now (recommended); every
-    comment starts a turn.
-20. **Scripts in mock-up frames (§4, §3.13.6):** none: `sandbox=""` under the
-    frame policy, as the Stage built it (recommended); or `allow-scripts`
-    (still no `allow-same-origin`, no network) so a mock-up can be a clickable
-    prototype.
+18. **Where side requests go (§3.13.5):** answered 12 November 2026: the
+    session alone, with no project. A request outside every open project is
+    stored under the session, never listed in Projects and found in the
+    session's history (§3.13.5). The other options were one standing Side
+    requests project per person and workspace, or each side request its own
+    small project.
+19. **Whether a comment starts a planner turn (§3.13.8):** answered 12
+    November 2026: comments ride the next turn, and Send on the viewer sends
+    them now, as §3.13.8 says. The other option was that every comment starts
+    a turn.
+20. **Scripts in mock-up frames (§4, §3.13.6):** answered 12 November 2026:
+    `allow-scripts`, still with no `allow-same-origin` and no network, so a
+    mock-up can be a clickable prototype (§4's rendering rules). The other
+    option was none, `sandbox=""` as the Stage on `main` still draws it until
+    the renderers lane (C5) lands.
 
 ---
 
