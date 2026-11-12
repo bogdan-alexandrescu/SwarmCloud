@@ -94,6 +94,7 @@ from ..errors import (
     Forbidden,
     Gone,
     NotFound,
+    RoleAdminRequired,
     RoleMemberRequired,
     RoleUnavailable,
     UpstreamUnavailable,
@@ -1514,18 +1515,6 @@ class RunEnd(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-class RunEndAdminRequired(Forbidden):
-    """Only the workspace's admin, or a platform admin, ends a run (#3612)."""
-
-    code = "run_end_admin_required"
-
-
-class RunNotEndable(Conflict):
-    """Only an APPROVED run with no workflow is ended by hand (#3612)."""
-
-    code = "run_not_endable"
-
-
 def _ends_runs(ctx: AppContext, auth: AuthContext) -> bool:
     """The caller is the selected workspace's admin: its own grant, a
     personal workspace's person, or a platform admin. Read fresh, past the
@@ -1556,13 +1545,16 @@ def end_run(
     holds nothing and its plan's files are released to the runs behind it.
     """
     if not _ends_runs(ctx, auth):
-        raise RunEndAdminRequired(
+        # Raised, never `refuse`d: the route is new, so no existing caller is
+        # refused, and letting a member end a run is the breach itself -- as
+        # on the role write routes, which raise the same code.
+        raise RoleAdminRequired(
             f"only an admin of {tenant_id} ends a run by hand; nothing was changed",
-            detail={"tenant_id": tenant_id},
+            detail={"tenant_id": tenant_id, "required": roles.ADMIN},
         )
     current = _runs(ctx).get(tenant_id, run_id)
     if current.state != RunState.APPROVED or current.workflow_id:
-        raise RunNotEndable(
+        raise issueruns_module.InvalidRunTransition(
             f"run {run_id!r} is {current.state.value}"
             + (f" with workflow {current.workflow_id}" if current.workflow_id else "")
             + "; only an APPROVED run whose workflow was never stored is ended here",

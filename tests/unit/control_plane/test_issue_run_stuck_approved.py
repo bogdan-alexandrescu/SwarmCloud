@@ -265,7 +265,7 @@ def test_a_plain_member_cannot_end_a_run(client, db, objects, api_context):
     response = _end(client, run["id"], "alice", reason="stuck")
 
     assert response.status_code == 403, response.text
-    assert response.json()["code"] == "run_end_admin_required"
+    assert response.json()["code"] == "role_admin_required"
     assert _stored(db, run["id"])["state"] == "APPROVED"
 
 
@@ -278,7 +278,7 @@ def test_only_an_approved_run_with_no_workflow_can_be_ended(client, db, objects,
 
     refused = _end(client, planned["id"], "dave", reason="stuck")
     assert refused.status_code == 409, refused.text
-    assert refused.json()["code"] == "run_not_endable"
+    assert refused.json()["code"] == "invalid_run_transition"
     assert _stored(db, planned["id"])["state"] == "PLANNED"
 
     running = client.post("/v1/runs", headers=auth_header("alice"),

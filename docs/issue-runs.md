@@ -330,9 +330,9 @@ wins.
 **An admin can end one sooner**: `POST /v1/runs/{run_id}:end {"reason"}` (1-500
 characters). Only the selected workspace's `admin` (its own grant, a personal
 workspace's person) or a platform admin may call it; anyone else is 403
-`run_end_admin_required`. The run is read under the caller's tenant (another
+`role_admin_required`. The run is read under the caller's tenant (another
 tenant's run is 404), and only an `APPROVED` run with no workflow is ended:
-anything else is 409 `run_not_endable` (a `PLANNED` plan is turned down with
+anything else is 409 `invalid_run_transition` (a `PLANNED` plan is turned down with
 `plan:reject`). The run ends `FAILED`, its error `ended by <email>: <reason>`.
 
 ## Sweeper: SwarmCloud finds the issues to work on
