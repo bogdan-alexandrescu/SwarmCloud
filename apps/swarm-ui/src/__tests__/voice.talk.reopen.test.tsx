@@ -44,6 +44,7 @@ vi.mock('../fetch', async (importOriginal) => {
 
 import { FIXTURE_CARDS, type VoiceCard } from '../voice/CardList'
 import { REOPEN_WAIT_MS, TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 
 const SESSION = 'vs-0001'
 
@@ -116,7 +117,7 @@ describe('a spent Live key reopens on the next tier', () => {
 
   it('offers again to the same session, keeps the captions and the cards, and draws one caption', async () => {
     answer()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const first = await start()
     const es = FakeEventSource.last
     await act(async () => first.events.deliver({ type: 'session.input_transcript.done', item_id: 'u1', transcript: 'Add CSV export to Runs.' }))
@@ -157,7 +158,7 @@ describe('a spent Live key reopens on the next tier', () => {
 
   it('draws nothing and offers nothing for a tier it does not know', async () => {
     answer()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await act(async () => FakeEventSource.last.frame('voice.tier.reopen', 1, { tier: 'sk-not-a-tier' }))
     await settle(act)
@@ -168,7 +169,7 @@ describe('a spent Live key reopens on the next tier', () => {
   it('ends the talk with its reason when the reopen is refused', async () => {
     const message = 'swarm-voice refused the session (HTTP 500); it was ended.'
     answer({ status: 'error', error: { status: 502, code: 'voice_unreachable', message } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
 
     await act(async () => FakeEventSource.last.frame('voice.tier.reopen', 1, { tier: 'api_key' }))
@@ -185,7 +186,7 @@ describe('a spent Live key reopens on the next tier', () => {
 
   it('a dropped peer waits for the reopen, and with none ends the talk', async () => {
     answer()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const first = await start()
     vi.useFakeTimers()
     first.connectionState = 'failed'
@@ -204,7 +205,7 @@ describe('a spent Live key reopens on the next tier', () => {
 
   it('a dropped peer reopens when the event comes within the wait', async () => {
     answer()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const first = await start()
     vi.useFakeTimers()
     first.connectionState = 'failed'

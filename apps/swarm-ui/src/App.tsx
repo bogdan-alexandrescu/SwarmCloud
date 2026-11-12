@@ -93,6 +93,7 @@ import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
 import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceSettingsSectionScreen, VoiceTalkScreen } from './voice/Section'
+import { VoiceSessionHolder } from './voice/session'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 import { HomeScreen } from './Home'
 
@@ -1819,6 +1820,8 @@ export function App() {
     // (§3.4, §11.3). A bar that occupies its height rather than painting over
     // whatever lands under it, and that runs under the content only: under
     // the spine it cut the avatar off at 1440x900 (#503).
+    // Voice it's session holder, above the routed screen for the tab's life (voice/session.tsx).
+    <VoiceSessionHolder navigate={go}>
     <div className={`ctl-frame${trail ? ' has-ctl-bar' : ''}`}>
         <SkyShell
           section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId, at.tab)}
@@ -1961,6 +1964,7 @@ export function App() {
           </FrameAge.Provider>
         </SkyShell>
     </div>
+    </VoiceSessionHolder>
   )
 }
 

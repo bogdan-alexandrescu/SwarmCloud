@@ -36,6 +36,7 @@ vi.mock('../fetch', async (importOriginal) => ({
 
 import { CostPill } from '../voice/CostPill'
 import { TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 
 const SESSION = 'vs_0001'
 
@@ -228,7 +229,7 @@ describe('the Talk pane carries the pill in its header row', () => {
   })
 
   it('shows no pill before a session; once it starts, the pill sits beside End and the meter is gone', async () => {
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     expect(screen.queryByRole('button', { name: /^Cost/ })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
@@ -242,7 +243,7 @@ describe('the Talk pane carries the pill in its header row', () => {
   })
 
   it("the prose guard: the live pane's words went down with the meter gone", async () => {
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
     await settle(act)
     // The live pane on this ledger, measured with the budget meter beside it
