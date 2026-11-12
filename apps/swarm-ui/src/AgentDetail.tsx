@@ -1829,13 +1829,18 @@ function hhmm(iso: string): string {
   return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
 }
 
+/** An event's age, for the row with no predecessor on the page to show a gap from. */
+export function ageText(iso: string, now: number): string {
+  return timeAgo(iso, now)
+}
+
 /**
  * One event row: its local time (the absolute instant in its title, as the
  * Attempts tab writes it), its kind in words, the gap since the event before
  * it on the page, and whose attempt it was. No JSON: the detail is on the
  * Attempts tab.
  */
-function DtEventRow({ e, prev, owner }: { e: TaskEvent; prev: TaskEvent | undefined; owner: string | null }) {
+function DtEventRow({ e, prev, owner, now }: { e: TaskEvent; prev: TaskEvent | undefined; owner: string | null; now: number }) {
   const kind = eventKind(e)
   const bad = /fail|lost|expired|refused/.test(kind)
   const at = instant(e.at)
@@ -1847,7 +1852,11 @@ function DtEventRow({ e, prev, owner }: { e: TaskEvent; prev: TaskEvent | undefi
       </time>
       <span>
         <span className="dt-ev-k">{eventWord(e)}</span>
-        {at !== null && before !== null && <small> {gapText(at - before)}</small>}
+        {/* THE OLDEST ROW ON THE PAGE HAS NO GAP (#3015): nothing before it is
+            on the page to measure from, so it drew no time at all. It shows its
+            own age instead, as `EventWhen` does on the Attempts tab. */}
+        {at !== null && before !== null && <small data-when="gap"> {gapText(at - before)}</small>}
+        {at !== null && before === null && <small data-when="age"> {ageText(e.at, now)}</small>}
         {owner !== null && <small> · {owner}</small>}
       </span>
     </li>
@@ -1977,7 +1986,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         <>
           <ol className="dt-evs">
             {newest.slice(0, 5).map((e, i) => (
-              <DtEventRow key={e.event_id} e={e} prev={newest[i + 1]} owner={ownerOf(e)} />
+              <DtEventRow key={e.event_id} e={e} prev={newest[i + 1]} owner={ownerOf(e)} now={now} />
             ))}
           </ol>
           {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER. Proven
@@ -1999,7 +2008,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               className="dt-note"
               aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
             >
-              Newest first · first page only
+              Newest first · the first page of events
             </p>
           )}
           {events.length > 5 && (
@@ -2007,7 +2016,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               <summary>All {events.length} events</summary>
               <ol className="dt-evs dt-evs-all">
                 {newest.slice(5).map((e, i) => (
-                  <DtEventRow key={e.event_id} e={e} prev={newest[i + 6]} owner={ownerOf(e)} />
+                  <DtEventRow key={e.event_id} e={e} prev={newest[i + 6]} owner={ownerOf(e)} now={now} />
                 ))}
               </ol>
             </details>
