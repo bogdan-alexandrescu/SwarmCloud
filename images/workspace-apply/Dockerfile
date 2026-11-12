@@ -267,7 +267,9 @@ RUN find /opt/swarm -name __pycache__ -prune -exec rm -rf {} + \
 #     with nothing else in it -- as the job will see it;
 #   * the scripts parse;
 #   * render.py imports its three packages from this layout and renders a
-#     tenant (offline: it marks the render not-for-apply and says so);
+#     tenant (offline: it marks the render not-for-apply and says so), under
+#     the placeholder label-key prefix: a deployment's comes from the job's
+#     command (--label-prefix, entry.py), never from the image;
 #   * the call guard judges its own cases (scripts/lib/workspace-guard-cases.json)
 #     on this image, as every execution does again before it runs.
 RUN set -e \
@@ -276,7 +278,7 @@ RUN set -e \
  && bash -n /opt/swarm/scripts/workspace-apply.sh \
  && bash -n /opt/swarm/scripts/register-tenant.sh \
  && bash -n /opt/swarm/scripts/lib/workspace-guard.sh \
- && python3 -I /opt/swarm/kubernetes/render.py tenant --tenant u-selftest \
+ && SWARM_LABEL_PREFIX=swarm.example.com python3 -I /opt/swarm/kubernetes/render.py tenant --tenant u-selftest \
       --gsa swarm-agent-worker-u-selftest@example-project.iam.gserviceaccount.com >/dev/null \
  && env -i PATH="${safe_path}" HOME=/tmp TMPDIR=/tmp /opt/swarm/scripts/lib/workspace-guard.sh self-test >/dev/null
 

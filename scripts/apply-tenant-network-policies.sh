@@ -104,6 +104,15 @@ esac
 refuse_foreign "--cluster '${GKE_CLUSTER}'" "${GKE_CLUSTER}"
 EXPECTED_ENTRY="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
 
+# --- the label-key prefix ----------------------------------------------------
+# Every policy render (the default-deny and egress policies' annotations) and
+# the closing parity check's read take one prefix, resolved here before any
+# gcloud or kubectl call exactly as kubernetes/apply.sh's step 0 does (common.sh
+# require_label_prefix; owner, 12 November 2026, "Tfvars everywhere"): the
+# deployment's tfvars name it, a configured one that differs is refused. The
+# release and hotfix jobs that run this set no prefix of their own.
+require_label_prefix "nothing was applied"
+
 step "Tenant network policies (${GKE_CLUSTER}, ${PROJECT_ID}/${GKE_LOCATION})"
 
 if [[ "${GET_CREDENTIALS}" -eq 1 ]]; then

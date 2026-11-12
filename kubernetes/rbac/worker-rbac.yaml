@@ -51,7 +51,7 @@ metadata:
     swarm-tenant: __TENANT_ID__
     app.kubernetes.io/part-of: swarm
   annotations:
-    swarm.saga.xyz/rationale: >-
+    __LABEL_PREFIX__/rationale: >-
       Intentionally empty. A worker needs no Kubernetes API access; its state is
       in Firestore, its artifacts are in GCS and its credentials arrive as
       projected environment variables.

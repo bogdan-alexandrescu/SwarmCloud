@@ -91,7 +91,9 @@ def _fwd_manifest(image: str = IMAGE) -> str:
     text = TEMPLATE.read_text()
     for key, value in values.items():
         text = text.replace(key, value)
-    assert "__" not in "".join(line for line in text.splitlines() if not line.lstrip().startswith("#")), \
+    # terraform leaves __LABEL_PREFIX__ for kubernetes/apply.sh to fill.
+    assert "__" not in "".join(line for line in text.splitlines()
+                               if not line.lstrip().startswith("#")).replace("__LABEL_PREFIX__", ""), \
         "a placeholder the test does not fill"
     return text
 
@@ -331,7 +333,9 @@ def test_a_manifest_is_applied_through_apply_sh_then_rolled_then_read_back(tmp_p
     result = cluster.run("--tf-init", "--get-credentials", "--confirm")
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
-    assert (cluster.dir / "applied.yaml").read_text().strip() == _fwd_manifest().strip()
+    # apply.sh filled the label prefix terraform left (kubernetes/label_prefix.py).
+    assert (cluster.dir / "applied.yaml").read_text().strip() == \
+        _fwd_manifest().replace("__LABEL_PREFIX__", f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}").strip()
 
     terraform = cluster.log("terraform").splitlines()
     assert _first(terraform, "init") < _first(terraform, f"output -raw {OUTPUT}")
@@ -403,7 +407,9 @@ def test_apply_sh_swarm_typesafe_fwd_applies_terraforms_manifest_alone(tmp_path)
     result = cluster.apply("--confirm")
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
-    assert (cluster.dir / "applied.yaml").read_text().strip() == _fwd_manifest().strip()
+    # apply.sh filled the label prefix terraform left (kubernetes/label_prefix.py).
+    assert (cluster.dir / "applied.yaml").read_text().strip() == \
+        _fwd_manifest().replace("__LABEL_PREFIX__", f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}").strip()
     # Only the forwarder's output: not the relay's, not the graph's, not
     # swarm-api's range.
     assert "swarm_live_manifest" not in cluster.log("terraform")
