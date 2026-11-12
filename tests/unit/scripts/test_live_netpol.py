@@ -662,6 +662,112 @@ def test_apply_refuses_when_swarm_api_has_no_direct_vpc_subnet(cluster):
     assert not (cluster["dir"] / "applied.yaml").exists()
 
 
+# --- apply.sh takes the label-key prefix from the deployment's tfvars --------
+#
+# The owner's "Tfvars everywhere" (12 November 2026): with nothing configured
+# the deploy renders under the prefix the deployment's own tfvars name
+# (label_prefix, else swarm.<first allowed domain>), and a configured prefix
+# that differs is refused before any kubectl call. Unreadable tfvars leave the
+# configured prefix; neither is the one rule's fixed refusal.
+
+#: Another placeholder prefix: one no tfvars below names.
+OTHER_PREFIX = "labels.example.net"
+UNSET = (
+    "the label-key prefix is not configured: set SWARM_LABEL_PREFIX, or SWARM_ORG_DOMAIN "
+    "for the default swarm.<org_domain>; no key is guessed"
+)
+MISMATCH = "the configured label-key prefix is not the one this deployment's tfvars name; nothing was applied"
+
+
+def _prefix_cluster(cluster: dict[str, Any], tmp_path: Path, tfvars: dict[str, Any] | None,
+                    **configured: str) -> dict[str, Any]:
+    """CLUSTER with its own deployment configuration: TFVARS as dev.tfvars (None:
+    no tfvars at all), the label-key settings CONFIGURED and nothing else, and
+    the relay manifest as terraform leaves it, its key prefix still the token."""
+    config = tmp_path / "prefix-config"
+    placeholder_deployment.write_deny_list(config, PROJECT, ["dev"])
+    if tfvars is not None:
+        placeholder_deployment.write_tfvars(config, ["dev"], tfvars)
+    cache = tmp_path / "prefix-cache"
+    cache.mkdir(mode=0o700)
+    env = {k: v for k, v in cluster["env"].items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+    env.update(SWARM_DEPLOY_CONFIG_DIR=str(config), XDG_CACHE_HOME=str(cache), ENVIRONMENT="dev", **configured)
+    (cluster["dir"] / "relay.yaml").write_text(
+        _relay_manifest().replace(f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}/", "__LABEL_PREFIX__/"))
+    return {**cluster, "env": env}
+
+
+def _rendered_prefixes(cluster: dict[str, Any]) -> set[str]:
+    text = (cluster["dir"] / "applied-dry-run.yaml").read_text()
+    assert "__LABEL_PREFIX__" not in text
+    return {key.split("/", 1)[0] for doc in _docs(text)
+            for part in ("labels", "annotations")
+            for key in ((doc.get("metadata") or {}).get(part) or {}) if "/" in key
+            and not key.split("/", 1)[0].endswith(("kubernetes.io", "googleapis.com", "k8s.io", "gke.io"))}
+
+
+def test_apply_with_nothing_configured_renders_under_the_tfvars_prefix(cluster, tmp_path):
+    env = _prefix_cluster(cluster, tmp_path, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]})
+    result = _apply(env)
+    assert result.returncode == 0, result.stderr
+    assert _rendered_prefixes(env) == {f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"}
+
+
+def test_apply_takes_the_tfvars_label_prefix_over_the_domain(cluster, tmp_path):
+    env = _prefix_cluster(cluster, tmp_path, {"label_prefix": OTHER_PREFIX,
+                                               "allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]})
+    result = _apply(env)
+    assert result.returncode == 0, result.stderr
+    assert _rendered_prefixes(env) == {OTHER_PREFIX}
+
+
+@pytest.mark.parametrize("configured", [{"SWARM_LABEL_PREFIX": OTHER_PREFIX},
+                                        {"SWARM_ORG_DOMAIN": "example.net"}])
+def test_apply_refuses_a_configured_prefix_the_tfvars_do_not_name_before_any_kubectl_call(
+        cluster, tmp_path, configured):
+    env = _prefix_cluster(cluster, tmp_path, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]}, **configured)
+    result = _apply(env, "--confirm")
+    assert result.returncode != 0
+    assert MISMATCH in result.stderr, result.stderr
+    # The sentence names neither value.
+    assert OTHER_PREFIX not in result.stderr and "example.net" not in result.stderr
+    assert not (cluster["dir"] / "kubectl.log").exists(), "kubectl was called"
+    assert not (cluster["dir"] / "applied.yaml").exists()
+
+
+def test_apply_accepts_a_configured_prefix_equal_to_the_tfvars_one(cluster, tmp_path):
+    env = _prefix_cluster(cluster, tmp_path, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]},
+                          SWARM_LABEL_PREFIX=f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}")
+    result = _apply(env)
+    assert result.returncode == 0, result.stderr
+    assert _rendered_prefixes(env) == {f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"}
+
+
+def test_apply_without_readable_tfvars_uses_the_configured_prefix(cluster, tmp_path):
+    env = _prefix_cluster(cluster, tmp_path, None, SWARM_LABEL_PREFIX=OTHER_PREFIX)
+    result = _apply(env)
+    assert result.returncode == 0, result.stderr
+    assert _rendered_prefixes(env) == {OTHER_PREFIX}
+
+
+@pytest.mark.parametrize("tfvars", [None, {"platform_owner": placeholder_deployment.TFVARS["platform_owner"]}])
+def test_apply_with_neither_refuses_with_the_fixed_sentence_before_any_kubectl_call(cluster, tmp_path, tfvars):
+    env = _prefix_cluster(cluster, tmp_path, tfvars)
+    result = _apply(env, "--confirm")
+    assert result.returncode != 0
+    assert UNSET in result.stderr, result.stderr
+    assert not (cluster["dir"] / "kubectl.log").exists(), "kubectl was called"
+
+
+def test_every_mode_resolves_the_prefix_once_before_kubectl() -> None:
+    """One call, at top level, before the first kubectl: every mode passes it."""
+    text = APPLY.read_text()
+    calls = [line for line in text.splitlines() if "resolved_label_prefix" in line and not line.lstrip().startswith("#")]
+    assert len(calls) == 1, calls
+    assert not calls[0].startswith((" ", "\t")), calls
+    assert text.index(calls[0]) < text.index('KUBECTL="$(kubectl_bin)"')
+
+
 # --- apply.sh --swarm-system applies the relay first (LB-L8e) -----------------
 
 

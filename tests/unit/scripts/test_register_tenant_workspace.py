@@ -807,12 +807,57 @@ def test_an_unreachable_cluster_fails_retryable_at_the_namespace(job: Job) -> No
     assert job.doc(f"tenants/{TENANT}") is None, "A8 runs only after the namespace (§4.2's order)"
 
 
-def test_no_label_prefix_stops_the_run_after_a1_before_any_write(job: Job) -> None:
-    """The job's fixed environment names no SWARM_LABEL_PREFIX (a job command
-    without --label-prefix): the run stops with the one rule's fixed sentence
-    before A2, and nothing in the cluster or IAM is made under a guessed key."""
-    env = {k: v for k, v in job.env.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
-    proc = job.create(env=env)
+#: A placeholder prefix other than the deployment's swarm.<domain>.
+OTHER_PREFIX = "labels.example.net"
+
+
+def _unconfigured(job: Job) -> dict[str, str]:
+    """The job's environment with no label-key prefix configured."""
+    return {k: v for k, v in job.env.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+
+
+def _key_prefixes(world: dict) -> set[str]:
+    """The prefixes of the platform's label and annotation keys on every object A7 made."""
+    found = set()
+    for obj in world["k8s"].values():
+        meta = obj.get("metadata") or {}
+        for part in ("labels", "annotations"):
+            for key in meta.get(part) or {}:
+                head = key.split("/", 1)[0] if "/" in key else ""
+                if head and not head.endswith(("kubernetes.io", "k8s.io", "googleapis.com", "gke.io")):
+                    found.add(head)
+    return found
+
+
+def test_a_personal_workspace_with_nothing_configured_renders_under_the_tfvars_prefix(job: Job) -> None:
+    """The owner's "Tfvars everywhere" (12 November 2026): a personal workspace's
+    expectation names no key, so ws_load_names takes the prefix from the
+    deployment's tfvars (deployment_label_prefix) when nothing is configured."""
+    write_placeholder_tfvars(job.config, ["dev"], {**_tfvars(), "label_prefix": OTHER_PREFIX})
+    proc = job.create(env=_unconfigured(job))
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert _field(job.record(), "state") == "ready", out
+    assert _key_prefixes(job.read()) == {OTHER_PREFIX}, out
+
+
+def test_a_personal_workspace_whose_configured_prefix_is_not_the_tfvars_one_stops_after_a1(job: Job) -> None:
+    proc = job.create(env={**job.env, "SWARM_LABEL_PREFIX": OTHER_PREFIX})
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the configured label-key prefix is not the one this deployment's tfvars name" in out, out
+    assert "nothing past A1 can run" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
+
+
+def test_no_label_prefix_anywhere_stops_the_run_after_a1_before_any_write(job: Job) -> None:
+    """Neither the job's fixed environment (a job command without --label-prefix)
+    nor the deployment's tfvars name a prefix: the run stops with the one rule's
+    fixed sentence before A2, and nothing in the cluster or IAM is made under a
+    guessed key."""
+    write_placeholder_tfvars(job.config, ["dev"], {"platform_owner": placeholder_deployment.TFVARS["platform_owner"]})
+    proc = job.create(env=_unconfigured(job))
     out = _out(proc)
     assert proc.returncode != 0, out
     assert "the label-key prefix is not configured: set SWARM_LABEL_PREFIX" in out, out
