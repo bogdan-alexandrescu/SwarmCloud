@@ -10,16 +10,18 @@
 //   * a card off screen asks for no frame; the request that came due while it
 //     was away goes out when it is back (`resume`);
 //   * the card's live badge reads the rate it is actually asking for, not a
-//     hard-coded number.
+//     hard-coded number;
+//   * a use may pass its own slower pace (`paceMs`, Home's tiny rows at about
+//     a second), and the table's floor still holds under it.
 //
 // MUTATIONS: read `minIntervalMs` once in the constructor (the 100 ms case
 // asks at 500 ms and turns red); ignore `paused` (the off-screen case sends a
 // request and turns red).
 
-import { act, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
-import { LiveThumb, RfbThumb, THUMB_INTERVALS, thumbIntervalMs, type LiveSocket, type ThumbSink } from '../LiveThumb'
+import { LiveThumb, RfbThumb, THUMB_INTERVALS, pacedIntervalMs, thumbIntervalMs, type LiveSocket, type ThumbSink } from '../LiveThumb'
 
 /** A clock and a timer queue the test advances by hand. */
 function clock() {
@@ -154,5 +156,50 @@ describe('the card says its rate', () => {
     act(() => handler({ data: bytes.buffer }))
     // One card on screen: the 100 ms tier, 10 fps.
     expect(screen.getByText('live · ≤10 fps')).toBeTruthy()
+  })
+})
+
+describe("a use's own pace (Home's tiny thumbnails)", () => {
+  it('only slows the table, never speeds it', () => {
+    expect(pacedIntervalMs(1, 1000)).toBe(1000)
+    expect(pacedIntervalMs(40, 1000)).toBe(1000)
+    expect(pacedIntervalMs(40, 50)).toBe(500)
+    expect(pacedIntervalMs(1)).toBe(100)
+  })
+
+  it('a card paced at a second asks for its next frame a second after the last, and says so', () => {
+    vi.useFakeTimers({ now: 0 })
+    try {
+      const sent: Uint8Array[] = []
+      const sock = {
+        binaryType: 'arraybuffer',
+        send(b: Uint8Array) {
+          sent.push(b)
+        },
+        close() {},
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+      } as unknown as LiveSocket
+      render(<LiveThumb taskId="task_one" workflowId={null} open={() => sock} paceMs={1000} />)
+      const handler = (sock as unknown as { onmessage: (ev: { data: ArrayBuffer }) => void }).onmessage
+      const requests = () => sent.filter((b) => b[0] === 3 && b.length === 10).length
+      const bytes = Uint8Array.from([...HANDSHAKE, 0, 0, ...u16(1), ...u16(0), ...u16(0), ...u16(2), ...u16(1), ...u32(0), ...new Array<number>(8).fill(9)])
+      act(() => handler({ data: bytes.buffer }))
+      const first = requests()
+      expect(first).toBeGreaterThan(0)
+      act(() => {
+        vi.advanceTimersByTime(999)
+      })
+      expect(requests()).toBe(first)
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(requests()).toBe(first + 1)
+      expect(screen.getByText('live · ≤1 fps')).toBeTruthy()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
   })
 })

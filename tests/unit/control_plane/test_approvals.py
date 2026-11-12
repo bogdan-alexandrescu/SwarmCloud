@@ -211,6 +211,8 @@ def test_a_planned_run_is_projected_and_approved_from_the_inbox_once(client, db,
     assert item["approval_id"] == f"run:{run['id']}"
     assert item["kind"] == "plan" and item["digest"] == run["plan_digest"] and item["projected"] is True
     assert "example-org/widgets#42" in item["summary"]
+    # Not started yet: the item names no workflow (PR #3901, Home's Review word).
+    assert item["subject"]["workflow_id"] is None
 
     stale = _decide(client, item["approval_id"], "approve", digest="0" * 64)
     assert stale.status_code == 409 and stale.json()["code"] == "plan_changed"
@@ -448,6 +450,8 @@ def test_a_held_run_with_auto_merge_waits_for_a_merge_approval_from_the_holds_ap
     (item,) = _inbox(client, kind="merge")
     assert item["digest"] == {"head_sha": SHA_A, "verdict": "MERGE"}
     assert item["approvers"] == "second_member"
+    # The workflow the run started, for Home's workflow row (PR #3901).
+    assert item["subject"]["workflow_id"] == running["workflow_id"]
 
     refused = _decide(client, item["approval_id"], "approve", digest=item["digest"])
     assert refused.status_code == 403 and refused.json()["code"] == "hold_approver_required"
@@ -776,3 +780,14 @@ def test_a_one_person_hold_is_not_a_group_hold():
     hold = issueruns.plan_hold(_bootstrap_plan(), platform=False, hard_stop_paths=[])
     assert issueruns.hold_confirmation(hold) == "terraform/bootstrap/main.tf"
     assert repo_id_for("eng", "example-org", "widgets").startswith("repo_")
+
+
+def test_a_merge_record_stored_without_its_workflow_takes_it_from_its_run():
+    """A record `request_merge` wrote before it named the workflow is served
+    with its run's; one that names it keeps its own; a run without one is null."""
+    old = {"kind": "merge", "subject": {"run_id": "run_1"}}
+    assert approvals.with_workflow(old, {"workflow_id": "wf_1"})["subject"] == {"run_id": "run_1", "workflow_id": "wf_1"}
+    assert old["subject"] == {"run_id": "run_1"}
+    named = {"kind": "merge", "subject": {"run_id": "run_1", "workflow_id": "wf_2"}}
+    assert approvals.with_workflow(named, {"workflow_id": "wf_1"})["subject"]["workflow_id"] == "wf_2"
+    assert approvals.with_workflow(old, None)["subject"]["workflow_id"] is None
