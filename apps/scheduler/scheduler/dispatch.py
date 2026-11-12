@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
@@ -826,6 +827,17 @@ LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
 
+#: The least memory a live pod's WORKER container is given, in GiB (#3104,
+#: owner 2026-11-12). A live-browser step running a Next dev server, a stub
+#: API, the Claude CLI and Playwright peaked at 5.37 GB in its heartbeats and
+#: was OOMKilled at the worker's 5 GiB (3 GiB at the code default); the
+#: reconciler fails an OOM with no retry, so the whole workflow was cancelled.
+#: 8 is about 1.5x that peak with the prompt's capped Node heap. Admission
+#: raises the pinned size by what it gives the worker (`with_worker_floor`,
+#: `sizes.for_task`), so the browser live pod is 4 cores / 13 GiB = 2 units,
+#: and the display share and CPU do not move.
+LIVE_WORKER_MEMORY_FLOOR_GIB = 8
+
 #: The display container's hardening: CONTAINER_SECURITY_CONTEXT's every
 #: field, under DISPLAY_UID and a primary group of its own.
 DISPLAY_SECURITY_CONTEXT: dict[str, Any] = {
@@ -902,6 +914,26 @@ def live_split_for(rc: Any, size: ResourceSize | None = None) -> tuple[LiveShare
         LiveShare(cpu_request=share.cpu, cpu_limit=display_cpu_limit,
                   memory_gib=share.memory_gib),
     )
+
+
+def with_worker_floor(size: ResourceSize, split: tuple[LiveShare, LiveShare]
+                      ) -> tuple[ResourceSize, tuple[LiveShare, LiveShare]]:
+    """`size` and its live `split` with the worker raised to
+    LIVE_WORKER_MEMORY_FLOOR_GIB, and the size's memory by the same amount,
+    so the containers still sum to the size admission charges. CPU, disk and
+    the display share are kept; a worker that already meets the floor
+    returns the inputs themselves. The size carries the raised split only
+    when it carried a stored one: a class without one is rendered from
+    LIVE_DISPLAY_SHARE, which `check_size` does not judge (`standard`'s
+    display is 4 GiB). Pure: `sizes.for_task` judges the result."""
+    worker, display = split
+    raise_gib = LIVE_WORKER_MEMORY_FLOOR_GIB - worker.memory_gib
+    if raise_gib <= 0:
+        return size, split
+    raised = (dataclasses.replace(worker, memory_gib=LIVE_WORKER_MEMORY_FLOOR_GIB), display)
+    stored = raised if size.live_split is not None else None
+    return dataclasses.replace(size, memory_gib=size.memory_gib + raise_gib,
+                               live_split=stored), raised
 
 
 def with_live_display(job: dict[str, Any], *, rc: Any,

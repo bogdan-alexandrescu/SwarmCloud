@@ -17,6 +17,15 @@ dispatch therefore cannot split them: the units the transaction charged and
 the pod Autopilot bills are one object (invariant 2). A running agent keeps
 the size it was admitted with, because nothing re-renders a running pod.
 
+A LIVE POD'S WORKER GETS AT LEAST LIVE_WORKER_MEMORY_FLOOR_GIB (#3104).
+`for_task` raises the worker's share of the live split to the floor and the
+pinned size's memory by the same amount (`dispatch.with_worker_floor`), here
+and not in the renderer, so the raise is still pinned at admission: the
+units charged, the attempt's sized_* record and the pod are one object
+(invariant 2), and each container's memory request still equals its limit
+(invariant 7). CPU, disk and the display share do not move. A raise that
+`check_size`'s bounds refuse is not applied, logged at ERROR.
+
 A MALFORMED VERSION READS AS THE CODE DEFAULTS, LOGGED AT ERROR. The route
 validates every write with the same `check_size`, so a stored version that
 fails it was written some other way -- by hand, or by a route with a bug --
@@ -33,6 +42,7 @@ from typing import Any, Mapping
 
 from swarm_common.models import Task
 from swarm_common.profiles import (
+    CLASS_ORDER,
     RESOURCE_CLASSES,
     Backend,
     LiveShare,
@@ -43,7 +53,7 @@ from swarm_common.profiles import (
     units_for,
 )
 
-from .dispatch import live_split_for
+from .dispatch import LIVE_WORKER_MEMORY_FLOOR_GIB, live_split_for, with_worker_floor
 
 log = logging.getLogger(__name__)
 
@@ -191,10 +201,31 @@ def current(store: Any) -> SizeVersion:
         return DEFAULTS
 
 
+def _floored(name: str, version: int, size: ResourceSize,
+             split: tuple[LiveShare, LiveShare]) -> Sized:
+    """The live `Sized` with the worker raised to the floor, or as given,
+    logged at ERROR, when the raised size breaks a bound. Judged alone, in
+    every class's slot: CLASS_ORDER compares classes, and the floor is one
+    for every live pod, so a shrunk step's pod is still no larger than the
+    class it shrank from."""
+    raised, raised_split = with_worker_floor(size, split)
+    if raised is not size:
+        refusals = [r for r in check_size({other: raised for other in CLASS_ORDER})
+                    if r.resource_class == name]
+        if refusals:
+            log.error("runner sizes: version %s's %s raised to the live worker floor of %s GiB "
+                      "breaks %s; it is sized as it stands", version, name,
+                      LIVE_WORKER_MEMORY_FLOOR_GIB,
+                      "; ".join(f"{r.field}={r.value!r} breaks {r.bound}" for r in refusals))
+            return Sized(resource_class=name, version=version, size=size, live_split=split)
+    return Sized(resource_class=name, version=version, size=raised, live_split=raised_split)
+
+
 def _default(name: str, live: bool) -> Sized:
     size = default_sizes()[name]
-    split = live_split_for(RESOURCE_CLASSES[name], size) if live else None
-    return Sized(resource_class=name, version=0, size=size, live_split=split)
+    if not live:
+        return Sized(resource_class=name, version=0, size=size)
+    return _floored(name, 0, size, live_split_for(RESOURCE_CLASSES[name], size))
 
 
 def for_task(version: SizeVersion, task: Task, *, backend: Backend, live: bool) -> Sized:
@@ -209,19 +240,20 @@ def for_task(version: SizeVersion, task: Task, *, backend: Backend, live: bool) 
     recorded. A resized class whose live split would leave the worker
     nothing is sized at its default, logged at ERROR, rather than refused:
     `check_size` cannot see the renderer's table for a class with no stored
-    split.
+    split. A live split's worker is raised to LIVE_WORKER_MEMORY_FLOOR_GIB,
+    and the size with it (`_floored`).
     """
     name = task.resource_class
     follows = backend is Backend.GKE_AUTOPILOT and version.classes is not None
     if not follows:
         return _default(name, live and backend is Backend.GKE_AUTOPILOT)
     size = effective_size(name, version.classes, backend)
-    split = None
-    if live:
-        try:
-            split = live_split_for(RESOURCE_CLASSES[name], size)
-        except ValueError as exc:
-            log.error("runner sizes: version %s's %s leaves a live pod no room (%s); "
-                      "task %s is sized at the code default", version.version, name, exc, task.id)
-            return _default(name, live)
-    return Sized(resource_class=name, version=version.version, size=size, live_split=split)
+    if not live:
+        return Sized(resource_class=name, version=version.version, size=size)
+    try:
+        split = live_split_for(RESOURCE_CLASSES[name], size)
+    except ValueError as exc:
+        log.error("runner sizes: version %s's %s leaves a live pod no room (%s); "
+                  "task %s is sized at the code default", version.version, name, exc, task.id)
+        return _default(name, live)
+    return _floored(name, version.version, size, split)

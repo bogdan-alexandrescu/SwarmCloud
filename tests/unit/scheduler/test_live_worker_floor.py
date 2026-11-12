@@ -109,7 +109,9 @@ def test_a_live_size_is_raised_to_the_floor(version, resource_class, share):
     assert (worker.cpu_request, worker.cpu_limit) == (unraised[0].cpu_request, unraised[0].cpu_limit)
     assert (sized.size.cpu_request, sized.size.cpu_limit, sized.size.disk_gib) == (
         before.cpu_request, before.cpu_limit, before.disk_gib)
-    assert sized.size.live_split == sized.live_split
+    # A stored split is the raised one; a class without one still has none
+    # (its split is LIVE_DISPLAY_SHARE's, rendered from `Sized.live_split`).
+    assert sized.size.live_split == (sized.live_split if before.live_split else None)
     assert sized.version == version.version
     # The raised size breaks no bound.
     assert _own_refusals(sized.size) == []

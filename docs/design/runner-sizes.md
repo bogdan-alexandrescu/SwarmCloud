@@ -482,8 +482,9 @@ phase 1 is wasted.
 |---|---|---|---|---|---|
 | `standard` | 4 | **8** | 8 GiB | 1 | ≈ 0.217 |
 | `browser`, not live | 4 | **8** | 8 GiB | 1 | ≈ 0.217 |
-| `browser`, live split: worker | 2 | **4** | 3 GiB | — | — |
+| `browser`, live split: worker | 2 | **4** | 3 GiB stored, **8 GiB** rendered (the live worker floor) | — | — |
 | `browser`, live split: display | 2 | **3** | 5 GiB | — | — |
+| `browser`, live pod as charged | 4 | 7 | **13 GiB** (8 + 5) | **2** | — |
 | `large` | 8 | **16** | 32 GiB | 4 | ≈ 0.514 |
 
 * **`CPU_BURST_MAX_RATIO = 2`.** Twice the request is what the measurement
@@ -496,6 +497,26 @@ phase 1 is wasted.
   (`dispatch.py` `LIVE_DISPLAY_SHARE` comment, `docs/browser-startup-speed.md`
   §11), so 2 guaranteed with room to 3 keeps what it had for Chromium's
   spikes while the agent gets its 2. Pod limit 7, pod request 4.
+* **The live worker floor** (`LIVE_WORKER_MEMORY_FLOOR_GIB = 8`,
+  `dispatch.with_worker_floor`, #3104, owner 2026-11-12). The worker's 3 GiB
+  share (5 GiB in a stored version that grew the class to 10) was OOMKilled
+  by a step that ran a Next dev server, a stub API, the Claude CLI and
+  Playwright: its heartbeats peaked at 5.37 GB, and the reconciler fails an
+  OOM with no retry, so the whole workflow was cancelled. Every live pod's
+  worker therefore gets at least 8 GiB, about 1.5× that peak with the
+  agent's Node heap capped by its prompt. The frozen table and its stored
+  split are not edited: `sizes.for_task` raises the worker's share to the
+  floor and the pinned size's memory by the same amount, keeping CPU, disk
+  and the display's share. It does so at admission, before the lease, so
+  the units charged, the attempt's `sized_*` record and the pod are the one
+  pinned object (invariant 2), and memory request still equals limit on
+  both containers (invariant 7). **The cost**: the browser live pod is
+  13 GiB, `units_for(4, 13)` = **2 units** instead of 1, and a live pod a
+  step shrank to `standard` is 12 GiB (8 + 4), also 2. `medium` and `large`
+  already give the worker more than 8 GiB and do not move; a pod that is not
+  live, and every Cloud Run profile, are sized as before. A raise that
+  `check_size`'s bounds would refuse (more than 6.5 GiB a core, or past
+  32 GiB) is not applied and is logged at ERROR.
 * **`large`** was reached by no profile when this was written (every
   profile named `standard` or `browser`, and a step only shrinks); it got the
   same ratio so it would be consistent when a profile named it. Since
@@ -671,7 +692,9 @@ so there is nothing to keep).
 * `with_live_display`: the split comes from `sized.live_split` (the browser
   class's), or for `standard` and `large`, which have no stored split, from
   `LIVE_DISPLAY_SHARE` scaled to the class as today. The function keeps its
-  refusal when the split leaves the worker nothing.
+  refusal when the split leaves the worker nothing. `sized.live_split`
+  already carries the worker raised to the live worker floor (§4.1), so the
+  renderer draws what admission charged and does no arithmetic of its own.
 * `CloudRunJobDispatcher._build_job`: unchanged values (the code default,
   `limits` = the request); the comment changes to say why it is the request.
 * `job_id_for`: unchanged — Cloud Run profiles do not follow, so no Job ever
