@@ -118,7 +118,9 @@ def test_the_pod_is_given_references_and_names_never_a_key():
 
 
 def test_the_placeholders_are_the_ones_terraform_fills():
-    placeholders = set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text()))
+    # Terraform leaves __LABEL_PREFIX__ for kubernetes/apply.sh to fill
+    # (kubernetes/label_prefix.py).
+    placeholders = set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) - {"__LABEL_PREFIX__"}
     assert placeholders == {"__SWARM_TYPESAFE_FWD_IMAGE__", "__TYPESAFE_FWD_KEY_VERSION__",
                             "__PROJECT_ID__", "__TYPESAFE_FWD_CONFIG_JSON__",
                             "__TYPESAFE_FWD_CONFIG_SHA256__"}

@@ -231,8 +231,8 @@ run "on_every_labelled_resource_carries_managed_by" {
   }
 
   assert {
-    condition     = length(regexall("__[A-Z0-9_]+__", output.swarm_voice_manifest)) == 0
-    error_message = "every placeholder in swarm-voice.yaml and swarm-system-voice.yaml is rendered"
+    condition     = length(regexall("__[A-Z0-9_]+__", replace(output.swarm_voice_manifest, "__LABEL_PREFIX__", ""))) == 0
+    error_message = "every placeholder in swarm-voice.yaml and swarm-system-voice.yaml is rendered but __LABEL_PREFIX__, which kubernetes/apply.sh fills"
   }
 }
 

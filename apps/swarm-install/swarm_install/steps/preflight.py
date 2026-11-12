@@ -1404,6 +1404,19 @@ def _domain_problem(domain: str) -> str | None:
     return None
 
 
+#: The install's label-key prefix (kubernetes/label_prefix.py's setting
+#: SWARM_LABEL_PREFIX; the owner's "configurable", 8 November 2026), recorded
+#: beside the domain it defaults from: every key the cluster steps render, fill
+#: and apply is `<it>/<name>` (steps/cluster.py `label_prefix`).
+LABEL_PREFIX_OUTPUT = "label_prefix"
+
+
+def default_label_prefix(domain: str) -> str:
+    """`swarm.<org_domain>`: label_prefix.py's default, so the keys an install
+    renders are the ones the release's admission policies match."""
+    return f"swarm.{domain}"
+
+
 class OrgDomainStep(_Base):
     """`org_domain`, the Google Workspace or Cloud Identity primary domain IAP
     admits (`domain:<it>`) and swarm-api's ALLOWED_DOMAINS holds. Read from the
@@ -1425,7 +1438,8 @@ class OrgDomainStep(_Base):
     def check(self, ctx: Any) -> Observation:
         domain = str(ctx.outputs.get("org_domain") or "")
         if domain and _domain_problem(domain) is None:
-            return Observation(MET, f"organization domain {domain}", {"org_domain": domain})
+            return Observation(MET, f"organization domain {domain}",
+                               {"org_domain": domain, LABEL_PREFIX_OUTPUT: default_label_prefix(domain)})
         return Observation(UNMET, "the organization's domain is not recorded yet")
 
     def plan(self, ctx: Any) -> Plan:
@@ -1460,7 +1474,7 @@ class OrgDomainStep(_Base):
         if problem:
             raise ValueError(problem)
         ctx.events.emit("step_apply", step=self.id, message=f"organization domain {domain}, from {source}")
-        remember(ctx, outputs={"org_domain": domain})
+        remember(ctx, outputs={"org_domain": domain, LABEL_PREFIX_OUTPUT: default_label_prefix(domain)})
 
     def _confirmed(self, ctx: Any) -> str:
         guess = self._account().rpartition("@")[2].strip().lower()

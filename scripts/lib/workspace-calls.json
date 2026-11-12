@@ -150,7 +150,7 @@
     },
     {
       "id": "C7",
-      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only. For a group or a service the Namespace must carry swarm.example.com/workspace: <w-id> (the expectation's namespace_label), the label the deployer's scope policy admits it by (docs/design/workspace-kinds.md §4.3 A7).",
+      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only. For a group or a service the Namespace must carry <prefix>/workspace: <w-id> (the expectation's namespace_label), the label the deployer's scope policy admits it by (docs/design/workspace-kinds.md §4.3 A7).",
       "shapes": [
         {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true}
       ]

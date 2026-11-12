@@ -877,6 +877,22 @@ def test_org_domain_read_from_the_organization() -> None:
     assert ctx.outputs["org_domain"] == "example.com"
 
 
+def test_org_domain_records_the_label_prefix_it_defaults() -> None:
+    """kubernetes/label_prefix.py's default, `swarm.<org_domain>`, recorded beside
+    the domain (the owner's "configurable", 8 November 2026): the cluster steps
+    render every key under it, so an install's keys are the release's."""
+    gcp = FakeGcp()
+    step = preflight.OrgDomainStep(lambda: gcp, Answers(), account=lambda: "admin@example.com")
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs[preflight.LABEL_PREFIX_OUTPUT] == "swarm.example.com"
+    # An install that recorded its domain before the setting existed gets it from the check.
+    earlier = ctx_for(outputs={"org_domain": "example.org"})
+    observed = step.check(earlier)
+    assert observed.status == MET
+    assert observed.outputs[preflight.LABEL_PREFIX_OUTPUT] == "swarm.example.org"
+
+
 def test_org_domain_falls_back_to_the_account_confirmed() -> None:
     gcp = FakeGcp()
     gcp.org_failure = ApiError(403, "PERMISSION_DENIED", "no")

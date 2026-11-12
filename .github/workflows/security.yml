@@ -237,7 +237,12 @@ jobs:
         #
         # kubernetes/render.py produces the objects that really reach a cluster,
         # for every runner profile in the frozen catalogue. This is the same
-        # renderer `make lint` and kubernetes/apply.sh use.
+        # renderer `make lint` and kubernetes/apply.sh use. Its label and
+        # annotation keys render under the placeholder organisation's prefix
+        # (kubernetes/label_prefix.py refuses to guess one): no check reads a
+        # key's prefix, and this render reaches no cluster.
+        env:
+          SWARM_LABEL_PREFIX: swarm.example.com
         run: |
           set -euo pipefail
           mkdir -p build/rendered
