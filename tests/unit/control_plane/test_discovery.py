@@ -128,6 +128,54 @@ def test_document_keys_are_exactly_the_public_set() -> None:
     assert reader.asked == []
 
 
+def test_plugin_home_joins_the_document_when_set() -> None:
+    """The repository the plugin is served from (owner/name), so the guide's
+    Start here page can fill its install command. Set from the same Terraform
+    variable as `plugin.min_version`."""
+    app = discovery.create_app(
+        environ=_environ(DISCOVERY_PLUGIN_HOME="example-org/example-repo"),
+        read_secret=FakeSecrets("unused"),
+    )
+
+    document = _get(app).json()
+
+    assert set(document) == PUBLIC_KEYS
+    assert set(document["plugin"]) == {"min_version", "home"}
+    assert document["plugin"] == {"min_version": "2026.10.0", "home": "example-org/example-repo"}
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_an_empty_plugin_home_is_omitted(value: str | None) -> None:
+    """Unset, the key is absent rather than an empty string, so the guide keeps
+    its marked placeholder instead of drawing a command that is not one."""
+    extra = {} if value is None else {"DISCOVERY_PLUGIN_HOME": value}
+    app = discovery.create_app(environ=_environ(**extra), read_secret=FakeSecrets("unused"))
+
+    document = _get(app).json()
+
+    assert document["plugin"] == {"min_version": "2026.10.0"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "example-repo",
+        "example-org/",
+        "/example-repo",
+        "example-org/example-repo/extra",
+        "https://github.com/example-org/example-repo",
+        "example org/example-repo",
+        "-example-org/example-repo",
+        "example-org/..",
+    ],
+)
+def test_a_malformed_plugin_home_refuses_to_start(value: str) -> None:
+    with pytest.raises(discovery.DiscoveryConfigError, match="DISCOVERY_PLUGIN_HOME"):
+        discovery.create_app(
+            environ=_environ(DISCOVERY_PLUGIN_HOME=value), read_secret=FakeSecrets("unused")
+        )
+
+
 def test_every_other_path_404s() -> None:
     app = discovery.create_app(environ=_environ(), read_secret=FakeSecrets("unused"))
     with TestClient(app) as client:
