@@ -394,6 +394,30 @@ describe('Home opens on what waits on the signed-in person', () => {
     expect(document.getElementById('home-work')?.textContent).toContain('your input')
   })
 
+  it('a person with no workspace yet gets the starter guide in one press, as a real button that opens Start here', async () => {
+    serve({ tasks: [], approvals: [], people: refused(403), role: null })
+    api.loadProfile.mockResolvedValue(ok({ ...profile(null), workspaces: [] }))
+    window.history.replaceState(null, '', '/')
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(screen.getByText(/^No workspace yet\./)).toBeTruthy())
+    // MUTATION: drop the button from the no-workspace line -> this fails.
+    const guide = screen.getByRole('link', { name: 'Read the starter guide' })
+    // A real button in the theme's style, not a text link.
+    expect(guide.className).toContain('c-btn')
+    expect(guide.getAttribute('href')).toBe('/guide/start-here')
+    fireEvent.click(guide)
+    expect(window.location.pathname).toBe('/guide/start-here')
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('a person with a workspace is not offered the starter guide', async () => {
+    serve({ tasks: [running], approvals: [], people: refused(403), role: null })
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(screen.getByText('Ada · member of your own workspace')).toBeTruthy())
+    expect(screen.queryByText(/^No workspace yet\./)).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Read the starter guide' })).toBeNull()
+  })
+
   it('reads owner questions from the merge park only', () => {
     expect(ownerQuestionsOf([merge, parkedForMe, running]).map((q) => q.key)).toEqual(['task_review1:0'])
   })
