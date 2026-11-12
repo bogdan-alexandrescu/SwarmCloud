@@ -10,6 +10,9 @@ workflows twice and `search` twice, and the turn ended with no answer. So:
   one page of swarm-api's, by following the route's own `next_page_token`;
 * the planner is told to count with a list tool, never with `search`, and
   `search` says it does not count;
+* the fast front (claudefront.py) runs the same read itself on
+  `Planner.read`, so a count is one haiku-class round, never a delegation
+  (the owner's pick on #3954);
 * every read, every page of it, is on the same route with the session grant's
   headers and never names a tenant or another person: the grant's tenant is
   swarm-api's to apply (invariant 9), and `submitted_by` takes only `me`.
@@ -209,3 +212,46 @@ def test_search_is_never_the_way_to_count():
     assert "never to count" in search["description"]
     assert "never count with `search`" in prompts.SYSTEM
     assert "`total`" in prompts.SYSTEM
+
+
+def _front_read(api: FakeApi, name: str, args: dict, *, grant: SessionGrant | None = None):
+    """`Planner.read`, the fast front's read (claudefront.py): no model, no lease."""
+    from swarm_voice import planner as planner_mod
+
+    async def main():
+        planner = planner_mod.Planner(api.http, api_base=API, id_tokens=api.id_tokens, accounts=None)
+        try:
+            return await planner.read(grant=grant or api.grant, name=name, args=args)
+        finally:
+            await api.http.aclose()
+
+    return asyncio.run(main())
+
+
+def test_the_fast_front_counts_running_agents_in_one_read_on_the_grant():
+    api = FakeApi(_grant(), running=230, mine=230)
+    text, is_error = _front_read(api, "list_agents", _agents(state="RUNNING", submitted_by="me"))
+    assert not is_error
+    assert text.startswith('<data source="list_agents">')
+    assert '"total":230' in text and '"total_exact":true' in text
+    assert {r.url.path for r in api.requests} == {"/v1/tasks"}
+    for request in api.requests:
+        assert api.tenant(request) == "mine"
+        assert "tenant_id" not in request.url.params
+    # Nothing secret reaches the child: no grant value, no ID token.
+    assert api.grant.headers()[GRANT_HEADER] not in text and api.id_token not in text
+
+
+def test_the_fast_front_reads_nothing_but_the_read_tools():
+    for name in ("speak", "draw_plan", "answer_question", "show_file", "delegate"):
+        api = FakeApi(_grant(), running=3)
+        text, is_error = _front_read(api, name, {})
+        assert is_error and "not a read tool" in text
+        assert api.requests == []
+
+
+def test_the_fast_front_refuses_another_persons_count_before_any_request():
+    api = FakeApi(_grant(), running=5)
+    text, is_error = _front_read(api, "list_agents", _agents(state="RUNNING", submitted_by=OTHER))
+    assert is_error and "submitted_by" in text
+    assert api.requests == []
