@@ -33,6 +33,9 @@ import { Absent } from '../primitives'
 import type { Me } from '../types'
 import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
 import { VoiceProjects } from './Projects'
+import { mockDirection } from './mock/projectsFixture' // MOCK-HOOK
+import { MockProjectsTabs } from './mock/ProjectsTabs' // MOCK-HOOK
+import { MockTalkTabs } from './mock/TalkTabs' // MOCK-HOOK
 import { VoiceSettings } from './Settings'
 import { TalkPane } from './Talk'
 import { VoiceTelemetry } from './Telemetry'
@@ -95,6 +98,7 @@ function Gate({ children }: { children: ReactNode }) {
  * swarm-api and the pane says so in the server's words.
  */
 export function VoiceTalkScreen() {
+  if (mockDirection() === 'tabs') return <><PageHead title="Talk" /><MockTalkTabs /></> // MOCK-HOOK
   return (
     <>
       <PageHead title="Talk" />
@@ -107,6 +111,7 @@ export function VoiceTalkScreen() {
 
 /** Voice it › Projects: the saved conversations, each resumable (§3.11). */
 export function VoiceProjectsScreen() {
+  if (mockDirection() === 'tabs') return <><PageHead title="Projects" /><MockProjectsTabs /></> // MOCK-HOOK
   return (
     <>
       <PageHead title="Projects" />

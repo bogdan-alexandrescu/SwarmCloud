@@ -1,0 +1,220 @@
+/* MOCK-HOOK FILE
+   MOCK-UP, direction "tabs" (?voiceprojects=tabs): Voice it › Projects as one
+   list under state tabs, and Talk's catch-up and session projects. Console
+   tokens only, so both themes hold. */
+
+/* ---- Projects: the tabs and the list ------------------------------------- */
+.vpm { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vpm-bar { display: flex; align-items: center; gap: 6px; min-width: 0; border-bottom: 1px solid var(--line); }
+.vpm-bar > .vpm-tabs { flex: 0 1 auto; min-width: 0; border-bottom: 0; align-self: flex-end; }
+.vpm-bar > .c-btn, .vpm-bar > .c-tip-host { flex: none; }
+.vpm-bar-gap { flex: 1 1 auto; }
+.vpm-arch { border-top: 1px solid var(--line-soft); }
+.vpm-arch-h { all: unset; box-sizing: border-box; cursor: pointer; width: 100%; display: flex; align-items: center; gap: 14px; padding: 8px 12px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.vpm-arch-h em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); margin-left: -8px; }
+.vpm-arch-h .vpm-mark { cursor: inherit; }
+.vpm-arch-h[aria-expanded="true"] .vpm-chev { transform: rotate(180deg); }
+.vpm-arch-h:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+
+.vpm-head, .vpm-row-main {
+  display: grid; align-items: center; gap: 4px 14px;
+  grid-template-columns: 24px minmax(0, 1fr) 190px 120px 64px 96px;
+}
+.vpm-head { padding: 0 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }
+.vpm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); overflow: hidden; }
+.vpm-row { min-width: 0; }
+.vpm-row + .vpm-row { border-top: 1px solid var(--line-soft); }
+.vpm-row-main { padding: 10px 12px; min-height: 56px; }
+.vpm-row:hover > .vpm-row-main, .vpm-row[data-open] > .vpm-row-main { background: var(--surface-2); }
+
+/* The state mark: a badge, each state its own silhouette and tint. */
+.vpm-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  color: var(--s-neu); background: color-mix(in srgb, var(--s-neu) 12%, transparent); cursor: help; }
+.vpm-mark svg { width: 12px; height: 12px; }
+.vpm-mark[data-hue="live"] { color: var(--s-live); background: color-mix(in srgb, var(--s-live) 16%, transparent); }
+.vpm-mark[data-hue="park"] { color: var(--s-park); background: color-mix(in srgb, var(--s-park) 18%, transparent); }
+.vpm-mark[data-hue="arch"] { color: var(--text-dim); background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
+.vpm-mark[data-state="completed"] { color: var(--surface); background: var(--s-neu); }
+.vpm-mark[data-state="completed"] svg { width: 13px; height: 13px; stroke-width: 2.4; }
+.vpm-mark:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* The mark's meaning opens at the end of its row's title column, inside the row,
+   so it covers no row's mark or title (a tooltip below would hide the next row). */
+.vpm-row-main { position: relative; }
+.vpm-row-main > .c-tip-host { position: static; }
+.vpm-row-main > .c-tip-host > .c-tip { top: 50%; left: auto; right: calc(12px + 96px + 64px + 120px + 190px + 4 * 14px); transform: translateY(-50%); }
+
+.vpm-title { all: unset; box-sizing: border-box; min-width: 0; cursor: pointer; display: grid; grid-template-columns: minmax(0, max-content) 14px; justify-content: start;
+  grid-template-areas: "t chev" "l chev"; column-gap: 8px; align-items: center; }
+.vpm-title:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.vpm-title-t { grid-area: t; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vpm-line { grid-area: l; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vpm-chev { grid-area: chev; width: 12px; height: 12px; color: var(--text-faint); transition: transform 160ms ease; }
+.vpm-title[aria-expanded="true"] .vpm-chev { transform: rotate(180deg); }
+.vpm-row[data-state="cancelled"] .vpm-title-t, .vpm-row[data-state="archived"] .vpm-title-t { color: var(--text-dim); font-weight: 500; }
+
+/* A status says its word only where it asks for something: Waiting. */
+.vpm-ask-w { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--r-pill); white-space: nowrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text);
+  background: color-mix(in srgb, var(--paused) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--paused) 45%, transparent); }
+.vpm-ask { justify-self: end; min-width: 0; }
+.vpm-when { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vpm-cards { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); white-space: nowrap; }
+.vpm-cards b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+.vpm-k { display: none; }
+.vpm-cards .vpm-k { display: inline; }
+.vpm-faint { color: var(--text-faint); }
+.vpm-acts { display: inline-flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.vpm-acts .c-menu-host > .c-btn { padding-inline: 6px; border-color: transparent; background: transparent; color: var(--text-dim); }
+.vpm-acts .c-menu-host > .c-btn:hover { background: var(--surface-2); color: var(--text); }
+
+/* The brief, unfolded under its row. */
+.vpm-brief { padding: 4px 12px 14px 50px; display: flex; flex-direction: column; gap: 12px; background: var(--surface-2); }
+.vpm-goal, .vpt-catch-goal { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.vpm-goal-h { font-size: var(--t-micro); line-height: var(--lh-micro); text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-right: 6px; }
+.vpm-brief-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.vpm-brief-col { min-width: 0; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--r-card); background: var(--surface); }
+.vpm-brief-col h4, .vpt-catch-col h4 { margin: 0 0 6px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text-dim); }
+.vpm-brief-col ul, .vpt-catch-col ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.vpm-none { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-faint); }
+.vpm-tab-none { padding: 24px 12px; text-align: center; border: 1px dashed var(--line); border-radius: var(--r-card); }
+.vpm-brief-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.vpm-dlg { display: flex; flex-direction: column; gap: 14px; min-width: min(420px, 100%); }
+.vpm-dlg-facts { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vpm-dlg-facts dt { color: var(--text-dim); }
+.vpm-dlg-facts dd { margin: 0; color: var(--text); }
+.vpm-dlg-cards { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; }
+.vpm-dlg-cards b { font-weight: 600; }
+.vpm-empty-acts { display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 760px) {
+  .vpm-head { display: none; }
+  .vpm-bar { flex-wrap: wrap; }
+  .vpm-bar > .vpm-tabs { flex: 1 1 100%; order: 2; }
+  .vpm-bar > .vpm-bar-gap { order: 0; }
+  .vpm-bar > .c-btn, .vpm-bar > .c-tip-host { order: 1; margin-bottom: 4px; }
+  .vpm-row-main { grid-template-columns: 24px minmax(0, 1fr) max-content;
+    grid-template-areas: "m t t" ". a a" ". w acts"; padding: 10px; row-gap: 6px; }
+  .vpm-mark { grid-area: m; align-self: start; }
+  .vpm-title { grid-area: t; }
+  .vpm-ask { grid-area: a; }
+  .vpm-ask:empty { display: none; }
+  .vpm-when { grid-area: w; font-size: var(--t-micro); }
+  .vpm-when .vpm-k { display: none; }
+  .vpm-cards { display: none; }
+  .vpm-acts { grid-area: acts; }
+  .vpm-brief { padding: 4px 10px 12px; }
+  .vpm-title-t, .vpm-line { white-space: normal; }
+  .vpm-brief-cols { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .vpm-row-main > .c-tip-host { position: relative; }
+  .vpm-row-main > .c-tip-host > .c-tip { top: calc(100% + 8px); left: 0; right: auto; transform: none; }
+}
+
+/* ---- Talk: session projects, the catch-up, the aside --------------------- */
+.vt.vpt { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "strip" "main" "cards"; --vt-ring: 230px; }
+.vpt-live { width: 8px; height: 8px; border-radius: 50%; background: var(--s-live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-live) 25%, transparent); }
+
+.vpt-strip { grid-area: strip; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vpt-strip > ul { list-style: none; margin: 0; padding: 2px; display: flex; gap: 8px; min-width: 0; overflow-x: auto; }
+.vpt-strip > ul > li { flex: none; }
+.vpt-proj { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 4px; min-width: 168px; max-width: 240px;
+  padding: 7px 12px; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass-dim); }
+.vpt-proj:hover { background: var(--vt-glass); }
+.vpt-proj { border-color: var(--line); }
+.vpt-proj[aria-pressed="true"] { background: var(--vt-glass); border-color: var(--sk-ac); box-shadow: inset 0 -2px 0 var(--sk-ac); }
+.vpt-proj[aria-pressed="true"] .vpt-proj-t::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%;
+  background: var(--sk-ac); vertical-align: 1px; }
+.vpt-proj:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.vpt-proj-top, .vpt-proj-bottom { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vpt-proj-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text-dim); }
+.vpt-proj[aria-pressed="true"] .vpt-proj-t { color: var(--text); }
+.vpt-new { flex: none; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: var(--s-live); background: color-mix(in srgb, var(--s-live) 18%, transparent); cursor: help; }
+.vpt-new svg { width: 9px; height: 9px; }
+.vpt-new:focus-visible, .vpt-card-mark:focus-visible, .vpt-speaking:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.vpt-prog { display: inline-flex; align-items: center; gap: 6px; }
+.vpt-prog-bar { width: 54px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
+.vpt-prog-bar > span { display: block; height: 100%; background: var(--s-live); }
+.vpt-prog-n { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.vpt-needs { display: inline-flex; padding: 0 7px; border-radius: var(--r-pill); white-space: nowrap; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text);
+  background: color-mix(in srgb, var(--paused) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--paused) 45%, transparent); }
+
+.vpt-main { grid-area: main; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; min-width: 0; }
+.vpt-convo { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vpt-core { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; position: sticky; top: 12px; }
+.vpt-core .vt-core { min-height: 0; }
+.vpt .vt-subs { max-height: 15em; }
+
+.vpt-catch { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  border: 1px solid var(--vt-glass-line); border-left: 3px solid var(--sk-ac); border-radius: var(--r-card); background: var(--vt-glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.vpt-catch-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-width: 0; }
+.vpt-catch-h h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text-dim); }
+.vpt-catch-t { color: var(--text); font-weight: 600; }
+.vpt-catch-when { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.vpt-catch-h > .c-btn { margin-left: auto; }
+.vpt-reading { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--sk-ac); }
+.vpt-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.vpt-eq i { width: 3px; border-radius: 1px; background: currentColor; animation: vpt-eq 900ms ease-in-out infinite; }
+.vpt-eq i:nth-child(1) { height: 6px; }
+.vpt-eq i:nth-child(2) { height: 12px; animation-delay: -300ms; }
+.vpt-eq i:nth-child(3) { height: 8px; animation-delay: -600ms; }
+@keyframes vpt-eq { 50% { transform: scaleY(.45); } }
+@media (prefers-reduced-motion: reduce) { .vpt-eq i { animation: none; } }
+.vpt-catch-cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.vpt-catch-col { min-width: 0; padding: 8px 10px; border-radius: var(--r-card); border: 1px solid transparent; }
+.vpt-catch-col[data-at="now"] { border-color: color-mix(in srgb, var(--sk-ac) 55%, transparent); background: color-mix(in srgb, var(--sk-ac) 8%, transparent); }
+.vpt-catch-col[data-at="now"] h4 { color: var(--sk-ac); }
+.vpt-catch-col[data-at="later"] ol { color: var(--text-dim); }
+.vpt-catch-n { display: none; font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.vpt-catch-line { margin: 0; display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; min-width: 0;
+  border: 1px solid var(--vt-glass-line); border-left: 3px solid var(--sk-ac); border-radius: var(--r-card); background: var(--vt-glass-dim); font-size: var(--t-meta); }
+.vpt-catch-line > .c-btn { margin-left: auto; }
+.vpt-catch-line > .vpm-goal-h { text-transform: none; letter-spacing: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.vpt-aside-mark { margin: 0 0 2px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text-dim); }
+
+.vpt-cards-of { color: var(--text); font-weight: 600; }
+.vpt-cards-done { color: var(--text-faint); }
+/* A card's state is its edge and its mark; only Needs you says a word. */
+.vt-card[data-state="working"] > .c-card { border-left: 3px solid var(--s-live); }
+.vt-card[data-state="open"] > .c-card { border-left: 3px solid var(--line); }
+.vpt-card-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; cursor: help;
+  color: var(--s-neu); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--s-neu) 55%, transparent); }
+.vpt-card-mark[data-state="working"] { color: var(--s-live); box-shadow: none; background: color-mix(in srgb, var(--s-live) 16%, transparent); }
+.vpt-card-mark svg { width: 10px; height: 10px; }
+/* The aside: its own place in the conversation, outside every project's cards. */
+.vpt-aside .c-card { border-color: var(--line); background: var(--vt-glass-dim); }
+.vpt-run { color: var(--text-dim); }
+.vt-mic-group > .c-tip-host:has(> .vpt-speaking) { display: none; }
+.vpt-speaking { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; color: var(--sk-ac);
+  background: color-mix(in srgb, var(--sk-ac) 12%, transparent); cursor: help; }
+.vpt-agents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vpt-agents > li { display: flex; align-items: center; gap: 8px; }
+.vpt-agents .vpm-faint { margin-left: auto; font-family: var(--mono); font-size: var(--t-micro); }
+
+@media (max-width: 760px) {
+  .vt.vpt { grid-template-areas: "hud" "strip" "main" "cards"; --vt-ring: 150px; }
+  .vpt-strip { gap: 4px; }
+  .vpt-strip > ul { flex: 1 1 auto; }
+  .vpt-strip > .c-btn { flex: none; padding-inline: 6px; }
+  .vpt-proj { min-width: 150px; }
+  .vpt-main { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .vpt-core { order: -1; position: static; }
+  .vpt-core .vt-core { display: none; }
+  .vpt-core .vt-mic { position: static; }
+  .vpt-catch-cols { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .vpt-catch-col { padding: 6px 8px; }
+  .vpt-catch-h { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 4px 10px; }
+  .vpt-catch-h > h3 { grid-column: 1; grid-row: 1; }
+  .vpt-catch-h > .c-btn { grid-column: 2; grid-row: 1; margin-left: 0; }
+  .vpt-catch-h > .vpt-catch-when, .vpt-catch-h > .vpt-reading { grid-column: 1 / -1; }
+  /* On a phone the parts already read fold to their heading, so the plan stays in view. */
+  .vpt-catch-col[data-at="read"] ol { display: none; }
+  .vpt-catch-col[data-at="read"] h4 { margin: 0; }
+  .vpt-catch-col[data-at="read"] .vpt-catch-n { display: inline; }
+  .vt-mic-group > .c-tip-host:has(> .vpt-speaking) { display: inline-flex; }
+}
