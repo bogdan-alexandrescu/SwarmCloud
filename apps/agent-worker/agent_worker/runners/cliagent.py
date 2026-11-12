@@ -59,6 +59,7 @@ from .. import issue as issue_mod
 from .. import metrics
 from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
+from ..handoff import HANDOFF_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
 from ..redact import collect_secrets, replace_lone_surrogates, scrub_file, scrub_text
@@ -172,7 +173,7 @@ def _gib(size: int) -> str:
     return f"{round(size / _GIB, 1):g} GiB"
 
 
-def budget_line(memory_max: int, workers: int) -> str:
+def budget_line(memory_max: int, workers: int, *, live_browser: bool = False) -> str:
     """The one prompt line that states the budget, for a first start.
 
     With #2507's rules: two heavy commands at once, a test run backgrounded
@@ -182,15 +183,27 @@ def budget_line(memory_max: int, workers: int) -> str:
     backgrounded test run is `time_limit_line`'s one sentence, never restated
     here (ONE-PLACE, the owner's ask of 2026-11-03 for prompts without
     repeated instructions).
+
+    On a live-browser pod (#3104) the dev server is what the browser renders:
+    it and its page compiles share this container's limit, so it runs with
+    its Node heap capped at the same `old_space`, and stays up while the
+    browser renders -- stopped only before tsc or the tests.
     """
     old_space = max(256, (memory_max - OLD_SPACE_HEADROOM_BYTES) // (1 << 20))
+    dev_server = (
+        "A dev server and its page compiles share this container's limit: start it with "
+        f"NODE_OPTIONS=--max-old-space-size={old_space} and keep it up while the browser "
+        "renders, then stop it before running tsc or the tests; "
+    ) if live_browser else (
+        "Stop any dev server you started (next "
+        "dev, uvicorn, postgres) before running tsc or the tests; "
+    )
     return (
         f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
         "at that limit the kernel kills the whole container, this attempt with it. Run "
         "one heavy command (a test run, tsc, a build) at a time; when a command times "
         "out, kill its process group "
-        "(kill -- -PGID) before starting another. Stop any dev server you started (next "
-        "dev, uvicorn, postgres) before running tsc or the tests; never pass pytest -n "
+        f"(kill -- -PGID) before starting another. {dev_server}never pass pytest -n "
         f"above {workers} (${XDIST_WORKERS_ENV}, which -n auto already uses); never set "
         f"--max-old-space-size above {old_space} (MiB: the {_gib(memory_max)} less "
         f"{_gib(OLD_SPACE_HEADROOM_BYTES)} for the worker and the CLI)."
@@ -2140,7 +2153,11 @@ def run_cli_agent(
     memory_max, cpu_cores = container_limits()
     budget = agent_resource_budget(memory_max, cpu_cores)
     if budget and memory_max is not None and not resume:
-        prompt = f"{prompt}\n\n{budget_line(memory_max, int(budget[XDIST_WORKERS_ENV]))}"
+        # A live-browser attempt's signal is `claude_code.live_browser_refusal`'s:
+        # the lifecycle sets SWARM_HANDOFF only for an attempt with a spool.
+        live = bool(os.environ.get(HANDOFF_ENV, "").strip())
+        stated = budget_line(memory_max, int(budget[XDIST_WORKERS_ENV]), live_browser=live)
+        prompt = f"{prompt}\n\n{stated}"
     # The argv every start of this step shares; a finish pass (below) adds its
     # own `--resume <id>` to it, and writes its own prompt to stdin.
     base_argv = list(argv)
