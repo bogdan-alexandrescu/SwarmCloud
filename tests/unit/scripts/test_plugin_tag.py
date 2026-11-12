@@ -355,7 +355,12 @@ def test_the_tag_waits_for_the_unit_tests_and_not_the_image_build():
     needs = [needs] if isinstance(needs, str) else list(needs or [])
     assert needs == ["python"], f"the tag job needs {needs}; the proof is `format / unit tests` alone"
     job_if = str(job.get("if", ""))
-    assert not re.search(r"\b(always|failure|cancelled)\(\s*\)", job_if), job_if
+    # `!cancelled()`, not none: with no status function GitHub ANDs the
+    # implicit success(), false whenever a job up the chain was skipped, which
+    # skipped this job on every main build (2026-11-11). Not `always()`: a
+    # cancelled run tags nothing.
+    assert re.search(r"!\s*cancelled\(\s*\)", job_if), job_if
+    assert not re.search(r"\b(always|failure)\(\s*\)", job_if), job_if
     push_main = {"github.event_name": "push", "github.ref": "refs/heads/main", "needs.python.result": "success"}
     assert _evaluate(job_if, **push_main) is True, job_if
     for result in ("failure", "cancelled", "skipped"):

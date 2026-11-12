@@ -1665,8 +1665,15 @@ jobs:
     name: tag the plugin's bridge (sc-v<version>)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: [python]
-    # No status function: it runs only when `python` succeeded.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success'
+    # `!cancelled()` IS REQUIRED. Without a status function GitHub ANDs the
+    # implicit `success()`, which is false when ANY job up the needs chain
+    # was skipped -- and on main `python-unit` and the lock / contract checks
+    # skip whenever the tree was reused from its pull request -- so the job
+    # was skipped on every main build although `python` succeeded (found
+    # 2026-11-11; tests/unit/scripts/test_workflow_needs_result_status.py).
+    # With it, the job runs exactly when `python` succeeded on a push to
+    # main, whatever was skipped above it; a cancelled run tags nothing.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success' }}
     permissions:
       contents: write
     steps:
