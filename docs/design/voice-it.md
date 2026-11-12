@@ -2139,13 +2139,17 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
 11. **Own speech during a pause (§3.12.7):** the machine's idle rule runs from
     the pause and stops the machine, not the session (recommended); the
     machine runs for the whole pause; or it stops at once.
-12. **The project states' names (§3.13.2):** In progress, Waiting on you,
-    Completed, Cancelled, Archived (recommended); or the stored names kept as
-    they are (Active, Waiting, Shipped, Archived) with Cancelled added.
-13. **What a merge moves (§3.13.2):** the last merge of a project's work, with
-    nothing running, nothing open in the brief and no card waiting, moves it to
-    Completed (recommended); a merge never completes a project (only the
-    owner or the planner does); or every merge only moves Waiting to In
+12. **The project states' names (§3.13.2):** answered 12 November 2026: In
+    progress, Waiting on you, Completed, Cancelled and Archived, stored as
+    `in_progress`, `waiting`, `completed`, `cancelled` and `archived`, with
+    old rows read without a migration (`active` as `in_progress`, `shipped`
+    as `completed`). The other option was the stored names kept as they are
+    (Active, Waiting, Shipped, Archived) with Cancelled added.
+13. **What a merge moves (§3.13.2):** answered 12 November 2026: the last
+    merge of a project's work moves it to Completed, only when nothing of the
+    project runs, its brief has nothing open and no card waits on the owner.
+    The other options were that a merge never completes a project (only the
+    owner or the planner does), or that every merge only moves Waiting to In
     progress.
 14. **What Cancel does to running work (§3.13.2):** answered 11 November
     2026: cancelling a project also cancels its running work. The one
@@ -2153,9 +2157,9 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     each through the platform's own cancel for its kind (§3.13.2). The other
     option was to cancel nothing and list what still runs, each with its own
     Cancel.
-15. **The brief's size (§3.13.3):** at most 16 KiB, about 4,000 tokens (goal
-    600 characters, 40 decided, 30 open, 10 next) (recommended); 32 KiB; or
-    8 KiB.
+15. **The brief's size (§3.13.3):** answered 12 November 2026: at most
+    16 KiB, about 4,000 tokens (goal 600 characters, 40 decided, 30 open, 10
+    next). The other options were 32 KiB or 8 KiB.
 16. **How long the catch-up runs (§3.13.4):** about 30 seconds spoken (at most
     four sentences) with the rest on a Catch-up document card, when something
     changed or ten minutes passed (recommended); one sentence and the card;

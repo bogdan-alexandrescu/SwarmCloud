@@ -5,7 +5,8 @@ invariant 9, §10 phase 2).
 THE DOCUMENTS sit beside the project and session documents the session
 routes write (`sessions.py`), and every one carries the tenant and the person:
 
-  voice_projects/{project}                              title, status, brief, references
+  voice_projects/{project}                              title, status (its state), state_history,
+                                                        brief, references
   voice_projects/{project}/cards/{card}                 the card envelope and body, versioned
   voice_projects/{project}/turns/{turn}                 one planner turn
   voice_projects/{project}/sessions/{session}           sessions.py's
@@ -82,12 +83,32 @@ AUDIT = vs.AUDIT
 AUDIT_RENAMED = "voice_project_renamed"
 AUDIT_DELETED = "voice_project_deleted"
 
-#: Project statuses (§3.7).
-ACTIVE = "active"
+#: A project's five states (§3.13.2; the owner's names, 12 November 2026),
+#: stored in `status`. Only these are written; `projectstate.py` holds who
+#: moves a project to which.
+IN_PROGRESS = "in_progress"
 WAITING = "waiting"
-SHIPPED = "shipped"
+COMPLETED = "completed"
+CANCELLED = "cancelled"
 ARCHIVED = "archived"
-STATUSES = (ACTIVE, WAITING, SHIPPED, ARCHIVED)
+STATUSES = (IN_PROGRESS, WAITING, COMPLETED, CANCELLED, ARCHIVED)
+#: The names stored before the five states, read without a migration: a
+#: stored document keeps its old value until the project's next move. This is
+#: the one place they live.
+OLD_STATUSES = {"active": IN_PROGRESS, "shipped": COMPLETED}
+#: The last moves a project keeps in `state_history`.
+STATE_HISTORY_MAX = 50
+
+#: The card states and kinds that wait on the owner (§3.13.2): a Proposal or
+#: Plan `proposed`, a Review, Details, Credential, Budget, Stop or Read-back
+#: `waiting`. A card in an OPEN_CARD_STATES state is open.
+WAITS_ON_OWNER = {
+    "proposal": vcards.PROPOSED, "plan": vcards.PROPOSED,
+    "review": vcards.WAITING, "details_input": vcards.WAITING,
+    "credential_input": vcards.WAITING, "budget": vcards.WAITING,
+    "stop": vcards.WAITING, "readback": vcards.WAITING,
+}
+OPEN_CARD_STATES = (vcards.PROPOSED, vcards.ACTING, vcards.WAITING)
 
 TITLE_MAX = 120
 #: The planner keeps the brief at a few thousand tokens (§3.7); a document
@@ -372,13 +393,41 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
 
-def project_view(project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+def read_state(value: Any) -> str:
+    """A stored status as one of the five states: `active` reads
+    `in_progress`, `shipped` reads `completed`, a missing or unknown value
+    reads `in_progress` (§3.13.2, no migration)."""
+    text = str(value or "")
+    if text in STATUSES:
+        return text
+    return OLD_STATUSES.get(text, IN_PROGRESS)
+
+
+def waits_on_owner(kind: Any, state: Any) -> bool:
+    return WAITS_ON_OWNER.get(str(kind or "")) == state
+
+
+def _history_view(history: Any) -> list[dict[str, Any]]:
+    rows = history if isinstance(history, list) else []
+    return [{**row, "at": _iso(row.get("at"))} for row in rows[-STATE_HISTORY_MAX:]
+            if isinstance(row, dict)]
+
+
+def project_view(project_id: str, data: dict[str, Any],
+                 counts: dict[str, Any] | None = None) -> dict[str, Any]:
     """What the routes answer: never the person's email or the tenant beyond
-    what the caller already is."""
+    what the caller already is. `counts` is what `VoiceStore.project_counts`
+    read from the project's sessions and cards; without it the three are
+    None and empty."""
+    counts = counts or {}
     return {
         "project_id": project_id,
         "title": data.get("title") or vs.UNTITLED,
-        "status": data.get("status") or ACTIVE,
+        "state": read_state(data.get("status")),
+        "state_history": _history_view(data.get("state_history")),
+        "last_session_at": _iso(counts.get("last_session_at")),
+        "open_cards": counts.get("open_cards"),
+        "waiting_on_owner": list(counts.get("waiting_on_owner") or []),
         "subject": data.get("subject"),
         "size": data.get("size"),
         "brief": data.get("brief") or {},
@@ -441,11 +490,52 @@ class VoiceStore:
                 .order_by("updated_at", direction=firestore.Query.DESCENDING)
                 .limit(LIST_LIMIT)
                 .stream())
-        return [project_view(snap.id, snap.to_dict() or {}) for snap in rows
+        mine = [(snap.id, snap.to_dict() or {}) for snap in rows
                 if self._mine(snap.to_dict(), tenant_id, person)]
+        return [self._view(tenant_id, person, project_id, data) for project_id, data in mine]
 
     def get_project(self, *, tenant_id: str, person: str, project_id: str) -> dict[str, Any]:
-        return project_view(project_id, self._owned(tenant_id, person, project_id))
+        return self._view(tenant_id, person, project_id,
+                          self._owned(tenant_id, person, project_id))
+
+    def _view(self, tenant_id: str, person: str, project_id: str,
+              data: dict[str, Any]) -> dict[str, Any]:
+        """A read project, its merge settled first (§3.13.2: settled on read,
+        no new job; `projectstate.settle`), with its counts."""
+        from . import projectstate  # imports this module
+
+        counts = self.project_counts(tenant_id=tenant_id, person=person, project_id=project_id)
+        data = projectstate.ProjectStates(self._db, self, now=self._now).settle(
+            tenant_id=tenant_id, person=person, project_id=project_id, data=data,
+            counts=counts)
+        return project_view(project_id, data, counts)
+
+    def project_counts(self, *, tenant_id: str, person: str,
+                       project_id: str) -> dict[str, Any]:
+        """The project's last session, its open cards and the cards that wait
+        on the owner, read from its own sessions and cards (this person's in
+        this tenant only). The caller has read the project as theirs."""
+        last: Any = None
+        for snap in self._project_ref(project_id).collection(SESSIONS).stream():
+            data = snap.to_dict() or {}
+            at = data.get("created_at")
+            if self._mine(data, tenant_id, person) and at is not None and (
+                    last is None or str(_iso(at)) > str(_iso(last))):
+                last = at
+        open_cards = 0
+        waiting: list[dict[str, Any]] = []
+        for snap in self._project_ref(project_id).collection(CARDS).stream():
+            data = snap.to_dict() or {}
+            if not self._mine(data, tenant_id, person):
+                continue
+            body = data.get("body") or {}
+            state = body.get("state")
+            if state in OPEN_CARD_STATES:
+                open_cards += 1
+            if waits_on_owner(data.get("kind"), state):
+                waiting.append({"card_id": snap.id, "kind": data.get("kind"),
+                                "title": body.get("title")})
+        return {"last_session_at": last, "open_cards": open_cards, "waiting_on_owner": waiting}
 
     def rename_project(self, *, tenant_id: str, person: str, project_id: str,
                        title: str) -> dict[str, Any]:
@@ -471,10 +561,11 @@ class VoiceStore:
     def update_project(self, *, tenant_id: str, person: str, project_id: str,
                        brief: dict[str, Any] | None = None,
                        references: dict[str, Any] | None = None,
-                       status: str | None = None, size: str | None = None,
+                       size: str | None = None,
                        subject: dict[str, Any] | None = None) -> dict[str, Any]:
         """The planner's after-turn write (§3.11): the brief, references,
-        status, size and subject. Only what is given changes."""
+        size and subject. Only what is given changes. The state is not here:
+        only its movers move it (`projectstate.py`, §3.13.2)."""
         data = self._owned(tenant_id, person, project_id)
         changes: dict[str, Any] = {}
         if brief is not None:
@@ -486,11 +577,6 @@ class VoiceStore:
             if not isinstance(references, dict):
                 raise ValidationFailed("references is an object", detail={"field": "references"})
             changes["references"] = references
-        if status is not None:
-            if status not in STATUSES:
-                raise ValidationFailed(f"status is one of {', '.join(STATUSES)}",
-                                       detail={"field": "status"})
-            changes["status"] = status
         if size is not None:
             changes["size"] = str(size)[:32]
         if subject is not None:
