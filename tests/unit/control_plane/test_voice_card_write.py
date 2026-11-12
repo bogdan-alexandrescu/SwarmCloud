@@ -82,7 +82,8 @@ def test_a_grant_draws_a_card_in_its_session_as_its_person_and_is_audited(client
     events = vstore.VoiceStore(db, now=lambda: datetime.now(timezone.utc)).events_after(
         tenant_id="eng", person="alice@example.com", project_id=call.project_id,
         session_id=call.session_id)
-    assert [e["type"] for e in events] == ["card.upsert"]
+    # The grant's masked work step (voice/workfeed.py), then the card.
+    assert [e["type"] for e in events] == ["work.step", "card.upsert"]
     rows = [r for r in _audit(db) if r["route"] == ROUTE]
     assert len(rows) == 1
     assert rows[0]["via"] == vg.VIA and rows[0]["method"] == "POST"
