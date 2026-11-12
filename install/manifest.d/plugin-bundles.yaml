@@ -13,6 +13,9 @@
 # and no step of their own; verify.plugins and swarm doctor's plugins.bundle-build
 # check that the builder may push only to swarm-plugin-bundles.
 version: 1
+env:
+  PLUGIN_BUNDLE_REPOSITORY:
+    setter: 'internal: read at apps/scheduler/scheduler/settings.py:661 (the one repository a plugin bundle''s digest may name, managed-plugins.md section 1.4.4); nothing in terraform/ sets it in the scheduler''s environment until the one-line follow-up after the bundle job wiring lane, so a deployed scheduler runs on the default, unset, which refuses a step with a bundle key and leaves every other step as before'
 entries:
 - id: sa.swarm-plugin-bundler
   kind: service-account
