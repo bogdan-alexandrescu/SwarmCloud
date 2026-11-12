@@ -49,10 +49,11 @@ from typing import Any
 from swarm_redaction import redact
 
 from ..errors import ValidationFailed
+from .workfeed import ID_RE
 
 #: Bumped when a kind, field, state or action changes, so the planner can
 #: tell a cached catalogue from the served one.
-CATALOGUE_VERSION = 2
+CATALOGUE_VERSION = 3
 
 # ---- the common states (§4) -------------------------------------------------
 
@@ -63,7 +64,9 @@ DONE = "done"
 FAILED = "failed"
 CANCELLED = "cancelled"
 DISMISSED = "dismissed"
-STATES = (PROPOSED, ACTING, WAITING, DONE, FAILED, CANCELLED, DISMISSED)
+#: A navigation offer a person said yes to (§3.12.3); only swarm-api sets it.
+ACCEPTED = "accepted"
+STATES = (PROPOSED, ACTING, WAITING, DONE, FAILED, CANCELLED, DISMISSED, ACCEPTED)
 
 #: Who created a card: the planner, the platform (swarm-voice following a tag,
 #: swarm-api's ledger), or the person by a click.
@@ -88,6 +91,32 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _BLOB_RE = re.compile(r"^tenants/[^\s]+$")
 #: A read-back's id (voice/readback.py mints it).
 _READBACK_ID_RE = re.compile(r"^vr_[0-9a-f]{32}$")
+
+# ---- the navigation offer (docs/design/voice-it.md §3.12.3) -----------------
+
+#: The pages a Navigate card may offer: the `FIXED` keys of
+#: apps/swarm-ui/src/paths.ts that a person reads, in its order, never an
+#: admin page, a submit form or a callback. The console maps the key through
+#: `FIXED` itself, so no string of the card becomes an address.
+#: tests/unit/control_plane/test_voice_navigate.py holds this to paths.ts.
+NAVIGATE_DESTINATIONS: tuple[str, ...] = (
+    "overview/now", "work/running", "work/workflows", "work/timeline",
+    "work/timeline/outcomes", "work/runs", "automate/schedules", "automate/approvals",
+    "capacity/pools", "capacity/profiles", "capacity/catalogue", "capacity/holders",
+    "capacity/accounts", "capacity/llm-providers", "capacity/llm-providers/plans",
+    "capacity/llm-providers/api-keys", "capacity/account-health", "capacity/quota",
+    "capacity/jev-usage", "capacity/api-reads",
+    "config/github", "config/repositories", "config/secrets", "config/mcp-servers",
+    "config/plugins", "config/people", "config/workspace",
+    "settings/profile",
+    "voice/talk", "voice/projects", "voice/preferences", "voice/settings", "voice/telemetry",
+    "help",
+)
+#: What an offer's `object` may name; the console builds that object's own
+#: page from its kind and id (`/agents/<id>`, `/runs/<id>`, ...).
+NAVIGATE_OBJECTS: tuple[str, ...] = ("agent", "workflow", "run", "schedule", "approval")
+#: Who accepted an offer: a person, by a click or a spoken yes. Never a writer.
+ACCEPTED_BY: tuple[str, ...] = ("person",)
 
 
 # ---- the field language -----------------------------------------------------
@@ -343,6 +372,23 @@ KINDS: tuple[Kind, ...] = (
          ("comment", "open_full_size"),
          ("planner",),
          "A written spec in Markdown, its headings addressable by notes."),
+    # §3.12.3: a console page offered after an answer. The planner writes it
+    # only as `proposed` and only new (`writer_rules`); swarm-api moves it to
+    # `accepted` on the person's click or spoken yes, or `dismissed`
+    # (readback.Offers); the holder marks an accepted one `done` once it
+    # has navigated. No field is an address.
+    Kind("navigate", "Navigate",
+         (_e("destination", NAVIGATE_DESTINATIONS),
+          _o("object", _e("kind", NAVIGATE_OBJECTS), _s("id", max=TITLE_MAX, pattern=ID_RE),
+             nullable=True),
+          _s("why", max=SUMMARY_MAX),
+          _e("accepted_by", ACCEPTED_BY, nullable=True)),
+         (PROPOSED, ACCEPTED, DONE, DISMISSED),
+         ("open",),
+         ("planner",),
+         "Offers one console page from a fixed list, after the answer: its destination, "
+         "optionally one object's id, and why in one line. Always new, always proposed; "
+         "only the person's yes opens it."),
 )
 
 BY_KIND: dict[str, Kind] = {k.kind: k for k in KINDS}
@@ -519,13 +565,52 @@ CARD_UPSERT = "card.upsert"
 CARD_REMOVE = "card.remove"
 
 
+def writer_rules(checked: dict[str, Any], *, session_id: str | None) -> None:
+    """What a writer may not do that the schema alone allows. A `navigate`
+    offer is written only new, only `proposed`, with no `accepted_by`, and
+    only on a session: `accepted` and `dismissed` are swarm-api's to set from
+    the person's answer (§3.12.3), so the planner can neither accept an offer
+    nor reopen one."""
+    if checked["kind"] != "navigate":
+        return
+    if checked["state"] != PROPOSED:
+        raise _refuse("state", "a navigate card is written only as proposed; "
+                               "only the person's yes accepts it")
+    if checked["body"].get("accepted_by") is not None:
+        raise _refuse("body.accepted_by", "is set by swarm-api when the person accepts")
+    if checked["card_id"] is not None:
+        raise _refuse("card_id", "a navigate offer is new each time; draw another offer")
+    if session_id is None:
+        raise _refuse("kind", "a navigate offer belongs to a live session")
+
+
+def _dismiss_older_offers(store: Any, *, tenant_id: str, person: str, project_id: str,
+                          session_id: str, keep: str) -> None:
+    """One offer is open a session at a time: a newer one replaces the
+    session's older open offers, each written `dismissed` with its event."""
+    for doc in store.list_cards(tenant_id=tenant_id, person=person, project_id=project_id):
+        stored = doc.get("body") or {}
+        if (doc.get("kind") != "navigate" or doc.get("session_id") != session_id
+                or doc.get("card_id") == keep or stored.get("state") != PROPOSED):
+            continue
+        moved = store.put_card(
+            tenant_id=tenant_id, person=person, project_id=project_id, card_id=doc["card_id"],
+            kind="navigate", session_id=session_id, turn_id=doc.get("turn_id"),
+            body={**stored, "state": DISMISSED})
+        store.append_event(tenant_id=tenant_id, person=person, project_id=project_id,
+                           session_id=session_id,
+                           event={"type": CARD_UPSERT, "card": card_view(doc["card_id"], moved)})
+
+
 def write_card(store: Any, *, tenant_id: str, person: str, project_id: str,
                session_id: str | None, card: Any, turn_id: str | None = None) -> dict[str, Any]:
     """Validate, store the card's next version, and append its `card.upsert`
     to the session's stream when it belongs to one. `store` is a
     `voice.store.VoiceStore`; the tenant and the person are the caller's,
-    resolved by the route, never a field of the card."""
+    resolved by the route, never a field of the card. A new navigate offer
+    replaces the session's open one."""
     checked = validate(card)
+    writer_rules(checked, session_id=session_id)
     card_id = checked["card_id"] or "vc_" + secrets.token_hex(16)
     doc = store.put_card(
         tenant_id=tenant_id, person=person, project_id=project_id, card_id=card_id,
@@ -536,6 +621,9 @@ def write_card(store: Any, *, tenant_id: str, person: str, project_id: str,
     if session_id is not None:
         store.append_event(tenant_id=tenant_id, person=person, project_id=project_id,
                            session_id=session_id, event={"type": CARD_UPSERT, "card": view})
+        if checked["kind"] == "navigate":
+            _dismiss_older_offers(store, tenant_id=tenant_id, person=person,
+                                  project_id=project_id, session_id=session_id, keep=card_id)
     return view
 
 

@@ -65,6 +65,7 @@ const STATE_WORD: Readonly<Record<CardState, string>> = {
   failed: 'failed',
   cancelled: 'cancelled',
   dismissed: 'dismissed',
+  accepted: 'accepted',
 }
 
 const CREATOR_WORD: Readonly<Record<string, string>> = { planner: 'the planner', platform: 'the platform', person: 'you' }
