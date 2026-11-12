@@ -1281,6 +1281,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
 #: the worker.
 QUESTIONS_NAME = "questions.json"
 QUESTIONS_KEY = "questions"
+#: The worker's reason beside `questions: 0` when it did not take the file
+#: (`agent_worker.questions.REJECTED_KEY`). Spelled again: the worker is not
+#: installed with the bridge.
+QUESTIONS_REJECTED_KEY = "questions_rejected"
 
 #: The worker takes no file larger than this, so one window of the artifacts
 #: route reads it whole; one byte more says whether it was cut.
@@ -1323,10 +1327,22 @@ def owner_questions(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]
 
     A task that asked none reads nothing more and answers `[]`. A counted file
     that cannot be read answers `[]` with `questions_unavailable_because`, so
-    "asked none" and "asked some we could not read" are never the same.
+    "asked none" and "asked some we could not read" are never the same. Nor
+    is a file the worker did not take (#3086): it is counted 0 with
+    `questions_rejected` beside it, and answers `[]` with the worker's reason
+    -- the file was never uploaded, so nothing more is read.
     """
     count = questions_count(task)
     if count == 0:
+        rejected = (task.get("result_summary") or {}).get(QUESTIONS_REJECTED_KEY)
+        if isinstance(rejected, str) and rejected.strip():
+            return {
+                "questions": [],
+                "questions_unavailable_because": (
+                    f"the worker did not take {QUESTIONS_NAME} as questions for the owner: "
+                    f"{clip(rejected, REJECTED_REASON_CHARS)}"
+                ),
+            }
         return {"questions": []}
     task_id = task_id_of(task)
     why = None
@@ -1373,6 +1389,58 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
         "recommended": _question_text(entry.get("recommended")),
         "context": _question_text(entry.get("context")),
     }
+
+
+#: How long one rejected file's reason may be where a hold names it: a
+#: reason, not the worker's whole text.
+REJECTED_REASON_CHARS = 200
+
+#: The owner-question hold's `blocked_by[].park_phase`, and the key its
+#: record rides under (`agent_worker.merge`'s owner-question park).
+OWNER_QUESTIONS_PHASE = "owner_questions"
+
+
+def hold_rejected_files(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each questions file the merge's owner-question hold could not take,
+    `{task_id, step_id, file, reason}`, the reason clipped.
+
+    WHY (#3086). The hold recorded only `unreadable: 1`: a person saw a
+    merge waiting on a person and nothing to answer, nor which step's file
+    was refused or why. The park's record names each one as
+    `rejected_files`; read from `blocked_by[].owner_questions`, else from
+    the API's `waiting.detail`. An entry that names no asking task or no
+    file is left out -- the document is tenant-writable, so nothing in it
+    is guessed at. `[]` for a hold that names none, or any other park.
+    """
+    raw: Any = None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == OWNER_QUESTIONS_PHASE:
+            record = block.get(OWNER_QUESTIONS_PHASE)
+            if isinstance(record, dict) and isinstance(record.get("rejected_files"), list):
+                raw = record["rejected_files"]
+    if raw is None:
+        waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+        detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+        if detail.get("park_phase") == OWNER_QUESTIONS_PHASE and isinstance(detail.get("rejected_files"), list):
+            raw = detail["rejected_files"]
+    out = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        asker, name = entry.get("task_id"), entry.get("file")
+        if not isinstance(asker, str) or not asker or not isinstance(name, str) or not name:
+            continue
+        step, reason = entry.get("step_id"), entry.get("reason")
+        out.append({"task_id": asker, "step_id": step if isinstance(step, str) else "", "file": name,
+                    "reason": clip(reason, REJECTED_REASON_CHARS) if isinstance(reason, str) else ""})
+    return out
+
+
+def rejected_files_words(rejected: list[dict[str, Any]]) -> str:
+    """`step implement (task_x) questions.json: <reason>; ...`, for a sentence."""
+    return "; ".join(
+        f"step {e['step_id'] or '?'} ({e['task_id']}) {e['file']}" + (f": {e['reason']}" if e["reason"] else "")
+        for e in rejected)
 
 
 #: Where the owner's stored answers are read, per task (`swarm_api.routes.tasks.read_questions`):
