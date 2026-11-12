@@ -288,6 +288,10 @@ LIVE_STALE_SECONDS = max(idle.seconds for idle in cat.IDLE) + LIVE_STALE_MARGIN_
 ACTIVITY_FIELDS = ("activity_at", "heartbeat_at", "live_at", "created_at")
 
 END_BY_PERSON = "ended_by_person"
+#: The holder's pagehide end (voice-it.md §3.12.2, "Closing the tab").
+END_TAB_CLOSED = "tab_closed"
+#: The causes the person's own end route may name; every other is swarm-api's own.
+PERSON_END_CAUSES = (END_BY_PERSON, END_TAB_CLOSED)
 #: Live with no activity for LIVE_STALE_SECONDS: ended by the next start or the sweep.
 END_ABANDONED = "abandoned"
 END_VOICE_UNREACHABLE = "voice_unreachable"
@@ -1678,21 +1682,26 @@ class VoiceSessions:
                 return owner[snap.reference.path]
         raise NotFound(f"voice session {session_id!r} not found")
 
-    def end(self, *, tenant_id: str, person: str, session_id: str) -> dict[str, Any]:
+    def end(self, *, tenant_id: str, person: str, session_id: str,
+            cause: str = END_BY_PERSON) -> dict[str, Any]:
+        """The person's own end: End (`ended_by_person`) or the holder's
+        pagehide end (`tab_closed`), nothing else (PERSON_END_CAUSES)."""
+        if cause not in PERSON_END_CAUSES:
+            raise ValueError(f"no Voice it end cause {cause!r} a person may name")
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         before = self._close(tenant_id=tenant_id, person=person, project_id=project_id,
-                             session_id=session_id, cause=END_BY_PERSON)
+                             session_id=session_id, cause=cause)
         told = None
         if before is not None:
-            told = self._client.end(session_id, cause=END_BY_PERSON)
+            told = self._client.end(session_id, cause=cause)
             if before.get("mode") == MODE_SPEECH and self._machine is not None:
                 # Stop (§4.5): the machine stops with the session, fenced by
                 # the lease's generation; none held is nothing to stop.
                 holder = self._machine.holder_of(session_id)
                 if holder is not None:
-                    self._machine.stop(holder, cause=END_BY_PERSON)
-            log.info("voice session ended tenant=%s project=%s session=%s voice_told=%s",
-                     tenant_id, project_id, session_id, told)
+                    self._machine.stop(holder, cause=cause)
+            log.info("voice session ended tenant=%s project=%s session=%s cause=%s voice_told=%s",
+                     tenant_id, project_id, session_id, cause, told)
         return {"project_id": project_id, "session_id": session_id, "state": ENDED,
                 "changed": before is not None, "voice_told": told}

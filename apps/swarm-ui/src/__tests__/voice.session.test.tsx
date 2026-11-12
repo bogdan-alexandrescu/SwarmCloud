@@ -5,13 +5,15 @@
 //     peer is never closed, no end is posted, and Talk draws the same
 //     session (its status, its cards, its cost pill);
 //   * closing the tab (`pagehide`) posts the end once, kept alive past the
-//     page, with the session cookie and the workspace header;
+//     page, with the session cookie, the workspace header and the cause
+//     `tab_closed`;
 //   * a reload is a fresh holder, and a fresh holder starts no session;
 //   * End still ends the session through swarm-api's end route
 //     (`ended_by_person`), and signing out ends it before the page leaves.
 //
 // MUTATIONS: hang up when Talk unmounts; send the end with sendBeacon or
-// without keepalive; drop the workspace header; post the end on every
+// without keepalive; drop the workspace header; send no cause or
+// `ended_by_person` on pagehide; post the end on every
 // pagehide; start a session when the holder mounts; navigate before the end.
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
@@ -182,6 +184,9 @@ describe("Voice it's session lives above the page", () => {
     expect(init.keepalive).toBe(true)
     expect(init.credentials).toBe('same-origin')
     expect((init.headers as Record<string, string>)[TENANT_HEADER]).toBe(WORKSPACE)
+    // A closed tab is recorded as `tab_closed`, not as ended by the person.
+    expect((init.headers as Record<string, string>)['content-type']).toBe('application/json')
+    expect(JSON.parse(String(init.body))).toEqual({ cause: 'tab_closed' })
     expect(peer.closed).toBe(true)
   })
 
@@ -202,6 +207,9 @@ describe("Voice it's session lives above the page", () => {
     fireEvent.click(screen.getByRole('button', { name: 'End' }))
     await settle(act)
     expect(ends().map(([t]) => (t as { url: string }).url)).toEqual([`/v1/voice/sessions/${SESSION}/end`])
+    // End names no cause: swarm-api records the missing one as `ended_by_person`.
+    expect(JSON.stringify(ends())).not.toContain('tab_closed')
+    expect(fetchSpy.mock.calls.filter(([u]) => String(u).endsWith('/end'))).toHaveLength(0)
     expect(peer.closed).toBe(true)
     expect(screen.getByRole('button', { name: 'Start talking' })).toBeTruthy()
   })

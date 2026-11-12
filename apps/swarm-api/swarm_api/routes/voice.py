@@ -18,7 +18,7 @@
         -> {session_id, seen_seq, changed}
     POST /v1/voice/sessions/{session_id}/turns  {text}
         -> {turn_id, reply, cards, delegation_id (speech, when delegated)}
-    POST /v1/voice/sessions/{session_id}/end
+    POST /v1/voice/sessions/{session_id}/end  {cause?: ended_by_person | tab_closed}
         -> {project_id, session_id, state, changed, voice_told}
 
     GET    /v1/voice/projects                 -> {projects: [...]}, newest first
@@ -97,7 +97,10 @@ swarm-voice, so none answers 503 for its absence.
 
 THE SHAPE is the Talk pane's (apps/swarm-ui/src/voice/rtc.ts,
 startVoiceSession and endVoiceSession): the pane sends `offer_sdp`, reads
-`answer_sdp`, and ends a session by its id alone. Ending finds the session's
+`answer_sdp`, and ends a session by its id alone, with an optional
+`{cause}`: `ended_by_person` (the default, End) or `tab_closed` (the
+holder's pagehide end); any other cause is 422, every other one being
+swarm-api's own. Ending finds the session's
 project among the caller's own projects in the selected workspace, so
 another tenant's session id, or another person's, is the same 404 as a
 missing one.
@@ -183,7 +186,7 @@ fake), else the deployment's from SWARM_VOICE_URL, else none.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -540,9 +543,19 @@ async def text_turn(
         service.turn, tenant_id=tenant_id, person=person, session_id=session_id, text=body.text)
 
 
+class EndSession(BaseModel):
+    """`/end`'s optional body: the person's own cause (sessions.PERSON_END_CAUSES).
+    None, or no body, is `ended_by_person`; any other cause is 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cause: Literal["ended_by_person", "tab_closed"] = vs.END_BY_PERSON
+
+
 @router.post("/sessions/{session_id}/end")
 async def end_session(
     session_id: str,
+    body: EndSession | None = None,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -552,7 +565,8 @@ async def end_session(
     service = _service(ctx, client, machine)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
-        service.end, tenant_id=tenant_id, person=person, session_id=session_id)
+        service.end, tenant_id=tenant_id, person=person, session_id=session_id,
+        cause=(body or EndSession()).cause)
 
 
 # --------------------------------------------------------------------------
