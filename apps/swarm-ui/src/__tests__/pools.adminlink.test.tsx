@@ -134,7 +134,7 @@ describe('By runner profile links its opened row to Pool limits for an admin onl
   it('draws the Pool limits link for an admin', async () => {
     const exp = await renderMatrix('admin')
     await waitFor(() => expect(limitsLinks(exp).map((a) => a.textContent)).toEqual(['Pool limits']), WAIT)
-    expect(limitsLinks(exp)[0].getAttribute('href')).toBe('#admin/limits')
+    expect(limitsLinks(exp)[0]!.getAttribute('href')).toBe('#admin/limits')
   })
 
   for (const who of ['member', 'unread', 'failed'] as const) {
