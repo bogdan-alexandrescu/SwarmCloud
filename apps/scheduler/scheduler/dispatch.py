@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -124,6 +125,7 @@ from swarm_common.profiles import (
     step_model_class,
     tools_launched,
 )
+from swarm_common.specsign import jcs
 
 from .credentials import AccountPool, CredentialSource, credential_for, needs_user_slot
 from .mcp_admission import names_mcp_servers
@@ -1719,6 +1721,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
+    # THE MANAGED PLUGINS BUCKET (managed-plugins.md §3). Where the worker
+    # fetches each pinned plugin copy (`agent_worker.pluginload.BUCKET_ENV`):
+    # the scheduler's own setting, rendered by terraform from the bucket it
+    # makes, never a caller's (invariant 10). Omitted when unset, for the
+    # merge reason above; the worker then reads the default bucket name.
+    plugins_bucket = str(getattr(settings, "plugins_bucket", "") or "").strip()
+    if plugins_bucket:
+        env["SWARM_PLUGINS_BUCKET"] = plugins_bucket
     # THE FORGE BROKER'S SWITCH (#1041, `settings.forge_broker`, terraform
     # `forge_broker`). Passed through like SWARM_PR_CONSOLE_LINKS, and omitted
     # when off, so an unswitched worker reads a person's slot with its own
@@ -1974,6 +1984,134 @@ def image_uri(settings: Any, profile: RunnerProfile) -> str:
             )
         return ref
     return f"{settings.artifact_registry_host}/{profile.image}:{settings.worker_image_tag}"
+
+
+# --- the plugin bundle image (docs/design/managed-plugins.md §1.4.4) ------------
+
+#: The refusal of a step whose plugin bundle the deployment cannot run: no
+#: repository configured, no ready bundle of the step's key on the live base,
+#: or a record whose output is not a digest under the repository. A platform
+#: refusal (PLATFORM_REFUSAL_CODES): the lease goes back in the same write and
+#: the step parks PLATFORM_REFUSED, spending no attempt, as the design's "the
+#: platform-refusal path it takes today" asks. The reason is a fixed word in
+#: the message, which goes to the log only (DispatchError).
+PLUGIN_BUNDLE_MISSING = "plugin_bundle_missing"
+
+#: swarm-api's bundle records (`swarm_api.pluginbundle.BUNDLES`), read here
+#: by key digest. swarm-api writes them; the scheduler only reads.
+PLUGIN_BUNDLES_COLLECTION = "plugin_bundles"
+PLUGIN_BUNDLE_READY = "ready"
+
+#: The signed plugin set's bundle field: `metadata.dispatch.plugins.bundle`,
+#: the bundle key (`swarm_api.pluginbundle.bundle_key`): one row per bundled
+#: install, exactly these fields.
+PLUGIN_BUNDLE_FIELD = "bundle"
+_BUNDLE_KEY_FIELDS = frozenset({"install_id", "version_id", "source_sha256"})
+
+#: The repository's shape, as `swarm_api.pluginbundle.REPOSITORY` checks it:
+#: this deployment's own registry, a `-plugin-bundles` repository.
+_BUNDLE_REPOSITORY = re.compile(
+    r"^([a-z0-9-]+)-docker\.pkg\.dev/([a-z][a-z0-9-]{4,61}[a-z0-9])/([a-z0-9][a-z0-9-]{0,47})-plugin-bundles$")
+_BUNDLE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def bundle_key_of(task: Task) -> list[dict[str, str]] | None:
+    """The bundle key the step's signed plugin set carries, or None for a step
+    with none -- every step while the built-ins switch is off, which then
+    dispatches exactly as before. A key present in any other shape is
+    refused `plugin_bundle_missing` (`bundle_key_invalid`), never read as
+    no key: the step names bundled plugins its release image may not carry."""
+    metadata = task.metadata if isinstance(task.metadata, Mapping) else {}
+    block = metadata.get("dispatch")
+    plugins = block.get("plugins") if isinstance(block, Mapping) else None
+    if not isinstance(plugins, Mapping) or plugins.get(PLUGIN_BUNDLE_FIELD) is None:
+        return None
+    key = plugins[PLUGIN_BUNDLE_FIELD]
+    if not (isinstance(key, list) and key and all(
+            isinstance(row, Mapping) and set(row) == _BUNDLE_KEY_FIELDS
+            and all(isinstance(row[f], str) and row[f] for f in _BUNDLE_KEY_FIELDS) for row in key)):
+        raise _bundle_missing("bundle_key_invalid", task)
+    return [dict(row) for row in key]
+
+
+def bundle_key_sha256(key: list[dict[str, str]]) -> str:
+    """`swarm_api.pluginbundle.key_sha256`: the digest a record is found by."""
+    return hashlib.sha256(jcs(list(key))).hexdigest()
+
+
+def read_plugin_bundles(db: Any, key_sha256: str) -> list[dict[str, Any]]:
+    """Every `plugin_bundles` record of one key digest, each with its id.
+
+    One equality filter, which the built-in single-field index serves. The
+    record's MAC is not checked here (the scheduler holds no catalogue key):
+    a forged record can only name another digest under the bundle repository,
+    which only the builder account pushes to, and the worker refuses an image
+    whose `.swarm-bundle.json` is not the signed pins (§1.4.4)."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    query = db.collection(PLUGIN_BUNDLES_COLLECTION).where(
+        filter=FieldFilter("key_sha256", "==", key_sha256))
+    return [{**(snap.to_dict() or {}), "bundle_id": snap.id} for snap in query.stream()]
+
+
+def _bundle_missing(reason: str, task: Task, profile: RunnerProfile | None = None) -> DispatchError:
+    profile_name = profile.name if profile is not None else task.runner_profile
+    return DispatchError(
+        f"plugin bundle missing ({reason}) for task {task.id} on runner profile "
+        f"{profile_name!r}: no ready bundle image of the step's pins can be run "
+        "(docs/design/managed-plugins.md §1.4.4)",
+        code=PLUGIN_BUNDLE_MISSING,
+    )
+
+
+def bundle_image(settings: Any, profile: RunnerProfile, task: Task, key: list[dict[str, str]],
+                 read: Callable[[str], list[Mapping[str, Any]]] | None) -> str:
+    """The image a step with bundle key `key` runs: the ready bundle's digest.
+
+    The record is the one of this key whose base for the profile's runner
+    image is the LIVE base (`image_uri`, from WORKER_IMAGE_REFS), so a step
+    queued across a release upgrade never runs an old worker against the new
+    control plane; and its output must be `<repository>/<runner image>@sha256:`
+    under PLUGIN_BUNDLE_REPOSITORY, so a forged record can point only at
+    another bundle image. Nothing here is the caller's: the key is in the
+    signed set and the digest is the catalogue's own record (invariant 10).
+    Anything else is `plugin_bundle_missing`, with its reason:
+    `repository_unset`, `repository_invalid`, `bundle_unreadable`,
+    `bundle_not_found`, `bundle_not_ready`, `digest_outside_repository`.
+    """
+    repository = str(getattr(settings, "plugin_bundle_repository", "") or "").strip()
+    if not repository:
+        raise _bundle_missing("repository_unset", task, profile)
+    match = _BUNDLE_REPOSITORY.match(repository)
+    if not (match and match.group(1) == getattr(settings, "region", None)
+            and match.group(2) == getattr(settings, "project_id", None)):
+        raise _bundle_missing("repository_invalid", task, profile)
+    base = image_uri(settings, profile)
+    digest = bundle_key_sha256(key)
+    if read is None:
+        raise _bundle_missing("bundle_unreadable", task, profile)
+    try:
+        records = read(digest)
+    except Exception as exc:  # noqa: BLE001 -- a fixed reason; the store's words go to the log
+        log.warning("plugin bundle records not read task=%s (%s)", task.id, type(exc).__name__)
+        raise _bundle_missing("bundle_unreadable", task, profile) from None
+    on_base = [r for r in records
+               if r.get("key_sha256") == digest and r.get("key") == key
+               and isinstance(r.get("base"), Mapping) and r["base"].get(profile.image) == base]
+    if not on_base:
+        raise _bundle_missing("bundle_not_found", task, profile)
+    ready = [r for r in on_base if r.get("state") == PLUGIN_BUNDLE_READY]
+    if not ready:
+        raise _bundle_missing("bundle_not_ready", task, profile)
+    # Every ready record of one key on one base was built from the same
+    # sources and recipes; the newest is taken, deterministically.
+    chosen = max(ready, key=lambda r: (str(r.get("created_at") or ""), str(r.get("bundle_id") or "")))
+    outputs = chosen.get("outputs")
+    output = outputs.get(profile.image) if isinstance(outputs, Mapping) else None
+    name, at, image_digest = output.partition("@") if isinstance(output, str) else ("", "", "")
+    if not (at and name == f"{repository}/{profile.image}" and _BUNDLE_DIGEST.match(image_digest)):
+        raise _bundle_missing("digest_outside_repository", task, profile)
+    return output
 
 
 #: GCP's cap on a service account id. A tenant id whose
@@ -3063,8 +3201,11 @@ GKE_JOB_QUOTA_EXCEEDED = "gke_job_quota_exceeded"
 GKE_CREATE_JOB_FORBIDDEN = "gke_create_job_forbidden"
 
 #: The codes that are the platform refusing this dispatch rather than this
-#: dispatcher lacking a permission: what PLATFORM_REFUSED will park on.
-PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDED})
+#: dispatcher lacking a permission: what PLATFORM_REFUSED will park on. A
+#: missing plugin bundle is the platform's too (managed-plugins.md §1.4.4):
+#: the step waits, holding nothing, until its bundle is ready again.
+PLATFORM_REFUSAL_CODES = frozenset({GKE_ADMISSION_REFUSED, GKE_JOB_QUOTA_EXCEEDED,
+                                    PLUGIN_BUNDLE_MISSING})
 
 #: How long a finished worker Job (and so its pod and its cache claim) stays
 #: in the tenant namespace: `ttlSecondsAfterFinished`. It holds a
@@ -3260,8 +3401,12 @@ class GkeJobDispatcher:
         return sanitize_name(configured or "swarm-agent-worker")
 
     def _manifest(self, *, task: Task, lease: Lease, profile: RunnerProfile,
-                  tenant: Tenant, sized: Sized | None = None) -> dict[str, Any]:
+                  tenant: Tenant, sized: Sized | None = None,
+                  image: str | None = None) -> dict[str, Any]:
         assert_tenant_identity(tenant, self._settings)
+        # The worker's image: the release image (`image_uri`) unless the
+        # router chose the step's plugin bundle digest (`bundle_image`).
+        worker_image = image or image_uri(self._settings, profile)
         rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
         disk = gke_disk(rc)
         # THE SIZE ADMISSION PINNED (SIZES-SCHED-2, docs/design/runner-sizes.md
@@ -3290,7 +3435,7 @@ class GkeJobDispatcher:
                gke_worker_env(task=task, lease=lease, tenant=tenant,
                               settings=self._settings).items()]
         # The image the pod's worker container runs, from the same call.
-        env.append({"name": WORKER_IMAGE_ENV, "value": image_uri(self._settings, profile)})
+        env.append({"name": WORKER_IMAGE_ENV, "value": worker_image})
         gates_env = quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile)
         env.extend({"name": k, "value": v} for k, v in gates_env.items())
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
@@ -3437,7 +3582,7 @@ class GkeJobDispatcher:
                         "containers": [
                             {
                                 "name": "worker",
-                                "image": image_uri(self._settings, profile),
+                                "image": worker_image,
                                 # NO "command" AND NO "args". The image
                                 # ENTRYPOINT, `tini -- python -m agent_worker`,
                                 # is the worker lifecycle; it reads
@@ -3662,9 +3807,9 @@ class GkeJobDispatcher:
         return self._identity or UNNAMED_IDENTITY
 
     def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant,
-                 sized: Sized | None = None) -> str:
+                 sized: Sized | None = None, image: str | None = None) -> str:
         manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant,
-                                  sized=sized)
+                                  sized=sized, image=image)
         namespace = manifest["metadata"]["namespace"]
         # What the attempt records, read back from the render BEFORE anything
         # is created: the worker records the same string from its env.
@@ -3815,10 +3960,16 @@ class BackendRouter:
     """Picks the dispatcher for a profile's resolved backend."""
 
     def __init__(self, *, cloud_run: Dispatcher | None, gke: Dispatcher | None,
-                 settings: Any, judgment: Callable[[str], str | None] | None = None) -> None:
+                 settings: Any, judgment: Callable[[str], str | None] | None = None,
+                 bundles: Callable[[str], list[Mapping[str, Any]]] | None = None) -> None:
         self._cloud_run = cloud_run
         self._gke = gke
         self._settings = settings
+        #: key digest -> the `plugin_bundles` records of that key
+        #: (`read_plugin_bundles` in a deployment). Read only for a step whose
+        #: signed plugin set carries a bundle key; unset, such a step is
+        #: refused `plugin_bundle_missing` (`bundle_unreadable`).
+        self._bundles = bundles
         #: tenant id -> the judgment backend its worker's judge will resolve
         #: (`read_judge_backend` in a deployment), None when unreadable. Unset
         #: reads as unreadable: `cloud_run_refused` then fails closed.
@@ -3854,6 +4005,30 @@ class BackendRouter:
             code="backend_unresolved",
         )
 
+    def plugin_bundle_image(self, *, task: Task, profile: RunnerProfile,
+                            backend: Backend) -> str | None:
+        """The bundle image a step runs, None for a step with no bundle key.
+
+        A step whose signed plugin set carries a bundle key runs the ready
+        bundle's digest (docs/design/managed-plugins.md §1.4.4); one that
+        cannot raises DispatchError `plugin_bundle_missing`, a platform
+        refusal. Asked twice per admitted step: by admission BEFORE the
+        lease transaction, so a step whose bundle is missing parks holding
+        nothing and is never leased (invariants 1-3), and by `dispatch`
+        after it, for a bundle that went away in between. A step with no key
+        reads nothing.
+        """
+        key = bundle_key_of(task)
+        if key is None:
+            return None
+        if backend is Backend.CLOUD_RUN_JOB:
+            # A Cloud Run Job's image is on the Job, shared by every
+            # execution of its tenant and profile, and an execution override
+            # cannot change it: rewriting it here would race every other
+            # execution of the Job.
+            raise _bundle_missing("backend_runs_release_image", task, profile)
+        return bundle_image(self._settings, profile, task, key, self._bundles)
+
     def dispatch(
         self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend,
         sized: Sized | None = None,
@@ -3878,17 +4053,26 @@ class BackendRouter:
                 "Job: the forwarder is reachable only from GKE (lane JUDGE-GKE)",
                 code=TYPESAFE_JUDGE_NEEDS_GKE,
             )
+        # THE PLUGIN BUNDLE IMAGE (docs/design/managed-plugins.md §1.4.4),
+        # asked AGAIN here though admission already asked it before the lease
+        # (`loop._prepare_admission`): the bundle can stop being ready, or a
+        # release upgrade move the live base, between the two. One that
+        # cannot run is refused `plugin_bundle_missing` HERE, before any
+        # backend is asked, and the drain gives the lease back in the same
+        # write (a platform refusal: PARKED, no attempt spent, no pool held).
+        image = self.plugin_bundle_image(task=task, profile=profile, backend=backend)
         dispatcher = self.for_backend(backend)
         # THE PINNED SIZE GOES ONLY TO A DISPATCHER THAT RENDERS IT (SIZES-SCHED-2):
         # the GKE renderer sizes each pod from it. A Cloud Run Job's resources
         # are fixed on the Job, which is why a Cloud Run profile is pinned at
         # the code default it already runs at (design §4.7), so there is
         # nothing to hand it.
+        extra: dict[str, Any] = {}
         if sized is not None and getattr(dispatcher, "renders_pinned_size", False):
-            return dispatcher.dispatch(
-                task=task, lease=lease, profile=profile, tenant=tenant, sized=sized
-            )
-        return dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
+            extra["sized"] = sized
+        if image is not None:
+            extra["image"] = image
+        return dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant, **extra)
 
 
 def _gke_ca_file() -> str:
@@ -3970,6 +4154,9 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
             if db is not None else None,
             quality_gates=gates, jev_judgments=judgments),
         settings=settings,
+        # The plugin bundle records (managed-plugins.md §1.4.4), read only for
+        # a step whose signed plugin set carries a bundle key.
+        bundles=(lambda key_sha256: read_plugin_bundles(db, key_sha256)) if db is not None else None,
         # The same document, read as the worker's judge reads it (JUDGE-GKE).
         judgment=(lambda tenant_id: read_judge_backend(db, tenant_id, mac_key=mac_key))
         if db is not None else None,

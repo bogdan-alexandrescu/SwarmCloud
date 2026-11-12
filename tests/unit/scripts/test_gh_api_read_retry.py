@@ -33,7 +33,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+THIS_REPO = "example-org/example-repo"
 PR = "4242"
 
 pytestmark = pytest.mark.skipif(
@@ -133,6 +133,7 @@ CLOSING_ANSWER = {
                 "body": "Nothing named.",
                 "closingIssuesReferences": {"totalCount": 0, "nodes": []},
                 "commits": {"totalCount": 1, "nodes": [{"commit": {"message": "one commit"}}]},
+                "labels": {"totalCount": 1, "nodes": [{"name": "ready"}]},
             }
         }
     }

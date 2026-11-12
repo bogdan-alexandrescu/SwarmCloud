@@ -703,6 +703,15 @@ def user_agent(kind: str) -> str:
     return f"{USER_AGENT_PRODUCT}/{client_version()} ({kind})"
 
 
+def send_user_agent(request: urllib.request.Request, agent: Any = None) -> urllib.request.Request:
+    """Put `User-Agent` on `request`: `agent` (a client's own `user_agent`), or
+    the `cli` one for a call made without a client -- the metadata server, the
+    discovery read, the OAuth posts. The one place every module's urllib
+    request is named (the owner's pick, 2026-11-06); it adds nothing else."""
+    request.add_header("User-Agent", agent if isinstance(agent, str) and agent else user_agent("cli"))
+    return request
+
+
 @dataclass
 class _Token:
     value: str
@@ -850,6 +859,8 @@ def task_payload(
     model_class: str | None = None,
     publish_to_pr: int | str | None = None,
     description: str | None = None,
+    plugins: dict[str, dict[str, Any]] | None = None,
+    plugins_off: list[str] | None = None,
 ) -> dict[str, Any]:
     """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
     `POST /v1/tasks/batch` alike.
@@ -897,6 +908,16 @@ def task_payload(
         # `TaskCreate.publish_to_pr`. Absent when not given, so a task naming
         # none sends what it always did.
         payload["publish_to_pr"] = publish_to_pr
+    if plugins is not None:
+        # The task's plugins BY NAME or install id (managed-plugins.md
+        # section 7), as checked by `workflows.check_step_plugins`, top-level
+        # as `TaskCreate.plugins`. Absent when not given, so a task naming
+        # none sends what it always did.
+        payload["plugins"] = plugins
+    if plugins_off is not None:
+        # The workspace defaults it turns off, as `TaskCreate.plugins_off`;
+        # sent as given, `[]` included, and absent when not given.
+        payload["plugins_off"] = plugins_off
     return payload
 
 
@@ -1470,7 +1491,9 @@ class SwarmClient:
             from . import discovery as _discovery
 
             self.skew = _discovery.Checker(
-                deployment.url, required=deployment.skew == _config.SKEW_REQUIRED
+                deployment.url,
+                required=deployment.skew == _config.SKEW_REQUIRED,
+                user_agent=lambda: self.user_agent,
             )
 
         #: The tenant every request names in `X-Swarm-Tenant`, or None to send
@@ -1914,7 +1937,7 @@ class SwarmClient:
         if self.tenant:
             req.add_header(TENANT_HEADER, self.tenant)
         req.add_header("Accept", "application/json" if raw_limit is None else "*/*")
-        req.add_header("User-Agent", self.user_agent)
+        send_user_agent(req, self.user_agent)
         # swarm-api gzips a whole answer of 1 KB or more for a caller that asks
         # (#1822): a board page is 1.43 MB plain, and this client is most of the
         # API's requests. An older API ignores it and answers plain, which
@@ -2001,6 +2024,8 @@ class SwarmClient:
         model_class: str | None = None,
         publish_to_pr: int | str | None = None,
         description: str | None = None,
+        plugins: dict[str, dict[str, Any]] | None = None,
+        plugins_off: list[str] | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -2047,6 +2072,11 @@ class SwarmClient:
         `strategy`, checked by `workflows.check_publish_to_pr` and sent only
         when given. swarm-api reads the pull request and refuses one it may
         not push onto.
+
+        `plugins` and `plugins_off` name the plugins the task loads and the
+        workspace defaults it turns off, by name or install id only, never a
+        path, an image, a command or a URL (invariant 10): swarm-api resolves
+        and signs them. Each is sent only when given.
         """
         payload = task_payload(
             prompt=prompt,
@@ -2062,6 +2092,8 @@ class SwarmClient:
             model_class=model_class,
             publish_to_pr=publish_to_pr,
             description=description,
+            plugins=plugins,
+            plugins_off=plugins_off,
         )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,

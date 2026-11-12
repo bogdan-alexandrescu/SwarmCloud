@@ -622,11 +622,19 @@ def grant_refusal(
     doc_id = f"{tenant_id}__{hashed}__{where.repo_id}"
     state = indexrun.state_routes(db)
     if state is not None:
-        # A switched tenant: `GET state/context` serves the ONE grant swarm-api
-        # derives from the signed `submitted_by` and `repository_url`. Any other
-        # slot's id is no grant it serves, so it reads as removed, as an absent
-        # document does here.
-        served = indexrun.route_context(state).get("forge_grant")
+        # A switched tenant: `GET state/context` serves the grant swarm-api
+        # derives from the signed `submitted_by` and `repository_url`, and
+        # beside it, keyed by id, the one on each of the task's signed
+        # `additional_repositories`. Any other id is no grant it serves, so it
+        # reads as removed, as an absent document does here; so does every
+        # additional repository's against an older swarm-api that serves no
+        # map. The checks below hold either one to this task as they hold a
+        # document read directly.
+        context = indexrun.route_context(state)
+        served = context.get("forge_grant")
+        if not (isinstance(served, Mapping) and served.get("id") == doc_id):
+            extra = context.get("additional_forge_grants")
+            served = extra.get(doc_id) if isinstance(extra, Mapping) else None
         data = dict(served) if isinstance(served, Mapping) and served.get("id") == doc_id \
             else None
     else:

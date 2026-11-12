@@ -60,8 +60,9 @@ merely larger.
 BOUNDED IN THE KERNEL, NOT ONLY BY THE CAP (security review, 2026-10-13).
 Every git runs under RLIMIT_AS (`max_git_memory_bytes`) and RLIMIT_FSIZE (the
 bundle cap), set by `_LIMIT_SHIM` before it becomes git; a call has one
-deadline across all its commands; at most `MAX_CONCURRENT_CALLS` run in a
-process, and a timeout kills git's whole process group. A write or an
+deadline across all its commands; at most `MAX_CONCURRENT_CALLS_PER_INSTANCE`
+run in an instance (`MAX_CONCURRENT_CALLS` in each of its uvicorn workers),
+and a timeout kills git's whole process group. A write or an
 allocation over a limit is `too_large`.
 
 Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_bundle`,
@@ -91,6 +92,7 @@ from urllib.parse import quote, urlparse
 
 from swarm_api.forge import may_receive_forge_token
 from swarm_api.redaction import MASK, redact
+from swarm_api.workers import per_worker
 
 #: Q6 = A (owner, 2026-10-13): a 256 MiB bundle, either way. Bounds the
 #: memory and tmpfs one call can take in swarm-api.
@@ -128,11 +130,17 @@ MAX_GIT_MEMORY_BYTES = 512 * 1024 * 1024
 #: MAX_PREREQUISITES depth-1 fetches each had GIT_TIMEOUT_SECONDS of their
 #: own, which held one request for over an hour.
 CALL_DEADLINE_SECONDS = 600
-#: Calls running at once in one swarm-api process. Each may hold a bundle at
+#: Calls running at once in one swarm-api INSTANCE. Each may hold a bundle at
 #: the cap in tmpfs (memory, on Cloud Run) and a git under MAX_GIT_MEMORY_BYTES;
 #: a call over the limit is refused `busy` at once rather than queued in a
 #: request thread.
-MAX_CONCURRENT_CALLS = 2
+MAX_CONCURRENT_CALLS_PER_INSTANCE = 2
+#: Calls running at once in one swarm-api PROCESS: the instance's 2 divided by
+#: its uvicorn workers (`workers.per_worker`, SWARM_API_WORKERS; owner's
+#: choice 2026-11-10). Each worker holds its own semaphore, so undivided, two
+#: workers would run 4 calls of up to 512 MiB of git and 256 MiB of bundle each
+#: in a 2 GiB instance. One worker keeps 2; two keep 1 each.
+MAX_CONCURRENT_CALLS = per_worker(MAX_CONCURRENT_CALLS_PER_INSTANCE)
 _CALL_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
 _DEADLINE: contextvars.ContextVar[float] = contextvars.ContextVar("gitexec_deadline")
 

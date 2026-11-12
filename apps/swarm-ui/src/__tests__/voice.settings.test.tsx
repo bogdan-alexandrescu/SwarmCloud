@@ -76,8 +76,12 @@ interface Call {
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
-/** A `fetch` answering the three routes; `patch` decides each write's answer. */
-function serve(read: () => unknown, patch: (body: Record<string, unknown>) => Response = () => json(200, read())): Call[] {
+/** A `fetch` answering the routes; `patch` decides each write's answer, `del` each delete's. */
+function serve(
+  read: () => unknown,
+  patch: (body: Record<string, unknown>) => Response = () => json(200, read()),
+  del: (body: Record<string, unknown>) => Response = () => json(404, { code: 'not_found', message: 'no such route' }),
+): Call[] {
   const calls: Call[] = []
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -85,6 +89,7 @@ function serve(read: () => unknown, patch: (body: Record<string, unknown>) => Re
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null
     calls.push({ method, url, body })
     if (url.includes('/v1/voice/settings/catalogue')) return json(200, CATALOGUE)
+    if (url.includes('/v1/voice/settings/dedicated-key') && method === 'DELETE') return del(body as Record<string, unknown>)
     if (url.includes('/v1/voice/settings') && method === 'PATCH') return patch(body as Record<string, unknown>)
     if (url.includes('/v1/voice/settings')) return json(200, read())
     return json(404, { code: 'not_found', message: 'no such route' })
@@ -217,6 +222,71 @@ describe('saving', () => {
   })
 })
 
+describe('the Debug switch', () => {
+  const debugSwitch = (): HTMLElement => within(card('engine')).getByRole('switch', { name: 'Debug mode' })
+
+  it('draws debug mode as served, and saves a flip as PATCH {version, debug} at once', async () => {
+    let debug = false
+    let version = 7
+    const calls = serve(
+      () => settings(version, { settings: { ...settings(version).settings, debug } }),
+      (body) => {
+        debug = body.debug === true
+        version += 1
+        return json(200, settings(version, { settings: { ...settings(version).settings, debug } }))
+      },
+    )
+    await page()
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(within(card('engine')).queryByRole('button', { name: 'Traces' })).toBeNull()
+    await act(async () => {
+      fireEvent.click(debugSwitch())
+    })
+    expect(calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([{ version: 7, debug: true }])
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('true')
+    // On, the row opens the traces on Telemetry; the page's Save waits for nothing.
+    expect(within(card('engine')).getByRole('button', { name: 'Traces' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(screen.getByText(/^v8/)).toBeTruthy()
+  })
+
+  it('is read only without the edit right: the state, and nothing that writes', async () => {
+    const calls = serve(() => settings(7, { settings: { ...settings(7).settings, debug: true } }))
+    await page(false)
+    const sw = debugSwitch() as HTMLButtonElement
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    expect(sw.disabled).toBe(true)
+    await act(async () => {
+      fireEvent.click(sw)
+    })
+    expect(calls.filter((c) => c.method === 'PATCH')).toEqual([])
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('leaves the switch as it was when the save fails, and says it was not saved', async () => {
+    const calls = serve(
+      () => settings(7),
+      () => json(500, { code: 'internal', message: 'the settings store did not answer' }),
+    )
+    await page()
+    await act(async () => {
+      fireEvent.click(debugSwitch())
+    })
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1)
+    expect(debugSwitch().getAttribute('aria-checked')).toBe('false')
+    const failed = screen.getByText('Not saved').closest('.vset-tick')!
+    expect(failed.getAttribute('title')).toContain('the settings store did not answer')
+  })
+
+  it('keeps its meaning behind the (i), off the surface', async () => {
+    serve(() => settings(7))
+    await page()
+    const row = card('engine').querySelector<HTMLElement>('[data-row="debug"]')!
+    expect(row.textContent).toBe('Debugi')
+    expect(within(row).getByRole('button', { name: /turn-by-turn trace/ })).toBeTruthy()
+  })
+})
+
 describe('the OpenAI key', () => {
   it('shows whether it is set, by whom and when, and nothing else of the answer', async () => {
     serve(() => settings(7))
@@ -233,6 +303,98 @@ describe('the OpenAI key', () => {
     await page()
     expect(document.querySelector('[data-key-status]')!.getAttribute('data-key-status')).toBe('unset')
     expect(screen.getByText('Not set')).toBeTruthy()
+  })
+})
+
+const DEDICATED = { set: true, label: 'voice-key', display_name: 'Voice key', by: 'owner@example.com', at: '2026-11-03T09:00:00Z', state: 'available', link: { open: false, expires_at: null }, replace: { kind: 'voice-api-key', label: 'voice-key' }, can_delete: true }
+const NO_DEDICATED = { set: false, label: null, display_name: null, by: null, at: null, state: null, link: { open: false, expires_at: null }, replace: null, can_delete: false }
+
+const dedicatedRow = (): HTMLElement => document.querySelector<HTMLElement>('[data-dedicated-key]')!
+
+describe('the dedicated key', () => {
+  it('shows its status, and Delete for a platform admin only', async () => {
+    serve(() => settings(7, { dedicated_key: DEDICATED }))
+    const view = await page()
+    const row = dedicatedRow()
+    expect(row.getAttribute('data-dedicated-key')).toBe('set')
+    // The state on the surface; its name, who added it and when behind the tick.
+    const tick = row.querySelector<HTMLElement>('.vset-tick')!
+    expect(tick.textContent).toBe('Available')
+    expect(tick.title).toMatch(/^Voice key, added by owner@example\.com, /)
+    expect(within(row).getByRole('button', { name: 'Delete' }).tagName).toBe('BUTTON')
+    view.unmount()
+
+    serve(() => settings(7, { dedicated_key: { ...DEDICATED, can_delete: false, replace: null } }))
+    const reader = await page(false)
+    expect(within(dedicatedRow()).queryByRole('button', { name: 'Delete' })).toBeNull()
+    reader.unmount()
+
+    serve(() => settings(7, { dedicated_key: { ...DEDICATED, can_delete: false } }))
+    await page(true)
+    expect(within(dedicatedRow()).queryByRole('button', { name: 'Delete' })).toBeNull()
+  })
+
+  it('deletes only once its label is typed, with one DELETE {label}', async () => {
+    let gone = false
+    const calls = serve(
+      () => settings(gone ? 8 : 7, { dedicated_key: gone ? NO_DEDICATED : DEDICATED }),
+      undefined,
+      () => {
+        gone = true
+        return json(200, settings(8, { dedicated_key: NO_DEDICATED }))
+      },
+    )
+    await page()
+    fireEvent.click(within(dedicatedRow()).getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('dialog', { name: 'Delete API key Voice key' })
+    const confirm = within(dialog).getByRole('button', { name: 'Delete key' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+    const field = within(dialog).getByRole('textbox', { name: 'Type voice-key to delete' })
+    fireEvent.change(field, { target: { value: 'voice-ke' } })
+    expect(confirm.disabled).toBe(true)
+    fireEvent.click(confirm)
+    fireEvent.change(field, { target: { value: 'voice-key' } })
+    expect(confirm.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(confirm)
+      fireEvent.click(confirm)
+    })
+    const deletes = calls.filter((c) => c.method === 'DELETE')
+    expect(deletes).toHaveLength(1)
+    expect(deletes[0]!.url).toContain('/v1/voice/settings/dedicated-key')
+    expect(deletes[0]!.body).toEqual({ label: 'voice-key' })
+    expect(dedicatedRow().getAttribute('data-dedicated-key')).toBe('unset')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('leaves the row as it was when the delete fails, and shows the error', async () => {
+    const calls = serve(
+      () => settings(7, { dedicated_key: DEDICATED }),
+      undefined,
+      () => json(502, { code: 'upstream_unavailable', message: 'the secret could not be destroyed' }),
+    )
+    await page()
+    fireEvent.click(within(dedicatedRow()).getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'voice-key' } })
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete key' }))
+    })
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1)
+    expect(await within(dialog).findByText(/Not deleted/)).toBeTruthy()
+    expect(dialog.textContent).toContain('the secret could not be destroyed')
+    const row = dedicatedRow()
+    expect(row.getAttribute('data-dedicated-key')).toBe('set')
+    expect(row.querySelector<HTMLElement>('.vset-tick')!.textContent).toBe('Available')
+    expect(within(row).queryByRole('button', { name: 'Delete' })).toBeNull()
+    expect(screen.getByRole('dialog')).toBe(dialog)
+  })
+
+  it('keeps its meaning behind the (i), off the surface', async () => {
+    serve(() => settings(7, { dedicated_key: DEDICATED }))
+    await page()
+    const name = dedicatedRow().querySelector('.vset-key-name')!
+    expect(name.textContent).toBe('Dedicated keyi')
   })
 })
 

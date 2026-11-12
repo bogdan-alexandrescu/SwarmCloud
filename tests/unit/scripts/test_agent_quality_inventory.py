@@ -1,7 +1,7 @@
 """The agent quality baseline is reproducible from the tree it names.
 
 docs/design/agent-quality/ is the agent quality program's baseline and
-capability inventory (BGD, 3 November 2026). Its capability matrix cites a
+capability inventory (the owner, 3 November 2026). Its capability matrix cites a
 test id for every capability it calls behaviourally tested, and its baseline
 names the model each class runs. Both go stale silently: a renamed test still
 reads as "tested" and a re-pinned model still reads as the baseline.
@@ -18,7 +18,7 @@ cloud credential) and says what no longer holds, so these tests hold:
     by where it is (file, enclosing test, kind) with its reason, and nothing
     the tree no longer has. It holds no count: a count two green changes each
     bump conflicts when they land together, and a list two changes each add a
-    row to does not (BGD, 6 November 2026: merge-safe whole-tree checks);
+    row to does not (the owner, 6 November 2026: merge-safe whole-tree checks);
   * every capability matrix row has its four columns, and its live-verified
     cell names a record, says "not read from here" or says why it does not
     apply ("n/a: ..."); a bare "none", "no" or "yes" is refused, because an
@@ -206,6 +206,11 @@ def test_the_report_counts_matrix_rows_and_fails_on_an_unnamed_live_cell(tmp_pat
 
 
 # --- the skip table: listed by location, never counted ---------------------
+# A skip is registered by its row in known-failures.md §3: file, enclosing test
+# and kind, with a reason. A change that adds a skip adds the row the failing
+# test prints; one that removes the skip deletes the row. Only the file, test
+# and kind are matched, so the reason may be reworded freely, and there is no
+# count to bump, so two changes that each add a skip land together.
 
 _TABLE_HEAD = (
     "| File | Test | Kind | Reason |\n"

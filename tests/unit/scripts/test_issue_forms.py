@@ -1,6 +1,6 @@
 """The issue forms are forms GitHub will render, and they offer the screens that exist.
 
-Adopted from saga-prompt-lab on 2026-09-24 at the owner's request: bugs, fixes
+Adopted from a peer application's repository on 2026-09-24 at the owner's request: bugs, fixes
 and improvements are filed through `.github/ISSUE_TEMPLATE/`, and CLAUDE.md's
 "Issues" section holds the rules around them.
 
@@ -392,10 +392,25 @@ def test_every_label_the_workflows_and_the_platform_use_is_declared() -> None:
 
 
 def _labels_the_worker_applies() -> set[str]:
-    """Every label the worker adds to a pull request it opens (TERRITORY-WARN)."""
+    """Every label the worker adds to a pull request it opens (TERRITORY-WARN),
+    and the merge step's `review-not-yet` on one whose review said NOT_YET."""
+    from agent_worker.merge import REVIEW_NOT_YET_LABEL
     from agent_worker.territory import OUT_OF_TERRITORY_LABEL
 
-    return {OUT_OF_TERRITORY_LABEL}
+    return {OUT_OF_TERRITORY_LABEL, REVIEW_NOT_YET_LABEL}
+
+
+def test_the_review_not_yet_label_is_declared_red_with_its_wording() -> None:
+    """The merge step labels a NOT_YET pull request `review-not-yet`, and the
+    `ready` gate refuses it while the label is on (owner, 9 November 2026).
+    MUTATION: drop the entry and a fresh repository never gets the label."""
+    from agent_worker.merge import REVIEW_NOT_YET_LABEL
+
+    (entry,) = [e for e in _declared_labels()
+                if isinstance(e, dict) and e.get("name") == REVIEW_NOT_YET_LABEL]
+    assert entry["description"] == "Its review said NOT_YET; a later review must say MERGE"
+    red, green, blue = (int(entry["color"][i:i + 2], 16) for i in (0, 2, 4))
+    assert red >= 0xc0 and green < 0x40 and blue < 0x40, entry["color"]
 
 
 def _labels_the_platform_applies() -> set[str]:
@@ -729,9 +744,9 @@ def test_an_epic_is_filed_with_no_task_item_in_its_body() -> None:
     the epic is not closeable. A task item the form writes into every epic's
     body therefore makes every epic unclosable by that procedure. Ticked on
     arrival, it also reads as finished work to anyone who trusts the body over
-    the comments -- the failure CLAUDE.md cites from saga-prompt-lab's #871,
+    the comments -- the failure CLAUDE.md cites from a peer application's repository,
     which closed on its body's index over two live defects the index never
-    listed. Prompt Lab's own epics (#1399) carry no task item in the body.
+    listed. That repository's own epics carry no task item in the body.
 
     This holds the PROPERTY -- nothing the form submits is a task item -- not
     the shape "has no checkboxes element", so a ticked box smuggled in as a

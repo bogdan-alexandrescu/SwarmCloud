@@ -259,7 +259,8 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
     ]
     assert [f.name for f in fields(WorkflowStep)][-3:] == ["model_class", "budget", "max_turns"]
     # RS-4 (contract request 111) appends the sized_* record after `model`;
-    # `model` keeps its position and only RS-4's six fields follow it.
+    # `model` keeps its position and only RS-4's six fields follow it, then
+    # contract request 152's three credential fields.
     # MUTATION: inserting an RS-4 field before `model`, or any other field
     # after it, turns this red.
     attempt_names = [f.name for f in fields(Attempt)]
@@ -271,6 +272,9 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
         "sized_memory_gib",
         "sized_disk_gib",
         "sized_live_split",
+        "account_id",
+        "credential_source",
+        "credential_tier",
     ]
     names = [f.name for f in fields(profiles.RunnerProfile)]
     # Contract request 133 appends `supports_max_turns` and `max_turns`, and

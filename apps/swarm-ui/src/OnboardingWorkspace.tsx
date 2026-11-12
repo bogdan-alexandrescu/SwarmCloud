@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadWorkspace, requestLoan, requestWorkspace } from './api'
 import { Button, ButtonLink, Dash, ToneMark } from './components'
 import { instant, spanText } from './duration'
+import { GuideLink } from './Guide'
 import type { ApiError } from './fetch'
 import { addressToPath } from './paths'
 import { Mark } from './primitives'
@@ -216,8 +217,8 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
         <>
           <p className="ur-hint ob-help">
             Your own isolated space to run agents in: an identity, a storage area and a Kubernetes namespace that only
-            your work uses. An admin approves it, and it is ready a few minutes later. Until then you can look around and
-            connect GitHub, but nothing of yours runs. Team work is not affected.
+            your work uses. An admin approves it, and it is ready a few minutes later. Until then, connect GitHub:{' '}
+            <GuideLink slug="start-here">Start here</GuideLink> says how. Nothing of yours runs. Team work is not affected.
           </p>
           <span className="ob-acts">
             <Button kind="primary" size="sm" disabled={posting} onClick={() => void request()}>
@@ -392,7 +393,7 @@ export function ClaudeAccountStepBody({ step, reload }: { step: OnboardingStep; 
             <p className="ur-small">Loan requested</p>
           ) : (
             <span className="ob-acts">
-              <ButtonLink size="sm" href={addressToPath('capacity/accounts')}>
+              <ButtonLink size="sm" href={addressToPath('capacity/llm-providers/plans')}>
                 Add key
               </ButtonLink>
               <Button size="sm" disabled={posting} onClick={() => void loan()}>

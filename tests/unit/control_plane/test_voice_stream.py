@@ -214,6 +214,19 @@ def test_a_live_session_streams_through_the_route_and_ends_before_600_seconds(cl
     assert clock() - began < 600
 
 
+def test_a_live_sessions_stream_connect_records_the_tabs_heartbeat(client, db, clock):
+    started = _start(client, "alice").json()
+    path = f"{vs.PROJECTS}/{started['project_id']}/{vs.SESSIONS}/{started['session_id']}"
+    assert "heartbeat_at" not in db.docs[path]
+
+    response = client.get(f"/v1/voice/sessions/{started['session_id']}/events",
+                          headers=auth_header("alice"))
+
+    assert response.status_code == 200
+    beat = db.docs[path]["heartbeat_at"]
+    assert vs.last_activity(db.docs[path]) == beat
+
+
 def test_another_tenants_session_reads_404_like_a_missing_one(client, db):
     theirs = _start(client, "bob").json()  # research
     missing = "vs_" + secrets.token_hex(16)

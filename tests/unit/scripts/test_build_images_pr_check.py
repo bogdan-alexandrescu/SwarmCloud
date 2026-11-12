@@ -79,10 +79,13 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
 # apps/swarm-voice/Dockerfile), which copies only the contract in, and
 # swarm-speech (own speech L3, apps/swarm-speech/Dockerfile), which copies
-# nothing of ours but its own app.
+# nothing of ours but its own app, and swarm-plugin-intake (managed plugins,
+# apps/plugin-intake/Dockerfile: its directory has no swarm- prefix), which
+# copies only its own package in.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "swarm-voice", "swarm-speech", "workspace-apply"}
+                                  "swarm-voice", "swarm-speech", "swarm-plugin-intake",
+                                  "swarm-plugin-bundler", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -143,6 +146,19 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # `claudecli` stage COPYs the file), so a version bump rebuilds it.
         (["images/agent-runtime-base/Dockerfile"], WORKER | {"swarm-voice"}),
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
+        # Managed plugins lane 14: the gstack and security-audit stages of the
+        # base and the browser image run the bundler's recipes from a bind
+        # mount, which is an input like a COPY: a recipe change rebuilds every
+        # image that carries a bundled tree, and the bundler that copies it.
+        (["images/plugin-bundler/recipes/gstack/build"], WORKER | {"swarm-plugin-bundler"}),
+        (["images/plugin-bundler/swarm-bundle"], WORKER | {"swarm-plugin-bundler"}),
+        # swarm-verify's context holds scripts/ too.
+        (["scripts/gstack_packaging_measure.py"], WORKER | {"swarm-plugin-bundler", "swarm-verify"}),
+        (["images/agent-runtime-browser/gstack-browser-files.txt"], WORKER | {"swarm-plugin-bundler"}),
+        # The stages mount the whole folder (a recipe finds the writer two
+        # folders up), so the bundler's own Dockerfile over-reads into them:
+        # one build too many, never one too few.
+        (["images/plugin-bundler/Dockerfile"], WORKER | {"swarm-plugin-bundler"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
         # The Lightpanda image's own recipe reaches it alone.
@@ -198,6 +214,10 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
         (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
         (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
+        # The plugin intake job: its recipe beside its app, which is named
+        # plugin-intake, and copying only its own package in.
+        (["apps/plugin-intake/plugin_intake/intake.py"], {"swarm-plugin-intake"}),
+        (["apps/plugin-intake/Dockerfile"], {"swarm-plugin-intake"}),
         # Voice it's own speech server (own speech L3): the same shape again,
         # copying nothing of ours but itself, so a contract change above does
         # not reach it.
@@ -460,7 +480,7 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     registry = "docker.pkg.dev"
     # The build mirrors are the one registry a build-only config may name: the
     # Dockerfiles name no project, so the build passes its project's mirror to
-    # pull through (DAYONE-DESAGA-1; scripts/lib/build-mirror.sh). Pulls only.
+    # pull through (the Day One project-defaults lane; scripts/lib/build-mirror.sh). Pulls only.
     mirror = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/swarm-mirror-(?:dockerhub|ghcr)\b")
     for target, event in submits.items():
         text = mirror.sub("<mirror>", event["text"])
@@ -528,7 +548,7 @@ def test_affected_by_needs_no_gcloud_and_takes_no_targets(tmp_path):
 @pytest.mark.parametrize("args", [["--affected-by", "-"], ["--inputs"]])
 def test_offline_modes_need_no_project(tmp_path, args):
     """application.yml's `changes` job runs these before it authenticates and
-    names no PROJECT_ID; common.sh has no default project (DAYONE-DESAGA-2)."""
+    names no PROJECT_ID; common.sh has no default project (the Day One project-defaults lane)."""
     env = _env(tmp_path)
     env.pop("PROJECT_ID")
     proc = subprocess.run(

@@ -30,6 +30,7 @@ start disagreeing.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import json
 import os
@@ -311,6 +312,24 @@ _DESCRIPTION_SCHEMA: dict[str, Any] = {
         f"{workflows.DESCRIPTION_MAX_CHARS} characters, shown on the console's agent page."),
 }
 
+#: A step's or task's plugins (docs/design/managed-plugins.md section 7), by
+#: name or install id only: checked for shape by `workflows.check_step_plugins`
+#: and `check_plugins_off`, sent top-level only when given, and checked for
+#: everything else by swarm-api, whose refusal comes back in its own words.
+_PLUGINS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": {"type": "object"},
+    "description": (
+        "The plugins this runs, by install id or built-in name: {install_id: {overrides?}} for a "
+        "managed install, {name: {mode, skills}} for a built-in. Never a path, image, command or URL."
+    ),
+}
+_PLUGINS_OFF_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "The workspace's default plugins this does not load, by install id or built-in name.",
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -335,6 +354,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
         "model_class": _MODEL_CLASS_SCHEMA,
         "retry_of": _RETRY_OF_SCHEMA,
+        "plugins": _PLUGINS_SCHEMA,
+        "plugins_off": _PLUGINS_OFF_SCHEMA,
     },
     "required": ["prompt"],
 }
@@ -342,7 +363,8 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "description",
                      "inputs", "files",
-                     "mcp_credentials", "additional_repositories", "model_class", "retry_of")
+                     "mcp_credentials", "additional_repositories", "model_class", "retry_of",
+                     "plugins", "plugins_off")
 
 #: Why `tasks` takes no `publish_to_pr` (#2183, PTP-DISPATCH): a pull request's
 #: branch takes one lane's fast-forward, so several tasks publishing onto one
@@ -397,7 +419,7 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
             "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files, "
-            "mcp_credentials, additional_repositories} "
+            "mcp_credentials, additional_repositories, plugins, plugins_off} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -434,6 +456,9 @@ TOOLS: list[dict[str, Any]] = [
             "MORE THAN ONE REPOSITORY: `additional_repositories` names registered "
             "repositories the agent reads, read-only, at ../repos/<name> beside its own; "
             "only its own repository's changes come back.\n"
+            "\n"
+            "PLUGINS: `plugins` names the plugins the task runs, {install_id: {overrides?}} or "
+            "{name: {mode, skills}}; `plugins_off` lists workspace defaults it turns off.\n"
             "\n"
             "A FOLLOW-UP TASK ON AN EXISTING PULL REQUEST (#2183): `publish_to_pr` names a "
             "pull request of the task's repository (41, \"#41\", owner/repo#41 or its URL), "
@@ -514,6 +539,8 @@ TOOLS: list[dict[str, Any]] = [
                 "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
                 "model_class": _MODEL_CLASS_SCHEMA,
                 "retry_of": _RETRY_OF_SCHEMA,
+                "plugins": _PLUGINS_SCHEMA,
+                "plugins_off": _PLUGINS_OFF_SCHEMA,
                 "publish_to_pr": {
                     "type": ["integer", "string"],
                     "description": (
@@ -1126,7 +1153,8 @@ TOOLS: list[dict[str, Any]] = [
             "whenever the units are not independent.\n"
             "\n"
             "Each step names a runner profile BY NAME and carries its own "
-            "prompt. `depends_on` lists step ids that must SUCCEED first; empty "
+            "prompt; a `fix-loop` step carries instead its `fix_loop` block "
+            "(review, fix, max_rounds), sent as given. `depends_on` lists step ids that must SUCCEED first; empty "
             "means the step is eligible immediately, NOT that it runs first. "
             "`input_from` maps an upstream step id to ONE artifact filename, "
             "copied into this step's working directory before its agent starts "
@@ -1425,6 +1453,8 @@ TOOLS: list[dict[str, Any]] = [
                                     + _ADDITIONAL_REPOSITORIES_SCHEMA["description"]
                                 ),
                             },
+                            "plugins": _PLUGINS_SCHEMA,
+                            "plugins_off": _PLUGINS_OFF_SCHEMA,
                             "stage": {
                                 "type": "string",
                                 "description": (
@@ -3311,20 +3341,25 @@ def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
 def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any,
                         additional: list[dict[str, str]] | None = None,
                         model_class: str | None = None,
-                        publish_to_pr: int | str | None = None) -> tuple:
+                        publish_to_pr: int | str | None = None,
+                        plugins: Any = None, plugins_off: Any = None) -> tuple:
     # The repositories it reads are part of what the task IS: the same prompt
     # over another set of repositories is a different question, not a repeat.
     # So is the model class it runs (#1435): one prompt on `haiku` and on
     # `opus` is a comparison, not a double dispatch. So is the pull request it
     # publishes onto (#2183): the same prompt as a new pull request and onto
-    # an existing one are two deliveries.
+    # an existing one are two deliveries. So are the plugins it runs: the
+    # same prompt with and without a hook is a comparison. Added only when
+    # named, so a dispatch naming none has the signature it always had.
+    named = (json.dumps([plugins, plugins_off], sort_keys=True),) \
+        if plugins is not None or plugins_off is not None else ()
     return (
         profile, prompt, strategy or "collect", repository.url, repository.ref,
         json.dumps(inputs or {}, sort_keys=True, default=str),
         json.dumps(additional, sort_keys=True),
         model_class,
         publish_to_pr,
-    )
+    ) + named
 
 
 def _retry_of(value: Any, *, where: str) -> str | None:
@@ -4177,6 +4212,10 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         strategy = _dispatch_strategy(item.get("strategy"))
         additional = check_additional_repositories(item.get("additional_repositories"), where=where)
         model_class = catalogue.check_model_class(profile, item.get("model_class"), where=where)
+        plugins = (workflows.check_step_plugins(item["plugins"], where=where)
+                   if item.get("plugins") is not None else None)
+        plugins_off = (workflows.check_plugins_off(item["plugins_off"], where=where)
+                       if item.get("plugins_off") is not None else None)
         repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
@@ -4184,7 +4223,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
                 "none: " + "; ".join(repository.notes) + ". Nothing was sent"
             )
         signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional,
-                                        model_class)
+                                        model_class, plugins=plugins, plugins_off=plugins_off)
         try:
             retry = _refuse_a_repeat_dispatch(
                 client, signature, retry_of=_retry_of(item.get("retry_of"), where=where))
@@ -4214,6 +4253,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             additional_repositories=additional,
             model_class=model_class,
             description=description,
+            plugins=plugins,
+            plugins_off=plugins_off,
         )
         if credentials:
             payload["mcp_credentials"] = credentials
@@ -4351,8 +4392,56 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     unused = progress.browser_unused_line(task)
     if unused is not None:
         described["browser_unused"] = unused
+    # WHAT ITS PLUGINS RAN (managed-plugins.md section 16): the attempt
+    # summary's `plugins` record as the task read served it, names, versions,
+    # digests and counts only. No key for a task that loaded none.
+    plugins = _plugins_ran(task)
+    if plugins:
+        described["plugins"] = plugins
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
+
+
+#: Per plugin, the keys of the attempt summary's `plugins` record that
+#: `swarm_result` shows (`agent_worker.plugins.record`, `pluginload.record`):
+#: its name, its version (`version` for a built-in, `version_id` for a managed
+#: install), its digest, and its counts. Nothing else of the record is shown.
+_PLUGIN_TEXT_KEYS = ("name", "version", "version_id", "runnable_sha256")
+_PLUGIN_HOOK_COUNTS = ("runs", "blocks", "errors")
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _plugins_ran(task: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The served `result_summary.plugins`, per install id or built-in name:
+    `name`, `version` or `version_id`, `runnable_sha256`, `hooks` (per event
+    its runs, blocks and errors), `mcp_servers_started` and `skill_runs`, each
+    only when served in that shape. {} when the task recorded none."""
+    summary = task.get("result_summary")
+    record = summary.get("plugins") if isinstance(summary, dict) else None
+    if not isinstance(record, dict):
+        return {}
+    shown: dict[str, dict[str, Any]] = {}
+    for key, entry in record.items():
+        if not isinstance(entry, dict):
+            continue
+        view: dict[str, Any] = {k: entry[k] for k in _PLUGIN_TEXT_KEYS if isinstance(entry.get(k), str)}
+        hooks = entry.get("hooks")
+        if isinstance(hooks, dict):
+            view["hooks"] = {
+                str(event): {n: counts[n] for n in _PLUGIN_HOOK_COUNTS if _count(counts.get(n))}
+                for event, counts in hooks.items() if isinstance(counts, dict)
+            }
+        servers = entry.get("mcp_servers_started")
+        if isinstance(servers, list):
+            view["mcp_servers_started"] = [name for name in servers if isinstance(name, str)]
+        skills = entry.get("skill_runs")
+        if isinstance(skills, dict):
+            view["skill_runs"] = {str(name): runs for name, runs in skills.items() if _count(runs)}
+        shown[str(key)] = view
+    return shown
 
 
 #: The file a review or re-review step writes (`agent_worker.expected_outputs.
@@ -4824,7 +4913,7 @@ def _outline(spec: dict[str, Any]) -> dict[str, Any]:
         when_step = when.get("step") if isinstance(when, dict) else None
         input_from = step.get("input_from")
         profile = step.get("runner_profile")
-        steps.append({
+        entry: dict[str, Any] = {
             "step_id": step.get("step_id"),
             "depends_on": list(step.get("depends_on") or []),
             "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
@@ -4834,7 +4923,12 @@ def _outline(spec: dict[str, Any]) -> dict[str, Any]:
                 {str(k): str(v) for k, v in input_from.items()}
                 if isinstance(input_from, dict) else {}
             ),
-        })
+        }
+        if isinstance(step.get("fix_loop"), dict):
+            # A loop step's block, as the spec holds it (docs/design/fix-loop.md
+            # §4.1), so the reader sees its rounds; only on a step that has one.
+            entry["fix_loop"] = step["fix_loop"]
+        steps.append(entry)
     label = spec.get("label")
     title = spec.get("title")
     strategy = spec.get("strategy")
@@ -5552,6 +5646,12 @@ def _call(
         # Refused here, before any request, when it names none; whether this
         # tenant may push onto it is the API's to say.
         publish_to_pr = workflows.check_publish_to_pr(args.get("publish_to_pr"), where="swarm_dispatch")
+        # ITS PLUGINS, by name or install id: the shape here, before any
+        # request; every other check is swarm-api's (managed-plugins.md §7).
+        plugins = (workflows.check_step_plugins(args["plugins"], where="swarm_dispatch")
+                   if args.get("plugins") is not None else None)
+        plugins_off = (workflows.check_plugins_off(args["plugins_off"], where="swarm_dispatch")
+                       if args.get("plugins_off") is not None else None)
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
         # or -- only with `infer: true` -- the checkout this bridge runs in,
         # refused when its branch is not pushed, because a remote agent on an
@@ -5563,7 +5663,8 @@ def _call(
             infer=_flag(args, "infer"),
         )
         signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional,
-                                        model_class, publish_to_pr)
+                                        model_class, publish_to_pr,
+                                        plugins=plugins, plugins_off=plugins_off)
         retry = _refuse_a_repeat_dispatch(
             client, signature, retry_of=_retry_of(args.get("retry_of"), where="swarm_dispatch"))
         if strategy == "direct-pr" and not repository.url:
@@ -5593,6 +5694,8 @@ def _call(
             **({"model_class": model_class} if model_class is not None else {}),
             **({"publish_to_pr": publish_to_pr} if publish_to_pr is not None else {}),
             **({"description": description} if description is not None else {}),
+            **({"plugins": plugins} if plugins is not None else {}),
+            **({"plugins_off": plugins_off} if plugins_off is not None else {}),
         ))
         task_id = task_id_of(task)
         if not task_id:
@@ -6799,6 +6902,30 @@ def _human_typed_label(account: dict[str, Any], label: str) -> None:
         raise SwarmError("the label typed was not this account's; nothing was removed")
 
 
+def _with_plugin_files_missing(text: str) -> str:
+    """`text`, carrying `plugin_files_missing: {root, action}` at its top level
+    when the plugin folder this bridge was started with is gone
+    (`launch.plugin_files_missing`, PLUGIN-VERSION-GUARD); unchanged otherwise.
+
+    EVERY reply, errors included, because the one symptom a session saw for
+    hours was `rows.error: .../workflows/run.js is not a file` buried in each
+    launch: a JSON object gains the key first; any other reply (plain text, a
+    list) gains one more line holding it as its own JSON object."""
+    from . import launch
+
+    missing = launch.plugin_files_missing()
+    if missing is None:
+        return text
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return json.dumps({"plugin_files_missing": missing,
+                           **{k: v for k, v in parsed.items() if k != "plugin_files_missing"}}, indent=2)
+    return f"{text}\n\n{json.dumps({'plugin_files_missing': missing})}"
+
+
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
@@ -6855,21 +6982,24 @@ def serve(stdin=None, stdout=None) -> int:
                 if alive is not None:
                     alive.stop()
             if isinstance(text, artifacts.ImageAnswer):
+                text = dataclasses.replace(text, text=_with_plugin_files_missing(text.text))
                 _respond(message_id, {"content": text.content()})
             else:
-                _respond(message_id, {"content": [{"type": "text", "text": text}]})
+                _respond(message_id, {"content": [{"type": "text", "text": _with_plugin_files_missing(text)}]})
         except SwarmError as exc:
             # isError, not a JSON-RPC error: the CALL failed, the protocol
             # did not, and a host that saw a transport error would drop the
             # session rather than show the operator what went wrong.
             _respond(
                 message_id,
-                {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
+                {"content": [{"type": "text", "text": _with_plugin_files_missing(_tool_error_text(exc))}],
+                 "isError": True},
             )
         except Exception as exc:  # pragma: no cover - defensive
             _respond(
                 message_id,
-                {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                {"content": [{"type": "text",
+                              "text": _with_plugin_files_missing(f"{type(exc).__name__}: {exc}")}],
                  "isError": True},
             )
 
@@ -6959,6 +7089,20 @@ def check_session_target() -> str | None:
     return None
 
 
+def report_plugin_files() -> dict[str, str] | None:
+    """The start-up check of the plugin's own files (PLUGIN-VERSION-GUARD):
+    `launch.plugin_files_missing`, said on STDERR -- the bridge's log -- when
+    they are gone. Never fatal: the tools still answer, each reply carrying
+    the same `plugin_files_missing` (`_with_plugin_files_missing`)."""
+    from . import launch
+
+    missing = launch.plugin_files_missing()
+    if missing is not None:
+        print(f"swarm-mcp: the sc plugin's files are missing at {missing['root']}: "
+              f"{missing['action']}", file=sys.stderr)
+    return missing
+
+
 def main() -> int:
     problem = check_session_target()
     if problem is not None:
@@ -6967,6 +7111,7 @@ def main() -> int:
         print(f"swarm-mcp: refusing to start: {problem}", file=sys.stderr)
         return 2
     seed_plugin_config()
+    report_plugin_files()
     return serve()
 
 

@@ -181,6 +181,19 @@ def infra(world: World, cloud: Cloud, project: str, inputs: dict[str, Any], targ
         cloud.run_jobs["swarm-plugin-intake"] = {
             "name": f"projects/{project}/locations/{region}/jobs/swarm-plugin-intake"}
     outputs["plugins_bucket"] = plugins
+    # plugin-bundles.tf, planned only with builtins_managed on: the builder
+    # account, its repository (push) and its reads of the release images.
+    if inputs.get("builtins_managed") == "on":
+        bundler = f"swarm-plugin-bundler@{project}.iam.gserviceaccount.com"
+        _account(cloud, bundler)
+        repositories = f"projects/{project}/locations/{region}/repositories"
+        world.registries.add(f"{repositories}/swarm-plugin-bundles")  # type: ignore[attr-defined]
+        cloud.repository_policies[f"{repositories}/swarm-plugin-bundles"] = {"etag": "BwE2E", "bindings": [
+            {"role": "roles/artifactregistry.writer", "members": [f"serviceAccount:{bundler}"]},
+            {"role": "roles/artifactregistry.reader", "members": [account("swarm-api"), account("swarm-scheduler")]},
+        ]}
+        cloud.repository_policies[f"{repositories}/swarm-images"] = {"etag": "BwE2E", "bindings": [
+            {"role": "roles/artifactregistry.reader", "members": [f"serviceAccount:{bundler}"]}]}
     if hasattr(world, "make_namespace"):  # infra's kubernetes provider makes swarm-system
         world.make_namespace("swarm-system")  # type: ignore[attr-defined]
     hostname = str(inputs.get("frontend_hostname") or inputs.get("hostname") or world.hostname)

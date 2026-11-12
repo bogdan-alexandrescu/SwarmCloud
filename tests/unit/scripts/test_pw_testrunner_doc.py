@@ -1,13 +1,13 @@
 """docs/design/live-browser.md §3.2 records the test-runner exception to BROWSER-ENFORCE.
 
-WHY THIS EXISTS (PW-TESTRUNNER-DOCS, part of #2253). §3.2 says the agent's own
-Chromium is refused (BROWSER-ENFORCE, owner decision 2026-10-13, #1030). PR
-#2254 then opened one sanctioned path on claude-code-browser: a headless TEST
+WHY THIS EXISTS (PW-TESTRUNNER-DOCS). §3.2 says the agent's own Chromium is
+refused (BROWSER-ENFORCE, owner decision 2026-10-13). The PW-TESTRUNNER pull
+request then opened one sanctioned path on claude-code-browser: a headless TEST
 process run through `swarm-test-browsers` launches its own Chromium from a
 writable directory, while the agent's `PLAYWRIGHT_BROWSERS_PATH` stays on the
 live-browser stub. A reader of §3.2 alone would believe no Chromium but the
 platform's can start, and would not learn what the wrapper refuses, what the
-download costs, or the risk #2254 left open. What would quietly rot: the
+download costs, or the risk PW-TESTRUNNER left open. What would quietly rot: the
 subsection being dropped, a name it states (the variable, the directory, the
 stub path, a cited symbol) drifting from the code, or the residual risk being
 softened into "closed".
@@ -38,7 +38,7 @@ DOCKERFILE = REPO / "images" / "agent-runtime-browser" / "Dockerfile"
 
 SECTION = "### 3.2 Chromium is launched by the platform, and the agent connects to it"
 NEXT = "### 3.2.1 dev-browser (opt-in)"
-EXCEPTION = "#### The test-runner exception (PW-TESTRUNNER, #2253)"
+EXCEPTION = "#### The test-runner exception (PW-TESTRUNNER)"
 
 _SYMBOL = re.compile(r"\b(apps/[\w./-]+\.py)::([\w.]+)")
 
@@ -57,7 +57,7 @@ def _exception() -> str:
     section = _section()
     assert EXCEPTION in section, (
         f"live-browser.md §3.2 has no {EXCEPTION!r} subsection: the sanctioned "
-        "test-runner path (#2254) is undocumented where BROWSER-ENFORCE is"
+        "test-runner path (PW-TESTRUNNER) is undocumented where BROWSER-ENFORCE is"
     )
     return _flat(section[section.index(EXCEPTION):])
 
@@ -107,7 +107,7 @@ def test_the_refusals_it_names_are_the_wrappers():
 
 def test_it_says_the_agents_default_stays_the_stub_and_cites_its_decisions():
     text = _exception()
-    for phrase in ("#1030", "#2253", "#2254", "2026-10-24",
+    for phrase in ("BROWSER-ENFORCE unchanged", "the PW-TESTRUNNER pull request built it", "2026-10-24",
                    "agent's own `PLAYWRIGHT_BROWSERS_PATH` is unchanged",
                    "not named `ms-playwright`"):
         assert phrase in text, f"§3.2's exception does not say {phrase!r}"
@@ -120,8 +120,8 @@ def test_it_states_the_cost_on_each_backend():
         assert phrase in text, f"§3.2's exception does not state the cost: {phrase!r}"
 
 
-def test_it_keeps_the_residual_risk_as_2254_stated_it():
-    """#2254's "What still could": not softened, not replaced by a new one."""
+def test_it_keeps_the_residual_risk_as_its_pull_request_stated_it():
+    """The PW-TESTRUNNER pull request's "What still could": not softened, not replaced by a new one."""
     text = _exception()
     for phrase in ("`swarm-test-browsers python browse.py`",
                    "cannot tell a test runner from a browsing script",
@@ -130,4 +130,4 @@ def test_it_keeps_the_residual_risk_as_2254_stated_it():
                    "not a sandbox",
                    "only for test suites",
                    "pod's own egress"):
-        assert phrase in text, f"§3.2's exception drops #2254's residual risk: {phrase!r}"
+        assert phrase in text, f"§3.2's exception drops PW-TESTRUNNER's residual risk: {phrase!r}"

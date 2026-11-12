@@ -30,7 +30,7 @@ Secret Manager) on PATH, sharing one state file:
   * the tenant's forge slot `swarm-tenant-<id>-git` and QA secret
     `swarm-tenant-<id>-qa` are deleted, by those two exact names and no
     other, behind the same typed confirmation, and no secret's value is ever
-    printed (OWNER DECISION, BGD 2026-10-22, #1977: a tenant id registered
+    printed (OWNER DECISION, the owner 2026-10-22, #1977: a tenant id registered
     again starts with empty slots).
 
 The two refusal guards are also MUTATED in-test: the same assertions run
@@ -1045,7 +1045,7 @@ def test_documents_terraform_owns_are_left_for_terraform(tmp_path):
 )
 def test_refusals_delete_nothing(tmp_path, tenant, over, says):
     before = world(**over)
-    # The deny-list is keyed by project (DAYONE-DESAGA-2): it is the list of the
+    # The deny-list is keyed by project (the Day One project-defaults lane): it is the list of the
     # project named, so the deny-listed case runs in the (placeholder) shared one.
     shared = {"PROJECT_ID": _P.SHARED_PROJECT} if says == "shared deny-list" else {}
     run = _run(tmp_path, before, "--tenant", tenant, "--apply", typed=tenant or "x", **shared)
@@ -1225,7 +1225,7 @@ def test_a_ledger_entry_is_found_from_the_ledger_not_only_from_secret_labels(tmp
 # 9. The tenant's -git slot and -qa secret go with it (#1977)
 # ---------------------------------------------------------------------------
 #
-# OWNER DECISION, BGD 2026-10-22: offboarding deletes swarm-tenant-<id>-git and
+# OWNER DECISION, the owner 2026-10-22: offboarding deletes swarm-tenant-<id>-git and
 # swarm-tenant-<id>-qa, behind the typed confirmation, so a tenant id registered
 # again later starts with empty slots instead of the old tenant's forge token or
 # QA test-account password.

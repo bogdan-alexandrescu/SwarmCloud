@@ -43,7 +43,7 @@ _PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
 _PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
 placeholder_deployment = _PLACEHOLDERS.deployment()
 HOST = "swarm.example.test"
-SA = "swarm-verify@example.iam.gserviceaccount.com"
+SA = "swarm-verify@example-project.iam.gserviceaccount.com"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -147,7 +147,7 @@ def _world(tmp_path: Path, *, signin_token: str = "", sa: str = "") -> dict[str,
         "NO_COLOR": "1",
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
         # A laptop's .env names its project, and common.sh has no default one
-        # (DAYONE-DESAGA-2); this world has no .env, so it names one here.
+        # (the Day One project-defaults lane); this world has no .env, so it names one here.
         "PROJECT_ID": "swarm-test",
         "API_HOST": HOST,
         "GCLOUD_TOKEN": _fake(),

@@ -3,8 +3,8 @@ that is not on the self-hosted pool is there for a stated, checked reason.
 
 OWNER DECISION, 2026-10-12. This repository is public, its fork-PR approval
 policy is `first_time_contributors` (left as it is), and its jobs may target
-the ephemeral GCP VMs that `runner-dispatcher` starts for the `bogdan-ci`
-label (repo webhook `/hook/swarmcloud`, sagaxyz/ai-studio#336). A RETURNING
+the ephemeral GCP VMs that `runner-dispatcher` starts for the `example-ci`
+label (repo webhook `/hook/swarmcloud`, set up in a peer repository's issue). A RETURNING
 outside contributor's fork PR needs no approval, so a self-hosted job it
 reaches would run their code on our VMs. The decision: fork PRs never reach
 the VMs. Pushes and same-repository PRs may.
@@ -257,7 +257,7 @@ def _jobs():
 
 #: Jobs that ask for the pool by its bare labels, on purpose. The only one is
 #: runner-fallback.yml's probe: while SELF_HOSTED_CI is off nothing else asks
-#: for a bogdan-ci runner, so the probe is how the judge sees the pool serve
+#: for a example-ci runner, so the probe is how the judge sees the pool serve
 #: again (docs/ci.md, "CI falls back to GitHub-hosted runners on its own").
 #: Accepted only while its workflow starts on schedule or dispatch alone (no
 #: fork can start it), and the job holds no permission, no secret and no
@@ -334,13 +334,13 @@ PRE_HATCH = (
         (["ubuntu-latest"], "hosted"),
         (APPROVED, "gated"),
         # What must fail.
-        (["self-hosted", "bogdan-ci"], "EXPOSED"),
-        ("bogdan-ci", "EXPOSED"),
+        (["self-hosted", "example-ci"], "EXPOSED"),
+        ("example-ci", "EXPOSED"),
         ("self-hosted", "EXPOSED"),
-        ({"group": "vms", "labels": ["bogdan-ci"]}, "EXPOSED"),
-        ("${{ fromJSON('[\"self-hosted\",\"bogdan-ci\"]') }}", "EXPOSED"),
+        ({"group": "vms", "labels": ["example-ci"]}, "EXPOSED"),
+        ("${{ fromJSON('[\"self-hosted\",\"example-ci\"]') }}", "EXPOSED"),
         # The fork check with its fallback swapped to a self-hosted label.
-        (APPROVED.replace("'ubuntu-24.04'", "'bogdan-ci'"), "EXPOSED"),
+        (APPROVED.replace("'ubuntu-24.04'", "'example-ci'"), "EXPOSED"),
         # The check inverted (== instead of !=) is not the approved spelling.
         (APPROVED.replace("!=", "=="), "EXPOSED"),
         # Only one of the two PR events checked.
@@ -371,7 +371,7 @@ NO_PR = {"workflow_run", "workflow_dispatch"}
         (SHORT, None, None, "EXPOSED"),
         # Mutation: the hatch dropped, or a self-hosted fallback.
         (SHORT.replace("vars.SELF_HOSTED_CI == 'off' && ", ""), "accept.yml", NO_PR, "EXPOSED"),
-        (SHORT.replace("'ubuntu-24.04'", "'bogdan-ci'"), "accept.yml", NO_PR, "EXPOSED"),
+        (SHORT.replace("'ubuntu-24.04'", "'example-ci'"), "accept.yml", NO_PR, "EXPOSED"),
         # The long form never needs the file's triggers.
         (APPROVED, "application.yml", NO_PR | {"pull_request"}, "gated"),
     ],
@@ -409,7 +409,7 @@ def test_every_short_form_file_uses_it_somewhere() -> None:
 def test_matrix_runs_on_is_resolved() -> None:
     job = {"runs-on": "${{ matrix.os }}", "strategy": {"matrix": {"os": ["ubuntu-24.04"]}}}
     assert verdict(job)[0] == "hosted"
-    job["strategy"]["matrix"]["include"] = [{"os": ["self-hosted", "bogdan-ci"]}]
+    job["strategy"]["matrix"]["include"] = [{"os": ["self-hosted", "example-ci"]}]
     assert verdict(job)[0] == "EXPOSED"
     job["strategy"]["matrix"]["include"] = [{"os": APPROVED}]
     assert verdict(job)[0] == "hosted"
@@ -420,7 +420,7 @@ def test_matrix_runs_on_is_resolved() -> None:
 
 #: With SWARM_CI_RUNNER_LABEL unset, the label the expression falls back to.
 POOL = ["self-hosted", "linux", "x64", "swarm-ci"]
-REPOSITORY = "bogdan-alexandrescu/SwarmCloud"
+REPOSITORY = "example-org/example-repo"
 #: The only context paths the approved expression reads. Anything else in an
 #: expression handed to resolve() is refused rather than guessed at.
 _CONTEXT_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*)+")
@@ -599,7 +599,7 @@ SECRETS_ON_VMS = "owner decision 2026-10-14: secrets on ephemeral self-hosted VM
 
 #: The only repository secrets a guarded job may hold, per job. The owner
 #: accepted the residual risk: for the job's life the secret is readable on
-#: the VM through IAP SSH or a disk snapshot in saga-ci-runners. Any other
+#: the VM through IAP SSH or a disk snapshot in the runners' project. Any other
 #: secret on a guarded job, or one of these on another job, fails.
 GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "auto-merge.yml:enable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),

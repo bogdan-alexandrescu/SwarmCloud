@@ -2,7 +2,8 @@
 machine's sweep (docs/design/voice-it-own-speech.md §3.3, §4.4, §4.5).
 
     WS   /v1/voice/sessions/{session_id}/audio
-    POST /v1/internal/voice/speech/sweep          -> {enabled, lease, ended, stopped, instance}
+    POST /v1/internal/voice/speech/sweep          -> {enabled, lease, ended, stopped, instance,
+                                                      abandoned}
 
 THE AUDIO SOCKET (§3.3 step 2) is the person's, behind the same front door
 and sign-in as every Voice it route: the caller is authenticated as a request
@@ -25,7 +26,9 @@ job), with an OIDC token for SWARM_SPEECH_SWEEP_AUDIENCE from an account in
 SWARM_SPEECH_SWEEP_CALLERS; anyone else is 401 or 403, and with no audience
 configured the route admits nobody (503). It ends a session whose lease lost
 its heartbeat, its tab or its idle time and stops an instance no live lease
-holds.
+holds. Whether or not the engine is on, it also ends every Voice it session
+of any mode left `live` without activity for sessions.LIVE_STALE_SECONDS
+(`abandoned`: how many), so none lingers in lists or holds its person.
 
 WHAT THE START LANE (L6) CALLS. `machine_for(app, ctx)` is the lifecycle a
 `speech` start takes the lease and starts the instance with
@@ -357,9 +360,16 @@ async def sweep(request: Request) -> dict[str, Any]:
     email = str(claims.get("email") or "").strip().lower()
     if email not in config.sweep_callers:
         raise Forbidden("the speech sweep is Cloud Scheduler's alone")
-    if not config.enabled:
-        return {"enabled": False, "lease": None, "ended": None, "stopped": False, "instance": None}
-    machine = machine_for(app, ctx)
+    machine = machine_for(app, ctx) if config.enabled else None
+    sessions = vs.VoiceSessions(ctx.db, _voice_client(app, ctx),
+                                marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
+                                now=ctx.now, machine=machine)
+    if machine is None:
+        abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
+        return {"enabled": False, "lease": None, "ended": None, "stopped": False, "instance": None,
+                "abandoned": abandoned}
+    # The machine's own causes first; what is left live without activity after.
     report = await run_in_threadpool(machine.sweep, VoiceSessionEnder(ctx, _voice_client(app, ctx)))
-    log.info("speech sweep %s", json.dumps(report, sort_keys=True))
-    return {"enabled": True, **report}
+    abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
+    log.info("speech sweep %s abandoned=%d", json.dumps(report, sort_keys=True), abandoned)
+    return {"enabled": True, **report, "abandoned": abandoned}

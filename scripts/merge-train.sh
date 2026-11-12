@@ -28,7 +28,13 @@
 #     requests that are green at head, labelled `ready`, mergeable, not drafts,
 #     not forks and aimed at main board a new one, oldest first, each still
 #     passing main's closing-references and dependency checks (the same two
-#     scripts auto-merge.yml's gate runs).
+#     scripts auto-merge.yml's gate runs). Fewer than MERGE_TRAIN_MIN_PRS
+#     (default 6) of them board nothing while the oldest has been `ready` (the
+#     label's last addition, read from GitHub) less than
+#     MERGE_TRAIN_MAX_WAIT_MINUTES (default 20), and the tick says so in one
+#     line; a `train-first` one, or a ready time that cannot be read, boards
+#     them at once (THE GATHER, gather_waits). A bisection's held-back half
+#     never gathers.
 #
 # WHAT A TRAIN IS. `train/<run id>-<attempt>` = origin/main plus each boarding
 # pull request squashed in order, one commit each, titled `<title> (#N)`. A
@@ -63,7 +69,7 @@
 # commit status on each head it lands, so the ruleset can require that context
 # (the runbook's change) and nothing reaches main without a green train.
 #
-# RED (BGD, 6 November 2026: keep the train and fix red trains). From 4 to 6
+# RED (the owner, 6 November 2026: keep the train and fix red trains). From 4 to 6
 # November 74 of 139 trains were red, mostly on checks known to fail at random
 # ('format / unit tests', 'swarm-ui typecheck / component tests', single
 # shards), and 6 of 18 ejected pull requests later landed with no change. So a
@@ -129,6 +135,10 @@
 #       The state block a train pull request's body carries.
 #   tell --prs <gh pr list json>
 #       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
+#   gather --prs <gh pr list json> --chosen <select lines>
+#       The gather alone (gather_waits), for the pull requests that would
+#       board: `wait` (and the one line saying why) or `board` (GH_REPO,
+#       GH_TOKEN).
 #   list-prs --out <file>
 #       The open pull request list the tick reads (list_open_prs) alone,
 #       into <file> (GH_REPO, GH_TOKEN).
@@ -150,7 +160,7 @@
 #       one only judges). Neither token is ever printed.
 set -euo pipefail
 # This script touches no project: it reads and writes GitHub only. It says
-# so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on an
+# so, so common.sh (no default project, the Day One project-defaults lane) does not stop on an
 # unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
@@ -171,6 +181,17 @@ STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
 MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
+# THE GATHER (gather_waits). A train boards once this many pull requests would
+# board, or once the oldest of them has been `ready` this long: the owner's
+# pick on 11 November 2026, "6 ready or 20 minutes", so fewer, larger trains
+# each pay the full suite once. Six: a red train of six is found in three more
+# trains. Twenty minutes: no `ready` pull request waits longer than about one
+# CI run before it boards. MIN_PRS 1 or MAX_WAIT_MINUTES 0 boards as soon as
+# one is green, as the train did before. A minimum above MAX_PRS counts as
+# MAX_PRS: a train never holds more.
+MIN_PRS="${MERGE_TRAIN_MIN_PRS:-6}"
+# Minutes; 0 turns the gather off (see MIN_PRS above).
+MAX_WAIT_MINUTES="${MERGE_TRAIN_MAX_WAIT_MINUTES:-20}"
 # A pull request GitHub is still computing the mergeability of is read this
 # many times in all, this many seconds apart: GitHub computes it in a few
 # seconds once asked, and a longer wait holds the whole tick. One still
@@ -223,7 +244,12 @@ RERUN_BY="${MERGE_TRAIN_RERUN_BY:-workflow}"
 # still for 75 minutes. So the list reads only the light fields of every open
 # pull request (1.5 s), and the two heavy ones, the body and the rollup, one
 # pull request at a time and only for those a tick acts on: a `ready` one and a
-# train. Every read is retried like a merge (gh_read, MERGE_RETRY_WAITS).
+# train. Every read is retried like a merge (gh_read, MERGE_RETRY_WAITS), and
+# so is every other GitHub read a tick makes: main's required checks, a
+# mergeability, a thread's comments, the check runs, statuses and Actions runs
+# that judge a train or main, the closed trains and the deploy hold's runs and
+# jobs. A write (a push, a comment, a label, a status, a merge) keeps its own
+# handling and is never repeated by gh_read: it may have landed.
 PR_LIGHT_FIELDS="number,title,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository,mergeable,labels"
 PR_HEAVY_FIELDS="body,statusCheckRollup"
 # Six single reads at once: each takes about a second, so forty `ready` pull
@@ -284,14 +310,21 @@ ROLLUP_JQ='
 reread_mergeable() {
   # The single-pull-request read, which makes GitHub compute a mergeability
   # the list reports as UNKNOWN. Prints MERGEABLE, CONFLICTING or UNKNOWN; a
-  # read that fails counts as UNKNOWN, so the pull request waits a tick.
-  local number="$1" reads=0 state=""
+  # read that fails even after gh_read's retries counts as UNKNOWN, so the
+  # pull request waits a tick.
+  local number="$1" reads=0 state="" view
+  view="$(mktemp)"
   while [[ "${reads}" -lt "${MERGEABLE_READS}" ]]; do
     [[ "${reads}" -eq 0 ]] || sleep "${MERGEABLE_WAIT_SECONDS}"
     reads=$((reads + 1))
-    state="$(gh pr view "${number}" --repo "${GH_REPO}" --json mergeable --jq .mergeable </dev/null 2>/dev/null)" || state=""
+    state=""
+    if gh_read "the mergeability of #${number}" "${view}" \
+      gh pr view "${number}" --repo "${GH_REPO}" --json mergeable --jq .mergeable; then
+      state="$(head -n 1 "${view}")"
+    fi
     [[ "${state}" == "UNKNOWN" || -z "${state}" ]] || break
   done
+  rm -f "${view}" "${view}.err"
   printf '%s\n' "${state:-UNKNOWN}"
 }
 
@@ -319,7 +352,7 @@ cmd_select() {
   # that is not required does not hold it (#815).
   # A check run is done when its status is COMPLETED, OR when it carries a
   # conclusion together with a completedAt, whatever its status says -- as
-  # `judge` reads it (BGD 2026-10-23, CHECK-STUCK-2, part of #2031): GitHub
+  # `judge` reads it (the owner 2026-10-23, CHECK-STUCK-2, part of #2031): GitHub
   # left PR 2006's `secret scan` IN_PROGRESS with a conclusion. A commit
   # status keeps its own reading.
   # --allow-unknown-mergeable also boards a pull request whose mergeability
@@ -439,20 +472,20 @@ cmd_judge() {
   # pull_request run, or a workflow run started again -- is listed once per
   # suite: PR 1966 listed ci-gate twice at 5b25774, (failure, success) (#1999).
   # So a check is decided here by the latest run (highest id) of EACH event
-  # that ran it (BGD 2026-10-22, CHECK-RULE-2, part of #1999), as the worker's
+  # that ran it (the owner 2026-10-22, CHECK-RULE-2, part of #1999), as the worker's
   # merge step, swarm-api and auto-merge.yml's gate 5 decide it: a re-run
   # replaces the earlier runs of its own event, never another's. The event is
   # the one that made the run's check suite, from --workflow-runs (GET
   # actions/runs?head_sha=, optional); a suite no Actions run names is its own
   # group, so without the file each check suite is judged on its own.
   # A run has finished when its status is completed, OR when it carries a
-  # conclusion together with a completed_at, whatever its status says (BGD
+  # conclusion together with a completed_at, whatever its status says (the owner
   # 2026-10-23, CHECK-STUCK, part of #2031): GitHub left PR 2006's `secret
   # scan` at in_progress with conclusion success and a completed_at. A run
   # with no conclusion stays pending; the worker's `check_run_finished` and
   # auto-merge.yml's gates 5-6 state the same rule.
   # A latest run that finished `cancelled` is neither bad nor good (#1778,
-  # BGD released bundle H09, 2026-10-27): someone stopped it, so a required
+  # The owner released bundle H09, 2026-10-27): someone stopped it, so a required
   # one leaves the verdict pending until its re-run answers, and a red
   # latest run of another event still makes the verdict red. The worker's
   # `cancelled_run` and swarm-api's `forgechecks.cancelled_run` say the same.
@@ -724,8 +757,10 @@ required_contexts() {
   local out="$1" rules branch
   rules="${WORK}/rules.json"
   branch="${WORK}/branch.json"
-  gh api "repos/${GH_REPO}/rules/branches/main" --paginate >"${rules}"
-  gh api "repos/${GH_REPO}/branches/main" >"${branch}"
+  gh_read "main's rules" "${rules}" gh api "repos/${GH_REPO}/rules/branches/main" --paginate \
+    || die "could not read main's rules"
+  gh_read "main's branch protection" "${branch}" gh api "repos/${GH_REPO}/branches/main" \
+    || die "could not read main's branch protection"
   {
     jq -r '(.protection.required_status_checks.contexts // [])[],
            ((.protection.required_status_checks.checks // [])[] | .context)' "${branch}"
@@ -741,13 +776,19 @@ gh_read() {
   # and runs it again after each wait in MERGE_RETRY_WAITS while it fails
   # transiently (merge_failure_transient, or gh's "unexpected end of JSON
   # input" for an empty reply) or exits 0 with something that is not JSON.
+  # A read with --jq prints the filter's text, not JSON: gh parsed the reply
+  # before filtering it, so an empty or broken one already failed in gh.
   # $1 names the read in its messages. Returns 1, the reason on stderr, when
   # it was refused or every attempt failed.
-  local what="$1" out="$2" err="$2.err" attempt=1 wait why
+  local what="$1" out="$2" err="$2.err" attempt=1 wait why filtered=false arg
   shift 2
+  for arg in "$@"; do
+    [[ "${arg}" != "--jq" ]] || filtered=true
+  done
   # shellcheck disable=SC2086 # MERGE_RETRY_WAITS is a list of numbers.
   for wait in ${MERGE_RETRY_WAITS} last; do
     if "$@" >"${out}" 2>"${err}" </dev/null; then
+      [[ "${filtered}" == "false" ]] || return 0
       jq -e . "${out}" >/dev/null 2>&1 && return 0
       printf 'the reply was not JSON\n' >"${err}"
     elif ! merge_failure_transient "${err}" && ! grep -q 'unexpected end of JSON input' "${err}"; then
@@ -861,8 +902,8 @@ tell_skip() {
   local number="$1" head="$2" key="$3" why="$4" details="$5" marker seen body clears
   marker="${SKIP_MARKER} head=${head} reason=${key} -->"
   seen="${WORK}/seen-${number}.txt"
-  if ! gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate --jq '.[].body' \
-    >"${seen}" 2>/dev/null </dev/null; then
+  if ! gh_read "#${number}'s comments" "${seen}" \
+    gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate --jq '.[].body'; then
     warn "could not read #${number}'s comments: not telling it why it does not board"
     return 0
   fi
@@ -874,6 +915,8 @@ tell_skip() {
       clears="What clears it: re-run that job from its run page if the failure was not this change's (a network timeout, a flake), or push a fix if it was. The train boards it on its next tick once every check at its head has finished green." ;;
     conflict)
       clears="What clears it: merge main into the branch (or rebase it onto main), resolve the conflict and push. The train boards it once its new head is green." ;;
+    review-not-yet)
+      clears="What clears it: a later review that says MERGE; the merge step that reads it removes \`review-not-yet\`. A CI fix does not, and the train boards nothing that carries the label." ;;
     *)
       clears="What clears it: edit the body so it closes only what this change finishes (write \`part of #N\` for the rest). The train reads it again on its next tick." ;;
   esac
@@ -918,7 +961,9 @@ guards_pass() {
   # anything else could not tell, and does not board either. A closing-keyword
   # refusal (2) does not clear by itself, so the pull request is told, once
   # at its head (tell_skip), unless $3 says this is a dry run; a read that
-  # could not tell, or a dependency not landed yet, may clear by itself.
+  # could not tell, or a dependency not landed yet, may clear by itself. A
+  # `review-not-yet` refusal (the same check's, owner decision 9 November
+  # 2026) is told under its own reason: only a later MERGE review clears it.
   local number="$1" head="$2" dry="$3" here rc refusal
   here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   refusal="${WORK}/closing-${number}.md"
@@ -927,8 +972,13 @@ guards_pass() {
   if [[ "${rc}" -ne 0 ]]; then
     info "#${number} does not board: its closing keywords name an open pull request, or that could not be read (exit ${rc})"
     if [[ "${rc}" -eq 2 && "${dry}" != "true" ]]; then
-      tell_skip "${number}" "${head}" closing-references \
-        "its closing keywords would close an open pull request" "${refusal}"
+      if grep -qxF -- "<!-- review-not-yet -->" "${refusal}"; then
+        tell_skip "${number}" "${head}" review-not-yet \
+          "its review said NOT_YET, and no later review has said MERGE" "${refusal}"
+      else
+        tell_skip "${number}" "${head}" closing-references \
+          "its closing keywords would close an open pull request" "${refusal}"
+      fi
     fi
     return 1
   fi
@@ -937,6 +987,63 @@ guards_pass() {
     info "#${number} does not board: something it depends on has not landed, or that could not be read (exit ${rc})"
     return 1
   fi
+}
+
+ready_since() {
+  # When `ready` was last added to pull request $1, in epoch seconds, from its
+  # issue events on GitHub; nothing printed when that cannot be read or was
+  # never added. Never a time this script keeps: GitHub's is the one record.
+  local number="$1" out="${WORK}/ready-since-$1.txt"
+  if ! gh_read "when #${number} became ready" "${out}" \
+    gh api "repos/${GH_REPO}/issues/${number}/events" --paginate \
+    --jq '[.[] | select(.event == "labeled" and .label.name == "ready") | .created_at | fromdateiso8601] | max // empty'; then
+    return 0
+  fi
+  grep -E '^[0-9]+$' "${out}" | sort -n | tail -n 1 || true
+}
+
+gather_waits() {
+  # THE GATHER (MIN_PRS, MAX_WAIT_MINUTES). $1 the open pull request list,
+  # $2 the pull requests that would board (start_train's chosen list). 0 when
+  # they wait, said in one summary line; 1 when they board. They board when
+  # the gather is off, when there are MIN_PRS of them, when one is labelled
+  # FIRST_LABEL (it waits for no queue and takes the rest with it), or when
+  # the oldest has been `ready` MAX_WAIT_MINUTES. A pull request whose ready
+  # time cannot be read counts as having waited the whole window: an
+  # unreadable time never holds work.
+  local prs="$1" chosen="$2" min="${MIN_PRS}" count numbers n since age
+  local window=$((MAX_WAIT_MINUTES * 60)) oldest="" oldest_age=-1 now
+  [[ "${min}" -le "${MAX_PRS}" ]] || min="${MAX_PRS}"
+  [[ "${min}" -gt 1 && "${MAX_WAIT_MINUTES}" -gt 0 ]] || return 1
+  count="$(grep -c . "${chosen}" || true)"
+  [[ "${count}" -lt "${min}" ]] || return 1
+  numbers="$(awk -F'\t' '{ print $1 }' "${chosen}" | tr '\n' ' ')"
+  if jq -e --arg first "${FIRST_LABEL}" --argjson these "$(awk -F'\t' '{ print $1 }' "${chosen}" | jq -s .)" '
+    any(.[]; (.number as $n | $these | index($n)) and any(.labels[]?; .name == $first))' \
+    "${prs}" >/dev/null; then
+    return 1
+  fi
+  now="$(date +%s)"
+  for n in ${numbers}; do
+    since="$(ready_since "${n}")"
+    if [[ -z "${since}" ]]; then
+      info "#${n}: when it became ready could not be read: it counts as having waited ${MAX_WAIT_MINUTES} minutes"
+      return 1
+    fi
+    age=$((now - since))
+    [[ "${age}" -ge 0 ]] || age=0
+    [[ "${age}" -lt "${window}" ]] || return 1
+    if [[ "${age}" -gt "${oldest_age}" ]]; then
+      oldest="${n}"
+      oldest_age="${age}"
+    fi
+  done
+  local at left noun="ready pull requests wait"
+  at="$(jq -nr --argjson t "$((now - oldest_age + window))" '$t | todate')"
+  left=$(((window - oldest_age + 59) / 60))
+  [[ "${count}" -ne 1 ]] || noun="ready pull request waits"
+  summary "gathering: ${count} ${noun} for ${min} to board (or ${MAX_WAIT_MINUTES} minutes); the oldest, #${oldest}, has been ready $((oldest_age / 60)) minutes; they board at the latest at ${at}, in ${left} minutes"
+  return 0
 }
 
 start_train() {
@@ -959,6 +1066,11 @@ start_train() {
       printf '%s\t%s\t%s\n' "${n}" "${sha}" "${title}" >>"${chosen}"
       count=$((count + 1))
     done <"${eligible}"
+    # The gather: the pool alone. A bisection's named half above boards at
+    # once, and a red train's retry never comes here.
+    if [[ -s "${chosen}" ]] && gather_waits "${WORK}/prs.json" "${chosen}"; then
+      return 0
+    fi
   fi
   if [[ ! -s "${chosen}" ]]; then
     if [[ -n "${explicit}" ]]; then
@@ -1086,7 +1198,8 @@ merge_one() {
     if ! merge_failure_transient "${err}"; then
       # After a lost reply, GitHub refuses the retry of a merge that went
       # through: that one has landed.
-      if [[ "${attempt}" -gt 1 ]] && gh pr view "${n}" --repo "${GH_REPO}" --json state >"${view}" 2>/dev/null </dev/null \
+      if [[ "${attempt}" -gt 1 ]] && gh_read "pull request #${n} after GitHub refused its merge" "${view}" \
+        gh pr view "${n}" --repo "${GH_REPO}" --json state \
         && jq -e '.state == "MERGED"' "${view}" >/dev/null; then
         summary "#${n} had merged although GitHub's reply to an earlier attempt was lost: counted as landed, not merged again"
         return 0
@@ -1103,6 +1216,8 @@ merge_one() {
       summary "merge of #${n}, attempt ${attempt} of ${attempts}, failed transiently: ${why}; retrying in ${wait}s"
       sleep "${wait}"
     fi
+    # Not gh_read: this read is the merge's own retry, once per attempt and
+    # after the merge's own wait, and one that fails still tries the merge.
     if gh pr view "${n}" --repo "${GH_REPO}" --json state,headRefOid >"${view}" 2>/dev/null </dev/null; then
       if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
         summary "#${n} had merged although GitHub's reply to attempt ${attempt} was lost: counted as landed, not merged again"
@@ -1196,12 +1311,13 @@ last_deploy() {
   LAST_DEPLOY=""
   LAST_DEPLOY_AT=""
   local runs="${WORK}/hold-releases.json" jobs="${WORK}/hold-release-jobs.json" run status found
-  gh api "repos/${GH_REPO}/actions/workflows/release.yml/runs?branch=main&per_page=${RELEASE_LOOK}" \
-    >"${runs}" 2>/dev/null </dev/null || return 1
+  gh_read "main's release.yml runs" "${runs}" \
+    gh api "repos/${GH_REPO}/actions/workflows/release.yml/runs?branch=main&per_page=${RELEASE_LOOK}" || return 1
   while IFS=$'\t' read -r run status; do
     # A run that has not started has run no job.
     case "${status}" in queued | pending | waiting | requested) continue ;; esac
-    gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100" >"${jobs}" 2>/dev/null </dev/null || return 1
+    gh_read "the jobs of release run ${run}" "${jobs}" \
+      gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100" || return 1
     # `deploy (<environment>)` on a push, as release.yml names it.
     found="$(jq -r '[(.jobs // [])[]
         | select((.name == "deploy" or (.name | startswith("deploy ("))) and .conclusion == "success" and .completed_at != null)
@@ -1251,8 +1367,8 @@ deploy_hold() {
     fi
   fi
   local runs="${WORK}/hold-build-runs.json" jobs="${WORK}/hold-build-jobs.json" run sha build
-  if ! gh api "repos/${GH_REPO}/actions/workflows/application.yml/runs?branch=main&event=push&per_page=1" \
-    >"${runs}" 2>/dev/null </dev/null; then
+  if ! gh_read "main's application.yml runs" "${runs}" \
+    gh api "repos/${GH_REPO}/actions/workflows/application.yml/runs?branch=main&event=push&per_page=1"; then
     HOLD_WHY="could not read main's application.yml runs: not holding"
     warn "${HOLD_WHY}"
     return 0
@@ -1263,7 +1379,8 @@ deploy_hold() {
     HOLD_WHY="main has no application.yml push run: nothing to hold for"
     return 0
   fi
-  if ! gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100" >"${jobs}" 2>/dev/null </dev/null; then
+  if ! gh_read "the jobs of application run ${run}" "${jobs}" \
+    gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100"; then
     HOLD_WHY="could not read the jobs of main's application.yml run ${run}: not holding"
     warn "${HOLD_WHY}"
     return 0
@@ -1364,14 +1481,17 @@ main_checks() {
   MAIN_RED=""
   MAIN_GREEN=false
   printf '%s\n' "$1" >"${nm}"
-  gh api "repos/${GH_REPO}/commits/main" >"${commit}" 2>/dev/null </dev/null || return 1
+  gh_read "main's head commit" "${commit}" gh api "repos/${GH_REPO}/commits/main" || return 1
   MAIN_SHA="$(jq -r '.sha // empty' "${commit}")" || return 1
   is_sha "${MAIN_SHA}" || return 1
-  gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/check-runs?per_page=100" >"${cr}" 2>/dev/null </dev/null || return 1
-  gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/status?per_page=100" >"${st}" 2>/dev/null </dev/null || return 1
+  gh_read "the check runs on main" "${cr}" \
+    gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/check-runs?per_page=100" || return 1
+  gh_read "the commit statuses on main" "${st}" \
+    gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/status?per_page=100" || return 1
   # Unread (no `actions: read`), each check suite is judged on its own, as
   # handle_train judges a train head.
-  gh api "repos/${GH_REPO}/actions/runs?head_sha=${MAIN_SHA}&per_page=100" >"${wf}" 2>/dev/null </dev/null \
+  gh_read "the Actions runs on main" "${wf}" \
+    gh api "repos/${GH_REPO}/actions/runs?head_sha=${MAIN_SHA}&per_page=100" \
     || printf '{"workflow_runs": []}\n' >"${wf}"
   cmd_judge --check-runs "${cr}" --statuses "${st}" --workflow-runs "${wf}" \
     --required "${WORK}/required.txt" --names "${nm}" >"${out}" || return 1
@@ -1399,7 +1519,8 @@ retry_failed_runs() {
   local number="$1" body="$2" head="$3" wf="${WORK}/retry-runs.json" err="${WORK}/rerun.err" run
   RETRY_RUNS=""
   RETRY_WHY=""
-  if ! gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${wf}" 2>/dev/null </dev/null; then
+  if ! gh_read "the Actions runs to re-run at ${head:0:12}" "${wf}" \
+    gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100"; then
     RETRY_WHY="could not read the Actions runs at ${head:0:12}"
     return 1
   fi
@@ -1444,11 +1565,13 @@ red_rules() {
   # and stop every other train boarding. An unreadable list goes on, and
   # retry_failed_runs says why it cannot retry.
   if [[ "${age}" -gt $((MAX_AGE_MINUTES * 60)) ]]; then
-    if gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+    if gh_read "the Actions runs at ${head:0:12}" "${runs}" \
+      gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" \
       && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
       summary "train ${id}: rule 1 (retry once): some runs at ${head:0:12} still run after $((age / 60)) minutes, past the ${MAX_AGE_MINUTES}-minute limit: not waiting for them"
     fi
-  elif gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+  elif gh_read "the Actions runs at ${head:0:12}" "${runs}" \
+    gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" \
     && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
     if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
       summary "train ${id}: rule 1 (retry once): its re-run at ${head:0:12} is still running: waiting"
@@ -1509,8 +1632,8 @@ main_red_gate() {
   # boards, 1 waits. A closed list that cannot be read boards, as before rule
   # 2; main's checks that cannot be read wait, within the same bound.
   local closed="${WORK}/closed.json" last="${WORK}/last-train.md" since checks names age
-  if ! gh pr list --repo "${GH_REPO}" --state closed --base main --limit 30 \
-    --json number,headRefName,body >"${closed}" 2>/dev/null </dev/null; then
+  if ! gh_read "the closed trains" "${closed}" \
+    gh pr list --repo "${GH_REPO}" --state closed --base main --limit 30 --json number,headRefName,body; then
     warn "could not read the closed trains: boarding without rule 2's wait"
     return 0
   fi
@@ -1567,8 +1690,12 @@ handle_train() {
   for pair in ${pairs}; do train_prs="${train_prs:+${train_prs} }${pair%%:*}"; done
 
   local cr="${WORK}/check-runs.json" st="${WORK}/status.json" verdict_file="${WORK}/verdict.tsv"
-  gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" >"${cr}"
-  gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" >"${st}"
+  gh_read "the check runs at train ${id}'s head" "${cr}" \
+    gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" \
+    || die "could not read the check runs at train ${id}'s head ${head}"
+  gh_read "the commit statuses at train ${id}'s head" "${st}" \
+    gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" \
+    || die "could not read the commit statuses at train ${id}'s head ${head}"
   # The event of each check suite, read only when some check ran more than
   # once at the head, as auto-merge.yml's gate 5 reads it (CHECK-RULE-2). A
   # read GitHub refuses (no `actions: read`) leaves no events, and each
@@ -1576,7 +1703,8 @@ handle_train() {
   local wf="${WORK}/workflow-runs.json"
   printf '{"workflow_runs": []}\n' >"${wf}"
   if jq -e '[(.check_runs // [])[].name] | group_by(.) | any(length > 1)' "${cr}" >/dev/null; then
-    gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${wf}" 2>/dev/null \
+    gh_read "the Actions runs at train ${id}'s head" "${wf}" \
+      gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" \
       || printf '{"workflow_runs": []}\n' >"${wf}"
   fi
   cmd_judge --check-runs "${cr}" --statuses "${st}" --workflow-runs "${wf}" \
@@ -1699,6 +1827,33 @@ cmd_tell() {
   tell_skipped "${prs}"
 }
 
+cmd_gather() {
+  # The gather alone (gather_waits), over the open pull request list --prs
+  # and the pull requests that would board, --chosen (a select line each):
+  # prints `wait` or `board` (GH_REPO, GH_TOKEN).
+  local prs="" chosen=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; prs="$2"; shift 2 ;;
+      --chosen) [[ $# -ge 2 ]] || die "--chosen needs a value"; chosen="$2"; shift 2 ;;
+      *) die "gather: unknown argument: $1" ;;
+    esac
+  done
+  is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
+  gather_knobs_valid
+  retry_knobs_valid
+  [[ -f "${prs}" ]] || die "gather: no --prs file"
+  [[ -f "${chosen}" ]] || die "gather: no --chosen file"
+  : "${GH_REPO:?GH_REPO is required}"
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "${WORK}"' EXIT
+  if gather_waits "${prs}" "${chosen}"; then
+    echo wait
+  else
+    echo board
+  fi
+}
+
 cmd_list_prs() {
   # The tick's open pull request list alone (list_open_prs), into --out.
   local out=""
@@ -1774,6 +1929,12 @@ cmd_land() {
   printf 'rc\t%s\nlanded\t%s\nreason\t%s\n' "${rc}" "${LANDED}" "${LAND_REASON}"
 }
 
+gather_knobs_valid() {
+  is_number "${MIN_PRS}" || die "MERGE_TRAIN_MIN_PRS is not a positive number: ${MIN_PRS}"
+  [[ "${MAX_WAIT_MINUTES}" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || die "MERGE_TRAIN_MAX_WAIT_MINUTES is not a number of minutes: ${MAX_WAIT_MINUTES}"
+}
+
 retry_knobs_valid() {
   [[ "${MERGE_RETRY_WAITS}" =~ ^([0-9]+( [0-9]+)*)?$ ]] \
     || die "MERGE_TRAIN_MERGE_RETRY_WAITS is not a list of seconds: ${MERGE_RETRY_WAITS}"
@@ -1793,6 +1954,7 @@ cmd_tick() {
   : "${RUN_ID:?RUN_ID is required}"
   : "${RUN_URL:?RUN_URL is required}"
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
+  gather_knobs_valid
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
   is_number "${MAIN_RED_WAIT_MINUTES}" || die "MERGE_TRAIN_MAIN_RED_WAIT_MINUTES is not a positive number: ${MAIN_RED_WAIT_MINUTES}"
   [[ "${RERUN_BY}" == "workflow" || "${RERUN_BY}" == "app" ]] \
@@ -1873,6 +2035,7 @@ main() {
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
     list-prs) cmd_list_prs "$@" ;;
+    gather) cmd_gather "$@" ;;
     hold) cmd_hold "$@" ;;
     land) cmd_land "$@" ;;
     judge) cmd_judge "$@" ;;

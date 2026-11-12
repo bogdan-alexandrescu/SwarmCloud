@@ -214,10 +214,11 @@ def test_each_writers_fields_are_the_ones_the_module_writes():
     assert judgment.unowned_covered_keys("code_intelligence") == ("judgment_backend",)
     assert judgment.unowned_covered_keys("top") == ()
     assert judgment.unowned_covered_keys("merge") == ()
-    assert judgment.WRITER_FIELDS["plugins"] == (plugins.ALLOWED,)
     # Contract request 140 covers the block's every-step defaults and settings
-    # digest; no swarm-api path writes them yet, so they are unowned.
-    assert judgment.unowned_covered_keys("plugins") == ("defaults", "configs_digest")
+    # digest: pluginconfig writes both, and PluginsStore.put carries them over
+    # under a block that verifies.
+    assert judgment.WRITER_FIELDS["plugins"] == (plugins.ALLOWED, plugins.DEFAULTS, plugins.CONFIGS_DIGEST)
+    assert judgment.unowned_covered_keys("plugins") == ()
 
 
 # -- the readers ------------------------------------------------------------------

@@ -868,7 +868,7 @@ the audit row permanent; no end date. The lanes, read from the code on
 2026-11-05. Where a PR number is not given, an earlier issue does not name it; `git log
 -- <file>` finds the commit.
 
-**JOIN-STORE (PR #2345).** `swarm_api/joinrequests.py` (`JoinStore`: the
+**JOIN-STORE.** `swarm_api/joinrequests.py` (`JoinStore`: the
 link, its code hashed at rest, rotation, `lookup`, `ask` with the four rate
 limits in its transaction, `decide`, `mine`, `open_for`; every record MAC'd
 under its own domain) and `swarm_api/memberships.py` (`MembershipStore`:
@@ -877,7 +877,7 @@ over `member`, `counts_for` the group the workspace has now; `is_person`), the
 codes of §4.9 in `errors.py`, and their `NOT_SWITCHABLE_CODES` entries
 ([api-refusals.md](../api-refusals.md#join-requests-refusals-with-no-switch-and-why)).
 
-**JOIN-RESOLVE (PR #2371, security-reviewed).** `auth.py`'s
+**JOIN-RESOLVE (security-reviewed).** `auth.py`'s
 `_platform_memberships` appends counted memberships to `tenant_choices` after
 the groups; `settings.platform_memberships` (`PLATFORM_MEMBERSHIPS`, off);
 `routes/tenants.py` says `via: "platform_member"`. The four rate limits became
@@ -885,7 +885,7 @@ settings here, as the owner answered on 2026-10-25 (`JOIN_OPEN_PER_PERSON` 3,
 `JOIN_DAILY_PER_PERSON` 10, `JOIN_DENIED_HOLD_DAYS` 7,
 `JOIN_OPEN_PER_WORKSPACE` 50, each with its reason beside it in `settings.py`).
 
-**JOIN-API (PR #2372).** `routes/join_requests.py`: lookup and ask (the code
+**JOIN-API.** `routes/join_requests.py`: lookup and ask (the code
 only in a body, both routes in `main.UNCAPTURED_ROUTES`), mine, withdraw, the
 link's GET and PUT, the members list and removal, approve and deny;
 `people.py`'s `join_requests`, `pending` and the grid's `requested` cell;
@@ -893,12 +893,12 @@ link's GET and PUT, the members list and removal, approve and deny;
 decision, the membership, a lowered role and every audit row are one
 transaction (the owner, 2026-10-25).
 
-**JOIN-BELL (PR #2381).** `notifications.py`'s `join_requests_to_decide`
+**JOIN-BELL.** `notifications.py`'s `join_requests_to_decide`
 (`admin:join:<ref>`) and `own_join_requests` (`join:<ref>:<state>`),
 `Viewer.administers` and `Reading.joins`
 ([notifications.md](../notifications.md)).
 
-**JOIN-UI-PERSON (PR #2390).** `JoinWorkspace.tsx` and the `/join` route: the
+**JOIN-UI-PERSON.** `JoinWorkspace.tsx` and the `/join` route: the
 code is read from the URL's fragment and posted in a body; the person's
 requests and their states; Workspace › People's link card (shown once) and
 its joined-by-request list.

@@ -1,0 +1,51 @@
+# Lane LP-T1 (docs/design/llm-providers.md sections 4.4 and 8.3; owner
+# decision Q3, 9 November 2026): the quota broker destroys a deleted API key's
+# secret, swarm-account-<tenant>--key-<label>, at once. A delete-only custom
+# role and its conditioned grant to swarm-quota-broker, both in
+# terraform/bootstrap, which the owner applies: a project grant made by the
+# release would need the role on the CI deployer's grantable list, whose
+# hasOnly() bounds neither member nor condition. The attempts index
+# (account_id, created_at) the same lane adds is one more key of
+# google_firestore_index.this, already listed by firestore.indexes.
+version: 1
+entries:
+- id: role.custom.swarmAccountKeyDeleter
+  kind: custom-role
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam roles describe swarmAccountKeyDeleter --project=$P
+  apply: terraform/bootstrap/account_key_secrets.tf resource "google_project_iam_custom_role" "account_key_deleter" (unconditional, always created)
+  verify: 'permissions: secretmanager.secrets.delete only'
+  explain: Lets the quota broker delete a deleted API key's secret at once (LLM providers, Q3); the broker already adds and destroys versions, but held no secrets.delete.
+  guards: lane LP-T1, owner decision Q3 of 9 November 2026
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/account_key_secrets.tf:106-115
+  notes: 'Nothing in terraform/infra names this role, so it has no order against a release; the broker''s key delete (LP-B1 stage (c)) must not ship before it is applied.'
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.account_key_deleter
+- id: iam-binding.broker-account-key-deleter
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.role:swarmAccountKeyDeleter'
+  apply: terraform/bootstrap/account_key_secrets.tf resource "google_project_iam_member" "account_key_deleter"
+  verify: 'swarm-quota-broker alone, condition: projects/<n>/secrets/swarm-account-{t}--key-*'
+  explain: The quota broker's only delete path for a secret; it reaches the pool's API key secrets and no plan account's, tenant's or other team's secret.
+  guards: NOT VERIFIED LIVE per file; lint with iamPolicies:lintPolicy before applying
+  secret_entry: secret created by the quota broker when an API key is added (design section 4.1); never via scripts/create-secrets.sh
+  depends_on:
+  - role.custom.swarmAccountKeyDeleter
+  - sa.swarm-quota-broker
+  evidence:
+  - terraform/bootstrap/account_key_secrets.tf:117-128
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.account_key_deleter

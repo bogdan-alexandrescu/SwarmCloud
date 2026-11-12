@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[3]
 AUTO_MERGE = REPO / ".github" / "workflows" / "auto-merge.yml"
 LABELS = REPO / ".github" / "labels.yml"
 CI_DOC = REPO / "docs" / "ci.md"
-GH_REPO = "bogdan-alexandrescu/SwarmCloud"
+GH_REPO = "example-org/example-repo"
 
 JOB = "ready-on-green"
 LABEL = "ready-on-green"

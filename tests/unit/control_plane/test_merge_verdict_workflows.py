@@ -21,6 +21,12 @@ fix workflows ended at the pull request. What these tests hold:
      backend: the steps the API derives carry only what the caller already
      sent for its review (invariant 10).
 
+These hold the re-review shape, which "on_merge_verdict" still appends while
+the `fix-loop` profile ships unavailable (contract request 124). With it
+available, a NOT_YET-gated fix gets the fix loop, 3 rounds, and a merge that
+reads the loop instead (the owner 2026-11-09, docs/design/fix-loop.md §9 Q8
+(b)): tests/unit/control_plane/test_fix_loop_by_default.py.
+
 The merge step's run on the derived target, MERGE and NOT_YET, is
 tests/unit/worker/test_merge_reads_the_rereview.py. No credentials, no
 network, no emulator: every agent step is `mock`.

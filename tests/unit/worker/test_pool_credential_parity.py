@@ -47,7 +47,7 @@ class AnyoneBroker:
     def __init__(self) -> None:
         self.asked: list[str | None] = []
 
-    def assign(self, provider, *, exclude=()):
+    def assign(self, provider, *, exclude=(), **_kw):
         self.asked.append(provider)
         return Assignment(
             account_id=ACCOUNT_ID,
@@ -56,7 +56,7 @@ class AnyoneBroker:
             account={"account_id": ACCOUNT_ID, "owner_tenant": TENANT, "label": "personal"},
         )
 
-    def release(self, account_id, assignment_id, *, unusable=""):
+    def release(self, account_id, assignment_id, *, unusable="", **_kw):
         return 0
 
 

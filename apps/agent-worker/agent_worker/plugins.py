@@ -16,6 +16,21 @@ document that names plugins and does not match is refused: a tenant worker
 can write the task document, never the signature. Free-form metadata with no
 signed reference (SWARM_WORK_CONTRACTS off) names nothing.
 
+TWO ROUTES FOR ONE RELEASE (docs/design/managed-plugins.md section 1.4.5).
+With the built-ins switch on, swarm-api signs gstack and security-audit as
+bundled managed entries instead (`metadata.dispatch.plugins`, `build:
+"image"`, under the reserved ids `builtin:gstack` and
+`builtin:security-audit`); a step submitted before the switch still carries
+`capabilities.plugins`. This worker reads both: a bundled entry is checked
+in place against the `.swarm-bundle.json` beside its install in this image
+(`pluginload.check_bundle`; nothing is fetched), then linked exactly as the
+code entry is, from the same folder, so a step runs the same skills from the
+same files on either route. Its mode and skills were checked by swarm-api
+against the signed version's `modes`; here only the mode the platform runs
+and the skills present in the install are. One plugin named on both routes
+is refused: swarm-api never signs both. Every `Plugin` carries its reserved
+install id on either route, and gstack's environment is keyed on it.
+
 CHECKED AGAIN HERE against this worker's own catalogue (`CATALOGUE`, which
 restates `swarm_api.plugincatalogue`; a unit test holds them equal): a
 catalogue name, a profile that loads it, unattended mode (planner and
@@ -82,6 +97,7 @@ from typing import Any, Iterable, Mapping
 from swarm_common.specsign import SpecNotCanonical
 from swarm_common.workcontract import contract_digest
 
+from . import pluginload
 from .errors import ConfigError
 
 
@@ -139,6 +155,15 @@ SECURITY_AUDIT = PluginEntry(
     skill_folders="skills",
 )
 CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK, SECURITY_AUDIT.name: SECURITY_AUDIT}
+
+
+def reserved_id(name: str) -> str:
+    """A built-in's reserved install id (`swarm_api.plugincatalogue`)."""
+    return pluginload.BUILT_IN_PREFIX + name
+
+
+#: The install id gstack's environment is keyed on, on either route.
+GSTACK_INSTALL_ID = reserved_id(GSTACK.name)
 
 #: The modes that run today; `swarm_api.plugincatalogue.SUPPORTED_MODES`.
 SUPPORTED_MODES = ("unattended",)
@@ -199,6 +224,17 @@ class Plugin:
     version: str
     mode: str
     skills: tuple[str, ...]
+    #: Its reserved install id on either route (`builtin:<name>`), derived
+    #: from the name when not given.
+    install_id: str = ""
+    #: The signed version id and source sha256 of a bundled entry; None for
+    #: a code entry, whose pin is the image's own.
+    version_id: str | None = None
+    source_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.install_id:
+            object.__setattr__(self, "install_id", reserved_id(self.name))
 
 
 @dataclass(frozen=True)
@@ -209,6 +245,13 @@ class Started:
     plugins: tuple[Plugin, ...]
     env: Mapping[str, str] = field(hash=False)
     guidance: str
+    #: The managed plugins of the signed set (`pluginload.load`), each
+    #: verified by digest and loaded whole through `--plugin-dir`.
+    managed: tuple[pluginload.Loaded, ...] = ()
+    #: The bundled built-ins of the signed set, each checked against its
+    #: image's manifest (`pluginload.check_bundle`); the security review
+    #: checks that manifest again before its validators run.
+    bundled: tuple[pluginload.Bundled, ...] = ()
 
 
 # --- which plugins ------------------------------------------------------------
@@ -276,6 +319,29 @@ def check(selection: Mapping[str, Mapping[str, Any]], *, profile: str) -> tuple[
     return tuple(out)
 
 
+def check_bundled(bundled: Iterable[pluginload.Bundled], *, profile: str,
+                  installs: Mapping[str, Path]) -> tuple[Plugin, ...]:
+    """The signed bundled built-ins, each checked in place against the
+    manifest in its install (`pluginload.check_bundle`, which raises
+    `PluginRefused`), or PluginUnavailable for one this worker does not know
+    how to link, a profile that does not load it, or a mode that does not run
+    yet. Nothing is fetched."""
+    out = []
+    for entry in bundled:
+        known = CATALOGUE.get(entry.name)
+        if known is None:
+            raise PluginUnavailable(f"{entry.install_id} is not a bundled plugin this worker links")
+        if profile not in known.runner_profiles:
+            raise PluginUnavailable(f"{entry.name} does not run on the {profile} profile")
+        if entry.mode not in SUPPORTED_MODES:
+            raise PluginUnavailable(f"{entry.name} in {entry.mode} mode {BRIDGE_REASON}")
+        found = pluginload.check_bundle(entry, installs[entry.name])
+        out.append(Plugin(name=entry.name, version=found.version, mode=entry.mode,
+                          skills=tuple(sorted(set(entry.skills))), install_id=entry.install_id,
+                          version_id=entry.version_id, source_sha256=entry.source_sha256))
+    return tuple(out)
+
+
 # --- the start of a step ------------------------------------------------------
 
 
@@ -285,10 +351,14 @@ def _skill_path(plugin: Plugin, install: Path, skill: str) -> Path:
     return (install / folders / skill) if folders is not None else (install / skill)
 
 
-def _install_of(plugin: Plugin, install_paths: Mapping[str, Path] | None) -> Path:
-    if install_paths is not None and plugin.name in install_paths:
-        return Path(install_paths[plugin.name])
-    return Path(CATALOGUE[plugin.name].install_path)
+def _install_of(name: str, install_paths: Mapping[str, Path] | None, *, bundled: bool = False) -> Path:
+    """Where a plugin's install sits: the given path, else for a bundled
+    entry the folder its recipe fixes, else the code entry's."""
+    if install_paths is not None and name in install_paths:
+        return Path(install_paths[name])
+    if bundled:
+        return pluginload.BUNDLE_ROOT / name
+    return Path(CATALOGUE[name].install_path)
 
 
 def _require_install(plugin: Plugin, install: Path, *, image: str) -> None:
@@ -408,20 +478,41 @@ def guidance(plugins: Iterable[Plugin]) -> str:
 
 def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile: str,
           image: str, environ: Mapping[str, str] | None = None,
-          install_paths: Mapping[str, Path] | None = None) -> Started | None:
+          install_paths: Mapping[str, Path] | None = None,
+          private_dir: Path | None = None, store: Any = None,
+          released: pluginload.Released | None = None,
+          provider_key: pluginload.ProviderKey | None = None,
+          secret_env_names: Iterable[str] = (), hard_stop_paths: Iterable[str] = ()) -> Started | None:
     """Set up the step's plugins before the agent, or None for a step with
     none. Raises PluginUnavailable, before anything is linked, for a plugin
-    this worker cannot run or an image without its install."""
+    this worker cannot run or an image without its install, and
+    `pluginload.PluginRefused` for a managed plugin set it cannot verify or a
+    pinned copy that is not the signed one.
+
+    The managed plugins (docs/design/managed-plugins.md section 4) come from
+    the signed `metadata.dispatch.plugins` alone, are installed under
+    `private/` (`private_dir`, by default the workspace's, beside `work/`)
+    and handed to the runner as paths (`pluginload.LOAD_ENV`)."""
     selection = selected(task)
-    if not selection:
+    managed_entries = pluginload.entries(task)
+    bundled_entries = pluginload.bundled(task)
+    if not selection and not managed_entries and not bundled_entries:
         return None
-    plugins = check(selection, profile=profile)
+    both = sorted(set(selection) & {b.name for b in bundled_entries})
+    if both:
+        raise PluginUnavailable(
+            f"the step names {', '.join(both)} both in its work contract and as a bundled plugin, "
+            "which swarm-api never signs, so none are loaded and the agent is not started")
+    plugins = check(selection, profile=profile) if selection else ()
+    installs = {p.name: _install_of(p.name, install_paths) for p in plugins}
+    installs.update({b.name: _install_of(b.name, install_paths, bundled=True) for b in bundled_entries})
+    plugins = tuple(sorted(plugins + check_bundled(bundled_entries, profile=profile, installs=installs),
+                           key=lambda p: p.name))
     environ = os.environ if environ is None else environ
-    installs = {p.name: _install_of(p, install_paths) for p in plugins}
     for p in plugins:
         _require_install(p, installs[p.name], image=image)
     chromium = None
-    if profile in BROWSER_PROFILES and any(p.name == GSTACK.name for p in plugins):
+    if profile in BROWSER_PROFILES and any(p.install_id == GSTACK_INSTALL_ID for p in plugins):
         # The browser image's own PLAYWRIGHT_BROWSERS_PATH (its Dockerfile
         # states the path once), as `livegate.find_chromium` reads it.
         browsers = environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
@@ -438,7 +529,7 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
 
     # gstack's state, config, project folder and variables, only for a step
     # that runs gstack: security-audit keeps no state and reads none of them.
-    gstack = next((p for p in plugins if p.name == GSTACK.name), None)
+    gstack = next((p for p in plugins if p.install_id == GSTACK_INSTALL_ID), None)
     env: dict[str, str] = {}
     if gstack is not None:
         home = Path(work) / HOME_DIR_NAME
@@ -454,7 +545,17 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
         if chromium is not None:
             env["GSTACK_CHROMIUM_PATH"] = chromium
             env["GSTACK_CHROMIUM_NO_SANDBOX"] = "1"
-    return Started(plugins=plugins, env=env, guidance=guidance(plugins))
+    managed: tuple[pluginload.Loaded, ...] = ()
+    if managed_entries:
+        loaded = pluginload.load(
+            task, private_dir=Path(private_dir) if private_dir is not None else Path(work).parent / "private",
+            store=store, environ=environ, released=released, provider_key=provider_key,
+            secret_env_names=secret_env_names, hard_stop_paths=hard_stop_paths)
+        if loaded is not None:
+            managed = loaded.plugins
+            env.update(loaded.env)
+    return Started(plugins=plugins, env=env, guidance=guidance(plugins) if plugins else "", managed=managed,
+                   bundled=bundled_entries)
 
 
 # --- after the agent ----------------------------------------------------------
@@ -488,11 +589,19 @@ def _skill_calls(stream: Path) -> list[str]:
 
 def record(started: Started | None, stream: Path | None) -> dict[str, Any] | None:
     """The attempt summary's `plugins`: per plugin its version, mode, skills
-    and how many times each ran. None for a step with none. Never raises."""
+    and how many times each ran, and per managed plugin, under its install
+    id, `pluginload.record` (version, digest, hook runs counted by the
+    launcher, MCP servers started, skills called). None for a step with
+    none. Never raises."""
     if started is None:
         return None
     calls = _skill_calls(Path(stream)) if stream is not None else []
     out: dict[str, Any] = {}
+    for loaded in started.managed:
+        try:
+            out[loaded.entry.install_id] = pluginload.record(loaded, calls)
+        except Exception as exc:  # noqa: BLE001 -- a record is never worth a failed step
+            out[loaded.entry.install_id] = {"managed": True, "record_error": type(exc).__name__}
     for p in started.plugins:
         runs = {s: 0 for s in p.skills}
         for call in calls:
@@ -501,6 +610,9 @@ def record(started: Started | None, stream: Path | None) -> dict[str, Any] | Non
                 runs[name] += 1
         out[p.name] = {"version": p.version, "mode": p.mode, "skills": list(p.skills),
                        "skill_runs": runs}
+        if p.version_id is not None:
+            out[p.name].update({"install_id": p.install_id, "version_id": p.version_id,
+                                "source_sha256": p.source_sha256})
     return out
 
 
@@ -509,6 +621,7 @@ __all__ = [
     "CATALOGUE",
     "CONFIG",
     "GSTACK",
+    "GSTACK_INSTALL_ID",
     "HOME_DIR_NAME",
     "Plugin",
     "NOTES",
@@ -518,12 +631,14 @@ __all__ = [
     "SUPPORTED_MODES",
     "Started",
     "check",
+    "check_bundled",
     "clear_links",
     "exclude_project_state",
     "find_chromium",
     "guidance",
     "link_skills",
     "record",
+    "reserved_id",
     "selected",
     "start",
 ]

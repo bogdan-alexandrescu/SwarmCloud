@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -114,6 +116,7 @@ def profile_extra(profile: str) -> dict:
     env.pop("SWARM_ENV_FILE", None)
     env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
     env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    env["GITHUB_REPOSITORY"] = FIXTURE_SLUG
     script = (
         f'source "{ROOT}/scripts/lib/common.sh"; '
         f'source "{ROOT}/scripts/lib/testlib.sh"; '
@@ -139,10 +142,12 @@ def profile_extra(profile: str) -> dict:
 # an empty workspace pytest exits 5, "no tests collected", so the row clones
 # this repository and runs pytest in a directory that holds one passing test.
 
-#: The public repository the smoke clones for the fixture: this one. Public,
-#: so the clone needs no tenant credential (`Worker._git_token` returns None
-#: and the clone runs anonymously).
-FIXTURE_REPOSITORY = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+#: The public repository the smoke clones for the fixture: this one, read from
+#: GITHUB_REPOSITORY (or the checkout's origin), never named in testlib.sh.
+#: Public, so the clone needs no tenant credential (`Worker._git_token`
+#: returns None and the clone runs anonymously).
+FIXTURE_SLUG = "example-org/example-repo"
+FIXTURE_REPOSITORY = f"https://github.com/{FIXTURE_SLUG}.git"
 
 
 def _fixture_dir() -> Path:
@@ -193,6 +198,10 @@ def test_the_fixture_has_a_test_that_passes():
 def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
     extra = profile_extra("generic")
     assert extra.get("repository_url") == FIXTURE_REPOSITORY, extra
+    # An anonymous HTTPS clone from GitHub, no userinfo: no tenant credential.
+    assert re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", FIXTURE_REPOSITORY), (
+        FIXTURE_REPOSITORY
+    )
     assert extra.get("repository_ref") == "main", extra
     from swarm_api.validation import check_repository_url
 
@@ -208,6 +217,7 @@ def _profile_extra_run(profile: str, **overrides: str) -> subprocess.CompletedPr
     env.pop("SWARM_ENV_FILE", None)
     env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
     env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    env["GITHUB_REPOSITORY"] = FIXTURE_SLUG
     env.update(overrides)
     script = (
         f'source "{ROOT}/scripts/lib/common.sh"; '
@@ -251,6 +261,41 @@ def test_the_default_generic_fixture_is_echoed_as_the_default():
     assert "from SWARM_SMOKE_FIXTURE" not in result.stderr, result.stderr
     # Every other profile clones nothing, so says nothing.
     assert _profile_extra_run("mock").stderr == "", "a profile with no fixture echoed one"
+
+
+def _generic_from_a_checkout(tmp_path: Path, origin: str | None) -> subprocess.CompletedProcess:
+    """profile_extra generic from a copy of scripts/ in a checkout whose origin is
+    ORIGIN (none when None), with no GITHUB_REPOSITORY and no override."""
+    root = tmp_path / "checkout"
+    shutil.copytree(ROOT / "scripts", root / "scripts")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if origin is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin], check=True)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWARM_ENV_FILE", "SWARM_SMOKE_FIXTURE_REPOSITORY", "SWARM_SMOKE_FIXTURE_REF",
+                        "GITHUB_REPOSITORY")}
+    env["NO_COLOR"] = "1"
+    script = (f'source "{root}/scripts/lib/common.sh"; source "{root}/scripts/lib/testlib.sh"; '
+              'profile_extra generic')
+    return subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True, text=True,
+                          timeout=60, check=False)
+
+
+def test_the_default_fixture_is_this_checkouts_origin_without_its_userinfo(tmp_path):
+    # Outside CI the repository is read from the checkout's origin, kept to its
+    # owner/repo: whatever userinfo the origin URL carries never reaches a task.
+    userinfo = f"x-access-token:{secrets.token_hex(8)}"
+    result = _generic_from_a_checkout(tmp_path, f"https://{userinfo}@github.com/{FIXTURE_SLUG}.git")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"repository_url": FIXTURE_REPOSITORY, "repository_ref": "main"}
+    assert userinfo not in result.stdout + result.stderr
+
+
+def test_no_repository_to_read_stops_and_names_the_setting(tmp_path):
+    result = _generic_from_a_checkout(tmp_path, None)
+    assert result.returncode != 0, result.stdout
+    assert "set SWARM_SMOKE_FIXTURE_REPOSITORY" in result.stderr, result.stderr
+    assert result.stdout == "", result.stdout
 
 
 def test_the_smoke_asserts_the_generic_command_exited_zero():

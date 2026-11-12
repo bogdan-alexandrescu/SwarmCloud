@@ -606,14 +606,15 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // heaviest slice, 485 s in CI, and ran into the 900 s timeout in six runs of
   // shard 1/8 and 1/4 with their findings complete. The rail's order is kept:
   // holders to Account health here, Provider quota onwards in `quota`.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health'], floor: 80 },
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/llm-providers', 'capacity/account-health'], floor: 80 },
   // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   { name: 'quota', routes: ['capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 80 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
-  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow it, as in the rail.
+  // Plugins (MANAGED PLUGINS; part of #2688) follows it, as in the rail.
+  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow Plugins, as in the rail.
   // THE FALLBACK TOKEN CARD'S `?` (QAFIX4-ADMIN, visual QA run 4 admin-009).
   // Pool limits' GitHub fallback token card draws HelpCard's 14px disc after
   // its <h2> in the card head, where a ghost Button with a bordered box used
@@ -635,15 +636,15 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // card is on Pool limits and the People rows on People, so each disc's
   // centring is kept by the slice that renders it.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets'], floor: 70,
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/plugins'], floor: 70,
     centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
     persona: 'platform-admin',
   },
-  // Voice it's three panes ride Admin › Setup's slice: they render their body
+  // Voice it's panes ride Admin › Setup's slice: they render their body
   // only for the person Voice it is open to, a platform admin until swarm-api's
   // session routes say otherwise (voice/Section.tsx `voiceItOpen`).
   {
-    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces', 'voice/talk', 'voice/projects', 'voice/preferences'], floor: 50,
+    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces', 'voice/talk', 'voice/projects', 'voice/preferences', 'voice/settings', 'voice/telemetry'], floor: 50,
     centred: ['span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred'],
     persona: 'platform-admin',
   },

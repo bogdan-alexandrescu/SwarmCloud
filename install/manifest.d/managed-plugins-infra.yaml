@@ -6,6 +6,9 @@
 # stage 14's verify.plugins and swarm doctor's plugins.infrastructure check that
 # the bucket exists, the job is deployed and a tenant account may read platform/.
 version: 1
+env:
+  SWARM_PLUGINS_BUCKET:
+    setter: terraform/infra/locals.tf:1382
 entries:
 - id: bucket.plugins
   kind: bucket
@@ -189,6 +192,26 @@ entries:
     terraform:
     - bootstrap/google_service_account.plugin_intake
     - infra/data.google_service_account.plugin_intake
+- id: iam-binding.plugin-intake-deployer-admin
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts get-iam-policy swarm-plugin-intake@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/plugin_intake.tf google_service_account_iam_member.deployer_admin_plugin_intake
+  verify: the release deployer holds serviceAccountAdmin on the intake account alone
+  explain: setting the deployer's actAs grant on the intake account needs that account's IAM policy
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-plugin-intake
+  evidence:
+  - terraform/bootstrap/plugin_intake.tf
+  notes: null
+  step: bootstrap.pass-1
+  refs:
+    terraform:
+    - bootstrap/google_service_account_iam_member.deployer_admin_plugin_intake
 - id: iam-binding.plugin-intake-deployer-acts-as
   kind: iam-binding
   scope: core
@@ -352,3 +375,48 @@ entries:
   refs:
     image:
     - swarm-plugin-intake
+- id: pubsub.plugin-intake-reports-topic
+  kind: pubsub-topic
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud pubsub topics describe ${name_prefix}-plugin-intake-reports --project=$P
+  apply: terraform/infra/plugins.tf google_pubsub_topic.plugin_intake_reports, its publisher grant to the Cloud Storage service agent and the bucket's staging/ finalize notification
+  verify: the plugins bucket announces an object finalized under staging/ on this topic
+  explain: an intake job's report is announced to swarm-api as soon as it is written, so an intake finishes without waiting for a read (section 2.2)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - bucket.plugins
+  - api.pubsub
+  evidence:
+  - terraform/infra/plugins.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_pubsub_topic.plugin_intake_reports
+    - infra/google_pubsub_topic_iam_member.plugin_intake_reports_gcs_publishes
+    - infra/google_storage_notification.plugin_intake_reports
+- id: pubsub.plugin-intake-reports-subscription
+  kind: pubsub-topic
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud pubsub subscriptions describe ${name_prefix}-plugin-intake-reports-api --project=$P
+  apply: terraform/infra/plugins.tf google_pubsub_subscription.plugin_intake_reports
+  verify: a report written under staging/ is pushed to swarm-api's /v1/internal/plugin-intake/report as the rollup sweeper
+  explain: push delivery of an intake report to swarm-api; nothing waits on it, a lost push costs only latency
+  guards: null
+  secret_entry: null
+  depends_on:
+  - pubsub.plugin-intake-reports-topic
+  - cloud-run-service.swarm-api
+  - sa.swarm-rollup-sweeper
+  evidence:
+  - terraform/infra/plugins.tf
+  notes: null
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_pubsub_subscription.plugin_intake_reports

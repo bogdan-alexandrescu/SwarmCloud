@@ -321,7 +321,11 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert create["transport"] == {"type": "webrtc", "sdp": body["offer"]}
         assert create["session"]["model"] == "gpt-live-1"
         # The caller picks nothing about the session: the instructions are swarm-voice's own.
-        assert create["session"]["instructions"] == live.INSTRUCTIONS
+        # The turn-taking setting goes with them (live.TURN_INSTRUCTIONS): the Live API's
+        # create offers no end-of-turn field, so nothing undocumented is sent.
+        assert create["session"]["instructions"] == live.INSTRUCTIONS + live.TURN_INSTRUCTIONS
+        assert set(create["session"]) <= {"model", "audio", "client", "delegation", "input",
+                                          "instructions", "store", "triggers"}
         # Attached before the answer went back, and held; the lease is held too.
         assert h.openai.attaches == [live_id]
         held = h.sessions.get(body["voice_session_id"])
@@ -329,7 +333,8 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert h.broker.holder["voice_session_id"] == body["voice_session_id"]
         assert h.broker.releases == []
         health = await h.client.get("/healthz")
-        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0}
+        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0,
+                                 "front_sessions": 0, "front_delegations": 0}
 
     run(scenario)
 
@@ -354,7 +359,8 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         busy = await h.post("/internal/sessions", _start_body(voice_id="vs_second0002"))
         assert busy.status_code == 409
         assert busy.json() == {"code": "voice_pool_busy", "message":
-                               "Voice it's OpenAI API key is in use by another session; try again when it ends."}
+                               "Voice it's OpenAI API key is in use by another session; try again when it ends.",
+                               "reason": "no_voice_account_available", "capability": "live"}
         assert len(h.openai.creates) == 1 and h.sessions.get("vs_second0002") is None
         # Once the first ends, its account is free again.
         assert (await h.post(f"/internal/sessions/{first['voice_session_id']}/end")).status_code == 200

@@ -1,5 +1,5 @@
 """JOIN-DOCS-ACCEPT: the join-request acceptance probe
-(docs/design/join-requests.md §6 row 8 and §8; part of #2325).
+(docs/design/join-requests.md §6 row 8 and §8).
 
 scripts/acceptance/groups/join.sh measures, against dev, the flow the unit
 tests in tests/unit/control_plane prove offline: an admin turns a workspace's
@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -67,10 +68,13 @@ SETTINGS = (
 )
 CHECKS = ("link-on", "ask", "approve", "selects", "no-group-write", "removal", "link-off")
 TENANT = "join-accept"
-ADMIN = "qa-admin@p.iam.gserviceaccount.com"
+ADMIN = "qa-admin@example-project.iam.gserviceaccount.com"
 PERSON = "join-tester@example.com"
 PERSON_SECRET = "swarm-acceptance-join-person"
 API_URL = "https://swarm-api.example.a.run.app"
+#: The deployment's private sandbox: configuration with no default in
+#: scripts/acceptance/config.sh, so the probe gets the placeholder repository's.
+SANDBOX_URL = f"https://github.com/{_PLACEHOLDERS.GITHUB_REPOSITORY}.git"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("jq") is None or shutil.which("base64") is None,
@@ -213,6 +217,7 @@ def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
            "FAKE_DIR": str(fake), "FAKE_API": API_URL, "FAKE_SWITCH": switch,
            "FAKE_BROKEN": broken, "FAKE_TENANT": TENANT, "FAKE_PERSON": PERSON,
            "FAKE_ADMIN": ADMIN, "SWARM_ACCEPTANCE_JOIN_SETTLE": "0",
+           "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_URL,
            "FAKE_CREDENTIAL_B64": base64.b64encode(credential.encode()).decode(),
            SETTINGS[0]: TENANT, SETTINGS[1]: ADMIN, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET,
            **placeholder_deployment.child_env("swarm-dev-test"), **tokens, **extra}
@@ -357,7 +362,7 @@ def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_accoun
     peer_sa = placeholder_deployment.PEER["service_account"]
     for name, value in ((SETTINGS[0], "smoke"), (SETTINGS[0], "u-someone"), (SETTINGS[0], "Eng"),
                         (SETTINGS[1], peer_sa),
-                        (SETTINGS[2], "swarm-qa@p.iam.gserviceaccount.com"),
+                        (SETTINGS[2], "swarm-qa@example-project.iam.gserviceaccount.com"),
                         (SETTINGS[3], "a/b"), (SETTINGS[3], peer_secret)):
         proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value})
         assert "REFUSED" in proc.stdout, (name, value)
@@ -434,6 +439,7 @@ def test_the_design_records_what_each_lane_built():
     for lane in ("JOIN-STORE", "JOIN-RESOLVE", "JOIN-API", "JOIN-BELL", "JOIN-UI-PERSON",
                  "JOIN-WIRE", "JOIN-UI-ADMIN", "JOIN-INDEX", "JOIN-BELL-WIRE", "JOIN-DOCS-ACCEPT"):
         assert f"**{lane}" in built, lane
-    for pr in ("#2345", "#2371", "#2372", "#2381", "#2390"):
-        assert pr in built, pr
+    # Each lane is named in words: an old issue or pull request number means
+    # nothing once the repository moves (docs/design/generic-repository.md, Q5).
+    assert not re.search(r"#\d", built), re.findall(r".{0,40}#\d+", built)
     assert "`scripts/acceptance/groups/join.sh`" in built

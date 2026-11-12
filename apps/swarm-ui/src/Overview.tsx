@@ -2,6 +2,7 @@ import './styles/overview.css'
 import './styles/names.css'
 import {
   ENDED_BADLY,
+  Explained,
   LifecycleBand,
   RecentFailures,
   WaitingWhy,
@@ -1303,8 +1304,17 @@ function HandoffTakeControl({ taskId }: { taskId: string }) {
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
  * card's last line, clamped to four at every width (overview-automate-010),
  * and its whole text is the title.
+ *
+ * WHAT A PROBLEM MEANS IS THE TITLE'S TOOLTIP (the owner's pick, 2026-11-05:
+ * no explanatory prose on the surface). A problem's `why` -- the sentence its
+ * detail used to end on -- is the title's `title` and its accessible
+ * description, through a hidden node, and is no longer drawn on the card. A
+ * card that is a box makes the title its own stop (`Explained`); a card that
+ * is one link cannot hold a second focus stop inside it, so the link carries
+ * the description and a keyboard hears it on the card's one stop.
  */
 export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name?: (id: string) => string | null }) {
+  const whyId = useId()
   // A PARK REASON IS A WORD (visual QA VQ-003, 2026-10-26): the parked
   // checks' detail read "CI_PENDING ×2 — Waiting for the pull request
   // checks…". `checks.ts` keeps the reason token, because the node-run check
@@ -1322,6 +1332,14 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
   // ` — ` is a no-break space, so the dash ends the clause it follows and a
   // clamped line cannot open on a lone "—…".
   const detail = keepDash(p.detail)
+  // A problem whose detail was only its explanation has no detail line now.
+  const said = p.detail === '' ? `${p.headline}.` : `${p.headline}. ${p.detail}`
+  const detailLine =
+    p.detail === '' ? null : (
+      <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
+        {namedIds(detail, name)}
+      </small>
+    )
   // EACH WORKFLOW THE CARD NAMES IS A LINK OF ITS OWN (visual QA N11,
   // 2026-10-21). A link cannot sit inside a link, so a card that names one
   // is a box rather than an `<a>`: the ids are links, and the card's own link
@@ -1344,15 +1362,21 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
       <div className={`ov-att is-${p.severity} is-split`}>
         {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
         <span className="ov-att-t">
-          <b title={p.headline}>{title}</b>
+          {p.why === undefined ? (
+            <b title={p.headline}>{title}</b>
+          ) : (
+            <Explained tip={p.why} className="ov-att-why">
+              {/* Above the first workflow's cover, as the ids' links are, so a
+                  pointer over the title reaches its tooltip. */}
+              <b style={OVER_COVER}>{title}</b>
+            </Explained>
+          )}
           {ids !== null && (
             <small className="ov-att-ids" title={ids}>
               {linkedIds(keepDash(ids), workflows, name)}
             </small>
           )}
-          <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-            {namedIds(detail, name)}
-          </small>
+          {detailLine}
         </span>
         <span className="ov-att-acts">
           {/* THE CARD OPENS THE FAILED WORKFLOW (#1680 box 6343766999, the owner's
@@ -1371,7 +1395,7 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
               <span className="ov-att-wf-t">{name(w.id) ?? `Workflow ${w.id}`}</span>
             </a>
           ))}
-          <a className={buttonClass({ kind: 'ghost', size: 'sm' }, false, 'ov-att-go')} href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
+          <a className={buttonClass({ kind: 'ghost', size: 'sm' }, false, 'ov-att-go')} href={toPath(p.href)} aria-label={`${go}: ${said}`}>
             <span className="ov-att-go-w">{go}</span>
           </a>
         </span>
@@ -1379,18 +1403,26 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
     )
   }
   return (
-    <a className={`ov-att is-${p.severity}`} href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
+    <a
+      className={`ov-att is-${p.severity}`}
+      href={toPath(p.href)}
+      aria-label={said}
+      aria-describedby={p.why === undefined ? undefined : whyId}
+    >
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
       <span className="ov-att-t">
-        <b title={p.headline}>{title}</b>
+        <b title={p.why ?? p.headline}>{title}</b>
+        {p.why !== undefined && (
+          <span id={whyId} data-help-description="" hidden>
+            {p.why}
+          </span>
+        )}
         {ids !== null && (
           <small className="ov-att-ids" title={ids}>
             {namedIds(keepDash(ids), name)}
           </small>
         )}
-        <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-          {namedIds(detail, name)}
-        </small>
+        {detailLine}
       </span>
       {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
           phone draws the card as one line, mark and title, the whole card
@@ -1405,6 +1437,9 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
     </a>
   )
 }
+
+/** A box card's title, lifted over `.is-cover::after` (overview.css). */
+const OVER_COVER: CSSProperties = { position: 'relative', zIndex: 1 }
 
 /** The ids line with every workflow id it names drawn as a link to that workflow. */
 function linkedIds(text: string, workflows: readonly { id: string; href: string }[], name: (id: string) => string | null = NO_NAMES): ReactNode[] {
@@ -1527,7 +1562,10 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
     <>
       <h3 className="ov-sub2">Can start now, by runner profile</h3>
       <CapacityStacks state={capacity} />
-      <h3 className="ov-sub2">Subscription accounts</h3>
+      {/* PLANS, NOT "Subscription accounts" (LP-U1): the line's link reads
+          LLM Providers, the tab it opens, and the heading names the page under
+          it, Plans, so the Overview says no more words than before the move. */}
+      <h3 className="ov-sub2">Plans</h3>
       <AccountLine state={accounts} />
     </>
   )
@@ -1902,8 +1940,10 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
-      <ButtonLink size="sm" className="ov-link" href="/capacity/accounts">
-        Accounts
+      {/* Accounts became Capacity › LLM Providers (llm-providers.md §6.1): the
+          word names the tab it opens, and the path is Plans' own. */}
+      <ButtonLink size="sm" className="ov-link" href="/capacity/llm-providers/plans">
+        LLM Providers
       </ButtonLink>
     </div>
   )

@@ -1,7 +1,7 @@
 """Every job that reads the merge App's key or the acceptance sandbox's token
 declares the main-only environment `repo-secrets`.
 
-REPO-SECRETS-ENV (part of #2029; BGD's decision, 2026-10-23). A
+REPO-SECRETS-ENV (part of #2029; the owner's decision, 2026-10-23). A
 repository-level Actions secret can be read by a workflow on ANY pushed branch,
 before any review or merge hold: push a branch whose workflow echoes
 `secrets.MERGE_APP_PRIVATE_KEY` and it runs. `MERGE_APP_PRIVATE_KEY` mints a

@@ -81,7 +81,7 @@ job that names `dev-iam`, not by `terraform apply` itself.
 
 WHAT THIS CANNOT PROVE: that the `prod` environment in repository settings has
 a required reviewer. Measured 2026-09-24 with `gh api .../environments`:
-reviewer bogdan-alexandrescu, deployment branch policy `main` only, and
+reviewer example-org, deployment branch policy `main` only, and
 `can_admins_bypass: true`. GitHub creates an environment a workflow names if
 it does not exist, with no protection at all, so the gate is only as real as
 that setting. Nor that a real prod release waits: the first prod dispatch
@@ -145,7 +145,10 @@ PROD_FACING = {
     # gcloud directly.
     "promotes": lambda code: bool(re.search(r"docker\s+tags\s+(add|delete)\b", code))
     or any("--scan-only" not in line for line in code.splitlines() if _PUSH_IMAGES.search(line)),
-    "applies": lambda code: bool(re.search(r"\bterraform\b[^\n]*\s(apply|destroy|import)\b", code)),
+    # scripts/lib/release-apply.sh applies the saved plan, and on a failed
+    # apply a targeted one of the Cloud Run services: an apply either way.
+    "applies": lambda code: bool(re.search(r"\bterraform\b[^\n]*\s(apply|destroy|import)\b", code))
+    or bool(re.search(r"(^|[\s/])release-apply\.sh(\s|$)", code)),
     "deploys": lambda code: bool(re.search(r"(^|[\s/])(deploy|verify-remote|warm-jobs)\.sh(\s|$)", code)),
 }
 

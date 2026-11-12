@@ -83,7 +83,7 @@ def test_no_dockerfile_fetches_from_ghcr_docker_hub_or_github(dockerfile: Path) 
 def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Path) -> None:
     # `# syntax=docker/dockerfile:1.7` is a Docker Hub pull BuildKit makes
     # before reading a single instruction. The line names no project
-    # (DAYONE-DESAGA-1): the build passes the same reference through the
+    # (the Day One project-defaults lane): the build passes the same reference through the
     # project's Docker Hub mirror as BUILDKIT_SYNTAX
     # (test_build_mirror.py::test_the_build_passes_the_mirror_of_the_project_it_builds_for).
     syntax = _syntax(dockerfile.read_text())
@@ -99,7 +99,7 @@ def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Pat
 def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
     text = dockerfile.read_text()
     args = _global_args(text)
-    # The defaults are empty (DAYONE-DESAGA-1,
+    # The defaults are empty (the Day One project-defaults lane,
     # test_build_mirror.py::test_no_dockerfile_names_a_project); the build
     # passes the mirror of the project it builds for, which for the live
     # project is MIRRORS.
@@ -166,6 +166,21 @@ def _dockerfile_tool_reads() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     for dockerfile in MIRROR_READERS:
         found |= _tool_reads(dockerfile)
+    return found | _bundled_plugin_reads()
+
+
+#: The bundled plugins' pins (managed plugins lane 14, docs/design/managed-plugins.md
+#: §1.4): the base and browser stages hand them to the bundler's recipes, which
+#: read each source archive and toolchain from the same /tmp/tool-mirror at the
+#: sha256 written here, so the manifest lists them as the base reads them.
+BUNDLED_PLUGINS = REPO / "images" / "agent-runtime-base" / "bundled-plugins.json"
+
+
+def _bundled_plugin_reads() -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for pins in json.loads(BUNDLED_PLUGINS.read_text())["plugins"].values():
+        for pinned in (pins["source"], *pins.get("toolchain", {}).values()):
+            found.add((pinned["sha256"], pinned["object"]))
     return found
 
 

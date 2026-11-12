@@ -197,5 +197,12 @@ describe('the prose budget', () => {
  * same line now counts `— · 8/8 reads? · poll 20s · refresh`: 158, every
  * added token a separator or a word that was glued to its neighbour. Two
  * tokens of room, as before.
+ *
+ * LOWERED TO 139 WITH THE CHECKS' `why` (the owner's pick, 2026-11-05): the
+ * never-polled account's card ended its detail on "— no reading has ever
+ * arrived, so their utilisation is unknown rather than zero and they cannot be
+ * counted as headroom." -- 21 tokens with the dash, now the card title's
+ * tooltip. This fixture measured 144 before and 123 after; the ceiling goes
+ * down by the same 21.
  */
-const OVERVIEW_CEILING = 160
+const OVERVIEW_CEILING = 139

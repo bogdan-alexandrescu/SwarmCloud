@@ -1971,7 +1971,7 @@ export const HELP_PLACES = {
   'capacity/profiles': 'By runner profile',
   'capacity/catalogue': 'Runtimes',
   'capacity/holders': 'Holders',
-  'capacity/accounts': 'Subscription accounts',
+  'capacity/llm-providers/plans': 'Plans',
   'capacity/account-health': 'Account health',
   'capacity/jev-usage': 'Jev usage',
   'capacity/quota': 'Provider quota',
@@ -1982,6 +1982,7 @@ export const HELP_PLACES = {
   'admin/runner-sizes': 'Runner sizes',
   'admin/platform-secrets': 'Platform secrets',
   'admin/workspaces': 'Workspaces',
+  'admin/plugins': 'Plugins',
   'config/github': 'GitHub access',
   'config/repositories': 'Repositories',
   'config/secrets': 'Secrets',
@@ -2049,7 +2050,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'binding-window': {
     subject: 'Utilisation of an account',
-    act: { say: 'Watch the window that refuses first; refilling the other one frees nothing.', at: 'capacity/accounts' },
+    act: { say: 'Watch the window that refuses first; refilling the other one frees nothing.', at: 'capacity/llm-providers/plans' },
   },
   'all-clear-basis': {
     subject: 'What an all-clear covers',
@@ -2189,7 +2190,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'park-on-missing-credential': {
     subject: 'A missing credential',
-    act: { say: 'Register an account for that provider, or the agent waits for ever.', at: 'capacity/accounts' },
+    act: { say: 'Register an account for that provider, or the agent waits for ever.', at: 'capacity/llm-providers/plans' },
   },
   'pool-freshness': {
     subject: 'A pool’s timestamp',
@@ -2241,7 +2242,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'credential-names-not-values': {
     subject: 'Credential names',
-    act: { say: 'To check what your tenant holds, look at its accounts.', at: 'capacity/accounts' },
+    act: { say: 'To check what your tenant holds, look at its accounts.', at: 'capacity/llm-providers/plans' },
   },
   'what-sets-it-apart-is-arithmetic': {
     subject: 'Runtime differences and disabled',
@@ -2297,7 +2298,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'sign-in-not-paste': {
     subject: 'Adding an account',
-    act: { say: 'Start the sign-in from the account pool.', at: 'capacity/accounts' },
+    act: { say: 'Start the sign-in from the account pool.', at: 'capacity/llm-providers/plans' },
   },
   'credential-split': {
     subject: 'The two account secrets',
@@ -2305,19 +2306,19 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'credential-refresh-sweep': {
     subject: 'Credential refresh',
-    act: { say: 'Leave refreshing to the sweep; press refresh on one account only to check it.', at: 'capacity/accounts' },
+    act: { say: 'Leave refreshing to the sweep; press refresh on one account only to check it.', at: 'capacity/llm-providers/plans' },
   },
   'refresh-now-probe': {
     subject: 'The refresh button',
-    act: { say: 'Press it to find out whether one account’s credential can be exchanged now.', at: 'capacity/accounts' },
+    act: { say: 'Press it to find out whether one account’s credential can be exchanged now.', at: 'capacity/llm-providers/plans' },
   },
   'reauth-required': {
     subject: 'Re-authentication required',
-    act: { say: 'Sign in again under the same label; nothing else clears it.', at: 'capacity/accounts' },
+    act: { say: 'Sign in again under the same label; nothing else clears it.', at: 'capacity/llm-providers/plans' },
   },
   'reauth-does-not-unpause': {
     subject: 'Signing in keeps state',
-    act: { say: 'After signing in, set the account’s state back yourself if it was stopped.', at: 'capacity/accounts' },
+    act: { say: 'After signing in, set the account’s state back yourself if it was stopped.', at: 'capacity/llm-providers/plans' },
   },
   'second-browser-application': {
     subject: 'A second organisation',
@@ -2333,15 +2334,15 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'signin-verify-by-reload': {
     subject: 'Checking a sign-in landed',
-    act: { say: 'Reload the account pool and look for the label before signing in again.', at: 'capacity/accounts' },
+    act: { say: 'Reload the account pool and look for the label before signing in again.', at: 'capacity/llm-providers/plans' },
   },
   'signin-201-no-name': {
     subject: 'An unnamed success',
-    act: { say: 'Reload the account pool to find the account by its label.', at: 'capacity/accounts' },
+    act: { say: 'Reload the account pool to find the account by its label.', at: 'capacity/llm-providers/plans' },
   },
   'signin-is-over': {
     subject: 'An expired sign-in',
-    act: { say: 'Reload the account pool; if the label is not there, start a new sign-in.', at: 'capacity/accounts' },
+    act: { say: 'Reload the account pool; if the label is not there, start a new sign-in.', at: 'capacity/llm-providers/plans' },
   },
   'signin-still-open': {
     subject: 'A refused paste',
@@ -2357,11 +2358,11 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'signin-holds-label-and-lending': {
     subject: 'Label and lending at sign-in',
-    act: { say: 'To change either, start a new sign-in; lending can also be edited on the account afterwards.', at: 'capacity/accounts' },
+    act: { say: 'To change either, start a new sign-in; lending can also be edited on the account afterwards.', at: 'capacity/llm-providers/plans' },
   },
   'signin-keeps-readings': {
     subject: 'Replacing a credential',
-    act: { say: 'Sign in under the existing label to replace only the credential.', at: 'capacity/accounts' },
+    act: { say: 'Sign in under the existing label to replace only the credential.', at: 'capacity/llm-providers/plans' },
   },
   'account-label-rules': {
     subject: 'Account labels',
@@ -2369,7 +2370,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'account-owned-by-one-tenant': {
     subject: 'Account ownership',
-    act: { say: 'Check the tenant the session names before starting a sign-in.', at: 'capacity/accounts' },
+    act: { say: 'Check the tenant the session names before starting a sign-in.', at: 'capacity/llm-providers/plans' },
   },
   'account-health': {
     subject: 'Account health',
@@ -2381,15 +2382,15 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   lending: {
     subject: 'Lending an account',
-    act: { say: 'Name the tenants to lend to on the account, and edit the list later as needed.', at: 'capacity/accounts' },
+    act: { say: 'Name the tenants to lend to on the account, and edit the list later as needed.', at: 'capacity/llm-providers/plans' },
   },
   'lending-narrows-isolation': {
     subject: 'Lending and isolation',
-    act: { say: 'Lend only to tenants you trust with the account’s token, and take the lending back when it is no longer needed.', at: 'capacity/accounts' },
+    act: { say: 'Lend only to tenants you trust with the account’s token, and take the lending back when it is no longer needed.', at: 'capacity/llm-providers/plans' },
   },
   'served-model-classes': {
     subject: 'Model classes an account serves',
-    act: { say: 'Tick the classes on the account; all four or none means every class.', at: 'capacity/accounts' },
+    act: { say: 'Tick the classes on the account; all four or none means every class.', at: 'capacity/llm-providers/plans' },
   },
   'lent-account': {
     subject: 'An account lent to you',
@@ -2401,47 +2402,47 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'account-states': {
     subject: 'Account states',
-    act: { say: 'Pause to stop new work, drain to move it off, and sign in again to clear the verdict.', at: 'capacity/accounts' },
+    act: { say: 'Pause to stop new work, drain to move it off, and sign in again to clear the verdict.', at: 'capacity/llm-providers/plans' },
   },
   'state-change-reason': {
     subject: 'State-change reasons',
-    act: { say: 'Give a reason with every state change; the next reader needs it.', at: 'capacity/accounts' },
+    act: { say: 'Give a reason with every state change; the next reader needs it.', at: 'capacity/llm-providers/plans' },
   },
   'account-removal-is-reversible': {
     subject: 'Removing an account',
-    act: { say: 'To bring a removed account back, sign in again under the same label.', at: 'capacity/accounts' },
+    act: { say: 'To bring a removed account back, sign in again under the same label.', at: 'capacity/llm-providers/plans' },
   },
   'provider-defines-windows': {
     subject: 'Provider windows',
-    act: { say: 'Open the account row to read a window that has no column of its own.', at: 'capacity/accounts' },
+    act: { say: 'Open the account row to read a window that has no column of its own.', at: 'capacity/llm-providers/plans' },
   },
   'accounts-table-shape': {
     subject: 'The accounts table',
-    act: { say: 'Read the verdict first; open an account for its controls and everything the row does not show.', at: 'capacity/accounts' },
+    act: { say: 'Read the verdict first; open an account for its controls and everything the row does not show.', at: 'capacity/llm-providers/plans' },
   },
   'no-amber-band': {
     subject: 'No amber band',
-    act: { say: 'Watch for a window that is fully spent; nothing short of that is a verdict.', at: 'capacity/accounts' },
+    act: { say: 'Watch for a window that is fully spent; nothing short of that is a verdict.', at: 'capacity/llm-providers/plans' },
   },
   'never-assigned-pool': {
     subject: 'A never-assigned pool',
-    act: { say: 'If no account in the pool was ever assigned, check that workers can reach it.', at: 'capacity/accounts' },
+    act: { say: 'If no account in the pool was ever assigned, check that workers can reach it.', at: 'capacity/llm-providers/plans' },
   },
   'unreadable-documents': {
     subject: 'Unreadable account documents',
-    act: { say: 'When documents were skipped, read every count over the pool as a lower bound, and fix the bad document.', at: 'capacity/accounts' },
+    act: { say: 'When documents were skipped, read every count over the pool as a lower bound, and fix the bad document.', at: 'capacity/llm-providers/plans' },
   },
   'skipped-for-this-tenant': {
     subject: 'Skipped for your tenant',
-    act: { say: 'Fix your tenant’s access to the account’s secret; the account is healthy.', at: 'capacity/accounts' },
+    act: { say: 'Fix your tenant’s access to the account’s secret; the account is healthy.', at: 'capacity/llm-providers/plans' },
   },
   'subscription-only-no-api-key': {
     subject: 'Subscription sign-ins only',
-    act: { say: 'Add the account by signing in; an API key has nowhere to go.', at: 'capacity/accounts' },
+    act: { say: 'Add the account by signing in; an API key has nowhere to go.', at: 'capacity/llm-providers/plans' },
   },
   'refresh-token-required': {
     subject: 'A refused credential',
-    act: { say: 'Sign in again so the answer carries both halves.', at: 'capacity/accounts' },
+    act: { say: 'Sign in again so the answer carries both halves.', at: 'capacity/llm-providers/plans' },
   },
   'clipboard-secure-context': {
     subject: 'A refused clipboard',
@@ -2547,6 +2548,8 @@ export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'admin/counts': 'platform-counts',
   'admin/platform-secrets': 'platform-secrets',
   'admin/workspaces': 'workspaces-you-admin',
+  // Admin › Plugins says Config › Plugins' topic: one plugin, allowed per workspace.
+  'admin/plugins': 'agent-plugins',
 }
 
 /** The page's own topic, or null when its `?` is the section's alone. */

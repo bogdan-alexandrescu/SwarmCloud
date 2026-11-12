@@ -55,6 +55,16 @@ waiting = {
 CHILDREN_INCOMPLETE. Their parks write the park instant into
 `next_eligible_at`, and nothing happens at that time.
 
+**A held merge wait has no next check** (the owner, 2026-11-10). While the
+wake tick's reading of a CI park (`merge_wait.reading`) is at the park's head,
+taken since it parked and younger than 900 s, the scheduler holds the park
+past `next_eligible_at` (`scheduler.loop.merge_wait_due`): that instant is the
+worker's fallback, held, and often already past. So `next_check_at` is null,
+the summary says when the checks were read and not "next check", it gets no
+"eligible since" ending, and `detail.held_last_check_at` serves the tick's
+last check. The console shows that time behind an (i) on "Next check". Every
+other wait keeps its line.
+
 **Eligible but not resumed.** Sometimes a timed park's `next_eligible_at` has
 passed and the agent is still PARKED. The summary then ends with "eligible
 since HH:MMZ, still parked: ...", and the history ends with an `eligible`
@@ -65,7 +75,7 @@ copy, or "waiting for the scheduler's next pass" when there is none.
 
 | reason | detail |
 |---|---|
-| CI_PENDING | `pull_request {number, url}`, taken from the park's `merge_wait.pull_request`, else from the signed `merge_target.number`. Then `head`, `code`, `pending`, `failed` (when recorded), `wakes`, `attempts_counted` (false when `attempt_refunded`; null when not recorded), `last_checked_at`, `wake_requested_at`, `train_since` (a merge-train wait's start: the first train park of its unbroken run, `merge_wait.train_entered_at`; null for any other wait, or a park recorded before it was kept) |
+| CI_PENDING | `pull_request {number, url}`, taken from the park's `merge_wait.pull_request`, else from the signed `merge_target.number`. Then `head`, `code`, `pending`, `failed` (when recorded), `wakes`, `attempts_counted` (false when `attempt_refunded`; null when not recorded), `last_checked_at`, `held_last_check_at` (the tick's last check while the scheduler holds the wait, above; null otherwise), `wake_requested_at`, `train_since` (a merge-train wait's start: the first train park of its unbroken run, `merge_wait.train_entered_at`; null for any other wait, or a park recorded before it was kept) |
 | READY_CAPACITY | `waiting_for` as the live waiting-for bar serves it, then the binding `pool`, `pool_state`, `active`, `limit`, `units` and `last_pass` (`blocked_by`). `place_in_line` (GET `/v1/tasks/{id}` only): 1 + the READY agents that need the binding pool and come before this one in the scheduler's READY query (priority DESC, then created_at ASC), from ONE count aggregation that ends before the agent's own position; a listing never counts. `place_in_line_basis` names the `pool`, its `scope` (`tenant`: the agent's own tenant only; `shared`: across tenants, and then only the number is served, never which agents or tenants are ahead) and the `order`, and `excludes` what the count does not model: the aging bonus and cross-tenant round-robin of `scheduler/fairness.py` and ties on created_at, so it is the database's line, not the pass's exact order. Null with `place_in_line_unavailable` saying why when nothing was counted: a listing, no live pool reading, no binding pool, a limit below the agent's units, or a failed count (an index missing or still building names the index). A failed count never fails the GET |
 | PROVIDER_QUOTA_EXHAUSTED, PROVIDER_COOLDOWN, PROVIDER_OUTAGE | `provider`, `account` (recorded `account_id`, else the latest attempt's), `provider_state`, `source`, `account_pool_reason`, `wait_seconds`, `until` |
 | SCHEDULED_RETRY | `last_error` (masked), `attempt` (used), `next_attempt`, `max_attempts`, `next_try_at`, `cause` |

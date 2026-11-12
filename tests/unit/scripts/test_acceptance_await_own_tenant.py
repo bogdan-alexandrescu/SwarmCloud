@@ -35,7 +35,7 @@ WORKFLOW = ROOT / "scripts" / "acceptance" / "groups" / "workflow.sh"
 DOCKERFILE = ROOT / "images" / "swarm-verify" / "Dockerfile"
 CLOUDBUILD = ROOT / "images" / "swarm-verify" / "cloudbuild.yaml"
 
-VERIFY = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+VERIFY = "swarm-verify@example-project.iam.gserviceaccount.com"
 OWN = tenant_id_for_user(VERIFY)
 
 #: The ACC_CHECK of each workflow run_workflow submits, and whether it runs in
@@ -105,7 +105,8 @@ def test_the_own_tenant_is_derived_with_the_frozen_rule_from_the_verified_email(
     result = _run('_wf_own_tenant; printf "own=%s\\n" "${WF_OWN_TENANT}"; cat "${LOG}"; rm -f "${LOG}"')
     assert result.returncode == 0, result.stderr
     assert f"own={OWN}" in result.stdout
-    assert OWN == "u-sw-c90291"          # dev.tfvars' key: the derivation is the same
+    # The shape of a service tenant's key in an env's tfvars: the derivation is the same.
+    assert re.fullmatch(r"u-sw-[0-9a-f]{6}", OWN), OWN
     # Asked of the API in the suite's own tenant, before anything is switched.
     assert "fetch smoke /tenants/me" in result.stdout
 
@@ -161,7 +162,8 @@ def test_run_workflow_runs_exactly_the_two_await_checks_in_the_own_tenant():
     # The judges of those two run in it too, and no other judge does.
     judged = re.findall(r"^\s*(_wf_in_own_tenant )?(_wf_check_\w+) ", run, re.M)
     assert {name for wrapped, name in judged if wrapped} == {"_wf_check_await", "_wf_check_expire"}
-    assert len(judged) == 7
+    # Eight: the fix-loop check (FL-ACCEPT) is the eighth, in ACC_TENANT.
+    assert len(judged) == 8
     # The id is derived before the first own-tenant submission.
     assert run.index("_wf_own_tenant") < run.index("_wf_in_own_tenant")
     # Never typed in: no line of code names it (the comments may).

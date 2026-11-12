@@ -56,7 +56,9 @@ from . import budget as budget_mod
 from . import (
     contractreview,
     gitidentity,
+    pluginconfig,
     plugins as plugins_mod,
+    pluginstore,
     publishtopr,
     runnersizes,
     workcontract,
@@ -113,7 +115,15 @@ from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
-from .schemas import NAME_MAX_CHARS, NAME_METADATA_KEYS, StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import (
+    NAME_MAX_CHARS,
+    NAME_METADATA_KEYS,
+    StepBudget,
+    StepPluginCreate,
+    TaskCreate,
+    WorkflowCreate,
+    WorkflowStepCreate,
+)
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
@@ -176,6 +186,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_fix_loop,
+    verdict_fix_loop_step,
     resolve_input_layout,
     is_security_review,
     resolve_integrator_step,
@@ -785,6 +796,34 @@ class SubmissionService:
         snap = db.collection(plugins_mod.COLLECTION).document(tenant_id).get()
         return (snap.to_dict() or {}) if snap.exists else {}
 
+    def _merge_plugins(self, spec: TaskCreate, *, tenant: Tenant,
+                       step_id: str | None) -> tuple[TaskCreate, plugins_mod.StepPlugins]:
+        """The step with the workspace's every-step defaults merged into its
+        plugins (docs/design/managed-plugins.md section 7): its `plugins`
+        field left holding the built-ins, and the managed set to sign in its
+        dispatch block. Reads nothing more when the step names no plugin,
+        turns none off and the workspace's signed block has no defaults."""
+        settings_doc = self._workspace_settings(tenant.tenant_id)
+        mac = settings_mac(self._settings)
+        chosen = {n: p.model_dump() for n, p in (spec.plugins or {}).items()}
+        if not chosen and not spec.plugins_off and not plugins_mod.signed_defaults(
+                tenant.tenant_id, settings_doc, mac):
+            return spec, plugins_mod.StepPlugins()
+        db = self._store.db
+        document = spec.metadata.get(workcontract.METADATA_KEY)
+        capabilities = document.get("capabilities") if isinstance(document, Mapping) else None
+        merged = plugins_mod.merge_step_plugins(
+            chosen, spec.plugins_off or (), tenant_id=tenant.tenant_id,
+            runner_profile=validate_runner_profile(spec.runner_profile).name, step_id=step_id,
+            settings_doc=settings_doc, mac=mac,
+            store=pluginstore.PluginStore(db, now=self._now, mac=mac),
+            configs=pluginconfig.PluginConfigs(db, now=self._now, mac=mac),
+            environ=os.environ,
+            caller_contract_plugins=bool(isinstance(capabilities, Mapping)
+                                         and capabilities.get("plugins")))
+        built_ins = {n: StepPluginCreate(**c) for n, c in merged.built_ins.items()}
+        return spec.model_copy(update={"plugins": built_ins or None}), merged
+
     def _build_task(
         self,
         *,
@@ -813,6 +852,14 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # Managed plugins and the workspace's every-step defaults (docs/
+        # design/managed-plugins.md section 7), first: a removed install the
+        # step names is refused (`plugin_removed`), the defaults are merged
+        # with the step's own choices minus its `plugins_off`, each managed
+        # install pinned to its current version. The built-ins stay in the
+        # `plugins` field for the work contract below; the managed set is
+        # signed in the dispatch block.
+        spec, step_plugins = self._merge_plugins(spec, tenant=tenant, step_id=step_id)
         # The step's `plugins` field (the owner's pick on PR #3264): checked
         # against the catalogue, its runner profile and the workspace's signed
         # setting, then carried in its work contract, so the contract below
@@ -976,6 +1023,10 @@ class SubmissionService:
             # Beside the contract's reference, inside the signed block no
             # caller can write, and never inside the contract's own bytes.
             metadata[DISPATCH_METADATA_KEY][contractreview.DISPATCH_FIELD] = contract_review
+        # The managed plugin set and the defaults skipped for this step
+        # (managed-plugins.md section 8): inside the signed block no caller
+        # can write, so the worker trusts only what was signed with the step.
+        step_plugins.record_on(metadata[DISPATCH_METADATA_KEY])
         if resolved_budget is not None:
             metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
                 step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)
@@ -1562,6 +1613,11 @@ class SubmissionService:
                 order = validate_dag(
                     step_specs, max_steps=self._settings.core.max_workflow_steps
                 )
+                # "on_merge_verdict" may have appended a `fix-loop` step (the
+                # owner Q8 (b)): resolved again, so it is checked and signed
+                # exactly as a declared one is.
+                if fix_loop is None:
+                    fix_loop = resolve_fix_loop(spec.steps, strategy=dispatch.strategy)
             if dispatch.strategy == "integrate":
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
@@ -1836,6 +1892,7 @@ class SubmissionService:
                     budget=source.budget,
                     model_class=source.model_class,
                     plugins=source.plugins,
+                    plugins_off=source.plugins_off,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
@@ -2049,17 +2106,22 @@ class SubmissionService:
 
           * a spec that states its own merge step keeps it -- unless
             `metadata.merge` is "off", which contradicts it, or
-            "on_merge_verdict", which derives the merge and its re-review
-            itself; both are refused;
+            "on_merge_verdict", which derives the merge and its fix loop (or
+            re-review) itself; both are refused;
           * "on": when the workflow opens ONE pull request
             (`validation.merge_sources`), one merge step is appended,
             depending on the step that opens it and on the review if there is
             one, before anything is built or signed;
           * "on_merge_verdict": only for an `integrate` workflow whose
-            integrator is gated on a review. A re-review of the integrator's
-            pushed head is appended (`rereview_step_for`, one round,
-            `REREVIEW_ROUNDS`), and the merge step depends on the integrator
-            and the re-review and reads the re-review's verdict: the latest;
+            integrator is gated on a review. A `fix-loop` step is appended
+            (`verdict_fix_loop_step`, `FIX_LOOP_VERDICT_MERGE_ROUNDS` rounds,
+            the owner 2026-11-09, docs/design/fix-loop.md §9 Q8 (b)) when the
+            gate is NOT_YET, and the merge step reads the loop; otherwise --
+            the loop profile unavailable, another gate, a security review --
+            a re-review of the integrator's pushed head (`rereview_step_for`,
+            one round, `REREVIEW_ROUNDS`), and the merge step depends on the
+            integrator and the re-review and reads the re-review's verdict:
+            the latest;
           * an explicit "on" or "on_merge_verdict" for a workflow it cannot
             apply to is refused, because the caller asked for a merge that
             would not happen; a repository's policy or the platform default
@@ -2075,11 +2137,11 @@ class SubmissionService:
             for an admin's setting. An explicit choice, or a stated merge
             step, on such a host is still refused at submission.
 
-        With a `fix-loop` step (`fix_loop`, docs/design/fix-loop.md §4.6,
-        the owner Q8 (a)) the merge reads the loop, whose last re-review is the
-        latest verdict, and "on_merge_verdict" appends ONLY the merge: the
-        loop's `re-review:1` is the re-review it would have appended
-        (`rereview_step_for` is skipped).
+        With a declared `fix-loop` step (`fix_loop`, docs/design/fix-loop.md
+        §4.6) the merge reads the loop, whose last re-review is the latest
+        verdict, and "on_merge_verdict" appends ONLY the merge, the loop kept
+        as declared, `max_rounds` included: the loop's `re-review:1` is the
+        re-review it would have appended (`rereview_step_for` is skipped).
 
         `single-pr` ends in its own merge step and is left as submitted.
         """
@@ -2093,7 +2155,7 @@ class SubmissionService:
                     f"metadata.{MERGE_METADATA_KEY} is {choice!r}, but step "
                     f"{stated[0]!r} is a merge step. "
                     + ("Remove one or the other." if choice == "off" else
-                       "'on_merge_verdict' appends the merge step and its re-review "
+                       "'on_merge_verdict' appends the merge step and its fix loop "
                        "itself: remove the step, or set metadata."
                        f"{MERGE_METADATA_KEY} to 'on' to keep your own."),
                     detail={"merge_steps": stated, MERGE_METADATA_KEY: choice},
@@ -2189,7 +2251,14 @@ class SubmissionService:
         *,
         explicit: bool,
     ) -> tuple[WorkflowCreate, str | None]:
-        """`spec` with a re-review and a merge step that reads its verdict.
+        """`spec` with a fix loop, or a re-review, and a merge step that reads it.
+
+        The loop (`verdict_fix_loop_step`, the owner 2026-11-09, Q8 (b)) when
+        the integrator is gated on the review's NOT_YET and the loop profile
+        is available: only the loop and the merge are appended, the merge
+        reading the loop (§4.6), and no separate re-review, because the
+        loop's `re-review:1` is that re-review. The returned re-review id is
+        then None. Otherwise the one re-review, as before.
 
         Refused when asked for explicitly and the workflow has no review a
         merge could wait on: `collect` and `single-pr` are not here, and
@@ -2197,6 +2266,24 @@ class SubmissionService:
         request, and a gate is refused there), so a merge under it would read
         no verdict. A repository's policy that cannot apply appends nothing.
         """
+        loop_step = verdict_fix_loop_step(step_specs, strategy)
+        if loop_step is not None:
+            with_loop = spec.model_copy(
+                update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(loop_step)]}
+            )
+            # The same checks a declared loop gets; `submit_workflow` resolves
+            # it again from the merged spec to sign its block.
+            plan = resolve_fix_loop(with_loop.steps, strategy=strategy)
+            appended = merge_step_for(self._step_specs(with_loop), strategy, loop=plan)
+            if plan is None or appended is None:  # the loop names its own sources
+                raise DispatchOptionError(
+                    f"the fix loop {loop_step['step_id']!r} was appended but no merge "
+                    "step could be derived from it.",
+                    detail={"strategy": strategy, MERGE_METADATA_KEY: MERGE_ON_VERDICT},
+                )
+            return with_loop.model_copy(
+                update={"steps": [*with_loop.steps, WorkflowStepCreate.model_validate(appended)]}
+            ), None
         by_id = {s.step_id: s for s in spec.steps}
         sources = merge_sources(step_specs, strategy)
         rereview = (

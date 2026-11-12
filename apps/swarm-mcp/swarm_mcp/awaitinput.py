@@ -318,6 +318,7 @@ def post_multipart(client: Any, path: str, content_type: str, body: bytes) -> An
     req.add_header("Accept", "application/json")
     req.add_header("Content-Type", content_type)
     req.add_header("Content-Length", str(len(body)))
+    client_module.send_user_agent(req, getattr(client, "user_agent", None))
     shared = getattr(client, "_shared", None)
     try:
         with client_module._open(req, timeout=120) as response:

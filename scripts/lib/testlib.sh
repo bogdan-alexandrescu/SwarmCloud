@@ -590,16 +590,37 @@ t_check_browser_fixture() {
 # an operator's shell used to make the smoke clone a stale fork or branch with
 # nothing in the run to say so. Through `redact`, as any URL an operator
 # supplies could carry userinfo.
-SMOKE_FIXTURE_REPOSITORY_DEFAULT="https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+#
+# THIS REPOSITORY IS READ, NOT NAMED (docs/design/generic-repository.md section
+# 2.5): GITHUB_REPOSITORY in CI, else this checkout's origin, kept to its
+# owner/repo so no userinfo an origin URL carries reaches a task. Neither, and
+# no SWARM_SMOKE_FIXTURE_REPOSITORY: the smoke stops and names the variable.
+smoke_fixture_repository_default() {
+  local slug="${GITHUB_REPOSITORY:-}" origin
+  if [[ -z "${slug}" ]]; then
+    origin="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+    if [[ "${origin}" =~ github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/*$ ]]; then
+      slug="${BASH_REMATCH[1]}"
+    fi
+  fi
+  slug="${slug%.git}"
+  [[ "${slug}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 0
+  printf 'https://github.com/%s.git' "${slug}"
+}
+
 profile_extra() {
   local profile="$1"
-  local url="${SMOKE_FIXTURE_REPOSITORY_DEFAULT}" url_from="the default"
+  local url="" url_from="the default, this repository"
   local ref="main" ref_from="the default"
   case "${profile}" in
     generic)
       if [[ -n "${SWARM_SMOKE_FIXTURE_REPOSITORY:-}" ]]; then
         url="${SWARM_SMOKE_FIXTURE_REPOSITORY}"
         url_from="from SWARM_SMOKE_FIXTURE_REPOSITORY"
+      else
+        url="$(smoke_fixture_repository_default)"
+        [[ -n "${url}" ]] \
+          || die "the generic smoke fixture is this repository, and neither GITHUB_REPOSITORY nor this checkout's origin names it: set SWARM_SMOKE_FIXTURE_REPOSITORY"
       fi
       if [[ -n "${SWARM_SMOKE_FIXTURE_REF:-}" ]]; then
         ref="${SWARM_SMOKE_FIXTURE_REF}"

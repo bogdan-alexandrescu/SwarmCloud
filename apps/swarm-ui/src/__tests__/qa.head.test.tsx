@@ -123,7 +123,7 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
   // Every section page with a page head (review of #503: /admin/counts kept
   // its own stacked head and lost the Admin `?`, and nothing here visited it).
   const PAGES = [
-    '/capacity/pools', '/workflows', '/admin/limits', '/timeline', '/capacity/accounts', '/submit', '/submit/task', '/runs',
+    '/capacity/pools', '/workflows', '/admin/limits', '/timeline', '/capacity/llm-providers/plans', '/capacity/llm-providers/api-keys', '/submit', '/submit/task', '/runs',
     '/admin/counts', '/capacity/holders', '/capacity/runtimes', '/admin/tenants', '/overview', '/agents',
   ]
 

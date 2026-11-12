@@ -916,10 +916,13 @@ run "a_role_the_deployer_does_not_hold_cannot_be_switched" {
 }
 
 # ---------------------------------------------------------------------------
-# THE SPEECH MACHINE (owner's decided follow-up, 2026-11-05). The release
-# deployer makes, stops and deletes Voice it's one speech instance and its boot
-# disk through swarmSpeechDeployer, conditioned from the start to that
-# machine's names (deployer_conditions.tf, its last section).
+# THE SPEECH MACHINE (owner's decided follow-up, 2026-11-05; zone fallback,
+# 2026-11-09). The release deployer makes Voice it's speech machine's regional
+# template, and stops and deletes the instance and its boot disk, through
+# swarmSpeechDeployer, conditioned from the start to those names
+# (deployer_conditions.tf, its last section). swarm-api creates the machine
+# from the template through swarmSpeechOperator, granted by this root on the
+# project with the same extract() form (speech_operator_grant.tf).
 # ---------------------------------------------------------------------------
 
 run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
@@ -945,14 +948,19 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
     error_message = "the release deployer holds swarmSpeechDeployer through exactly one project binding"
   }
 
-  # The verbs voice_speech.tf's instance and its instance-level iam_member
-  # use, on an instance and a disk, and nothing else.
+  # The verbs voice_speech.tf's template, and the instance and instance-level
+  # iam_member an earlier release made, use, on an instance, a disk and a
+  # template, and nothing else.
   assert {
     condition = toset(google_project_iam_custom_role.deployer_speech_machine[0].permissions) == toset([
       "compute.disks.create",
       "compute.disks.delete",
       "compute.disks.get",
       "compute.disks.setLabels",
+      "compute.instanceTemplates.create",
+      "compute.instanceTemplates.delete",
+      "compute.instanceTemplates.get",
+      "compute.instanceTemplates.useReadOnly",
       "compute.instances.create",
       "compute.instances.delete",
       "compute.instances.get",
@@ -989,10 +997,27 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
     error_message = "the release deployer's swarmSpeechDeployer binding carries no condition"
   }
 
-  # The expression, rendered, exactly: one extract() per kind, nothing else.
+  # The expression, rendered, exactly: one extract() per kind and the
+  # template's startsWith(), nothing else.
   assert {
-    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\""
-    error_message = "the speech machine's condition is not the two extract() tests on its instance and disk names"
+    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\" || resource.name.startsWith(\"projects/example-project/regions/us-central1/instanceTemplates/swarm-speech-\")"
+    error_message = "the speech machine's condition is not the two extract() tests on its instance and disk names and the startsWith() on its template's"
+  }
+
+  assert {
+    condition = alltrue([
+      for n in ["projects/example-project/regions/us-central1/instanceTemplates/swarm-speech-20261109000000000000000001"] :
+      startswith(n, local.deployer_speech_template_prefix)
+      ]) && !anytrue([
+      for n in [
+        "projects/example-project/regions/us-central1/instanceTemplates/gke-peer-cluster-nap-e2-standard-2",
+        "projects/example-project/regions/us-central1/instanceTemplates/swarm-speechx",
+        "projects/example-project/regions/europe-west1/instanceTemplates/swarm-speech-1",
+        "projects/example-project/global/instanceTemplates/swarm-speech-1",
+        "projects/example-shared-project/regions/us-central1/instanceTemplates/swarm-speech-1",
+      ] : startswith(n, local.deployer_speech_template_prefix)
+    ])
+    error_message = "the speech machine's condition refuses its template, or admits a template that is not its"
   }
 
   assert {
@@ -1014,6 +1039,10 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
         "projects/example-project/zones/us-central1-a/disks/swarm-speech-a",
         "projects/example-project/zones/us-central1-c/instances/swarm-speech-c",
         "projects/example-project/zones/us-central1-c/disks/swarm-speech-c",
+        # The one name swarm-api's regional bulk insert gives it, in
+        # whichever zone Google placed it (owner, 2026-11-09).
+        "projects/example-project/zones/us-central1-b/instances/swarm-speech-machine",
+        "projects/example-project/zones/us-central1-b/disks/swarm-speech-machine",
         ] : anytrue([
           for p in local.deployer_speech_machine_paths :
           startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
@@ -1052,6 +1081,83 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
       "roles/compute.instanceAdmin.v1",
     ])) == 0
     error_message = "a project-wide compute instance role on the deployer makes the speech machine's condition meaningless"
+  }
+}
+
+# swarm-api creates, starts, moves and deletes the speech machine in the zones
+# of voice_speech.zones (owner, 2026-11-09). Its swarmSpeechOperator is on the
+# project, conditioned to the machine, and granted by this root, never by CI.
+run "swarm_api_operates_the_speech_machine_only_and_ci_cannot_grant_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition = toset(google_project_iam_custom_role.speech_operator.permissions) == toset([
+      "compute.addresses.useInternal",
+      "compute.disks.create",
+      "compute.disks.delete",
+      "compute.disks.setLabels",
+      "compute.instanceTemplates.get",
+      "compute.instanceTemplates.useReadOnly",
+      "compute.instances.create",
+      "compute.instances.delete",
+      "compute.instances.get",
+      "compute.instances.getSerialPortOutput",
+      "compute.instances.setLabels",
+      "compute.instances.setMachineType",
+      "compute.instances.setMetadata",
+      "compute.instances.setServiceAccount",
+      "compute.instances.setTags",
+      "compute.instances.start",
+      "compute.instances.stop",
+      "compute.subnetworks.use",
+    ])
+    error_message = "swarmSpeechOperator carries a permission swarm_api/voice/speech_machine.py does not use, or lacks one a create from the template checks"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.speech_operator.description) <= 300
+    error_message = "IAM refuses a custom role description over 300 characters, at apply (lesson 10)"
+  }
+
+  assert {
+    condition = (
+      google_project_iam_member.api_speech_operator.member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com" &&
+      length(google_project_iam_member.api_speech_operator.condition) == 1 &&
+      google_project_iam_member.api_speech_operator.condition[0].expression == local.speech_operator_condition
+    )
+    error_message = "swarm-api's swarmSpeechOperator binding is not swarm-api's, or carries no condition"
+  }
+
+  # The deployer's extract() per kind, then the template, the address and the
+  # subnet a create names; nothing else.
+  assert {
+    condition     = local.speech_operator_condition == "resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\" || resource.name.startsWith(\"projects/example-project/regions/us-central1/instanceTemplates/swarm-speech-\") || resource.name == \"projects/example-project/regions/us-central1/addresses/swarm-speech\" || resource.name == \"projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1\""
+    error_message = "swarm-api's speech condition is not the deployer's extract() form plus its template, address and subnet"
+  }
+
+  assert {
+    condition = (
+      length(regexall("&&", local.speech_operator_condition)) + length(regexall("\\|\\|", local.speech_operator_condition)) + length(regexall("![^=]", local.speech_operator_condition)) <= 12 &&
+      length(regexall("matches\\(", local.speech_operator_condition)) == 0 &&
+      length(regexall("hasOnly\\(", local.speech_operator_condition)) == 0
+    )
+    error_message = "swarm-api's speech condition is over IAM's 12 logical operators or uses a function GCP's linter refuses"
+  }
+
+  # hasOnly() limits which roles CI grants, never to whom: on the list, CI
+  # could grant swarmSpeechOperator to anyone unconditioned.
+  assert {
+    condition     = !anytrue([for r in local.deployer_grantable_project_roles : strcontains(r, "swarmSpeechOperator")])
+    error_message = "swarmSpeechOperator is on the release deployer's grantable list: CI could grant it unconditioned"
   }
 }
 
@@ -1342,6 +1448,51 @@ run "the_speech_machines_project_roles_are_grantable" {
       for k, g in google_project_iam_member.speech_metric_writer : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
     ])
     error_message = "terraform/infra/voice_speech.tf grants swarm-speech a metric-write role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+}
+
+# terraform/infra/plugin-bundles.tf (managed plugins' bundle job,
+# managed-plugins.md section 1.4.2) writes nothing to the project's IAM policy:
+# the builder's project-level log writer went with the owner's change of 11
+# November 2026 (a Cloud Run job's output reaches Cloud Logging without one),
+# and swarm-api's one grant is a custom role on the job's own policy. Planned
+# with builtins_managed "on", so the inventory run below sees the file switched
+# on and finds no project grant there to account for.
+run "the_plugin_bundle_job_writes_no_project_grant" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment      = "dev"
+    tenants          = {}
+    builtins_managed = "on"
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys; the fixture plugin_bundles.tftest.hcl uses.
+    image_refs = {
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-plugin-bundler"     = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-plugin-bundler@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_job_iam_member.plugin_bundle_api_runs) == 1
+      && length(google_artifact_registry_repository_iam_member.plugin_bundler_push) == 1
+    )
+    error_message = "with builtins_managed on and the bundler image, the bundle job's grants are planned: on the job's own policy and the bundle repository, never the project"
   }
 }
 

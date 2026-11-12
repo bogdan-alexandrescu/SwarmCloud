@@ -4,6 +4,7 @@ import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type H
 import { addressToPath } from './paths'
 import { EmptyState } from './components'
 import { CountNote, PageHead } from './Shell'
+import { GuideLink } from './Guide'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -99,6 +100,12 @@ export function HelpScreen({ topic }: { topic: string }) {
           aria-label="Search all topics"
         />
       </label>
+
+      {/* THE GUIDE (Guide.tsx): the long form, from day one to everyday work. */}
+      <p className="help-guide">
+        No workspace yet? <GuideLink slug="start-here">Start here</GuideLink>, then <GuideLink>the user guide</GuideLink>: setup,
+        everyday work and fixes.
+      </p>
 
       {/* ON A PHONE THE PANEL IS BEHIND THE MENU, so the group is a select
           under the search (H1 phone frame). The sheet hides it where the

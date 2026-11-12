@@ -9,7 +9,11 @@
  * pull request's diff and a log are drawn as numbered lines from the body
  * swarm-api read itself, headed by where they came from and their line range;
  * a note's `lines` anchor bands its lines and carries its pin. A mock-up is
- * drawn only in a sandboxed frame with nothing allowed. A read-back the gate
+ * one proposal's frames, each drawn in its own sandboxed frame with nothing
+ * allowed and a content policy that fetches nothing; a note on a frame pins
+ * there, the approved frame carries a tick whose tip says who approved it and
+ * when, and Approve on a frame posts it to the approval route (the person may
+ * also approve by voice, through the planner). A read-back the gate
  * holds slides in at the right edge: what was heard, what will run, Go and
  * Not that (posted to the read-back route), and its clock.
  *
@@ -31,7 +35,7 @@
  *
  * The speech controls (mic, engine status) are TalkPane's; the stage draws
  * none. It reads only the routes: GET visuals and one visual, PATCH a note's
- * state, GET the pending read-back, POST go or not-that, and the events the
+ * state, POST a mock-up frame's approval, GET the pending read-back, POST go or not-that, and the events the
  * card list hands it. Nothing here spends.
  */
 
@@ -39,11 +43,13 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 
 import {
   answerReadback,
+  approveVoiceMockup,
   loadPendingReadback,
   loadVoiceVisual,
   loadVoiceVisuals,
   normVoiceVisual,
   resolveVoiceNote,
+  type VoiceApproval,
   type VoiceNote,
   type VoiceReadback,
   type VoiceVisual,
@@ -149,15 +155,70 @@ function onLines(note: VoiceNote, d: VoiceVisualDetail): boolean {
 
 const openNotes = (notes: readonly VoiceNote[]): VoiceNote[] => notes.filter((n) => n.state === 'open')
 
+/** What a mock-up frame may do: fetch nothing, run nothing (voice-it.md §4); `sandbox=""` already runs no script. */
+export const FRAME_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"
+
+interface Frame {
+  id: string
+  label: string
+  html: string
+}
+
+/** A mock-up's frames (`{frames: [{id, label, html}]}`); a body drawn before frames is one frame. */
+export function mockupFrames(d: VoiceVisualDetail): Frame[] {
+  try {
+    const frames = (JSON.parse(d.body) as { frames?: unknown } | null)?.frames
+    if (Array.isArray(frames)) {
+      const out = frames.flatMap((f) => {
+        const r = (f ?? {}) as Record<string, unknown>
+        return typeof r.id === 'string' && typeof r.html === 'string' ? [{ id: r.id, label: typeof r.label === 'string' ? r.label : r.id, html: r.html }] : []
+      })
+      if (out.length > 0) return out
+    }
+  } catch {
+    // Not frames: the whole body is the one document.
+  }
+  return [{ id: 'frame-1', label: d.visual.title, html: d.body }]
+}
+
+/** A frame's document under the content policy, the policy first in its head. */
+function framed(html: string): string {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${FRAME_POLICY}">`
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html)
+  return doctype === null ? meta + html : doctype[0] + meta + html.slice(doctype[0].length)
+}
+
+const onFrame = (note: VoiceNote, frameId: string): boolean => note.anchor?.type === 'part' && note.anchor.part_id === frameId
+
+function approvedTip(a: VoiceApproval): string {
+  const at = a.at === null ? null : new Date(a.at)
+  const when = at === null || Number.isNaN(at.getTime()) ? '' : `, ${at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
+  return `Approved by ${a.by || 'the person'}${a.via === 'voice' ? ' by voice' : ''}${when}`
+}
+
+/** The approved frame's tick; its tip says who approved it, how and when. */
+function ApprovedTick({ approval }: { approval: VoiceApproval }) {
+  return (
+    <TalkTip tip={approvedTip(approval)} end>
+      <span className="vts-approved" role="img" aria-label="Approved" tabIndex={0}>
+        <svg className="vts-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 12.5l4.5 4.5L19 7.5" />
+        </svg>
+      </span>
+    </TalkTip>
+  )
+}
+
 /**
  * Voice it's tooltip: the components' Tooltip (hover and focus, after its
  * delay, gone on Escape; open on a tap too, since Safari never focuses a
  * tapped button), with `data-help-description` on the tip so its sentence
  * stays out of the words the prose ratchet counts (proseapp.tsx), as People's
  * InfoTip and Profile's AboutTip are kept. The read-back's clock and the Talk
- * pane's (i) use it.
+ * pane's (i) use it. `end` opens it leftwards, for a tip at the right of a
+ * row (the approved tick ends a frame's header, and the frame clips past it).
  */
-export function TalkTip({ tip, children }: { tip: string; children: ReactNode }) {
+export function TalkTip({ tip, end = false, children }: { tip: string; end?: boolean; children: ReactNode }) {
   const id = useId()
   const [open, setOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -173,7 +234,7 @@ export function TalkTip({ tip, children }: { tip: string; children: ReactNode })
   useEffect(() => () => hide(), [])
   return (
     <span
-      className="c-tip-host"
+      className={`c-tip-host${end ? ' is-end' : ''}`}
       aria-describedby={id}
       onMouseEnter={() => show(false)}
       onMouseLeave={hide}
@@ -364,6 +425,7 @@ export function TalkStage({
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [openPin, setOpenPin] = useState<string | null>(null)
   const [resolving, setResolving] = useState<string | null>(null)
+  const [approving, setApproving] = useState<string | null>(null)
   const [hold, setHold] = useState<VoiceReadback | null>(null)
   const [holdBusy, setHoldBusy] = useState(false)
   const [holdProblem, setHoldProblem] = useState<string | null>(null)
@@ -450,7 +512,14 @@ export function TalkStage({
         const v = normVoiceVisual(ev.data.visual)
         if (v === null) return
         const held = listed.current.find((x) => x.visual_id === v.visual_id)
-        if (held !== undefined && held.version >= v.version) return
+        if (held !== undefined && held.version >= v.version) {
+          // The same version approved: the tick moves, the stage stays where the person put it.
+          if (held.version === v.version && held.approved?.frame_id !== v.approved?.frame_id) {
+            setVisuals((vs) => vs.map((x) => (x.visual_id === v.visual_id ? v : x)))
+            setDetail((d) => (d !== null && d.visual.visual_id === v.visual_id ? { ...d, visual: v } : d))
+          }
+          return
+        }
         setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
         newest.current = markOf(v)
         setPicked(null)
@@ -532,11 +601,26 @@ export function TalkStage({
     }
   }
 
+  const approve = async (visualId: string, frameId: string) => {
+    if (projectId === null) return
+    setApproving(frameId)
+    const r = await approveVoiceMockup(projectId, visualId, frameId, sessionId)
+    if (!mounted.current) return
+    setApproving(null)
+    if ((r.status === 'ok' || r.status === 'stale') && r.data !== null) {
+      const v = r.data
+      setVisuals((vs) => vs.map((x) => (x.visual_id === v.visual_id ? v : x)))
+      setDetail((d) => (d !== null && d.visual.visual_id === v.visual_id ? { ...d, visual: v } : d))
+    }
+  }
+
   if (visuals.length === 0 && hold === null) return null
 
   const shown = detail !== null && detail.visual.visual_id === shownId ? detail : null
   const pins = shown === null ? [] : openNotes(shown.notes)
-  const loose = shown === null ? [] : pins.map((note, i) => ({ note, n: i + 1 })).filter((p) => !onLines(p.note, shown))
+  const frames = shown !== null && shown.visual.kind === 'mockup' ? mockupFrames(shown) : []
+  const numbered = pins.map((note, i) => ({ note, n: i + 1 }))
+  const loose = shown === null ? [] : numbered.filter((p) => !onLines(p.note, shown) && !frames.some((f) => onFrame(p.note, f.id)))
   const where = shown === null ? null : sourceLine(shown.visual)
   const range = shown?.visual.lines ?? null
   const pointed = shown !== null && focus !== null && focus.visual_id === shown.visual.visual_id ? focus : null
@@ -579,9 +663,38 @@ export function TalkStage({
               </figcaption>
             )}
             {shown.visual.kind === 'mockup' ? (
-              <div className="vts-mockup">
-                {/* A mock-up is the planner's HTML: drawn only in a frame that allows nothing (§8.1). */}
-                <iframe className="vts-mockup-frame" title={shown.visual.title} sandbox="" srcDoc={shown.body} />
+              <div className="vts-mockups">
+                {frames.map((f) => {
+                  const approved = shown.visual.approved?.frame_id === f.id ? shown.visual.approved : null
+                  return (
+                    <div key={f.id} className={`vts-mockup-one${approved !== null ? ' is-approved' : ''}`} role="group" aria-label={f.label}>
+                      <div className="vts-mockup-head">
+                        <span className="vts-mockup-label">{f.label}</span>
+                        {numbered
+                          .filter((p) => onFrame(p.note, f.id))
+                          .map((p) => (
+                            <Pin key={p.note.note_id} n={p.n} note={p.note} open={openPin === p.note.note_id} onToggle={() => setOpenPin(openPin === p.note.note_id ? null : p.note.note_id)} />
+                          ))}
+                        {approved !== null ? (
+                          <ApprovedTick approval={approved} />
+                        ) : (
+                          <Button kind="ghost" size="sm" onClick={() => void approve(shown.visual.visual_id, f.id)} busy={approving === f.id}>
+                            Approve
+                          </Button>
+                        )}
+                      </div>
+                      {numbered
+                        .filter((p) => onFrame(p.note, f.id) && openPin === p.note.note_id)
+                        .map((p) => (
+                          <NoteText key={p.note.note_id} note={p.note} onResolve={() => void resolve(p.note)} busy={resolving === p.note.note_id} />
+                        ))}
+                      <div className="vts-mockup">
+                        {/* A frame is the planner's HTML: drawn only in a frame that allows nothing and fetches nothing (§8.1). */}
+                        <iframe className="vts-mockup-frame" title={f.label} sandbox="" srcDoc={framed(f.html)} />
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <Lines detail={shown} focus={pointed?.lines ?? null} pins={pins} open={openPin} setOpen={setOpenPin} onResolve={(n) => void resolve(n)} resolving={resolving} />

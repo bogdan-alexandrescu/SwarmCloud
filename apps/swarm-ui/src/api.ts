@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -108,19 +108,40 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
 export type FixturePersona = 'member' | 'platform-admin' | 'workspace-admin'
 const PERSONA_COOKIE = 'swarm_qa_persona'
 
-function readFixturePersona(): FixturePersona {
-  if (typeof document === 'undefined') return 'member'
+/** One fixture switch's cookie value, or null when the page has no such cookie. */
+function readFixtureCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
   for (const part of document.cookie.split(';')) {
     const at = part.indexOf('=')
-    if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
-      const value = part.slice(at + 1).trim()
-      return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
-    }
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim()
   }
-  return 'member'
+  return null
+}
+
+function readFixturePersona(): FixturePersona {
+  const value = readFixtureCookie(PERSONA_COOKIE)
+  return value === 'platform-admin' || value === 'workspace-admin' ? value : 'member'
 }
 
 const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
+
+/**
+ * THE EXAMPLE PLANS' SWITCH (owner, 6 November 2026: the approval page can be
+ * seen and tested on its fixtures). The approval page's three example plans
+ * (`fixtureExampleRuns`) and the fixture inbox that projects the PLANNED runs
+ * (`fixtureApprovalItems`) load only when the page carries this cookie as
+ * `on`, set by hand in a dev server's console or by a test before it imports
+ * this module:
+ *
+ *   document.cookie = 'swarm_fixture_example_plans=on'
+ *
+ * Off by default, so the default fixtures are what they always were: the
+ * Runs list, Home's waiting list, the Automate badge and the inbox draw the
+ * pages every prose ratchet measures. A cookie, as the persona is, and read
+ * ONCE, here, and only in the fixture build; any other value is off.
+ */
+const EXAMPLE_PLANS_COOKIE = 'swarm_fixture_example_plans'
+const FIXTURE_EXAMPLE_PLANS = USE_FIXTURES && readFixtureCookie(EXAMPLE_PLANS_COOKIE) === 'on'
 /** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
 const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
 /**
@@ -1708,6 +1729,264 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
 }
 
 /**
+ * A plan with the planner's approval sections (plansections.py: `purpose`,
+ * `why`, `changes`, `risk`, `validation`, `graph`), as the run read serves
+ * them. The sections are the server's and absent from `RunPlan`, which types
+ * the plan before them; the approval page reads them off the plan as served.
+ */
+type FixtureSectionedPlan = RunPlan & {
+  purpose: string
+  why: string
+  changes: { file: string; area: string; kind: 'add' | 'modify' | 'delete' | 'test'; what: string }[]
+  risk: { level: 'low' | 'medium' | 'high'; factors: string[]; blast_radius: string; invariants: number[]; mitigations: string[]; rollback: string }
+  validation: { tests: { file: string; proves: string; requirements: number[] }[]; qa: { check: string; where: string; when: string }[] }
+  graph: { nodes: { id: string; label: string; kind: 'changed' | 'caller' | 'test' | 'route'; file?: string }[]; edges: { from: string; to: string; kind: 'calls' | 'imports' | 'tests' }[] }
+}
+
+/**
+ * THE APPROVAL PAGE'S THREE EXAMPLE PLANS (owner, 6 November 2026: the page
+ * can be seen and tested on its fixtures). Each is an issue run waiting for
+ * approval with every section the run read serves: a small one-step plan, a
+ * high-risk plan over admission and a frozen contract file, and a three-step
+ * plan whose steps and change graph have an order. Invented repositories,
+ * files and people.
+ */
+const FIXTURE_PLAN_SMALL: FixtureSectionedPlan = {
+  summary: 'Date each exported note in its own time zone, not the server\'s.',
+  purpose: 'Date each exported note in the zone it was written in, so a late-evening note keeps its day.',
+  why: 'The export formats every date in the server\'s zone, so a note saved after 23:00 lands on the next day.',
+  estimate: '1 h',
+  requirements: ['An exported note is dated in the zone it was written in', 'A note with no zone is dated in UTC, as today'],
+  steps: [{
+    step_id: 'export-zone',
+    title: 'Format export dates in the note\'s zone',
+    prompt: 'Pass the note\'s zone to format_day() in src/notes/export.py, with the test first.',
+    files: ['src/notes/export.py', 'src/notes/timefmt.py', 'tests/test_export_zone.py', 'docs/export.md'],
+    estimate: '1 h',
+  }],
+  changes: [
+    { file: 'src/notes/export.py', area: 'Export', kind: 'modify', what: 'Passes each note\'s zone to format_day()' },
+    { file: 'src/notes/timefmt.py', area: 'Export', kind: 'modify', what: 'format_day() takes a zone, UTC when none' },
+    { file: 'tests/test_export_zone.py', area: 'Tests', kind: 'test', what: 'Red first: a 23:30 note keeps its day' },
+    { file: 'docs/export.md', area: 'Docs', kind: 'modify', what: 'Says which zone an exported date is in' },
+  ],
+  risk: {
+    level: 'low',
+    factors: ['Changes one formatter that only the export calls'],
+    blast_radius: 'The notes export. No write path, no stored data.',
+    invariants: [],
+    mitigations: ['A note with no zone keeps today\'s UTC date'],
+    rollback: 'Revert the pull request; nothing stored changes.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/test_export_zone.py', proves: 'A note saved at 23:30 in its zone is exported on that day', requirements: [1] },
+      { file: 'tests/test_export_zone.py', proves: 'A note with no zone is exported in UTC', requirements: [2] },
+    ],
+    qa: [{ check: 'Export a note written late in the evening and read its date', where: 'staging · /notes/export', when: 'after deploy' }],
+  },
+  graph: {
+    nodes: [
+      { id: 'c1', label: 'export_notes()', kind: 'changed', file: 'src/notes/export.py' },
+      { id: 'c2', label: 'format_day()', kind: 'changed', file: 'src/notes/timefmt.py' },
+      { id: 'k1', label: 'GET /notes/export', kind: 'caller', file: 'src/notes/routes.py' },
+      { id: 't1', label: '2 tests · new', kind: 'test', file: 'tests/test_export_zone.py' },
+    ],
+    edges: [
+      { from: 'k1', to: 'c1', kind: 'calls' },
+      { from: 'c1', to: 'c2', kind: 'calls' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+    ],
+  },
+}
+
+const FIXTURE_PLAN_HIGH_RISK: FixtureSectionedPlan = {
+  summary: 'Reserve every pool a lease needs in one transaction at admission, all or nothing.',
+  purpose: 'Admit a run only when every pool it needs is reserved together, in one transaction.',
+  why: 'Admission reserves pools one at a time, so two runs racing for the last slot each held half and neither started.',
+  estimate: '5 h',
+  requirements: ['A run is admitted only with every pool reserved', 'A refused reservation leaves no pool held', 'Concurrency counts a run from LEASED'],
+  steps: [
+    {
+      step_id: 'contract-reservation',
+      title: 'Add the reservation\'s pools to the contract',
+      prompt: 'Add a pools list to Reservation in apps/common/swarm_common/contract.py, through a contract request.',
+      files: ['apps/common/swarm_common/contract.py'],
+      estimate: '1 h',
+    },
+    {
+      step_id: 'admission-all-or-nothing',
+      title: 'Reserve every pool in one transaction',
+      prompt: 'Move the per-pool reservations in admission.py into one transaction in capacity.py, with the race test first.',
+      files: [
+        'apps/scheduler-api/scheduler_api/admission.py', 'apps/scheduler-api/scheduler_api/capacity.py',
+        'tests/unit/scheduler/test_admission_all_or_nothing.py', 'tests/unit/scheduler/test_capacity_race.py',
+      ],
+      estimate: '4 h',
+    },
+  ],
+  changes: [
+    { file: 'apps/common/swarm_common/contract.py', area: 'Contract', kind: 'modify', what: 'Reservation gains the list of pools it holds' },
+    { file: 'apps/scheduler-api/scheduler_api/admission.py', area: 'Admission', kind: 'modify', what: 'admit() reserves through one call, not one per pool' },
+    { file: 'apps/scheduler-api/scheduler_api/capacity.py', area: 'Capacity', kind: 'modify', what: 'reserve_all() takes every pool in one transaction' },
+    { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', area: 'Tests', kind: 'test', what: 'Red first: a refused pool leaves none held' },
+    { file: 'tests/unit/scheduler/test_capacity_race.py', area: 'Tests', kind: 'test', what: 'Red first: two racing runs, one admitted whole' },
+  ],
+  risk: {
+    level: 'high',
+    factors: ['Changes how every run is admitted', 'Edits a frozen contract file', 'A transaction over every pool can contend'],
+    blast_radius: 'Admission and capacity for every tenant: a defect holds or leaks capacity.',
+    invariants: [2, 3],
+    mitigations: ['The race test runs two admissions against one free slot', 'The transaction retries a contended read three times, then refuses'],
+    rollback: 'Revert the pull request; reservations made since carry an unread pools list.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', proves: 'A run with one pool refused holds no other pool', requirements: [1, 2] },
+      { file: 'tests/unit/scheduler/test_admission_all_or_nothing.py', proves: 'An admitted run counts against concurrency from LEASED', requirements: [3] },
+      { file: 'tests/unit/scheduler/test_capacity_race.py', proves: 'Two runs racing for the last slot: one admitted, one queued', requirements: [1] },
+    ],
+    qa: [
+      { check: 'Submit two runs for one free slot and read that one leases and one queues', where: 'staging · /work/runs', when: 'after deploy' },
+      { check: 'Read the capacity board: no pool shows a held slot without a lease', where: 'staging · /capacity', when: 'after deploy' },
+    ],
+  },
+  graph: {
+    nodes: [
+      { id: 'f1', label: 'Reservation', kind: 'changed', file: 'apps/common/swarm_common/contract.py' },
+      { id: 'c1', label: 'admit()', kind: 'changed', file: 'apps/scheduler-api/scheduler_api/admission.py' },
+      { id: 'c2', label: 'reserve_all()', kind: 'changed', file: 'apps/scheduler-api/scheduler_api/capacity.py' },
+      { id: 'k1', label: 'dispatch_next()', kind: 'caller', file: 'apps/scheduler-api/scheduler_api/dispatch.py' },
+      { id: 't1', label: '2 tests · new', kind: 'test', file: 'tests/unit/scheduler/test_admission_all_or_nothing.py' },
+      { id: 't2', label: '1 test · new', kind: 'test', file: 'tests/unit/scheduler/test_capacity_race.py' },
+    ],
+    edges: [
+      { from: 'k1', to: 'c1', kind: 'calls' },
+      { from: 'c1', to: 'c2', kind: 'calls' },
+      { from: 'c2', to: 'f1', kind: 'imports' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+      { from: 't2', to: 'c2', kind: 'tests' },
+    ],
+  },
+}
+
+const FIXTURE_PLAN_THREE_STEPS: FixtureSectionedPlan = {
+  summary: 'Break the monthly invoice down by team: the ledger column, the API, then the page.',
+  purpose: 'Show each team\'s share on the monthly invoice, from the ledger through the API to the page.',
+  why: 'The invoice gives one total, so finance splits each month\'s bill between teams by hand.',
+  estimate: '6 h',
+  requirements: ['Each ledger entry records its team', 'The invoice read serves a total per team', 'The invoice page draws a row per team'],
+  steps: [
+    {
+      step_id: 'ledger-team',
+      title: 'Record the team on each ledger entry',
+      prompt: 'Add a team column to the ledger in src/ledger/schema.py with a migration, with tests first.',
+      files: ['src/ledger/schema.py', 'migrations/0042_entry_team.sql', 'tests/test_ledger_team.py'],
+      estimate: '2 h',
+    },
+    {
+      step_id: 'invoice-api',
+      title: 'Serve a total per team on the invoice read',
+      prompt: 'Group the month\'s entries by team in src/invoices/totals.py and serve them on GET /invoices/{month}.',
+      depends_on: ['ledger-team'],
+      files: ['src/invoices/totals.py', 'src/invoices/routes.py', 'tests/test_invoice_teams.py'],
+      estimate: '2 h',
+    },
+    {
+      step_id: 'invoice-page',
+      title: 'Draw a row per team on the invoice page',
+      prompt: 'Draw the teams\' rows in web/src/Invoice.tsx from the invoice read, with a test first.',
+      depends_on: ['invoice-api'],
+      files: ['web/src/Invoice.tsx', 'web/src/__tests__/invoice.teams.test.tsx'],
+      estimate: '2 h',
+    },
+  ],
+  changes: [
+    { file: 'src/ledger/schema.py', area: 'Ledger', kind: 'modify', what: 'LedgerEntry gains a team column' },
+    { file: 'migrations/0042_entry_team.sql', area: 'Ledger', kind: 'add', what: 'Adds the team column, unset on older entries' },
+    { file: 'tests/test_ledger_team.py', area: 'Tests', kind: 'test', what: 'Red first: a new entry keeps its team' },
+    { file: 'src/invoices/totals.py', area: 'Invoices', kind: 'modify', what: 'month_totals() groups entries by team' },
+    { file: 'src/invoices/routes.py', area: 'Invoices', kind: 'modify', what: 'GET /invoices/{month} serves the teams\' totals' },
+    { file: 'tests/test_invoice_teams.py', area: 'Tests', kind: 'test', what: 'Red first: the teams\' totals add up to the total' },
+    { file: 'web/src/Invoice.tsx', area: 'Invoice page', kind: 'modify', what: 'Draws one row per team under the total' },
+    { file: 'web/src/__tests__/invoice.teams.test.tsx', area: 'Tests', kind: 'test', what: 'Red first: a row per team, in the served order' },
+  ],
+  risk: {
+    level: 'medium',
+    factors: ['A migration on the ledger table', 'Older entries have no team'],
+    blast_radius: 'The ledger\'s writes and the invoice read and page.',
+    invariants: [],
+    mitigations: ['Older entries total under "No team" rather than being dropped', 'The migration adds a column and rewrites no row'],
+    rollback: 'Revert the pull request; the added column stays and is unread.',
+  },
+  validation: {
+    tests: [
+      { file: 'tests/test_ledger_team.py', proves: 'A new ledger entry is stored with its team', requirements: [1] },
+      { file: 'tests/test_invoice_teams.py', proves: 'The teams\' totals add up to the invoice total', requirements: [2] },
+      { file: 'web/src/__tests__/invoice.teams.test.tsx', proves: 'The page draws one row per served team', requirements: [3] },
+    ],
+    qa: [{ check: 'Open last month\'s invoice and read a row per team that adds up', where: 'staging · /billing/invoices', when: 'after deploy' }],
+  },
+  graph: {
+    nodes: [
+      { id: 'c1', label: 'LedgerEntry', kind: 'changed', file: 'src/ledger/schema.py' },
+      { id: 'c2', label: 'month_totals()', kind: 'changed', file: 'src/invoices/totals.py' },
+      { id: 'r1', label: 'GET /invoices/{month}', kind: 'route', file: 'src/invoices/routes.py' },
+      { id: 'c3', label: 'Invoice', kind: 'changed', file: 'web/src/Invoice.tsx' },
+      { id: 't1', label: '1 test · new', kind: 'test', file: 'tests/test_ledger_team.py' },
+      { id: 't2', label: '1 test · new', kind: 'test', file: 'tests/test_invoice_teams.py' },
+      { id: 't3', label: '1 test · new', kind: 'test', file: 'web/src/__tests__/invoice.teams.test.tsx' },
+    ],
+    edges: [
+      { from: 'c2', to: 'c1', kind: 'imports' },
+      { from: 'r1', to: 'c2', kind: 'calls' },
+      { from: 'c3', to: 'r1', kind: 'calls' },
+      { from: 't1', to: 'c1', kind: 'tests' },
+      { from: 't2', to: 'c2', kind: 'tests' },
+      { from: 't3', to: 'c3', kind: 'tests' },
+    ],
+  },
+}
+
+/** An example plan's run: its own invented issue, planned `minutes` ago and waiting for approval. */
+function fixtureExampleRun(id: string, plan: FixtureSectionedPlan, issue: { owner: string; repo: string; number: number; title: string; body: string; labels: string[] }, minutes: number, by: string): IssueRun {
+  const ref = `${issue.owner}/${issue.repo}#${issue.number}`
+  const url = `https://github.com/${issue.owner}/${issue.repo}/issues/${issue.number}`
+  const created = new Date(FIXTURE_NOW - (minutes + 4) * 60_000).toISOString()
+  const planned = new Date(FIXTURE_NOW - minutes * 60_000).toISOString()
+  return fixtureIssueRun(id, {
+    issue: { ref, owner: issue.owner, repo: issue.repo, number: issue.number, url, repository_url: `https://github.com/${issue.owner}/${issue.repo}` },
+    plan,
+    // Built, not a literal, as the first run's digest is.
+    plan_digest: `sha256:${id.slice(4).padEnd(64, '0')}`,
+    created_by: by, created_at: created, updated_at: planned,
+    history: [{ at: created, from: null, to: 'PLANNING', by }, { at: planned, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+    issue_read: { title: issue.title, labels: issue.labels, state: 'open', comments: 2, url, body: issue.body, body_truncated: false, body_redacted: false, read_at: created },
+  })
+}
+
+function fixtureExampleRuns(): IssueRun[] {
+  if (!FIXTURE_EXAMPLE_PLANS) return []
+  return [
+    fixtureExampleRun('run_5a1d3e70', FIXTURE_PLAN_SMALL, {
+      owner: 'example-org', repo: 'notes-service', number: 88, labels: ['bug'],
+      title: 'An exported note saved after 23:00 is dated the next day',
+      body: 'Export a note written at 23:30: its date is the following day.',
+    }, 12, 'member@example.com'),
+    fixtureExampleRun('run_7e02b9c4', FIXTURE_PLAN_HIGH_RISK, {
+      owner: 'example-org', repo: 'example-scheduler', number: 640, labels: ['bug', 'capacity'],
+      title: 'Two runs racing for the last slot each reserve half of it and neither starts',
+      body: 'Submit two runs when one slot is free: both hold one pool and wait for the other.',
+    }, 25, 'operator@example.com'),
+    fixtureExampleRun('run_3c8f6a15', FIXTURE_PLAN_THREE_STEPS, {
+      owner: 'example-org', repo: 'billing-ledger', number: 215, labels: ['enhancement'],
+      title: 'The monthly invoice gives one total, with no share per team',
+      body: 'Show each team\'s share of the month on the invoice.',
+    }, 55, 'reviewer@example.com'),
+  ]
+}
+
+/**
  * THE FIXTURE RUNS REMEMBER WHAT WAS DONE TO THEM (QA1-FIX-24, part of
  * #2596): a run planned from Submit is a new run created now (runs-submit-15),
  * and an approval or a rejection is still there on the next read
@@ -1722,6 +2001,7 @@ function fixtureIssueRuns(): IssueRun[] {
   const created = new Date(FIXTURE_NOW - 50 * 60_000).toISOString()
   return [
     ...fixtureRunsMade,
+    ...fixtureExampleRuns(),
     fixtureIssueRun('run_4c1e09d2'),
     // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
@@ -2601,6 +2881,23 @@ export interface AgentRun {
 }
 
 /**
+ * The attempt's credential fields (contract request 152), as the attempt card's
+ * Plan / API key chip reads them. A tier the contract does not name and an
+ * empty account id read as not recorded (null), never as a guess; a field the
+ * API did not serve stays absent (an older API).
+ */
+export function normaliseAttemptCredential(a: AttemptRow): AttemptRow {
+  const out = { ...a }
+  if ('credential_tier' in a) {
+    out.credential_tier = a.credential_tier === 'plan' || a.credential_tier === 'api_key' ? a.credential_tier : null
+  }
+  if ('account_id' in a) {
+    out.account_id = typeof a.account_id === 'string' && a.account_id.trim() !== '' ? a.account_id : null
+  }
+  return out
+}
+
+/**
  * THE MASKED INPUT IS NOT PART OF THIS READ (PR #210 re-review). It was a
  * fifth read in the `Promise.all` below, so the whole drawer -- the task's
  * state, its events, its attempts -- waited on `/v1/tasks/{id}/input`, and a
@@ -2631,8 +2928,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   // the attempt card reads it off its own row. Absent on an older API.
   const withAccounts = (d: { attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }) =>
     d.accounts_by_attempt === undefined
-      ? d.attempts
-      : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
+      ? d.attempts.map(normaliseAttemptCredential)
+      : d.attempts.map((a) => ({ ...normaliseAttemptCredential(a), account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading') return task
   // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
@@ -7142,13 +7439,119 @@ export async function finishAccountSignIn(body: {
   }
 }
 
-/** `PUT /v1/accounts/{id}/lending`. The whole list, not a delta. */
+/**
+ * What `POST /v1/accounts/device/start` answers with, as routes/accounts.py's
+ * `_DEVICE_START_FIELDS` passes it: the code to type, the page to type it on
+ * and the state to poll with. Never the device id, which the broker keeps.
+ */
+export interface DeviceSignIn {
+  state: string
+  user_code: string
+  /** Always https: it is handed to `window.open`. */
+  verification_uri: string
+  /** Null when the server did not say; no deadline is invented here. */
+  expires_in_seconds: number | null
+  interval_seconds: number
+}
+
+/** What `POST /v1/accounts/device/poll` answers with. */
+export type DevicePoll =
+  | { status: 'pending'; interval_seconds: number | null }
+  | { status: 'expired' }
+  | { status: 'filed'; account: Account | null; expires_at: string | null }
+
+/** RFC 8628 §3.5's default poll interval, for a start answer that names none. */
+const DEVICE_INTERVAL_DEFAULT_S = 5
+
+function deviceRefusal(message: string): Result<never> {
+  return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message } }
+}
+
+function positiveSeconds(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
+
+/**
+ * `POST /v1/accounts/device/start`: a ChatGPT plan's sign-in with a one-time
+ * code, for a browser that cannot catch the plan's localhost redirect. The
+ * body is `AccountDeviceSignInStart`'s, a `StrictModel`: the label and the
+ * lends, no provider (only that plan signs in this way) and no owner (the
+ * proxy resolves the caller's workspace).
+ */
+export async function beginDeviceSignIn(body: { label: string; lend_to: string[] }): Promise<Result<DeviceSignIn>> {
+  const res = USE_FIXTURES ? await fixtureBeginDeviceSignIn(body) : await write(route('/v1/accounts/device/start'), 'POST', body)
+  if (res.status !== 'ok') return res as Result<DeviceSignIn>
+  const b = res.data
+  if (!isRecord(b) || typeof b.state !== 'string' || typeof b.user_code !== 'string' || b.user_code === '' || typeof b.verification_uri !== 'string') {
+    return deviceRefusal('The platform answered the sign-in request without a code and a page to type it on. Nothing was registered.')
+  }
+  // Checked for `authorize_url`'s reason: this value goes to `window.open`.
+  if (!/^https:\/\//i.test(b.verification_uri)) {
+    return deviceRefusal('The platform returned a sign-in page this console will not open, because it is not an https address. Nothing was registered.')
+  }
+  return {
+    status: 'ok',
+    fetchedAt: res.fetchedAt,
+    data: {
+      state: b.state,
+      user_code: b.user_code,
+      verification_uri: b.verification_uri,
+      expires_in_seconds: positiveSeconds(b.expires_in_seconds),
+      interval_seconds: positiveSeconds(b.interval_seconds) ?? DEVICE_INTERVAL_DEFAULT_S,
+    },
+  }
+}
+
+/**
+ * `POST /v1/accounts/device/poll`: `pending` (with the interval to wait),
+ * `expired`, or `filed` with the plan. Only the tenant that started it may
+ * poll; the broker files the plan once and a second poll reads it filed. An
+ * answer naming any other status is an error, never a guess at pending.
+ */
+export async function pollDeviceSignIn(body: { state: string }): Promise<Result<DevicePoll>> {
+  const res = USE_FIXTURES ? await fixturePollDeviceSignIn(body) : await write(route('/v1/accounts/device/poll'), 'POST', body)
+  if (res.status !== 'ok') return res as Result<DevicePoll>
+  const b = res.data
+  const ok = (data: DevicePoll): Result<DevicePoll> => ({ status: 'ok', fetchedAt: res.fetchedAt, data })
+  if (isRecord(b) && b.status === 'pending') return ok({ status: 'pending', interval_seconds: positiveSeconds(b.interval_seconds) })
+  if (isRecord(b) && b.status === 'expired') return ok({ status: 'expired' })
+  if (isRecord(b) && b.status === 'filed') {
+    return ok({
+      status: 'filed',
+      // A filed answer that names no account is still filed: the list's reload finds the plan.
+      account: isRecord(b.account) && typeof b.account.account_id === 'string' ? (b.account as unknown as Account) : null,
+      expires_at: typeof b.expires_at === 'string' ? b.expires_at : null,
+    })
+  }
+  return deviceRefusal('The platform answered the sign-in check with a status this console does not know. Nothing on this page was changed.')
+}
+
+/**
+ * `PUT /v1/accounts/{id}/lending`. The whole set, not a delta: a list is
+ * today's bare `lend_to` (a borrower already lent keeps its cap), a map is
+ * `lends`, each borrowing workspace with its agents cap (§4.6, Q7).
+ */
 export async function setAccountLending(
   accountId: string,
-  lendTo: string[],
+  lendTo: string[] | Record<string, number>,
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
-  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
+  const body = Array.isArray(lendTo)
+    ? { lend_to: lendTo }
+    : { lends: Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n }])) }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', body)
+}
+
+/**
+ * `PUT /v1/accounts/{id}/per-workspace-max` (§4.6, Q6): at most this many of
+ * the plan's agents at once may be one workspace's, the owner's or a
+ * borrower's. The whole map; `{}` clears every cap. Owner only.
+ */
+export async function setAccountPerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixturePerWorkspaceMax(accountId, caps)
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', {
+    per_workspace_max: caps,
+  })
 }
 
 /**
@@ -7165,7 +7568,21 @@ export async function setAccountLending(
  * `blocked_by`, `next_eligible_at`, `max_agents`, the organisation and the
  * duplicate marks), typed in accountsPool.ts.
  */
-export type ServedAccount = Account & PoolFields & { model_classes?: string[] }
+export type ServedAccount = Account & PoolFields & { model_classes?: string[] } & PlanCaps
+
+/** One lend's cap as the broker serves it (§4.6, Q7); `cap_set` false is a lend carried over from `lend_to`. */
+export type LendCap = { max_agents: number; monthly_spend_cap_usd: number | null; cap_set: boolean }
+
+/**
+ * A plan's caps as served: each lend's cap, each workspace's per-workspace
+ * cap (Q6), and, on the owner's own rows, each borrower's live holders --
+ * `null` when swarm-api could not read them, absent from an older one.
+ */
+export type PlanCaps = {
+  lends?: Record<string, LendCap>
+  per_workspace_max?: Record<string, number>
+  lend_holders?: Record<string, number> | null
+}
 
 /**
  * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
@@ -8067,11 +8484,74 @@ async function fixtureFinishSignIn(body: {
   }
 }
 
-async function fixtureLending(accountId: string, lendTo: string[]): Promise<Result<unknown>> {
+/**
+ * The device sign-ins this fixture holds, keyed by state: a code, then the
+ * plan filed on the second poll (the first reads pending, so the console's
+ * polling is exercised). The plan filed is the label the person typed, on
+ * the fixture's own workspace, unmeasured: no account is invented.
+ */
+const fixtureDevice = new Map<string, { label: string; lend_to: string[]; polls: number }>()
+
+function fixtureDeviceCode(): string {
+  const pick = () => Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, '0')
+  return `${pick()}-${pick()}`
+}
+
+async function fixtureBeginDeviceSignIn(body: { label: string; lend_to: string[] }): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 260))
+  if (!/^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(body.label)) {
+    return fixtureRefused(`account label '${body.label}' must be lowercase letters, digits and dashes, starting and ending alphanumeric, at most 40 characters`)
+  }
+  const state = `fixture-device-${Math.random().toString(36).slice(2)}`
+  fixtureDevice.set(state, { label: body.label, lend_to: body.lend_to, polls: 0 })
+  noteFixtureProbe(route('/v1/accounts/device/start'), 260, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      state,
+      user_code: fixtureDeviceCode(),
+      verification_uri: 'https://device.example.com/activate',
+      expires_in_seconds: 900,
+      interval_seconds: 5,
+      provider: 'openai',
+    },
+  }
+}
+
+async function fixturePollDeviceSignIn(body: { state: string }): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 120))
+  const pending = fixtureDevice.get(body.state)
+  if (!pending) return { status: 'ok', fetchedAt: Date.now(), data: { status: 'expired' } }
+  noteFixtureProbe(route('/v1/accounts/device/poll'), 120, true)
+  pending.polls += 1
+  if (pending.polls < 2) return { status: 'ok', fetchedAt: Date.now(), data: { status: 'pending', interval_seconds: 5 } }
+  const id = `${FIXTURE_TENANT}:${pending.label}`
+  const existing = fixtureAccounts.find((a) => a.account_id === id)
+  const account: ServedAccount = existing
+    ? { ...existing, lend_to: pending.lend_to }
+    : fixtureAccount(FIXTURE_TENANT, pending.label, { provider: 'openai', lend_to: pending.lend_to, observed_at: null, stale: true, windows: {} })
+  fixtureAccounts = existing ? fixtureAccounts.map((a) => (a.account_id === id ? account : a)) : [...fixtureAccounts, account]
+  // Filed once; the state then reads as a sign-in that is over.
+  fixtureDevice.delete(body.state)
+  return { status: 'ok', fetchedAt: Date.now(), data: { status: 'filed', account, expires_at: ISO(8 * 3600_000), registered: null, organisation: null } }
+}
+
+async function fixtureLending(accountId: string, lendTo: string[] | Record<string, number>): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 180))
+  const borrowers = Array.isArray(lendTo) ? lendTo : Object.keys(lendTo)
+  const lends = Array.isArray(lendTo)
+    ? null
+    : Object.fromEntries(Object.entries(lendTo).map(([t, n]) => [t, { max_agents: n, monthly_spend_cap_usd: null, cap_set: true }]))
   fixtureAccounts = fixtureAccounts.map((a) =>
-    a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
+    a.account_id === accountId ? { ...a, lend_to: borrowers, ...(lends !== null ? { lends } : {}) } : a,
   )
+  return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixturePerWorkspaceMax(accountId: string, caps: Record<string, number>): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? { ...a, per_workspace_max: { ...caps } } : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
@@ -8175,6 +8655,11 @@ async function fixtureState(
   fixtureAccounts = fixtureAccounts.map((a) =>
     a.account_id === accountId ? { ...a, state, reason } : a,
   )
+  // A key's state is the same route (API Keys' Pause, Drain and Resume);
+  // Resume also clears the out-of-credit mark, as the broker's does.
+  fixtureApiKeys = fixtureApiKeys.map((k) =>
+    k.account_id === accountId ? { ...k, state, reason, ...(state === 'AVAILABLE' ? { exhausted_at: null } : {}) } : k,
+  )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
@@ -8216,9 +8701,239 @@ async function fixtureRefresh(accountId: string): Promise<Result<unknown>> {
 
 async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 200))
+  if (fixtureApiKeys.some((k) => k.account_id === accountId)) {
+    // A key's secret is destroyed with it (docs/design/llm-providers.md §4.4).
+    fixtureApiKeys = fixtureApiKeys.filter((k) => k.account_id !== accountId)
+    return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId } }
+  }
   fixtureAccounts = fixtureAccounts.filter((a) => a.account_id !== accountId)
   return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId, secret: 'retained' } }
 }
+
+// ===========================================================================
+// API keys (Capacity › LLM Providers › API Keys; docs/design/llm-providers.md
+// §4 and §6.3)
+// ===========================================================================
+//
+// A KEY IS AN ACCOUNT of an `-api` provider: the same `GET /v1/accounts` list
+// the plans come from, its `kind` `api_key`. So the key controls are the plan
+// controls' routes (`setAccountState`, `removeAccount`, both above); only the
+// read and the add are the keys' own. The value is never in any of these: the
+// broker serves none, and the add sends it once, in the redeem POST body.
+
+/** The two key vendors' providers (`sl.API_KEY_PROVIDERS` in swarm-api). */
+export const API_KEY_PROVIDERS = ['anthropic-api', 'openai-api'] as const
+export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number]
+
+/** One lend of a key (`lends`): the borrower's agents cap and spend cap; `cap_set` false is a lend carried over with no cap yet. */
+export interface ApiKeyLend {
+  max_agents: number | null
+  monthly_spend_cap_usd: number | null
+  cap_set?: boolean
+}
+
+/** A key as `account_to_api` serves it: the plan fields plus the key's own (§4.6), its `lends` in a key's shape rather than a plan's `LendCap`. Absent: an older broker, said as unknown. */
+export type ApiKeyAccount = Omit<ServedAccount, 'lends'> & {
+  kind?: 'api_key' | 'plan' | string
+  vendor?: string
+  pools?: string[]
+  lends?: Record<string, ApiKeyLend>
+  monthly_spend_cap_usd?: number | null
+  /** Each workspace's cap on the agents it holds on the key (Q6). */
+  per_workspace_max?: Record<string, number>
+  month_spend_usd?: number | null
+  lend_spend_usd?: Record<string, number>
+  exhausted_at?: string | null
+  voice_dedicated?: boolean
+  tier?: string | null
+}
+
+export interface ApiKeysBoard {
+  keys: ApiKeyAccount[]
+  /** The workspace the list was read as, echoed from the verified token; null for every workspace. */
+  tenant: string | null
+  /** When this list was read, as a browser instant (see `AccountsBoard.readAt`). */
+  readAt: number
+}
+
+/** A key, not a plan: the broker's `kind`, or, from a broker older than it, an `-api` provider. */
+export function isApiKey(a: { kind?: string; provider: string }): boolean {
+  return a.kind !== undefined ? a.kind === 'api_key' : a.provider.endsWith('-api')
+}
+
+/**
+ * The developer keys this workspace sees, from `GET /v1/accounts`. Voice it's
+ * dedicated key is left out: it is managed in Voice it › Settings, never here
+ * (§4.4, Q9). Zero keys is an ok read with an empty list, not an empty state,
+ * so the page keeps its Add key.
+ */
+export async function loadApiKeys(): Promise<Result<ApiKeysBoard>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    return { status: 'ok', fetchedAt: Date.now(), data: { keys: fixtureApiKeys.filter(listedKey), tenant: 'u-owner', readAt: Date.now() } }
+  }
+  const r = await read<AccountsPage>(route('/v1/accounts'), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<ApiKeysBoard>
+  const keys = (r.data.accounts as ApiKeyAccount[]).filter(listedKey)
+  return { ...r, data: { keys, tenant: r.data.tenant_id, readAt: r.fetchedAt } } as Result<ApiKeysBoard>
+}
+
+function listedKey(a: ApiKeyAccount): boolean {
+  return isApiKey(a) && a.voice_dedicated !== true && a.tier !== 'voice_dedicated'
+}
+
+/**
+ * ADD A KEY, ONE STEP (§4.1): mint an `api-key` link for the reader's own
+ * email, then redeem it here with the value in the POST body. The value
+ * reaches swarm-api once and is kept nowhere; a refusal never quotes it.
+ * A failed mint sends nothing; a refused redeem leaves the link reopened by
+ * swarm-api, and this page simply asks again.
+ *
+ * `redeem` is SetupLink.tsx's `redeemSetupLink`, the one redemption path (as
+ * Accounts.tsx's Voice it key uses it), handed in because SetupLink.tsx
+ * imports this module.
+ */
+export type RedeemLink = (token: string, value: string) => Promise<Result<unknown>>
+
+export async function addApiKey(body: { provider: ApiKeyProvider; label: string; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const id = `u-owner:${body.label}`
+    if (fixtureApiKeys.some((k) => k.account_id === id)) return fixtureRefused(`the key was not added: there is already an account labelled ${body.label}`)
+    fixtureApiKeys = [...fixtureApiKeys, fixtureKey(body.label, body.provider)]
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.label, provider: body.provider, account_id: id, written: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.label, owner: body.owner, provider: body.provider })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return redeem(token, body.value)
+}
+
+/**
+ * REPLACE KEY (§4.5): the same one step as the add, for the key's own label
+ * and vendor, the link minted with `replace` so swarm-api refuses it unless a
+ * key of that vendor is on the label. The broker adds the value as a new
+ * version and expires the old one; holds, caps, lends and the Voice it share
+ * are untouched.
+ */
+export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
+  const provider = body.key.provider as ApiKeyProvider
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (!fixtureApiKeys.some((k) => k.account_id === body.key.account_id && k.provider === provider)) {
+      return fixtureRefused(`the key was not replaced: there is no ${provider} key labelled ${body.key.label} to replace`)
+    }
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.key.label, provider, account_id: body.key.account_id, written: true, replaced: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.key.label, owner: body.owner, provider, replace: true })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return redeem(token, body.value)
+}
+
+/** `PUT /v1/accounts/{id}/spend-cap`: a key's monthly spend cap in US dollars, null for none (§4.6). Owner only. */
+export async function setKeySpendCap(accountId: string, usd: number | null): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (usd !== null && !(usd > 0 && usd <= 1_000_000)) return fixtureRefused('a monthly spend cap is above 0 and at most 1,000,000 US dollars')
+    return fixtureKeyWrite(accountId, { monthly_spend_cap_usd: usd })
+  }
+  return write(route('/v1/accounts/{account_id}/spend-cap', { account_id: accountId }), 'PUT', { monthly_spend_cap_usd: usd })
+}
+
+/** `PUT /v1/accounts/{id}/per-workspace-max`: each workspace's cap on the agents it holds on the key (Q6); `{}` clears them. Owner only. */
+export async function setKeyPerWorkspaceMax(accountId: string, caps: Readonly<Record<string, number>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    return fixtureKeyWrite(accountId, { per_workspace_max: { ...caps } })
+  }
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', { per_workspace_max: caps })
+}
+
+/** `PUT /v1/accounts/{id}/lending` with `lends`: every lend of a key with its agents cap and spend cap (Q7), the whole map. Owner only. */
+export async function setKeyLends(accountId: string, lends: Readonly<Record<string, { max_agents: number; monthly_spend_cap_usd: number }>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const full: Record<string, ApiKeyLend> = {}
+    for (const [ws, c] of Object.entries(lends)) full[ws] = { ...c, cap_set: true }
+    return fixtureKeyWrite(accountId, { lends: full, lend_to: Object.keys(lends).sort() })
+  }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lends })
+}
+
+function fixtureKeyWrite(accountId: string, change: Partial<ApiKeyAccount>): Result<unknown> {
+  const found = fixtureApiKeys.find((k) => k.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account = { ...found, ...change }
+  fixtureApiKeys = fixtureApiKeys.map((k) => (k.account_id === accountId ? account : k))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+/** A key's fixture row: an `-api` account, measured by spend rather than windows. */
+function fixtureKey(label: string, provider: ApiKeyProvider, extra: Partial<ApiKeyAccount> = {}): ApiKeyAccount {
+  return {
+    account_id: `u-owner:${label}`,
+    owner_tenant: 'u-owner',
+    label,
+    provider,
+    kind: 'api_key',
+    vendor: provider === 'openai-api' ? 'openai' : 'anthropic',
+    tier: 'api_key',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    lends: {},
+    assigned: 0,
+    max_agents: 4,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: ISO(-40 * 60_000),
+    model_classes: [],
+    monthly_spend_cap_usd: null,
+    month_spend_usd: 0,
+    lend_spend_usd: {},
+    exhausted_at: null,
+    voice_dedicated: false,
+    ...extra,
+  }
+}
+
+// ONE OF EACH TREATMENT a key card draws: a live key with a lend, a paused
+// one, one out of credit, one with no spend cap, and the other vendor.
+let fixtureApiKeys: ApiKeyAccount[] = [
+  fixtureKey('team-key', 'anthropic-api', {
+    display_name: 'Team key',
+    assigned: 3,
+    max_agents: 8,
+    monthly_spend_cap_usd: 400,
+    month_spend_usd: 212.5,
+    lend_to: ['smoke'],
+    lends: { smoke: { max_agents: 2, monthly_spend_cap_usd: 50, cap_set: true } },
+    lend_spend_usd: { smoke: 18.25 },
+  }),
+  fixtureKey('night-key', 'anthropic-api', {
+    state: 'PAUSED',
+    reason: 'paused for the weekend',
+    monthly_spend_cap_usd: 100,
+    month_spend_usd: 64,
+  }),
+  fixtureKey('spare-key', 'anthropic-api', {
+    max_agents: 2,
+    monthly_spend_cap_usd: 50,
+    month_spend_usd: 50,
+    exhausted_at: ISO(-2 * 3600_000),
+    can_take_new_agent: false,
+  }),
+  fixtureKey('codex-key', 'openai-api', {
+    assigned: 1,
+    max_agents: 3,
+    month_spend_usd: 31.4,
+    pools: ['accounts', 'voice-it'],
+  }),
+]
 
 // ===========================================================================
 // Overview (the landing screen) -- two reads nothing else needed
@@ -11082,7 +11797,7 @@ function fixtureSecretsOverview(url: string): unknown {
       { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(5), set_by: 'alice@example.com', consumers: [], can_manage: true },
       { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
       { section: 'keys', store: 'mcp_servers', name: 'kb', consumer: 'mcp:kb', secrets: [], status: 'unset', set_at: null, set_by: null, consumers: ['mcp:kb'], can_manage: true },
-      { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/accounts' },
+      { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/llm-providers/plans' },
       github('tenant'),
     ],
   }
@@ -12963,7 +13678,8 @@ export interface ScheduleAuditEntry {
 export interface ApprovalItem {
   approval_id: string
   kind: string
-  subject: { run_id?: string; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
+  /** `workflow_id`: the workflow the item waits in (a run's, once it started one; an await-input or contract step's own). */
+  subject: { run_id?: string; workflow_id?: string | null; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
   summary: string
   state: string
   requested_at: string | null
@@ -13070,12 +13786,14 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
  * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
  * The development fixtures serve no inbox, and say so by being empty rather
- * than by inventing items.
+ * than by inventing items; behind the example plans' switch
+ * (`FIXTURE_EXAMPLE_PLANS`) it is their PLANNED runs, projected as the live
+ * API projects them (`fixtureApprovalItems`).
  */
 export async function loadApprovals(
   options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
 ): Promise<Result<{ approvals: ApprovalItem[] }>> {
-  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  if (USE_FIXTURES) return fixtureApprovals(options)
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
@@ -13139,7 +13857,7 @@ export interface ApprovalDetail {
 export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
   const target = route('/v1/approvals/{id}', { id: itemId })
   if (USE_FIXTURES) {
-    const made = fixtureContractApproval(itemId)
+    const made = fixtureContractApproval(itemId) ?? fixtureRunApproval(itemId)
     if (made === null) return scheduleNotServed(target)
     noteFixtureProbe(target, 0, true)
     return { status: 'ok', fetchedAt: Date.now(), data: made }
@@ -13148,9 +13866,66 @@ export async function loadApproval(itemId: string): Promise<Result<ApprovalDetai
 }
 
 /**
+ * THE FIXTURE INBOX: every PLANNED fixture run, as `approvals.project_run`
+ * projects one -- `run:<id>`, its digest the plan's, its summary the issue and
+ * the plan's summary, pending until the run is approved or rejected. Among
+ * them are the approval page's three example plans (`fixtureExampleRuns`).
+ * Only behind the example plans' switch (`FIXTURE_EXAMPLE_PLANS`): off it the
+ * inbox is empty and no `run:<id>` item is served or decided.
+ */
+const FIXTURE_RUN_APPROVAL = 'run:'
+
+function fixtureApprovalItems(): (ApprovalItem & { digest: string | null; approvers: string; may_decide: unknown })[] {
+  // Off the switch the fixture inbox is empty, as it always was.
+  if (!FIXTURE_EXAMPLE_PLANS) return []
+  return fixtureIssueRuns()
+    .filter((r) => r.state === 'PLANNED' && r.plan_approval === 'required')
+    .map((r) => ({
+      approval_id: `${FIXTURE_RUN_APPROVAL}${r.id}`, kind: 'plan',
+      subject: { run_id: r.id, issue: r.issue.ref, schedule_id: null, firing_id: null },
+      digest: r.plan_digest,
+      summary: `${r.issue.ref}: ${r.plan?.summary ?? ''}`,
+      approvers: 'members', state: 'pending',
+      requested_at: [...r.history].reverse().find((h) => h.to === 'PLANNED')?.at ?? r.created_at,
+      // A run made by hand waits as it always has.
+      expires_at: null, projected: true,
+      may_decide: { approve: true, reject: true, why: null, deciders: ['members'] },
+    }))
+    // Oldest first, as the inbox is.
+    .sort((a, b) => (a.requested_at ?? '').localeCompare(b.requested_at ?? ''))
+}
+
+async function fixtureApprovals(options: { kind?: string; state?: string }): Promise<Result<{ approvals: ApprovalItem[] }>> {
+  // No fixture probe, as before the example plans: the inbox is read by the
+  // frame on every page, and a probe here would add a `/v1/approvals` row to
+  // Capacity > API reads that the fixture build never showed.
+  // Every projected item is pending: a decided plan's run is no longer PLANNED.
+  const approvals = options.state === 'decided' || options.state === 'expired'
+    ? []
+    : fixtureApprovalItems().filter((i) => options.kind === undefined || options.kind === '' || i.kind === options.kind)
+  return approvals.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', fetchedAt: Date.now(), data: { approvals } }
+}
+
+/** `GET /v1/approvals/run:<id>` on the fixtures: the projected item and its run, as the route serves them. */
+function fixtureRunApproval(itemId: string): ApprovalDetail | null {
+  const approval = fixtureApprovalItems().find((i) => i.approval_id === itemId)
+  const run = fixtureIssueRuns().find((r) => r.id === approval?.subject.run_id)
+  return approval === undefined || run === undefined ? null : { approval, run: run as unknown as ApprovalDetail['run'] }
+}
+
+/** A projected plan's decision on the fixtures is its run's own, as the route decides it; null for any other item. */
+async function fixtureRunDecision(itemId: string, action: 'approve' | 'reject', reason = ''): Promise<Result<unknown> | null> {
+  const item = fixtureApprovalItems().find((i) => i.approval_id === itemId)
+  if (item === undefined || item.subject.run_id === undefined) return null
+  const r = await fixturePlanAction(item.subject.run_id, action, undefined, reason)
+  if (r.status !== 'ok') return r
+  return { status: 'ok', fetchedAt: r.fetchedAt, data: { approval: { ...item, state: action === 'approve' ? 'approved' : 'rejected' }, run: r.data.run } }
+}
+
+/**
  * THE FIXTURE BUILD'S JEV JUDGMENTS (jev-contract.md lane 7), each a merge
- * waiting on its owner and opened by address, `/automate/approvals/<id>`: the
- * inbox stays empty, as the fixture build's inbox always is.
+ * waiting on its owner and opened by address, `/automate/approvals/<id>`: none
+ * is in the fixture inbox, which lists only the PLANNED runs.
  *
  *   * `apr_fixture_contract_judged`: Jev judged three requirements, one unmet,
  *     and the step was already sent back twice;
@@ -13255,14 +14030,14 @@ export function fixtureContractRefusal(body: Record<string, unknown>): { code: s
  */
 export async function approveApproval(itemId: string, body: { digest: unknown; confirm?: string }): Promise<Result<unknown>> {
   const target = route('/v1/approvals/{id}:approve', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) return (await fixtureRunDecision(itemId, 'approve')) ?? scheduleNotServed(target)
   return write(target, 'POST', body)
 }
 
 /** `POST /v1/approvals/{id}:reject`: any member may, and a reason is required (§4.5). */
 export async function rejectApproval(itemId: string, body: { reason: string }): Promise<Result<unknown>> {
   const target = route('/v1/approvals/{id}:reject', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) return (await fixtureRunDecision(itemId, 'reject', body.reason)) ?? scheduleNotServed(target)
   return write(target, 'POST', body)
 }
 
@@ -14313,6 +15088,31 @@ export interface SetupStepNeed {
   reason: string | null
 }
 
+/** One install a person added, as `steps.plugins.added` lists it (swarm-api's `added_plugins`). */
+export interface SetupAddedPlugin {
+  install_id: string
+  name: string
+  display_name: string
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+}
+
+/**
+ * `steps.plugins`, the optional plugin step (managed-plugins §15.1, swarm-api's
+ * `plugins_step_view`): `done` once an install a person added is active (the
+ * bundled ones never count), `skipped` when a platform admin skipped it and
+ * none exists, else `todo`. It is never needed.
+ */
+export interface SetupPluginsStep {
+  state: 'todo' | 'skipped' | 'done'
+  count: number
+  added: SetupAddedPlugin[]
+  /** `console/plugins_step`: who skipped it and when; null when it is not skipped. */
+  skipped: { skipped_at: string | null; skipped_by: string | null } | null
+  /** The active bundled installs' names (§1.4), never counted; empty when the route serves none. */
+  bundled: string[]
+}
+
 /** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
 export interface SetupVerifyRuns {
   task: string | null
@@ -14391,7 +15191,7 @@ export interface SetupState {
   /** The personal workspace's row for one person; null for a team. */
   personal: SetupPersonal | null
   /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
-  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
+  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null; plugins?: SetupPluginsStep | null } | null
   /** The usual length of each wait (`typical_s`); empty when the route serves none. */
   typical_s: SetupTypical
 }
@@ -14530,6 +15330,28 @@ function normPersonal(raw: unknown): SetupPersonal | null {
   }
 }
 
+/** `steps.plugins`, or null from a route that serves none: then no plugin line is drawn. */
+export function normPluginsStep(raw: unknown): SetupPluginsStep | null {
+  const s = objOf(raw)
+  if (s === null) return null
+  const added = (Array.isArray(s.added) ? s.added : [])
+    .map(objOf)
+    .filter((a): a is Record<string, unknown> => a !== null && strOf(a.install_id) !== null)
+    .map((a): SetupAddedPlugin => {
+      const name = strOf(a.name) ?? (strOf(a.install_id) as string)
+      return { install_id: strOf(a.install_id) as string, name, display_name: strOf(a.display_name) ?? name, scope: a.scope === 'workspace' ? 'workspace' : 'platform', tenant_id: strOf(a.tenant_id) }
+    })
+  const skipped = objOf(s.skipped)
+  const state = s.state === 'done' || s.state === 'skipped' ? s.state : 'todo'
+  return {
+    state,
+    count: typeof s.count === 'number' && Number.isFinite(s.count) && s.count >= 0 ? s.count : added.length,
+    added,
+    skipped: skipped === null ? null : { skipped_at: timeOf(skipped.skipped_at), skipped_by: strOf(skipped.skipped_by) },
+    bundled: labelsOf(s.bundled),
+  }
+}
+
 function normStepNeed(raw: unknown): SetupStepNeed | null {
   const s = objOf(raw)
   return s === null ? null : { needed: s.needed !== false, state: strOf(s.state) ?? '', reason: strOf(s.reason) }
@@ -14632,7 +15454,7 @@ export function normSetupState(raw: unknown): SetupState {
     sizing,
     mode,
     personal: mode === 'individual' ? normPersonal(d.personal) : null,
-    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
+    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites), plugins: normPluginsStep(steps.plugins) },
     typical_s: normTypical(d.typical_s),
   }
 }
@@ -14668,8 +15490,11 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
+/**
+ * `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes.
+ * `api-key`: a developer key for the account pool (API Keys › Add), naming its vendor (`provider`), ten minutes.
+ */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key' | 'api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -14746,7 +15571,7 @@ export function normSetupHealth(raw: unknown): SetupHealth | null {
 }
 
 /** A write's answer as T, or the write's own error. */
-async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
+async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 120))
     if (!fixtureIsAdmin) return fixtureAdminRefusal<T>(target, 120)
@@ -14857,6 +15682,41 @@ export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; 
 }
 
 /**
+ * `POST /v1/admin/setup/plugins/skip`: a platform admin skips the optional
+ * plugin step (`console/plugins_step`, audited `setup_step_skipped`). The
+ * answer is the step as it now reads; skipping again changes nothing.
+ */
+export function skipSetupPlugins(): Promise<Result<SetupPluginsStep | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/plugins/skip'),
+    'POST',
+    undefined,
+    (raw) => normPluginsStep(objOf(raw)?.plugins),
+    () => {
+      fixturePluginsSkipped = fixturePluginsSkipped ?? { skipped_at: new Date(FIXTURE_NOW).toISOString(), skipped_by: 'ana@example.com' }
+      return normPluginsStep(fixturePluginsStep())
+    },
+  )
+}
+
+/**
+ * `DELETE /v1/admin/setup/plugins/skip` ("Add one anyway"): the skip removed
+ * (audited `setup_step_unskipped`), and the step as it now reads.
+ */
+export function undoSetupPluginsSkip(): Promise<Result<SetupPluginsStep | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/plugins/skip'),
+    'DELETE',
+    undefined,
+    (raw) => normPluginsStep(objOf(raw)?.plugins),
+    () => {
+      fixturePluginsSkipped = null
+      return normPluginsStep(fixturePluginsStep())
+    },
+  )
+}
+
+/**
  * `POST /v1/admin/setup/teams`: the same call `swarm team add` makes. It
  * answers each invite with the group's Google Admin members page (#26), kept
  * so the form opens it; a page that is not Google Admin's is dropped.
@@ -14875,7 +15735,7 @@ export function createSetupTeam(body: { group: string; display_name?: string; fi
 }
 
 /** `POST /v1/admin/setup/links`: a one-time link for one named person. */
-export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string }): Promise<Result<SetupLink>> {
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string; provider?: ApiKeyProvider; replace?: boolean }): Promise<Result<SetupLink>> {
   return setupWrite(
     route('/v1/admin/setup/links'),
     'POST',
@@ -14884,7 +15744,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' || body.kind === 'api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 
@@ -14974,6 +15834,18 @@ function fixtureSignInClient(): Record<string, unknown> {
 }
 
 /** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+/**
+ * The fixture build's skip of the optional plugin step: the skip and undo
+ * fixtures set and clear it, and every fixture read of GET /v1/admin/setup
+ * serves it, so a skip holds across the re-read that follows it.
+ */
+let fixturePluginsSkipped: { skipped_at: string; skipped_by: string } | null = null
+
+/** The fixture's `steps.plugins` (managed-plugins §15.1): nothing added yet; skipped once the skip fixture ran. */
+function fixturePluginsStep(): Record<string, unknown> {
+  return { needed: false, optional: true, state: fixturePluginsSkipped === null ? 'todo' : 'skipped', count: 0, added: [], skipped: fixturePluginsSkipped, bundled: ['gstack', 'security-audit'] }
+}
+
 function fixtureSetupState(): Record<string, unknown> {
   const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
   const t0 = FIXTURE_NOW / 1000 - 240
@@ -15027,6 +15899,7 @@ function fixtureSetupState(): Record<string, unknown> {
       pool_accounts: 3,
       budget_usd: 900,
     },
+    steps: { plugins: fixturePluginsStep() },
   }
 }
 
@@ -15175,13 +16048,1550 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
 }
 
 // --------------------------------------------------------------------------
+// Config › Plugins, managed (docs/design/managed-plugins.md §6, §7, lane 10c):
+// the workspace's catalogue (`routes/plugin_catalogue.py`), each plugin's
+// settings, secrets and bindings, and the plugins on for every step
+// (`routes/plugin_config.py`). A secret's value is sent once, on its own
+// route, with a one-time link's token, and no answer here ever carries one.
+// --------------------------------------------------------------------------
+
+const PLUGIN_CATALOGUE_OF = '/v1/workspaces/{tenant_id}/plugin-catalogue'
+const PLUGIN_CONFIG_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}'
+const PLUGIN_SECRET_OF = '/v1/workspaces/{tenant_id}/plugin-config/{install_id}/secrets/{field}'
+const PLUGIN_DEFAULTS_OF = '/v1/workspaces/{tenant_id}/plugin-defaults'
+
+/** Where a catalogue entry comes from: baked in the image, the platform's catalogue, or this workspace's own. */
+export type PluginScope = 'built_in' | 'platform' | 'workspace'
+
+export interface PluginComponentCounts {
+  skills: number
+  commands: number
+  agents: number
+  hooks: number
+  mcp_servers: number
+}
+
+/** One card of the workspace's catalogue (`pluginstore.install_view`, `plugincatalogue.builtin_entries`). */
+export interface PluginEntry {
+  install_id: string
+  name: string
+  scope: PluginScope
+  version: string | null
+  description: string | null
+  /** The install's source as the API serves it (`kind`, `repository`, `ref`, `commit`, `filename`); null for a built-in. */
+  source: Record<string, unknown> | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts of what the pinned copy ships; null for a built-in, whose skills ride per mode. */
+  components: PluginComponentCounts | null
+  /** A built-in's skills per mode; null for an install. */
+  skills_by_mode: Record<string, string[]> | null
+  runner_profiles: string[]
+  updated_at: string | null
+  updated_by: string | null
+}
+
+export interface WorkspaceCatalogue {
+  tenant_id: string
+  entries: PluginEntry[]
+  /** The caller is the workspace's owner or admin: it may install a private plugin. */
+  can_install: boolean
+}
+
+function pText(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pTally(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0
+}
+
+function normPluginEntry(raw: unknown, scope: PluginScope): PluginEntry | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.install_id)
+  const name = pText(r.name) ?? pText(r.display_name)
+  if (id === null || name === null) return null
+  const c = r.components === undefined || r.components === null ? null : pluginRecord(r.components)
+  const modes = r.skills === undefined || r.skills === null ? null : pluginRecord(r.skills)
+  return {
+    install_id: id,
+    name,
+    scope,
+    version: pText(r.version),
+    description: pText(r.description),
+    source: scope === 'built_in' ? null : pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: c === null ? null : { skills: pTally(c.skills), commands: pTally(c.commands), agents: pTally(c.agents), hooks: pTally(c.hooks), mcp_servers: pTally(c.mcp_servers) },
+    skills_by_mode: modes === null ? null : Object.fromEntries(Object.entries(modes).map(([m, s]) => [m, pluginStrings(s)])),
+    runner_profiles: pluginStrings(r.runner_profiles),
+    updated_at: pText(r.updated_at),
+    updated_by: pText(r.updated_by),
+  }
+}
+
+/** What `GET /v1/workspaces/{tenant_id}/plugin-catalogue` answers, as one list of cards. */
+export function normWorkspaceCatalogue(raw: unknown): WorkspaceCatalogue {
+  const r = pluginRecord(raw)
+  const list = (v: unknown, scope: PluginScope) =>
+    (Array.isArray(v) ? v : []).map((e) => normPluginEntry(e, scope)).filter((e): e is PluginEntry => e !== null)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    entries: [...list(r.built_in, 'built_in'), ...list(r.platform_installs, 'platform'), ...list(r.installs, 'workspace')],
+    can_install: r.can_install === true,
+  }
+}
+
+/** The value of a plugin's field kinds (`pluginconfig.form_fields`): a value, a path in the checkout, a secret, a file. */
+export type PluginFieldKind = 'value' | 'path' | 'secret' | 'file'
+
+export interface PluginField {
+  key: string
+  source: 'user_config' | 'overlay'
+  /** `string`, `number`, `boolean`, `directory` or `file`, as the manifest or the overlay declares it. */
+  type: string
+  kind: PluginFieldKind
+  title: string | null
+  description: string | null
+  required: boolean
+  multiple: boolean
+  default: unknown
+  /** `env` or `file`: where the worker puts it. */
+  target: string
+  variable: string | null
+  /** The workspace keys this field may use instead of a value (`typesafe`). */
+  bindable: string[]
+}
+
+/** What the console is shown of one field's value: a non-secret value, or only whether a secret or file is set. */
+export interface PluginFieldState {
+  set: boolean
+  value?: unknown
+  binding?: { kind: string; provider: string }
+  set_at?: string | null
+  set_by?: string | null
+  sha256?: string | null
+  bytes?: number | null
+}
+
+export interface PluginConfig {
+  tenant_id: string
+  install_id: string
+  version_id: string
+  fields: PluginField[]
+  revision: number
+  values: Record<string, PluginFieldState>
+  missing: string[]
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+}
+
+const FIELD_KINDS: readonly PluginFieldKind[] = ['value', 'path', 'secret', 'file']
+
+function normPluginField(raw: unknown): PluginField | null {
+  const r = pluginRecord(raw)
+  const key = pText(r.key)
+  const kind = FIELD_KINDS.find((k) => k === r.kind)
+  if (key === null || kind === undefined) return null
+  return {
+    key,
+    source: r.source === 'overlay' ? 'overlay' : 'user_config',
+    type: pText(r.type) ?? 'string',
+    kind,
+    title: pText(r.title),
+    description: pText(r.description),
+    required: r.required === true,
+    multiple: r.multiple === true,
+    default: r.default ?? null,
+    target: pText(r.target) ?? 'env',
+    variable: pText(r.variable),
+    bindable: pluginStrings(r.bindable),
+  }
+}
+
+function normFieldState(raw: unknown): PluginFieldState {
+  const r = pluginRecord(raw)
+  const b = r.binding === undefined || r.binding === null ? null : pluginRecord(r.binding)
+  // Only the shape a console may show: a value for a non-secret field, the
+  // binding, who set it and when. Anything else the answer carried is dropped.
+  return {
+    set: r.set === true,
+    ...('value' in r ? { value: r.value } : {}),
+    ...(b !== null ? { binding: { kind: pText(b.kind) ?? '', provider: pText(b.provider) ?? '' } } : {}),
+    ...('set_at' in r ? { set_at: pText(r.set_at) } : {}),
+    ...('set_by' in r ? { set_by: pText(r.set_by) } : {}),
+    ...('sha256' in r ? { sha256: pText(r.sha256) } : {}),
+    ...('bytes' in r ? { bytes: typeof r.bytes === 'number' ? r.bytes : null } : {}),
+  }
+}
+
+/** What `GET` and `PUT .../plugin-config/{install_id}` answer. */
+export function normPluginConfig(raw: unknown): PluginConfig {
+  const r = pluginRecord(raw)
+  const form = pluginRecord(r.form)
+  const values = pluginRecord(r.values)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    install_id: typeof form.install_id === 'string' ? form.install_id : '',
+    version_id: typeof form.version_id === 'string' ? form.version_id : '',
+    fields: (Array.isArray(form.fields) ? form.fields : []).map(normPluginField).filter((f): f is PluginField => f !== null),
+    revision: typeof r.revision === 'number' ? r.revision : 0,
+    values: Object.fromEntries(Object.entries(values).map(([k, v]) => [k, normFieldState(v)])),
+    missing: pluginStrings(r.missing),
+    set_at: pText(r.set_at),
+    set_by: pText(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+export interface PluginDefaults {
+  tenant_id: string
+  /** Built-in names and install ids on for every step. */
+  defaults: string[]
+  can_edit: boolean
+}
+
+function normPluginDefaults(raw: unknown): PluginDefaults {
+  const r = pluginRecord(raw)
+  return { tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '', defaults: pluginStrings(r.defaults), can_edit: r.can_edit === true }
+}
+
+/** A one-time link to one secret or file setting's form: ten minutes, one use, this caller's. */
+export interface PluginSecretLink {
+  field: string
+  /** The console address the API minted (absolute when it knows the console's origin). */
+  url: string | null
+  path: string
+  expires_at: string | null
+  /** The link's `t`, held in memory to send back with the value; never drawn. */
+  token: string | null
+}
+
+function normSecretLink(raw: unknown): PluginSecretLink {
+  const r = pluginRecord(raw)
+  const path = typeof r.path === 'string' ? r.path : ''
+  const at = path.indexOf('?')
+  const t = at === -1 ? null : new URLSearchParams(path.slice(at + 1)).get('t')
+  return { field: typeof r.field === 'string' ? r.field : '', url: pText(r.url), path, expires_at: pText(r.expires_at), token: t === null || t === '' ? null : t }
+}
+
+function normIntake(raw: unknown): PluginIntake {
+  const r = pluginRecord(raw)
+  const refusal = r.refusal === null || r.refusal === undefined ? null : pluginRecord(r.refusal)
+  return {
+    intake_id: typeof r.intake_id === 'string' ? r.intake_id : '',
+    state: typeof r.state === 'string' ? r.state : '',
+    install_id: pText(r.install_id),
+    version_id: pText(r.version_id),
+    refusal: refusal === null ? null : { code: pText(refusal.code) ?? '', sentence: pText(refusal.sentence) },
+    deadline: pText(r.deadline),
+  }
+}
+
+/** A pinned version as the preview draws it (`pluginstore.version_view`). */
+export interface WorkspacePluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  license: string | null
+  description: string | null
+  source: Record<string, unknown>
+  runnable_sha256: string | null
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hooks: { event: string; matcher: string | null; command: string }[]
+  mcp_servers: { name: string; url_host: string | null }[]
+  runtimes: string[]
+  hosts: string[]
+  profiles: string[]
+  user_config: number
+  created_at: string | null
+  created_by: string | null
+}
+
+// The managed plugin catalogue (docs/design/managed-plugins.md §1, §2;
+// swarm-api routes/plugin_catalogue.py). Admin › Plugins reads the platform
+// catalogue; a workspace's private plugins answer the same shapes.
+// --------------------------------------------------------------------------
+
+/** Which catalogue a call names: the platform's (a platform admin's), or one workspace's. */
+export type PluginCatalogueScope = { kind: 'platform' } | { kind: 'workspace'; tenantId: string }
+
+export const PLATFORM_PLUGIN_CATALOGUE: PluginCatalogueScope = { kind: 'platform' }
+
+/** Each catalogue route, the platform's template and the workspace's, as the router declares them. */
+const CATALOGUE_ROUTES = {
+  catalogue: ['/v1/admin/plugin-catalogue', '/v1/workspaces/{tenant_id}/plugin-catalogue'],
+  installs: ['/v1/admin/plugin-catalogue/installs', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs'],
+  uploads: ['/v1/admin/plugin-catalogue/uploads', '/v1/workspaces/{tenant_id}/plugin-catalogue/uploads'],
+  intake: ['/v1/admin/plugin-catalogue/intakes/{intake_id}', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}'],
+  start: ['/v1/admin/plugin-catalogue/intakes/{intake_id}/start', '/v1/workspaces/{tenant_id}/plugin-catalogue/intakes/{intake_id}/start'],
+  versions: ['/v1/admin/plugin-catalogue/installs/{install_id}/versions', '/v1/workspaces/{tenant_id}/plugin-catalogue/installs/{install_id}/versions'],
+} as const
+
+function catalogueRoute(scope: PluginCatalogueScope, which: keyof typeof CATALOGUE_ROUTES, params: Readonly<Record<string, string>> = {}): ApiRoute {
+  const [platform, workspace] = CATALOGUE_ROUTES[which]
+  return scope.kind === 'platform' ? route(platform, params) : route(workspace, { ...params, tenant_id: scope.tenantId })
+}
+
+/** Where a plugin came from, as the install or version records it. */
+export interface CatalogueSource {
+  /** `github`, `marketplace`, `upload`, or `image` for a built-in. */
+  kind: string
+  repository: string | null
+  ref: string | null
+  commit: string | null
+  subdir: string | null
+  /** The marketplace entry's name. */
+  plugin: string | null
+  /** An upload's file name. */
+  filename: string | null
+}
+
+/** One card of the catalogue: `pluginstore.install_view`, or a built-in entry. */
+export interface CatalogueEntry {
+  install_id: string
+  name: string
+  display_name: string
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  built_in: boolean
+  source: CatalogueSource
+  version: string | null
+  description: string | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** Counts per component kind; a built-in's skills come from its modes. */
+  components: { skills: number; commands: number; agents: number; hooks: number; mcp_servers: number }
+  runner_profiles: string[]
+  removable: boolean
+  updatable: boolean
+  updated_at: string | null
+  updated_by: string | null
+  /** In a workspace's view of the platform's installs: whether it allows the plugin. */
+  allowed: boolean | null
+}
+
+export interface PluginCatalogue {
+  scope: 'platform' | 'workspace'
+  built_in: CatalogueEntry[]
+  installs: CatalogueEntry[]
+  /** The platform view's workspace installs; a workspace view's platform installs. */
+  others: CatalogueEntry[]
+  /** The intake's caps (the owner's Q8 answer), or null from an API that did not serve them. */
+  limits: { max_packed_bytes: number; max_unpacked_bytes: number; max_files: number; max_expansion_ratio: number } | null
+  can_install: boolean
+}
+
+/** One fetch or upload in flight: `routes.plugin_catalogue.intake_view`. */
+export interface CatalogueIntake {
+  intake_id: string
+  /** `awaiting_upload`, `running`, `pinned` or `refused`. */
+  state: string
+  install_id: string | null
+  version_id: string | null
+  source: CatalogueSource | null
+  /** A fixed code; `sentence` is swarm-api's own for its codes, null for one the intake job reported. */
+  refusal: { code: string; sentence: string | null; entry_index: number | null } | null
+  deadline: string | null
+}
+
+/** One pinned version: `pluginstore.version_view`. */
+export interface PluginVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  source: CatalogueSource | null
+  source_sha256: string | null
+  runnable_sha256: string | null
+  runnable_bytes: number | null
+  files: number | null
+  unpacked_bytes: number | null
+  manifest: Record<string, unknown>
+  components: {
+    skills: { name: string }[]
+    commands: { name: string }[]
+    agents: { name: string }[]
+    hooks: { event: string; matcher: string | null; command: string }[]
+    mcp_servers: { name: string; command: string | null }[]
+  }
+  /** Runtimes the intake found or the overlay declared, as `name` or `name >= min`. */
+  runtimes: string[]
+  profiles: string[]
+  hosts: string[]
+  created_at: string | null
+  created_by: string | null
+}
+
+function pluginNames(v: unknown): string[] {
+  return (Array.isArray(v) ? v : []).map((e) => pText(pluginRecord(e).name)).filter((n): n is string => n !== null)
+}
+
+function normVersion(raw: unknown): WorkspacePluginVersion {
+  const r = pluginRecord(raw)
+  const m = pluginRecord(r.manifest)
+  const c = pluginRecord(r.components)
+  const req = pluginRecord(r.requires)
+  return {
+    version_id: typeof r.version_id === 'string' ? r.version_id : '',
+    current: r.current === true,
+    version: pText(r.version) ?? pText(m.version),
+    license: pText(m.license),
+    description: pText(m.description),
+    source: pluginRecord(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    skills: pluginNames(c.skills),
+    commands: pluginNames(c.commands),
+    agents: pluginNames(c.agents),
+    hooks: (Array.isArray(c.hooks) ? c.hooks : []).map((h) => {
+      const x = pluginRecord(h)
+      return { event: pText(x.event) ?? '', matcher: pText(x.matcher), command: pText(x.command) ?? '' }
+    }),
+    mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).map((s) => {
+      const x = pluginRecord(s)
+      return { name: pText(x.name) ?? '', url_host: pText(x.url_host) }
+    }),
+    runtimes: (Array.isArray(req.runtimes) ? req.runtimes : []).map((x) => {
+      const t = pluginRecord(x)
+      const n = pText(t.name)
+      const v = pText(t.min_version)
+      return n === null ? '' : v === null ? n : `${n} ${v}`
+    }).filter((n) => n !== ''),
+    hosts: pluginStrings(r.hosts),
+    profiles: pluginStrings(req.profiles),
+    user_config: Array.isArray(m.user_config) ? m.user_config.length : 0,
+    created_at: pText(r.created_at),
+    created_by: pText(r.created_by),
+  }
+}
+
+const PLUGIN_FIXTURE_TENANT = 'u-owner'
+
+/** The fixture build's catalogue: the two built-ins the fixture Allowed list serves, nothing installed. */
+function fixtureCatalogue(): Record<string, unknown> {
+  const served = normWorkspacePlugins(fixturePlugins())
+  return {
+    scope: 'workspace',
+    tenant_id: PLUGIN_FIXTURE_TENANT,
+    built_in: served.catalogue.map((p) => ({
+      install_id: `builtin:${p.name}`, name: p.name, display_name: p.name, scope: 'platform', built_in: true, state: 'active',
+      source: { kind: 'image' }, current_version: null, version: p.version, runner_profiles: p.runner_profiles,
+      skills: Object.fromEntries(Object.entries(p.modes).map(([m, o]) => [m, o?.skills ?? []])), hosts: [],
+    })),
+    platform_installs: [],
+    installs: [],
+    can_install: true,
+  }
+}
+
+let fixturePluginDefaults: string[] = []
+
+async function pluginFixture<T>(target: ApiRoute, value: T): Promise<Result<T>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe(target, 40, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: value }
+}
+
+function mapPlugin<T>(r: Result<unknown>, norm: (raw: unknown) => T): Result<T> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`: the built-ins, the platform's installs and this workspace's own. */
+export async function loadWorkspaceCatalogue(tenantId: string): Promise<Result<WorkspaceCatalogue>> {
+  const target = route(PLUGIN_CATALOGUE_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return pluginFixture(target, normWorkspaceCatalogue(fixtureCatalogue()))
+  return mapPlugin(await read<unknown>(target, () => false), normWorkspaceCatalogue)
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: the plugins on for every step. */
+export async function loadPluginDefaults(tenantId: string): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  return mapPlugin(await read<unknown>(target, () => false), normPluginDefaults)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/plugin-defaults` with `{defaults}`: signed and audited by the API. */
+export async function savePluginDefaults(tenantId: string, defaults: readonly string[]): Promise<Result<PluginDefaults>> {
+  const target = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    fixturePluginDefaults = [...new Set(defaults)].sort()
+    return pluginFixture(target, { tenant_id: PLUGIN_FIXTURE_TENANT, defaults: [...fixturePluginDefaults], can_edit: true })
+  }
+  return mapPlugin(await write(target, 'PUT', { defaults: [...defaults] }), normPluginDefaults)
+}
+
+/** `GET .../plugin-config/{install_id}`: the form the pinned version declares and the workspace's values (never a secret's). */
+export async function loadPluginConfig(tenantId: string, installId: string): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normPluginConfig)
+}
+
+/**
+ * `PUT .../plugin-config/{install_id}`: non-secret values only, against the
+ * version and the revision the form was read at (a stale form is refused
+ * `form_changed` or `config_conflict`). `null` clears a value.
+ */
+export async function savePluginValues(
+  tenantId: string,
+  installId: string,
+  body: { version_id: string; revision: number; values: Record<string, unknown> },
+): Promise<Result<PluginConfig>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', body), normPluginConfig)
+}
+
+/** `POST .../secrets/{field}/links`: a one-time link to set one secret or file setting. */
+export async function mintPluginSecretLink(tenantId: string, installId: string, field: string): Promise<Result<PluginSecretLink>> {
+  const target = route(`${PLUGIN_SECRET_OF}/links`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST'), normSecretLink)
+}
+
+/** `PUT .../secrets/{field}`: the value, once, with its link's token. The answer says only that it is set. */
+export async function storePluginSecret(tenantId: string, installId: string, field: string, value: string, linkToken: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { value, link_token: linkToken }), normFieldState)
+}
+
+/** `DELETE .../secrets/{field}`: destroy a secret or a file setting's content. */
+export async function removePluginSecret(tenantId: string, installId: string, field: string): Promise<Result<PluginFieldState>> {
+  const target = route(PLUGIN_SECRET_OF, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'DELETE')
+  return mapPlugin(await write(target, 'DELETE'), normFieldState)
+}
+
+/** `PUT .../secrets/{field}/binding`: use a workspace key (a closed list: `typesafe`) instead of a value. */
+export async function bindPluginSecret(tenantId: string, installId: string, field: string, provider: string): Promise<Result<PluginFieldState>> {
+  const target = route(`${PLUGIN_SECRET_OF}/binding`, { tenant_id: tenantId, install_id: installId, field })
+  if (USE_FIXTURES) return repoNotServed(target, 'PUT')
+  return mapPlugin(await write(target, 'PUT', { provider }), normFieldState)
+}
+
+/** A workspace install's source: a GitHub repository at a ref, or a marketplace's entry. */
+export type PluginSourceBody =
+  | { kind: 'github'; repository: string; ref: string; subdir: string }
+  | { kind: 'marketplace'; repository: string; ref: string; plugin: string }
+
+/** `POST .../plugin-catalogue/installs`: fetch, quarantine and start the network-less intake. Its owner's or admin's. */
+export async function installWorkspacePlugin(tenantId: string, source: PluginSourceBody, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(target, 'POST')
+  return mapPlugin(await write(target, 'POST', overlay === null ? { source } : { source, overlay }), normIntake)
+}
+
+/**
+ * An upload's three steps: `POST .../uploads` opens the intake and a signed
+ * URL bound to the archive's type and size; the bytes go straight to it, never
+ * through swarm-api; `POST .../intakes/{id}/start` runs the intake.
+ */
+export async function uploadWorkspacePlugin(tenantId: string, file: File, subdir: string, overlay: Record<string, unknown> | null): Promise<Result<PluginIntake>> {
+  const opened = route(`${PLUGIN_CATALOGUE_OF}/uploads`, { tenant_id: tenantId })
+  if (USE_FIXTURES) return repoNotServed(opened, 'POST')
+  const body: Record<string, unknown> = { filename: file.name, size: file.size, subdir }
+  if (overlay !== null) body.overlay = overlay
+  const r = await write(opened, 'POST', body)
+  if (r.status !== 'ok' && r.status !== 'stale') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was not opened.' } }
+  const answer = pluginRecord(r.data)
+  const intake = normIntake(answer.intake)
+  const upload = pluginRecord(answer.upload)
+  const url = pText(upload.url)
+  if (url === null || intake.intake_id === '') {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The upload was opened without a destination.' } }
+  }
+  const headers = Object.fromEntries(Object.entries(pluginRecord(upload.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  const tenant = chosenTenant()
+  let sent: Response
+  try {
+    sent = await fetch(url, {
+      method: 'PUT', body: file,
+      headers: apiHeaders(headers, tenant),
+    })
+  } catch {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The archive could not be sent.' } }
+  }
+  if (!sent.ok) {
+    let code: string | null = null
+    try {
+      const parsed: unknown = await sent.json()
+      if (typeof parsed === 'object' && parsed !== null && typeof (parsed as { code?: unknown }).code === 'string') code = (parsed as { code: string }).code
+    } catch {
+      code = null
+    }
+    dropRefusedTenant(sent.status, code, tenant)
+    return { status: 'error', error: { kind: 'server_error', httpStatus: sent.status, code: null, message: `The archive was refused by its destination (HTTP ${sent.status}).` } }
+  }
+  const start = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}/start`, { tenant_id: tenantId, intake_id: intake.intake_id })
+  return mapPlugin(await write(start, 'POST'), normIntake)
+}
+
+/** `GET .../plugin-catalogue/intakes/{intake_id}`: its state; reading it finishes one whose report is there. */
+export async function readWorkspaceIntake(tenantId: string, intakeId: string): Promise<Result<PluginIntake>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/intakes/{intake_id}`, { tenant_id: tenantId, intake_id: intakeId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), normIntake)
+}
+
+/** `GET .../plugin-catalogue/installs/{install_id}/versions`: the pinned versions, current first as the API orders them. */
+export async function loadWorkspacePluginVersions(tenantId: string, installId: string): Promise<Result<WorkspacePluginVersion[]>> {
+  const target = route(`${PLUGIN_CATALOGUE_OF}/installs/{install_id}/versions`, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) return repoNotServed(target)
+  return mapPlugin(await read<unknown>(target, () => false), (raw) => {
+    const v = pluginRecord(raw).versions
+    return (Array.isArray(v) ? v : []).map(normVersion)
+  })
+}
+
+export interface CatalogueVersions {
+  install: CatalogueEntry
+  versions: PluginVersion[]
+}
+
+/** A GitHub repository or a marketplace entry, as Add plugin sends it (`SourceBody`). */
+export interface PluginSourceInput {
+  kind: 'github' | 'marketplace'
+  repository: string
+  ref: string
+  subdir: string
+  plugin: string | null
+}
+
+/** The signed upload URL `POST .../uploads` answers: valid ten minutes, never kept. */
+export interface PluginUploadTarget {
+  method: string
+  url: string
+  headers: Record<string, string>
+}
+
+function catStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function catNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normCatalogueSource(raw: unknown): CatalogueSource {
+  const r = pluginRecord(raw)
+  return {
+    kind: catStr(r.kind) ?? 'unknown',
+    repository: catStr(r.repository),
+    ref: catStr(r.ref),
+    commit: catStr(r.commit),
+    subdir: catStr(r.subdir),
+    plugin: catStr(r.plugin),
+    filename: catStr(r.filename),
+  }
+}
+
+function normCatalogueEntry(raw: unknown): CatalogueEntry | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.install_id)
+  const name = catStr(r.name)
+  if (id === null || name === null) return null
+  const counts = pluginRecord(r.components)
+  const count = (k: string) => catNum(counts[k]) ?? 0
+  // A built-in serves its skills per mode; the card counts the distinct ones.
+  const modeSkills = new Set(Object.values(pluginRecord(r.skills)).flatMap(pluginStrings))
+  return {
+    install_id: id,
+    name,
+    display_name: catStr(r.display_name) ?? name,
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    tenant_id: catStr(r.tenant_id),
+    built_in: r.built_in === true,
+    source: normCatalogueSource(r.source),
+    version: catStr(r.version),
+    description: catStr(r.description),
+    runnable_sha256: catStr(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    components: { skills: Math.max(count('skills'), modeSkills.size), commands: count('commands'), agents: count('agents'), hooks: count('hooks'), mcp_servers: count('mcp_servers') },
+    runner_profiles: pluginStrings(r.runner_profiles),
+    removable: r.removable === true,
+    updatable: r.updatable === true,
+    updated_at: catStr(r.updated_at),
+    updated_by: catStr(r.updated_by),
+    allowed: typeof r.allowed === 'boolean' ? r.allowed : null,
+  }
+}
+
+function catEntries(v: unknown): CatalogueEntry[] {
+  return (Array.isArray(v) ? v : []).map(normCatalogueEntry).filter((e): e is CatalogueEntry => e !== null)
+}
+
+/** `GET {base}`: the catalogue's built-ins, its installs and the other scope's. */
+export function normPluginCatalogue(raw: unknown): PluginCatalogue {
+  const r = pluginRecord(raw)
+  const l = pluginRecord(r.limits)
+  const packed = catNum(l.max_packed_bytes)
+  return {
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    built_in: catEntries(r.built_in),
+    installs: catEntries(r.installs),
+    others: catEntries(r.scope === 'workspace' ? r.platform_installs : r.workspace_installs),
+    limits: packed === null ? null : { max_packed_bytes: packed, max_unpacked_bytes: catNum(l.max_unpacked_bytes) ?? 0, max_files: catNum(l.max_files) ?? 0, max_expansion_ratio: catNum(l.max_expansion_ratio) ?? 0 },
+    can_install: r.can_install === true,
+  }
+}
+
+export function normCatalogueIntake(raw: unknown): CatalogueIntake | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.intake_id)
+  const state = catStr(r.state)
+  if (id === null || state === null) return null
+  const refusal = pluginRecord(r.refusal)
+  const code = catStr(refusal.code)
+  return {
+    intake_id: id,
+    state,
+    install_id: catStr(r.install_id),
+    version_id: catStr(r.version_id),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    refusal: code === null ? null : { code, sentence: catStr(refusal.sentence), entry_index: catNum(refusal.entry_index) },
+    deadline: catStr(r.deadline),
+  }
+}
+
+function catNamed(v: unknown): { name: string }[] {
+  return (Array.isArray(v) ? v : []).flatMap((x) => {
+    const n = catStr(pluginRecord(x).name)
+    return n === null ? [] : [{ name: n }]
+  })
+}
+
+function catRuntimes(requires: Record<string, unknown>): string[] {
+  const out = new Set<string>()
+  for (const part of ['suggested', 'declared']) {
+    for (const rt of Array.isArray(pluginRecord(requires[part]).runtimes) ? (pluginRecord(requires[part]).runtimes as unknown[]) : []) {
+      if (typeof rt === 'string') out.add(rt)
+      const o = pluginRecord(rt)
+      const n = catStr(o.name)
+      if (n !== null) out.add(catStr(o.min_version) === null ? n : `${n} >= ${String(o.min_version)}`)
+    }
+  }
+  return [...out].sort()
+}
+
+function normPluginVersion(raw: unknown): PluginVersion | null {
+  const r = pluginRecord(raw)
+  const id = catStr(r.version_id)
+  if (id === null) return null
+  const c = pluginRecord(r.components)
+  const requires = pluginRecord(r.requires)
+  return {
+    version_id: id,
+    current: r.current === true,
+    version: catStr(r.version),
+    source: r.source === null || r.source === undefined ? null : normCatalogueSource(r.source),
+    source_sha256: catStr(r.source_sha256),
+    runnable_sha256: catStr(r.runnable_sha256),
+    runnable_bytes: catNum(r.runnable_bytes),
+    files: catNum(r.files),
+    unpacked_bytes: catNum(r.unpacked_bytes),
+    manifest: pluginRecord(r.manifest),
+    components: {
+      skills: catNamed(c.skills),
+      commands: catNamed(c.commands),
+      agents: catNamed(c.agents),
+      hooks: (Array.isArray(c.hooks) ? c.hooks : []).flatMap((x) => {
+        const h = pluginRecord(x)
+        const event = catStr(h.event)
+        return event === null ? [] : [{ event, matcher: catStr(h.matcher), command: catStr(h.command) ?? '' }]
+      }),
+      mcp_servers: (Array.isArray(c.mcp_servers) ? c.mcp_servers : []).flatMap((x) => {
+        const s = pluginRecord(x)
+        const n = catStr(s.name)
+        return n === null ? [] : [{ name: n, command: catStr(s.command) }]
+      }),
+    },
+    runtimes: catRuntimes(requires),
+    profiles: pluginStrings(pluginRecord(requires.declared).profiles),
+    hosts: pluginStrings(r.hosts),
+    created_at: catStr(r.created_at),
+    created_by: catStr(r.created_by),
+  }
+}
+
+export function normCatalogueVersions(raw: unknown): CatalogueVersions | null {
+  const r = pluginRecord(raw)
+  const install = normCatalogueEntry(r.install)
+  if (install === null) return null
+  return { install, versions: (Array.isArray(r.versions) ? r.versions : []).map(normPluginVersion).filter((v): v is PluginVersion => v !== null) }
+}
+
+/** `GET {base}`: the catalogue, as its reader may see it. */
+export async function loadPluginCatalogue(scope: PluginCatalogueScope): Promise<Result<PluginCatalogue>> {
+  return readAs(catalogueRoute(scope, 'catalogue'), normPluginCatalogue)
+}
+
+/** `GET {base}/installs/{install_id}/versions`: an install and its pinned versions. */
+export async function loadCatalogueVersions(scope: PluginCatalogueScope, installId: string): Promise<Result<CatalogueVersions | null>> {
+  return readAs(catalogueRoute(scope, 'versions', { install_id: installId }), normCatalogueVersions)
+}
+
+/** `GET {base}/intakes/{intake_id}`: an intake's state; reading it also finishes one whose report is in. */
+export async function loadCatalogueIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<CatalogueIntake | null>> {
+  return readAs(catalogueRoute(scope, 'intake', { intake_id: intakeId }), normCatalogueIntake)
+}
+
+function catIntake(r: Result<unknown>): Result<CatalogueIntake | null> {
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normCatalogueIntake(r.data) }
+  return r
+}
+
+/** `POST {base}/installs`: resolve a GitHub ref or a marketplace entry, fetch it into quarantine, start the intake. */
+export async function startPluginInstall(scope: PluginCatalogueScope, source: PluginSourceInput, overlay: Record<string, unknown> | null): Promise<Result<CatalogueIntake | null>> {
+  const body = {
+    source: source.kind === 'github'
+      ? { kind: 'github', repository: source.repository, ref: source.ref, subdir: source.subdir }
+      : { kind: 'marketplace', repository: source.repository, ref: source.ref, plugin: source.plugin },
+    ...(overlay === null ? {} : { overlay }),
+  }
+  return catIntake(await writeTo(catalogueRoute(scope, 'installs'), 'POST', body))
+}
+
+/** `POST {base}/uploads`: an intake awaiting its archive, and the signed URL to put it at. */
+export async function openPluginUpload(
+  scope: PluginCatalogueScope,
+  file: { name: string; size: number },
+  subdir: string,
+  overlay: Record<string, unknown> | null,
+): Promise<Result<{ intake: CatalogueIntake; upload: PluginUploadTarget } | null>> {
+  const r = await writeTo(catalogueRoute(scope, 'uploads'), 'POST', { filename: file.name, size: file.size, subdir, ...(overlay === null ? {} : { overlay }) })
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const raw = pluginRecord(r.data)
+  const intake = normCatalogueIntake(raw.intake)
+  const u = pluginRecord(raw.upload)
+  const url = catStr(u.url)
+  const headers = Object.fromEntries(Object.entries(pluginRecord(u.headers)).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  return { ...r, data: intake === null || url === null ? null : { intake, upload: { method: catStr(u.method) ?? 'PUT', url, headers } } }
+}
+
+/**
+ * The archive's bytes, straight to Cloud Storage at the signed URL, so they
+ * never pass through swarm-api (§2.2). Answers whether the store took them;
+ * the URL is never logged or kept.
+ */
+export async function putPluginArchive(upload: PluginUploadTarget, file: Blob): Promise<boolean> {
+  // apiHeaders with no tenant: the store is cross-origin, the signed URL is
+  // the authority, and the chosen tenant (X-Swarm-Tenant) is swarm-api's
+  // header, never sent to Cloud Storage.
+  const tenant: string | null = null
+  try {
+    const r = await fetch(upload.url, {
+      method: upload.method,
+      headers: apiHeaders(upload.headers, tenant),
+      body: file,
+      credentials: 'omit',
+    })
+    // A refusal names the tenant that was sent, and none was: nothing to forget.
+    dropRefusedTenant(r.status, null, tenant)
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
+/** `POST {base}/intakes/{intake_id}/start`: the upload arrived, run the intake. */
+export async function startPluginIntake(scope: PluginCatalogueScope, intakeId: string): Promise<Result<CatalogueIntake | null>> {
+  return catIntake(await writeTo(catalogueRoute(scope, 'start', { intake_id: intakeId }), 'POST'))
+}
+
+// --------------------------------------------------------------------------
+// A managed plugin's page (docs/design/managed-plugins.md section 9, lane
+// 10b): its install and versions, the diff to a candidate and its apply, a
+// check for an update, its removal, its settings as the workspace holds them,
+// and who uses it. `swarm_api.routes.plugin_catalogue` and `plugin_config`.
+// --------------------------------------------------------------------------
+
+const PLUGIN_CATALOGUE_PLATFORM = '/v1/admin/plugin-catalogue'
+const PLUGIN_CATALOGUE_WORKSPACE = PLUGIN_CATALOGUE_OF
+
+/**
+ * Which catalogue holds an install: its id says it (`p-` the platform's,
+ * `w-` a workspace's, `swarm_api.pluginstore.INSTALL_ID`), and a workspace's
+ * catalogue is read through that workspace.
+ */
+export interface PluginPlace {
+  installId: string
+  /** The workspace the page is read in; null on Admin › Plugins. */
+  tenantId: string | null
+}
+
+export function pluginScopeOf(installId: string): 'platform' | 'workspace' {
+  return installId.startsWith('w-') ? 'workspace' : 'platform'
+}
+
+/** The catalogue route an install's own routes hang from; null when a workspace install has no workspace to read it in. */
+function pluginCatalogueBase(p: PluginPlace): { template: string; params: Record<string, string> } | null {
+  if (pluginScopeOf(p.installId) === 'platform') return { template: PLUGIN_CATALOGUE_PLATFORM, params: {} }
+  if (p.tenantId === null) return null
+  return { template: PLUGIN_CATALOGUE_WORKSPACE, params: { tenant_id: p.tenantId } }
+}
+
+export interface PluginHook {
+  event: string
+  matcher: string | null
+  command: string
+}
+
+export interface PluginComponents {
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hooks: PluginHook[]
+  mcp_servers: string[]
+}
+
+/** `pluginstore.install_view`: an install with its current version's summary. */
+export interface ManagedInstall {
+  install_id: string
+  name: string
+  display_name: string | null
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  state: string
+  /** The source as stored: `kind` and the strings it carries (repository, ref, commit, ...). */
+  source: Record<string, string>
+  current_version: string | null
+  version: string | null
+  description: string | null
+  runnable_sha256: string | null
+  hosts: string[]
+  /** How many of each component the current version ships. */
+  counts: Record<keyof PluginComponents, number>
+  removable: boolean
+  updatable: boolean
+  updated_at: string | null
+  updated_by: string | null
+  /** In a workspace's catalogue, a platform install: whether that workspace allows it; null where not said. */
+  allowed: boolean | null
+}
+
+/** `pluginstore.version_view`: one pinned version. */
+export interface ManagedVersion {
+  version_id: string
+  current: boolean
+  version: string | null
+  source: Record<string, string>
+  runnable_sha256: string | null
+  runnable_bytes: number | null
+  files: number | null
+  unpacked_bytes: number | null
+  license: string | null
+  homepage: string | null
+  components: PluginComponents
+  /** `requires`' runtimes, as the manifest or the overlay declares them. */
+  runtimes: string[]
+  hosts: string[]
+  created_at: string | null
+  created_by: string | null
+}
+
+export interface PluginVersions {
+  install: ManagedInstall
+  /** Newest first. */
+  versions: ManagedVersion[]
+}
+
+export interface PluginAddedRemoved {
+  added: string[]
+  removed: string[]
+}
+
+/** `pluginstore.version_diff`: what changes from the current version to another. */
+export interface PluginVersionDiff {
+  from_version_id: string | null
+  to_version_id: string | null
+  manifest: { field: string; from: string | null; to: string | null }[]
+  hooks: { added: PluginHook[]; removed: PluginHook[]; changed: { from: PluginHook; to: PluginHook }[] }
+  mcp_servers: PluginAddedRemoved & { changed: string[] }
+  skills: PluginAddedRemoved
+  commands: PluginAddedRemoved
+  agents: PluginAddedRemoved
+  settings: PluginAddedRemoved & { retyped: string[]; newly_sensitive: string[] }
+  hosts: PluginAddedRemoved
+  runtimes: { from: string[]; to: string[] } | null
+  files: { from: number | null; to: number | null }
+  unpacked_bytes: { from: number | null; to: number | null }
+  runnable_sha256: { from: string | null; to: string | null }
+  source: { from_commit: string | null; to_commit: string | null; compare: string | null }
+  /** Where a malicious update acts: hooks, mcp_servers, hosts, sensitive. */
+  marked: string[]
+  needs_confirmation: boolean
+}
+
+export interface PluginDiffAnswer {
+  install_id: string
+  diff: PluginVersionDiff
+  /** What an apply quotes: proof the admin applies the diff they read. */
+  diff_sha256: string
+}
+
+/**
+ * `routes.plugin_catalogue.intake_view`: a fetch or an upload being pinned,
+ * or a check for an update, while the intake job runs and after.
+ */
+export interface PluginIntake {
+  intake_id: string
+  state: 'awaiting_upload' | 'running' | 'pinned' | 'refused' | string
+  install_id: string | null
+  version_id: string | null
+  refusal: { code: string; sentence: string | null } | null
+  deadline: string | null
+}
+
+/** One field of `pluginconfig.form`, and the workspace's value for it (`values_view`). */
+export interface PluginSettingRow {
+  key: string
+  title: string | null
+  description: string | null
+  type: string
+  kind: string
+  required: boolean
+  sensitive: boolean
+  default: string | number | boolean | null
+  /** A value field's value, when set; never a secret's. */
+  value: string | number | boolean | null
+  set: boolean
+  set_by: string | null
+  set_at: string | null
+  /** A secret bound to a workspace key instead of stored: the provider. */
+  binding: string | null
+}
+
+export interface PluginSettings {
+  tenant_id: string
+  version_id: string | null
+  fields: PluginSettingRow[]
+  missing: string[]
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+}
+
+/**
+ * Who uses an install (section 9.2): the workspaces that allow it or make it
+ * an every-step default, saved workflows and agents whose steps name it, the
+ * schedules that run them, and steps queued or running with it now.
+ */
+export interface PluginUsage {
+  workspaces: { tenant_id: string; allowed: boolean; every_step: boolean }[]
+  workflows: { tenant_id: string; id: string; name: string; kind: string; steps: string[]; how: string }[]
+  schedules: { tenant_id: string; schedule_id: string; name: string }[]
+  steps: { tenant_id: string; task_id: string; workflow_id: string | null; step: string | null; state: string }[]
+}
+
+/** The workspace's own facts about a plugin: its catalogue's entry and its every-step defaults. */
+export interface PluginInWorkspace {
+  tenant_id: string
+  entry: ManagedInstall | null
+  every_step: boolean
+  can_install: boolean
+}
+
+function pCount(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function pStrings(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, x] of Object.entries(pluginRecord(v))) if (typeof x === 'string' && x !== '') out[k] = x
+  return out
+}
+
+function pNames(v: unknown): string[] {
+  return (Array.isArray(v) ? v : []).flatMap((e) => {
+    if (typeof e === 'string' && e !== '') return [e]
+    const n = pText(pluginRecord(e).name)
+    return n === null ? [] : [n]
+  })
+}
+
+function pHook(v: unknown): PluginHook | null {
+  const r = pluginRecord(v)
+  const event = pText(r.event)
+  return event === null ? null : { event, matcher: pText(r.matcher), command: pText(r.command) ?? '' }
+}
+
+function pHooks(v: unknown): PluginHook[] {
+  return (Array.isArray(v) ? v : []).map(pHook).filter((h): h is PluginHook => h !== null)
+}
+
+function pAddedRemoved(v: unknown): PluginAddedRemoved {
+  const r = pluginRecord(v)
+  return { added: pluginStrings(r.added), removed: pluginStrings(r.removed) }
+}
+
+const PLUGIN_COMPONENT_KEYS = ['skills', 'commands', 'agents', 'hooks', 'mcp_servers'] as const
+
+function normManagedInstall(raw: unknown): ManagedInstall | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.install_id)
+  const name = pText(r.name)
+  if (id === null || name === null) return null
+  const c = pluginRecord(r.components)
+  const counts = Object.fromEntries(PLUGIN_COMPONENT_KEYS.map((k) => [k, pCount(c[k]) ?? 0])) as ManagedInstall['counts']
+  return {
+    install_id: id,
+    name,
+    display_name: pText(r.display_name),
+    scope: r.scope === 'workspace' ? 'workspace' : 'platform',
+    tenant_id: pText(r.tenant_id),
+    state: pText(r.state) ?? 'active',
+    source: pStrings(r.source),
+    current_version: pText(r.current_version),
+    version: pText(r.version),
+    description: pText(r.description),
+    runnable_sha256: pText(r.runnable_sha256),
+    hosts: pluginStrings(r.hosts),
+    counts,
+    removable: r.removable === true,
+    updatable: r.updatable === true,
+    updated_at: pText(r.updated_at),
+    updated_by: pText(r.updated_by),
+    allowed: typeof r.allowed === 'boolean' ? r.allowed : null,
+  }
+}
+
+function normRuntimes(requires: unknown): string[] {
+  const r = pluginRecord(requires)
+  const declared = pluginRecord(r.declared)
+  const block = Object.keys(declared).length > 0 ? declared : pluginRecord(r.suggested)
+  return (Array.isArray(block.runtimes) ? block.runtimes : []).flatMap((x) => {
+    if (typeof x === 'string' && x !== '') return [x]
+    const o = pluginRecord(x)
+    const n = pText(o.name)
+    if (n === null) return []
+    const v = pText(o.version) ?? pText(o.min)
+    return [v === null ? n : `${n} ${v}`]
+  })
+}
+
+function normManagedVersion(raw: unknown): ManagedVersion | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.version_id)
+  if (id === null) return null
+  const m = pluginRecord(r.manifest)
+  const c = pluginRecord(r.components)
+  return {
+    version_id: id,
+    current: r.current === true,
+    version: pText(r.version) ?? pText(m.version),
+    source: pStrings(r.source),
+    runnable_sha256: pText(r.runnable_sha256),
+    runnable_bytes: pCount(r.runnable_bytes),
+    files: pCount(r.files),
+    unpacked_bytes: pCount(r.unpacked_bytes),
+    license: pText(m.license),
+    homepage: pText(m.homepage),
+    components: {
+      skills: pNames(c.skills),
+      commands: pNames(c.commands),
+      agents: pNames(c.agents),
+      hooks: pHooks(c.hooks),
+      mcp_servers: pNames(c.mcp_servers),
+    },
+    runtimes: normRuntimes(r.requires),
+    hosts: pluginStrings(r.hosts),
+    created_at: pText(r.created_at),
+    created_by: pText(r.created_by),
+  }
+}
+
+export function normPluginVersions(raw: unknown): PluginVersions | null {
+  const r = pluginRecord(raw)
+  const install = normManagedInstall(r.install)
+  if (install === null) return null
+  const versions = (Array.isArray(r.versions) ? r.versions : [])
+    .map(normManagedVersion)
+    .filter((v): v is ManagedVersion => v !== null)
+    .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+  return { install, versions }
+}
+
+function pFromTo(v: unknown): { from: number | null; to: number | null } {
+  const r = pluginRecord(v)
+  return { from: pCount(r.from), to: pCount(r.to) }
+}
+
+function pScalar(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  return typeof v === 'string' ? v : JSON.stringify(v)
+}
+
+export function normPluginDiff(raw: unknown): PluginDiffAnswer | null {
+  const r = pluginRecord(raw)
+  const d = pluginRecord(r.diff)
+  const sha = pText(r.diff_sha256)
+  if (sha === null || Object.keys(d).length === 0) return null
+  const hooks = pluginRecord(d.hooks)
+  const servers = pluginRecord(d.mcp_servers)
+  const settings = pluginRecord(d.settings)
+  const runtimes = d.runtimes === null || d.runtimes === undefined ? null : pluginRecord(d.runtimes)
+  const digests = pluginRecord(d.runnable_sha256)
+  const source = pluginRecord(d.source)
+  return {
+    install_id: pText(r.install_id) ?? '',
+    diff_sha256: sha,
+    diff: {
+      from_version_id: pText(d.from_version_id),
+      to_version_id: pText(d.to_version_id),
+      manifest: Object.entries(pluginRecord(d.manifest)).map(([field, ft]) => {
+        const o = pluginRecord(ft)
+        return { field, from: pScalar(o.from), to: pScalar(o.to) }
+      }),
+      hooks: {
+        added: pHooks(hooks.added),
+        removed: pHooks(hooks.removed),
+        changed: (Array.isArray(hooks.changed) ? hooks.changed : []).flatMap((c) => {
+          const o = pluginRecord(c)
+          const from = pHook(o.from)
+          const to = pHook(o.to)
+          return from === null || to === null ? [] : [{ from, to }]
+        }),
+      },
+      mcp_servers: { ...pAddedRemoved(servers), changed: pluginStrings(servers.changed) },
+      skills: pAddedRemoved(d.skills),
+      commands: pAddedRemoved(d.commands),
+      agents: pAddedRemoved(d.agents),
+      settings: { ...pAddedRemoved(settings), retyped: pluginStrings(settings.retyped), newly_sensitive: pluginStrings(settings.newly_sensitive) },
+      hosts: pAddedRemoved(d.hosts),
+      runtimes: runtimes === null ? null : { from: normRuntimes({ declared: { runtimes: runtimes.from } }), to: normRuntimes({ declared: { runtimes: runtimes.to } }) },
+      files: pFromTo(d.files),
+      unpacked_bytes: pFromTo(d.unpacked_bytes),
+      runnable_sha256: { from: pText(digests.from), to: pText(digests.to) },
+      source: { from_commit: pText(source.from_commit), to_commit: pText(source.to_commit), compare: pText(source.compare) },
+      marked: pluginStrings(d.marked),
+      needs_confirmation: d.needs_confirmation === true,
+    },
+  }
+}
+
+function normPluginIntake(raw: unknown): PluginIntake | null {
+  const r = pluginRecord(raw)
+  const id = pText(r.intake_id)
+  if (id === null) return null
+  const refusal = pluginRecord(r.refusal)
+  const code = pText(refusal.code)
+  return {
+    intake_id: id,
+    state: pText(r.state) ?? 'running',
+    install_id: pText(r.install_id),
+    version_id: pText(r.version_id),
+    refusal: code === null ? null : { code, sentence: pText(refusal.sentence) },
+    deadline: pText(r.deadline),
+  }
+}
+
+function pSettingValue(v: unknown): string | number | boolean | null {
+  return typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) ? v : null
+}
+
+export function normPluginSettings(raw: unknown): PluginSettings {
+  const r = pluginRecord(raw)
+  const form = pluginRecord(r.form)
+  const values = pluginRecord(r.values)
+  const fields = (Array.isArray(form.fields) ? form.fields : []).flatMap((f): PluginSettingRow[] => {
+    const o = pluginRecord(f)
+    const key = pText(o.key)
+    if (key === null) return []
+    const v = pluginRecord(values[key])
+    const binding = pluginRecord(v.binding)
+    return [{
+      key,
+      title: pText(o.title),
+      description: pText(o.description),
+      type: pText(o.type) ?? 'string',
+      kind: pText(o.kind) ?? 'value',
+      required: o.required === true,
+      sensitive: o.sensitive === true,
+      default: o.sensitive === true ? null : pSettingValue(o.default),
+      // A secret's value never comes back (section 6.2); only a value field's is read.
+      value: o.sensitive === true ? null : pSettingValue(v.value),
+      set: v.set === true,
+      set_by: pText(v.set_by),
+      set_at: pText(v.set_at),
+      binding: pText(binding.provider),
+    }]
+  })
+  return {
+    tenant_id: pText(r.tenant_id) ?? '',
+    version_id: pText(form.version_id),
+    fields,
+    missing: pluginStrings(r.missing),
+    set_at: pText(r.set_at),
+    set_by: pText(r.set_by),
+    can_edit: r.can_edit === true,
+  }
+}
+
+export function normPluginUsage(raw: unknown): PluginUsage {
+  const r = pluginRecord(raw)
+  const rows = (v: unknown) => (Array.isArray(v) ? v : []).map(pluginRecord)
+  return {
+    workspaces: rows(r.workspaces).flatMap((o) => {
+      const t = pText(o.tenant_id)
+      return t === null ? [] : [{ tenant_id: t, allowed: o.allowed === true, every_step: o.every_step === true }]
+    }),
+    workflows: rows(r.workflows).flatMap((o) => {
+      const id = pText(o.id)
+      return id === null
+        ? []
+        : [{ tenant_id: pText(o.tenant_id) ?? '', id, name: pText(o.name) ?? id, kind: pText(o.kind) ?? 'workflow', steps: pluginStrings(o.steps), how: pText(o.how) ?? 'added' }]
+    }),
+    schedules: rows(r.schedules).flatMap((o) => {
+      const id = pText(o.schedule_id)
+      return id === null ? [] : [{ tenant_id: pText(o.tenant_id) ?? '', schedule_id: id, name: pText(o.name) ?? id }]
+    }),
+    steps: rows(r.steps).flatMap((o) => {
+      const id = pText(o.task_id)
+      return id === null
+        ? []
+        : [{ tenant_id: pText(o.tenant_id) ?? '', task_id: id, workflow_id: pText(o.workflow_id), step: pText(o.step), state: pText(o.state) ?? 'queued' }]
+    }),
+  }
+}
+
+/** A refusal the page can say in place: the route answered, and what it answered is not the shape asked for. */
+function pluginShapeError(target: ApiRoute): Result<never> {
+  return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: `${target.template} answered a shape this console does not read` } }
+}
+
+function noPluginWorkspace(): Result<never> {
+  return { status: 'error', error: { kind: 'invalid', httpStatus: null, code: null, message: 'No workspace is chosen to read this plugin in' } }
+}
+
+/* The fixture build's one managed plugin: invented, generic, two versions. */
+const FIXTURE_PLUGIN_INSTALL = 'w-0123456789ab'
+const FIXTURE_PLUGIN_HOOK = { event: 'Stop', matcher: null, command: 'node check.mjs' }
+const FIXTURE_PLUGIN_NEW_HOOK = { event: 'PreToolUse', matcher: 'Bash', command: 'node guard.mjs' }
+let fixturePluginCurrent = 'v-000000000001'
+
+function fixturePluginVersion(id: string, version: string, at: number, hooks: unknown[]): Record<string, unknown> {
+  return {
+    version_id: id, current: id === fixturePluginCurrent, version,
+    source: { kind: 'github', repository: 'example-org/example-plugin', ref: `v${version}`, commit: id.slice(-1).repeat(40) },
+    runnable_sha256: id.slice(-1).repeat(64), runnable_bytes: 48_213, files: 12, unpacked_bytes: 131_072,
+    manifest: { name: 'example-plugin', version, license: 'MIT' },
+    components: { skills: [{ name: 'check' }], hooks, commands: [], agents: [], mcp_servers: [] },
+    requires: { declared: { runtimes: ['node'], hosts: ['api.example.com'] } }, hosts: ['api.example.com'],
+    created_at: new Date(at).toISOString(), created_by: 'member@example.com',
+  }
+}
+
+function fixturePluginVersions(): Record<string, unknown> {
+  const versions = [
+    fixturePluginVersion('v-000000000002', '0.3.0', FIXTURE_NOW - 2 * 3_600_000, [FIXTURE_PLUGIN_HOOK, FIXTURE_PLUGIN_NEW_HOOK]),
+    fixturePluginVersion('v-000000000001', '0.2.0', FIXTURE_NOW - 50 * 3_600_000, [FIXTURE_PLUGIN_HOOK]),
+  ]
+  const current = versions.find((v) => v.current === true) ?? versions[1]!
+  return {
+    install: {
+      install_id: FIXTURE_PLUGIN_INSTALL, name: 'example-plugin', scope: 'workspace', tenant_id: 'eng', state: 'active',
+      source: current.source, current_version: fixturePluginCurrent, version: current.version, description: 'Checks each turn before it ends',
+      runnable_sha256: current.runnable_sha256, hosts: ['api.example.com'],
+      components: { skills: 1, commands: 0, agents: 0, hooks: (current.components as { hooks: unknown[] }).hooks.length, mcp_servers: 0 },
+      removable: true, updatable: true, updated_at: current.created_at, updated_by: 'member@example.com',
+    },
+    versions,
+  }
+}
+
+function fixturePluginDiff(versionId: string): Record<string, unknown> {
+  const forward = versionId === 'v-000000000002'
+  const hooks = { added: forward ? [FIXTURE_PLUGIN_NEW_HOOK] : [], removed: forward ? [] : [FIXTURE_PLUGIN_NEW_HOOK], changed: [] }
+  const none = { added: [], removed: [] }
+  return {
+    install_id: FIXTURE_PLUGIN_INSTALL,
+    diff_sha256: forward ? 'a'.repeat(64) : 'b'.repeat(64),
+    diff: {
+      from_version_id: fixturePluginCurrent, to_version_id: versionId,
+      manifest: { version: { from: forward ? '0.2.0' : '0.3.0', to: forward ? '0.3.0' : '0.2.0' } },
+      hooks, mcp_servers: { ...none, changed: [] }, skills: none, commands: none, agents: none,
+      settings: { added: forward ? ['max_retries'] : [], removed: [], retyped: [], newly_sensitive: [] },
+      hosts: none, runtimes: null, files: { from: 12, to: 12 }, unpacked_bytes: { from: 131_072, to: 131_072 },
+      runnable_sha256: { from: '1'.repeat(64), to: '2'.repeat(64) }, source: { from_commit: '1'.repeat(40), to_commit: '2'.repeat(40), compare: null },
+      marked: ['hooks'], needs_confirmation: true,
+    },
+  }
+}
+
+async function fixturePluginAnswer<T>(target: ApiRoute, norm: (raw: unknown) => T | null, raw: unknown): Promise<Result<T>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(target, 60, true)
+  const data = norm(raw)
+  return data === null ? pluginShapeError(target) : { status: 'ok', fetchedAt: Date.now(), data }
+}
+
+/** `GET {base}/installs/{install_id}/versions`: the install and every version it has pinned. */
+export async function loadPluginVersions(p: PluginPlace): Promise<Result<PluginVersions>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/versions`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginVersions, fixturePluginVersions())
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginVersions(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET {base}/installs/{install_id}/diff?version_id=`: current to `versionId`, from the two stored versions. */
+export async function loadPluginDiff(p: PluginPlace, versionId: string): Promise<Result<PluginDiffAnswer>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/diff`, { ...base.params, install_id: p.installId }, new URLSearchParams({ version_id: versionId }))
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginDiff, fixturePluginDiff(versionId))
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginDiff(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/**
+ * `POST {base}/installs/{install_id}/apply`: make `versionId` current. It
+ * quotes the digest of the diff the admin read, and the plugin's name typed
+ * when the diff is marked; the API refuses `diff_changed` when the diff moved.
+ */
+export async function applyPluginVersion(p: PluginPlace, versionId: string, diffSha256: string, confirmName: string | null): Promise<Result<PluginVersions>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/apply`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) {
+    fixturePluginCurrent = versionId
+    return fixturePluginAnswer(target, normPluginVersions, fixturePluginVersions())
+  }
+  const r = await write(target, 'POST', { version_id: versionId, diff_sha256: diffSha256, ...(confirmName === null ? {} : { confirm_name: confirmName }) })
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normPluginVersions(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/**
+ * `POST {base}/installs/{install_id}/update`: check a GitHub or marketplace
+ * install's ref (its own, or `ref`) for a new version. The intake runs as an
+ * install's does; its result is a candidate, never current until applied.
+ */
+export async function checkPluginUpdate(p: PluginPlace, ref: string | null): Promise<Result<PluginIntake>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/update`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginIntake, { intake_id: '0'.repeat(32), state: 'pinned', version_id: 'v-000000000002' })
+  const r = await write(target, 'POST', ref === null || ref === '' ? {} : { ref })
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normPluginIntake(pluginRecord(r.data).intake ?? r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET {base}/intakes/{intake_id}`: an update check's state; reading it finishes an intake whose report is in. */
+export async function loadPluginIntake(p: PluginPlace, intakeId: string): Promise<Result<PluginIntake>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/intakes/{intake_id}`, { ...base.params, intake_id: intakeId })
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normPluginIntake, { intake_id: intakeId, state: 'pinned', version_id: 'v-000000000002' })
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const data = normPluginIntake(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `DELETE {base}/installs/{install_id}?confirm=<name>`: remove it; later submissions naming it are refused. */
+export async function removePlugin(p: PluginPlace, confirmName: string): Promise<Result<ManagedInstall>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}`, { ...base.params, install_id: p.installId }, new URLSearchParams({ confirm: confirmName }))
+  if (USE_FIXTURES) return fixturePluginAnswer(target, normManagedInstall, { ...pluginRecord(fixturePluginVersions().install), state: 'removed', removable: false, updatable: false })
+  const r = await write(target, 'DELETE')
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<never>
+  const data = normManagedInstall(r.data)
+  return data === null ? pluginShapeError(target) : { ...r, data }
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-config/{install_id}`: the form and the workspace's values, never a secret's. */
+export async function loadPluginSettings(tenantId: string, installId: string): Promise<Result<PluginSettings>> {
+  const target = route(PLUGIN_CONFIG_OF, { tenant_id: tenantId, install_id: installId })
+  if (USE_FIXTURES) {
+    return fixturePluginAnswer(target, normPluginSettings, {
+      tenant_id: tenantId,
+      form: { version_id: fixturePluginCurrent, fields: [
+        { key: 'threshold', type: 'number', kind: 'value', title: 'Threshold', required: false, sensitive: false, default: 0.7 },
+        { key: 'service_key', type: 'string', kind: 'secret', title: 'Service key', required: true, sensitive: true, default: null },
+      ] },
+      values: { threshold: { set: true, value: 0.75 }, service_key: { set: true, set_by: 'member@example.com', set_at: new Date(FIXTURE_NOW - 40 * 3_600_000).toISOString() } },
+      missing: [], set_at: new Date(FIXTURE_NOW - 40 * 3_600_000).toISOString(), set_by: 'member@example.com', can_edit: true,
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPluginSettings(r.data) }
+  return r
+}
+
+/**
+ * The workspace's own facts about a plugin: its catalogue's entry (whether it
+ * allows a platform plugin, whether this caller may change its plugins) and
+ * whether it is on for every step (`GET .../plugin-defaults`).
+ */
+export async function loadPluginInWorkspace(tenantId: string, installId: string): Promise<Result<PluginInWorkspace>> {
+  const cat = route(PLUGIN_CATALOGUE_WORKSPACE, { tenant_id: tenantId })
+  const defs = route(PLUGIN_DEFAULTS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(cat, 40, true)
+    noteFixtureProbe(defs, 40, true)
+    const entry = normManagedInstall(fixturePluginVersions().install)
+    return { status: 'ok', fetchedAt: Date.now(), data: { tenant_id: tenantId, entry: installId === FIXTURE_PLUGIN_INSTALL ? entry : null, every_step: false, can_install: true } }
+  }
+  const [c, d] = await Promise.all([read<unknown>(cat, () => false), read<unknown>(defs, () => false)])
+  if (c.status !== 'ok' && c.status !== 'stale') return c
+  if (d.status !== 'ok' && d.status !== 'stale') return d
+  const cr = pluginRecord(c.data)
+  const entries = [...(Array.isArray(cr.installs) ? cr.installs : []), ...(Array.isArray(cr.platform_installs) ? cr.platform_installs : [])]
+  const entry = entries.map(normManagedInstall).find((e) => e?.install_id === installId) ?? null
+  const data: PluginInWorkspace = {
+    tenant_id: tenantId,
+    entry,
+    every_step: pluginStrings(pluginRecord(d.data).defaults).includes(installId),
+    can_install: cr.can_install === true,
+  }
+  return c.status === 'stale' ? { ...c, data } : d.status === 'stale' ? { ...d, data } : { status: 'ok', fetchedAt: Math.min(c.fetchedAt, d.fetchedAt), data }
+}
+
+/**
+ * `GET {base}/installs/{install_id}/usage`: who uses it (section 9.2). The
+ * catalogue lane's routes do not serve it yet; until they do the page says so
+ * in place (a 404 with no code), never as nobody.
+ */
+export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsage>> {
+  const base = pluginCatalogueBase(p)
+  if (base === null) return noPluginWorkspace()
+  const target = route(`${base.template}/installs/{install_id}/usage`, { ...base.params, install_id: p.installId })
+  if (USE_FIXTURES) {
+    return fixturePluginAnswer(target, normPluginUsage, {
+      workspaces: [{ tenant_id: 'eng', allowed: true, every_step: false }],
+      workflows: [{ tenant_id: 'eng', id: 'wf-nightly', name: 'nightly-check', kind: 'workflow', steps: ['review', 'verify'], how: 'added' }],
+      schedules: [{ tenant_id: 'eng', schedule_id: 'sch-1', name: 'nightly' }],
+      steps: [],
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPluginUsage(r.data) }
+  return r
+}
+
+// --------------------------------------------------------------------------
 // Voice it › Settings (swarm-api routes/voice_settings.py)
 // --------------------------------------------------------------------------
 
-/** `GET` the settings, `PATCH {version, <field>: <name>}` to change them. */
+/** `GET` the settings, `PATCH {version, <field>: <name>}` (or `debug: true|false`) to change them. */
 export const VOICE_SETTINGS = '/v1/voice/settings'
 /** Every name a setting may take: the page offers these and nothing else. */
 export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+/** `DELETE {label}`: the dedicated key, its label typed back. Platform admins only. */
+export const VOICE_DEDICATED_KEY = '/v1/voice/settings/dedicated-key'
 
 /** The fields a write may name (speech_catalogue.FIELDS). */
 export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
@@ -15206,8 +17616,23 @@ export interface VoiceKeyStatus {
   link: { open: boolean; expires_at: string | null }
 }
 
+/** The dedicated Voice it key's status (`dedicated_key`): never the key or its secret. */
+export interface VoiceDedicatedKey {
+  /** null when the quota broker could not say. */
+  set: boolean | null
+  label: string | null
+  display_name: string | null
+  by: string | null
+  at: string | null
+  state: string | null
+  /** Whether the reader may delete it: a platform admin, while it is set. */
+  can_delete: boolean
+}
+
 export interface VoiceSettingsView {
   settings: Record<VoiceSettingField, string>
+  /** Debug mode (`settings.debug`): each session that starts with it on keeps a turn-by-turn trace. */
+  debug: boolean
   version: number
   updated_by: string | null
   updated_at: string | null
@@ -15216,6 +17641,7 @@ export interface VoiceSettingsView {
   /** The machine fields the next start changes. */
   pending: VoiceSettingField[]
   openai_key: VoiceKeyStatus
+  dedicated_key: VoiceDedicatedKey
 }
 
 const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -15262,8 +17688,10 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
   const a = objOf(d.applied)
   const k = objOf(d.openai_key) ?? {}
   const link = objOf(k.link) ?? {}
+  const dk = objOf(d.dedicated_key) ?? {}
   return {
     settings,
+    debug: s.debug === true,
     version: finiteOf(d.version) ?? 0,
     updated_by: strOf(d.updated_by),
     updated_at: strOf(d.updated_at),
@@ -15274,6 +17702,15 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
       by: strOf(k.by),
       at: strOf(k.at),
       link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+    dedicated_key: {
+      set: typeof dk.set === 'boolean' ? dk.set : null,
+      label: strOf(dk.label),
+      display_name: strOf(dk.display_name),
+      by: strOf(dk.by),
+      at: strOf(dk.at),
+      state: strOf(dk.state),
+      can_delete: dk.can_delete === true,
     },
   }
 }
@@ -15308,7 +17745,8 @@ function fixtureVoiceCatalogue(): unknown {
   }
 }
 
-let fixtureVoiceSaved: { settings: Record<string, string>; version: number; updated_at: string } | null = null
+let fixtureVoiceSaved: { settings: Record<string, string>; debug: boolean; version: number; updated_at: string } | null = null
+let fixtureVoiceKeyDeleted = false
 
 function fixtureVoiceSettings(): unknown {
   const settings = fixtureVoiceSaved?.settings ?? {
@@ -15317,13 +17755,16 @@ function fixtureVoiceSettings(): unknown {
   }
   const applied = { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', at: new Date(FIXTURE_NOW - 3_600_000).toISOString() }
   return {
-    settings,
+    settings: { ...settings, debug: fixtureVoiceSaved?.debug ?? false },
     version: fixtureVoiceSaved?.version ?? 3,
     updated_by: 'owner@example.com',
     updated_at: fixtureVoiceSaved?.updated_at ?? new Date(FIXTURE_NOW - 86_400_000).toISOString(),
     applied,
     pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
     openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+    dedicated_key: fixtureVoiceKeyDeleted
+      ? { set: false, label: null, display_name: null, by: null, at: null, state: null, can_delete: false }
+      : { set: true, label: 'voice-openai', display_name: null, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), state: 'available', can_delete: fixtureIsAdmin },
   }
 }
 
@@ -15353,12 +17794,15 @@ export async function loadVoiceCatalogue(): Promise<Result<VoiceCatalogue>> {
   return r as Result<VoiceCatalogue>
 }
 
+/** What a save may change: catalogue names, and debug mode as true or false. */
+export type VoiceSettingsChanges = Partial<Record<VoiceSettingField, string>> & { debug?: boolean }
+
 /**
  * `PATCH /v1/voice/settings` with the version the page read: swarm-api
  * refuses it 409 when someone else saved first, and 422 naming the field
  * for a name its catalogue does not list. Platform admins only.
  */
-export async function saveVoiceSettings(version: number, changes: Partial<Record<VoiceSettingField, string>>): Promise<Result<VoiceSettingsView>> {
+export async function saveVoiceSettings(version: number, changes: VoiceSettingsChanges): Promise<Result<VoiceSettingsView>> {
   const target = route(VOICE_SETTINGS)
   if (USE_FIXTURES) {
     if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
@@ -15367,10 +17811,29 @@ export async function saveVoiceSettings(version: number, changes: Partial<Record
     if (version !== now.version) {
       return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: now.version }, method: 'PATCH' } }
     }
-    fixtureVoiceSaved = { settings: { ...now.settings, ...changes }, version: now.version + 1, updated_at: new Date().toISOString() }
+    const { debug, ...names } = changes
+    fixtureVoiceSaved = { settings: { ...now.settings, ...names }, debug: debug ?? now.debug, version: now.version + 1, updated_at: new Date().toISOString() }
     return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
   }
   const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/**
+ * `DELETE /v1/voice/settings/dedicated-key` with the label typed back:
+ * swarm-api deletes the broker's dedicated key, and only that one, and
+ * answers the settings read again. Platform admins only.
+ */
+export async function deleteVoiceDedicatedKey(label: string): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_DEDICATED_KEY)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    fixtureVoiceKeyDeleted = true
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'DELETE', { label })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
   return r as Result<VoiceSettingsView>
 }
@@ -15381,6 +17844,7 @@ export async function saveVoiceSettings(version: number, changes: Partial<Record
 export const VOICE_VISUALS = '/v1/voice/projects/{project_id}/visuals'
 export const VOICE_VISUAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}'
 export const VOICE_NOTE = '/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}'
+export const VOICE_APPROVAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}/approval'
 export const VOICE_READBACK_PENDING = '/v1/voice/sessions/{session_id}/readbacks/pending'
 export const VOICE_READBACK_GO = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/go'
 export const VOICE_READBACK_NOT_THAT = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/not-that'
@@ -15408,6 +17872,16 @@ export interface VoiceVisual {
   lines: { from: number; to: number } | null
   created_by: string | null
   updated_at: string | null
+  /** A mock-up's approved frame: which, who approved it, how and when (`Visuals.approve`). */
+  approved: VoiceApproval | null
+}
+
+export interface VoiceApproval {
+  frame_id: string
+  label: string
+  by: string
+  via: 'voice' | 'stage'
+  at: string | null
 }
 
 export interface VoiceNote {
@@ -15472,14 +17946,23 @@ export function normVoiceVisual(v: unknown): VoiceVisual | null {
     parts: Array.isArray(d.parts)
       ? d.parts.flatMap((p) => {
           const part = p as Record<string, unknown> | null
-          const pid = vStr(part?.part_id)
-          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? undefined }]
+          // swarm-api serves a part as `{id, label}`.
+          const pid = vStr(part?.part_id) ?? vStr(part?.id)
+          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? vStr(part?.label) ?? undefined }]
         })
       : [],
     lines: from !== null && to !== null ? { from, to } : null,
     created_by: vStr(d.created_by),
     updated_at: vStr(d.updated_at),
+    approved: normApproval(d.approved),
   }
+}
+
+function normApproval(v: unknown): VoiceApproval | null {
+  const a = (v ?? null) as Record<string, unknown> | null
+  const frame = vStr(a?.frame_id)
+  if (a === null || typeof a !== 'object' || frame === null) return null
+  return { frame_id: frame, label: vStr(a.label) ?? frame, by: vStr(a.by) ?? '', via: a.via === 'stage' ? 'stage' : 'voice', at: vStr(a.at) }
 }
 
 function normVoiceNote(v: unknown): VoiceNote | null {
@@ -15527,6 +18010,7 @@ const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
       lines: { from: 40, to: 52 },
       created_by: 'planner',
       updated_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
+      approved: null,
     },
     body: [
       'export function StepFilters({ steps, onPick }: StepFiltersProps) {',
@@ -15566,6 +18050,7 @@ const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
       lines: { from: 1, to: 4 },
       created_by: 'planner',
       updated_at: new Date(FIXTURE_NOW - 120_000).toISOString(),
+      approved: null,
     },
     body: [
       'Running 14 tests using 2 workers',
@@ -15626,6 +18111,19 @@ export async function resolveVoiceNote(projectId: string, visualId: string, note
     return voiceFixtureOk(target, { note_id: noteId, state: 'resolved' })
   }
   return write(target, 'PATCH', sessionId === null ? { state: 'resolved' } : { state: 'resolved', session_id: sessionId })
+}
+
+/**
+ * `POST /v1/voice/projects/{p}/visuals/{v}/approval` with `{frame}`: the
+ * person approves one of a mock-up's frames on the Stage. Answers the visual
+ * with its approval.
+ */
+export async function approveVoiceMockup(projectId: string, visualId: string, frame: string, sessionId: string | null): Promise<Result<VoiceVisual | null>> {
+  const target = route(VOICE_APPROVAL, { project_id: projectId, visual_id: visualId })
+  if (USE_FIXTURES) return voiceFixtureOk(target, null)
+  const r = await write(target, 'POST', sessionId === null ? { frame } : { frame, session_id: sessionId })
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceVisual((r.data as { visual?: unknown } | null)?.visual) }
 }
 
 /** `GET /v1/voice/sessions/{s}/readbacks/pending`: the read-back waiting on the person, or null. */
@@ -15860,4 +18358,179 @@ export function loadVoiceTelemetrySession(id: string, tz: string): Promise<Resul
 /** The live stream's address: an `EventSource` resumes from the last sample's seq by itself. */
 export function voiceTelemetryLiveUrl(): string {
   return route(VOICE_TELEMETRY_LIVE, {}, telemetryQuery({})).url
+}
+
+// ---- Voice it › debug mode: the trace (swarm-api routes/voice_trace.py, voice/trace.py) ----
+
+/** `GET`: the recent sessions with a trace, newest first. */
+export const VOICE_TRACE_SESSIONS = '/v1/voice/trace/sessions'
+/** `GET`: one session's trace, every planner turn in full. */
+export const VOICE_TRACE_SESSION = '/v1/voice/trace/sessions/{session_id}'
+/** The stream event a finished turn sends to Talk while debug mode is on (voice/stream.py). */
+export const VOICE_TRACE_TURN = 'trace.turn'
+
+/** The stream event a spent Live key's held next tier sends to Talk (swarm-api voice/stream.py `TIER_REOPEN`). */
+export const VOICE_TIER_REOPEN = 'voice.tier.reopen'
+/** The tiers a reopen names (swarm-api voice/sessions.py `REOPEN_TIERS`): a name, never a key. */
+export const VOICE_TIERS = ['plan', 'api_key', 'voice_dedicated'] as const
+export type VoiceTier = (typeof VOICE_TIERS)[number]
+/** `voice.tier.reopen`: the tier the session's next start opens on. */
+export interface VoiceTierReopenEvent {
+  type: typeof VOICE_TIER_REOPEN
+  seq: number
+  tier: VoiceTier
+}
+
+/** One card or mock-up a turn drew, or tried to: `refused` is the masked reason it was not. */
+export interface VoiceTraceDrawn {
+  kind: string
+  title: string | null
+  frames?: string[]
+  refused?: string
+}
+
+/** A kept text as served: masked pieces, already masked in place by the server. */
+export type VoiceTraceText = string[]
+
+/** One planner turn as `served_turn` sends it. */
+export interface VoiceTraceTurn {
+  n: number
+  at: string | null
+  secs: number | null
+  lines: { who: string; text: VoiceTraceText }[]
+  handoff: VoiceTraceText | null
+  /** Each read as "tool: target". */
+  read: string[]
+  drawn: VoiceTraceDrawn[]
+  /** Why nothing was drawn, as the server's sentence, and its code. */
+  none: string | null
+  none_code: string | null
+  told: VoiceTraceText
+  events: Record<string, number>
+  /** The credential tier that served the turn (`plan`, `api_key`, `voice_dedicated`), only when the server sends one. */
+  tier?: string
+}
+
+/** One traced session in the list. */
+export interface VoiceTraceSessionRow {
+  session_id: string
+  project_id: string | null
+  engine: string | null
+  engine_code: string | null
+  started: string | null
+  turns: number
+  cards: number
+  refused: number
+}
+
+export interface VoiceTraceSessions {
+  sessions: VoiceTraceSessionRow[]
+  scope: string | null
+}
+
+/** One session's trace. */
+export interface VoiceTrace {
+  session_id: string
+  project_id: string | null
+  engine: string | null
+  engine_code: string | null
+  started: string | null
+  minutes: number | null
+  turns: VoiceTraceTurn[]
+  events: Record<string, number>
+  scope: string | null
+}
+
+/** Talk's one line for a finished turn (`trace.stream_event`): `none` is the no-cards code. */
+export interface VoiceTraceTurnEvent {
+  type: typeof VOICE_TRACE_TURN
+  seq: number
+  at: string | null
+  n: number
+  drawn: { kind: string; title: string | null }[]
+  refused: { kind: string; title: string | null; reason: string | null }[]
+  none: string | null
+}
+
+const traceTexts = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : [])
+const traceObjs = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.map(telObj) : [])
+const traceCounts = (v: unknown): Record<string, number> => {
+  const out: Record<string, number> = {}
+  for (const [k, n] of Object.entries(telObj(v))) if (telNum(n) !== null) out[k] = n as number
+  return out
+}
+
+function normVoiceTraceDrawn(raw: unknown): VoiceTraceDrawn {
+  const o = telObj(raw)
+  const d: VoiceTraceDrawn = { kind: telStr(o.kind) ?? '', title: telStr(o.title) }
+  if (Array.isArray(o.frames)) d.frames = traceTexts(o.frames)
+  if (typeof o.refused === 'string') d.refused = o.refused
+  return d
+}
+
+export function normVoiceTraceTurn(raw: unknown): VoiceTraceTurn {
+  const o = telObj(raw)
+  return {
+    n: telNum(o.n) ?? 0,
+    at: telStr(o.at),
+    secs: telNum(o.secs),
+    lines: traceObjs(o.lines).map((l) => ({ who: telStr(l.who) ?? '', text: traceTexts(l.text) })),
+    handoff: Array.isArray(o.handoff) ? traceTexts(o.handoff) : null,
+    read: traceTexts(o.read),
+    drawn: traceObjs(o.drawn).map(normVoiceTraceDrawn),
+    none: telStr(o.none),
+    none_code: telStr(o.none_code),
+    told: traceTexts(o.told),
+    events: traceCounts(o.events),
+    ...(typeof o.tier === 'string' ? { tier: o.tier } : {}),
+  }
+}
+
+function traceSummary(o: Record<string, unknown>): Pick<VoiceTrace, 'session_id' | 'project_id' | 'engine' | 'engine_code' | 'started'> {
+  return { session_id: telStr(o.session_id) ?? '', project_id: telStr(o.project_id), engine: telStr(o.engine), engine_code: telStr(o.engine_code), started: telStr(o.started) }
+}
+
+export function normVoiceTraceSessions(raw: unknown): VoiceTraceSessions {
+  const o = telObj(raw)
+  return {
+    sessions: traceObjs(o.sessions).map((r) => ({ ...traceSummary(r), turns: telNum(r.turns) ?? 0, cards: telNum(r.cards) ?? 0, refused: telNum(r.refused) ?? 0 })),
+    scope: telStr(o.scope),
+  }
+}
+
+export function normVoiceTrace(raw: unknown): VoiceTrace {
+  const o = telObj(raw)
+  return { ...traceSummary(o), minutes: telNum(o.minutes), turns: traceObjs(o.turns).map(normVoiceTraceTurn), events: traceCounts(o.events), scope: telStr(o.scope) }
+}
+
+/** A `trace.turn` event's data, or null when it names no turn. */
+export function normVoiceTraceTurnEvent(raw: unknown): VoiceTraceTurnEvent | null {
+  const o = telObj(raw)
+  if (typeof o.n !== 'number' || !Number.isInteger(o.n)) return null
+  return {
+    type: VOICE_TRACE_TURN,
+    seq: telNum(o.seq) ?? 0,
+    at: telStr(o.at),
+    n: o.n,
+    drawn: traceObjs(o.drawn).map((d) => ({ kind: telStr(d.kind) ?? '', title: telStr(d.title) })),
+    refused: traceObjs(o.refused).map((d) => ({ kind: telStr(d.kind) ?? '', title: telStr(d.title), reason: telStr(d.reason) })),
+    none: telStr(o.none),
+  }
+}
+
+/**
+ * `GET /v1/voice/trace/sessions?scope=platform`, under Telemetry's access
+ * rule. A failed read answers its error, never an empty list; the fixture
+ * build serves no traced session.
+ */
+export function loadVoiceTraceSessions(): Promise<Result<VoiceTraceSessions>> {
+  const target = route(VOICE_TRACE_SESSIONS, {}, telemetryQuery({}))
+  return telemetryRead(target, normVoiceTraceSessions, { sessions: [], scope: null })
+}
+
+/** `GET /v1/voice/trace/sessions/{session_id}?scope=platform`: the error when it fails; the fixture build's is empty. */
+export function loadVoiceTrace(sessionId: string): Promise<Result<VoiceTrace>> {
+  const target = route(VOICE_TRACE_SESSION, { session_id: sessionId }, telemetryQuery({}))
+  const none: VoiceTrace = { session_id: sessionId, project_id: null, engine: null, engine_code: null, started: null, minutes: null, turns: [], events: {}, scope: null }
+  return telemetryRead(target, normVoiceTrace, none)
 }

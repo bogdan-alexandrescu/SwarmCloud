@@ -2,7 +2,8 @@
 §9.3; lane DAYONE-UPGRADE-1, part of #2688; `swarm_install.upgrade` holds the
 order and says why each step exists).
 
-    swarm upgrade [--to V] --project P [--env prod] [--allow-downgrade] [--json-events]
+    swarm upgrade [--to V] --project P [--env prod] [--allow-downgrade] [--builtins-managed on|off]
+                  [--json-events]
 
 With no `--to`, the release is the one the deployment's channel names now
 (`channels/<channel>`: rc for a deployment running a release candidate, else
@@ -33,6 +34,26 @@ plan review, the typed destroy approval), the policies through
 keys through `team.ensure_verify_keys`, and the checks through stage 14's
 quick checks. Dispatch is paused and resumed as the person (a platform admin
 signed in with `swarm login`) through `POST /v1/admin/dispatch/{pause,resume}`.
+Kept plugin bundles are rebuilt the same way, as that person: the bundle job
+applied alone through `apply_pass` with `BUNDLE_JOB_ADDRESS` as its one
+target, then `POST /v1/admin/plugin-bundles/rebuild` (one build started per
+call, called again after each build) and each build's
+`GET /v1/admin/plugin-bundles/{id}` (managed-plugins.md section 1.4.4).
+
+**The built-ins switch** (`--builtins-managed on|off`; managed-plugins.md
+sections 1.4.5 and 1.4.7, the owner's choice of 10 November 2026): a
+platform admin of an installed deployment turns gstack and security-audit as
+managed plugins on or off here, the verb that already changes what a
+deployment runs. The choice is recorded in the install state
+(`tfvars.BUILTINS_MANAGED_CHOICE_KEY`) before anything is applied, and infra
+renders it on its next pass: this upgrade's own infra step, or, on a
+deployment that already runs its channel's release, the next `swarm install`
+or `swarm upgrade`. A resumed run without the flag renders the recorded
+choice. Refused (exit 5, nothing recorded) with a fixed code: `on` for a
+release whose images ship no bundler (`upgrade.carries_bundle_manifests`, the
+check the upgrade itself refuses on), `off` while a built bundle is retained
+(`upgrade.retained_bundles`), and either while the install has not reached
+READY, which renders `on` (Day One).
 
 Exit: 0 upgraded (or nothing to do); 1 a step failed (the output names it and
 `swarm upgrade --to V` resumes there); 4 the drain passed its bound; 5 refused
@@ -59,9 +80,11 @@ from ..events import Events
 from ..exitcodes import MET, UNKNOWN, ExitCode
 from ..lease import Lease, LeaseHeld, LeaseRefused
 from ..migrations import FirestoreMigrationDocuments, MigrationFailed
+from .. import tfvars
 from ..record import DATABASE
 from ..state import GcsObjectStore, StateStore, local_path, state_bucket
-from ..upgrade import AppInstallation, GithubApp, Upgrade, UpgradeFailed, UpgradeRefused, version_key
+from ..upgrade import (BUNDLE_JOB_ADDRESS, AppInstallation, GithubApp, Upgrade, UpgradeFailed, UpgradeRefused,
+                       carries_bundle_manifests, parse_images_json, retained_bundles, version_key)
 from ..waits import SystemClock, WaitGaveUp
 
 NAME = "upgrade"
@@ -84,6 +107,9 @@ LOGGING = "https://logging.googleapis.com/v2"
 #: swarm-api's read of the GitHub App and its installation, as the App
 #: (`swarm_api.setup_app_read`): permissions only, never a token or a key.
 APP_ROUTE = "/v1/admin/setup/github-app/permissions"
+#: swarm-api's bundle builds (routes/plugin_bundles.py): the rebuild an upgrade
+#: asks for between its image copy and infra, and each build's status.
+BUNDLES_ROUTE = "/v1/admin/plugin-bundles"
 #: Set on the re-exec into V's engine: the release it was installed as, so a
 #: CLI that still is not V refuses rather than installing again.
 ENGINE_ENV = "SWARM_UPGRADE_ENGINE"
@@ -92,6 +118,11 @@ ENGINE_ENV = "SWARM_UPGRADE_ENGINE"
 CONFIRM_PLAN_ENV = "SWARM_UPGRADE_CONFIRM_PLAN"
 #: The wheels install.sh installs, in its order: swarm-mcp is the tool, the others ride with it.
 WHEELS = ("swarm_mcp", "swarm_install", "swarm_common", "swarm_redaction")
+#: The fixed codes `--builtins-managed` refuses with (exit 5), each said with
+#: one fixed sentence; nothing is recorded.
+NO_BUNDLER = "builtins_managed_no_bundler"
+BUNDLES_RETAINED = "builtins_managed_bundles_retained"
+NOT_INSTALLED = "builtins_managed_not_installed"
 INSTALL_LINE = "curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARMCLOUD_VERSION={version} sh"
 
 
@@ -113,6 +144,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--env", default="prod", type=_check(_ENV, "an environment name"),
                         help="the install's environment (default prod)")
     parser.add_argument("--allow-downgrade", action="store_true", help="allow a release older than the running one")
+    parser.add_argument("--builtins-managed", choices=("on", "off"), default=None,
+                        help="turn gstack and security-audit as managed plugins on or off for this deployment "
+                             "(recorded now, applied by infra's next pass; default: keep what it records)")
     parser.add_argument("--context", default=None, help="the swarm CLI context naming this deployment")
     parser.add_argument("--json-events", action="store_true", help="write events as one JSON object per line")
 
@@ -194,6 +228,8 @@ def reexec_argv(swarm: Path, target: str, args: argparse.Namespace) -> list[str]
         argv.append("--allow-downgrade")
     if args.context:
         argv += ["--context", args.context]
+    if args.builtins_managed:
+        argv += ["--builtins-managed", args.builtins_managed]
     if args.json_events:
         argv.append("--json-events")
     return argv
@@ -259,6 +295,35 @@ def nothing_to_do(state: Any, target: str) -> bool:
     progress = dict(state.outputs.get("upgrade") or {})
     resuming = progress.get("to") == target and progress.get("finished") != target
     return not resuming and str(state.release or "") == target
+
+
+def record_builtins_managed(store: Any, value: str, *, release: str, fetch: Any, documents: Any) -> str:
+    """Record a platform admin's `builtins_managed` choice for the deployment
+    that runs (or is being upgraded to) `release`, and say when it applies.
+    Refused (`UpgradeRefused`, a fixed code first) before anything is written."""
+    state = store.load()
+    if state.ready_at is None:
+        raise UpgradeRefused(
+            f"{NOT_INSTALLED}: the install has not reached READY, and a fresh install renders builtins_managed on "
+            "(managed-plugins.md section 15.2); the switch changes an installed deployment. Nothing was recorded")
+    if value == "on" and not carries_bundle_manifests(parse_images_json(fetch(release, "images.json"))):
+        raise UpgradeRefused(
+            f"{NO_BUNDLER}: {release} carries no plugin bundle manifests (its images have no bundler image), so its "
+            "workers could not run gstack or security-audit as managed plugins (managed-plugins.md section 1.4.7). "
+            "Nothing was recorded")
+    if value == "off":
+        bundles = retained_bundles(documents())
+        if bundles:
+            raise UpgradeRefused(
+                f"{BUNDLES_RETAINED}: {len(bundles)} plugin bundle(s) built for a bundled install are retained; with "
+                "builtins_managed off, submission writes the code entries again and no new step would run the "
+                "version an admin applied (managed-plugins.md sections 1.4.5 and 1.4.7). Nothing was recorded")
+
+    def change(state: Any) -> None:
+        state.outputs[tfvars.BUILTINS_MANAGED_CHOICE_KEY] = value
+
+    store.update(change)
+    return f"builtins_managed {value} is recorded; infra applies it on its next infra pass"
 
 
 class LiveWorld:
@@ -540,6 +605,22 @@ class LiveWorld:
     def resume_dispatch(self, reason: str) -> None:
         self._swarm_api().request("POST", "/v1/admin/dispatch/resume", payload={"reason": reason})
 
+    # -- the plugin bundles (managed-plugins.md section 1.4.4) ----------------------
+
+    def apply_bundle_job(self, version: str) -> None:
+        """The bundle job alone, on `version`'s bundler image: infra's latest
+        pass, targeted, so nothing else moves before the rebuilds."""
+        from ..steps import bootstrap
+
+        ctx = self.ctx(version)
+        bootstrap.apply_pass(ctx, self.deps, self._pass_for(ctx, "infra"), targets=(BUNDLE_JOB_ADDRESS,))
+
+    def rebuild_bundles(self, base: Mapping[str, str]) -> Mapping[str, Any]:
+        return self._swarm_api().request("POST", BUNDLES_ROUTE + "/rebuild", payload={"base": dict(base)})
+
+    def bundle_status(self, bundle_id: str) -> Mapping[str, Any]:
+        return self._swarm_api().request("GET", f"{BUNDLES_ROUTE}/{bundle_id}")
+
     def running(self) -> int:
         from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -590,9 +671,12 @@ def run(args: argparse.Namespace) -> int:
         state = store.load()
         if target is None:
             target = channel_release(world.read_public, state.release)
-            if nothing_to_do(state, target):
+            if nothing_to_do(state, target) and not args.builtins_managed:
                 print(f"swarm upgrade: {args.project} runs {target}, the release its channel names; nothing to do")
                 return int(ExitCode.OK)
+        # The switch alone: the deployment already runs `target`, so nothing is upgraded.
+        switch_only = bool(args.builtins_managed) and nothing_to_do(state, target)
+        if args.to is None and not switch_only:
             print(f"swarm upgrade: release {target} is available ({args.project} runs {state.release}). Its notes:")
             print(release_notes(world.fetch, target))
             confirm_plan = True
@@ -615,7 +699,14 @@ def run(args: argparse.Namespace) -> int:
         return int(ExitCode.PAUSED)
     try:
         try:
-            code = flow.run(target, allow_downgrade=args.allow_downgrade)
+            if args.builtins_managed:
+                said = record_builtins_managed(store, args.builtins_managed, release=target, fetch=world.fetch,
+                                               documents=world.documents)
+                if switch_only:
+                    said += (f": run swarm install --project {args.project} --env {args.env} to apply it now, or let "
+                             "the next swarm upgrade apply it")
+                print(f"swarm upgrade: {said}")
+            code = ExitCode.OK if switch_only else flow.run(target, allow_downgrade=args.allow_downgrade)
         finally:
             left = world.close_reach()
             if left:
@@ -639,5 +730,6 @@ def _failed(events: Events, exc: BaseException) -> int:
     return int(code)
 
 
-__all__ = ["CHECKS", "HELP", "LiveWorld", "NAME", "MET", "add_arguments", "channel_release",
-           "ensure_engine", "exit_code_for", "fetch_wheels", "install_engine", "run", "wheel_version"]
+__all__ = ["BUNDLES_RETAINED", "CHECKS", "HELP", "LiveWorld", "NAME", "MET", "NOT_INSTALLED", "NO_BUNDLER",
+           "add_arguments", "channel_release", "ensure_engine", "exit_code_for", "fetch_wheels", "install_engine",
+           "record_builtins_managed", "run", "wheel_version"]

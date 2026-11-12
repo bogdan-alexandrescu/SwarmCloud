@@ -268,7 +268,7 @@ export const KEYBOARD_GROUPS: readonly KeyboardGroup[] = [
   },
   {
     name: 'accounts',
-    routes: ['capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'],
+    routes: ['capacity/llm-providers', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'],
     stopFloor: 90,
     helps: 6,
   },
@@ -281,9 +281,9 @@ export const KEYBOARD_GROUPS: readonly KeyboardGroup[] = [
   {
     name: 'admin',
     routes: [
-      'admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets',
+      'admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/plugins',
       'admin/setup', 'admin/health', 'admin/people', 'admin/workspaces',
-      'voice/talk', 'voice/projects', 'voice/preferences',
+      'voice/talk', 'voice/projects', 'voice/preferences', 'voice/settings', 'voice/telemetry',
     ],
     stopFloor: 80,
     helps: 3,

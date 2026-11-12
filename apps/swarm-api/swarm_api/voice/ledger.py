@@ -5,7 +5,8 @@ COMPUTED, NEVER COUNTED. Nothing here writes a total. Every figure is derived
 each time it is read from facts other code already keeps:
 
   Talk          the session's seconds (`talk_seconds` when swarm-voice wrote
-                it, else live_at -> ended_at, or -> now while live) at
+                it, else live_at -> ended_at, or -> now while live, less the
+                paused intervals: sessions.py THE PAUSE) at
                 `gpt-live-1`'s per-minute price (`modelprices.per_minute_cost`)
   Planner       each turn's `usage` at the platform's `model_prices`
                 (Opus 5.5 unless the turn names its model). A turn run on a
@@ -262,7 +263,8 @@ class FirestoreWork:
 
 def talk_seconds(session: Mapping[str, Any], now: datetime) -> float:
     """swarm-voice's reported seconds when it wrote them, else the session's
-    live span: live_at to ended_at, or to now while it is live."""
+    open time: live_at to ended_at, or to now while it is live, less the
+    paused intervals (§3.12.8: a paused voice is not billed)."""
     reported = session.get("talk_seconds")
     if isinstance(reported, (int, float)) and not isinstance(reported, bool) and math.isfinite(reported):
         return max(float(reported), 0.0)
@@ -272,7 +274,9 @@ def talk_seconds(session: Mapping[str, Any], now: datetime) -> float:
     end = _aware(session.get("ended_at"))
     if end is None:
         end = now if session.get("state") == vs.LIVE else live_at
-    return max((end - live_at).total_seconds(), 0.0)
+    if end <= live_at:
+        return 0.0
+    return max((end - live_at).total_seconds() - vs.paused_seconds(session, live_at, end), 0.0)
 
 
 def turn_cost(usage: Any, prices: Mapping[str, Mapping[str, Any]]) -> float | None:

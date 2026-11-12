@@ -105,12 +105,21 @@ be stated:
   input / $20 output / $0.20 cache read per million tokens. It has
   **`claude-fable-5-1` at $10 / $50 / $0.25**, so Fable costs 2.5 times Opus
   per token. Planning on Fable is therefore a quality choice, not a saving.
-  Neither `claude-sonnet-5-5` nor `claude-haiku-5-5` is in the table. The
-  table's prefix match does not price them as `claude-sonnet-5` or
-  `claude-haiku-4-5` either: `_MODEL_SUFFIX` admits only a date or a context
-  marker after the priced name. For scale only, the previous Sonnet
-  (`claude-sonnet-5`, $2 / $10) is half of Opus 5.5 and Haiku 4.5 ($1 / $5) is
-  a quarter. That is not a measurement of the 5.5 tier (§4.10).
+  Since the owner pinned the sonnet and haiku classes (6 November 2026), the
+  seed (`SEED` in `apps/swarm-api/swarm_api/modelprices.py`) prices both 5.5
+  classes from the provider's pricing page as read on 2026-10-19:
+  **`claude-sonnet-5-5` at $2 / $10 / $0.10** (cache write $2.50), half of
+  Opus 5.5, and **`claude-haiku-5-5` at $0.10 / $0.50 / $0.01** (cache write
+  $0.125) for a prompt up to 100,000 tokens and $0.50 / $2.50 / $0.05 (cache
+  write $0.625) over it, a fortieth of Opus 5.5 on a short prompt. Haiku 5.5
+  carries those two figures as `tiers`, priced per request by its own prompt,
+  because the provider prices it that way (§4.10). Each entry cites the page
+  (`source`) and the day it was read (`as_of`), not `source: code`, so a
+  reader can tell a published figure from one carried over from the old
+  table. The prefix match still does not price a 5.5 model as `claude-sonnet-5`
+  or `claude-haiku-4-5`: `_MODEL_SUFFIX` admits only a date or a context
+  marker after the priced name, so a model that is not in the table prices
+  nothing rather than borrowing a neighbour's figure.
 * **Subscription accounts.** Most claude-code attempts run on pool accounts
   (`apps/quota-broker/quota_broker/accounts.py`). On those, the cost is not
   dollars but the account's quota windows. `Account.headroom` takes the
@@ -792,15 +801,20 @@ pricing-page refresh and the nightly observed-rate check (lane
 PRICES-REFRESH) are schedule types, `model-prices-refresh` and
 `model-prices-check` ([schedules.md §3.14 and §3.15](../schedules.md#314-model-prices-refresh)).
 They run once an admin creates the two platform schedules. The refresh
-leaves `claude-haiku-5-5` unpriced: the page prices it in two tiers by
-prompt length, and one entry holds one figure per rate.
+reads Haiku 5.5's two prompt-length rows as one entry with `tiers`
+(`modelprices.tiers_problem`), so it writes the tiered figure rather than
+leaving the model unpriced.
 
-By the owner's answer to Q9, `_LIST_PRICES` gains only dated figures that the
-owner or an operator supplies. **`claude-fable-5-1` is already in it** ($10 /
-$50 / $0.25, cached 2026-06-24 and checked 2026-10-05, with the table's own
-note), so a stopped Fable attempt is estimated today. Until figures are
-supplied, a stopped attempt on **`claude-sonnet-5-5` or `claude-haiku-5-5`
-prices nothing** and reads "cost not reported", which the table's own rule
+By the owner's answer to Q9, the table gains only dated figures with a
+source. **`claude-fable-5-1` is in it** ($10 / $50 / $0.25, cached 2026-06-24
+and checked 2026-10-05, with the table's own note), and so, since the owner
+pinned the two classes on 6 November 2026, are **`claude-sonnet-5-5` and
+`claude-haiku-5-5`**, at the pricing page's figures of 2026-10-19 (§1.2), so a
+stopped attempt on any of the four classes is estimated. The seed is what a
+setting that was never written reads as: a deployment whose `model_prices` was
+already written keeps its stored table, and gains the two entries from the
+weekly refresh or an admin's PUT; until then a stopped 5.5 attempt there still
+prices nothing and reads "cost not reported", which the table's own rule
 calls honest. A completed attempt on any class still reports the CLI's own
 `total_cost_usd`.
 
@@ -1298,5 +1312,5 @@ the code that holds the lane's rule, and the test that holds it there.
 `WORKER_MODELS`, kept for one release so a scheduler rolled back alone finds
 its map (§4.2). Removing it is the follow-up lane §6 names, to be dispatched
 once a release carrying MODEL-SCHED has applied. Prices for
-`claude-sonnet-5-5` and `claude-haiku-5-5` are not in `_LIST_PRICES` until
-an operator supplies dated figures (§4.10; R2 is an earlier issue).
+`claude-sonnet-5-5` and `claude-haiku-5-5` are no longer open: the seed
+carries the pricing page's dated figures (§4.10; R2 is an earlier issue).

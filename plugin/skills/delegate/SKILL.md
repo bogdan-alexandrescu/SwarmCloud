@@ -220,8 +220,16 @@ the review runs however small the change (a mock-up review, say); a block
 `{"min_lines": 40, "risk_paths": ["apps/redaction/**"]}` (and
 `requirements_check`) sets it. It is sent as the step's
 `metadata.review_gate`, and a malformed one is refused before anything is
-sent. It is the one step metadata a spec sets: a step carrying `metadata`
-is refused, like any key outside the accepted list.
+sent. A step carrying `metadata` itself is refused, like any key outside
+the accepted list.
+
+**A step's work contract is the step's `work_contract`**, beside its
+`runner_profile`, in a `swarm_workflow` step and in a `/sc:swarmcloud` spec
+alike. It is sent as the step's `metadata.work_contract`, which contract
+review runs on; a malformed one (not an object, a `schema` other than 1, a
+key the contract does not have) is refused before anything is sent, naming
+the step and the field. `review_gate` and `work_contract` are the only step
+metadata a spec sets.
 
 **A repository's whole Playwright suite is `swarm_suite_gate`, not a
 hand-written workflow.** Name the registered `repository`, the `ref`, `suite:
@@ -706,6 +714,51 @@ each is a way the same prompt does different work:
   that did not finish and every row that started after a failed or edited
   one, completed ones included: each re-run `sc:remote` row dispatches a
   second task, even when its first task had already completed.
+
+## A fix loop: rounds until a review says MERGE
+
+A `fix-loop` step runs review-fix rounds on one pull request until a review
+says MERGE (docs/workflows.md, "The fix loop"). It is built, but its runner
+type is unavailable until the owner switches it on: until then a spec that
+names `fix-loop` is refused, and everything below about getting one
+automatically falls back to a single re-review. Read `swarm_profiles` before
+promising a developer a loop.
+
+* **A spec gets one without declaring it** when it merges on its review:
+  a top-level `merge` of `on_merge_verdict` (or the repository's merge policy)
+  on an `integrate` workflow whose integrator is gated on the review with
+  `"verdict_in": ["NOT_YET"]`. The platform appends the loop, `max_rounds`
+  3, and a merge that reads its final review. A workflow with a security
+  review keeps the single re-review instead, because a merge behind a loop
+  reads only the loop. An issue run gets the loop with `max_rounds` equal to
+  its `fix_rounds`.
+* **A spec declares one** to choose its rounds or its round profiles: add a
+  step `{"step_id": "loop", "runner_profile": "fix-loop", "depends_on":
+  ["fix"], "fix_loop": {"review": "review", "fix": "fix", "max_rounds": 3}}`.
+  `max_rounds` is 1-5 and counts the declared fix as round 1; optional
+  `fix_round` and `re_review` name a `runner_profile`, `model_class` or
+  `prompt` for the rounds, by name. Under `direct-pr` there is no `fix`: the
+  loop depends on the review, which `builds_on` one implementer and declares
+  `allow_empty_diff: true`. Give the loop no image, input, prompt or
+  resources: it runs no container, and the API refuses them.
+
+Each round shows as its own step, `review-fix:<k>` or `re-review:<k>`, an
+ordinary agent with a row of its own. The loop itself holds nothing while
+its rounds run or while it waits.
+
+**A parked loop needs a person.** When the rounds run out without a MERGE,
+or a fix changed nothing, a round failed or was refused, or a verdict did
+not read, the loop parks HUMAN_REQUIRED with that phase. It then needs one
+of two decisions, and both are the developer's, never yours: add a round
+(the next fix gets the last verdict's findings, and an optional note) or end
+the loop (it ends FAILED, nothing merges, and the pull request stays open).
+Show the developer the phase and round k of N, ask which they want, and act
+only on the developer's word: the workflow page has **Add a round** and
+**Stop**, the routes are `POST /v1/workflows/{workflow_id}/fix-loop/rounds`
+and `POST /v1/workflows/{workflow_id}/fix-loop/end`, and the plugin's tool
+for it is the `sc` skill's, in "A fix loop that waits for you". A loop never
+runs more than 10 rounds in all, and a park nobody answers ends FAILED after
+7 days.
 
 ## The honesty constraint
 

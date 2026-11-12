@@ -71,6 +71,16 @@ installation that has not granted the permission is a typed
 `ActionsMintRefused` carrying the installation's account, so the caller can
 answer with `forgeperms.review_url`; nothing is written.
 
+THE THIRD: A PLUGIN SOURCE READ (docs/design/managed-plugins.md section 2.1;
+the owner's pick, 2026-11-08: "Add a contents-only mint method").
+`contents_token(tenant, owner, repo)` mints the token the managed plugin
+catalogue reads a workspace's private plugin repository with: resolve a ref,
+read `marketplace.json`, stream the commit's tarball. The same installation
+lookup, ONE repository, and exactly `CONTENTS_READ_PERMISSIONS` --
+`contents: read` and nothing else (`metadata: read` comes with any token), not
+`RUN_READ_PERMISSIONS`' pull requests, which a source read never touches.
+Minted fresh, never held. A failure is a typed `ContentsMintRefused`.
+
 WHOSE QUOTA (QUOTA-THROTTLE). `read_credential` answers the token AND the
 identity its quota is kept under in `forge_limits.QUOTAS`,
 `installation:<id>`: the caller reads inside `forge_limits.acting_as(that)`
@@ -103,6 +113,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "ACTIONS_ENV_READ", "APP_INSTALLATION_SOURCE", "ACTIONS_ENV_WRITE", "ACTIONS_PERMISSIONS", "ACTIONS_REPO_READ",
     "ACTIONS_REPO_WRITE", "ACTIONS_RULE_READ", "ActionsMintRefused", "ActionsToken",
+    "CONTENTS_READ_PERMISSIONS", "ContentsMintRefused", "MINT_CONTENTS_NOT_GRANTED",
     "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "MINT_FAILED",
     "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "MINT_RUN_NOT_GRANTED",
     "MintRefused", "READ_PERMISSIONS", "RUN_READ_PERMISSIONS", "RUN_WRITE_PERMISSIONS",
@@ -159,6 +170,13 @@ RUN_READ_PERMISSIONS: Mapping[str, str] = {
     "pull_requests": "read",
 }
 
+#: What a plugin source read needs and nothing more (managed-plugins.md
+#: section 2.1): a ref's commit, one file at it and its tarball are all
+#: Contents. Never held.
+CONTENTS_READ_PERMISSIONS: Mapping[str, str] = {
+    "contents": "read",
+}
+
 #: The GitHub calls an Actions secret mint may be for, each with the ONE
 #: permission it needs and nothing more (SSC-ACTIONS-API; GitHub's
 #: "Permissions required for GitHub Apps", read 2026-10-24): the repository
@@ -192,6 +210,9 @@ MINT_FAILED = "mint_failed"
 #: GitHub refused a run token's permissions: the installation has not
 #: accepted "Contents" or "Pull requests: Read and write".
 MINT_RUN_NOT_GRANTED = "run_permissions_not_granted"
+#: GitHub refused a contents token's permission: the installation has not
+#: accepted "Contents: Read".
+MINT_CONTENTS_NOT_GRANTED = "contents_not_granted"
 #: A token is used until this long before GitHub's `expires_at` (tokens
 #: live an hour), so none is sent that could expire mid-read.
 REFRESH_BEFORE = 300.0
@@ -252,6 +273,10 @@ class WorkflowMintRefused(MintRefused):
 
 class RunMintRefused(MintRefused):
     """No run token for a service submission (DAYONE-SERVICE-APP-TOKEN)."""
+
+
+class ContentsMintRefused(MintRefused):
+    """No contents-only token for a plugin source read (managed-plugins.md)."""
 
 
 class ActionsMintRefused(MintRefused):
@@ -405,6 +430,19 @@ class InstallationTokens:
             tenant_id, owner, repo, RUN_WRITE_PERMISSIONS if write else RUN_READ_PERMISSIONS,
             what="run token", refused=RunMintRefused,
             not_granted=lambda: MINT_RUN_NOT_GRANTED)
+        return token
+
+    def contents_token(self, tenant_id: str, owner: str, repo: str) -> str:
+        """A token for ONE read of `owner/repo`'s contents (a plugin source:
+        a ref, a file, the tarball), minted now from THIS tenant's
+        installation of `owner`: one repository, exactly
+        `CONTENTS_READ_PERMISSIONS`. Never held: every call mints, and nothing
+        here keeps the value once it is returned. Raises
+        `ContentsMintRefused`."""
+        token, _installation = self._mint_now(
+            tenant_id, owner, repo, CONTENTS_READ_PERMISSIONS,
+            what="contents token", refused=ContentsMintRefused,
+            not_granted=lambda: MINT_CONTENTS_NOT_GRANTED)
         return token
 
     def _mint_now(self, tenant_id: str, owner: str, repo: str,

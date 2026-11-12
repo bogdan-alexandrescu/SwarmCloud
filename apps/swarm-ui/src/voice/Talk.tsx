@@ -72,26 +72,51 @@
  * line says why, and a close button dismisses it. Text mode keeps the
  * browser's microphone and its speech recognition, with a text box beside it.
  *
+ * DEBUG MODE (the owner's pick of 10 November 2026, "Trace on Telemetry").
+ * While Settings' Debug is on (read with the engine, when the page opens),
+ * each planner turn's `trace.turn` event on the session's stream (the card
+ * list hands it up, `onTraceEvent`) draws one line under the Stage: the
+ * turn's number, the cards drawn and refused, and why nothing was drawn; what
+ * was drawn and each refusal's reason are behind its tooltip, and Trace opens
+ * the turn on Telemetry. Off, no line, whatever the stream carries.
+ *
  * BY VOICE. Every control also answers a whole spoken phrase (`spokenAction`):
  * "stop the session" ends it, "mute", "push to talk", "open mic" and "stop
  * speaking" do what their buttons do. A read-back's Go and Not that are heard
  * by swarm-api on our own engine (the relay's read-back matcher); in text
  * mode the page posts a phrase that can answer one to the read-back answer
  * route first, and sends it as a turn only when it answered nothing.
+ *
+ * A SPENT LIVE KEY REOPENS (docs/design/llm-providers.md §5.3, §5.4). When
+ * the key's credit is gone, swarm-api streams `voice.tier.reopen` with the
+ * next tier's name; the page makes a fresh offer to the same session at once
+ * (rtc.ts `reopenTalk`), keeps the captions and the cards, and shows one
+ * caption naming the tier, never a modal. A reopen that fails ends the talk
+ * with its reason. A peer that drops waits REOPEN_WAIT_MS for that event
+ * before it ends the talk: the spent Live session can close before the event
+ * reaches the page.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { normVoiceSettings, USE_FIXTURES, VOICE_SETTINGS } from '../api'
+import {
+  normVoiceSettings,
+  normVoiceTraceTurnEvent,
+  USE_FIXTURES,
+  VOICE_SETTINGS,
+  VOICE_TIERS,
+  type VoiceTier,
+  type VoiceTraceTurnEvent,
+} from '../api'
 import { Button, buttonClass, Segmented, ToneMark } from '../components'
 import { read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
-import { CardList } from './CardList'
+import { CardList, type StreamEvent } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { BudgetMeter } from './Meter'
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
-import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
+import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
 import {
@@ -111,6 +136,80 @@ import { startVoiceDetection, type VoiceDetection } from './vad'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
+
+/** Why a turn drew nothing, by the server's code (swarm_api/voice/trace.py `NONE_CODES`), in the line's words. */
+const NONE_WORDS: Readonly<Record<string, string>> = {
+  empty_transcript: 'empty transcript',
+  refused: 'all refused',
+  planner_error: 'planner error',
+  timeout: 'timed out',
+  no_grant: 'no grant',
+  answered_in_words: 'answered in words',
+}
+
+const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`
+const named = (d: { kind: string; title: string | null }): string => (d.title ? `${d.kind} “${d.title}”` : d.kind)
+
+/** The turn in full on Telemetry, out of the router as the console's other navigations go. */
+function openTrace(sessionId: string, n: number): void {
+  window.history.pushState(null, '', `/voice/telemetry?${new URLSearchParams({ s: sessionId, open: String(n) })}`)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/** Debug mode's one line under the Stage: the last planner turn's outcome, what it drew and refused in its tooltip. */
+function TurnLine({ turn, sessionId }: { turn: VoiceTraceTurnEvent; sessionId: string | null }) {
+  const cards = turn.drawn.length
+  const out = [
+    plural(cards, 'card'),
+    ...(turn.refused.length > 0 ? [`${turn.refused.length} refused`] : []),
+    ...(cards === 0 && turn.none !== null ? [NONE_WORDS[turn.none] ?? turn.none] : []),
+  ].join(' · ')
+  const tip = [
+    ...(cards > 0 ? [`Drawn: ${turn.drawn.map(named).join(', ')}`] : []),
+    ...turn.refused.map((r) => `Refused: ${named(r)}, ${r.reason ?? 'no reason given'}`),
+  ].join('. ')
+  return (
+    <div className="vt-turn" role="group" aria-label="Last planner turn" data-outcome={cards > 0 ? 'drawn' : 'none'}>
+      <TalkTip tip={tip || `Turn ${turn.n}: nothing drawn`}>
+        <span className="vt-turn-main" tabIndex={0}>
+          <span className={`vt-turn-dot ${cards > 0 ? 'is-ok' : 'is-warn'}`} aria-hidden="true" />
+          <span className="vt-turn-n">Turn {turn.n}</span>
+          <span className="vt-turn-out">{out}</span>
+        </span>
+      </TalkTip>
+      {sessionId !== null && (
+        <Button kind="ghost" size="sm" onClick={() => openTrace(sessionId, turn.n)}>
+          Trace
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/** Each tier by the name the session's header gives it (llm-providers.md §5.4). */
+export function tierName(tier: VoiceTier): string {
+  if (tier === 'plan') return 'Plan'
+  if (tier === 'voice_dedicated') return 'Voice it key'
+  return 'Shared key'
+}
+
+/** The one caption a tier change draws. */
+export function tierCaption(tier: VoiceTier): string {
+  return `Moved to ${tierName(tier)}`
+}
+
+/** A `voice.tier.reopen` event's tier, or null when it names none Talk knows. */
+export function reopenTier(ev: StreamEvent): VoiceTier | null {
+  const tier = ev.data.tier
+  return typeof tier === 'string' && (VOICE_TIERS as readonly string[]).includes(tier) ? (tier as VoiceTier) : null
+}
+
+/**
+ * How long a dropped peer waits for `voice.tier.reopen` before the talk ends:
+ * swarm-voice's lease of the next tier (the broker's 10 s timeout) and the
+ * stream's one-second poll, with room to spare.
+ */
+export const REOPEN_WAIT_MS = 15_000
 
 /** The call the page holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
@@ -184,12 +283,54 @@ async function answeredReadback(sessionId: string, text: string): Promise<boolea
   }
 }
 
-/** The one line a fallback draws (§4.7). */
+/** The one line a fallback draws (§4.7); its details are `fallbackTip`'s. */
 export function fallbackLine(f: SpeechFallback): string {
-  if (f.reason === 'no_l4') return f.zone === null ? 'No L4 free.' : `No L4 free in ${f.zone}.`
-  if (f.reason === 'not_ready') return 'Speech machine not ready.'
-  if (f.reason === 'engine_down') return 'Engine down.'
-  return 'Own speech unavailable.'
+  if (f.reason === 'no_l4') return f.zone === null ? 'No L4 free: text mode.' : `No L4 free in ${f.zone}: text mode.`
+  if (f.reason === 'not_ready') return 'Speech machine not ready: text mode.'
+  if (f.reason === 'engine_down') return 'Engine down: text mode.'
+  if (f.reason === 'front_refused') return 'No Claude account free: text mode.'
+  return 'Own speech unavailable: text mode.'
+}
+
+/** What the fallback's line holds behind its (i): why, what carries the talk, and when to retry. */
+export function fallbackTip(f: SpeechFallback): string {
+  if (f.reason === 'no_l4' || f.reason === 'not_ready') {
+    const why = f.reason === 'no_l4' ? 'No speech machine (L4) was free.' : 'The speech machine did not start in time.'
+    return `${why} This talk continues as text with Voice it's Claude front, on the account it already holds. Start again in a few minutes to try own speech.`
+  }
+  if (f.reason === 'engine_down') return "The speech engine went down. This talk continues as text with Voice it's Claude front."
+  if (f.reason === 'front_refused') return "No Claude account was free for the voice front. This talk continues as text on Voice it's plan."
+  return 'Own speech could not start. This talk continues as text.'
+}
+
+/**
+ * Whether a text session runs on Voice it's ChatGPT plan: one that started as
+ * text, or whose fallback started swarm-voice's text session because no front
+ * held anything (`front_refused`, `speech_not_deployed`). A no-L4, not-ready or
+ * engine-down fallback stays on the Claude front with the account it holds.
+ */
+export function onChatGptPlan(f: SpeechFallback | null): boolean {
+  return f === null || f.reason === 'front_refused' || f.reason === 'speech_not_deployed'
+}
+
+/**
+ * A start refusal's one line, by its cause (`detail.reason`); swarm-api's full
+ * sentence goes behind the (i). The OpenAI key is named only when a Live
+ * start found it held by another session.
+ */
+export function refusalLine(reason: string): string | null {
+  if (reason === 'openai_key_in_use') return 'OpenAI key in use by another session.'
+  if (reason === 'no_voice_account_available') return 'No Voice it plan account free.'
+  return null
+}
+
+function InfoGlyph() {
+  return (
+    <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11v5.5M12 7.75v.01" />
+    </svg>
+  )
 }
 
 function CloseGlyph() {
@@ -205,14 +346,14 @@ function BootPhases({ boot }: { boot: readonly BootPhase[] }) {
   const done = boot.slice(0, -1)
   const now = boot[boot.length - 1]
   return (
-    <span className="vt-status" role="list" aria-label="Starting">
+    <span className="vt-boot" role="list" aria-label="Starting">
       {done.map((p) => (
-        <span key={p} role="listitem" aria-label={p} title={p}>
+        <span key={p} className="vt-boot-step is-done" role="listitem" aria-label={p} title={p}>
           <ToneMark tone="ok" />
         </span>
       ))}
       {now !== undefined && (
-        <span role="listitem" aria-current="step">
+        <span className="vt-boot-step is-now" role="listitem" aria-current="step">
           {now}
         </span>
       )}
@@ -245,9 +386,13 @@ function eventType(data: unknown): string | null {
  * to), so it is not wrapped in words of the page's own. A failure in this
  * browser has no such sentence and is headed as one.
  */
-function startProblem(e: unknown): string {
-  if (e instanceof TalkError && e.api !== null && e.api.message.trim() !== '') return e.api.message
-  return `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`
+function startProblem(e: unknown): { line: string; tip: string | null } {
+  if (e instanceof TalkError && e.api !== null && e.api.message.trim() !== '') {
+    const detail = e.api.detail as { reason?: unknown } | undefined
+    const line = typeof detail?.reason === 'string' ? refusalLine(detail.reason) : null
+    return line === null ? { line: e.api.message, tip: null } : { line, tip: e.api.message }
+  }
+  return { line: `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`, tip: null }
 }
 
 function MicGlyph({ off = false }: { off?: boolean }) {
@@ -303,7 +448,12 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
 export function TalkPane() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [problem, setProblem] = useState<string | null>(null)
+  /** A start refusal's full sentence, behind the problem line's (i). */
+  const [problemTip, setProblemTip] = useState<string | null>(null)
   const [lines, setLines] = useState<CaptionLine[]>([])
+  // Settings' debug mode, read with the engine; and the session's last traced turn while it is on.
+  const [debug, setDebug] = useState(false)
+  const [turn, setTurn] = useState<VoiceTraceTurnEvent | null>(null)
   const [voice, setVoice] = useState<MediaStream | null>(null)
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
   const [track, setTrack] = useState<MediaStreamTrack | null>(null)
@@ -318,6 +468,10 @@ export function TalkPane() {
   const [speechState, setSpeechState] = useState<string | null>(null)
   // Why this session is in text mode instead of on its engine; null once dismissed.
   const [fallback, setFallback] = useState<SpeechFallback | null>(null)
+  // The one caption of a tier change mid-session (§5.4).
+  const [tierLine, setTierLine] = useState<string | null>(null)
+  // Kept apart from `fallback`, which Dismiss clears: the status line must not change with it.
+  const [onPlan, setOnPlan] = useState(true)
   // A text session's spoken reply, 0..1, or null when nothing is spoken.
   const [level, setLevel] = useState<number | null>(null)
   // Why a text session types instead of listening; null while it listens.
@@ -338,6 +492,11 @@ export function TalkPane() {
   const audio = useRef<HTMLAudioElement | null>(null)
   // The card list reads the session's one stream and hands the stage its visual, note and focus events through this.
   const feed = useMemo(stageFeed, [])
+  // Debug mode's turns come up from the same stream; a frame that names no turn changes nothing.
+  const onTraceEvent = useCallback((ev: StreamEvent) => {
+    const t = normVoiceTraceTurnEvent({ ...ev.data, seq: ev.seq })
+    if (t !== null) setTurn(t)
+  }, [])
   // The Resume's project: undefined until the first start takes it, then the
   // id until a start succeeds, then null.
   const resumed = useRef<string | null | undefined>(undefined)
@@ -353,7 +512,10 @@ export function TalkPane() {
     if (USE_FIXTURES) return
     let stop = false
     void read<unknown>(route(VOICE_SETTINGS), () => false).then((r) => {
-      if (!stop && (r.status === 'ok' || r.status === 'stale')) engine.current = normVoiceSettings(r.data).settings.engine || null
+      if (stop || (r.status !== 'ok' && r.status !== 'stale')) return
+      const view = normVoiceSettings(r.data)
+      engine.current = view.settings.engine || null
+      setDebug(view.debug)
     })
     return () => {
       stop = true
@@ -402,7 +564,16 @@ export function TalkPane() {
     return c
   }, [closeSpeech])
 
+  // A drop waits for a reopen; a reopen in flight is not a drop.
+  const dropTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reopening = useRef(false)
+  const clearDrop = useCallback(() => {
+    if (dropTimer.current !== null) clearTimeout(dropTimer.current)
+    dropTimer.current = null
+  }, [])
+
   const end = useCallback(async () => {
+    clearDrop()
     const c = hangUp()
     if (c === null) return
     setPhase('ending')
@@ -414,7 +585,55 @@ export function TalkPane() {
         : `swarm-api did not confirm the end (${refused.message}). The call here is closed; Voice it ends a session after ten minutes of silence.`,
     )
     setPhase('idle')
-  }, [hangUp])
+  }, [hangUp, clearDrop])
+
+  const dropped = useCallback(() => {
+    if (reopening.current || dropTimer.current !== null) return
+    dropTimer.current = setTimeout(() => {
+      dropTimer.current = null
+      void end()
+    }, REOPEN_WAIT_MS)
+  }, [end])
+
+  /** The reopen: a fresh offer to the same session, on the tier swarm-api named. */
+  const reopen = useCallback(
+    async (tier: VoiceTier) => {
+      const c = call.current
+      if (c === null || reopening.current || c.mode !== 'live' || !('dropPeer' in c)) return
+      reopening.current = true
+      clearDrop()
+      setVoicePlaying(false)
+      try {
+        const next = await reopenTalk({ onEvent, onVoice: (s) => setVoice(s), onDropped: dropped }, c)
+        if (!mounted.current || call.current !== c) {
+          // Ended or left while the offer was out: the new peer goes too.
+          next.hangUp()
+          if (!mounted.current) void endVoiceSession(next.sessionId)
+          return
+        }
+        call.current = next
+        setTierLine(tierCaption(tier))
+      } catch (e) {
+        if (!mounted.current || call.current !== c) return
+        // A reopen that fails ends the talk with its reason, as a spent key does.
+        await end()
+        if (!mounted.current) return
+        const said = startProblem(e)
+        setProblem(said.line)
+        setProblemTip(said.tip)
+      } finally {
+        reopening.current = false
+      }
+    },
+    [onEvent, dropped, clearDrop, end],
+  )
+  const onTierEvent = useCallback(
+    (ev: StreamEvent) => {
+      const tier = reopenTier(ev)
+      if (tier !== null) void reopen(tier)
+    },
+    [reopen],
+  )
 
   /** One turn of a text session: caption it, send it, caption and speak the reply. */
   const say = useCallback(
@@ -526,6 +745,7 @@ export function TalkPane() {
       setVoicePlaying(false)
       setLines((l) => l.filter((x) => x.final))
       setFallback(text.fallback)
+      setOnPlan(onChatGptPlan(text.fallback))
       setTalkMode('text')
       beginText()
     },
@@ -612,10 +832,12 @@ export function TalkPane() {
 
   const start = useCallback(async () => {
     setProblem(null)
+    setProblemTip(null)
     setLines([])
     setTyped(null)
     setDraft('')
     setFallback(null)
+    setTierLine(null)
     setPhase('connecting')
     if (resumed.current === undefined) resumed.current = takeResumedProject()
     setProjectId(resumed.current)
@@ -629,7 +851,7 @@ export function TalkPane() {
               {
                 onEvent,
                 onVoice: (s) => setVoice(s),
-                onDropped: () => void end(),
+                onDropped: dropped,
               },
               resumed.current,
             )
@@ -644,25 +866,32 @@ export function TalkPane() {
       setProjectId(c.projectId)
       setTalkMode(c.mode)
       if (c.mode === 'text') {
-        if ('fallback' in c) setFallback(c.fallback)
+        const f = 'fallback' in c ? c.fallback : null
+        setFallback(f)
+        setOnPlan(onChatGptPlan(f))
         beginText()
       } else if (c.mode === 'speech') beginSpeech(c)
       setSessionId(c.sessionId)
+      setTurn(null)
       setMicStream(c.micStream)
       setTrack(c.mic)
       setPhase('live')
     } catch (e) {
       if (!mounted.current) return
-      setProblem(startProblem(e))
+      const said = startProblem(e)
+      setProblem(said.line)
+      setProblemTip(said.tip)
       setPhase('idle')
     }
-  }, [onEvent, end, beginText, beginSpeech])
+  }, [onEvent, dropped, beginText, beginSpeech])
 
   // Leaving the page ends the session: a call nobody can hear is still billed per second.
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
+      if (dropTimer.current !== null) clearTimeout(dropTimer.current)
+      dropTimer.current = null
       listener.current?.close()
       listener.current = null
       speaker.current?.cancel()
@@ -708,7 +937,7 @@ export function TalkPane() {
   const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
 
   return (
-    <div className="vt has-stage" data-state={state}>
+    <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}`} data-state={state}>
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
@@ -719,7 +948,7 @@ export function TalkPane() {
           {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
           {speechMode && boot.length === 0 && (speechState ?? (mic.muted ? 'muted' : 'listening'))}
-          {textMode && ', on the ChatGPT plan'}
+          {textMode && onPlan && ', on the ChatGPT plan'}
           {phase === 'ending' && 'Ending the session…'}
         </p>
         <span className="vt-hud-actions">
@@ -737,30 +966,47 @@ export function TalkPane() {
           <TalkTip
             tip={
               textMode
-                ? "A text conversation on the ChatGPT plan: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
+                ? "A text conversation: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
                 : "Headphones are advised: the browser's echo cancellation is what lets you talk over Voice it."
             }
           >
             <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="About headphones">
-              <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <circle cx="12" cy="12" r="8.5" />
-                <path d="M12 11v5.5M12 7.75v.01" />
-              </svg>
+              <InfoGlyph />
             </button>
           </TalkTip>
         </span>
         {textMode && fallback !== null && (
-          <p className="vt-note" role="status">
-            {fallbackLine(fallback)}{' '}
+          <p className="vt-fallback" role="status">
+            <span>{fallbackLine(fallback)}</span>{' '}
+            <TalkTip tip={fallbackTip(fallback)}>
+              <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Why text mode">
+                <InfoGlyph />
+              </button>
+            </TalkTip>
             <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Dismiss" onClick={() => setFallback(null)}>
               <CloseGlyph />
             </button>
           </p>
         )}
+        {live && tierLine !== null && (
+          <p className="vt-note" role="status">
+            {tierLine}
+          </p>
+        )}
         {textMode && typed !== null && <p className="vt-note">{typed}</p>}
         {problem !== null && (
           <p className="vt-problem" role="alert">
-            {problem}
+            <span>{problem}</span>
+            {problemTip !== null && (
+              <>
+                {' '}
+                <TalkTip tip={problemTip}>
+                  <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="Why it did not start">
+                    <InfoGlyph />
+                  </button>
+                </TalkTip>
+              </>
+            )}
           </p>
         )}
       </div>
@@ -770,6 +1016,7 @@ export function TalkPane() {
       ) : (
         <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={feed} />
       )}
+      {debug && turn !== null && <TurnLine turn={turn} sessionId={sessionId} />}
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
@@ -839,7 +1086,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} onTraceEvent={onTraceEvent} onTierEvent={onTierEvent} />
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}

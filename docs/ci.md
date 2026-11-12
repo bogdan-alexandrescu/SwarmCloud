@@ -842,16 +842,43 @@ summary and the manifest's `incremental.full_build`:
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
 
-**An image whose Dockerfile upgrades OS packages is rebuilt by every main
-build and every release.** This was the owner's decision on 2026-10-14 ("force a fresh apt
-layer", on every release). It costs about 7 extra minutes per release.
+**What rebuilds an image now.** On main, `build-images.sh --incremental`
+rebuilds an image, and every image built FROM it (`build_after`), when:
+
+* `--affected-by` reaches it from the diff since its digest's `built_from`
+  (with `uv.lock` narrowed to its own `uv export`, above);
+* its baked build args differ from the previous digest's, or were never
+  recorded;
+* or one of the whole-build reasons above holds: build logic changed, no
+  ancestor record, a reused digest older than `BUILD_REUSE_MAX_AGE_DAYS`, the
+  `full_build` input, prod, or a dirty tree.
+
+Every other image is reused, **an image whose Dockerfile upgrades OS packages
+included**. A release's check of CI's record (`--reuse-ci`) asks the same
+questions and one more: **an image whose Dockerfile upgrades OS packages is
+rebuilt by every release**, whatever its inputs did, and so is every image
+built FROM one.
+
+**Why the release and not main.** The owner decided on 2026-10-14 to "force a
+fresh apt layer" on every release; it costs about 7 extra minutes per release.
+Until 2026-11-06 main's own build refreshed those images too, and that bought
+nothing: no digest main refreshed is ever promoted, because the release
+rebuilds every one of them whatever main did. It only delayed the release.
+Measured 2026-11-06, a commit that changed only swarm-api (`3b82588b4`) rebuilt
+17 of 19 images on main, swarm-speech for 1,717 s, and the release waited
+about 45 minutes for them. So `plan_incremental` now refreshes OS packages
+only under the release's check (`REUSE_CHECK`), and main reuses such a digest
+while its inputs are unchanged; `BUILD_REUSE_MAX_AGE_DAYS` still bounds how
+old a reused digest on main may be. The fresh layer is still in everything
+that ships, because the release builds what it scans and promotes.
+
 `APT_REFRESH` names the build: the commit plus the GitHub run id and attempt,
 or the commit and the time outside Actions. `BUILD_APT_REFRESH` overrides it.
-The manifest records it per image as `apt_refresh`. A digest of such an image
-is reused only when its `apt_refresh` is this build's, which no other run's
-is. So `plan_incremental` rebuilds every one of them, and the release's reuse
-check does too, even from a record CI built whole for the same commit. An
-image built FROM one is rebuilt with it. One that upgrades nothing
+The manifest records it per image as `apt_refresh`; a reused digest keeps the
+`apt_refresh` of the build that upgraded it. Under the release's check a
+digest of such an image is reused only when its `apt_refresh` is this build's,
+which no other run's is, so the release rebuilds every one of them, even from
+a record CI built whole for the same commit. One that upgrades nothing
 (swarm-verify) is still reused. Which images upgrade is read from their
 Dockerfiles (`upgrades_os_packages`), not listed.
 A digest CI built from the commit being released is that commit's own
@@ -872,7 +899,8 @@ serves an older upgrade either. workspace-apply's apt `RUN` also fails its own
 build when a simulated `apt-get dist-upgrade` still has something to install,
 which catches a package `apt-get upgrade` kept back. The scan stays strict:
 nothing is ignored or pinned. `test_build_images_apt_refresh.py` holds all of
-this.
+this, and `test_build_images_fast.py` holds that a main commit touching only
+swarm-api rebuilds only the images whose inputs include it.
 
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
@@ -1951,8 +1979,17 @@ never names a version. It refuses anything that is not `X.Y.Z`.
   when the unit shards and the lock / contract / bridge-install checks passed
   on this commit, or were skipped by their own `if:`: a tree main reuses was
   proven job by job on its pull request ([Main reuses the tested
-  tree](#main-reuses-the-tested-tree)). The job's `if:` names
-  `needs.python.result == 'success'` and no status function.
+  tree](#main-reuses-the-tested-tree)).
+
+  So the job runs after a green `format / unit tests` on a push to main,
+  whatever upstream jobs were skipped. Its `if:` is `!cancelled() && ... &&
+  needs.python.result == 'success'`. Without a status function, GitHub adds
+  an implicit `success()`, and that is false when any job up the `needs:`
+  chain was skipped. A tree main reuses skips the unit shards and the lock /
+  contract checks, so until 2026-11-11 the job was skipped on every main
+  build and tags were pushed by hand.
+  [`test_workflow_needs_result_status.py`](../tests/unit/scripts/test_workflow_needs_result_status.py)
+  holds every job that reads a `needs.<job>.result` to a status function.
 * **Why not the release any more** (owner decision, [the owner], 2026-11-04: "Tag
   once tests pass"). Until then `release.yml` made the tag, and
   on a push it waited for `images and scan`, which waits for CI's whole image
@@ -3530,9 +3567,11 @@ What main does as of 2026-10-10:
 * **A workflow spec may set `merge: "on_merge_verdict"`** in its `metadata`
   (`MERGE_ON_VERDICT` in
   [`validation.py`](../apps/swarm-api/swarm_api/validation.py)). That
-  appends a re-review on the integrator's pushed head and a `merge` step,
-  which merges the integrator's pull request only when that review says
-  MERGE and CI is green.
+  appends a fix loop (3 rounds, the owner 2026-11-09) when the integrator is
+  gated on the review's NOT_YET, or else a re-review on the integrator's
+  pushed head, and a `merge` step, which merges the integrator's pull
+  request only when the latest review says MERGE and CI is green
+  ([workflows.md](workflows.md#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)).
 * **Merge steps on one repository take a single merge slot** and land in
   submission order, so concurrent merges no longer refuse
   `behind_too_often` behind each other
@@ -4237,6 +4276,75 @@ vitest ids its log names. It is read-only. Then:
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
 
+## What runs where
+
+**The owner's pick, 2026-11-11:** *"skip pr testing and only run tests when
+merging to main"*, choosing "Fast checks only on PRs". Until then every pull
+request head ran the whole of `application.yml` -- ten unit-test shards of
+about eight minutes, up to eight swarm-ui component-test shards of seven to
+nine, the swarm-ui typecheck and build, the integration tests and the image
+build -- and the merge train's pull request ran it all again on the same
+change, and main a third time unless it reused the train's tree.
+
+| run | fast checks | heavy jobs |
+|---|---|---|
+| a lane's pull request (any head but `train/`), no label | run | **skipped** |
+| a pull request labelled `full-ci` | run | run |
+| the merge train's pull request (`train/<id>`, [`scripts/merge-train.sh`](../scripts/merge-train.sh)) | run | run |
+| a push to `main`, a merge queue entry, a dispatch | run | run (main may reuse the train's green tree, [below](#the-full-suite-runs-once-per-change-in-the-merge-train)) |
+
+**Heavy**, skipped on a lane's pull request, each because it is minutes of
+runner time that the train's pull request runs again on the same change
+anyway: `unit tests (k/N)`, `swarm-ui component tests (k/N)`,
+`swarm-ui typecheck / build`, `integration tests (emulator)` and
+`build changed images without pushing`. `build images`, terraform.yml's
+`plan` and security.yml's `trivy (published images)` are heavy too, but
+already never run on any pull request (a pull request cannot mint the cloud
+token they need, or they scan what is deployed), so they keep their own `if:`.
+
+**Fast**, on every pull request, because each takes about a minute and catches
+what a reviewer would otherwise read for: `shellcheck`,
+`release workflow wiring (actionlint)`,
+`ruff check`, `lock / contract / format / bridge install`,
+`kubernetes manifests`, security.yml's `secret scan`,
+`platform policy assertions`, `checkov (terraform + kubernetes)` and
+`trivy (repo)` (a sub-minute scan of the repository, not of an image), and
+terraform.yml's `fmt / validate / tflint`, `terraform test` (one folded,
+offline, path-filtered job) and `checkov`. The deployment-values guard on the
+diff is not a job of these three workflows
+([design/generic-repository.md](design/generic-repository.md)), so this rule
+does not touch it; a SwarmCloud lane also meets it in its worker's
+pre-publish gate (`scripts/changed-guards.sh`).
+
+**The rule is written once**, as the `what this change reaches` job's `full`
+output: `true` when the event is not `pull_request`, when the head branch
+starts with `train/`, or when the pull request carries the `full-ci` label.
+Each heavy job reads `needs.changes.outputs.full == 'true'` first in its
+`if:`. terraform.yml and security.yml need no copy: none of their jobs that
+run on a pull request is heavy.
+
+**A skipped heavy job passes; a failed one does not.** A job skipped by its own
+`if:` reports `skipped`, which a required check reads as passed, and
+`ci-gate`, `format / unit tests` and `swarm-ui typecheck / component tests`
+count it as a pass and still fail on any job that ran and failed. ci-gate's
+reuse check (`scripts/lib/ci_reuse.py`, `HEAVY`) treats a heavy job as not
+reached when `full` is `false`, and as reached when `full` is `true` or
+absent, so a skip it cannot explain still fails. No job was renamed and no
+required check changed.
+
+**`full-ci`, the escape hatch.** Add the label to a pull request that needs the
+whole suite before the train -- a change to CI itself, a risky refactor. The
+label is read from the event that started the run, so it counts from the next
+push after it is added (an empty commit will do); re-running an old run does
+not see it.
+
+**What a lane gives up.** A defect only a heavy job catches is found by the
+train's pull request, which bisects and ejects the pull request that broke it;
+main never sees the failure. A lane's own agent still runs the tests related
+to its change before it finishes (`scripts/related-tests.sh --run`).
+`tests/unit/scripts/test_fast_checks_on_lane_prs.py` holds the rule against
+the three workflow files.
+
 ## The full suite runs once per change, in the merge train
 
 **[the owner]'s pick, 2026-11-06:** *"we really need to fix ci merges
@@ -4274,7 +4382,10 @@ still run, and the release's test gate reads a skipped job as passed. Any
 other push runs the full suite as before: a direct push, a tree no green train
 tested, a train that closed any other way, or an API it could not read.
 
-**B. A lane's pull request tests what its change reaches.** A pull request
+**B. A lane's pull request tests what its change reaches.** (Since
+2026-11-11 a lane's pull request skips the heavy jobs entirely unless it is
+labelled `full-ci`, [above](#what-runs-where); what follows is what they run
+when it is.) A pull request
 from a `swarm/**` branch of this repository (the `lane` step,
 `ci-select.sh lane`) still runs shellcheck, actionlint, ruff, the format,
 contract and lock checks, the swarm-ui typecheck and build, the manifests and

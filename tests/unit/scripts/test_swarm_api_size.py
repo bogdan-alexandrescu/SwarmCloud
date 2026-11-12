@@ -1,4 +1,4 @@
-"""swarm-api runs up to 8 instances of 2 vCPU and 2 GiB in dev (BGD's pick,
+"""swarm-api runs up to 8 instances of 2 vCPU and 2 GiB in dev (the owner's pick,
 2026-11-06, part of #2688).
 
 The load analysis of 2026-11-06 found swarm-api at 5 of its 5 instances for

@@ -707,6 +707,9 @@ def project_run(run: IssueRun, schedule: Mapping[str, Any] | None = None) -> dic
         "kind": HOLD if hold else PLAN,
         "subject": {
             "run_id": run.id,
+            # The workflow the run started, null before it started one: what
+            # Home's workflow row says Review on (PR #3901, the owner's pick).
+            "workflow_id": run.workflow_id,
             "issue": run.issue.short,
             "schedule_id": (run.schedule or {}).get("schedule_id"),
             "firing_id": (run.schedule or {}).get("firing_id"),
@@ -924,11 +927,29 @@ def sync_run_approvals(db: Any, now: datetime, tenant_id: str) -> int:
     return made
 
 
-def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
-    """Whether a pending merge record still has a run waiting at its head."""
+def _merge_run(db: Any, doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The run a merge record names, as stored; None when it is gone."""
     subject = doc.get("subject") or {}
     snap = db.collection(RUNS_COLLECTION).document(str(subject.get("run_id"))).get()
-    return _merge_run_waits(doc, snap.to_dict() if snap.exists else None)
+    return (snap.to_dict() or {}) if snap.exists else None
+
+
+def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
+    """Whether a pending merge record still has a run waiting at its head."""
+    return _merge_run_waits(doc, _merge_run(db, doc))
+
+
+def with_workflow(doc: Mapping[str, Any], run: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A merge record with its run's `subject.workflow_id`. A record stored
+    before `request_merge` wrote it takes it from the run the inbox read
+    anyway; one that has it keeps its own. Read only: the record is not
+    rewritten."""
+    subject = dict(doc.get("subject") or {})
+    if "workflow_id" in subject:
+        return dict(doc)
+    workflow = (run or {}).get("workflow_id")
+    subject["workflow_id"] = workflow if isinstance(workflow, str) and workflow else None
+    return {**doc, "subject": subject}
 
 
 def live_merges(db: Any, docs: Iterable[Mapping[str, Any]]) -> set[str]:
@@ -963,10 +984,13 @@ def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str
     sync_run_approvals(ctx.db, now, tenant_id)
     items: list[dict[str, Any]] = []
     for doc in pending(ctx.db, tenant_id):
-        if doc.get("kind") == MERGE and not _live_merge(ctx.db, doc):
-            # Its run merged, failed or moved head: nothing waits on it now.
-            _close(ctx.db, now, doc, SUPERSEDED)
-            continue
+        if doc.get("kind") == MERGE:
+            run = _merge_run(ctx.db, doc)
+            if not _merge_run_waits(doc, run):
+                # Its run merged, failed or moved head: nothing waits on it now.
+                _close(ctx.db, now, doc, SUPERSEDED)
+                continue
+            doc = with_workflow(doc, run)
         items.append(doc)
     runs, _ = IssueRuns(ctx.db, now=ctx.now).planned(tenant_id, limit=INBOX_SCAN)
     schedules_seen: dict[str, dict[str, Any] | None] = {}
@@ -1234,7 +1258,7 @@ def request_merge(db: Any, now: datetime, run: IssueRun, *, head_sha: str, verdi
     number = (run.pull_request or {}).get("number")
     return request(
         db, now, tenant_id=run.tenant_id, kind=MERGE, key=f"{run.id}:{head_sha}",
-        subject={"run_id": run.id, "pr": number, "issue": run.issue.short,
+        subject={"run_id": run.id, "workflow_id": run.workflow_id, "pr": number, "issue": run.issue.short,
                  "schedule_id": (run.schedule or {}).get("schedule_id"),
                  "firing_id": (run.schedule or {}).get("firing_id")},
         digest=merge_digest(head_sha, verdict),

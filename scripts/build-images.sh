@@ -139,7 +139,7 @@
 set -euo pipefail
 # --affected-by and --inputs touch no project: they read the checkout, and
 # the pull-request job runs them before it authenticates, with no PROJECT_ID.
-# They say so, so common.sh (no default project, DAYONE-DESAGA-2) does not
+# They say so, so common.sh (no default project, the Day One project-defaults lane) does not
 # stop on an unset PROJECT_ID. Every other mode still needs one; combining
 # either with another flag is refused below, before anything is built.
 # --local too: it is a mode of --build-only (refused below without it) that
@@ -209,7 +209,21 @@ source "${REPO_ROOT}/scripts/lib/image-switches.sh"
 # swarm-speech-image metadata at the next start, and the machine pulls it on
 # boot (docs/design/voice-it-own-speech.md §5.3, §14 L3). It copies only
 # apps/swarm-speech in.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech workspace-apply)
+# swarm-plugin-intake (managed plugins, docs/design/managed-plugins.md §2.2)
+# is the isolated Cloud Run job that checks one quarantined plugin archive,
+# apps/plugin-intake/Dockerfile. terraform/infra/plugins.tf plans the job only
+# once image_refs has its digest (local.plugin_intake_on): before this list
+# named it, no deployment had the job, and every Add plugin answered 503 "The
+# intake job could not be started" (live, 2026-11-09). Its app directory has
+# no swarm- prefix, so recipe_target names it. It copies only its own package
+# in, and it upgrades OS packages, so every release rebuilds it.
+# swarm-plugin-bundler (managed plugins lane 14, docs/design/managed-plugins.md
+# section 1.4.2) is the image a deployment's bundle build runs: the gstack and
+# security-audit recipes and the .swarm-bundle.json writer, images/plugin-bundler
+# (recipe_target maps the name). Built, signed and promoted like every image so
+# a Day One install copies it; no runner profile and no service runs it, and
+# terraform deploys nothing from it.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech swarm-plugin-intake swarm-plugin-bundler workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
@@ -222,9 +236,13 @@ ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser
 # duplicate-layer gates (scripts/image-sizes.sh) and terraform's image_refs --
 # all keyed by image name -- cover it as the image it is. Its recipe directory
 # is the base's, so it reads the base's inputs and is rebuilt with it.
+# swarm-plugin-intake is its own recipe, in a directory named without the
+# swarm- prefix (apps/plugin-intake), which terraform's image name carries.
 recipe_target() {
   case "$1" in
     agent-runtime-base-nocodex) printf '%s' "agent-runtime-base" ;;
+    swarm-plugin-intake) printf '%s' "plugin-intake" ;;
+    swarm-plugin-bundler) printf '%s' "plugin-bundler" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -302,9 +320,46 @@ recipe_dockerfile() {
 #     is under it; a glob source is kept as the glob it is. swarm-verify's
 #     recipe assembles its own context from the same repo-relative paths its
 #     Dockerfile copies, so those sources are repository paths too;
+#   * every repository path a `RUN --mount=type=bind,source=...` mounts
+#     (dockerfile_bind_sources): the base and browser images' gstack and
+#     security-audit stages run images/plugin-bundler's recipes, the closure
+#     walker and the browser list from bind mounts (managed plugins lane 14),
+#     and a recipe change must rebuild the images whose bundled trees it
+#     builds, or an incremental release keeps a digest built by the old one;
 #   * .dockerignore and .gcloudignore, which decide what every build sees.
 # `*` in these globs crosses `/`, as bash's [[ == ]] matches it: an input
 # over-read builds one image too many, an input under-read builds one too few.
+# The repository paths a Dockerfile's RUN lines bind-mount, one per line. A
+# mount with `from=` reads another stage or image, not the repository, and is
+# not one; comment lines are skipped. BIND_NOT_INPUTS are mounted on purpose
+# WITHOUT being inputs: agent-runtime-base's npm cache mounts apps/swarm-ui so
+# that a UI lockfile change does not rebuild the four worker images (its
+# Dockerfile says why; every release rebuilds that layer anyway).
+# build/tool-mirror is not in the repository: the build stages it from the
+# tool mirror, and what it may hold is pinned by
+# images/agent-runtime-base/tool-mirror.sha256, an input of the base already.
+BIND_NOT_INPUTS=(apps/swarm-ui build/tool-mirror)
+dockerfile_bind_sources() {
+  local src
+  awk '
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      while (match(line, /--mount=type=bind,[^[:space:]]+/)) {
+        opts = substr(line, RSTART + 18, RLENGTH - 18)
+        line = substr(line, RSTART + RLENGTH)
+        if (opts ~ /(^|,)from=/) continue
+        n = split(opts, kv, ",")
+        for (i = 1; i <= n; i++) {
+          if (kv[i] ~ /^(source|src)=/) { sub(/^[^=]*=/, "", kv[i]); print kv[i] }
+        }
+      }
+    }
+  ' "$1" | while IFS= read -r src; do
+    if ! in_list "${src%/}" "${BIND_NOT_INPUTS[@]}"; then printf '%s\n' "${src}"; fi
+  done
+}
+
 image_inputs() {
   local target="$1" recipe dockerfile sources src
   recipe="$(find_recipe "${target}")" \
@@ -314,6 +369,7 @@ image_inputs() {
   printf '%s\n' "$(dirname -- "${recipe#*$'\t'}")/*" .dockerignore .gcloudignore
   sources="$(dockerfile_copy_sources "${REPO_ROOT}/${dockerfile}")" \
     || die "${dockerfile}: a COPY or ADD above cannot be mapped to repository paths, so a change to what it copies would not build ${target}"
+  sources="${sources}"$'\n'"$(dockerfile_bind_sources "${REPO_ROOT}/${dockerfile}")"
   while IFS= read -r src; do
     [[ -n "${src}" ]] || continue
     src="${src#./}"
@@ -397,7 +453,7 @@ REUSE_CHECK=0
 # source upload and gcloud's polling. Nothing about any of those builds waited
 # on another except one pair (see build_after below).
 #
-# Bounded because saga-agents-staging is a SHARED project: its Cloud Build
+# Bounded because example-project is a SHARED project: its Cloud Build
 # concurrency quota is shared with the other team in it, so a release should
 # take what it needs and no more. And 4 is what it needs. agent-runtime-browser
 # and agent-runtime-indexer cannot be submitted until agent-runtime-base has
@@ -413,7 +469,7 @@ POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"
 # which only the tests use). Main's image build failed 27 times on 2026-10-20
 # and 2026-10-21 on `429 RESOURCE_EXHAUSTED` for
 # cloudbuild.googleapis.com/get_requests: the per-minute status-read quota of
-# saga-agents-staging, a project SHARED with another team that draws on the
+# example-project, a project SHARED with another team that draws on the
 # same quota. Each image was a blocking `gcloud builds submit`, which polls its
 # own build while it streams the log, so four images were four pollers, per
 # commit, and every main commit runs its own build. Now one `builds list
@@ -514,7 +570,7 @@ if [[ -n "${REUSE_CI}" ]]; then
   [[ "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 ]] \
     || die "--reuse-ci cannot be combined with --digests-only or --async"
 fi
-# A RELEASE DOES NOT REBUILD WHAT ITS ENVIRONMENT SWITCHES OFF (Bogdan's pick,
+# A RELEASE DOES NOT REBUILD WHAT ITS ENVIRONMENT SWITCHES OFF (the owner's pick,
 # 2026-11-06). The release of 2026-11-06 11:28 UTC rebuilt swarm-speech for 29
 # of its ~75 minutes, and scanned it, for dev, where voice_speech is off and
 # nothing runs it. Under --reuse-ci, outside prod, an image whose switch
@@ -1031,7 +1087,7 @@ build_seconds_of() {
   if [[ "${secs}" =~ ^[0-9]+$ ]]; then printf '%s' "${secs}"; else printf 'null'; fi
 }
 
-# LAYER CACHE (BGD, 2026-11-06): the images built with BuildKit's inline
+# LAYER CACHE (the owner, 2026-11-06): the images built with BuildKit's inline
 # cache, FROM their previous digest. swarm-speech's third-party closure
 # (torch, vLLM) is gigabytes; its Dockerfile installs it from the lock alone,
 # in a stage with no APT_REFRESH and no source, and copies it in before the
@@ -1483,7 +1539,7 @@ row_of() {
   return 1
 }
 
-# SLOWEST FIRST (BGD, 2026-11-06). Submitted in ALL_TARGETS order,
+# SLOWEST FIRST (the owner, 2026-11-06). Submitted in ALL_TARGETS order,
 # swarm-speech -- 1,717 s and 1,521 s that morning, every other image 1-4
 # min -- started in the last batch of BUILD_PARALLELISM, and the release
 # waited ~45 min for it. queue_order sorts by each image's recorded
@@ -1505,7 +1561,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
     # terraform/infra deployed those exact tags -- so the first sign of trouble
     # was Cloud Run reporting "Image not found" long after the build "passed".
     err "no Dockerfile or cloudbuild.yaml found for ${target}"
-    dim "looked in images/${target}/, apps/${target}/, docker/${target}/"
+    dim "looked in images/$(recipe_target "${target}")/, apps/$(recipe_target "${target}")/, docker/$(recipe_target "${target}")/"
     die "every target in ALL_TARGETS must be buildable; add a recipe or remove it from the list"
   fi
   kind="${recipe%%$'\t'*}"
@@ -2008,7 +2064,7 @@ show_log() {
 # Whether gcloud's output in a file is Cloud Build refusing on QUOTA: the 429
 # RESOURCE_EXHAUSTED that main's image build failed on 27 times on 2026-10-20
 # and 2026-10-21 (cloudbuild.googleapis.com/get_requests, shared with the other
-# team in saga-agents-staging). gcloud prints the HTTP status and the API's
+# team in example-project). gcloud prints the HTTP status and the API's
 # status name; either is enough, and nothing else prints them.
 quota_exhausted() {
   [[ -s "$1" ]] || return 1

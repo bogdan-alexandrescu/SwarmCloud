@@ -34,7 +34,7 @@ from typing import Any
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
 
-from .client import SwarmClient, SwarmError, task_id_of
+from .client import SwarmClient, SwarmError, send_user_agent, task_id_of
 from .profiles import backend_of
 
 _GCS = "https://storage.googleapis.com/storage/v1/b"
@@ -92,7 +92,7 @@ def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
     # method -- the tests' -- gets no retry, which is the old behaviour.
     forget = getattr(client, "forget_credentials", None)
     for attempt in (1, 2):
-        req = urllib.request.Request(url)
+        req = send_user_agent(urllib.request.Request(url), getattr(client, "user_agent", None))
         req.add_header("Authorization", f"Bearer {client.access_token()}")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:

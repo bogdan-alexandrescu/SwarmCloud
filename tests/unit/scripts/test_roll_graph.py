@@ -317,7 +317,7 @@ def test_a_state_terraform_cannot_read_is_a_failure_not_off(tmp_path):
 
 
 @pytest.mark.parametrize("how", ["flag", "context", "terraform"])
-def test_the_shared_agents_staging_cluster_is_refused_before_any_apply(tmp_path, how):
+def test_the_shared_peer_cluster_is_refused_before_any_apply(tmp_path, how):
     """PEER_CLUSTER, the shared project's cluster on the never-touch list, is another team's live cluster (CLAUDE.md rule 2),
     refused by common.sh's deny-list whichever way it arrives."""
     # CONTROL: the same fixture, pointed at our cluster, applies.
@@ -470,7 +470,7 @@ def test_apply_sh_swarm_graph_refuses_a_manifest_that_reaches_outside(tmp_path, 
     assert not cluster.applied()
 
 
-def test_apply_sh_swarm_graph_refuses_agents_staging(tmp_path):
+def test_apply_sh_swarm_graph_refuses_the_peer_cluster(tmp_path):
     cluster = Cluster(tmp_path)
     (cluster.dir / "cluster-entry").write_text(FOREIGN_REF)
     result = cluster.run("--swarm-graph", "--context", "swarm-dev", "--cluster", CLUSTER, "--confirm", script=APPLY)

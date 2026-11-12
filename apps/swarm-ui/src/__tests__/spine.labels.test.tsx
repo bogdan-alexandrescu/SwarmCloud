@@ -74,8 +74,9 @@ describe('Admin pages do not repeat admin (#136)', () => {
     // The pages, not the "In Automate" links under them (S1b, CONFIG-PANEL-E), in their groups' order.
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out)')]
     // Platform secrets joined after Platform counts: SSC-UI, part of #2158.
+    // Plugins joined after Platform secrets: managed plugins, part of #2688.
     // Setup and Health joined last of the platform's: DAYONE-SETUP-UI-3, part of #2688.
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Platform people', 'Workspaces', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Platform people', 'Workspaces', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Plugins', 'Setup', 'Health'])
     for (const p of pages) {
       // "Workspaces you admin" says admin in its name; what is held is the mark.
       if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces') expect(p.textContent ?? '').not.toMatch(/admin/i)
@@ -102,7 +103,7 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
       SECTIONS.filter((s) => s.id !== 'admin' && s.tabs.some((t) => !t.admin)).flatMap((s) => s.tabs.filter((t) => t.admin).map((t) => t.id)),
     )
     const marked = new Set(
-      (['work', 'capacity', 'admin'] as const).flatMap((sec) =>
+      (['work', 'capacity', 'admin', 'voice'] as const).flatMap((sec) =>
         PANEL_PAGES[sec].flatMap((p) => [
           ...(p.admin === true ? [p.key] : []),
           ...(p.kids ?? []).filter((k) => k.admin === true).map((k) => k.key),
@@ -111,6 +112,8 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
     )
     expect([...marked].sort()).toEqual([...flagged].sort())
     expect(marked.has('quota')).toBe(true)
+    // Voice it › Telemetry, a platform admin's alone (owner's pick, 2026-11-08).
+    expect(marked.has('telemetry')).toBe(true)
   })
 })
 

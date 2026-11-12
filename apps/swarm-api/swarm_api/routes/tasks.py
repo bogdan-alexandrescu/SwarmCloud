@@ -498,7 +498,7 @@ def _session_page(
 
 @router.get("/open-questions")
 def list_open_questions(
-    claude_session: str = Query(...),
+    claude_session: str | None = Query(default=None),
     since: datetime | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
@@ -516,9 +516,15 @@ def list_open_questions(
     tasks: the questions are the submitter's to answer. Each row is the row
     `GET /v1/tasks` serves; `filter` echoes the session and the window, and
     `complete` is false only when the read hit its bound.
+
+    WITHOUT `claude_session` (10 November 2026): the caller's tasks of every
+    session, and of none, under the same window, bound and `complete`. Voice
+    it's planner reads this as its `open_questions` tool and has no Claude Code
+    session, so the required parameter answered it 422 on every read. Still
+    only the caller's own tasks; `filter.claude_session` echoes null.
     """
-    session = sessiontag.valid(claude_session)
-    if session is None:
+    session = None if claude_session is None else sessiontag.valid(claude_session)
+    if claude_session is not None and session is None:
         raise ValidationFailed(
             f"claude_session {claude_session!r} is not a Claude Code session id",
             detail={"pattern": sessiontag.PATTERN},

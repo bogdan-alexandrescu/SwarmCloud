@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from .test_no_live_literals import _listed
+
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "scripts" / "live_report.py"
 SCRIPT = ROOT / "scripts" / "live-report.sh"
@@ -393,7 +395,16 @@ def test_script_reads_our_cluster_only_and_refuses_the_shared_one():
     text = SCRIPT.read_text()
     assert 'resource.labels.cluster_name=\\"${GKE_CLUSTER}\\"' in text
     assert 'is_shared_resource "${GKE_CLUSTER}"' in text
-    assert "agents-staging" not in "\n".join(_effective_lines(text))
+    assert "peer-cluster" not in "\n".join(_effective_lines(text))
+
+
+def test_script_names_nothing_on_the_pattern_list():
+    # The shared project's cluster (and every other live value) comes from the
+    # deployment pattern list, read the way test_no_live_literals.py reads it;
+    # skips, saying why, with no list. Reported by list line, never value.
+    code = "\n".join(_effective_lines(SCRIPT.read_text()))
+    hits = [f"list:{e.line}" for e in _listed() if e.pattern.search(code)]
+    assert not hits, hits
 
 
 def test_script_avoids_bash4_only_constructs():

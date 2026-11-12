@@ -106,6 +106,17 @@ _LENDABLE_SECRET_NAME = re.compile(
     rf"\Aswarm-account-[A-Za-z0-9_-]+(?<!{re.escape(REFRESH_SUFFIX)})\Z"
 )
 
+#: The ONLY secrets this service may DELETE: an API key's one secret,
+#: `swarm-account-<tenant>--key-<label>` (docs/design/llm-providers.md §4.4).
+#: The same shape as the IAM condition the owner applied in bootstrap
+#: (`terraform/bootstrap/account_key_secrets.tf`): a non-empty tenant with no
+#: `--` in it, then `--key-`. A plan's secret, its `-refresh` half, every
+#: `swarm-tenant-*` secret and every name outside the platform's family are
+#: refused here before the API is asked, so a bug cannot lean on IAM alone.
+_KEY_SECRET_NAME = re.compile(
+    r"\Aswarm-account-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*--key-[A-Za-z0-9_-]+\Z"
+)
+
 #: How many times a reader sync re-reads the policy after another writer's
 #: setIamPolicy made its etag stale. Two lending changes to one account racing
 #: is the only realistic writer, so a small bound is plenty.
@@ -133,6 +144,18 @@ def owned_by_this_platform(name: str) -> bool:
     how the shared project gets a destroy it did not authorise.
     """
     return bool(_PLATFORM_SECRET_NAME.match(name))
+
+
+def is_key_secret(name: str) -> bool:
+    """Whether `name` is an API key's own secret, the one kind this service
+    may delete (`_KEY_SECRET_NAME`)."""
+    return bool(_KEY_SECRET_NAME.match(name))
+
+
+def version_number(name: str) -> int | None:
+    """The number in a version's resource name, or None when it does not parse."""
+    match = _VERSION_NAME.match(name or "")
+    return int(match.group("number")) if match else None
 
 
 def _version_state(version: Any) -> str:
@@ -386,8 +409,10 @@ class SecretManagerStore:
             return added, removed
         raise AssertionError("unreachable: the loop returns or raises")
 
-    def add_version(self, name: str, payload: str) -> None:
-        """Publish `payload`, then expire what it superseded.
+    def add_version(self, name: str, payload: str) -> str:
+        """Publish `payload`, then expire what it superseded. Returns the new
+        version's resource name ("" when the API named none), which a key's
+        rotation keeps (`destroy_versions_before`).
 
         RETENTION RUNS AFTER THE WRITE AND CANNOT FAIL IT. The credential
         landing is the point; expiring its predecessors is housekeeping, and a
@@ -414,7 +439,100 @@ class SecretManagerStore:
             # surface later as an unexplained auth error inside a job.
             raise SecretMissing(name) from None
 
-        self._expire_superseded(name, str(getattr(created, "name", "") or ""))
+        written = str(getattr(created, "name", "") or "")
+        self._expire_superseded(name, written)
+        return written
+
+    def _checked_versions(self, secret: str) -> list[tuple[int, str, str]]:
+        """Every version of `secret` as (number, resource name, state), each
+        re-checked as retention checks it: its name parses and names THIS
+        project and THIS secret. Any surprise raises `ValueError` and nothing
+        is destroyed. `SecretMissing` when the secret is gone."""
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        listed: list[tuple[int, str, str]] = []
+        try:
+            for version in client.list_secret_versions(
+                request={"parent": f"{self.parent}/secrets/{secret}"}
+            ):
+                name = str(getattr(version, "name", "") or "")
+                match = _VERSION_NAME.match(name)
+                if match is None or match.group("secret") != secret:
+                    raise ValueError("a listed version does not name this secret")
+                project = match.group("project")
+                if project != self._project_id and project != self._this_project_number(secret):
+                    raise ValueError("a listed version names another project")
+                listed.append((int(match.group("number")), name, _version_state(version)))
+        except gexc.NotFound:
+            raise SecretMissing(secret) from None
+        return listed
+
+    def _destroy(self, names: Sequence[str]) -> int:
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        destroyed = 0
+        for name in names:
+            try:
+                client.destroy_secret_version(request={"name": name})
+            except (gexc.NotFound, gexc.FailedPrecondition):
+                # Destroyed by a concurrent pass between the listing and here.
+                continue
+            destroyed += 1
+        return destroyed
+
+    def destroy_all_versions(self, secret: str) -> int:
+        """Destroy EVERY version of a pool account's secret not already
+        destroyed, and return how many. A deleted API key's first step
+        (docs/design/llm-providers.md §4.4), and the whole of the delete for
+        the dedicated Voice it key stored under its old `--<label>` name (Q9),
+        which keeps its empty secret.
+
+        Only a pool account's access-token secret (`_LENDABLE_SECRET_NAME`):
+        never a `swarm-tenant-*` secret, so an imported key's workspace
+        secret cannot be reached from here, and never a `-refresh` half. A
+        secret already gone has nothing left to destroy: 0."""
+        if not _LENDABLE_SECRET_NAME.match(secret) or not owned_by_this_platform(secret):
+            raise ValueError("only a pool account's own secret has its versions destroyed")
+        try:
+            versions = self._checked_versions(secret)
+        except SecretMissing:
+            return 0
+        return self._destroy([name for _, name, state in versions if state != "DESTROYED"])
+
+    def destroy_versions_before(self, secret: str, keep: int | None) -> int:
+        """After a key's rotation and its hold TTL (§4.5): destroy every
+        version older than version `keep`, the one the rotation wrote, and
+        return how many. With `keep` unknown, the newest enabled version is
+        kept. Refused (ValueError) unless the kept version is listed and
+        enabled, so this can never leave the key with nothing to read."""
+        if not is_key_secret(secret) and not _LENDABLE_SECRET_NAME.match(secret):
+            raise ValueError("only a pool account's own secret is rotated")
+        versions = self._checked_versions(secret)
+        enabled = sorted(n for n, _, state in versions if state == "ENABLED")
+        if keep is None:
+            keep = enabled[-1] if enabled else None
+        if keep is None or keep not in enabled:
+            raise ValueError("the version a rotation wrote is not enabled; nothing was destroyed")
+        return self._destroy(
+            [name for n, name, state in versions if n < keep and state != "DESTROYED"]
+        )
+
+    def delete_key_secret(self, secret: str) -> bool:
+        """Delete an API key's secret itself (§4.4), after its versions are
+        destroyed. The one delete this service makes, under the owner's
+        conditioned `swarmAccountKeyDeleter` grant, and refused here for any
+        name that grant would refuse. False when it was already gone."""
+        if not is_key_secret(secret):
+            raise ValueError("only an API key's own secret (--key-) is ever deleted")
+        from google.api_core import exceptions as gexc
+
+        try:
+            self._secret_client().delete_secret(request={"name": f"{self.parent}/secrets/{secret}"})
+        except gexc.NotFound:
+            return False
+        return True
 
     def _expire_superseded(self, secret: str, just_written: str) -> None:
         """Destroy every ENABLED version older than the newest RETAINED_VERSIONS.
@@ -592,6 +710,28 @@ class SecretManagerStore:
             pairs.append((tenant, provider))
         return sorted(set(pairs))
 
+    def workspace_provider_keys(self) -> list[tuple[str, str]]:
+        """Every (tenant_id, vendor) whose own provider secret,
+        `swarm-tenant-<tenant>-<vendor>`, `scripts/create-secrets.sh` wrote
+        (its `component=tenant-credential` labels), for the import of Q7.
+        Names only: the value is read by the import, one secret at a time,
+        and never listed. A secret whose name is not exactly what its labels
+        derive is skipped, so a label cannot point the import at another
+        secret."""
+        pairs: list[tuple[str, str]] = []
+        for secret in self._list():
+            name = secret.name.rsplit("/", 1)[-1]
+            if name.endswith(REFRESH_SUFFIX):
+                continue
+            labels = dict(getattr(secret, "labels", {}) or {})
+            tenant, vendor = labels.get("tenant"), labels.get("provider")
+            if not tenant or vendor not in ("anthropic", "openai"):
+                continue
+            if name != f"swarm-tenant-{tenant}-{vendor}":
+                continue
+            pairs.append((tenant, vendor))
+        return sorted(set(pairs))
+
     def _list(self) -> Iterator[Any]:
         client = self._secret_client()
         return iter(
@@ -606,5 +746,7 @@ __all__ = [
     "RETAINED_VERSIONS",
     "SecretManagerStore",
     "SecretMissing",
+    "is_key_secret",
     "owned_by_this_platform",
+    "version_number",
 ]

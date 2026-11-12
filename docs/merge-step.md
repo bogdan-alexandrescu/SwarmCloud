@@ -45,7 +45,217 @@ below.**
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
 **Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
-readied on `claude-code`, never the browser -- the section below.**
+readied on `claude-code`, never the browser -- the third section below.**
+**Revised 2026-11-09: a merge behind a fix loop reads the loop's final
+review, and a merge step that refuses a NOT_YET labels the pull request
+`review-not-yet`, which `ready` cannot merge -- the second section below.**
+**Revised 2026-11-10: a merge step waiting on CI holds no lease between
+checks -- the scheduler holds its 15-minute fallback while swarm-api's wake
+tick is reading the checks and finding no answer -- the section below.**
+
+## Revised 2026-11-10: a merge step waiting on CI holds no lease between checks
+
+The owner chose on 10 November 2026 that this document describes the change
+made by the merged lane "A merge step waiting on CI holds no capacity lease
+between checks" (the owner's pick of 6 November 2026, after the load
+analysis). The code is `scheduler.loop.merge_wait_due` and
+`Scheduler._promote_ci_waits`, the comments on `MERGE_CI_FALLBACK_SECONDS` in
+`apps/agent-worker/agent_worker/merge.py`, and swarm-api's wake tick
+(`swarm_api.mergewake`); `tests/unit/control_plane/test_merge_wait_no_lease.py`
+drives it end to end. This section supersedes what "Revised 2026-10-06" §1
+says about the fallback waking a park every 15 minutes.
+
+### Why: each wake was a new attempt with a lease
+
+A merge step that finds its pull request's checks still running parks
+CI_PENDING and exits. The park itself always held nothing. But the scheduler
+returned every park to READY at its fallback instant -- the park plus
+`MERGE_CI_FALLBACK_SECONDS` (900 s) -- whether or not anything had changed,
+and every READY was admitted: a lease, a pool count, a Job execution and a
+worker start, to read checks that swarm-api's wake tick had read a minute
+before and found still running, and then park again. In the 7 days to
+6 November 2026 that was 5,303 merge-step attempts for 439 merges: about 12
+attempts per merge, and a third of all the platform's attempts. Nearly all of
+them learnt nothing the control plane did not already know.
+
+### What happens now
+
+1. **The step parks with no lease.** The worker's park
+   (`control.ControlPlane.park_ci_pending`) is one fenced transaction: the
+   agent goes PARKED on CI_PENDING, its lease and slot are given back, the
+   attempt is refunded (up to `MERGE_CI_MAX_WAKES`, 60), `metadata.merge_wait`
+   records the head, the pull request and the pending names, and
+   `next_eligible_at` is set to the park plus 900 s, the fallback instant.
+   Unchanged by this revision.
+2. **The wake tick reads the checks, and now records what it read.** The
+   clock is the deployment's per-tenant Cloud Scheduler job `merge_wake`,
+   every minute; each park is read at most once per `CI_READ_SECONDS` (30 s),
+   with the tenant's own token. When CI has an answer -- green, red with no
+   repair round left, the head moved, the pull request closed or merged --
+   the tick writes `merge_wait.wake_requested_at`, as before. When it has no
+   answer yet -- checks still running, or a repair round running at a red
+   head -- it writes `merge_wait.reading`: `{head, read_at, pending, failed}`,
+   plus the round under way.
+3. **The scheduler holds the fallback while that reading is fresh.**
+   `_promote_ci_waits` promotes a marked park at once. An unmarked one goes
+   through `merge_wait_due`: while the tick's reading is of THIS park -- the
+   park's head, read at or after the park instant and not in the future --
+   and younger than `MERGE_CI_FALLBACK_SECONDS`, the park stays PARKED even
+   past its fallback instant. Each such pass is counted in the drain report's
+   `held_ci_waits`: a lease and a worker start not spent.
+4. **A held wait still has deadlines.** It wakes on its own (`wait_deadline`)
+   at the first of these still ahead of the park, and never before the
+   fallback instant:
+   * `MERGE_CI_RECHECK_SECONDS` (90 min) from this park, so the worker reads
+     every fact itself at least that often;
+   * `CI_STUCK_SECONDS` (90 min) from the wait's start (`merge.ci_stuck`),
+     the window `/sc check` flags a wait at;
+   * `MERGE_CI_MAX_SECONDS` (6 h) from `first_parked_at`, where the worker
+     refuses `checks_timeout` (not while a slot or train wait has paused the
+     CI clock).
+   The scheduler image restates these bounds; the test above holds them
+   equal to the worker's.
+5. **Otherwise the fallback decides, as it always did.** No reading, a
+   reading at another head, one older than the park or from the future, or a
+   tick silent for 900 s (30 of its reads: it is not reading this park) --
+   then the park is due at its fallback instant (`fallback_due`). So a dead
+   tick, a broken token or a GitHub outage still never strands a merge; it
+   costs a wake every 15 minutes, as before this revision.
+
+**What wakes a merge step is the tick, not a webhook.** The push receiver
+(`apps/swarm-github-hooks`) forwards only a push to a repository's default
+branch and drops every other event, check events included, as
+`ignored_event`. No check event marks or wakes a merge park today: the
+answer reaches the step through the tick's next read, at most about a minute
+after CI settles.
+
+**The held fallback, worked through.** A step parks at 10:00 with three
+checks pending; its fallback instant is 10:15. The tick reads the checks at
+within a minute and every minute after, each time writing a fresh `reading`.
+At 10:15 the scheduler finds the instant passed but the reading 30 s old, so
+it holds the park and counts it in `held_ci_waits`. CI goes green at 10:22;
+the tick's next read marks the park, the scheduler's next pass makes it
+READY, and admission leases it once: one attempt for the whole wait, where
+the old fallback would have made two. Had CI still been running at 11:30,
+the recheck bound would have woken the worker once to read every fact
+itself, and parked it again. Had the tick died at 10:05, the reading would
+have gone stale at 10:20 and the park would have woken then, on the
+fallback.
+
+### How the invariants hold
+
+* **Invariant 1 (only LEASED/DISPATCHED/STARTING/RUNNING create demand).** A
+  held park is PARKED: no lease, no pool count, no Job execution, no pending
+  pod. Holding it longer creates no demand; it only removes demand that
+  bought nothing. A forged reading -- `merge_wait` is tenant-writable -- can
+  at most hold a park until `MERGE_CI_RECHECK_SECONDS`, and costs no capacity
+  while it does. A forged marker costs one early wake, whose worker trusts
+  nothing the tick saw.
+* **Invariant 3 (concurrency counts from LEASED).** The scheduler's
+  promotion (`promote_to_ready`) writes the agent alone, guarded on the state
+  and park reason the sweep read: no lease and no pool count. Only admission,
+  later, takes capacity, all-or-nothing, and the step's concurrency counts
+  from that lease. Fewer wakes means fewer leases, never a lease not counted.
+* **Invariant 5 (fencing).** The park is written in one fenced transaction,
+  so a superseded attempt gets `FencedWriteRefused` and can neither park the
+  agent nor refund an attempt. A held wait has no worker and no generation in
+  flight. Every wake, held or not, is a fresh admission with a new
+  generation; the tick's writes are guarded on the agent still being PARKED on
+  CI_PENDING at the head it read, and neither the tick nor the scheduler
+  touches a lease.
+
+### How the console's waiting line reads during a held wait
+
+The line is `waiting_detail._ci`'s summary. While the tick's reading is
+newer than the park, the line shows the reading's pending and failed names,
+not the park's, and says when they were read:
+
+```
+CI on PR #N: 3 checks pending (a, b, c); read 10:21Z; re-checked 1 times; next check 10:15Z
+```
+
+and its "resumes when" says `its pull request's checks settle (swarm-api's
+wake tick marks the step), or the fallback re-check at 10:15Z`. During a
+held wait the `next check` time is the fallback instant, which has passed:
+read it as "the fallback is being held". The `read` time is what shows the
+wait is live; it moves every minute while the tick reads. The line does not
+name the hold's own deadline (`MERGE_CI_RECHECK_SECONDS` and the others in
+step 4); `GET /v1/tasks/{id}` serves the `merge_wait` they are computed from.
+A `read` time that stops moving for 15 minutes means the tick is not reading
+the park, and the fallback wakes it.
+
+## Revised 2026-11-09: the merge reads the fix loop's final review, and a NOT_YET holds the pull request with `review-not-yet`
+
+Two changes to what the merge step reads and what it does on a refusal. Both
+serve one rule: a pull request merges on the verdict about the code it holds,
+never on CI alone.
+
+**Behind a fix loop, the merge reads the loop's final review.** A workflow
+with a `fix-loop` step ([workflows.md](workflows.md#the-fix-loop-review-fix-rounds-until-a-review-says-merge))
+ends in a merge whose signed `merge_target` names the loop as `review_loop`
+in place of a `review` and a staged verdict file; the target parser refuses
+a target naming both. The worker reads the loop's `final_review` from its
+verified `result_summary.fix_loop`, or the loop's declared review when it ran
+no round, and merges only on that review's MERGE, at the head it judged
+(`merge._loop_review`). Why: the loop's rounds are appended after submission,
+so no verdict file of theirs could be staged into a merge signed before they
+existed, and round 0's review judged code the rounds have since changed.
+Each check ends the step MERGE_REFUSED with its own code:
+
+| check | refused |
+|---|---|
+| the step named is on the `fix-loop` profile | `fix_loop_not_a_fix_loop` |
+| the loop SUCCEEDED (a loop that was stopped, expired or is still running did not) | `fix_loop_not_succeeded` |
+| the final review is the loop's declared review, or a re-review whose signed round record names this loop, in this tenant | `fix_loop_review_not_its_own` |
+| that review SUCCEEDED | `fix_loop_review_not_succeeded` |
+| a re-review's signed `repository_ref` is a full sha, and the head its round record names | `fix_loop_review_head_unknown` |
+| its verdict file reads | `verdict_unreadable` |
+
+Why each is a refusal rather than a fallback: the worker trusts only what
+is signed, so a `final_review` that names another loop's review, a failed
+one or one that judged another head is never read as this pull request's
+MERGE. A loop that ends FAILED fails its workflow, so its merge
+step does not start in the first place; `fix_loop_not_succeeded` is the
+worker's own guard for a merge that runs anyway.
+
+**A NOT_YET labels the pull request `review-not-yet` (the owner, 9 November
+2026).** When the merge step refuses `verdict_not_merge` -- the review it
+reads said NOT_YET, the single re-review's included -- it does four things,
+each tried on its own so that one failing (a token that may not turn
+auto-merge off, say) is logged and the rest still run, and none changes the
+refusal (`merge._hold_not_yet`):
+
+1. labels the pull request `review-not-yet`;
+2. turns GitHub's native auto-merge off, when it is on;
+3. removes `ready`, when it is on;
+4. comments the review's findings once per review: at most 20 of them,
+   each cut to 300 characters, inside one fenced block with every run of
+   three backticks broken and passed through the worker's redaction,
+   because they are an agent's text.
+
+What it did is recorded in the step's `result_summary.review_not_yet`. Why:
+a lane whose one re-review said NOT_YET ended FAILED with its pull request
+open and green, then a `ready` label merged it on CI alone and the
+regression the review had found reached main. The label is what makes that refusal
+outlast the workflow.
+
+**The `ready` gate refuses while the label is on.**
+`scripts/check-closing-references.sh`, which auto-merge.yml's gate and the
+repository's merge train both run, refuses a pull request that carries
+`review-not-yet` and comments why. A CI fix does not clear the label, and
+neither does a green CI run: only a later merge step that reads a MERGE does,
+removing it before anything merges or boards the train
+(`merge._clear_not_yet`; a failure to remove it is logged and the merge goes
+on, while the gate still refuses `ready` until it is gone). Why only a
+MERGE: the label records a review's judgement, and only a review's
+judgement may undo it.
+
+**What it does not do.** The label goes on only through a merge step's
+`verdict_not_merge`. A fix loop that waits for a person, or that a person
+stopped or that expired, has no merge step that ran, so nothing labels its
+pull request: it stays open without `review-not-yet`. A person who adds
+`ready` to such a pull request merges it on CI alone, as before this
+revision.
 
 ## Revised 2026-11-05: the re-review that runs no agent runs on claude-code
 
@@ -223,11 +433,12 @@ the pick, reports `picks-built.json` and opens its own pull request
 that the round is merged by its own review and merge steps rather than left
 open for a person: it is an `integrate` workflow, pick-fix -> review -> fix
 gated on NOT_YET, with `metadata.merge` `"on_merge_verdict"`, so submission
-appends the re-review and the merge step and it merges only on a MERGE
-verdict, as any lane does. Why: a pick the owner already made is not a
-decision a person must make again at the merge, and the review still gates
-it; a second NOT_YET after the one fix leaves the pull request open for a
-person (`REREVIEW_ROUNDS`). The recommended pick,
+appends the fix loop (3 rounds, the owner 2026-11-09; the one re-review while
+the `fix-loop` profile is unavailable) and the merge step, and it merges only
+on a MERGE verdict, as any lane does. Why: a pick the owner already made is
+not a decision a person must make again at the merge, and the review still
+gates it; a NOT_YET the loop's rounds do not settle leaves the pull request
+open for a person ([workflows.md](workflows.md#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)). The recommended pick,
 or the same pick answered again, starts nothing. Fencing, the merge slot and
 the hold for every other question are unchanged.
 

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The security-audit recipe: Cloudflare's security audit skill at a pinned
+# commit, staged for /opt/swarm/plugins/security-audit.
+#
+# Factored out of agent-runtime-base's security-audit-build stage
+# (docs/design/managed-plugins.md, section 1.4.2): the release build runs it
+# there with images/agent-runtime-base/bundled-plugins.json, and a
+# deployment's bundle build runs it in the bundler image with an admin's
+# newer pin, so both stage the same tree from the same archive. The commands
+# are the stage's own, unchanged, so the default pins stage byte for byte the
+# tree the stage staged before (tests/unit/scripts/test_plugin_bundle_recipes.py
+# holds the digests equal):
+#
+#   * the commit's source archive is read ONLY from the mirror folder, at the
+#     object path its pin names, checked against the pinned sha256 and against
+#     the commit GitHub writes into its pax header, before it is unpacked;
+#   * ONLY skills/security-audit/ and LICENSE are staged, at the archive's own
+#     relative paths: directories 0755, files 0644 (the validators run as
+#     `node <file>`, so nothing needs an execute bit), no symlink, device or
+#     fifo;
+#   * with --validate-with NODE, the skill's own validator tests run on a copy
+#     of the staged skill (their output stays out of the tree), because those
+#     validators decide whether a review's findings count (section 1.4.6);
+#   * .swarm-bundle.json is written last, over the staged tree.
+#
+# usage: build --pins FILE --mirror DIR --out DIR [--validate-with NODE]
+
+PLUGIN=security-audit
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bundle="${here}/../../swarm-bundle"
+
+pins="" mirror="" out="" node=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pins) pins="$2"; shift 2 ;;
+    --mirror) mirror="$2"; shift 2 ;;
+    --out) out="$2"; shift 2 ;;
+    --validate-with) node="$2"; shift 2 ;;
+    *) echo "security-audit recipe: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+if [ -z "${pins}" ] || [ -z "${mirror}" ] || [ -z "${out}" ]; then
+  echo "usage: build --pins FILE --mirror DIR --out DIR [--validate-with NODE]" >&2
+  exit 2
+fi
+if [ -e "${out}" ]; then
+  echo "security-audit recipe: ${out} exists; it stages into a new folder only" >&2
+  exit 2
+fi
+
+pin() { python3 "${bundle}" pin --pins "${pins}" --plugin "${PLUGIN}" "$1"; }
+SECURITY_AUDIT_OBJECT="$(pin source.object)"
+SECURITY_AUDIT_SHA256="$(pin source.sha256)"
+SECURITY_AUDIT_COMMIT="$(pin source.commit)"
+
+scratch="$(mktemp -d)"
+archive="${scratch}/security-audit.tar.gz"
+trap 'rm -rf "${scratch}"' EXIT
+
+curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${archive}" \
+  "file://${mirror}/${SECURITY_AUDIT_OBJECT}"
+echo "${SECURITY_AUDIT_SHA256}  ${archive}" | sha256sum -c -
+test "$(gzip -dc "${archive}" | git get-tar-commit-id)" = "${SECURITY_AUDIT_COMMIT}"
+mkdir "${scratch}/src"
+tar -xzf "${archive}" -C "${scratch}/src" --strip-components=1
+test -f "${scratch}/src/skills/security-audit/SKILL.md"
+test -f "${scratch}/src/LICENSE"
+mkdir -p "${out}/skills"
+cp -R "${scratch}/src/skills/security-audit" "${out}/skills/security-audit"
+cp "${scratch}/src/LICENSE" "${out}/LICENSE"
+test -z "$(find "${out}" ! -type f ! -type d)"
+find "${out}" -type d -exec chmod 0755 {} +
+find "${out}" -type f -exec chmod 0644 {} +
+
+if [ -n "${node}" ]; then
+  cp -R "${out}/skills/security-audit" "${scratch}/validate"
+  (cd "${scratch}/validate" \
+    && HOME="${scratch}" "${node}" --test validate-findings.test.cjs validate-coverage-ledger.test.cjs)
+fi
+
+python3 "${bundle}" write --pins "${pins}" --plugin "${PLUGIN}" --tree "${out}" \
+  --input "build=${here}/build" --out "${out}/.swarm-bundle.json"

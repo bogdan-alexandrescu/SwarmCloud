@@ -30,10 +30,21 @@
 # keyword closes; it never reopens a closed one and cannot change a merged
 # one); a number GitHub answers 404 for passes (nothing to close).
 #
+# A REVIEW THAT SAID NOT_YET HOLDS IT TOO (owner decision, 9 November 2026).
+# A lane's merge step refused a pull request on its review's NOT_YET, an
+# operator labelled it `ready`, and native auto-merge merged on CI alone the
+# regression the review had found. Now the merge step labels such a pull
+# request `review-not-yet` (apps/agent-worker/agent_worker/merge.py), and
+# this script, which auto-merge.yml's gate and the merge train already run,
+# refuses it while that label is on, whatever its closing keywords say. The
+# label comes off only when a merge step reads a later review's MERGE: a CI
+# fix does not clear it. The labels are read in the same GraphQL call; a
+# pull request with more labels than one page fails closed.
+#
 # EXIT. 0: nothing would be closed that must not be. 2: refused, and stdout is
 # the comment to post. Anything else: could not tell -- a pull request number
 # that is not one, an unreadable or erroring answer, a failed read other than
-# a 404, more references or commits than one page. Empty is not success: the
+# a 404, more references, commits or labels than one page. Empty is not success: the
 # caller must treat every exit but 0 as "not merged".
 #
 # Usage:
@@ -45,7 +56,7 @@
 
 set -euo pipefail
 # This script touches no project: it reads GitHub only. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
 # PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
@@ -55,6 +66,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # One page each. A pull request with more references or commits than this
 # fails closed rather than being judged on part of its text.
 PAGE=100
+# The label the merge step puts on a pull request whose review said NOT_YET.
+REVIEW_NOT_YET=review-not-yet
 
 QUERY="query(\$owner: String!, \$name: String!, \$number: Int!) {
   repository(owner: \$owner, name: \$name) {
@@ -68,11 +81,17 @@ QUERY="query(\$owner: String!, \$name: String!, \$number: Int!) {
         totalCount
         nodes { commit { message } }
       }
+      labels(first: ${PAGE}) {
+        totalCount
+        nodes { name }
+      }
     }
   }
 }"
 
-usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header, to its first line that is not a comment: no line range to keep
+# in step with it.
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; }
 
 pr=""
 repo="${GH_REPO:-}"
@@ -120,6 +139,8 @@ jq -e '.data.repository.pullRequest.closingIssuesReferences.nodes | type == "arr
   || die "the answer for #${pr} carries no closing-references list"
 jq -e '.data.repository.pullRequest.commits.nodes | type == "array"' "${answer}" >/dev/null \
   || die "the answer for #${pr} carries no commit list"
+jq -e '.data.repository.pullRequest.labels.nodes | type == "array"' "${answer}" >/dev/null \
+  || die "the answer for #${pr} carries no label list"
 
 references_total="$(jq -r '.data.repository.pullRequest.closingIssuesReferences.totalCount // 0' "${answer}")"
 commits_total="$(jq -r '.data.repository.pullRequest.commits.totalCount // 0' "${answer}")"
@@ -130,6 +151,20 @@ if [[ "${references_total}" -gt "${PAGE}" ]]; then
 fi
 if [[ "${commits_total}" -gt "${PAGE}" ]]; then
   die "#${pr} has ${commits_total} commits and one page reads ${PAGE}; not judged on part of them"
+fi
+labels_total="$(jq -r '.data.repository.pullRequest.labels.totalCount // 0' "${answer}")"
+[[ "${labels_total}" =~ ^[0-9]+$ ]] || die "the answer for #${pr} carries no readable label count"
+if [[ "${labels_total}" -gt "${PAGE}" ]]; then
+  die "#${pr} has ${labels_total} labels and one page reads ${PAGE}; not judged on part of them"
+fi
+
+# Its review said NOT_YET, and no later review has said MERGE.
+held_by_review=false
+if jq -e --arg label "${REVIEW_NOT_YET}" \
+    'any(.data.repository.pullRequest.labels.nodes[]; .name == $label)' "${answer}" >/dev/null; then
+  held_by_review=true
+  err "#${pr} carries \`${REVIEW_NOT_YET}\`: its review said NOT_YET"
+  note "* **\`${REVIEW_NOT_YET}\`: its review said NOT_YET -- not merged until a later review says MERGE**"
 fi
 
 # Every number in this repository that GitHub lists or a closing keyword
@@ -191,19 +226,32 @@ if [[ "${visited}" -eq 0 ]]; then
   note "#${pr} names nothing with a closing keyword."
 fi
 
-if [[ ${#open_prs[@]} -eq 0 ]]; then
+if [[ ${#open_prs[@]} -eq 0 && "${held_by_review}" != "true" ]]; then
   exit 0
+fi
+
+# The refusal comment. Its first line marks a review hold for
+# scripts/merge-train.sh (guards_pass); GitHub renders it as nothing.
+lead="**Not merged, and \`ready\` removed.** "
+if [[ "${held_by_review}" == "true" ]]; then
+  printf '%s\n' "<!-- ${REVIEW_NOT_YET} -->"
+  printf '%s\n' "${lead}This pull request carries the \`${REVIEW_NOT_YET}\` label: its review said NOT_YET. A later review must say MERGE before it can merge, and the merge step that reads that MERGE removes the label. A CI fix does not clear it, and neither does a green CI run: \`ready\` is refused while the label is on."
+  lead=""
+  if [[ ${#open_prs[@]} -eq 0 ]]; then
+    exit 2
+  fi
+  echo
 fi
 
 if [[ ${#open_prs[@]} -eq 1 ]]; then
   n="${open_prs[0]}"
-  printf '%s\n' "**Not merged, and \`ready\` removed.** This pull request's text names open pull request #${n} with a closing keyword (for example \"fix #${n}\"), so GitHub would close #${n} when this merges. Reword it (for example \"PR ${n}\") or use \"part of #${n}\", then add \`ready\` again."
+  printf '%s\n' "${lead}This pull request's text names open pull request #${n} with a closing keyword (for example \"fix #${n}\"), so GitHub would close #${n} when this merges. Reword it (for example \"PR ${n}\") or use \"part of #${n}\", then add \`ready\` again."
 else
   listed=""
   for n in "${open_prs[@]}"; do
     listed="${listed:+${listed}, }#${n}"
   done
   n="${open_prs[0]}"
-  printf '%s\n' "**Not merged, and \`ready\` removed.** This pull request's text names open pull requests ${listed} with a closing keyword (for example \"fix #${n}\"), so GitHub would close them when this merges. Reword each (for example \"PR ${n}\") or use \"part of #${n}\", then add \`ready\` again."
+  printf '%s\n' "${lead}This pull request's text names open pull requests ${listed} with a closing keyword (for example \"fix #${n}\"), so GitHub would close them when this merges. Reword each (for example \"PR ${n}\") or use \"part of #${n}\", then add \`ready\` again."
 fi
 exit 2

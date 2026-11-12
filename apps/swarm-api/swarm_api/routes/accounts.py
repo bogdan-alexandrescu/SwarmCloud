@@ -89,7 +89,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
-from pydantic import Field, StrictInt
+from pydantic import Field, StrictFloat, StrictInt
 from swarm_redaction import redact as redact_text
 
 from .. import roles
@@ -118,7 +118,6 @@ from ..schemas import (
     ACCOUNT_PROVIDERS,
     VOICE_ONLY_PROVIDERS,
     AccountCreate,
-    AccountLending,
     AccountSignInFinish,
     AccountSignInStart,
     AccountStateChange,
@@ -193,6 +192,20 @@ def _writer_tenant_id(ctx: AppContext, auth: AuthContext) -> str:
     tenant_id = _tenant_id(ctx, auth)
     if ctx.roles is not None:
         ctx.roles.require(auth, roles.MEMBER)
+    return tenant_id
+
+
+def _admin_tenant_id(ctx: AppContext, auth: AuthContext) -> str:
+    """`_writer_tenant_id`, and then the role `admin` there: the gate on a
+    plan's caps, each lend's agents cap and the per-workspace caps (owner
+    pick, #3851). The `member` gate runs first, so a viewer keeps its
+    `role_member_required` answer; a member is `role_admin_required`,
+    through its switch, before any broker call. A platform admin acting in
+    the workspace passes as on every other account write, audited by
+    `deps.current_auth`."""
+    tenant_id = _writer_tenant_id(ctx, auth)
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.ADMIN)
     return tenant_id
 
 
@@ -289,11 +302,15 @@ def list_accounts(
     # With the tenant's own Voice-it-only accounts (`include_reserved`), so
     # the page's Voice it pool section and Pools… can reach a reserved one.
     payload = pool.list_accounts(tenant_id, include_reserved=True)
+    now = datetime.now(timezone.utc)
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
         "accounts": [
-            _with_voice_pool(_with_hold_deadline(_with_health_row(_own_view(a, tenant_id))))
+            _with_lend_holders(
+                _with_voice_pool(_with_hold_deadline(_with_health_row(_own_view(a, tenant_id)))),
+                tenant_id, pool, now,
+            )
             for a in payload.get("accounts") or []
         ],
         "tenant_id": tenant_id,
@@ -365,6 +382,39 @@ def _with_hold_deadline(account: Any) -> Any:
         if parsed is not None and parsed.tzinfo is not None:
             at = raw
     return {**account, ACCOUNT_HOLD_DEADLINE: at}
+
+
+def _with_lend_holders(account: Any, tenant_id: str, pool: AccountPool, now: datetime) -> Any:
+    """An OWNED, lent row's live holders per borrower (§6.2: each lend line
+    is the borrower's agents now over its cap), as `lend_holders`
+    {tenant: n}, every borrower named, 0 included.
+
+    Counted as the broker's `is_lend_full_for` counts: live holds, from the
+    grant (LEASED), never RUNNING; a hold past its deadline does not count.
+    Only on the owner's rows: a borrower is told nothing of another
+    borrower, as `holders_view` tells it nothing. A holds read that fails
+    serves None -- unknown -- for that row, never zeros, and never fails the
+    list."""
+    if not isinstance(account, dict) or account.get("owner_tenant") != tenant_id:
+        return account
+    lends = account.get("lends")
+    borrowers = [t for t in (lends if isinstance(lends, dict) else {}) if isinstance(t, str)]
+    borrowers += [t for t in account.get("lend_to") or [] if isinstance(t, str) and t not in borrowers]
+    if not borrowers or not isinstance(account.get("account_id"), str):
+        return account
+    try:
+        holds = pool.holds(account["account_id"]).get("holds") or []
+    except Exception:  # noqa: BLE001 -- the list stands; this row's count is unknown
+        return {**account, "lend_holders": None}
+    counts = dict.fromkeys(borrowers, 0)
+    for hold in holds:
+        if not isinstance(hold, dict) or hold.get("tenant_id") not in counts:
+            continue
+        expires = _utc(hold.get("expires_at"))
+        if expires is None or now >= expires:
+            continue
+        counts[hold["tenant_id"]] += 1
+    return {**account, "lend_holders": counts}
 
 
 #: The broker's pool names (the Voice it pool, owner 2026-11-02): an account
@@ -562,6 +612,86 @@ def finish_sign_in(
     }
 
 
+class AccountDeviceSignInStart(StrictModel):
+    """Begin adding a ChatGPT plan with a device code. No provider: only a
+    plan signs in this way. No owner: the caller's workspace is the owner."""
+
+    label: str = Field(min_length=1, max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountDeviceSignInPoll(StrictModel):
+    """Ask whether the person approved it, by the state start answered."""
+
+    state: str = Field(min_length=8, max_length=256)
+
+
+#: What a device start may tell the browser, by allow-list: the code to type,
+#: where to type it, and the state to poll with. Never the device id.
+_DEVICE_START_FIELDS = (
+    "state",
+    "user_code",
+    "verification_uri",
+    "expires_in_seconds",
+    "interval_seconds",
+    "provider",
+)
+
+
+@router.post("/device/start")
+def begin_device_sign_in(
+    body: AccountDeviceSignInStart,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Start a ChatGPT plan's sign-in with a one-time code (`codex login
+    --device-auth`'s flow), for a browser that cannot catch the plan's
+    localhost redirect.
+
+    The tenant and the role are `begin_sign_in`'s: `_writer_tenant_id`, before
+    any broker call. The broker holds the device id it polls the vendor with;
+    this answer passes only `_DEVICE_START_FIELDS`.
+    """
+    result = pool.begin_device_sign_in(
+        owner_tenant=_writer_tenant_id(ctx, auth),
+        label=body.label,
+        lend_to=list(body.lend_to),
+    )
+    return {k: result.get(k) for k in _DEVICE_START_FIELDS}
+
+
+@router.post("/device/poll")
+def poll_device_sign_in(
+    body: AccountDeviceSignInPoll,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """`pending`, `expired`, or `filed` with the plan.
+
+    The ownership re-check is `finish_sign_in`'s: the CALLER's tenant goes as
+    `expected_owner` and the broker refuses, before it asks the vendor
+    anything, a poll by any tenant but the one that started the sign-in -- a
+    403 that leaves the sign-in to its owner. The broker files the plan, once;
+    a second poll reads it filed.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    result = pool.poll_device_sign_in(state=body.state, expected_owner=tenant_id)
+    status_word = result.get("status")
+    if status_word == "filed":
+        return {
+            "status": "filed",
+            "account": _own_view(result.get("account"), tenant_id),
+            **_registered(result),
+            "expires_at": result.get("expires_at"),
+            "note": "stored write-only; no read path in this API can return key material",
+        }
+    if status_word == "pending":
+        return {"status": "pending", "interval_seconds": result.get("interval_seconds")}
+    return {"status": "expired"}
+
+
 def _registered(result: dict) -> dict[str, Any]:
     """WHICH ORGANISATION THE ADD REGISTERED (#2222), by allow-list.
 
@@ -605,6 +735,63 @@ def refresh_account(
     return _own_answer(pool.refresh(account_id), tenant_id)
 
 
+class LendCap(StrictModel):
+    """One lend's cap (docs/design/llm-providers.md §4.6, Q7): `max_agents`
+    always, `monthly_spend_cap_usd` on a key only. `max_agents` is taken as
+    sent, so `true`, `"2"` or `2.5` is refused by `_checked_lends` in the
+    broker's words ("is a whole number") rather than coerced or refused in
+    pydantic's; the plan/key rule on the spend cap is the broker's."""
+
+    max_agents: Any
+    monthly_spend_cap_usd: StrictFloat | StrictInt | None = None
+
+
+class AccountLending(StrictModel):
+    """Who may borrow an account: `lends`, each borrower with its cap, or
+    today's bare `lend_to` list, which the broker still reads for a plan (a
+    borrower already lent keeps its cap; a new one is carried over, marked
+    `cap not set`). Neither: lent to nobody, as `{}` always meant. Declared
+    here, beside the one route that takes it, like `AccountModelClasses`."""
+
+    lend_to: list[str] | None = Field(default=None, max_length=50)
+    lends: dict[str, LendCap] | None = Field(default=None, max_length=50)
+
+
+def _max_agents_words(value: Any) -> str | None:
+    """`quota_broker.accounts.validate_max_agents`'s refusal for `value`, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "an account's max_agents is a whole number"
+    if 1 <= value <= MAX_AGENTS_LIMIT:
+        return None
+    return (
+        f"an account's max_agents is 1 to {MAX_AGENTS_LIMIT}, and this is {value}; "
+        "pause the account to stop it taking new agents"
+    )
+
+
+def _checked_lends(body: AccountLending) -> dict[str, dict[str, Any]] | None:
+    """The body's `lends` as the broker's route takes them, or None for a
+    `lend_to` body; a 422 in the broker's words (`_lends_for`,
+    `validate_lends`) for what it would refuse anyway, before it is asked."""
+    if body.lends is not None and body.lend_to is not None:
+        raise ValidationFailed("send lends or lend_to, not both")
+    if body.lends is None:
+        return None
+    lends: dict[str, dict[str, Any]] = {}
+    for tenant, cap in body.lends.items():
+        if not tenant:
+            raise ValidationFailed("a lend names its borrowing workspace")
+        if cap.max_agents is None:
+            raise ValidationFailed(f"the lend to {tenant} carries no cap; every lend sets max_agents")
+        words = _max_agents_words(cap.max_agents)
+        if words is not None:
+            raise ValidationFailed(f"the lend to {tenant}: {words}")
+        lends[tenant] = {"max_agents": cap.max_agents}
+        if cap.monthly_spend_cap_usd is not None:
+            lends[tenant]["monthly_spend_cap_usd"] = cap.monthly_spend_cap_usd
+    return lends
+
+
 @router.put("/{account_id}/lending")
 def set_lending(
     account_id: str,
@@ -613,10 +800,60 @@ def set_lending(
     ctx: AppContext = Depends(get_context),
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """Replace the list of tenants this account lends to. Owner only."""
+    """Replace who this account lends to, with each borrower's agents cap
+    (§4.6, Q7). Owner only: a `member` of the owning workspace for a bare
+    `lend_to`, as it always was, and an `admin` there for `lends`, which sets
+    the caps (`_admin_tenant_id`); a platform admin acting there passes
+    either way, recorded by `deps.current_auth`'s platform-admin audit. A
+    bare `lend_to` changes no cap: a borrower already lent keeps its own.
+
+    `lends` is forwarded as `lends`; a `lend_to` body is forwarded as it
+    always was, so today's callers keep working. The caps are checked before
+    the broker is asked anything, in its words; a lend to the owner itself
+    is refused there too, after the ownership read."""
+    if body.lends is not None:
+        tenant_id = _admin_tenant_id(ctx, auth)
+    else:
+        tenant_id = _writer_tenant_id(ctx, auth)
+    lends = _checked_lends(body)
+    _owned(pool, tenant_id, account_id)
+    if lends is None:
+        return _own_answer(pool.set_lending(account_id, lend_to=list(body.lend_to or [])), tenant_id)
+    if tenant_id in lends:
+        raise ValidationFailed(
+            "an account is not lent to its own workspace; its own limit is per_workspace_max"
+        )
+    return _own_answer(pool.set_lending(account_id, lends=lends), tenant_id)
+
+
+class AccountSpendCap(StrictModel):
+    """An API key's monthly spend cap in US dollars, or null for none (§4.6).
+
+    Declared here, beside the one route that takes it. Required, so an empty
+    body is not read as "clear". What a cap may be (above 0, the ceiling) and
+    that a plan has none are the broker's: its 422 reaches the caller.
+    """
+
+    monthly_spend_cap_usd: StrictFloat | StrictInt | None
+
+
+@router.put("/{account_id}/spend-cap")
+def set_spend_cap(
+    account_id: str,
+    body: AccountSpendCap,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """An API key's monthly spend cap. Owner only, as lending is.
+
+    Metered by the broker from the workers' `cost_usd` estimates (Q5); a key
+    at its cap takes no new agent. Lowering it closes no hold.
+    """
     tenant_id = _writer_tenant_id(ctx, auth)
     _owned(pool, tenant_id, account_id)
-    return _own_answer(pool.set_lending(account_id, lend_to=list(body.lend_to)), tenant_id)
+    cap = None if body.monthly_spend_cap_usd is None else float(body.monthly_spend_cap_usd)
+    return _own_answer(pool.set_spend_cap(account_id, monthly_spend_cap_usd=cap), tenant_id)
 
 
 class AccountModelClasses(StrictModel):
@@ -705,6 +942,52 @@ def set_max_agents(
     max_agents = _checked_max_agents(body.max_agents)
     _owned(pool, tenant_id, account_id)
     return _own_answer(pool.set_max_agents(account_id, max_agents=max_agents), tenant_id)
+
+
+class AccountPerWorkspaceMax(StrictModel):
+    """Each workspace's cap on the agents it holds on an account (Q6), the
+    owner's and each borrower's. REQUIRED, so an empty body is refused rather
+    than read as "no caps"; `{}` clears every cap. 51: the owner and the
+    broker's 50 lends. Each number is taken as sent and refused by
+    `_max_agents_words` in the broker's words, not coerced."""
+
+    per_workspace_max: dict[str, Any] = Field(max_length=51)
+
+
+@router.put("/{account_id}/per-workspace-max")
+def set_per_workspace_max(
+    account_id: str,
+    body: AccountPerWorkspaceMax,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """At most this many of the account's agents at once may be one
+    workspace's (§4.6, Q6). Owner only, and an `admin` of the owning
+    workspace, as the lend caps are (`_admin_tenant_id`). Each number is checked before the broker is asked anything,
+    and a workspace that neither owns nor borrows the account is refused
+    after the ownership read, both in the broker's words. Lowering a cap
+    closes no hold; the broker refuses the next grant over it."""
+    tenant_id = _admin_tenant_id(ctx, auth)
+    for tenant, value in body.per_workspace_max.items():
+        if not tenant:
+            raise ValidationFailed("per_workspace_max names each workspace")
+        words = _max_agents_words(value)
+        if words is not None:
+            raise ValidationFailed(f"per_workspace_max for {tenant}: {words}")
+    account = _owned(pool, tenant_id, account_id)
+    lends = account.get("lends")
+    allowed = {tenant_id, *(account.get("lend_to") or []),
+               *(lends if isinstance(lends, dict) else {})}
+    stranger = sorted(t for t in body.per_workspace_max if t not in allowed)
+    if stranger:
+        raise ValidationFailed(
+            f"per_workspace_max names {stranger[0]}, which neither owns nor borrows {account_id}"
+        )
+    return _own_answer(
+        pool.set_per_workspace_max(account_id, per_workspace_max=dict(body.per_workspace_max)),
+        tenant_id,
+    )
 
 
 class AccountName(StrictModel):

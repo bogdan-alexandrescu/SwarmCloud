@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
-import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
+import { Button, ButtonLink, Card, Chip, Dash, ToneMark, Tooltip, buttonClass } from './components'
 import type { ApiError } from './fetch'
 import { connectionOf, Refusal } from './GitHubConnect'
+import { GuideLink } from './Guide'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
+import { Icon } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { WorkspaceTabWords } from './Profile'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
@@ -478,6 +480,13 @@ export function SetupCard() {
           <Chip>
             {countLabel(d)}
           </Chip>
+          {/* THE GUIDE, as the rail draws Help: an icon whose name and
+              sentence sit in the tooltip, so Overview shows no more words. */}
+          <Tooltip tip="Every step, explained in the user guide.">
+            <GuideLink slug="sign-in" label="User guide" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}>
+              <Icon name="help" className="c-ic" />
+            </GuideLink>
+          </Tooltip>
           <Button kind="ghost" size="sm" busy={hiding} onClick={() => void hide()}>
             Hide
           </Button>
@@ -510,7 +519,8 @@ export function OnboardingScreen() {
       <p className="ur-sub">
         Connect GitHub as yourself, install the App where your repositories are, enable the orgs SwarmCloud may reach,
         choose the repositories it may read or write, and verify that it can, all on GitHub access. Each step is checked
-        again on every read; nothing here is marked done by hand.
+        again on every read; nothing here is marked done by hand. Every step, explained:{' '}
+        <GuideLink slug="sign-in">the user guide</GuideLink>.
       </p>
       <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your setup checklist" onRetry={doc.reload} lines={6}>
         {(d) =>

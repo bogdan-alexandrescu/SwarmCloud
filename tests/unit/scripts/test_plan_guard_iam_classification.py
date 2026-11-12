@@ -75,8 +75,8 @@ def _plan(tmp_path: Path, *changes: dict, name: str = "plan.json") -> Path:
 
 
 def _change(rtype: str, actions: list[str], *, address: str | None = None, before=None, after=None) -> dict:
-    values = {"project": "saga-agents-staging", "role": "roles/viewer",
-              "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"}
+    values = {"project": "example-project", "role": "roles/viewer",
+              "member": "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"}
     return {
         "address": address or f"{rtype}.edge",
         "mode": "managed",
@@ -244,7 +244,7 @@ def test_every_iam_row_is_written_to_the_summary(tmp_path):
     assert 'module.iam.google_project_iam_member.plain["a"]' in summary, summary
     assert "module.storage.google_storage_bucket_iam_member.b" in summary, summary
     assert "roles/viewer" in summary, summary
-    assert "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com" in summary, summary
+    assert "swarm-scheduler@example-project.iam.gserviceaccount.com" in summary, summary
     assert "google_cloud_run_v2_service.this" not in summary, summary
 
 
@@ -253,8 +253,8 @@ def test_a_value_holding_a_pipe_does_not_break_the_summary_table(tmp_path):
         tmp_path,
         _change(
             "google_project_iam_member", ["create"],
-            after={"project": "saga-agents-staging", "role": "roles/a|b",
-                   "member": "serviceAccount:x@saga-agents-staging.iam.gserviceaccount.com"},
+            after={"project": "example-project", "role": "roles/a|b",
+                   "member": "serviceAccount:x@example-project.iam.gserviceaccount.com"},
         ),
     )
     assert _answer(_classify(plan, tmp_path)) == "true"

@@ -38,6 +38,20 @@
 # covers workflows and single tasks alike, and a task this session dispatches
 # gets its row from swarm_dispatch's reply.
 #
+# AND IT MARKS ITS OWN VERSION FOLDER IN USE (PLUGIN-VERSION-GUARD, owner
+# 2026-11-09). Claude Code keeps each plugin version in
+# ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/, with
+# `.in_use/<pid>` markers -- plain empty files named by the pid of each Claude
+# Code process using it -- and deletes a version folder no live marker names.
+# A long-lived session whose pid was in no marker lost its sc folder while it
+# ran: every launch failed with `run.js is not a file` and the plugin's agent
+# types were gone. So, first and whatever else is configured, this hook
+# writes `.in_use/<pid of the Claude Code process>` into CLAUDE_PLUGIN_ROOT
+# when that is a cache version folder (`claude_pid`, `mark_in_use`): only
+# when it is missing, as an empty file, and never touching another marker.
+# The bridge says when the folder is gone anyway (swarm_mcp.launch
+# `plugin_files_missing`).
+#
 # READ-ONLY. `sc workflows` reads GET /v1/workflows and each running workflow,
 # and GET /v1/tasks?state=<s>&submitted_by=me for the single tasks; it submits,
 # attaches and cancels nothing.
@@ -227,6 +241,56 @@ record_session() {
 }
 
 # The minutes `/sc watch` saved for this project, or nothing.
+# The Claude Code process this hook runs for: the first ancestor that is not a
+# shell. VERIFIED 2026-11-09 by a SessionStart hook that printed its ancestry
+# (`ps -o pid=,ppid=,comm=`) under `claude --print --settings <file>`: the
+# hook script's parent was `/bin/sh -c "<hook>"` and that shell's parent was
+# `claude` -- Claude Code runs a command hook through a shell, and a shell
+# that execs its one command (bash does) leaves `claude` as the direct
+# parent. So shells are stepped over, three at most, and pid 1 or less is
+# never taken.
+claude_pid() {
+  local pid name hops
+  pid="$PPID"
+  hops=0
+  while [ "$hops" -lt 4 ]; do
+    case "$pid" in
+      '' | *[!0-9]*) return 0 ;;
+    esac
+    [ "$pid" -gt 1 ] || return 0
+    name="$(ps -o comm= -p "$pid" 2>/dev/null)" || return 0
+    name="${name##*/}"
+    name="${name#-}"
+    case "$name" in
+      sh | bash | dash | zsh | ksh | mksh | ash | busybox) ;;
+      '') return 0 ;;
+      *)
+        printf '%s' "$pid"
+        return 0
+        ;;
+    esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" || return 0
+    hops=$((hops + 1))
+  done
+}
+
+mark_in_use() {
+  local root pid marker
+  root="${CLAUDE_PLUGIN_ROOT:-}"
+  # Only a version folder in Claude Code's plugin cache; never a checkout's
+  # plugin/ loaded with --plugin-dir. A folder already gone is not re-created.
+  case "$root" in
+    */plugins/cache/*/*/*) ;;
+    *) return 0 ;;
+  esac
+  [ -d "$root" ] || return 0
+  pid="$(claude_pid)" || return 0
+  [ -n "$pid" ] || return 0
+  [ -d "$root/.in_use" ] || mkdir "$root/.in_use" 2>/dev/null || [ -d "$root/.in_use" ] || return 0
+  marker="$root/.in_use/$pid"
+  [ -e "$marker" ] || { : >"$marker"; } 2>/dev/null || true
+}
+
 watch_minutes() {
   local file minutes
   file="$1"
@@ -273,6 +337,7 @@ session_id="$(printf '%s' "$hook_input" | tr -d '\n' \
   | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)" || session_id=""
 session_id="$(session_shaped "$session_id")" || session_id=""
 record_session "$session_id" || true
+mark_in_use || true
 
 url="${SWARM_PLUGIN_DEPLOYMENT_URL:-${CLAUDE_PLUGIN_OPTION_DEPLOYMENT_URL:-}}"
 [ -n "$url" ] || exit 0

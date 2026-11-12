@@ -28,6 +28,7 @@ import { useState, type ReactNode } from 'react'
 
 import { HelpCard } from './HelpCard'
 import { agentPath } from './OverviewRegions'
+import { InfoTip } from './People'
 import { clockTime, formatDuration, type Task, type TaskState, type Waiting, type WaitingHistoryEntry } from './types'
 
 /** History entries shown before "show all N". The newest stay; the oldest fold. */
@@ -67,6 +68,26 @@ function When({ iso, now }: { iso: unknown; now: number }) {
   const at = clockTime(str(iso), now)
   if (at === null) return <NotRecorded />
   return <time dateTime={str(iso)!} title={at.title}>{at.text}</time>
+}
+
+/**
+ * A HELD MERGE WAIT HAS NO NEXT CHECK (the owner, 2026-11-10): while the
+ * scheduler holds it on the wake tick's fresh reading, the API serves no
+ * `next_check_at` and the tick's last check as `held_last_check_at`. That
+ * time goes behind an (i), never as visible prose; every other wait keeps
+ * its time, or "not recorded".
+ */
+function NextCheck({ w, now }: { w: Waiting; now: number }) {
+  const held = w.reason === 'CI_PENDING' ? clockTime(str(obj(w.detail)?.held_last_check_at), now) : null
+  if (held === null) return <When iso={w.next_check_at} now={now} />
+  return (
+    <span data-wait-held="">
+      <InfoTip
+        about="the next check"
+        tip={`None scheduled: the scheduler holds this wait on its wake tick's reading of CI, last checked ${held.title}.`}
+      />
+    </span>
+  )
 }
 
 function Text({ value, why }: { value: unknown; why?: string | null }) {
@@ -477,7 +498,7 @@ export function WaitPanel({ task, now }: { task: Task; now: number }) {
           <Text value={w.resumes_when} />
         </Fact>
         <Fact k="next-check" label="Next check">
-          <When iso={w.next_check_at} now={now} />
+          <NextCheck w={w} now={now} />
         </Fact>
         <DetailFacts w={w} now={now} />
       </dl>

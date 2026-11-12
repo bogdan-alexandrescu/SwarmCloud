@@ -110,6 +110,13 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
         SWARM_API,
         frozenset({"client_id", "saved_at", "saved_by"}),
     ),
+    # Admin › Setup's optional "add a plugin" step (managed-plugins §15.1):
+    # when and by whom a platform admin skipped it. The engine reads it as it
+    # reads the others and copies nothing from it.
+    "swarm-install/{env}/console/plugins_step": (
+        SWARM_API,
+        frozenset({"skipped_at", "skipped_by"}),
+    ),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,
         frozenset({"run_at", "checks", "findings"}),

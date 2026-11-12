@@ -102,7 +102,11 @@ returns this park to READY, reason `owner_questions_answered`, once every
 question its `owner_questions` hold names is answered. An answer while
 another named question is still open leaves it parked, and a hold the route
 cannot read -- `unreadable` entries, a malformed or out-of-workflow entry --
-waits for a person's `human-ready`, as before. A review re-running wakes
+waits for a person's `human-ready`, as before. That ready is recorded with
+the verdict and head it acknowledged (10 November 2026, `_unreadable_hold`),
+and the next attempt goes on past those unreadable entries; before, nothing
+recorded it, and the attempt the ready started parked again on the same
+entries, every time. A review re-running wakes
 nothing. Either way the next attempt reads every answer again. The
 scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
 it spares a `question_wait` or `release_wait` one, so it never dead-letters
@@ -219,6 +223,21 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: A member's ready on an owner-question hold that named `needs_owner`
+#: entries the merge cannot read (10 November 2026): swarm-api's
+#: `handoff.ready_writes` records it on this task, in the transaction that
+#: returns it to READY, as `{source: {by, at, review_task, verdict_digest,
+#: head, round_heads, unreadable}}` -- `source` one of the two below, the
+#: rest copied from the park's `acknowledges` (`_unreadable_hold`). Held
+#: equal to swarm-api's `handoff.OWNER_READY_METADATA_KEY` by
+#: tests/unit/worker/test_merge_ready_past_unreadable.py.
+OWNER_READY_METADATA_KEY = "owner_hold_ready"
+OWNER_READY_REVIEW = "review"
+OWNER_READY_SECURITY = "security_review"
+#: What an acknowledgement must match, field for field, to be this hold's.
+OWNER_READY_BASIS = ("review_task", "verdict_digest", "head", "round_heads")
+#: Where the merge records that it went on past a hold's unreadable entries.
+OWNER_READY_SUMMARY_KEY = "owner_unreadable_ready"
 #: The code, and the HUMAN_REQUIRED park's `park_phase`, of a CI wait handed
 #: to a person (part of #2688, 2026-11-06): the repair rounds are spent past
 #: CI_STUCK_SECONDS, or a check that failed at a head a repair round was
@@ -326,7 +345,12 @@ MERGE_CI_MAX_WAKES = 60
 #: cannot use, then costs a wake every 15 minutes -- one lease of a few
 #: seconds -- instead of stranding the merge. Not shorter, the design's 900:
 #: each fallback wake is a Job execution and a cold start, which the tick
-#: exists to avoid.
+#: exists to avoid. Since 2026-11-10 the scheduler holds this fallback while
+#: the tick's own reading of the park (`merge_wait.reading`) is fresh and
+#: says CI has no answer (`scheduler.loop.merge_wait_due`, which restates
+#: this, CI_STUCK_SECONDS and MERGE_CI_MAX_SECONDS): the park then waits for
+#: the tick's mark, or for the first of those bounds, so a merge step makes
+#: no attempt per check -- 5,303 attempts for 439 merges in the 7 days before.
 MERGE_CI_FALLBACK_SECONDS = 900
 
 #: How many times the step updates its branch WHILE HOLDING its repository's
@@ -550,6 +574,25 @@ REPOSITORY_TRAIN_VARIABLE = "MERGE_TRAIN"
 REPOSITORY_TRAIN_ON = "on"
 #: The label the train boards by (`merge-train.sh select`).
 REPOSITORY_TRAIN_LABEL = "ready"
+#: A pull request whose review said NOT_YET (owner decision, 9 November
+#: 2026). A lane's merge refused `verdict_not_merge`, an operator labelled the
+#: green pull request `ready`, and native auto-merge merged on CI alone the
+#: regression the review had found. So a `verdict_not_merge` refusal labels
+#: the pull request with this, takes `ready` off, turns auto-merge off and
+#: comments the findings once (`_hold_not_yet`); while it is on,
+#: scripts/check-closing-references.sh -- which auto-merge.yml's gate and the
+#: merge train both run -- refuses `ready`. Only a merge step that reads a
+#: later MERGE takes it off (`_clear_not_yet`): a green CI run never does.
+REVIEW_NOT_YET_LABEL = "review-not-yet"
+#: The hidden first line of the NOT_YET comment, with the review's task id
+#: after it: one comment per review, however often the refusal is reached.
+REVIEW_NOT_YET_MARKER = "<!-- swarm-merge review-not-yet review="
+#: The comment's bounds: findings listed, characters per finding, characters
+#: in all. The findings are an agent's text on a page anyone with read access
+#: sees, bounded and scrubbed like every other comment this step posts.
+REVIEW_NOT_YET_FINDINGS_SHOWN = 20
+REVIEW_NOT_YET_FINDING_CHARS = 300
+REVIEW_NOT_YET_COMMENT_CHARS = 8000
 #: The commit status the train posts on each head it lands, which the
 #: runbook's ruleset change requires (`merge-train.sh` TRAIN_CONTEXT).
 REPOSITORY_TRAIN_CONTEXT = "merge-train"
@@ -698,6 +741,13 @@ _ENQUEUE_MUTATION = (
     " enqueuePullRequest(input: {pullRequestId: $pullRequestId,"
     " expectedHeadOid: $expectedHeadOid}) {"
     f" {_QUEUE_ENTRY} }} }}"
+)
+
+#: Turns native auto-merge off (`_hold_not_yet`).
+_DISABLE_AUTO_MERGE_MUTATION = (
+    "mutation($pullRequestId: ID!) {"
+    " disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {"
+    " pullRequest { number } } }"
 )
 
 #: Whether the pull request is in its base's merge queue, and the last reason
@@ -1105,6 +1155,8 @@ class PullRequestFacts:
     #: The pull request's label names: `ready` boards the repository's merge
     #: train (`_board`).
     labels: tuple[str, ...] = ()
+    #: Whether GitHub's native auto-merge is armed on it (REST `auto_merge`).
+    auto_merge: bool = False
 
 
 @dataclass(frozen=True)
@@ -1373,6 +1425,12 @@ class ForgeMerger(Protocol):
 
     def add_label(self, number: int, name: str) -> None: ...
 
+    def remove_label(self, number: int, name: str) -> bool: ...
+
+    def disable_auto_merge(self, node_id: str) -> None: ...
+
+    def commented_with(self, number: int, marker: str) -> bool: ...
+
     def train_ejection(self, number: int) -> str | None: ...
 
     def train_skip(self, number: int, head: str) -> str | None: ...
@@ -1479,6 +1537,7 @@ class GitHubMerger:
             labels=tuple(name for name in (
                 _str(_mapping(label).get("name")) for label in (data.get("labels") or []))
                 if name),
+            auto_merge=isinstance(data.get("auto_merge"), Mapping),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1819,6 +1878,41 @@ class GitHubMerger:
         if answer.status != 200:
             raise forge_mod.ForgeAnswered(answer.status, path, forge_mod._message_of(answer.data))
 
+    def remove_label(self, number: int, name: str) -> bool:
+        """Take one label off the pull request: True when this call removed it,
+        False when it was not on (404). Raises on any other answer."""
+        path = f"{self._base}/issues/{number}/labels/{quote(name, safe='')}"
+        answer = self._client.request("DELETE", path)
+        if answer.status == 200:
+            return True
+        if answer.status == 404:
+            return False
+        raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/issues/{number}/labels",
+                                      forge_mod._message_of(answer.data))
+
+    def disable_auto_merge(self, node_id: str) -> None:
+        """Turn GitHub's native auto-merge off. GraphQL answers a refusal 200
+        with `errors` (a token without the right: "Resource not accessible
+        by integration"), which raises like any other."""
+        answer = self._client.request(
+            "POST", "/graphql",
+            payload={"query": _DISABLE_AUTO_MERGE_MUTATION,
+                     "variables": {"pullRequestId": node_id}},
+        )
+        data = _mapping(answer.data)
+        if answer.status != 200 or data.get("errors"):
+            raise forge_mod.ForgeAnswered(answer.status, "/graphql",
+                                          _graphql_message(answer.data)
+                                          or "auto-merge was not turned off")
+
+    def commented_with(self, number: int, marker: str) -> bool:
+        """Whether a comment on the pull request already begins with `marker`."""
+        for comment in self._client.paginate(f"{self._base}/issues/{number}/comments"):
+            body = _str(_mapping(comment).get("body"))
+            if body is not None and body.startswith(marker):
+                return True
+        return False
+
     def train_ejection(self, number: int) -> str | None:
         """Why the pull request lost `ready`, as its comments say: the latest
         comment that is either the merge train's ejection
@@ -2050,8 +2144,10 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
 
 #: The catalogue profile of a fix-loop step (FL-CONTRACT, the owner Q10).
 FIX_LOOP_PROFILE = "fix-loop"
-#: The loop's signed dispatch block, as FL-SUBMIT signs it: `review` (and,
-#: under `integrate`, `fix`) are TASK ids, as `verdict_gate.task_id` is.
+#: The loop's signed dispatch block, as FL-SUBMIT signs it
+#: (`validation.FixLoopSpec.block`): `review` (and, under `integrate`, `fix`)
+#: are STEP ids; `review_task_id` (and `fix_task_id`) are their TASK ids.
+#: Only `review_task_id` names the declared review a round-0 merge rests on.
 FIX_LOOP_DISPATCH_KEY = "fix_loop"
 #: A round's signed dispatch record: `{loop_task, round, kind, head, ...}`,
 #: `kind` "review" for a `re-review:<k>`, "fix" for a `review-fix:<k>`.
@@ -2092,7 +2188,7 @@ def _loop_review(ctx: ActionContext, loop_id: str) -> _LoopReview:
     1. The loop: of this workflow, signed (`verify_upstream`), on the
        `fix-loop` profile, SUCCEEDED.
     2. Its `result_summary.fix_loop.final_review`, or for `rounds: 0` its
-       signed `fix_loop.review`.
+       signed `fix_loop.review_task_id` (`fix_loop.review` is the step id).
     3. That review: signed (a re-review is its own one-step workflow, so it
        is verified against the workflow its signature names), this tenant,
        SUCCEEDED, and either the loop's declared review or a round whose
@@ -2120,7 +2216,7 @@ def _loop_review(ctx: ActionContext, loop_id: str) -> _LoopReview:
                            "SUCCEEDED: its rounds ended without a review saying MERGE")
     block = _mapping(_mapping(_mapping(loop.get("metadata")).get("dispatch"))
                      .get(FIX_LOOP_DISPATCH_KEY))
-    declared = _task_id(block.get("review"))
+    declared = _task_id(block.get("review_task_id"))
     record = _mapping(_mapping(loop.get("result_summary")).get(FIX_LOOP_SUMMARY_KEY))
     final = record.get("final_review")
     rounds = record.get("rounds")
@@ -2195,7 +2291,8 @@ class _Run:
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
-    def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
+    def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int,
+                       acknowledges: dict[str, Any] | None = None) -> ActionOutcome:
         """The owner's questions are a hold no tick can clear: park for a person.
 
         `held` is each still-unanswered `needs_owner` question, or each
@@ -2203,15 +2300,24 @@ class _Run:
         how many entries could not be read. The lifecycle writes the park in
         one fenced transaction (`handoff.park_human_required`), releases the
         lease and exits 75.
+
+        `acknowledges` (with `unreadable`) is what a member's ready on this
+        park acknowledges (`_unreadable_hold`): swarm-api records it on the
+        task when the ready returns it to READY, and the next attempt goes on
+        past these unreadable entries while the verdict and head are the same.
         """
         named = [f"step {q.get('step_id') or q.get('task_id')} question {q.get('question_index')}"
                  for q in held]
         if unreadable:
             named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
-                         "the merge cannot read")
+                         "the merge cannot read (a member's ready lets the merge go on past "
+                         f"{'it' if unreadable == 1 else 'them'})")
         message = ("the review, or a blocking question of a fix round, says these owner "
                    "questions hold the merge, and they are unanswered: " + "; ".join(named))
-        wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
+        wait: dict[str, Any] = {"code": OWNER_QUESTIONS_OPEN, "questions": held,
+                                "unreadable": unreadable}
+        if unreadable and acknowledges is not None:
+            wait["acknowledges"] = acknowledges
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{OWNER_QUESTIONS_OPEN}: {message}",
@@ -2357,8 +2463,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # (`owner_questions.hold_reason`) -- no longer holds the merge. It
         # is merged past, recorded, and stays open for the owner.
         held, past = _advisory_split(ctx, held)
-        if held or verdict.needs_owner_unreadable:
-            return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        # 10 November 2026: unreadable entries a member said ready on, for
+        # this verdict at this head, hold no more; readable ones still do.
+        unreadable, basis = _unreadable_hold(run, OWNER_READY_REVIEW, target.review,
+                                             verdict, target, opener)
+        if held or unreadable:
+            return run.wait_for_owner(held, unreadable=unreadable, acknowledges=basis)
         if past:
             summary[ADVISORY_MERGED_PAST_KEY] = past
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
@@ -2378,13 +2488,14 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         except InputUnavailable as exc:
             if owner_less_not_yet:
                 # Refused as before #3149: no pick could be checked.
-                return run.refuse("verdict_not_merge", f"{not_merge}; {exc}")
+                return _refuse_not_yet(run, opener, verdict, target.review,
+                                       f"{not_merge}; {exc}")
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
         if owner_less_not_yet and not unbuilt:
             # Nothing for a pick-fix round to build: the findings are a fix
             # step's, and the refusal is word for word the one before #3149.
-            return run.refuse("verdict_not_merge", not_merge)
+            return _refuse_not_yet(run, opener, verdict, target.review, not_merge)
         held = [_held_row(row) for row in asked_by_rounds
                 if row.get("blocking") is True and row.get("answer") is None
                 and not owner_less_not_yet]
@@ -2398,8 +2509,8 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # a NOT_YET verdict's findings still stand: never merged without a
         # review of the head.
         if verdict.verdict != "MERGE":
-            return run.refuse(
-                "verdict_not_merge",
+            return _refuse_not_yet(
+                run, opener, verdict, target.review,
                 f"{not_merge}; its owner questions are answered and their picks "
                 "built, so a re-review must judge the head",
             )
@@ -2449,6 +2560,181 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     )
 
 
+def _refuse_not_yet(run: _Run, opener: Mapping[str, Any], verdict: verdict_mod.Verdict,
+                    review: str | None, message: str) -> ActionOutcome:
+    """Refuse `verdict_not_merge`, after holding the pull request against
+    `ready` (`_hold_not_yet`). Nothing the hold does, or fails to do, changes
+    the refusal: a forge or credential failure is logged and the step still
+    ends `verdict_not_merge` with `message`. Only a stale fence (FencedError)
+    goes past it, because a stale worker must not touch anything."""
+    ctx = run.ctx
+    try:
+        _hold_not_yet(run, opener, verdict, review)
+    except FencedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the refusal stands whatever failed
+        ctx.log.warning("the NOT_YET pull request was not held against `ready`",
+                        error=type(exc).__name__,
+                        reason=ctx.scrub(str(exc))[:300])
+    return run.refuse("verdict_not_merge", message)
+
+
+def _hold_not_yet(run: _Run, opener: Mapping[str, Any], verdict: verdict_mod.Verdict,
+                  review: str | None) -> None:
+    """Label the refused pull request `review-not-yet`, take `ready` off,
+    turn native auto-merge off and comment the findings once.
+
+    The token is the step's own forge token, read and handled as
+    `_merge_with_token` reads it, for the same client and the same scope:
+    nothing new is asked of it. Each action is tried on its own, so one that
+    fails -- a token that may not turn auto-merge off, say -- is logged and the
+    rest still run; the gate's refusal of `review-not-yet` holds regardless.
+    What was done is recorded under the summary's `review_not_yet`.
+    """
+    ctx, summary = run.ctx, run.summary
+    number = pull_request_number(opener)
+    if number is None:
+        ctx.log.warning("the NOT_YET pull request is unknown: not labelled",
+                        label=REVIEW_NOT_YET_LABEL)
+        return
+    if mergeable_repository(ctx.repository_url) is None or ctx.read_git_token is None:
+        ctx.log.warning("no forge to label the NOT_YET pull request on",
+                        pull_request=number, label=REVIEW_NOT_YET_LABEL)
+        return
+    token = ctx.read_git_token()
+    ctx.register_secret(token)
+    try:
+        merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
+                            retry=forge_retry(ctx))
+    finally:
+        del token
+    if ctx.recheck():
+        return
+    done: dict[str, Any] = {"pull_request": number}
+    summary["review_not_yet"] = done
+
+    def attempt(key: str, action: Callable[[], Any]) -> None:
+        try:
+            done[key] = action()
+        except FencedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - logged; the next action still runs
+            done[key] = False
+            ctx.log.warning(f"the NOT_YET hold could not {key.replace('_', ' ')}",
+                            pull_request=number, error=type(exc).__name__,
+                            reason=ctx.scrub(str(exc))[:300])
+
+    def label() -> bool:
+        merger.add_label(number, REVIEW_NOT_YET_LABEL)
+        return True
+
+    attempt("label", label)
+    pr: PullRequestFacts | None = None
+
+    def read() -> bool:
+        nonlocal pr
+        pr = merger.pull_request(number)
+        return True
+
+    attempt("read", read)
+
+    def auto_merge_off() -> bool:
+        if pr is None or not pr.auto_merge:
+            return False
+        if not pr.node_id:
+            raise forge_mod.ForgeError("the pull request's node id was not read")
+        merger.disable_auto_merge(pr.node_id)
+        return True
+
+    def ready_off() -> bool:
+        if pr is not None and REPOSITORY_TRAIN_LABEL not in pr.labels:
+            return False
+        return merger.remove_label(number, REPOSITORY_TRAIN_LABEL)
+
+    attempt("disable_auto_merge", auto_merge_off)
+    attempt("remove_ready", ready_off)
+    marker = f"{REVIEW_NOT_YET_MARKER}{review or 'unknown'} -->"
+
+    def comment() -> bool:
+        if merger.commented_with(number, marker):
+            return False
+        return merger.comment(number, review_not_yet_comment(verdict, marker=marker,
+                                                             scrub=ctx.scrub))
+
+    attempt("comment", comment)
+    ctx.log.info("the NOT_YET pull request is held against `ready`", **done)
+
+
+def review_not_yet_comment(verdict: verdict_mod.Verdict, *, marker: str,
+                           scrub: Callable[[str], str]) -> str:
+    """The one comment a `verdict_not_merge` refusal posts: the review's
+    findings, each its summary and, where the review said, its file and line,
+    bounded and passed through the worker's redaction. The findings are an
+    agent's text, UNTRUSTED: they go inside one fenced block with every run of
+    three backticks broken (`verdict.pull_request_lines`), so none renders as
+    a link, an image or an @-mention."""
+    where = {loc.finding: loc for loc in verdict.locations}
+    head = [
+        marker,
+        f"**Not merged: the review said {verdict.verdict}.** This pull request is "
+        f"labelled `{REVIEW_NOT_YET_LABEL}`, and `{REPOSITORY_TRAIN_LABEL}` cannot merge it "
+        "while that label is on.",
+        "",
+    ]
+    tail = [
+        "",
+        "A later review must say MERGE before this pull request can merge: the merge "
+        f"step that reads that MERGE removes `{REVIEW_NOT_YET_LABEL}`. A CI fix does not "
+        "clear it, and neither does a green CI run.",
+        "(apps/agent-worker/agent_worker/merge.py)",
+    ]
+    # Room for the findings: the bound less the rest, and the fence and the
+    # "more" line, so the comment never needs cutting mid-block.
+    room = REVIEW_NOT_YET_COMMENT_CHARS - len("\n".join(head + tail)) - 200
+    listed: list[str] = []
+    for index, finding in enumerate(verdict.findings[:REVIEW_NOT_YET_FINDINGS_SHOWN]):
+        text = _one_line(scrub(str(finding)), REVIEW_NOT_YET_FINDING_CHARS)
+        loc = where.get(index)
+        if loc is not None:
+            place = _one_line(scrub(loc.file), 200)
+            if loc.line is not None:
+                place = f"{place}:{loc.line}"
+            text = f"{text} ({place})"
+        line = f"- {text.replace('```', 'ʼʼʼ')}"
+        if len(line) + 1 > room:
+            break
+        room -= len(line) + 1
+        listed.append(line)
+    body = list(head)
+    if listed:
+        body += ["The review's findings:", "", "```text", *listed, "```"]
+    elif not verdict.findings:
+        body.append("The review listed no findings.")
+    more = len(verdict.findings) - len(listed) + verdict.findings_dropped
+    if more > 0:
+        body.append(f"{more} more finding(s) are in the review's verdict and not shown here.")
+    return scrub("\n".join(body + tail))
+
+
+def _clear_not_yet(run: _Run, merger: ForgeMerger, number: int) -> None:
+    """A MERGE verdict clears an earlier review's `review-not-yet`, before
+    anything merges or boards: the gate refuses `ready` while it is on. A
+    failure is logged, and the merge goes on; the gate still refuses the
+    `ready` path until the label is gone."""
+    ctx = run.ctx
+    try:
+        removed = merger.remove_label(number, REVIEW_NOT_YET_LABEL)
+    except FencedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the MERGE verdict stands
+        ctx.log.warning(f"`{REVIEW_NOT_YET_LABEL}` could not be removed",
+                        pull_request=number, error=type(exc).__name__,
+                        reason=ctx.scrub(str(exc))[:300])
+        run.summary["review_not_yet_cleared"] = False
+        return
+    run.summary["review_not_yet_cleared"] = removed
+
+
 #: The merge refusals the security review's verdict adds.
 SECURITY_VERDICT_UNREADABLE = "security_verdict_unreadable"
 SECURITY_VERDICT_NOT_MERGE = "security_verdict_not_merge"
@@ -2471,7 +2757,9 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
     review's own task. Then every answer must accept the risk or mark a false
     positive; any other answer -- "Fix it now", or free text naming no option
     -- refuses `security_fix_requested`, so the finding is fixed and reviewed
-    before anything merges. A NOT_YET naming no question, or a verdict that
+    before anything merges. Entries it cannot read park too; once a member's
+    ready acknowledges them (`_unreadable_hold`) the merge refuses
+    `security_verdict_not_merge`, since no unreadable entry accepts a risk. A NOT_YET naming no question, or a verdict that
     does not read, refuses: an unreadable security review is not a pass.
     """
     staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
@@ -2499,8 +2787,20 @@ def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
         if ended is not None:
             return ended
     held = _unanswered(ctx, verdict.needs_owner)
-    if held or verdict.needs_owner_unreadable:
-        return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+    unreadable, basis = _unreadable_hold(run, OWNER_READY_SECURITY, None, verdict, target, opener)
+    if held or unreadable:
+        return run.wait_for_owner(held, unreadable=unreadable, acknowledges=basis)
+    if verdict.needs_owner_unreadable:
+        # A ready acknowledged entries no one can read: none of them is an
+        # answer that accepts a risk or marks a false positive, so the gate
+        # stays closed -- refused, not parked for ever and not merged.
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and "
+            f"{verdict.needs_owner_unreadable} of its needs_owner entries cannot be read, so no "
+            "answer accepts the risk or marks a false positive for them: re-run the security "
+            "review",
+        )
     answers = _security_answers(ctx, verdict.needs_owner)
     record["answers"] = answers
     fix = [row for row in answers
@@ -3001,6 +3301,55 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
                 f"pick fix round {len(rounds) + 1} of {MERGE_PICK_ROUNDS_MAX} is due to build it")
 
 
+def _unreadable_hold(run: _Run, source: str, review_task: str | None, verdict: Any,
+                     target: MergeTarget, opener: Mapping[str, Any],
+                     ) -> tuple[int, dict[str, Any] | None]:
+    """`(unreadable entries still holding, what a ready on them acknowledges)`.
+
+    THE LIVE FINDING (10 November 2026): a review wrote its `needs_owner`
+    entries as sentences, the merge parked on two it could not read, and
+    every human-ready re-ran it into the same park for eight hours: nothing
+    recorded that a person had said ready, and nothing could ever read the
+    entries. Now the park names what a ready acknowledges -- the review task,
+    the verdict file's digest, the head the merge pins (`reviewed_head`, else
+    the opener's pushed head) and this merge's own rounds' heads -- and
+    swarm-api's `ready_writes` copies it onto the task, with who and when,
+    under `OWNER_READY_METADATA_KEY`. While all four are the same, this
+    attempt goes on past that verdict's unreadable entries, and records so
+    in `OWNER_READY_SUMMARY_KEY`. A newer review (another digest), a moved
+    head or a new round's head is another hold, which parks again until
+    someone says ready again. Only the UNREADABLE entries are acknowledged:
+    a readable `needs_owner` question is still re-read and must still be
+    answered, and the pick-built check, the checks and every later gate
+    still apply. The record is the task's own document, which only a ready
+    writes; a forged one could at most skip what a ready skips.
+    """
+    count = verdict.needs_owner_unreadable
+    if not count:
+        return 0, None
+    ctx = run.ctx
+    own = _own_doc(ctx)
+    rounds = _fix_round_heads(ctx, own, opener, target.pull_request or "")
+    basis: dict[str, Any] = {
+        "source": source,
+        "review_task": review_task,
+        "verdict_digest": verdict.digest,
+        "head": _str_or_none(run.summary.get("reviewed_head")) or _pushed_head(opener),
+        "round_heads": sorted({head for _task, head in rounds}),
+    }
+    if basis["verdict_digest"] is None or basis["head"] is None:
+        return count, None
+    record = _mapping(_mapping(_mapping(own.get("metadata")).get(OWNER_READY_METADATA_KEY))
+                      .get(source))
+    if any(record.get(key) != basis[key] for key in OWNER_READY_BASIS):
+        return count, basis
+    run.summary.setdefault(OWNER_READY_SUMMARY_KEY, {})[source] = {
+        "by": _str_or_none(record.get("by")), "at": _str_or_none(record.get("at")),
+        "unreadable": count, "verdict_digest": basis["verdict_digest"], "head": basis["head"],
+    }
+    return 0, None
+
+
 def _unanswered(ctx: ActionContext,
                 refs: tuple[verdict_mod.OwnerQuestionRef, ...], *,
                 asked_text: bool = False) -> list[dict[str, Any]]:
@@ -3291,6 +3640,19 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"default branch {default or '(unreadable)'}")
     if slot is not None:
         slot.base = default
+    if run.summary.get("verdict") == "MERGE" and REVIEW_NOT_YET_LABEL in pr.labels:
+        # The review (or the fix loop's final re-review) said MERGE: an
+        # earlier NOT_YET's label comes off before anything merges or boards.
+        _clear_not_yet(run, merger, number)
+    elif REVIEW_NOT_YET_LABEL in pr.labels and not pr.merged:
+        # A step that read no MERGE -- a named pull request, another
+        # workflow's (`pull_request_workflow`), any target with no review --
+        # must not merge or board what a review held: only a later MERGE
+        # takes the label off.
+        return run.refuse("review_not_yet",
+                          f"pull request #{number} carries `{REVIEW_NOT_YET_LABEL}`: its review "
+                          "said NOT_YET, and only a merge step that reads a later MERGE "
+                          "verdict can merge it")
     if pr.merged:
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default

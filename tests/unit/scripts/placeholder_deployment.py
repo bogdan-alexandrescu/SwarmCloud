@@ -55,7 +55,8 @@ MARKER_HELP = (
     "(it proves what common.sh does without them)"
 )
 #: The variables this deployment sets; an opted-out test sees none of them.
-NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME")
+NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME",
+         "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL")
 #: The environments the repository's tfvars examples name; a child's own gets its list too.
 ENVIRONMENTS = ("dev", "prod")
 
@@ -75,6 +76,10 @@ ZONE: str = _P.ZONE
 #: The placeholder list's entries by kind (cluster, network, subnet, bucket, service_account):
 #: what a test that proves a never-touch refusal names, never a real resource.
 PEER: dict[str, str] = dict(_P.PEER)
+#: The deployment's private acceptance sandbox: configuration with no default in
+#: scripts/acceptance/config.sh (Terraform renders it on the swarm-verify job), so
+#: a child gets the placeholder repository's clone URL, never a real sandbox.
+SANDBOX_REPOSITORY_URL: str = f"https://github.com/{_P.GITHUB_REPOSITORY}.git"
 
 
 def environments(*named: str | None) -> list[str]:
@@ -105,6 +110,31 @@ def write_deny_list(config_dir: Path, project: str, envs: tuple[str, ...] | list
         path.chmod(0o600)
 
 
+#: The placeholder settings a script reads from a deployment's <env>.tfvars
+#: (deployment_setting and deployment_list in scripts/lib/common.sh): its allowed
+#: domain, which gives the label prefix swarm.<domain>, and its platform owner.
+TFVARS: dict[str, str | list[str]] = {"allowed_domains": [_P.ORG_DOMAIN], "platform_owner": _P.OWNER}
+
+
+def write_tfvars(config_dir: Path, envs: tuple[str, ...] | list[str] = ENVIRONMENTS,
+                 settings: Mapping[str, str | list[str]] | None = None) -> None:
+    """The placeholder <env>.tfvars (TFVARS, or SETTINGS), under CONFIG_DIR/<env>/ for each
+    env, the way config_fetch reads one offline. Only for a test whose script reads one:
+    the package deployment serves none, so a script that needs one and finds none is proved
+    to stop."""
+    values = TFVARS if settings is None else settings
+    lines = [f"{name} = {json.dumps(value)}" for name, value in values.items()]
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.chmod(0o700)
+    for env in envs:
+        target = config_dir / env
+        target.mkdir(exist_ok=True)
+        target.chmod(0o700)
+        path = target / f"{env}.tfvars"
+        path.write_text("\n".join(lines) + "\n")
+        path.chmod(0o600)
+
+
 class PlaceholderDeployment:
     """The placeholder deployment rooted at ROOT (a private temporary directory)."""
 
@@ -121,18 +151,20 @@ class PlaceholderDeployment:
         return self.root / "projects" / project / "config"
 
     def env(self) -> dict[str, str]:
-        """The variables a child needs: the placeholder project, region, zone and list."""
+        """The variables a child needs: the placeholder project, region, zone, sandbox and list."""
         return {
             "PROJECT_ID": PROJECT,
             "REGION": REGION,
             "ZONE": ZONE,
             "SWARM_DEPLOY_CONFIG_DIR": str(self.config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
+            "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,
         }
 
     def child_env(self, project: str = PROJECT, environment: str = "dev") -> dict[str, str]:
         """For a test that builds its child's environment from scratch: the placeholder
-        region and zone, and the placeholder list served for PROJECT in ENVIRONMENT."""
+        region and zone, the placeholder sandbox, and the placeholder list served for
+        PROJECT in ENVIRONMENT."""
         config_dir = self.config_dir_for(project)
         write_deny_list(config_dir, project, environments(environment, os.environ.get("ENVIRONMENT")))
         return {
@@ -140,6 +172,7 @@ class PlaceholderDeployment:
             "ZONE": ZONE,
             "SWARM_DEPLOY_CONFIG_DIR": str(config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
+            "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,
         }
 
     def serve(self, env: Mapping[str, str]) -> dict[str, str] | None:

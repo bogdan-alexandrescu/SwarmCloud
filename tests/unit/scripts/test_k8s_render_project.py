@@ -18,6 +18,7 @@ import contextlib
 import functools
 import importlib.util
 import io
+import os
 import re
 import secrets
 import subprocess
@@ -38,7 +39,34 @@ placeholder_deployment = _PLACEHOLDERS.deployment()
 
 #: A project id built at runtime, so no test reads as naming a real one.
 PROJECT = f"k8s-render-{secrets.token_hex(4)}"
-LIVE_PROJECT = "saga-" + "agents-staging"
+#: A deployment's project, which a render for PROJECT must never name (the old default).
+LIVE_PROJECT = _PLACEHOLDERS.PROJECT
+_GUARD_SPEC = importlib.util.spec_from_file_location(
+    "swarm_guards_deployment_values", REPO / "scripts" / "guards" / "deployment_values.py"
+)
+_GUARD = importlib.util.module_from_spec(_GUARD_SPEC)
+sys.modules.setdefault("swarm_guards_deployment_values", _GUARD)
+_GUARD_SPEC.loader.exec_module(_GUARD)
+
+
+def _assert_names_no_live_project(*texts: str) -> None:
+    """No rendered text names a live project id (the list's C1 entries).
+
+    What is live comes from the deployment pattern list the guard reads
+    (DEPLOYMENT_PATTERNS, or the file DEPLOYMENT_PATTERNS_FILE names), the way
+    tests/unit/scripts/test_no_live_literals.py takes it: this repository
+    spells no live value. Called last in each test, after its offline checks,
+    so with no list only this part is skipped, and the skip says why.
+    """
+    path = os.environ.get(_GUARD.LIST_FILE_VARIABLE)
+    text = Path(path).read_text(encoding="utf-8") if path else os.environ.get(_GUARD.LIST_VARIABLE)
+    if not (text and text.strip()):
+        pytest.skip("no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): "
+                    "nothing says what is live")
+    projects = [e for e in _GUARD.parse_list(text).entries if e.category == "C1"]
+    for rendered in texts:
+        hits = [e.line for e in projects if e.pattern.search(rendered)]
+        assert not hits, f"a render names the live project of pattern list line(s) {hits}"
 
 #: A cluster network that passes network_values' checks: what apply.sh reads.
 NETWORK = (
@@ -85,7 +113,7 @@ def test_project_is_required() -> None:
     """A namespace and RBAC render for a cluster, with no --project, exits 2.
 
     It rendered the live project's scheduler and reconciler into every tenant
-    namespace of any project (render.py `--project default=`), and apply.sh's
+    namespace of any project (render.py's default for `--project`), and apply.sh's
     tenant mode passed no project.
     """
     uids = ("--scheduler-uid", _uid(), "--reconciler-uid", _uid())
@@ -98,7 +126,6 @@ def test_project_is_required() -> None:
 
     code, out, _ = _main("tenant", "--tenant", "eng", "--project", PROJECT, *NETWORK, *uids, *quota)
     assert code == 0
-    assert LIVE_PROJECT not in out
     emails = set(re.findall(r"[a-z-]+@([a-z0-9-]+)\.iam\.gserviceaccount\.com", out))
     assert emails == {PROJECT}, emails
 
@@ -110,6 +137,7 @@ def test_project_is_required() -> None:
         # MUTATION: drop `--project "${PROJECT_ID}"` from one of the three.
         assert call, f"apply.sh's `render.py {command}` does not pass --project \"${{PROJECT_ID}}\""
     assert "PROJECT_FLAGS=(--project)" in text
+    _assert_names_no_live_project(out)
 
 
 def test_apply_refuses_an_unset_project(tmp_path: Path) -> None:
@@ -226,7 +254,7 @@ def test_policies_unchanged_without_project() -> None:
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert _docs(out), "policies rendered nothing"
-    # MUTATION: put `default="saga-agents-staging"` back on policies' --project.
+    # MUTATION: put `default="example-project"` back on policies' --project.
     assert LIVE_PROJECT not in out
     projects = set(re.findall(r"@([a-z0-9-]+)\.iam\.gserviceaccount\.com", out))
     assert projects == {_load().OFFLINE_PROJECT}, projects
@@ -234,6 +262,7 @@ def test_policies_unchanged_without_project() -> None:
 
     # The lint tenant and job renders beside it (security.yml, Makefile, the
     # worker's pre-publish checkov) keep working offline and name no project.
+    rendered = [out]
     for argv in (
         ["tenant", "--tenant", "lint"],
         ["job", "--tenant", "lint", "--profile", "claude-code", "--task", "tsk_lint",
@@ -244,7 +273,8 @@ def test_policies_unchanged_without_project() -> None:
             cwd=REPO, capture_output=True, text=True, timeout=120, check=False,
         )
         assert ran.returncode == 0, (argv, ran.stderr)
-        assert LIVE_PROJECT not in ran.stdout, argv
+        rendered.append(ran.stdout)
+    _assert_names_no_live_project(*rendered)
 
 
 @pytest.mark.parametrize("command", ["identity", "verify-read"])
@@ -253,6 +283,6 @@ def test_apply_side_renders_take_the_project_given(command: str) -> None:
     project's it passes, never the live one."""
     code, out, _ = _main(command, "--tenant", "eng", "--project", PROJECT)
     assert code == 0
-    assert LIVE_PROJECT not in out
     if command == "identity":
         assert out.split()[1] == f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+    _assert_names_no_live_project(out)

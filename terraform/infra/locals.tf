@@ -849,7 +849,19 @@ locals {
     "REFUSAL_${trim(replace(upper(code), "/[^A-Z0-9]+/", "_"), "_")}" => on ? "on" : "off"
   }
 
+  # The bundle job swarm-api runs for a bundle build (swarm_api.pluginbundle
+  # JOB_ENV; managed-plugins.md section 1.4.2), by name, only where the job
+  # exists (plugin-bundles.tf: the switch on and the bundler image's digest
+  # known). Absent otherwise, as it was before this line: swarm-api then
+  # answers every bundle route 503 bundle_build_unconfigured rather than run
+  # a job that is not there.
+  api_plugin_bundle_env = local.plugin_bundle_job_on ? {
+    PLUGIN_BUNDLE_JOB = local.plugin_bundle_job_name
+  } : {}
+
   service_env = {
+    # local.api_plugin_bundle_env: PLUGIN_BUNDLE_JOB, the bundle job's name
+    # (plugin-bundles.tf), only where the job exists.
     # local.api_browser_egress_env: the browser egress switch (egress.tf).
     # local.api_grant_attestation_env: GRANT_ATTESTATION_REQUIRED (workspace_grant_key.tf).
     # local.settings_mac_env / scheduler_settings_mac_env: the one
@@ -860,7 +872,7 @@ locals {
     # local.api_decision_route_env: INTERNAL_DECISION_API_ADDRESS, swarm-api's
     # route to the decision API through the tailnet egress's internal load
     # balancer (tailscale.tf; jev-contract.md section 4.1).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, local.api_plugin_bundle_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -872,6 +884,12 @@ locals {
       # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
+
+      # uvicorn workers an instance (var.api_workers, default 1; dev sets 2,
+      # the owner's choice of 2026-11-10). The image passes it to
+      # `uvicorn --workers`, and swarm_api.workers divides each per-instance
+      # cap by it, so the instance's caps stay what they were.
+      SWARM_API_WORKERS = tostring(var.api_workers)
 
       # Where a cancel asks for its task's execution to be stopped now rather
       # than at the worker's next poll or the reconciler's next pass (#627).
@@ -1071,6 +1089,29 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
+      # The bundle repository (swarm_api.pluginbundle REPOSITORY_ENV;
+      # managed-plugins.md section 1.4.3): the one image path a bundle build
+      # pushes to and a bundle record's digest may name. "" while
+      # var.builtins_managed is off (plugin-bundles.tf), which is also what
+      # swarm-api read before this line, when nothing set it: off, every
+      # bundle route answers 503 bundle_build_unconfigured, as it did. The
+      # job's name comes with it in local.api_plugin_bundle_env, only where
+      # the job exists.
+      #
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) is not set here yet:
+      # nothing in apps/swarm-api reads it, and scripts/lib/check-env-parity.sh
+      # refuses a variable terraform sets and nothing reads. It comes with the
+      # swarm-api code that reads it (lane 17 of section 17.1).
+      PLUGIN_BUNDLE_REPOSITORY = local.plugin_bundle_repository
+
+      # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
+      # var.plugins_switch says what each value does): "off" refuses every
+      # step that names a plugin. "on" unless the environment's tfvars sets
+      # "off", the state swarm-api reads when the key is unset, so this line
+      # plans no behaviour change. A platform admin's console setting
+      # (swarm_api.platformswitches) overrides it.
+      SWARM_PLUGINS = var.plugins_switch
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
@@ -1219,9 +1260,10 @@ locals {
       # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
       # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
       # deployed", and no speech route touches Compute.
-      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
-      #     stops (one zone, one machine; a stock-out falls back to text and
-      #     never tries a second zone).
+      #   _PROJECT/_ZONES/_INSTANCE/_TEMPLATE: the zones the one regional
+      #     bulk insert lets Google place the machine in (owner, 2026-11-09:
+      #     "let Google pick the zone"; none free, text), the machine's name
+      #     prefix, and the regional template it creates it from.
       #   _ADDR: the reserved internal address the relay dials on 8080.
       #   _AUDIENCE: the ID token's audience the speech server checks; the
       #     same constant the voice_speech output names.
@@ -1235,13 +1277,30 @@ locals {
       #     tick account, the scheduler identity this root already lists as
       #     a platform caller. Empty callers means every sweep is refused.
       SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
-      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
-      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? join(",", local.speech_zones) : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? local.speech_machine_prefix : ""
+      SWARM_SPEECH_TEMPLATE       = local.voice_speech_on && var.voice_speech.template ? google_compute_region_instance_template.speech[0].id : ""
       SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
       SWARM_SPEECH_AUDIENCE       = "swarm-speech"
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
       SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
       SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
+
+      # The managed plugin catalogue (plugins.tf; routes/plugin_catalogue.py).
+      #   _PLUGINS_BUCKET: where an intake's archive is quarantined, the
+      #     console's signed upload goes and pinned copies are written. Empty
+      #     would answer every install 503; the bucket is made by every apply.
+      #   _INTAKE_JOB: the job each intake starts one execution of, with
+      #     overrides (swarm-api holds jobsExecutorWithOverrides on it alone).
+      #   _INTAKE_AUDIENCE/_INTAKE_CALLERS: who may POST the intake's
+      #     callback: the bucket notification's push subscription, an OIDC
+      #     token for swarm-api's push audience from the rollup sweeper's
+      #     account (plugins.tf says why that account). Either empty admits
+      #     nobody (503) and intakes are finished only when read.
+      SWARM_PLUGINS_BUCKET         = google_storage_bucket.plugins.name
+      SWARM_PLUGIN_INTAKE_JOB      = local.plugin_intake_name
+      SWARM_PLUGIN_INTAKE_AUDIENCE = local.push_audiences["swarm-api"]
+      SWARM_PLUGIN_INTAKE_CALLERS  = module.scheduler.rollup_sweeper_email
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
@@ -1320,6 +1379,12 @@ locals {
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
+      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository, the one
+      # image path a bundle record's digest may name; managed-plugins.md
+      # section 1.4.4) is set here by lane 18 of section 17.1, with the
+      # scheduler code that reads it: scripts/lib/check-env-parity.sh refuses
+      # a variable terraform sets and nothing reads.
+
       # The model each profile's agent runs when a step names no class, for
       # the Jobs this scheduler creates (tenants this root does not list). The
       # same `local.profile_default_models` sets MODEL on this root's own Jobs,
@@ -1348,6 +1413,12 @@ locals {
       # serves.
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
+
+      # The managed plugins bucket (plugins.tf), passed THROUGH to every
+      # worker by `scheduler.dispatch.worker_env`: agent_worker.pluginload
+      # fetches each pinned copy from it. Empty omits it; the worker then
+      # reads the default <project>-swarm-plugins.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
 
       # A live-browser pod's JEV_API_URL for a workspace that judges with an
       # internal backend (scheduler.judgment, JUDGE-SELECT). See
@@ -1511,6 +1582,11 @@ locals {
       # of the wake topic's publisher_members in main.tf). Unset, the
       # reconciler logs a warning at start and the tick does the release.
       DISPATCH_TOPIC = local.wake_topic
+
+      # The managed plugins bucket (plugins.tf): reconciler.plugingc deletes
+      # unreferenced pinned copies under platform/ and tenants/ in it (§9.3).
+      # Empty: the default <project>-swarm-plugins name.
+      SWARM_PLUGINS_BUCKET = google_storage_bucket.plugins.name
     })
   }
 }

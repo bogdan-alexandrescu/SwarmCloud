@@ -51,6 +51,7 @@ if _APP not in sys.path:
 
 from swarm_api.errors import ValidationFailed  # noqa: E402
 from swarm_api.voice import cards as vcards  # noqa: E402
+from swarm_api.voice import visuals as vvis  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
@@ -148,6 +149,7 @@ class World:
         self.broker_calls: list[tuple[str, dict]] = []
         self.api_requests: list[httpx.Request] = []
         self.cards: list[dict] = []
+        self.visuals: list[dict] = []
         self.tasks = [{"task_id": "t-" + secrets.token_hex(4), "title": "Fix the login redirect",
                        "state": "FAILED"}]
         self.plan: dict = {"calls": []}
@@ -204,6 +206,17 @@ class World:
             card_id = "vc_" + secrets.token_hex(16)
             self.cards.append({**checked, "card_id": card_id})
             return httpx.Response(201, json={"card": {**checked, "card_id": card_id, "version": 1}})
+        if request.method == "POST" and path == f"/v1/voice/sessions/{self.grant.session_id}/visuals":
+            # swarm-api's own frame check, so a refused mock-up is refused here too.
+            visual = json.loads(request.content)["visual"]
+            try:
+                _, parts = vvis.check_frames(visual["body"])
+            except ValidationFailed as exc:
+                return httpx.Response(422, json={"detail": str(exc)})
+            self.visuals.append(visual)
+            return httpx.Response(200, json={"visual": {
+                "visual_id": "vv_" + secrets.token_hex(16), "kind": "mockup", "version": 1,
+                "parts": parts, "lines": None}})
         return httpx.Response(404)
 
     def claude_binary(self) -> str:
@@ -265,13 +278,22 @@ def test_a_turn_leases_one_account_draws_one_card_speaks_two_sentences_and_relea
     result = _delegate(world)
     assert result.error is None, result.error
     assert [c["kind"] for c in result.cards] == ["details_input"] and len(world.cards) == 1
-    assert _sentences(result.spoken) <= 2 and result.spoken.startswith("The question is on screen.")
+    # The planner's two sentences, then what the turn drew, counted (planner.drew).
+    assert result.spoken == "The question is on screen. Pick a repository. I drew 1 card on screen."
     assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-1/release"]
     assign = world.broker_calls[0][1]
     assert assign == {"provider": "anthropic", "holder": "voice-planner", "person": PERSON,
-                      "voice_session_id": world.grant.session_id}
+                      "voice_session_id": world.grant.session_id, "key_tier": True}
     release = world.broker_calls[1][1]
     assert release["voice_session_id"] == world.grant.session_id and release["assignment_id"].startswith("as-")
+
+
+def test_a_turn_that_drew_nothing_says_so_whatever_the_model_said(world):
+    world.plan = {"calls": [["speak", {"summary": "The plan is on screen."}]]}
+    result = _delegate(world)
+    assert result.error is None and result.cards == [] and world.cards == []
+    # MUTATION: speak the model's words alone and the voice hears a card that is not there.
+    assert result.spoken == "The plan is on screen. " + pl.NOTHING_DRAWN
 
 
 def test_the_account_is_released_even_when_the_child_fails(world):
@@ -356,6 +378,78 @@ def test_an_unknown_kind_is_refused_and_never_written(world):
     answers = json.loads(Path(str(world.dump) + ".results").read_text())
     assert answers[0]["result"]["isError"] is True
     assert not any(r.method == "POST" for r in world.api_requests)
+
+
+def _page(name: str) -> str:
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" '
+            'content="width=device-width, initial-scale=1"><title>' + name + '</title><style>'
+            'body{font-family:system-ui;margin:0}.hero{padding:64px}</style></head><body>'
+            '<section class="hero"><h1>' + name + '</h1><a href="#start">Start</a></section>'
+            '</body></html>')
+
+
+def test_three_versions_asked_for_are_three_frames_drawn(world):
+    frames = [{"label": n, "html": _page(n)} for n in ("Classic", "Bold", "Minimal")]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    # MUTATION: post each page's <meta charset> as written and swarm-api refuses the mock-up.
+    assert len(world.visuals) == 1 and result.frames_dropped == []
+    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == [
+        "Classic", "Bold", "Minimal"]
+    assert result.spoken == "Three versions are on screen. I drew 1 mock-up on screen."
+
+
+def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "The versions are on screen."}]]}
+    result = _delegate(world)
+    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == ["Classic", "Bold"]
+    # MUTATION: drop the frame without a word and the person hears of no missing version.
+    assert result.spoken.endswith(
+        "I drew 1 mock-up on screen. I drew two of the three versions; the third, Minimal, was "
+        "refused because it has a script tag, and a frame runs no code and loads nothing.")
+    assert result.frames_dropped[0]["dropped"][0]["n"] == 3
+    assert result.drawn == [{"kind": "mockup", "title": "The landing page",
+                             "frames": ["Classic", "Bold"]}]
+
+
+def test_a_dropped_frame_redrawn_in_the_same_turn_is_not_said_missing(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    redrawn = [{"label": n, "html": _page(n)} for n in ("Classic", "Bold", "Minimal")]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["show_mockup", {"title": "The landing page", "frames": redrawn,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    assert [f["label"] for f in json.loads(world.visuals[-1]["body"])["frames"]] == [
+        "Classic", "Bold", "Minimal"]
+    # MUTATION: keep the first call's dropped frame and the voice says a drawn version is missing.
+    assert result.frames_dropped == []
+    assert "refused" not in result.spoken and "of the three" not in result.spoken
+
+
+def test_a_redraw_still_refused_leaves_the_missing_version_said_once(world):
+    frames = [{"label": "Classic", "html": _page("Classic")},
+              {"label": "Bold", "html": _page("Bold")},
+              {"label": "Minimal", "html": "<script>draw()</script>"}]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["show_mockup", {"title": "The landing page", "frames": frames[2:],
+                                             "visual_id": None}],
+                            ["speak", {"summary": "The versions are on screen."}]]}
+    result = _delegate(world)
+    assert len(world.visuals) == 1 and len(result.frames_dropped) == 1
+    assert result.spoken.count("was refused because") == 1
+    assert "I drew two of the three versions; the third, Minimal," in result.spoken
 
 
 def test_a_child_stopped_while_writing_its_results_leaves_the_last_whole_results(world):
@@ -501,7 +595,8 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert r.status_code == 201, r.text
                 create = openai.creates[0]["session"]
                 assert create["delegation"] == {"type": "client"}
-                assert create["instructions"].startswith(live.INSTRUCTIONS)
+                assert create["instructions"] == (live.INSTRUCTIONS + live.DELEGATE_INSTRUCTIONS
+                                                  + live.TURN_INSTRUCTIONS)
                 for _ in range(200):
                     if any(e.get("type") == "session.commentary.append" for e in openai.received):
                         break
@@ -552,3 +647,108 @@ def test_a_sessions_planner_model_runs_the_child_on_it_and_none_keeps_the_pin(wo
     assert picked.usage["model"] == "claude-opus-5-5"
     assert pinned_argv[pinned_argv.index("--model") + 1] == claudeturn.MODEL
     assert pinned.usage["model"] == claudeturn.MODEL
+
+
+# ------------------------------------------- the fallback order (§5.3)
+
+
+class SpentOnce:
+    """A Claude Code stand-in: the first account it runs on is spent (the CLI's
+    error result, as `claudeturn.note_result` reads it); the next one speaks."""
+
+    model = claudeturn.MODEL
+
+    def __init__(self, *, spent_every_time: bool = False) -> None:
+        self.tokens: list[str] = []
+        self.spent_every_time = spent_every_time
+
+    def with_model(self, model: str) -> "SpentOnce":
+        return self
+
+    async def run(self, *, prompt, system, token, tools, handler, known, done) -> claudeturn.ChildOutcome:
+        self.tokens.append(token)
+        if len(self.tokens) == 1 or self.spent_every_time:
+            outcome = claudeturn.ChildOutcome(exit_code=1)
+            claudeturn.note_result(outcome, {"is_error": True, "result": "Credit balance is too low"})
+            return outcome
+        await handler(prompts.SPEAK_TOOL, {"summary": "Done.", "point_at": None})
+        return claudeturn.ChildOutcome(exit_code=0, stopped=True, usage={"input_tokens": 10})
+
+
+def _chain(world: World, tiers: list[str]):
+    """The broker walks `tiers`, one account each, passing over `exclude`."""
+    world.keys = {f"acct-{i}": "k-" + secrets.token_hex(12) for i in range(len(tiers))}
+
+    def broker(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        world.broker_calls.append((request.url.path, body))
+        if request.url.path == "/v1/accounts/assign":
+            for i, tier in enumerate(tiers):
+                if f"acct-{i}" not in body.get("exclude", []):
+                    return httpx.Response(200, json={
+                        "account_id": f"acct-{i}", "assignment_id": f"as-{i}", "tier": tier, "reason": "",
+                        "credential": {"access_token": world.keys[f"acct-{i}"]}, "next_reset_at": None})
+            return httpx.Response(200, json={"account_id": None, "assignment_id": None, "credential": None,
+                                             "reason": plannerlease.NO_ACCOUNT_AVAILABLE, "next_reset_at": None})
+        return httpx.Response(200, json={"released": True})
+
+    world.broker = broker
+
+
+def _delegate_on(world: World, claude: SpentOnce) -> pl.TurnResult:
+    async def main():
+        planner = world.planner()
+        planner._claude = claude  # noqa: SLF001
+        try:
+            return await planner.delegate(person=PERSON, grant=world.grant,
+                                          transcript=[("person", "Plan it.")])
+        finally:
+            await world.http.aclose()
+
+    return asyncio.run(main())
+
+
+def test_a_turn_on_a_spent_plan_moves_to_the_key_tier_and_runs_again(world, caplog):
+    _chain(world, [accountlease.TIER_PLAN, accountlease.TIER_KEY])
+    claude = SpentOnce()
+    with caplog.at_level(logging.DEBUG):
+        result = _delegate_on(world, claude)
+    assert result.error is None and result.spoken.startswith("Done.")
+    # The plan's token first, then the key's, handed over as a key.
+    assert claude.tokens == [world.keys["acct-0"], world.keys["acct-1"]]
+    assert not isinstance(claude.tokens[0], claudeturn.ApiKey) and isinstance(claude.tokens[1], claudeturn.ApiKey)
+    # The spent plan given back, then the assign with it excluded; the key released at the end.
+    assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-0/release", "/v1/accounts/assign",
+                             "/v1/voice/lease/acct-1/release"]
+    assert world.broker_calls[2][1]["exclude"] == ["acct-0"]
+    assert result.tier == accountlease.TIER_KEY and result.usage["tier"] == accountlease.TIER_KEY
+    # A key is billed per token, so the ledger prices it.
+    assert result.usage["billing"] == pl.BILLING_KEY
+    for key in world.keys.values():
+        assert key not in caplog.text and key not in json.dumps(result.usage) and key not in result.spoken
+
+
+def test_a_turn_on_a_plan_keeps_the_subscription_billing_and_names_its_tier(world):
+    _chain(world, [accountlease.TIER_PLAN])
+    claude = SpentOnce()
+    claude.tokens.append("already-ran")  # the stand-in speaks on its first account
+    result = _delegate_on(world, claude)
+    assert result.error is None and result.tier == accountlease.TIER_PLAN
+    assert result.usage["billing"] == pl.BILLING and result.usage["tier"] == accountlease.TIER_PLAN
+    assert world.paths() == ["/v1/accounts/assign", "/v1/voice/lease/acct-0/release"]
+
+
+def test_with_both_tiers_spent_the_turn_says_the_pool_is_full_and_holds_nothing(world, caplog):
+    """The planner's chain has no tier 3 (Q2): a spent key is the end."""
+    _chain(world, [accountlease.TIER_PLAN, accountlease.TIER_KEY])
+    claude = SpentOnce(spent_every_time=True)
+    with caplog.at_level(logging.DEBUG):
+        result = _delegate_on(world, claude)
+    assert len(claude.tokens) == 2
+    assert result.spoken == pl.SAY_POOL_FULL and "no tier is left" in (result.error or "")
+    assert world.broker_calls[-1][0] == "/v1/accounts/assign"
+    assert world.broker_calls[-1][1]["exclude"] == ["acct-0", "acct-1"]
+    released = [p for p in world.paths() if p.endswith("/release")]
+    assert released == ["/v1/voice/lease/acct-0/release", "/v1/voice/lease/acct-1/release"]
+    for key in world.keys.values():
+        assert key not in caplog.text

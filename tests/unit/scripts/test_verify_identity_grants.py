@@ -5,7 +5,7 @@ docs/audits/2026-09-22/race-test-needs-a-write.md):
 
 1. `swarm-verify` passes IAP on the front door. Before this, the load balancer
    answered 403 "Access denied. For user swarm-verify@..." -- IAP knew who the
-   caller was and it was not on the list, because `domain:saga.xyz` does not
+   caller was and it was not on the list, because `domain:example.com` does not
    cover a `*.iam.gserviceaccount.com` identity. PR #15's end-to-end check and
    every operator script run with SWARM_IMPERSONATE_SA go through that door.
 
@@ -86,6 +86,14 @@ def _string_value(path: Path, name: str) -> str:
     )
     assert m, f"{name} is not assigned in {path.relative_to(ROOT)}"
     return m.group(1)
+
+
+def _allowed_domain() -> str:
+    """dev's first allowed domain, read from dev.tfvars rather than restated:
+    the coarse IAP grant for people is `domain:<it>`."""
+    domains = _string_list(DEV_TFVARS, "allowed_domains")
+    assert domains, "dev.tfvars allowed_domains names no domain"
+    return domains[0]
 
 
 def _verify_identity() -> str:
@@ -169,7 +177,7 @@ def test_the_verify_identity_can_pass_iap_on_the_front_door() -> None:
     )
     # The coarse grant for people is unchanged: adding the gate must not have
     # replaced the domain.
-    assert "domain:saga.xyz" in members, members
+    assert f"domain:{_allowed_domain()}" in members, members
 
 
 def test_the_verify_identity_holds_the_narrow_pool_capability_in_dev() -> None:
