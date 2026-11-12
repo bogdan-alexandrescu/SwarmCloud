@@ -109,15 +109,15 @@ describe('a merge held on questions the platform did not take', () => {
     const rows = rejectedRows(container)
     // MUTATION: no `rejected` fact -- the panel says only "Unreadable entries 2".
     expect(rows).toHaveLength(2)
-    expect(rows[0].textContent).toBe(`implement wrote questions.json the platform did not take: ${REASON}`)
+    expect(rows[0]!.textContent).toBe(`implement wrote questions.json the platform did not take: ${REASON}`)
     // A file whose step was not recorded is named by its task.
-    expect(rows[1].textContent).toBe(`${FIX} wrote questions.json the platform did not take: the file is not JSON`)
-    const link = rows[0].querySelector<HTMLAnchorElement>('a')
+    expect(rows[1]!.textContent).toBe(`${FIX} wrote questions.json the platform did not take: the file is not JSON`)
+    const link = rows[0]!.querySelector<HTMLAnchorElement>('a')
     // MUTATION: the step's name drawn as plain text.
     expect(link, 'no link to the asking task').not.toBeNull()
     expect(link!.textContent).toBe('implement')
     expect(link!.getAttribute('href')).toBe(`/agents/recent/${IMPL}/details`)
-    expect(rows[0].getAttribute('data-rejected-file')).toBe(IMPL)
+    expect(rows[0]!.getAttribute('data-rejected-file')).toBe(IMPL)
   })
 
   it('reads them off the park record when the wait detail does not carry them', () => {
@@ -125,7 +125,7 @@ describe('a merge held on questions the platform did not take', () => {
     const rows = rejectedRows(container)
     // MUTATION: read only `detail.rejected_files`.
     expect(rows).toHaveLength(1)
-    expect(rows[0].textContent).toContain(REASON)
+    expect(rows[0]!.textContent).toContain(REASON)
   })
 
   it('draws no rejected row for a hold that names none', () => {
