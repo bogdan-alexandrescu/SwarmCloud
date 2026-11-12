@@ -184,6 +184,46 @@ start always was. The offer goes to swarm-voice with no grant and no models:
 swarm-voice's reopen keeps the spent session's grant, planner model and trace.
 A reopen swarm-voice refuses ends the session (cause `reopen_failed`) and tells
 swarm-voice, so the held tier and any spent Live session are closed.
+
+THE PAUSE (docs/design/voice-it.md §3.12.2, §3.12.4, §3.12.7, §3.12.8). swarm-voice
+closes a GPT-Live session's voice while delegated work runs and says so through
+the session grant (routes/voice.py `/reopen`, `{state, cause}`, its
+`session.state` event's names): `paused` writes `voice_state: paused`,
+`paused_at` and `work_running: true` (it pauses only with a delegation in
+flight); `waking` with cause `result` writes `work_running: false` and
+`work_done_at`; `listening` closes the interval. A paused session stays
+`live`: its grant still resolves, the person's marker still names it, and
+swarm-voice keeps its Voice it pool lease. It holds no lease or pool slot of
+the platform's (invariant 1): it is a voice session, not an agent.
+
+The session document keeps
+
+  voice_state     open | paused
+  paused_at       the open pause's start; None while the voice is open
+  pauses          the closed intervals, [{paused_at, woke_at}], the newest
+                  PAUSES_KEPT; older ones fold into `paused_seconds_before`
+  work_running    whether a delegation swarm-voice paused for is in flight
+  seen_seq        the highest stream sequence the owner's main view has
+                  shown (`seen`): only ever moved forward, never past
+                  `event_seq`; `seen_at` is when it was last posted
+
+THE BROWSER'S REOPEN (`reopen_paused`). The console posts a fresh offer and
+the cause (REOPEN_CAUSES: `result`, `speech`, `resume`) for the session's own
+person in this tenant; the offer goes to swarm-voice's
+`POST /internal/sessions/{id}/reopen` with the project's brief and the
+session's open cards' one-liners, read here for that person, as quoted data
+(the owner's answer, 11 November 2026). An ended session is 409 and nothing is
+forwarded. swarm-voice's answer closes the pause (`woke_at`); a refusal keeps
+the session as it was, paused, so Resume can try again (§3.12.7: a failed
+reopen keeps the session paused). The tier move keeps its own path (THE
+REOPEN above).
+
+PAUSED_IDLE. A paused session with no delegated work running and no activity
+from its person (`paused_at`, `work_done_at`, `seen_at` and `activity_at`, the
+newest of them) for PAUSED_IDLE_SECONDS ends as `paused_idle`, by the same
+sweep and start that end an abandoned one, so swarm-voice is told the same
+way. The heartbeat is not the person's activity: an open tab is not him. The
+project, its cards, its starts and its brief are kept, as every end keeps them.
 """
 
 from __future__ import annotations
@@ -253,6 +293,30 @@ END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
 #: Another session holds the speech machine (speech_machine.MachineInUse).
 END_MACHINE_IN_USE = "speech_machine_in_use"
+#: A paused session idle this long with nothing delegated running (PAUSED_IDLE).
+END_PAUSED_IDLE = "paused_idle"
+#: The owner's answer (§3.12.2, question 10): 60 minutes paused with nothing
+#: running and no activity from him ends the session.
+PAUSED_IDLE_SECONDS = 60 * 60
+#: The times on a paused session that count from (PAUSED_IDLE): the pause,
+#: the delegated work's end, the owner's last seen post and his last turn.
+PAUSED_IDLE_FIELDS = ("paused_at", "work_done_at", "seen_at", "activity_at")
+#: The voice's states on a live session (THE PAUSE).
+VOICE_OPEN = "open"
+VOICE_PAUSED = "paused"
+#: What swarm-voice's grant reports (its live.py `session.state` names).
+VOICE_REPORTS = ("paused", "waking", "listening")
+#: What wakes a paused voice from the browser (swarm_voice.live.WAKE_CAUSES).
+REOPEN_CAUSES = ("result", "speech", "resume")
+#: The closed pause intervals kept on the document; a session that pauses
+#: more often folds the oldest into `paused_seconds_before`, so the document
+#: stays small whatever its length.
+PAUSES_KEPT = 100
+#: Card states that are still open (cards.PROPOSED, ACTING, WAITING), and the
+#: longest one-liner a reopen carries (swarm_voice.main.REOPEN_CARD_MAX_CHARS).
+OPEN_CARD_STATES = frozenset({"proposed", "acting", "waiting"})
+REOPEN_CARD_MAX_CHARS = 600
+REOPEN_CARDS_MAX = 200
 
 #: A session's modes: GPT-Live over WebRTC on an OpenAI API key, or the ChatGPT
 #: plan's text conversation (owner, 4 November 2026: "both paths").
@@ -814,6 +878,52 @@ class HttpVoiceClient:
         spoken = body.get("spoken")
         return spoken if isinstance(spoken, str) and spoken.strip() else None
 
+    def reopen_voice(self, session_id: str, *, offer: str, cause: str, brief: dict[str, Any] | None,
+                     cards: list[str]) -> StartAnswer:
+        """swarm-voice's `POST /internal/sessions/{id}/reopen` (THE BROWSER'S
+        REOPEN): the answer, or `VoiceSessionNotLive` (not held there),
+        `VoiceSessionLive` (nothing to reopen, or a reopen in flight), a pool
+        refusal, or `VoiceUnreachable`. Neither body is logged."""
+        path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/reopen"
+        body: dict[str, Any] = {"offer": offer, "cause": cause, "cards": cards}
+        if brief:
+            body["brief"] = brief
+        try:
+            status, raw = self._post(path, body, START_TIMEOUT_SECONDS)
+        except (OSError, ValueError) as exc:
+            log.warning("voice reopen for session=%s did not reach swarm-voice (%s)",
+                        session_id, type(exc).__name__)
+            raise VoiceUnreachable("swarm-voice could not be reached to reopen the voice; "
+                                   "the session is still paused.") from None
+        if status == 404:
+            raise VoiceSessionNotLive("swarm-voice no longer holds this Voice it session; start a new one.",
+                                      detail={"reason": NOT_LIVE})
+        refusal = pool_refusal(status, raw) if status in (403, 409) else None
+        if refusal is not None:
+            log.warning("swarm-voice refused the Voice it pool on the reopen of session=%s (HTTP %s, %s)",
+                        session_id, status, refusal.detail.get("reason"))
+            raise refusal
+        if status == 409:
+            raise VoiceSessionLive("This Voice it session's voice is already open or reopening.",
+                                   detail={"session_id": session_id, "reason": "nothing_to_reopen"})
+        refused = openai_refusal(raw) if status == 502 else None
+        if refused is not None:
+            raise refused
+        if status != 200:
+            log.warning("swarm-voice refused the reopen of session=%s (HTTP %s)", session_id, status)
+            raise VoiceUnreachable(f"swarm-voice could not reopen the voice (HTTP {status}); "
+                                   "the session is still paused.")
+        try:
+            answered = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            answered = None
+        if not isinstance(answered, dict) or answered.get("voice_session_id") != session_id:
+            raise VoiceUnreachable("swarm-voice answered the reopen for another session.")
+        answer, live_id = answered.get("answer"), answered.get("live_session_id")
+        if not isinstance(answer, str) or not isinstance(live_id, str) or not live_id:
+            raise VoiceUnreachable("swarm-voice answered the reopen without an SDP answer.")
+        return StartAnswer(answer=answer, live_session_id=live_id)
+
     def end(self, session_id: str, *, cause: str) -> bool:
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/end"
         try:
@@ -860,6 +970,67 @@ def last_activity(session: Mapping[str, Any]) -> datetime | None:
         times.append(_aware(fallback.get("at")))
     seen = [t for t in times if t is not None]
     return max(seen) if seen else None
+
+
+def paused_seconds(session: Mapping[str, Any], start: datetime, end: datetime) -> float:
+    """The seconds of [start, end] the session's voice was paused (THE PAUSE):
+    each closed interval and the open pause, clipped to the span, plus the
+    folded `paused_seconds_before`."""
+    intervals: list[tuple[datetime | None, datetime | None]] = []
+    for pause in session.get("pauses") or ():
+        if isinstance(pause, Mapping):
+            intervals.append((_aware(pause.get("paused_at")), _aware(pause.get("woke_at"))))
+    open_since = _aware(session.get("paused_at"))
+    if open_since is not None:
+        intervals.append((open_since, end))
+    total = 0.0
+    for began, woke in intervals:
+        if began is None or woke is None:
+            continue
+        lo, hi = max(began, start), min(woke, end)
+        if hi > lo:
+            total += (hi - lo).total_seconds()
+    before = session.get("paused_seconds_before")
+    if isinstance(before, (int, float)) and not isinstance(before, bool) and before > 0:
+        total += float(before)
+    return total
+
+
+def _closed_pauses(data: Mapping[str, Any], woke_at: datetime) -> dict[str, Any]:
+    """The fields that close the open pause at `woke_at`: the interval joins
+    `pauses`, the oldest beyond PAUSES_KEPT folding into its seconds."""
+    began = _aware(data.get("paused_at"))
+    pauses = [p for p in (data.get("pauses") or []) if isinstance(p, Mapping)]
+    fields: dict[str, Any] = {"voice_state": VOICE_OPEN, "paused_at": None}
+    if began is None:
+        return fields
+    pauses.append({"paused_at": began, "woke_at": max(woke_at, began)})
+    before = data.get("paused_seconds_before")
+    folded = float(before) if isinstance(before, (int, float)) and not isinstance(before, bool) else 0.0
+    while len(pauses) > PAUSES_KEPT:
+        oldest = pauses.pop(0)
+        start, stop = _aware(oldest.get("paused_at")), _aware(oldest.get("woke_at"))
+        if start is not None and stop is not None and stop > start:
+            folded += (stop - start).total_seconds()
+        fields["paused_seconds_before"] = folded
+    fields["pauses"] = [dict(p) for p in pauses]
+    return fields
+
+
+def open_card_lines(cards: Any, session_id: str) -> list[str]:
+    """The session's open cards as one-liners for a reopen's instructions:
+    the kind, the title and the summary, quoted data, never configuration."""
+    lines: list[str] = []
+    for card in cards:
+        body = card.get("body") if isinstance(card.get("body"), Mapping) else {}
+        if card.get("session_id") != session_id or body.get("state") not in OPEN_CARD_STATES:
+            continue
+        title, summary = body.get("title"), body.get("summary")
+        line = f"{card.get('kind') or 'card'} ({body['state']}): {title if isinstance(title, str) else ''}".rstrip()
+        if isinstance(summary, str) and summary.strip():
+            line = f"{line} -- {summary.strip()}"
+        lines.append(line[:REOPEN_CARD_MAX_CHARS])
+    return lines[:REOPEN_CARDS_MAX]
 
 
 def record_heartbeat(db: Any, *, project_id: str, session_id: str, now: datetime) -> None:
@@ -937,6 +1108,22 @@ class VoiceSessions:
     def _mine(data: dict[str, Any] | None, tenant_id: str, person: str) -> bool:
         return bool(data) and data.get("tenant_id") == tenant_id and data.get("person") == person
 
+    def _paused_idle(self, session: Mapping[str, Any]) -> bool:
+        """A `live` session paused with nothing delegated running and no
+        activity from its person for PAUSED_IDLE_SECONDS (PAUSED_IDLE)."""
+        if session.get("state") != LIVE or session.get("voice_state") != VOICE_PAUSED \
+                or session.get("work_running") is True:
+            return False
+        times = [t for t in (_aware(session.get(field)) for field in PAUSED_IDLE_FIELDS) if t is not None]
+        return bool(times) and self._now() - max(times) >= timedelta(seconds=PAUSED_IDLE_SECONDS)
+
+    def _stale_cause(self, session: Mapping[str, Any]) -> str | None:
+        """Why a `live` session no longer holds its person, or None: a long
+        pause (`paused_idle`) before the abandonment (`abandoned`)."""
+        if self._paused_idle(session):
+            return END_PAUSED_IDLE
+        return END_ABANDONED if self._abandoned(session) else None
+
     def _abandoned(self, session: Mapping[str, Any]) -> bool:
         """A `live` session with no activity for LIVE_STALE_SECONDS. One that
         records no time at all is never judged: every start writes some."""
@@ -957,7 +1144,7 @@ class VoiceSessions:
         session = snap.to_dict() or {}
         state = session.get("state")
         if state == LIVE:
-            return (False, session) if self._abandoned(session) else (True, None)
+            return (False, session) if self._stale_cause(session) is not None else (True, None)
         if state == STARTING:
             created = _aware(session.get("created_at"))
             stale = SPEECH_STARTING_STALE_SECONDS if session.get("mode") == MODE_SPEECH \
@@ -970,11 +1157,12 @@ class VoiceSessions:
         transaction (its reads done): the fields a person's end writes, with
         its own cause."""
         project_id, session_id = str(marker["project_id"]), str(marker["session_id"])
-        txn.update(self._session_ref(project_id, session_id), {"state": ENDED, "ended_at": self._now(), "end_cause": END_ABANDONED,
+        cause = self._stale_cause(session) or END_ABANDONED
+        txn.update(self._session_ref(project_id, session_id), {"state": ENDED, "ended_at": self._now(), "end_cause": cause,
                          "grant_hash": None})
         self._audit(txn, action=AUDIT_ENDED, tenant_id=str(session.get("tenant_id") or ""),
                     person=str(session.get("person") or ""), project_id=project_id,
-                    session_id=session_id, detail={"cause": END_ABANDONED})
+                    session_id=session_id, detail={"cause": cause})
 
     def _tell_abandoned(self, session_id: str, session: Mapping[str, Any]) -> None:
         """swarm-voice ends its side, and a speech session's machine stops,
@@ -982,17 +1170,18 @@ class VoiceSessions:
         if self._client is None:
             log.warning("abandoned voice session=%s: no swarm-voice to tell", session_id)
             return
+        cause = self._stale_cause(session) or END_ABANDONED
         try:
-            told = self._client.end(session_id, cause=END_ABANDONED)
+            told = self._client.end(session_id, cause=cause)
             if session.get("mode") == MODE_SPEECH and self._machine is not None:
                 holder = self._machine.holder_of(session_id)
                 if holder is not None:
-                    self._machine.stop(holder, cause=END_ABANDONED)
+                    self._machine.stop(holder, cause=cause)
         except Exception as exc:  # noqa: BLE001 -- best effort: the session is ended here
             log.warning("abandoned voice session=%s: swarm-voice's end failed (%s)",
                         session_id, type(exc).__name__)
             return
-        log.info("abandoned voice session ended session=%s voice_told=%s", session_id, told)
+        log.info("stale voice session ended session=%s cause=%s voice_told=%s", session_id, cause, told)
 
     def sweep_abandoned(self) -> list[str]:
         """End every abandoned `live` session a person's marker names, of
@@ -1249,6 +1438,130 @@ class VoiceSessions:
                  tenant_id, project_id, session_id, tier)
         return {"project_id": project_id, "session_id": session_id, "state": LIVE,
                 "new_project": False, "mode": MODE_LIVE, "answer_sdp": started.answer, "tier": tier}
+
+    def report_voice_state(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
+                           state: str, cause: str | None = None) -> dict[str, Any]:
+        """swarm-voice's report through the grant (THE PAUSE): `paused`,
+        `waking` or `listening`, at this service's clock. `NotFound` when the
+        session is not this person's in this tenant; 409 when it is not a live
+        Live session. Repeating a report changes nothing."""
+        if state not in VOICE_REPORTS:
+            raise ValueError(f"no Voice it voice state {state!r}")
+        session_ref = self._session_ref(project_id, session_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(session_ref))
+            data = (snap.to_dict() or {}) if snap.exists else {}
+            if not self._mine(data, tenant_id, person.strip().lower()):
+                raise NotFound(f"voice session {session_id!r} not found")
+            if data.get("state") != LIVE or (data.get("mode") or MODE_LIVE) != MODE_LIVE:
+                raise VoiceSessionNotLive("This Voice it session is not a live Live session; nothing pauses.",
+                                          detail={"reason": NOT_LIVE, "state": data.get("state")})
+            now = self._now()
+            fields: dict[str, Any] = {}
+            if state == "paused" and data.get("voice_state") != VOICE_PAUSED:
+                # swarm-voice pauses only with a delegation in flight.
+                fields = {"voice_state": VOICE_PAUSED, "paused_at": now, "work_running": True}
+            elif state == "waking" and cause == "result":
+                fields = {"work_running": False, "work_done_at": now}
+            elif state == "listening" and data.get("voice_state") == VOICE_PAUSED:
+                fields = _closed_pauses(data, now)
+                if cause == "result":
+                    fields.update({"work_running": False, "work_done_at": now})
+            if fields:
+                txn.update(session_ref, fields)
+            return {**data, **fields}
+
+        after = _apply(self._db.transaction())
+        log.info("voice session %s: swarm-voice reports %s (%s)", session_id, state, cause or "-")
+        return {"session_id": session_id, "voice_state": after.get("voice_state") or VOICE_OPEN}
+
+    def reopen_paused(self, *, tenant_id: str, person: str, session_id: str, offer: str,
+                      cause: str) -> dict[str, Any]:
+        """The browser's reopen of this person's live Live session (THE
+        BROWSER'S REOPEN): the fresh offer, the brief and the open cards go to
+        swarm-voice and its answer comes back. 404 for a session that is not
+        this person's in this tenant; 409 for one that is ended, starting, or
+        not a Live session, and for swarm-voice's "nothing to reopen". A
+        refusal leaves the session as it was."""
+        if cause not in REOPEN_CAUSES:
+            raise ValueError(f"no Voice it reopen cause {cause!r}")
+        person = person.strip().lower()
+        project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
+        session_ref = self._session_ref(project_id, session_id)
+        snap = _snapshot(session_ref.get())
+        data = (snap.to_dict() or {}) if snap.exists else {}
+        if not self._mine(data, tenant_id, person):
+            raise NotFound(f"voice session {session_id!r} not found")
+        if data.get("state") != LIVE or (data.get("mode") or MODE_LIVE) != MODE_LIVE:
+            raise VoiceSessionNotLive("This Voice it session is not live; it cannot be reopened.",
+                                      detail={"reason": NOT_LIVE, "state": data.get("state"),
+                                              "mode": data.get("mode") or MODE_LIVE})
+        project_snap = _snapshot(self._project_ref(project_id).get())
+        project = (project_snap.to_dict() or {}) if project_snap.exists else {}
+        brief = project.get("brief") if self._mine(project, tenant_id, person) else None
+        cards = [{"card_id": c.id, **(c.to_dict() or {})}
+                 for c in self._project_ref(project_id).collection("cards").stream()]
+        lines = open_card_lines([c for c in cards if self._mine(c, tenant_id, person)], session_id)
+        reopen = getattr(self._client, "reopen_voice", None)
+        if not callable(reopen):
+            raise unavailable()
+        started = reopen(session_id, offer=offer, cause=cause,
+                         brief=brief if isinstance(brief, dict) and brief else None, cards=lines)
+        if not isinstance(started, StartAnswer) or not _valid_answer(started.answer):
+            raise VoiceUnreachable("swarm-voice's answer to the reopen is not an SDP answer; "
+                                   "the session is still paused.")
+
+        @firestore.transactional
+        def _woke(txn: Any) -> None:
+            current = _snapshot(txn.get(session_ref))
+            now_data = (current.to_dict() or {}) if current.exists else {}
+            if now_data.get("state") != LIVE:
+                return
+            now = self._now()
+            fields = {"live_session_id": started.live_session_id, "reopened_at": now, "activity_at": now,
+                      **_closed_pauses(now_data, now)}
+            if cause == "result":
+                fields.update({"work_running": False, "work_done_at": now})
+            txn.update(session_ref, fields)
+
+        _woke(self._db.transaction())
+        log.info("voice session reopened by cause tenant=%s project=%s session=%s cause=%s",
+                 tenant_id, project_id, session_id, cause)
+        return {"project_id": project_id, "session_id": session_id, "state": LIVE, "voice_state": VOICE_OPEN,
+                "mode": MODE_LIVE, "answer_sdp": started.answer, "cause": cause}
+
+    def mark_seen(self, *, tenant_id: str, person: str, session_id: str, seq: int) -> dict[str, Any]:
+        """The highest stream sequence this person's main view has shown
+        (`seen_seq`): moved only forward and never past `event_seq`; a lower
+        one changes nothing. `seen_at` is the person's activity (PAUSED_IDLE).
+        404 for a session that is not this person's in this tenant."""
+        person = person.strip().lower()
+        project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
+        session_ref = self._session_ref(project_id, session_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[int, bool]:
+            snap = _snapshot(txn.get(session_ref))
+            data = (snap.to_dict() or {}) if snap.exists else {}
+            if not self._mine(data, tenant_id, person):
+                raise NotFound(f"voice session {session_id!r} not found")
+            stored = data.get("seen_seq")
+            seen = stored if isinstance(stored, int) and not isinstance(stored, bool) else 0
+            written = data.get("event_seq")
+            ceiling = written if isinstance(written, int) and not isinstance(written, bool) else 0
+            wanted = min(max(int(seq), 0), ceiling)
+            fields: dict[str, Any] = {"seen_at": self._now()} if data.get("state") == LIVE else {}
+            moved = wanted > seen
+            if moved:
+                fields["seen_seq"] = wanted
+            if fields:
+                txn.update(session_ref, fields)
+            return (wanted if moved else seen), moved
+
+        seen, moved = _apply(self._db.transaction())
+        return {"session_id": session_id, "seen_seq": seen, "changed": moved}
 
     def turn(self, *, tenant_id: str, person: str, session_id: str, text: str) -> dict[str, Any]:
         """One spoken turn of a text session, as text: swarm-voice's reply and
