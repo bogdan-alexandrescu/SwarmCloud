@@ -125,7 +125,7 @@ The pattern list is built once, before lane 1 merges, by the owner (section 6, s
 | Destroy-guard floors | `scripts/lib/destroy-guard-proof-cases.json` (`inventory_floor`) | Into `deny-list.json` as `floors`; the tracked proof cases use placeholders |
 | Python deny-list twin | `apps/swarm-api/swarm_api/issueruns.py:1331-1388` (a literal shared project) | A Terraform-rendered environment pair on swarm-api, from the same tfvars (section 2.4) |
 | A hard-coded repository name | `.github/workflows/merge-train.yml:135` | `github.repository` (lane 12's patch) |
-| Live values in variable descriptions, validations and `removed`/`moved` addresses | `terraform/bootstrap/variables.tf`, `terraform/infra/variables.tf`, `removed.tf`, `custom_roles_moved_to_bootstrap.tf` | Descriptions use placeholders. `removed`/`moved` blocks whose old address embeds a tenant slug are deleted once `terraform state list` shows no such address (lane 4 reads it first) |
+| Live values in variable descriptions, validations and `removed`/`moved` addresses | `terraform/bootstrap/variables.tf`, `terraform/infra/variables.tf`, `removed.tf`, `custom_roles_moved_to_bootstrap.tf` | Descriptions use placeholders. `removed`/`moved` blocks whose old address embeds a tenant slug are deleted once `terraform state list` shows no such address (lane 4 reads it first). Both `removed.tf` files were deleted on 2026-11-11, when neither state held any of their addresses |
 
 ### 2.3 How each reader gets them
 

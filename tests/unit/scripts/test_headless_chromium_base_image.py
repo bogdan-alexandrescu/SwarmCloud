@@ -1,6 +1,6 @@
 """agent-runtime-base carries what a headless Chromium needs, and no Chromium (FIX-2253).
 
-WHY THIS EXISTS (BGD, 2026-10-26, fix (c) on #2253). A step on plain
+WHY THIS EXISTS (the owner, 2026-10-26, fix (c) on #2253). A step on plain
 claude-code could not run a repository's own `npx playwright test`: after
 `npx playwright install chromium` the browser failed on a missing
 `libglib-2.0.so.0`, and the agent is not root, so `install --with-deps` cannot

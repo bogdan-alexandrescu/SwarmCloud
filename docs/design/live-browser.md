@@ -63,7 +63,7 @@ Section 5.7 is about that.
 |---|---|---|
 | **LB-1** | An **interactive** remote browser: headed Chromium on a virtual display, VNC proxied through the platform into the console via noVNC, with a "take control" button. Not a view-only screencast. | §3, §4, §6 |
 | **LB-2** | Frames are visible **only to members of the agent's tenant**, checked on every connection (invariant 9). | §5.1, §5.2 |
-| **LB-3** | Password and secret fields are **masked before anything leaves the pod**. **Superseded for pixels by BGD, 2026-10-25**: the screen is shown as Chromium drew it; text is still redacted. | §5.3 |
+| **LB-3** | Password and secret fields are **masked before anything leaves the pod**. **Superseded for pixels by the owner, 2026-10-25**: the screen is shown as Chromium drew it; text is still redacted. | §5.3 |
 | **LB-4** | Frames and recordings are kept **7 days**, under the tenant's GCS prefix. | §7 |
 | **LB-5** | The console presentation is **a Browser tab on the agent page, with theater mode available from it** (owner's choice, 2026-10-11, from five in-console alternatives; recorded on #1030). This replaces the earlier phased plan of separate split, picture-in-picture and wall views. | §6 |
 | **LB-6** | The browser can run **as a mobile device, not only desktop**, and a person in control works it **by touch**. Presets: Desktop 1440×900, iPhone 15 393×852, Pixel 8 412×915, iPhone SE 375×667, iPad (gen 7) 810×1080, with rotate. | §6.1 |
@@ -215,7 +215,7 @@ What this does **not** stop: an agent that names a binary itself
 browser. The stub turns the default path, the one an agent reaches for, into
 an instruction; it is not a sandbox, and the pod remains the boundary.
 
-#### The test-runner exception (PW-TESTRUNNER, #2253)
+#### The test-runner exception (PW-TESTRUNNER)
 
 One sanctioned path launches a Chromium that is not the live browser: a
 repository's own headless **test** suite. BROWSER-ENFORCE made a step on
@@ -223,7 +223,8 @@ repository's own headless **test** suite. BROWSER-ENFORCE made a step on
 suite's launch hit the stub, and the revision the repository pins had nowhere
 writable to go under the read-only root). The owner decided on 2026-10-24 that a
 headless test process may launch its own Chromium while the agent's own
-browsing stays on the live browser, #1030 unchanged; PR #2254 built it. Before
+browsing stays on the live browser, BROWSER-ENFORCE unchanged; the PW-TESTRUNNER
+pull request built it. Before
 the CLI starts, the runner makes a writable directory,
 `$XDG_CACHE_HOME/swarm-test-browsers`
 (`apps/agent-worker/agent_worker/runners/claude_code.py::prepare_test_browsers`),
@@ -258,15 +259,16 @@ costs about 170 MB of the container's memory, and a full workspace gives
 ENOSPC, not an OOM kill. The cache is emptied at the start of each attempt, so
 a resumed (parked) attempt downloads the revision again.
 
-**What still could reopen #1030**, as #2254 states it:
+**What still could reopen BROWSER-ENFORCE**, as the PW-TESTRUNNER pull request
+states it:
 `swarm-test-browsers python browse.py`, or
 `PLAYWRIGHT_BROWSERS_PATH=$SWARM_TEST_BROWSERS_PATH python …`, gives the agent
 a hidden headless Chromium. The wrapper cannot tell a test runner from a
 browsing script; an allowlist of `npx`/`npm` is bypassed by
-`npm exec -- node browse.js`. This was already possible before #2254:
+`npm exec -- node browse.js`. This was already possible before PW-TESTRUNNER:
 `/opt/playwright` is world-readable, so `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright`
 or an `executable_path=` into it always worked. BROWSER-ENFORCE is a default
-plus an instruction, not a sandbox. What #2254 adds is a *named, sanctioned*
+plus an instruction, not a sandbox. What PW-TESTRUNNER adds is a *named, sanctioned*
 path; an agent that misreads the note could use it for browsing, and the guard
 against that is the note's "only for test suites". A test Chromium also has the
 pod's own egress, not the live browser's gate: the same egress the agent's
@@ -1466,7 +1468,7 @@ pod, and no new ticket for a closed session is minted.
 
 ### 5.3 The screen leaves the pod as Chromium drew it (LB-3, amended 2026-10-25)
 
-**BGD's decision, 2026-10-25 (06:00 UTC): "Stop redacting elements or sections
+**The owner's decision, 2026-10-25 (06:00 UTC): "Stop redacting elements or sections
 of the visual content that a browser agent or session displays via the live
 browser. There is no need to redact parts of the screen in any situation."**
 So the live gate paints nothing over the screen. Every frame it publishes --
@@ -1479,9 +1481,9 @@ still holds for text (§5.3.2).
 **Why.** The on-screen mask had to fail closed, and failing closed meant
 blanking. It covered pages for minutes while a person was waiting to act on
 them: the grey "masking unavailable" frame on pages dev-browser opened
-(#1344), reCAPTCHA frames covered for a whole hand-off because the gate could
-not link them to their iframe boxes (#1340), whole-page blanks on every layout
-change, and the live view going grey under #1030 (LIVE-BLANK). Each fix
+(GREY-TAIL), reCAPTCHA frames covered for a whole hand-off because the gate
+could not link them to their iframe boxes, whole-page blanks on every layout
+change, and the live view going grey under BROWSER-ENFORCE (LIVE-BLANK). Each fix
 narrowed one cause and left the mechanism. The owner judged on-screen redaction
 unnecessary "in any situation". What bounds who sees a frame is unchanged:
 viewers are members of the tenant the agent works for (§5.1), and recordings
@@ -1523,7 +1525,7 @@ What the gate still does:
 * **Two frames the gate makes itself.** Before the first capture the hub shows
   a flat fill. When the attempt has ended and Chromium has closed, the
   desktop name is "The agent has finished; its browser is closed."
-  (`REASON_BROWSER_CLOSED`, GREY-TAIL #1344).
+  (`REASON_BROWSER_CLOSED`, GREY-TAIL).
 * **The viewer metrics line** keeps `unavailable_ms`,
   `unavailable_ms_by_reason` and `blank_ms`, which now cover only "not
   captured yet" and "browser closed". `page_blanked_ms` is gone with the page

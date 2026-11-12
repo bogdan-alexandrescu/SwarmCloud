@@ -38,7 +38,7 @@
 #   * the cluster must start with `swarm-` and match nothing on SHARED_DENY_LIST,
 #     and the context's kubeconfig cluster entry must be exactly
 #     gke_<PROJECT_ID>_<GKE_LOCATION>_<cluster> -- the cluster whose network is
-#     read is the cluster written to, never `agents-staging`;
+#     read is the cluster written to, never `peer-cluster`;
 #   * a labelled namespace outside `swarm-tenant-` is refused, not applied;
 #   * the cluster's network is READ (kubernetes/cluster-network.sh), never typed;
 #   * under --confirm, every rendered policy is read back by name in every

@@ -130,6 +130,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # Debug mode's trace of a planner turn (voice/trace.py): a record of what
     # the turn did, never an act, so nothing is read back before it.
     ("POST", "/v1/voice/sessions/{session_id}/trace"),
+    # A spent Live key's next tier (llm-providers.md §5.3): swarm-voice says
+    # which tier is held for the reopen, never an act of the person's.
+    ("POST", "/v1/voice/sessions/{session_id}/reopen"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the

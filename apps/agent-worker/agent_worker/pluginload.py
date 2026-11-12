@@ -27,6 +27,23 @@ the worker never loads a skipped install, and refuses a set that also names
 one (`plugin_set_invalid`): swarm-api never signs both, so either the merge
 is broken or the block is not the one it meant.
 
+A BUNDLED BUILT-IN IS CHECKED IN PLACE (section 1.4.4, lane 19). With the
+built-ins switch on, swarm-api signs gstack and security-audit as entries
+with `build: "image"` under their reserved ids (`builtin:<name>`,
+`pluginconfig.bundled_entry`): the step's mode and skills and the version's
+source sha256, and no object. Their bytes are in this worker's own
+read-only image at `/opt/swarm/plugins/<name>/`, which the bundle recipe
+fixes, beside the `.swarm-bundle.json` the recipe wrote. `bundled` reads
+those entries; `check_bundle` reads that manifest and refuses the step
+unless its install id, plugin, install path and source sha256 are the
+signed ones, and, when the entry signs them, its recipe digest and tree
+sha256 too (`plugin_bundle_mismatch`; no manifest at all is
+`plugin_bundle_manifest_missing`). Nothing is downloaded or unpacked for
+one: `entries`, `load` and `wants_release` see only the fetched kind, and
+`plugins.start` links a checked bundled entry's skills from the image as it
+links a code entry's. With the switch off no such entry is signed, and
+nothing here reads a manifest.
+
 INSTALL (section 4.2), per plugin, before the agent: download
 `<object>` from the plugins bucket into `private/plugins/<sha256>.tar`
 (private: never checkpointed, never uploaded), refuse the step when the
@@ -152,12 +169,26 @@ MAX_PARSED_FILE_BYTES = 1 * MIB
 #: At most eight plugins per step (section 13, invariant 7).
 MAX_PLUGINS = 8
 
+#: A bundled entry's `build` (`swarm_api.pluginstore.BUILD_IMAGE`), the
+#: folder the bundle recipe fixes for each bundled plugin, and the manifest
+#: it writes there (images/plugin-bundler/swarm-bundle).
+BUILD_IMAGE = "image"
+BUNDLE_ROOT = Path("/opt/swarm/plugins")
+BUNDLE_MANIFEST = ".swarm-bundle.json"
+
 #: Claude Code's managed settings, which can turn `--plugin-dir` off
 #: (`disableSideloadFlags`, spike "What this spike did not measure").
 MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 
 #: The shapes the signed set may hold (swarm_api.pluginstore's patterns).
 INSTALL_ID = re.compile(r"^[pw]-[0-9a-f]{12}$")
+#: A bundled built-in's reserved install id (`swarm_api.plugincatalogue`'s
+#: BUILT_IN_PREFIX and the plugin's name): reserved, never minted.
+BUILT_IN_PREFIX = "builtin:"
+BUNDLED_ID = re.compile(r"^builtin:[a-z0-9][a-z0-9-]{0,62}$")
+#: A bundled plugin's version as its manifest states it (a release or a
+#: commit; the prompt names it, so nothing else is read).
+BUNDLE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 VERSION_ID = re.compile(r"^v-[0-9a-f]{12}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PLUGIN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -195,7 +226,18 @@ REFUSALS = {
     "plugin_name_duplicate": "Two plugins in the step's signed set share one name.",
     "plugin_sideload_disabled": "This image's Claude Code settings turn off loading a plugin from a folder.",
     "plugins_bucket_unknown": "This worker has no plugins bucket to fetch a pinned copy from.",
+    "plugin_bundle_manifest_missing": "This image carries no manifest for a bundled plugin, so it cannot be checked against its signed pin.",
+    "plugin_bundle_mismatch": "A bundled plugin's manifest in this image does not match its signed pin.",
+    "plugin_bundle_settings": "A bundled plugin's signed entry carries settings, which this worker does not hand to a plugin built into its image.",
 }
+
+
+def _install_id_detail(install_id: Any) -> str | None:
+    """A platform-minted or reserved install id, or None: the only id a
+    refusal carries."""
+    if isinstance(install_id, str) and (INSTALL_ID.match(install_id) or BUNDLED_ID.match(install_id)):
+        return install_id
+    return None
 
 
 class PluginRefused(ConfigError):
@@ -209,7 +251,7 @@ class PluginRefused(ConfigError):
     def __init__(self, code: str, *, install_id: str | None = None, version_id: str | None = None) -> None:
         super().__init__(REFUSALS[code])
         self.code = code
-        self.install_id = install_id if isinstance(install_id, str) and INSTALL_ID.match(install_id) else None
+        self.install_id = _install_id_detail(install_id)
         self.version_id = version_id if isinstance(version_id, str) and VERSION_ID.match(version_id) else None
 
     def detail(self) -> dict[str, str]:
@@ -236,6 +278,32 @@ class Entry:
     secrets: Mapping[str, Mapping[str, str]] = field(hash=False)
     skills: tuple[str, ...] | None
     disabled_skills: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Bundled:
+    """One bundled built-in of the signed set (`build: "image"`), its shape
+    checked: what its image's manifest must say, and the step's mode and
+    skills. `recipe_digest` and `tree_sha256` are None when the entry does
+    not sign them."""
+
+    install_id: str
+    name: str
+    version_id: str
+    source_sha256: str
+    mode: str
+    skills: tuple[str, ...]
+    recipe_digest: str | None = None
+    tree_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class BundleManifest:
+    """What a bundled plugin's `.swarm-bundle.json` said, once checked."""
+
+    version: str
+    recipe_digest: str
+    tree_sha256: str
 
 
 @dataclass(frozen=True)
@@ -364,24 +432,117 @@ def _entry(install_id: Any, raw: Any, *, tenant_id: str) -> Entry:
                  skills=skills, disabled_skills=tuple(disabled_raw))
 
 
-def entries(task: Mapping[str, Any]) -> tuple[Entry, ...]:
-    """The signed set's entries, checked, in install-id order. Refuses the
-    whole set when any entry is not in the shape this worker reads, when it
-    holds more than MAX_PLUGINS, or two plugins of one name (the CLI keys
-    every component by the manifest's name, spike section 1)."""
+def _bundled_entry(install_id: str, raw: Any) -> Bundled:
+    """One signed `build: "image"` entry, checked: `plugin_set_invalid`, or
+    `plugin_bundle_settings` for one that carries settings. The reserved id
+    is the plugin's own name; nothing is fetched, so no object or digest of
+    a pinned copy may be signed with it."""
+    if not isinstance(raw, Mapping):
+        raise PluginRefused("plugin_set_invalid", install_id=install_id)
+    version_id = raw.get("version_id")
+
+    def bad(code: str = "plugin_set_invalid") -> PluginRefused:
+        return PluginRefused(code, install_id=install_id, version_id=version_id)
+
+    name, source, mode, skills = raw.get("name"), raw.get("source_sha256"), raw.get("mode"), raw.get("skills")
+    if not (isinstance(name, str) and PLUGIN_NAME.match(name) and install_id == BUILT_IN_PREFIX + name
+            and raw.get("scope") == "platform" and isinstance(version_id, str) and VERSION_ID.match(version_id)
+            and isinstance(source, str) and SHA256.match(source)
+            and raw.get("runnable_sha256") is None and raw.get("object") is None
+            and isinstance(mode, str) and SKILL.match(mode)
+            and isinstance(skills, list) and skills and all(isinstance(s, str) and SKILL.match(s) for s in skills)):
+        raise bad()
+    digests: dict[str, str | None] = {}
+    for key in ("recipe_digest", "tree_sha256"):
+        value = raw.get(key)
+        if value is not None and not (isinstance(value, str) and SHA256.match(value)):
+            raise bad()
+        digests[key] = value
+    disabled = raw.get("disabled_skills") or []
+    if not isinstance(disabled, list) or not all(isinstance(s, str) and SKILL.match(s) for s in disabled):
+        raise bad()
+    for key in ("env", "files", "secrets"):
+        value = raw.get(key) or {}
+        if not isinstance(value, Mapping):
+            raise bad()
+        if value:
+            raise bad("plugin_bundle_settings")
+    return Bundled(install_id=install_id, name=name, version_id=version_id, source_sha256=source,
+                   mode=mode, skills=tuple(skills), recipe_digest=digests["recipe_digest"],
+                   tree_sha256=digests["tree_sha256"])
+
+
+def _parsed(task: Mapping[str, Any]) -> tuple[tuple[Entry, ...], tuple[Bundled, ...]]:
+    """The signed set split into the entries fetched by digest and the
+    bundled built-ins, each checked, in install-id order. Refuses the whole
+    set when any entry is not in the shape this worker reads, when it holds
+    more than MAX_PLUGINS, or two plugins of one name (the CLI keys every
+    component by the manifest's name, spike section 1)."""
     block = signed_set(task)
     if not block:
-        return ()
+        return (), ()
     if len(block) > MAX_PLUGINS:
         raise PluginRefused("plugin_set_invalid")
     tenant_id = str(task.get("tenant_id") or "")
-    out = tuple(_entry(k, block[k], tenant_id=tenant_id) for k in sorted(block, key=str))
+    fetched: list[Entry] = []
+    bundled_: list[Bundled] = []
     seen: set[str] = set()
-    for e in out:
-        if e.name in seen:
-            raise PluginRefused("plugin_name_duplicate", install_id=e.install_id, version_id=e.version_id)
-        seen.add(e.name)
-    return out
+    for key in sorted(block, key=str):
+        raw = block[key]
+        if isinstance(raw, Mapping) and raw.get("build") is not None:
+            if raw.get("build") != BUILD_IMAGE or not isinstance(key, str) or not BUNDLED_ID.match(key):
+                raise PluginRefused("plugin_set_invalid", install_id=key)
+            item: Entry | Bundled = _bundled_entry(key, raw)
+            bundled_.append(item)
+        else:
+            item = _entry(key, raw, tenant_id=tenant_id)
+            fetched.append(item)
+        if item.name in seen:
+            raise PluginRefused("plugin_name_duplicate", install_id=item.install_id, version_id=item.version_id)
+        seen.add(item.name)
+    return tuple(fetched), tuple(bundled_)
+
+
+def entries(task: Mapping[str, Any]) -> tuple[Entry, ...]:
+    """The signed set's entries fetched by digest, checked (`_parsed`): a
+    bundled built-in is never one of them."""
+    return _parsed(task)[0]
+
+
+def bundled(task: Mapping[str, Any]) -> tuple[Bundled, ...]:
+    """The signed set's bundled built-ins (`build: "image"`), checked
+    (`_parsed`), for `check_bundle` and `plugins.start`."""
+    return _parsed(task)[1]
+
+
+def check_bundle(entry: Bundled, root: Path) -> BundleManifest:
+    """The bundled plugin's `.swarm-bundle.json` in `root`, the image's own
+    read-only folder, against its signed entry; nothing is fetched or
+    hashed. Refuses `plugin_bundle_manifest_missing` when the folder or the
+    manifest is not there (or is a link), and `plugin_bundle_mismatch`
+    unless the manifest names this install, this plugin, this folder and the
+    signed source sha256, carries a recipe digest and a tree sha256, and
+    those equal the signed ones when the entry signs them."""
+    root = Path(root)
+
+    def refuse(code: str) -> PluginRefused:
+        return PluginRefused(code, install_id=entry.install_id, version_id=entry.version_id)
+
+    found = None if root.is_symlink() or not root.is_dir() else _read_json(root / BUNDLE_MANIFEST)
+    if not isinstance(found, dict):
+        raise refuse("plugin_bundle_manifest_missing")
+    source, recipe, tree = (found.get(k) if isinstance(found.get(k), Mapping) else {}
+                            for k in ("source", "recipe", "tree"))
+    recipe_digest, tree_sha256, version = recipe.get("digest"), tree.get("sha256"), found.get("version")
+    if (found.get("install_id") != entry.install_id or found.get("plugin") != entry.name
+            or found.get("install_path") != str(root) or source.get("sha256") != entry.source_sha256
+            or not isinstance(recipe_digest, str) or not SHA256.match(recipe_digest)
+            or not isinstance(tree_sha256, str) or not SHA256.match(tree_sha256)
+            or entry.recipe_digest not in (None, recipe_digest)
+            or entry.tree_sha256 not in (None, tree_sha256)
+            or not isinstance(version, str) or not BUNDLE_VERSION.match(version)):
+        raise refuse("plugin_bundle_mismatch")
+    return BundleManifest(version=version, recipe_digest=recipe_digest, tree_sha256=tree_sha256)
 
 
 def wants_release(task: Mapping[str, Any]) -> bool:
@@ -1042,6 +1203,12 @@ def record(plugin: Loaded, skill_calls: Iterable[str]) -> dict[str, Any]:
 
 __all__ = [
     "BLOCK_KEY",
+    "BUILD_IMAGE",
+    "BUILT_IN_PREFIX",
+    "BUNDLE_MANIFEST",
+    "BUNDLE_ROOT",
+    "BundleManifest",
+    "Bundled",
     "ENV_DIR_ENV",
     "ERRORS_SUFFIX",
     "JEV_ADAPTER",
@@ -1053,6 +1220,8 @@ __all__ = [
     "PluginRefused",
     "REFUSALS",
     "SKIPPED_KEY",
+    "bundled",
+    "check_bundle",
     "entries",
     "errors_file",
     "fetch",

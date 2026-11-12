@@ -11,7 +11,7 @@
     pod may hold a graph ticket), one peer, and from nothing else; TCP 8081,
     the stats port, from swarm-api's Direct VPC egress range and from the
     swarm-graph pods themselves (a replica reads its peers' /v1/stats/local,
-    BGD 2026-10-28), and from nothing else (docs/design/graph-answer-cache.md
+    The owner 2026-10-28), and from nothing else (docs/design/graph-answer-cache.md
     §5.3; lane CACHE-2-NETWORK). kubernetes/network_parity.py judges the
     policy with the same function the tests use;
   * swarm-api's way in: the internal load balancer `swarm-graph-stats` on the
@@ -53,6 +53,15 @@ APP = {"app.kubernetes.io/name": NAME}
 PORT = 8080
 STATS_PORT = 8081
 STATS_PY = REPO / "apps" / "swarm-graph" / "swarm_graph" / "stats.py"
+def _annotation_domain() -> str:
+    """The domain the manifests' swarm annotation keys carry, read from
+    kubernetes/network_parity.py's SOURCE_ANNOTATION rather than restated: the
+    lane that owns kubernetes/ owns that value."""
+    text = (REPO / "kubernetes" / "network_parity.py").read_text()
+    match = re.search(r'^SOURCE_ANNOTATION = "([^"/]+)/network-source"$', text, re.M)
+    assert match, "kubernetes/network_parity.py no longer names SOURCE_ANNOTATION"
+    return match.group(1)
+
 #: A swarm-api range and a load balancer address that appear nowhere else, so
 #: a rendered value that matches them can only have come from the render.
 FAKE_API_CIDR = "10.123.16.0/20"
@@ -211,7 +220,7 @@ def test_only_a_tenant_namespace_reaches_it_on_8080():
 
 
 def test_8081_is_admitted_only_from_swarm_api_and_the_graph_pods():
-    """§5.3 and BGD's 2026-10-28 rule: swarm-api's Direct VPC egress range for
+    """§5.3 and the owner's 2026-10-28 rule: swarm-api's Direct VPC egress range for
     GET /v1/stats, and the swarm-graph pods of this namespace for the peer
     fan-out to /v1/stats/local. Neither reaches 8080; no tenant reaches 8081."""
     admitted = _admitted(_policy())
@@ -348,7 +357,7 @@ def test_the_kill_switch_is_a_mounted_directory_with_exactly_its_keys():
     assert volume["name"] == mount["name"]
     assert volume["configMap"]["name"] == "swarm-graph-config"
     annotations = _deployment()["spec"]["template"]["metadata"]["annotations"]
-    assert "swarm.saga.xyz/config-sha256" in annotations
+    assert f"{_annotation_domain()}/config-sha256" in annotations
 
 
 def test_the_rendered_setting_has_exactly_the_keys_the_service_accepts():

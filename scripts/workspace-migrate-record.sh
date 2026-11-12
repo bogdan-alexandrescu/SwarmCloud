@@ -2,10 +2,11 @@
 # Write the `ready`, `migrated` workspace record of a personal tenant whose
 # resources Terraform made (docs/workspaces.md §3.3; lane W9 of #847).
 #
-# WHY. u-bogdan's account, grants, secrets, jobs and documents were made by
-# Terraform and are forgotten from its state by terraform/{infra,bootstrap}/
-# removed.tf, without being destroyed. From then on nothing knows the tenant is
-# a workspace unless `workspaces/u-bogdan` says so, and the submission gate
+# WHY. u-owner's account, grants, secrets, jobs and documents were made by
+# Terraform and were forgotten from its state, without being destroyed, by
+# `removed` blocks in terraform/{infra,bootstrap} (deleted on 2026-11-11, once
+# neither state held their addresses). From then on nothing knows the tenant is
+# a workspace unless `workspaces/u-owner` says so, and the submission gate
 # (§5) refuses every tenant whose record is not `ready`. The workspace job
 # cannot write it: it would try to CREATE what already exists. So this writes
 # it, once, and `register-tenant.sh --workspace <id> --mode verify` then reads
@@ -13,7 +14,7 @@
 #
 # A REQUEST MAY ALREADY EXIST, AND ITS ID IS KEPT. On 2026-10-09 the owner
 # asked for a workspace in the console before the migration ran, so
-# `workspaces/u-bogdan` was `requested` with an id and a `workspace_ids/`
+# `workspaces/u-owner` was `requested` with an id and a `workspace_ids/`
 # entry. A fresh id would orphan both. A `requested`, `failed` or `denied`
 # record is therefore completed IN PLACE; only a missing one is created, with a
 # fresh id; a record already `ready` and `migrated` is left alone (a re-run is
@@ -51,9 +52,9 @@
 # writes only if the record is still in the state the plan was read from.
 #
 # Usage:
-#   scripts/workspace-migrate-record.sh u-bogdan              # dry run
-#   scripts/workspace-migrate-record.sh u-bogdan --apply      # write, after typing u-bogdan
-#   scripts/workspace-migrate-record.sh u-bogdan --quota-pods 100 --quota-cpu 400
+#   scripts/workspace-migrate-record.sh u-owner              # dry run
+#   scripts/workspace-migrate-record.sh u-owner --apply      # write, after typing u-owner
+#   scripts/workspace-migrate-record.sh u-owner --quota-pods 100 --quota-cpu 400
 #
 # Exit: 0 written, nothing to do, or a dry run; 1 refused or failed (nothing
 # written); 2 usage.
@@ -77,7 +78,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/workspace-migrate-record.sh <tenant> [--apply] [--quota-pods N --quota-cpu N] [--allow-prod]
 
-  <tenant>        the personal tenant, u-<name> (for example u-bogdan)
+  <tenant>        the personal tenant, u-<name> (for example u-owner)
   --apply         write the record, after typing the tenant id; without it, a
                   dry run that prints the plan and writes nothing
   --dry-run       the default, accepted so a command line can say so
@@ -107,7 +108,7 @@ while [[ $# -gt 0 ]]; do
       TENANT="$1"; shift ;;
   esac
 done
-[[ -n "${TENANT}" ]] || { usage; err "name the tenant, for example u-bogdan"; exit 2; }
+[[ -n "${TENANT}" ]] || { usage; err "name the tenant, for example u-owner"; exit 2; }
 if [[ "${APPLY}" -eq 1 && "${SAID_DRY_RUN}" -eq 1 ]]; then
   die "--apply and --dry-run contradict each other; say which one you mean"
 fi

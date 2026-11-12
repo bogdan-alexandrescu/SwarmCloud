@@ -399,3 +399,51 @@ def test_voice_key_the_broker_refuses_is_not_echoed_and_spends_the_link(setup_cl
     assert refused.status_code == 422, refused.text
     assert pasted not in refused.text
     assert db.docs[f"{COLLECTION}/{digest(token)}"]["used_at"] is not None
+
+
+# ---- replacing the dedicated key keeps its owner workspace ------------------------------
+
+
+def _dedicated(tenant: str, label: str = "voice-key") -> dict:
+    """The broker's row for Voice it's dedicated key, owned by `tenant`."""
+    return {"account_id": f"{tenant}:{label}", "owner_tenant": tenant, "label": label,
+            "provider": "openai-api", "voice_dedicated": True, "pools": ["voice-it"]}
+
+
+def test_a_replace_by_an_admin_of_another_workspace_files_the_key_under_its_owner(
+        setup_client, db, pool) -> None:
+    first = _mint(setup_client, "voice-api-key", "probe", owner=ROOT)
+    own = first.json()["tenant"]
+    owner = "voice-home" if own != "voice-home" else "voice-home-2"
+    pool.accounts.append(_dedicated(owner))
+
+    minted = _mint(setup_client, "voice-api-key", "voice-key", owner=ROOT)
+    token = _token(minted)
+    assert db.docs[f"{COLLECTION}/{digest(token)}"]["tenant_id"] == owner != own
+    assert minted.json()["tenant"] == owner
+    key = _voice_key()
+    opened = setup_client.post(REDEEM, json={"token": token, "value": key},
+                               headers=auth_header("root"))
+    assert opened.status_code == 200, opened.text
+    assert [r["owner_tenant"] for r in pool.registered] == [owner]
+    assert opened.json()["account_id"] == f"{owner}:voice-key"
+
+
+def test_a_first_key_keeps_the_minting_admins_workspace(setup_client, db, pool) -> None:
+    # A shared key in the Voice it pool is no dedicated key: still a first key.
+    pool.accounts.append({**_dedicated("voice-home", "shared"), "voice_dedicated": False})
+    minted = _mint(setup_client, "voice-api-key", "voice-key", owner=ROOT)
+    token = _token(minted)
+    tenant = db.docs[f"{COLLECTION}/{digest(token)}"]["tenant_id"]
+    assert tenant and tenant != "voice-home"
+    assert minted.json()["tenant"] == tenant
+
+
+def test_a_voice_key_link_is_not_minted_while_the_broker_cannot_say_who_owns_the_key(
+        setup_client, db, pool) -> None:
+    pool.listing_fails = True
+    before = dict(db.docs)
+    refused = _mint(setup_client, "voice-api-key", "voice-key", owner=ROOT)
+    assert refused.status_code == 503, refused.text
+    assert {k: v for k, v in db.docs.items() if k.startswith(COLLECTION)} == \
+        {k: v for k, v in before.items() if k.startswith(COLLECTION)}

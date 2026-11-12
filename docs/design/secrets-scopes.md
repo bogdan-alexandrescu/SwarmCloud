@@ -1,6 +1,6 @@
 # Secrets scopes: workspace, person and repository on one Config › Secrets page, and GitHub Actions as a write-only destination
 
-**Status: built 2026-10-24 (lane SSC-DOCS, part of #2158), except phase 0.** Designed 2026-10-23
+**Status: built 2026-10-24 (lane SSC-DOCS), except phase 0.** Designed 2026-10-23
 (lane SECRETS-SCOPES-DESIGN, PR 2159);
 The owner answered §10 the same evening (§11), and **§11 overrides this document
 wherever the two differ**. Every §9 lane but one has merged, each marked
@@ -858,7 +858,7 @@ The owner answered §10. Each answer is recorded on the design agent (`task_dffd
 
 ---
 
-## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)
+## 12. What was built (2026-10-24, lane SSC-DOCS)
 
 Read on main at `6571518`, after SSC-SC (PR 2251) merged. Each entry names
 the lane, its PR and what it built; where the build departs from §2-§6, the
@@ -1059,7 +1059,7 @@ that should be refused:
 | `grant_key_required` | a repository grant is written unattested, and the release drops it, because a repository grant is released only when attested (§2.2) | every environment holds the grant key |
 | `qa_bypass_link_required` | a bypass value sent without a link is written and logged without the value | the console's bypass form opens from a link (SSC-UI) |
 
-**The residual risk BGD accepted (Q3) is live.** User-scoped-secrets step 5
+**The residual risk the owner accepted (Q3) is live.** User-scoped-secrets step 5
 has not shipped: `terraform/bootstrap/forge_user_slots.tf`
 (`resource "google_project_iam_member" "forge_slot_reader" {`) still lets
 tenant workers read the `-git-u-` user-token slots. Once the App holds

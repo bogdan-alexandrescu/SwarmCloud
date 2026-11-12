@@ -1,14 +1,14 @@
 """QUOTA-ONE (#2039): a workspace tenant's namespace quota has one formula.
 
-THE INCIDENT. u-bogdan's workspace (w-752763) read `failed` on 2026-10-23.
+THE INCIDENT. u-owner's workspace (w-752763) read `failed` on 2026-10-23.
 Its namespace had been applied by hand with `kubernetes/apply.sh --tenant
-u-bogdan`, which rendered kubernetes/render.py's flat defaults (pods 100,
+u-owner`, which rendered kubernetes/render.py's flat defaults (pods 100,
 requests.cpu 400) where the record's 100 agents want pods 200, requests.cpu
 800. The job's final check (A9) compared the two and failed the workspace as
 "a ResourceQuota is missing", and `--mode limits`, the one run that re-applies
 a quota, refused a workspace that was not `ready`.
 
-Decided by BGD on 2026-10-23: ONE formula, and apply.sh renders a workspace
+Decided by the owner on 2026-10-23: ONE formula, and apply.sh renders a workspace
 tenant's quota from its record. What is under test here is the shipped code:
 
   * the per-agent constants live once, in scripts/lib/workspace-quota.json,
@@ -56,7 +56,7 @@ WORKSPACE = "w-3f9a2c"
 PRINCIPAL = "alice@example.com"
 TENANT = "u-alice"
 
-#: The issue's own numbers for 100 agents: what A9 asked of u-bogdan's
+#: The issue's own numbers for 100 agents: what A9 asked of u-owner's
 #: namespace, and what CLD applied by hand at 02:37Z (#2039, "Anything else").
 HUNDRED = ["--quota-pods", "200", "--quota-cpu", "800", "--quota-memory", "1600Gi",
            "--quota-jobs", "800", "--quota-ephemeral", "2000Gi"]
@@ -269,7 +269,7 @@ def test_apply_renders_a_workspace_tenant_s_quota_from_its_record(tmp_path: Path
     assert result.returncode == 0, result.stderr
     hard = _quota(cluster)
     # MUTATION: drop the record's flags from the render and this is 100/400,
-    # u-bogdan's namespace on 2026-10-23.
+    # u-owner's namespace on 2026-10-23.
     assert (hard["pods"], hard["requests.cpu"], hard["limits.cpu"]) == ("200", "800", "1600"), hard
     assert (hard["requests.memory"], hard["count/jobs.batch"], hard["requests.ephemeral-storage"]) \
         == ("1600Gi", "800", "2000Gi"), hard

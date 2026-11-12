@@ -6,8 +6,8 @@
 # `swarmcloud`, the id `swarmcloud` being taken; `swarmcloud-releases` had that
 # id been taken, D23). It is where every company's install fetches the release,
 # and nothing in a deployment reads it after the install has copied the images
-# (D21). BGD runs this. Until 2026-10-30 nothing in CI held a grant in that
-# project (D22); since BGD's "Move publishing into CI now" (DAYONE-RELEASE-CI)
+# (D21). The owner runs this. Until 2026-10-30 nothing in CI held a grant in that
+# project (D22); since the owner's "Move publishing into CI now" (DAYONE-RELEASE-CI)
 # the publish-release workflow's identity holds four, made by
 # --ci-publisher below. It creates, in this order, each only if it is not
 # there yet:
@@ -85,7 +85,7 @@ set -euo pipefail
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 # This script never touches PROJECT_ID's project: it works in the release home
 # its --project names. It says so, so common.sh (no default project, region or
-# zone, DAYONE-DESAGA-2) does not stop on an unset REGION or ZONE. PROJECT_ID
+# zone, the Day One project-defaults lane) does not stop on an unset REGION or ZONE. PROJECT_ID
 # still matters: it names the deployment whose never-touch list the release
 # home is checked against, below.
 SWARM_NO_PROJECT=1
@@ -193,7 +193,7 @@ done
 # The CI publisher is a service account. Nothing on SHARED_DENY_LIST ever
 # qualifies. In the shared project only SwarmCloud's own accounts (swarm-*) do:
 # every SwarmCloud account lives there, and the publisher is the deployer,
-# swarm-tf-deployer, the identity publish-release.yml authenticates as (BGD,
+# swarm-tf-deployer, the identity publish-release.yml authenticates as (the owner,
 # 2026-10-30). Any other account of the shared project may be the other
 # team's, so it is refused.
 if [[ "${PUBLISHER_SET}" -eq 1 ]]; then
@@ -313,7 +313,7 @@ if [[ "${KEYRING_CREATE}" -eq 0 ]] && gc_read kms keys describe "${KEY}" --keyri
     --location="${LOCATION}" --project="${PROJECT}" --format=json >"${key}" 2>"${WORK}/key.err"; then
   jq -e '.purpose == "ASYMMETRIC_SIGN" and .versionTemplate.algorithm == "EC_SIGN_P256_SHA256"' \
     "${key}" >/dev/null \
-    || die "key ${KEYRING}/${KEY} exists as $(jq -r '"\(.purpose) \(.versionTemplate.algorithm)"' "${key}"), not ASYMMETRIC_SIGN EC_SIGN_P256_SHA256; a key's purpose and algorithm cannot change and a key cannot be deleted -- choosing a new key name is BGD's decision"
+    || die "key ${KEYRING}/${KEY} exists as $(jq -r '"\(.purpose) \(.versionTemplate.algorithm)"' "${key}"), not ASYMMETRIC_SIGN EC_SIGN_P256_SHA256; a key's purpose and algorithm cannot change and a key cannot be deleted -- choosing a new key name is the owner's decision"
   has_label "${key}" || KEY_LABEL=1
 else
   KEY_CREATE=1

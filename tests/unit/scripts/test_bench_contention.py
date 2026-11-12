@@ -136,7 +136,7 @@ def test_the_wrapper_refuses_the_live_database_without_credentials(tmp_path) -> 
     proc = subprocess.run(
         ["bash", str(WRAPPER), "--database", "swarm"],
         capture_output=True, text=True, timeout=60,
-        # PROJECT_ID named: common.sh has no default project (DAYONE-DESAGA-2),
+        # PROJECT_ID named: common.sh has no default project (the Day One project-defaults lane),
         # and the guard under test is the live database's, in the deployment's
         # project: the placeholder one, with its region and never-touch list.
         env={"PATH": f"{tools}:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_ENV_FILE": str(tmp_path / "none"),

@@ -146,7 +146,7 @@ if api_get "/tenants/me" >"${me_body}"; then
   fi
   # WHAT THIS STEP CAN HONESTLY ASSERT.
   #
-  # It used to hardcode `*@saga.xyz`, which is a restatement of ALLOWED_DOMAINS
+  # It used to hardcode `*@example.com`, which is a restatement of ALLOWED_DOMAINS
   # and was false by construction for the only identity that can run this
   # suite: swarm-verify is a service account, and a service account cannot be a
   # principal in a Workspace domain. ALLOWED_USERS exists precisely so that

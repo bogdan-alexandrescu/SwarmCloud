@@ -5,7 +5,7 @@ The release home is project `swarmcloud-prod` (D25; display name `swarmcloud`; `
 id had been taken, D23): an Artifact Registry repository `swarmcloud` (us,
 Docker), a bucket `gs://swarmcloud` (uniform access, versioning) and a KMS key
 `swarmcloud-release/cosign` (asymmetric P-256) that signs the release, each
-labelled `managed-by=swarm-release`. BGD runs it; CLD does not create projects.
+labelled `managed-by=swarm-release`. The owner runs it; CLD does not create projects.
 
 The public read (`allUsers` as `roles/storage.objectViewer` on the bucket and
 `roles/artifactregistry.reader` on the repository) is the one IAM change that
@@ -14,7 +14,7 @@ effective `iam.allowedPolicyMemberDomains` policy on the project already admits
 it -- the Q4 org-policy exception, an org-admin act -- and only after the
 operator types the project id, which `SWARM_ASSUME_YES` does not skip.
 
-`--ci-publisher EMAIL` (DAYONE-RELEASE-CI, BGD 2026-10-30: CI publishes) grants
+`--ci-publisher EMAIL` (DAYONE-RELEASE-CI, the owner 2026-10-30: CI publishes) grants
 the publish-release workflow's identity exactly four roles, each on one
 resource and none on the project: `roles/artifactregistry.writer` on the
 repository, `roles/storage.objectAdmin` on the bucket, and
@@ -342,7 +342,7 @@ def test_alternate_release_project_is_admitted(tmp_path: Path) -> None:
 # --ci-publisher: the four release roles for publish-release.yml's identity
 # ---------------------------------------------------------------------------
 
-PUBLISHER = "swarm-deployer@a-ci-project.iam.gserviceaccount.com"
+PUBLISHER = "swarm-deployer@example-shared-project.iam.gserviceaccount.com"
 PUBLISHER_MEMBER = f"serviceAccount:{PUBLISHER}"
 #: (resource kind, role) -- the whole of what --ci-publisher may grant.
 PUBLISHER_GRANTS = {
@@ -438,7 +438,7 @@ def test_ci_publisher_grants_only_what_is_missing(tmp_path: Path) -> None:
     """A role held by someone else, or another role held by the publisher, is
     not the grant: only the bucket's is in place here."""
     state = _all_exist(**{
-        "repo-iam": _bound("roles/artifactregistry.writer", "serviceAccount:other@x.iam.gserviceaccount.com"),
+        "repo-iam": _bound("roles/artifactregistry.writer", "serviceAccount:other@example-shared-project.iam.gserviceaccount.com"),
         "bucket-iam": _bound("roles/storage.objectAdmin"),
         "key-iam": _bound("roles/cloudkms.viewer"),
     })
@@ -470,7 +470,7 @@ def test_ci_publisher_that_can_sign_also_gets_the_key_reader(tmp_path: Path) -> 
     "",
     "someone@example.com",
     "user:someone@example.com",
-    "serviceAccount:swarm-deployer@a-ci-project.iam.gserviceaccount.com",
+    "serviceAccount:swarm-deployer@example-shared-project.iam.gserviceaccount.com",
     "allUsers",
     "ci-runner@example-shared-project.iam.gserviceaccount.com",
 ])
@@ -485,7 +485,7 @@ def test_ci_publisher_refuses_anything_but_a_service_account(tmp_path: Path, ema
 
 def test_ci_publisher_accepts_swarmclouds_own_account_in_the_shared_project(tmp_path: Path) -> None:
     """The deployer publish-release.yml authenticates as lives in the shared
-    project, like every SwarmCloud account (BGD, 2026-10-30): a swarm-* account
+    project, like every SwarmCloud account (the owner, 2026-10-30): a swarm-* account
     there is accepted, and gets exactly the four grants."""
     deployer = "swarm-tf-deployer@example-shared-project.iam.gserviceaccount.com"
     proc = _run(tmp_path, _all_exist(), "--ci-publisher", deployer, "--dry-run")

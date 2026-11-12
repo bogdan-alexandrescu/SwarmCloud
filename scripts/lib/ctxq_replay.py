@@ -297,7 +297,7 @@ def build_corpus(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
     """One row per lane of a quality-baseline bundle, with CTXQ-M's split."""
     qm = _quality_metrics()
     lanes = list(bundle.get("lanes") or [])
-    report = qm.build_report(bundle)
+    report = qm.build_report(bundle, qm.configured_operators())
     per_pr = {p["number"]: p for p in report["ci"]["per_pr"]}
     not_yet = set(report["review"]["m4_not_yet"])
     hand = set(report["hand_fixup"]["m6_hand_fixed"])

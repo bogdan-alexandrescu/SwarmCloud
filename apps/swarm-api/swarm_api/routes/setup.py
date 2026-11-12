@@ -110,6 +110,7 @@ from ..judgment import settings_mac
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
 from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
+from ..voice import settings as vsettings
 from ..setup_github import (
     GitHubSetupApi,
     ManifestFlow,
@@ -1674,12 +1675,51 @@ class LinkCreate(StrictModel):
     #: `api-key` only: the key also serves Voice it (§4.6), a platform admin's
     #: choice, which minting already requires.
     share_with_voice_it: bool = False
+    #: `api-key` only: Replace key (§4.5). The link carries a new value for the
+    #: key already on `label`, of the same vendor; the broker adds it as a new
+    #: version and expires the old one, touching no hold, cap, lend or share.
+    #: Unset, the link adds a key and refuses a label already in use, so an add
+    #: never rotates a key by accident.
+    replace: bool = False
 
 
 #: The fixed reason an `api-key` redeem the broker refused is answered with
 #: (the established `validation_failed` code, its `detail.reason`; a new 4xx
 #: code would ship report-only behind `swarm_api.refusals`).
 API_KEY_REFUSED = "api_key_refused"
+#: The reasons an `api-key` link is refused for what is on its label: an add
+#: whose label is taken, a replace whose label holds no key of its vendor.
+API_KEY_LABEL_TAKEN = "api_key_label_taken"
+API_KEY_NOTHING_TO_REPLACE = "api_key_nothing_to_replace"
+
+
+def _api_key_label_check(pool: AccountPool, *, tenant_id: str, label: str, provider: str,
+                         replace_key: bool, expires_at: str | None = None) -> None:
+    """Refuse an `api-key` link whose mode does not fit its label (§4.1, §4.5).
+
+    Read from the broker's list (reserved accounts included, so a key kept
+    for Voice it is seen), at mint and again at redeem, before the link is
+    spent: the label may change hands in the link's ten minutes. An add needs
+    the label free; a replace needs a key of the same vendor on it."""
+    account_id = f"{tenant_id}:{label}"
+    listed = pool.list_accounts(tenant_id, include_reserved=True).get("accounts") or []
+    current = next((a for a in listed if isinstance(a, dict)
+                    and a.get("account_id") == account_id
+                    and a.get("owner_tenant") == tenant_id), None)
+    detail: dict[str, Any] = {} if expires_at is None else {"expires_at": expires_at}
+    if replace_key:
+        is_key = current is not None and (
+            current.get("kind") == "api_key" if current.get("kind") is not None
+            else str(current.get("provider") or "").endswith("-api"))
+        if not is_key or current.get("provider") != provider:
+            raise ValidationFailed(
+                f"there is no {provider} key labelled {label} in {tenant_id} to replace",
+                detail={"reason": API_KEY_NOTHING_TO_REPLACE, **detail})
+    elif current is not None:
+        raise ValidationFailed(
+            f"there is already an account labelled {label} in {tenant_id}; Replace key "
+            "gives a key a new value",
+            detail={"reason": API_KEY_LABEL_TAKEN, **detail})
 
 
 def _is_member(directory: MembershipResolver | None, email: str, group: str) -> bool:
@@ -1703,14 +1743,18 @@ def mint_link(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """One route, five kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
 
     `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
-    minting admin's own: `owner` must be the caller, and the account is filed
-    under the caller's own resolved workspace, recorded now so the redeem
-    cannot be pointed at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
+    minting admin's own: `owner` must be the caller. A first key is filed
+    under the caller's own resolved workspace; a key that replaces the
+    dedicated Voice it key under that key's owner workspace, as the broker's
+    account says, so an admin of another workspace replaces it rather than
+    adding a second. Either is recorded now so the redeem cannot be pointed
+    at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
 
     For one person (decision 7) a pool account is owned by the installer's
     personal workspace and its link is the installer's alone, and the
@@ -1720,12 +1764,14 @@ def mint_link(
     team_id: str | None = None
     progress_path: str | None = None
     if body.kind == sl.API_ACCOUNT:
-        return _mint_api_key_link(body, owner, caller=caller, ctx=ctx, links=links)
-    if body.provider is not None or body.workspace is not None or body.share_with_voice_it:
-        raise ValidationFailed(f"provider, workspace and share_with_voice_it are an "
+        return _mint_api_key_link(body, owner, caller=caller, ctx=ctx, links=links, pool=pool)
+    if (body.provider is not None or body.workspace is not None or body.share_with_voice_it
+            or body.replace):
+        raise ValidationFailed(f"provider, workspace, share_with_voice_it and replace are an "
                                f"{sl.API_ACCOUNT} link's; a {body.kind} link takes none")
     if body.kind == sl.VOICE_API_KEY:
-        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links,
+                                    pool=pool)
     engine = record.read_engine()
     personal = None
     if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
@@ -1782,16 +1828,32 @@ def mint_link(
 
 
 def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
-                         links: sl.SetupLinks) -> dict:
+                         links: sl.SetupLinks, pool: AccountPool) -> dict:
     """A `voice-api-key` link, for the minting platform admin alone.
 
     `admin_auth` has already refused anyone but a platform admin. The owner
     named in the body must BE that admin: a link another person could open
-    would let the key be pasted by someone the console never asked."""
+    would let the key be pasted by someone the console never asked.
+
+    The workspace the key is filed under is the dedicated key's owner when
+    the broker's platform-wide listing names one (a replace), else the
+    admin's own (a first key). A listing that could not be read mints
+    nothing (503): filing a replace under the admin's workspace would add a
+    second dedicated key instead of replacing the one there is."""
     if caller.auth is None or owner != caller.email.strip().lower():
         raise Forbidden("a Voice it API key link is for the platform admin who makes it; "
                         "name yourself as its owner")
-    tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    try:
+        listing = pool.voice_it_accounts()
+    except Exception as exc:  # noqa: BLE001 -- the class name only
+        log.warning("the broker could not be read for a Voice it key link (%s)",
+                    type(exc).__name__)
+        raise UpstreamUnavailable("the account pool could not say whether Voice it has a "
+                                  "dedicated key; no link was made, try again") from None
+    dedicated = vsettings.dedicated_account(listing)
+    replaced = dedicated.get("owner_tenant") if dedicated is not None else None
+    tenant_id = (replaced if isinstance(replaced, str) and replaced
+                 else ctx.submissions.tenant_for(caller.auth).tenant_id)
     token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
                              tenant_id=tenant_id)
     path = sl.FORMS[body.kind].format(token=token)
@@ -1803,7 +1865,7 @@ def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, c
 
 
 def _mint_api_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
-                       links: sl.SetupLinks) -> dict:
+                       links: sl.SetupLinks, pool: AccountPool) -> dict:
     """An `api-key` link (docs/design/llm-providers.md §4.1), for the person
     named, often the one who holds the vendor account.
 
@@ -1811,7 +1873,11 @@ def _mint_api_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx
     workspace is fixed HERE, from the body's `workspace` (which must exist) or
     the admin's own, and stored on the link: the redeem takes no workspace, so
     a link minted for one workspace cannot file a key under another
-    (invariant 9). It lasts ten minutes (`sl.API_KEY_TTL`)."""
+    (invariant 9). It lasts ten minutes (`sl.API_KEY_TTL`).
+
+    `replace` mints Replace key's link (§4.5): the label must hold a key of
+    the vendor named, and the Voice it share is left as it is, so it takes
+    no `share_with_voice_it`. Without it the label must be free."""
     if body.provider is None:
         raise ValidationFailed(f"an {sl.API_ACCOUNT} link names its vendor: provider is one of "
                                + ", ".join(sl.API_KEY_PROVIDERS))
@@ -1824,16 +1890,23 @@ def _mint_api_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx
     else:
         raise ValidationFailed(f"name the workspace that will own the key: an {sl.API_ACCOUNT} "
                                "link needs one")
+    if body.replace and body.share_with_voice_it:
+        raise ValidationFailed("Replace key changes the key's value alone; its Voice it share "
+                               "stays as it is, so send no share_with_voice_it")
+    _api_key_label_check(pool, tenant_id=tenant_id, label=body.label, provider=body.provider,
+                         replace_key=body.replace)
     token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
                              tenant_id=tenant_id,
                              extra={"provider": body.provider,
-                                    "share_with_voice_it": body.share_with_voice_it})
+                                    "share_with_voice_it": body.share_with_voice_it,
+                                    "replace": body.replace})
     path = sl.FORMS[body.kind].format(token=token)
     base = console_origin(ctx.settings.console_url)
-    log.info("minted a setup link kind=%s label=%s provider=%s", body.kind, body.label,
-             body.provider)
+    log.info("minted a setup link kind=%s label=%s provider=%s replace=%s", body.kind,
+             body.label, body.provider, body.replace)
     return {"kind": body.kind, "label": body.label, "owner": owner, "tenant": tenant_id,
             "provider": body.provider, "share_with_voice_it": body.share_with_voice_it,
+            "replace": body.replace,
             "url": f"{base}{path}" if base else None, "path": path,
             "expires_at": link["expires_at"].isoformat()}
 
@@ -1976,6 +2049,11 @@ def _redeem_api_key(body: LinkRedeem, auth: AuthContext, peeked: dict[str, Any],
     if provider not in sl.API_KEY_PROVIDERS or not peeked.get("tenant_id"):
         # A record no mint of this kind writes: refused as a dead link.
         raise sl.LinkInvalid("this link is not valid: ask the admin for a new one")
+    replace_key = peeked.get("replace") is True
+    # Checked again before the link is spent: a refusal here leaves it unused.
+    _api_key_label_check(pool, tenant_id=str(peeked["tenant_id"]),
+                         label=str(peeked.get("label") or ""), provider=provider,
+                         replace_key=replace_key, expires_at=expires_at)
     link = links.redeem(body.token, email=auth.email)
     label = str(link.get("label") or "")
     tenant_id = str(link.get("tenant_id") or "")
@@ -1998,10 +2076,11 @@ def _redeem_api_key(body: LinkRedeem, auth: AuthContext, peeked: dict[str, Any],
         raise
     account = result.get("account") if isinstance(result, dict) else None
     account_id = (account or {}).get("account_id") if isinstance(account, dict) else None
-    log.info("a setup link registered its account kind=%s label=%s provider=%s tenant=%s",
-             sl.API_ACCOUNT, label, provider, tenant_id)
+    log.info("a setup link registered its account kind=%s label=%s provider=%s tenant=%s "
+             "replaced=%s", sl.API_ACCOUNT, label, provider, tenant_id, replace_key)
     return {"kind": sl.API_ACCOUNT, "label": label, "tenant": tenant_id, "provider": provider,
-            "account_id": account_id or f"{tenant_id}:{label}", "written": True}
+            "account_id": account_id or f"{tenant_id}:{label}", "written": True,
+            "replaced": replace_key}
 
 
 # --------------------------------------------------------------------------

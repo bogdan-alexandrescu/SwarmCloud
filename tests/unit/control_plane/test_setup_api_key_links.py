@@ -132,7 +132,7 @@ def test_mint_then_redeem_calls_the_broker_once_and_returns_no_key(setup_client,
     body = opened.json()
     assert body == {"kind": "api-key", "label": "team-key", "tenant": team,
                     "provider": "anthropic-api", "account_id": f"{team}:team-key",
-                    "written": True}
+                    "written": True, "replaced": False}
     assert key not in opened.text
     assert key not in _everything_logged(caplog.records)
     assert key not in json.dumps(db.docs, default=str)
@@ -331,3 +331,99 @@ def test_register_api_key_answers_a_broker_refusal_as_the_callers_422() -> None:
     with pytest.raises(ValidationFailed):
         _client(rec).register_api_key(owner_tenant="eng", label="k", provider="anthropic-api",
                                       credential=_key(), added_by=ALICE)
+
+
+# ---------------------------------------------------------------------------
+# Replace key (§4.5): the link's `replace` mode
+# ---------------------------------------------------------------------------
+
+
+def _added(client, pool, team: str, *, provider: str = "anthropic-api",
+           label: str = "team-key") -> str:
+    """A key already on `label`, added through the link as the page does."""
+    token = _token(_mint(client, workspace=team, provider=provider, label=label))
+    opened = client.post(REDEEM, json={"token": token, "value": _key(provider)},
+                         headers=auth_header("alice"))
+    assert opened.status_code == 200, opened.text
+    return f"{team}:{label}"
+
+
+def test_replace_sends_the_new_value_for_the_same_label_once(setup_client, db, pool,
+                                                              caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    team = _team(setup_client)
+    account_id = _added(setup_client, pool, team)
+    minted = _mint(setup_client, workspace=team, replace=True)
+    token = _token(minted)
+    assert minted.json()["replace"] is True and _record(db, token)["replace"] is True
+    new = _key()
+    opened = setup_client.post(REDEEM, json={"token": token, "value": new},
+                               headers=auth_header("alice"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json() == {"kind": "api-key", "label": "team-key", "tenant": team,
+                             "provider": "anthropic-api", "account_id": account_id,
+                             "written": True, "replaced": True}
+    # The broker's own registration rotates a key already on the label.
+    assert [(r["label"], r["credential"]) for r in pool.registered][-1] == ("team-key", new)
+    assert len(pool.registered) == 2
+    assert new not in opened.text and new not in _everything_logged(caplog.records)
+    assert new not in json.dumps(db.docs, default=str)
+
+
+def test_replace_is_refused_where_the_label_holds_no_key_of_that_vendor(setup_client, db,
+                                                                         pool) -> None:
+    team = _team(setup_client)
+    nothing = _mint(setup_client, workspace=team, replace=True)
+    assert nothing.status_code == 422, nothing.text
+    assert nothing.json()["detail"]["reason"] == "api_key_nothing_to_replace"
+    _added(setup_client, pool, team)
+    other_vendor = _mint(setup_client, workspace=team, provider="openai-api", replace=True)
+    assert other_vendor.status_code == 422, other_vendor.text
+    # A plan on the label is not a key to replace either.
+    pool.accounts.append({"account_id": f"{team}:a-plan", "owner_tenant": team,
+                          "label": "a-plan", "provider": "anthropic", "kind": "plan"})
+    plan = _mint(setup_client, workspace=team, label="a-plan", replace=True)
+    assert plan.status_code == 422, plan.text
+    assert len(pool.registered) == 1
+
+
+def test_an_add_never_rotates_a_key_already_on_the_label(setup_client, db, pool) -> None:
+    team = _team(setup_client)
+    _added(setup_client, pool, team)
+    again = _mint(setup_client, workspace=team)
+    assert again.status_code == 422, again.text
+    assert again.json()["detail"]["reason"] == "api_key_label_taken"
+    assert len(pool.registered) == 1
+
+
+def test_the_label_is_checked_again_at_redeem_and_a_refusal_leaves_the_link_unused(
+        setup_client, db, pool) -> None:
+    team = _team(setup_client)
+    add_token = _token(_mint(setup_client, workspace=team))
+    _added(setup_client, pool, team)
+    late = setup_client.post(REDEEM, json={"token": add_token, "value": _key()},
+                             headers=auth_header("alice"))
+    assert late.status_code == 422, late.text
+    assert late.json()["detail"]["reason"] == "api_key_label_taken"
+    assert late.json()["detail"]["expires_at"]
+    assert _record(db, add_token)["used_at"] is None
+    replace_token = _token(_mint(setup_client, workspace=team, replace=True))
+    pool.accounts.clear()
+    gone = setup_client.post(REDEEM, json={"token": replace_token, "value": _key()},
+                             headers=auth_header("alice"))
+    assert gone.status_code == 422, gone.text
+    assert gone.json()["detail"]["reason"] == "api_key_nothing_to_replace"
+    assert _record(db, replace_token)["used_at"] is None
+    assert len(pool.registered) == 1
+
+
+def test_replace_takes_no_voice_it_share_and_no_other_kind_takes_replace(setup_client, db,
+                                                                         pool) -> None:
+    team = _team(setup_client)
+    _added(setup_client, pool, team)
+    shared = _mint(setup_client, workspace=team, replace=True, share_with_voice_it=True)
+    assert shared.status_code == 422, shared.text
+    stray = setup_client.post(LINKS, json={"kind": "addon-secret", "label": "tailscale",
+                                           "owner": ALICE, "replace": True},
+                              headers=auth_header("root"))
+    assert stray.status_code == 422, stray.text

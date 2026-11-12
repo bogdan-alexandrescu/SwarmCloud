@@ -69,9 +69,10 @@ from ..voice import sessions as vs
 from ..voice import store as vstore
 from ..voice import stream as vstream
 from ..voice import visuals as vvis
-from .voice import allowed_person, voice_blobs
+from .voice import RefusalLogged, allowed_person, voice_blobs
 
-router = APIRouter(prefix="/v1/voice", tags=["voice"])
+#: Every write here logs its refusal (code, field, reason; never the body): routes/voice.py.
+router = APIRouter(prefix="/v1/voice", tags=["voice"], route_class=RefusalLogged)
 
 
 class VisualBody(BaseModel):

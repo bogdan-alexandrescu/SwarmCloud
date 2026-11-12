@@ -70,6 +70,17 @@ class FakePool:
         self.fails = fails
         self.pool_answer = pool_answer or {"account": None, "reason": vs.NO_LIVE_ACCOUNT}
         self.listed = 0
+        #: Every account id swarm-api asked the broker to delete.
+        self.removed: list[str] = []
+        #: When set, the broker's delete raises it (and removes nothing).
+        self.remove_fails: ApiError | None = None
+
+    def remove(self, account_id: str) -> dict[str, Any]:
+        if self.remove_fails is not None:
+            raise self.remove_fails
+        self.removed.append(account_id)
+        self.accounts = [a for a in self.accounts if a["account_id"] != account_id]
+        return {"removed": account_id, "secret": "destroyed"}
 
     def voice_pool(self, person: str) -> dict[str, Any]:
         if self.fails:
@@ -172,13 +183,14 @@ def test_no_dedicated_key_reads_as_not_set_with_an_open_link():
 
     assert key == {"set": False, "label": None, "display_name": None, "by": None, "at": None,
                    "state": None, "link": {"open": True, "expires_at": expires.isoformat()},
-                   "replace": None}
+                   "replace": None, "can_delete": False}
 
 
 def test_the_admin_replaces_the_dedicated_key_through_the_voice_api_key_link():
     body = _read(FakePool([_account("voice-key", dedicated=True)]), user=ROOT)
 
     assert body["dedicated_key"]["replace"] == {"kind": sl.VOICE_API_KEY, "label": "voice-key"}
+    assert body["dedicated_key"]["can_delete"] is True
 
 
 def test_a_reader_who_is_not_an_admin_gets_the_read_only_view():
@@ -187,6 +199,7 @@ def test_a_reader_who_is_not_an_admin_gets_the_read_only_view():
 
     assert body["dedicated_key"]["set"] is True
     assert body["dedicated_key"]["replace"] is None
+    assert body["dedicated_key"]["can_delete"] is False
     assert [t["state"] for t in body["chain"]] == ["not_set_up", "not_set_up", "available"]
 
 
@@ -198,6 +211,116 @@ def test_a_broker_read_that_fails_is_unknown_never_not_set(caplog):
     assert (key["set"], key["state"], key["replace"]) == (None, None, None)
     assert [t["state"] for t in body["chain"]] == [None, None, None]
     assert "OSError" in caplog.text
+
+
+# ---- deleting the dedicated key (§4.4, §6.4) -----------------------------------------
+
+
+DELETE = "/v1/voice/settings/dedicated-key"
+
+
+def _delete(client: TestClient, label: Any, *, user: str = ROOT):
+    return client.request("DELETE", DELETE, json={"label": label},
+                          headers={"x-test-user": user})
+
+
+def _audits(db: FakeFirestore) -> list[dict]:
+    return [doc for path, doc in db.docs.items() if path.startswith(f"{vs.AUDIT}/")
+            and doc.get("action") == vsettings.AUDIT_DEDICATED_KEY_DELETED]
+
+
+def test_an_admin_deletes_the_dedicated_key_through_the_broker_and_it_is_audited(caplog):
+    db = FakeFirestore()
+    pool = FakePool([_account("shared-key"), _account("voice-key", dedicated=True)])
+    with caplog.at_level(logging.INFO):
+        r = _delete(_app(db, pool), "voice-key")
+
+    assert r.status_code == 200, r.text
+    assert pool.removed == ["ops:voice-key"]
+    # The answer is the page read again: the key is gone, the shared key stays.
+    assert r.json()["dedicated_key"]["set"] is False
+    assert [a["label"] for a in pool.accounts] == ["shared-key"]
+    [row] = _audits(db)
+    assert (row["by"], row["at"], row["tenant_id"]) == (ROOT, NOW, None)
+    assert row["detail"] == {"label": "voice-key", "outcome": "deleted"}
+    assert "audit: Voice it's dedicated key deleted" in caplog.text
+
+
+@pytest.mark.parametrize("user", [ALICE, "bob@example.com"])
+def test_anyone_but_a_platform_admin_is_refused_the_delete(user):
+    db = FakeFirestore()
+    pool = FakePool([_account("voice-key", dedicated=True)])
+    r = _delete(_app(db, pool), "voice-key", user=user)
+
+    assert r.status_code == 403, r.text
+    assert pool.removed == [] and _audits(db) == []
+
+
+@pytest.mark.parametrize("typed", ["shared-key", "voice-ke", "VOICE-KEY", "", None])
+def test_the_delete_needs_the_dedicated_keys_label_typed_and_reaches_no_other_key(typed):
+    db = FakeFirestore()
+    pool = FakePool([_account("shared-key"), _account("voice-key", dedicated=True,
+                                                     tenant="eng")])
+    r = _delete(_app(db, pool), typed)
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "label"
+    assert pool.removed == [] and _audits(db) == []
+
+
+def test_the_delete_deletes_the_brokers_dedicated_account_never_one_the_caller_names():
+    pool = FakePool([_account("voice-key", tenant="eng"),
+                     _account("voice-key", dedicated=True, tenant="ops")])
+    r = _app(FakeFirestore(), pool).request(
+        "DELETE", DELETE, json={"label": "voice-key", "account_id": "eng:voice-key"},
+        headers={"x-test-user": ROOT})
+
+    assert r.status_code == 200, r.text
+    assert pool.removed == ["ops:voice-key"]
+
+
+def test_with_no_dedicated_key_there_is_nothing_to_delete():
+    pool = FakePool([_account("shared-key")])
+    r = _delete(_app(FakeFirestore(), pool), "shared-key")
+
+    assert r.status_code == 404, r.text
+    assert pool.removed == []
+
+
+def test_a_broker_that_cannot_be_read_deletes_nothing():
+    pool = FakePool([_account("voice-key", dedicated=True)], fails=True)
+    r = _delete(_app(FakeFirestore(), pool), "voice-key")
+
+    assert r.status_code == 503, r.text
+    assert pool.removed == []
+
+
+def test_a_delete_the_broker_refuses_is_answered_with_its_error_and_audited():
+    from swarm_api.errors import UpstreamUnavailable
+
+    db = FakeFirestore()
+    pool = FakePool([_account("voice-key", dedicated=True)])
+    pool.remove_fails = UpstreamUnavailable("the key's secret could not be destroyed")
+    r = _delete(_app(db, pool), "voice-key")
+
+    assert r.status_code == 503, r.text
+    assert "could not be destroyed" in r.text
+    [row] = _audits(db)
+    assert row["detail"] == {"label": "voice-key", "outcome": "upstream_unavailable"}
+
+
+def test_the_client_deletes_through_the_brokers_account_route():
+    seen: list[dict] = []
+
+    def transport(method, url, *, headers, body=None, timeout=15.0):
+        seen.append({"method": method, "url": url})
+        return 200, {"removed": "ops:voice-key", "secret": "destroyed"}
+
+    client = BrokerClient(base_url="https://broker.internal", audience="https://broker.example",
+                          tokens=StaticIdToken(secrets.token_hex(16)), transport=transport)
+
+    client.remove("ops:voice-key")
+    assert seen == [{"method": "DELETE", "url": "https://broker.internal/v1/accounts/ops%3Avoice-key"}]
 
 
 # ---- the chain line ---------------------------------------------------------------------

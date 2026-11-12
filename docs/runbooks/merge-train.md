@@ -253,6 +253,66 @@ train through `workflow_run` as any App-started run does.
   is abandoned and rebuilt. `vars.MERGE_TRAIN_MAX_PRS` changes the batch size
   from 4.
 
+## Gathering a train: six ready or twenty minutes
+
+A train does not board as soon as one pull request is green. It boards once
+`MERGE_TRAIN_MIN_PRS` pull requests (default **6**) would board, or once the
+oldest of them has been `ready` for `MERGE_TRAIN_MAX_WAIT_MINUTES` (default
+**20**). The owner picked this on 11 November 2026 ("6 ready or 20
+minutes"). Each train pays the whole suite once, and the full suite is moving
+to run only on the train and on main. So fewer, larger trains spend less CI
+time. Twenty minutes caps the cost: no `ready` pull request waits much
+longer than about one CI run before it boards.
+
+While it gathers, each tick boards nothing and says so in one line of its
+summary: how many pull requests wait, the oldest one and how long it has been
+ready, and the latest time they board, for example:
+
+```text
+gathering: 3 ready pull requests wait for 6 to board (or 20 minutes); the oldest, #101, has been ready 7 minutes; they board at the latest at 2026-11-11T10:20:00Z, in 13 minutes
+```
+
+The train boards on the first tick after that time. Ticks come from CI runs
+finishing and from `ready` being added, and the five-minute schedule is the
+fallback. So the real wait can run past twenty minutes until the next tick.
+
+**"Ready since"** is when the `ready` label was **last added**, read from
+the pull request's issue events on GitHub on every tick. The script keeps no
+file or clock of its own. If you take `ready` off and put it back, the wait
+starts again. If that time cannot be read, the pull request counts as having
+waited the whole window, and the train boards. An unreadable time never holds
+work back.
+
+**What never waits:**
+
+* A `ready` pull request also labelled `train-first` boards at once, and the
+  others that are ready board with it.
+* A bisection's held-back half boards at once, as before. This is the explicit
+  list after a red train is halved.
+* A red train whose failed jobs are being re-run (rule 1) is unchanged. It
+  stays open and is judged again, and nothing new boards.
+
+**How to change the settings.** These are repository variables, read like
+`MERGE_TRAIN_MAX_PRS`. The tick's `env:` in `.github/workflows/merge-train.yml`
+must pass them to the script as
+`MERGE_TRAIN_MIN_PRS: ${{ vars.MERGE_TRAIN_MIN_PRS }}` and
+`MERGE_TRAIN_MAX_WAIT_MINUTES: ${{ vars.MERGE_TRAIN_MAX_WAIT_MINUTES }}`.
+When a variable is unset, the script uses its default.
+
+```bash
+gh variable set MERGE_TRAIN_MIN_PRS -R example-org/example-repo --body 6
+gh variable set MERGE_TRAIN_MAX_WAIT_MINUTES -R example-org/example-repo --body 20
+```
+
+* `MERGE_TRAIN_MIN_PRS=1` or `MERGE_TRAIN_MAX_WAIT_MINUTES=0` turns the gather
+  off. A train then boards as soon as one pull request is green, as it did
+  before. The tick makes no extra read.
+* A minimum above `MERGE_TRAIN_MAX_PRS` counts as `MERGE_TRAIN_MAX_PRS`,
+  because a train never holds more.
+* A value that is not a number (or a minimum of 0) stops the tick with an error
+  that names the variable. Delete the variable to go back to the default:
+  `gh variable delete MERGE_TRAIN_MIN_PRS -R example-org/example-repo`.
+
 ## Rolling back
 
 Strict comes back on and `merge-train` is no longer required. Then
