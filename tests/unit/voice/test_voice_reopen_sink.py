@@ -324,7 +324,7 @@ def test_a_state_post_failing_twice_is_dropped_with_a_log_line_that_carries_no_c
     dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
     assert len(dropped) == 1
     assert voice_id in dropped[0] and live.WAKING in dropped[0] and "503" in dropped[0]
-    for secret in (grant.value, id_token, "say nothing of this"):
+    for secret in (grant.headers()[GRANT_HEADER], id_token, "say nothing of this"):
         assert secret not in caplog.text
 
 
