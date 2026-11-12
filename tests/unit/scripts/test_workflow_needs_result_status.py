@@ -33,6 +33,8 @@ from typing import Any
 import pytest
 import yaml
 
+from .test_fast_checks_on_lane_prs import without_lane_clause
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.yml"))
 
@@ -86,7 +88,8 @@ def test_plugin_tag_runs_after_a_green_python_on_a_push_to_main():
     workflow = yaml.safe_load((REPO / ".github" / "workflows" / "application.yml").read_text())
     job = workflow["jobs"]["plugin-tag"]
     assert job["needs"] == ["python"]
-    condition = re.sub(r"\s+", " ", str(job["if"])).strip()
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    condition = re.sub(r"\s+", " ", without_lane_clause(job["if"])).strip()
     condition = re.sub(r"^\$\{\{\s*(.*?)\s*\}\}$", r"\1", condition)
     assert condition == (
         "!cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' "
