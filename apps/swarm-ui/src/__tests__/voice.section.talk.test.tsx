@@ -34,6 +34,7 @@ vi.mock('../fetch', async (importOriginal) => ({
 }))
 
 const { VoiceTalkScreen } = await import('../voice/Section')
+const { VoiceSessionHolder } = await import('../voice/session')
 
 /** swarm-api's own sentences (swarm_api/voice/sessions.py `unavailable`, `not_allowed`). */
 const UNAVAILABLE =
@@ -80,7 +81,7 @@ describe('Voice it › Talk', () => {
 
   it('draws the Talk pane, its start control and its captions, for the person Voice it is open to', async () => {
     signedIn(true)
-    render(<VoiceTalkScreen />)
+    render(<VoiceSessionHolder><VoiceTalkScreen /></VoiceSessionHolder>)
     expect(await screen.findByRole('button', { name: 'Start talking' })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'Talk' })).toBeTruthy()
     expect(screen.getByRole('log', { name: 'Captions' })).toBeTruthy()
@@ -92,7 +93,7 @@ describe('Voice it › Talk', () => {
 
   it("draws the Gate's refusal, and no Talk pane, for anyone else", async () => {
     signedIn(false)
-    render(<VoiceTalkScreen />)
+    render(<VoiceSessionHolder><VoiceTalkScreen /></VoiceSessionHolder>)
     expect(await screen.findByText('Voice it is not open to you')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'Talk' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Start talking' })).toBeNull()
@@ -102,7 +103,7 @@ describe('Voice it › Talk', () => {
   it("shows swarm-api's 503 sentence as served, and leaves no live track", async () => {
     signedIn(true)
     refuseStarts(503, 'voice_unavailable', UNAVAILABLE)
-    render(<VoiceTalkScreen />)
+    render(<VoiceSessionHolder><VoiceTalkScreen /></VoiceSessionHolder>)
     fireEvent.click(await screen.findByRole('button', { name: 'Start talking' }))
     await settle(act)
     expect(screen.getByRole('alert').textContent).toBe(UNAVAILABLE)
@@ -117,7 +118,7 @@ describe('Voice it › Talk', () => {
   it("shows swarm-api's 403 sentence as served, and leaves no live track", async () => {
     signedIn(true)
     refuseStarts(403, 'forbidden', NOT_ALLOWED)
-    render(<VoiceTalkScreen />)
+    render(<VoiceSessionHolder><VoiceTalkScreen /></VoiceSessionHolder>)
     fireEvent.click(await screen.findByRole('button', { name: 'Start talking' }))
     await settle(act)
     expect(screen.getByRole('alert').textContent).toBe(NOT_ALLOWED)
