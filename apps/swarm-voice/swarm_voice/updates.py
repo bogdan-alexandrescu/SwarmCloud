@@ -134,7 +134,7 @@ DRAW_PREFIX = "draw_"
 CHECKIN_LINE = "Still working: {doing}."
 CHECKIN_IDLE = "Still working on it."
 DRAWN_LINE = "I drew a {kind} card: {title}."
-MORE_LINE = "And {n} more updates."
+MORE_LINE = "And {n} more {updates}."
 
 
 def tool_phrase(name: str) -> str | None:
@@ -158,12 +158,13 @@ def _title(value: Any) -> str:
 @dataclass(frozen=True)
 class Update:
     """One thing worth saying: its kind, its key (never said twice) and its
-    line; a result names its delegation."""
+    line; a result names its delegation, a roster update its item."""
 
     kind: str
     key: str
     line: str
     delegation_id: str | None = None
+    item: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,21 +190,26 @@ def roster_updates(changes: Iterable[Change]) -> list[Update]:
             continue
         base = f"{change.kind}:{change.id}"
         if change.before is None and change.state in ("queued", "running"):
-            found.append(Update(MILESTONE, f"{base}:started", STARTED.format(item=item, id=change.id)))
+            found.append(Update(MILESTONE, f"{base}:started", STARTED.format(item=item, id=change.id),
+                                item=base))
         phase = (change.phase or "").upper()
         if change.kind == "run" and phase in RUN_PHASES:
             kind, line = RUN_PHASES[phase]
-            found.append(Update(kind, f"{base}:{phase.lower()}", line.format(id=change.id)))
+            found.append(Update(kind, f"{base}:{phase.lower()}", line.format(id=change.id), item=base))
             continue
         if change.state in STATE_PHRASES and change.state != change.before:
             kind, line = STATE_PHRASES[change.state]
-            found.append(Update(kind, f"{base}:{change.state}", line.format(item=item, id=change.id)))
+            found.append(Update(kind, f"{base}:{change.state}", line.format(item=item, id=change.id),
+                                item=base))
     return found
 
 
 def merge(updates: list[Update]) -> str:
     """One line for `updates`: the result first, then what needs the owner,
-    then milestones and a check-in, at most LINE_PHRASES phrases."""
+    then milestones and a check-in, at most LINE_PHRASES phrases. Of one
+    item's updates only the newest is named: it says where the item is now."""
+    newest = {u.item: at for at, u in enumerate(updates) if u.item is not None}
+    updates = [u for at, u in enumerate(updates) if u.item is None or newest[u.item] == at]
     ranked = sorted(updates, key=lambda u: _ORDER.get(u.kind, 9))
     if any(u.kind != CHECKIN for u in ranked):
         # A check-in says nothing another update does not say better.
@@ -211,7 +217,7 @@ def merge(updates: list[Update]) -> str:
     named = [u.line for u in ranked[:LINE_PHRASES]]
     rest = len(ranked) - len(named)
     if rest:
-        named.append(MORE_LINE.format(n=rest))
+        named.append(MORE_LINE.format(n=rest, updates="update" if rest == 1 else "updates"))
     return " ".join(named)
 
 

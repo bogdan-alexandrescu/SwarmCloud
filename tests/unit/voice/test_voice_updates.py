@@ -223,6 +223,12 @@ def test_a_milestone_a_needs_the_owner_change_and_a_result_each_speak_once():
     asyncio.run(asyncio.wait_for(scenario(), 10))
 
 
+def test_updates_past_the_lines_limit_are_counted():
+    many = [vu.Update(vu.MILESTONE, f"k{n}", f"Agent t-{n} started.", item=f"agent:t-{n}") for n in range(5)]
+    assert vu.merge(many) == "Agent t-0 started. Agent t-1 started. Agent t-2 started. And 2 more updates."
+    assert vu.merge(many[:4]).endswith("And 1 more update.")
+
+
 def test_three_updates_in_one_second_speak_as_one_line():
     world = World()
 
@@ -341,7 +347,7 @@ _ALLOWED = [re.compile(p) for p in (
     rf"Run {_ID} (opened its pull request|is fixing its pull request's checks|"
     r"is done: its pull request is through|has a plan waiting for your approval)\.",
     r"I drew a [a-z ]+ card: Login page\.",
-    r"Still working: [a-z' -]+\.", r"Still working on it\.", r"And \d+ more updates\.",
+    r"Still working: [a-z' -]+\.", r"Still working on it\.", r"And \d+ more updates?\.",
 )]
 
 
@@ -415,3 +421,59 @@ def test_the_start_binds_one_queue_and_the_end_drops_it():
         assert vu.BOARD.get(voice_id) is None and session.updates.closed
 
     asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+def test_the_follower_tells_a_runs_pull_request_from_its_own_phase_and_never_writes_it():
+    import httpx
+
+    grant = _grant(_voice_id())
+    phase = ["RUNNING"]
+    posted: list[dict] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tasks":
+            return httpx.Response(200, json={"tasks": []})
+        if request.url.path == "/v1/runs/run-1":
+            return httpx.Response(200, json={"run": {"state": phase[0]}})
+        if request.url.path == f"/v1/voice/sessions/{grant.session_id}/work":
+            import json as _json
+            posted.append(_json.loads(request.content))
+            return httpx.Response(200, json={"seq": 1})
+        return httpx.Response(500)
+
+    async def tokens() -> str:
+        return secrets.token_hex(12)
+
+    board = vu.Board()
+    speaker = FakeSpeaker()
+    clock = [100.0]
+
+    async def scenario():
+        queue = board.bind(grant.session_id, lambda: speaker, clock=lambda: clock[0], tick=None)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+            api = follow.RosterApi(http, base_url="http://api", id_tokens=tokens, grant=grant)
+            follower = follow.Follower(voice_id=grant.session_id, project_id=grant.project_id,
+                                       reads=follow.ApiReads(api), updates=board)
+            await follower.tick()  # the baseline: nothing told
+            follower.note("run", "run-1")
+            await follower.tick()
+            phase[0] = "CHECKING"  # still `running` on the roster: nothing written
+            await follower.tick()
+            phase[0] = "FIXING"
+            await follower.tick()
+            phase[0] = "CHECKING"
+            await follower.tick()
+            phase[0] = "DONE"
+            await follower.tick()
+        clock[0] += 1.5
+        await queue.pump()
+        queue_said.append(set(queue.said))
+
+    queue_said: list[set] = []
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    # Of one run's four updates, the line names where it is now; none is said again.
+    assert speaker.lines == ["Run run-1 is done: its pull request is through."]
+    assert {"run:run-1:started", "run:run-1:checking", "run:run-1:fixing", "run:run-1:done"} <= queue_said[0]
+    # The roster carries its five fields only: the phase is never written.
+    assert [list(row) for body in posted for row in body["roster"]] == [
+        ["kind", "id", "state", "done", "total"]] * 2
