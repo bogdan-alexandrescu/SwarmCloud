@@ -15,8 +15,8 @@ backend, the one without IAP, with the invoker IAM check disabled. So:
 * **Exactly the public set** (plan §6.2): `schema`, `name`, `version`,
   `console_url`, `api_url`, `oauth_client_id`, `iap_audience`,
   `plugin.min_version`, and `plugin.home` (the plugin repository's
-  owner/name) only when `DISCOVERY_PLUGIN_HOME` is set. Never another secret, a tenant, a group, an email or
-  the install state. tests/unit/control_plane/test_discovery.py fails on any
+  owner/name) only when `DISCOVERY_PLUGIN_HOME` is set. Never another secret,
+  a tenant, a group, an email or the install state. tests/unit/control_plane/test_discovery.py fails on any
   extra key.
 * **`oauth_client_secret` only when `DISCOVERY_SERVE_CLIENT_SECRET=true`**:
   The owner's Q1 decision (design §14 item 1, plan §6.3), switched on by the engine
