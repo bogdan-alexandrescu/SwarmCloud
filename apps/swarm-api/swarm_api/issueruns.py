@@ -264,6 +264,8 @@ log = logging.getLogger(__name__)
 
 #: The collection, and the id prefix of its documents.
 RUNS_COLLECTION = "issue_runs"
+#: The tasks a run's planner and steps are (`linked_workflow_id`).
+TASKS_COLLECTION = "tasks"
 RUN_ID_PREFIX = "run"
 
 #: Who plans, and who works. Fixed here, never a caller's choice (invariant 10).
@@ -524,7 +526,10 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
          RunState.FAILED}
     ),
     # APPROVED lasts as long as one submission: RUNNING when the workflow is
-    # stored, FAILED when it is refused.
+    # stored, FAILED when it is refused -- or, past
+    # APPROVED_SUBMISSION_BOUND_SECONDS, when it was never stored at all
+    # (the tick, `routes.runs._settle_submission`, #3612; or an admin's
+    # POST /v1/runs/{run_id}:end).
     RunState.APPROVED: frozenset({RunState.RUNNING, RunState.FAILED}),
     # A workflow that SUCCEEDED opened a pull request whose CI is not read
     # yet: CHECKING. No pull request is FAILED, saying so -- unless nothing
@@ -550,6 +555,17 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
 TERMINAL_RUN_STATES: frozenset[RunState] = frozenset(
     state for state, exits in RUN_TRANSITIONS.items() if not exits
 )
+
+#: How long an APPROVED run may wait for its workflow before the tick settles
+#: it (#3612). APPROVED lasts one submission: `routes.runs._approve` commits
+#: the claim, submits, then writes RUNNING, all in one request -- and a
+#: swarm-api that died or timed out in between left the run APPROVED with no
+#: workflow for ever, holding its plan's files against every later run (the
+#: territory guard counts APPROVED as worked). swarm-api's request_timeout is
+#: 660 s (terraform/infra/main.tf), so no request is still submitting past it;
+#: 1800 s leaves room for the workspace gate and a slow submit on top, so a
+#: submission in flight is never failed.
+APPROVED_SUBMISSION_BOUND_SECONDS = 1800
 
 
 class InvalidRunTransition(Conflict):
@@ -4347,6 +4363,42 @@ def _resigned(run: IssueRun, data: Mapping[str, Any], changes: dict[str, Any],
     merged = dict(data)
     merged.update(changes)
     changes[OWNER_SIGNATURE] = sign(run, IssueRun.from_firestore(merged))
+
+
+def submission_overdue(run: "IssueRun", now: datetime) -> bool:
+    """Whether `run` is APPROVED with no workflow for longer than one
+    submission can take (APPROVED_SUBMISSION_BOUND_SECONDS). A run with no
+    `approved_at` is timed from when it was last written, then created."""
+    if run.state != RunState.APPROVED or run.workflow_id:
+        return False
+    since = run.approved_at or run.updated_at or run.created_at
+    if since is None:
+        return True
+    return (now - since).total_seconds() > APPROVED_SUBMISSION_BOUND_SECONDS
+
+
+def linked_workflow_id(db: Any, tenant_id: str, run_id: str) -> str | None:
+    """The workflow a step task of `run_id` in `tenant_id` belongs to, or None.
+
+    A compiled workflow's step tasks carry `metadata.issue_run.run_id` (the
+    planner's carries the run id as a plain string, so it never matches), so
+    a task found here is a submission that WAS stored whose RUNNING write was
+    lost. Filtered on the run's tenant, and the tenant checked again on the
+    row, so another tenant's task is never read as this run's (invariant 9).
+    Two equality filters: Firestore's single-field indexes serve them.
+    """
+    rows = (
+        db.collection(TASKS_COLLECTION)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{ISSUE_RUN_METADATA_KEY}.run_id", "==", run_id))
+        .limit(5)  # a few: a task with no workflow id is skipped, not the answer
+        .stream()
+    )
+    for snap in rows:
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") == tenant_id and data.get("workflow_id"):
+            return str(data["workflow_id"])
+    return None
 
 
 def failure_text(message: str) -> str:
