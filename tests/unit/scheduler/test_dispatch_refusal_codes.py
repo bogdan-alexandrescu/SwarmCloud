@@ -176,7 +176,10 @@ def test_an_rbac_403_keeps_its_namespace_diagnosis() -> None:
     assert f"kubectl get ns {NAMESPACE}" in message
 
 
-def test_only_the_two_platform_codes_are_platform_refusals() -> None:
+def test_only_the_platform_codes_are_platform_refusals() -> None:
     # MUTATION: add gke_create_job_forbidden to the set -- an RBAC fault would
     # be parked as the platform's refusal once PLATFORM_REFUSED is applied.
-    assert PLATFORM_REFUSAL_CODES == {"gke_admission_refused", "gke_job_quota_exceeded"}
+    # `plugin_bundle_missing` is the platform's too: the deployment has no
+    # ready bundle image for the step's pins (managed-plugins.md §1.4.4).
+    assert PLATFORM_REFUSAL_CODES == {
+        "gke_admission_refused", "gke_job_quota_exceeded", "plugin_bundle_missing"}
