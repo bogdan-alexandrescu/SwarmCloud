@@ -55,7 +55,7 @@ MARKER_HELP = (
     "(it proves what common.sh does without them)"
 )
 #: The variables this deployment sets; an opted-out test sees none of them.
-NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME",
+NAMES = ("PROJECT_ID", "REGION", "ZONE", "SWARM_ORG_DOMAIN", "SWARM_DEPLOY_CONFIG_DIR", "XDG_CACHE_HOME",
          "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL")
 #: The environments the repository's tfvars examples name; a child's own gets its list too.
 ENVIRONMENTS = ("dev", "prod")
@@ -73,6 +73,10 @@ PROJECT: str = _P.PROJECT
 SHARED_PROJECT: str = _P.SHARED_PROJECT
 REGION: str = _P.REGION
 ZONE: str = _P.ZONE
+#: The placeholder organisation's domain: kubernetes/label_prefix.py's default
+#: prefix, swarm.<domain>, which every render of a key needs (the owner's
+#: "configurable", 8 November 2026).
+ORG_DOMAIN: str = _P.ORG_DOMAIN
 #: The placeholder list's entries by kind (cluster, network, subnet, bucket, service_account):
 #: what a test that proves a never-touch refusal names, never a real resource.
 PEER: dict[str, str] = dict(_P.PEER)
@@ -151,11 +155,12 @@ class PlaceholderDeployment:
         return self.root / "projects" / project / "config"
 
     def env(self) -> dict[str, str]:
-        """The variables a child needs: the placeholder project, region, zone, sandbox and list."""
+        """The variables a child needs: the placeholder project, region, zone, organisation domain, sandbox and list."""
         return {
             "PROJECT_ID": PROJECT,
             "REGION": REGION,
             "ZONE": ZONE,
+            "SWARM_ORG_DOMAIN": ORG_DOMAIN,
             "SWARM_DEPLOY_CONFIG_DIR": str(self.config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
             "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,
@@ -170,6 +175,7 @@ class PlaceholderDeployment:
         return {
             "REGION": REGION,
             "ZONE": ZONE,
+            "SWARM_ORG_DOMAIN": ORG_DOMAIN,
             "SWARM_DEPLOY_CONFIG_DIR": str(config_dir),
             "XDG_CACHE_HOME": str(self.root / "cache"),
             "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_REPOSITORY_URL,

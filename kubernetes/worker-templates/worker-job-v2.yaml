@@ -59,14 +59,14 @@ metadata:
     app.kubernetes.io/component: agent-worker
   annotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
-    swarm.saga.xyz/task-id: __TASK_ID__
-    swarm.saga.xyz/attempt-id: __ATTEMPT_ID__
-    swarm.saga.xyz/generation: "__GENERATION__"
+    __LABEL_PREFIX__/task-id: __TASK_ID__
+    __LABEL_PREFIX__/attempt-id: __ATTEMPT_ID__
+    __LABEL_PREFIX__/generation: "__GENERATION__"
     # Which subscription account the broker assigned. Recorded here as well as
     # on the lease so `kubectl describe` answers "which account is this agent
     # burning?" without a Firestore lookup -- the first question asked when one
     # account is exhausted and others are not.
-    swarm.saga.xyz/account: __ACCOUNT_LABEL__
+    __LABEL_PREFIX__/account: __ACCOUNT_LABEL__
 spec:
   backoffLimit: 0
   completions: 1

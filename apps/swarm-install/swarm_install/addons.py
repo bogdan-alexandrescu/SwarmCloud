@@ -698,6 +698,11 @@ class Flow:
         if not manifest:
             raise AddonError(f"terraform output {output} is empty after the switch; the add-on's image or key "
                              "is missing (swarm doctor names which)")
+        # Terraform leaves the label-key prefix for kubernetes/apply.sh to fill
+        # (kubernetes/label_prefix.py); the add-on applies the render itself.
+        from .steps.cluster import fill_label_prefix
+
+        manifest = fill_label_prefix(str(manifest), self._outputs())
         code, _, err = self.world.kube("apply", "--server-side", "--namespace=swarm-system", "-f", "-",
                                        stdin=str(manifest))
         if code != 0:

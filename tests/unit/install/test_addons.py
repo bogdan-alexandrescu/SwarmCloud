@@ -799,6 +799,31 @@ def test_the_workload_waited_on_is_the_one_the_manifest_declares(name: str) -> N
     assert f"{kind.lower()}/{workload}" not in world.workloads
 
 
+@pytest.mark.parametrize("name", sorted(WORKLOAD_FILES))
+def test_the_workload_is_applied_with_the_label_prefix_apply_sh_would_fill(name: str) -> None:
+    """Terraform leaves `__LABEL_PREFIX__` in the add-on's render for
+    kubernetes/apply.sh (kubernetes/label_prefix.py); the add-on applies the
+    render itself, so it fills it with the install's `swarm.<org_domain>`."""
+
+    class Labelled(FakeWorld):
+        def apply(self, root: str, overlay: Mapping[str, Any], *,
+                  guard: Callable[[Mapping[str, Any]], None]) -> Mapping[str, Any]:
+            outputs = dict(super().apply(root, overlay, guard=guard))
+            return {k: v + "  labels:\n    __LABEL_PREFIX__/addon: on\n" for k, v in outputs.items()}
+
+        def kube(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
+            if args[0] == "apply":
+                self.stdins.append(str(stdin))
+            return super().kube(*args, stdin=stdin)
+
+    world = Labelled()
+    world.stdins = []
+    the_flow, _ = flow(world)
+    the_flow.enable(name, given=GIVEN.get(name, {}))
+    assert world.stdins and all("__LABEL_PREFIX__" not in s for s in world.stdins)
+    assert all("swarm.example.com/addon: on" in s for s in world.stdins)
+
+
 def test_brave_search_is_not_on_while_swarm_api_cannot_read_its_key() -> None:
     """F10: the check looked only for a version, so it said on while every search
     answered search_unconfigured. It now asks swarm-api to run one real search."""

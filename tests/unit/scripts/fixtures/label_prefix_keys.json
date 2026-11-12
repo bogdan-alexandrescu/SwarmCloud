@@ -1,0 +1,132 @@
+{
+ "_about": "Every label and annotation key name under the configurable prefix, in order, as each template and render held them before the prefix became the setting SWARM_LABEL_PREFIX (8 November 2026). tests/unit/scripts/test_label_prefix.py holds the templates' __LABEL_PREFIX__ keys and the renders' keys to these lists, so a key the live admission policies match renders exactly as before when the setting carries the live prefix.",
+ "templates": {
+  "kubernetes/namespaces/tenant-namespace.yaml": [
+   "tenant",
+   "service-account",
+   "description"
+  ],
+  "kubernetes/network-policies/allow-egress.yaml": [
+   "network-source",
+   "pod-cidr",
+   "service-cidr",
+   "cluster-dns-ip",
+   "node-local-dns-ip"
+  ],
+  "kubernetes/network-policies/default-deny.yaml": [
+   "rationale"
+  ],
+  "kubernetes/network-policies/swarm-system-live.yaml": [
+   "network-source",
+   "swarm-api-egress-cidr"
+  ],
+  "kubernetes/network-policies/swarm-system-voice.yaml": [
+   "network-source",
+   "swarm-api-egress-cidr"
+  ],
+  "kubernetes/policies/workspace-provisioner-scope.yaml": [
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace"
+  ],
+  "kubernetes/rbac/dispatcher-rbac.yaml": [
+   "rationale",
+   "rationale"
+  ],
+  "kubernetes/rbac/provisioner-rbac.yaml": [
+   "rationale"
+  ],
+  "kubernetes/rbac/verify-rbac.yaml": [
+   "rationale"
+  ],
+  "kubernetes/rbac/worker-rbac.yaml": [
+   "rationale"
+  ],
+  "kubernetes/service-accounts/legacy-worker-serviceaccount.yaml": [
+   "superseded-by"
+  ],
+  "kubernetes/service-accounts/worker-serviceaccount.yaml": [
+   "rationale"
+  ],
+  "kubernetes/swarm-system/swarm-egress.yaml": [
+   "config-sha256"
+  ],
+  "kubernetes/swarm-system/swarm-graph.yaml": [
+   "config-sha256"
+  ],
+  "kubernetes/swarm-system/swarm-live.yaml": [
+   "network-source",
+   "swarm-api-egress-cidr"
+  ],
+  "kubernetes/swarm-system/swarm-typesafe-fwd.yaml": [
+   "config-sha256"
+  ],
+  "kubernetes/swarm-system/tailscale-egress.yaml": [
+   "tailnet-fqdn",
+   "tailnet-fqdn"
+  ],
+  "kubernetes/worker-templates/worker-job-browser.yaml": [
+   "task-id",
+   "attempt-id",
+   "generation"
+  ],
+  "kubernetes/worker-templates/worker-job-v2.yaml": [
+   "task-id",
+   "attempt-id",
+   "generation",
+   "account"
+  ],
+  "kubernetes/worker-templates/worker-job.yaml": [
+   "task-id",
+   "attempt-id",
+   "generation"
+  ]
+ },
+ "renders": {
+  "policies": [
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "workspace",
+   "rationale"
+  ],
+  "tenant": [
+   "workspace",
+   "tenant",
+   "service-account",
+   "description",
+   "rationale",
+   "rationale",
+   "rationale",
+   "rationale",
+   "rationale",
+   "network-source",
+   "pod-cidr",
+   "service-cidr",
+   "cluster-dns-ip",
+   "node-local-dns-ip"
+  ],
+  "swarm-system": [
+   "network-source",
+   "swarm-api-egress-cidr"
+  ],
+  "job": [
+   "task-id",
+   "attempt-id",
+   "generation"
+  ]
+ }
+}

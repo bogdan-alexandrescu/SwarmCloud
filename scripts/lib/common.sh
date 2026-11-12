@@ -1105,6 +1105,60 @@ deployment_label_prefix() {
   printf '%s' "${prefix}"
 }
 
+# resolved_label_prefix -> sets RESOLVED_LABEL_PREFIX to the prefix a deploy or
+# a personal workspace's job renders under (owner, 12 November 2026, "Tfvars
+# everywhere"): this deployment's tfvars (deployment_label_prefix) when they
+# name one, else the configured one (kubernetes/label_prefix.py:
+# SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>). Returns 2, printing
+# nothing, when both are present and differ: the caller refuses with its own
+# fixed sentence, naming neither value. Returns 1 when there is none (the one
+# rule's fixed refusal on stderr) or a configured value is not a key prefix.
+# When the tfvars give no prefix, why (the fetch's own error, or tfvars naming
+# neither setting) is printed first, redacted: an unreadable config folder is
+# never reported as nothing more than "not configured".
+# Not called in $(...): RESOLVED_LABEL_PREFIX must reach the caller's shell.
+resolved_label_prefix() {
+  local rule="${REPO_ROOT}/kubernetes/label_prefix.py" python="${PYTHON_BIN:-python3}" tfvars="" configured="" why
+  RESOLVED_LABEL_PREFIX=""
+  # Unreadable tfvars, or tfvars naming neither setting, are "no tfvars prefix".
+  # Redirected to a file, not captured: the lookup's stdout is the prefix.
+  why="$(mktemp "${TMPDIR:-/tmp}/swarm-label-prefix.XXXXXX")" || return 1
+  if ! tfvars="$(deployment_label_prefix 2>"${why}")"; then
+    tfvars=""
+    redact <"${why}" >&2
+  fi
+  rm -f -- "${why}"
+  if [[ -n "$(printf '%s' "${SWARM_LABEL_PREFIX:-}${SWARM_ORG_DOMAIN:-}" | tr -d '[:space:]')" ]]; then
+    configured="$("${python}" "${rule}")" || return 1
+  fi
+  if [[ -n "${tfvars}" ]]; then
+    [[ -z "${configured}" || "${configured}" == "${tfvars}" ]] || return 2
+    # Through the rule as well, which holds the tfvars value to a key prefix's shape.
+    configured="$(SWARM_LABEL_PREFIX="${tfvars}" "${python}" "${rule}")" || return 1
+  elif [[ -z "${configured}" ]]; then
+    "${python}" "${rule}" >/dev/null || return 1
+  fi
+  # shellcheck disable=SC2034  # read by require_label_prefix below
+  RESOLVED_LABEL_PREFIX="${configured}"
+}
+
+# require_label_prefix CONSEQUENCE -> exports SWARM_LABEL_PREFIX as
+# resolved_label_prefix resolves it, for every render.py, tenant_netpol.py,
+# network_parity.py and label_prefix.py the caller runs after it, or stops with
+# one fixed sentence ending in CONSEQUENCE ("nothing was applied"). The one
+# place a deploy step, the tenant network policy sweep, the parity check or a
+# personal workspace's job turns the rule into a refusal; called at the top,
+# before kubectl is located. Not in $(...): the export must reach the caller.
+require_label_prefix() {
+  local consequence="$1" status=0
+  resolved_label_prefix || status=$?
+  case "${status}" in
+    0) export SWARM_LABEL_PREFIX="${RESOLVED_LABEL_PREFIX}" ;;
+    2) die "the configured label-key prefix is not the one this deployment's tfvars name; ${consequence}." ;;
+    *) die "the label-key prefix is not configured (above); ${consequence}." ;;
+  esac
+}
+
 # Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
 # shellcheck disable=SC2034  # consumed by the scripts that source this library
 TF_VAR_ARGS=()
