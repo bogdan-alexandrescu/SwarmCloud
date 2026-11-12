@@ -93,9 +93,6 @@ class Allow:
     url_paths: tuple[str, ...] = ()
     tenant_slugs: frozenset[str] = frozenset()
     exempt: frozenset[tuple[str, int]] = frozenset()
-    #: The owner's rulings of 2026-11-08: (path, sha256 of the handle) pairs; a
-    #: handle is allowed only in its one file (placeholders.json `code_owner_handles`).
-    handles: frozenset[tuple[str, str]] = frozenset()
 
     @classmethod
     def load(cls, path: Path = PLACEHOLDERS) -> Allow:
@@ -124,7 +121,6 @@ class Allow:
             url_paths=tuple(e["path"] for e in allow["public_url_paths"]),
             tenant_slugs=frozenset(e["slug"] for e in allow["tenant_slugs"]),
             exempt=frozenset((e["path"], int(e["line"])) for e in allow["exempt_lines"]),
-            handles=frozenset((e["path"], e["sha256"]) for e in allow["code_owner_handles"]),
         )
 
     def screened(self, entries: list[Entry]) -> Allow:
@@ -465,21 +461,6 @@ def _mask_address(source: Source, address: str | None, allow: Allow) -> str:
     return re.sub(re.escape(address), allow.repository, source.text, flags=re.IGNORECASE)
 
 
-#: A forge handle as CODEOWNERS writes it: `@name`, not part of an address.
-_HANDLE = re.compile(r"(?<![A-Za-z0-9_.-])@[A-Za-z0-9][A-Za-z0-9-]{0,38}(?![A-Za-z0-9_-])")
-
-
-def _mask_handles(path: str, text: str, allow: Allow) -> str:
-    """TEXT with each handle allowed in PATH replaced by the placeholder owner's,
-    so neither layer reads it. Elsewhere the same handle is still found."""
-    digests = {d for p, d in allow.handles if p == path}
-    if not digests:
-        return text
-    placeholder = "@" + allow.repository.split("/", 1)[0]
-    return _HANDLE.sub(
-        lambda m: placeholder if hashlib.sha256(m.group(0).encode()).hexdigest() in digests else m.group(0), text)
-
-
 def scan(sources: Iterable[Source], allow: Allow, entries: list[Entry], *, archive_refs: bool,
          address: str | None) -> list[Finding]:
     rules = SHAPE_RULES + ((ARCHIVE_RULE,) if archive_refs else ())
@@ -489,7 +470,6 @@ def scan(sources: Iterable[Source], allow: Allow, entries: list[Entry], *, archi
             found.add(Finding(source.path, 1, "C10", "tracked-file"))
         if not source.text or source.lines == set():
             continue
-        source = replace(source, text=_mask_handles(source.path, source.text, allow))
         starts = [0] + [m.end() for m in re.finditer("\n", source.text)]
 
         def line_of(offset: int) -> int:

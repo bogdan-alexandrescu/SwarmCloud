@@ -76,16 +76,19 @@ def test_the_plan_uses_the_fetched_file_and_fetches_it_first(where: str):
     assert 'XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}"' in fetch["run"]
 
 
-def test_every_job_that_plans_names_a_zone_and_the_state_bucket():
-    """common.sh has no default zone: resolve.sh stops without one."""
+def test_every_job_that_plans_names_the_state_bucket_as_a_secret():
+    """The configuration root is gs://<state bucket>/config, so resolve.sh
+    needs the bucket; it is a deployment identifier, read as a secret. No
+    zone is passed: common.sh does not require one and nothing reads it."""
     plan_env = _load(TERRAFORM)["jobs"]["plan"]["env"]
-    assert plan_env["ZONE"] == "${{ vars.GCP_ZONE }}"
     assert plan_env["TF_STATE_BUCKET"] == "${{ secrets.TF_STATE_BUCKET }}"
+    planners = 0
     for workflow in ("release.yml", "hotfix.yml"):
         for name, job in _load(REPO / ".github" / "workflows" / workflow)["jobs"].items():
             if any("release-apply" in str(s.get("uses", "")) for s in job.get("steps", [])):
-                assert job["env"]["ZONE"] == "${{ vars.GCP_ZONE }}", f"{workflow}: {name}"
+                planners += 1
                 assert job["env"]["TF_STATE_BUCKET"] == "${{ secrets.TF_STATE_BUCKET }}", f"{workflow}: {name}"
+    assert planners >= 2, planners
 
 
 @pytest.fixture()
@@ -108,7 +111,7 @@ def runner(tmp_path: Path) -> dict:
         "HOME": str(tmp_path / "home"),
         "PROJECT_ID": placeholders.PROJECT,
         "REGION": placeholders.REGION,
-        "ZONE": placeholders.ZONE,
+        # No ZONE: no job that plans sets one, and the fetch needs none.
         "ENVIRONMENT": "dev",
         "RUNNER_TEMP": str(temp),
         "GITHUB_ENV": str(github_env),

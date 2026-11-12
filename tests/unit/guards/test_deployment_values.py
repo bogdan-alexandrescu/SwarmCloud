@@ -19,7 +19,6 @@ nothing the guard would find. Offline: a temporary git repository, no cloud.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import importlib.util
 import os
@@ -610,8 +609,9 @@ def test_license_line_3_is_exempt_and_line_4_is_not(tmp_path: Path):
 
 # ---------------------------------------------------------------------------
 # The owner's rulings of 8 November 2026 (part of #2688): GitHub Actions' public
-# App id, the release home as a product address, and the owner's code-owner
-# handle in .github/CODEOWNERS only. As above, every allowed value is read from
+# App id and the release home as a product address. (The third, the owner's
+# code-owner handle in .github/CODEOWNERS, is moot since main's CODEOWNERS
+# names a placeholder team.) As above, every allowed value is read from
 # placeholders.json and every listed value is built at run time.
 # ---------------------------------------------------------------------------
 
@@ -647,29 +647,3 @@ def test_another_app_id_bucket_or_project_is_still_reported(tmp_path: Path):
     result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
     assert findings(result.stdout) == [("docs/x.md", 1, "C6", "github-app-id"), ("docs/x.md", 2, "C7", "bucket"),
                                        ("docs/x.md", 3, "C1", "project-flag")]
-
-
-def test_the_code_owner_handle_entry_is_one_digest_scoped_to_codeowners_and_matches_a_handle_there():
-    entries = ALLOWLIST["code_owner_handles"]
-    assert [e["path"] for e in entries] == [".github/CODEOWNERS"] and entries[0]["why"]
-    digest = entries[0]["sha256"]
-    assert re.fullmatch(r"[0-9a-f]{64}", digest), "the handle is recorded as a digest, never as itself"
-    text = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
-    handles = {hashlib.sha256(m.group(0).encode()).hexdigest() for m in dv._HANDLE.finditer(text)}
-    assert digest in handles, "no handle in .github/CODEOWNERS has the recorded digest"
-
-
-def test_an_allowed_handle_is_not_reported_in_codeowners_but_is_everywhere_else():
-    first, second = _word("Fn"), _word("Ln")
-    handle, other = f"@{first}-{second}", f"@{first}-{_word('o')}"
-    allow = dataclasses.replace(dv.Allow.load(), handles=frozenset(
-        {(".github/CODEOWNERS", hashlib.sha256(handle.encode()).hexdigest())}))
-    entries = dv.parse_entries(f"C5\tliteral\t{first}\nC5\tliteral\t{handle[1:]}\n", first_line=2)
-    codeowners = f"# reviews\n/scripts/a.sh  {handle}\n/scripts/b.sh  {other}\n/c/ {handle}x\n"
-    sources = [dv.Source(".github/CODEOWNERS", codeowners),
-               dv.Source("docs/x.md", f"ask {handle}\n"),
-               dv.Source(".github/workflows/x.yml", f"reviewer: {handle}\n")]
-    found = [(f.path, f.line, f.rule_id) for f in dv.scan(sources, allow, entries, archive_refs=False, address=None)]
-    assert found == [(".github/CODEOWNERS", 3, "list:2"), (".github/CODEOWNERS", 4, "list:2"),
-                     (".github/workflows/x.yml", 1, "list:2"), (".github/workflows/x.yml", 1, "list:3"),
-                     ("docs/x.md", 1, "list:2"), ("docs/x.md", 1, "list:3")], found

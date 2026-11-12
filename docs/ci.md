@@ -2418,7 +2418,7 @@ new account does not exist yet.
 | accounts the deployer administers | where the list comes from |
 |---|---|
 | `swarm-api`, `swarm-scheduler`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-tick`, `swarm-verify` | [`terraform/modules/service_account_ids`](../terraform/modules/service_account_ids/main.tf), which `modules/iam`, `terraform/infra/verify.tf` and bootstrap all read |
-| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of [`dev.tfvars`](../terraform/environments/dev/dev.tfvars), read by bootstrap from the file (`infra_tenants_tfvars`) |
+| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of the deployment's `dev.tfvars` (kept in its private configuration; its shape is [`dev.tfvars.example`](../terraform/environments/dev/dev.tfvars.example)), read by bootstrap from the file (`infra_tenants_tfvars`) |
 | never `swarm-ci-fix` or `swarm-tf-deployer` | subtracted, and a precondition fails the plan if infra ever manages either |
 
 Nothing restates the list, so an account infra starts managing is an account
@@ -3704,8 +3704,9 @@ It is left as it is while another decision on that file is pending.
 the pull request adding it has merged and `ci-gate` has reported green on a
 pull request, the owner (or the orchestrator, with the owner's go-ahead) adds
 it to the ruleset. The PUT replaces the ruleset whole, so the body restates
-every rule it has today (read on 2026-09-29) and adds only `ci-gate`. No check
-is pinned to an `integration_id` (owner decision, 2026-09-29), the four
+every rule it has today (read on 2026-09-29) and adds `ci-gate`, plus
+`deployment-values`, security.yml's always-run guard (part of #2688). No check
+is pinned to an `integration_id` (owner decision, 2026-09-29), the five
 security checks included, as today:
 
 ```bash
@@ -3749,6 +3750,7 @@ gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
           {"context": "trivy (repo)"},
           {"context": "checkov (terraform + kubernetes)"},
           {"context": "platform policy assertions"},
+          {"context": "deployment-values"},
           {"context": "ci-gate"}
         ]
       }
@@ -4828,7 +4830,7 @@ gets there. Merge commits must be allowed on the repository
 ### Operator step: add the merge queue rule
 
 Apply it only once the pull request carrying this section has merged and a
-pull request has shown `ci-gate` and the four security checks green after it.
+pull request has shown `ci-gate` and the five security checks green after it.
 The PUT replaces the ruleset whole, so the body restates every rule the
 [ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main) sets and adds
 only `merge_queue`. Compare it with a fresh read first
@@ -4876,6 +4878,7 @@ gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
           {"context": "trivy (repo)"},
           {"context": "checkov (terraform + kubernetes)"},
           {"context": "platform policy assertions"},
+          {"context": "deployment-values"},
           {"context": "ci-gate"}
         ]
       }
