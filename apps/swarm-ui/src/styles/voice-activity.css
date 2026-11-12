@@ -1,6 +1,6 @@
 /* Voice it's crew strip and working card (Roster.tsx, WorkingCard.tsx), ported from the owner's pick of
    12 November 2026, "Crew strip". */
-.vtc-crew { position: relative; z-index: 4; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+.vtc-crew { grid-column: 1 / -1; position: relative; z-index: 4; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   padding: 8px; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass-dim, var(--vt-glass)); }
 .vtc-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .vtc-chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 0 1 auto; }
