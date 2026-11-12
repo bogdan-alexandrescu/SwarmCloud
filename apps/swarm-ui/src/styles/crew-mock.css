@@ -1,0 +1,220 @@
+/* MOCK-HOOK FILE */
+/* VOICE IT ACTIVITY, DIRECTION "CREW" (mock-up only; voice/CrewMock.tsx).
+   Every colour is a console token, mixed with transparency for glass and
+   glow, so both themes hold. */
+
+.vt.vtc {
+  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-areas: "hud hud" "stage stage" "crew crew" "core subs";
+  gap: 12px;
+}
+.vt.vtc.is-paused { grid-template-areas: "hud hud" "stage stage" "crew crew" "subs subs"; }
+.vtc .vt-sky {
+  background:
+    radial-gradient(ellipse 40% 40% at 12% 86%, color-mix(in srgb, var(--info) 16%, transparent), transparent 72%),
+    radial-gradient(ellipse 30% 30% at 96% 4%, color-mix(in srgb, var(--paused) 8%, transparent), transparent 70%);
+}
+.vtc.is-paused .vt-sky {
+  background: radial-gradient(ellipse 36% 36% at 10% 62%, color-mix(in srgb, var(--paused) 12%, transparent), transparent 72%);
+}
+.vtc-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.vtc-proj { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--vt-glass-line); color: var(--text-dim); font-size: var(--t-meta); }
+.vtc-proj.is-first { margin-left: 0; padding-left: 0; border-left: 0; }
+.vtc-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.vtc-mic { display: inline-flex; align-items: center; gap: 6px; }
+.vtc-kept { margin: 0; flex-basis: 100%; display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-radius: var(--r-card); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+  background: color-mix(in srgb, var(--ok) 10%, var(--vt-glass)); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); }
+.vtc-kept .vtc-ic { color: var(--ok-ink, var(--ok)); }
+
+/* ---- the stage ------------------------------------------------------------ */
+.vtc-stage { grid-area: stage; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.vtc-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.vtc-tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: var(--r-pill);
+  border: 1px solid var(--vt-glass-line); background: var(--vt-glass); color: var(--text-dim); font: inherit; font-size: var(--t-meta); cursor: pointer; }
+.vtc-tab[aria-selected='true'] { color: var(--text); border-color: color-mix(in srgb, var(--info) 55%, transparent); }
+.vtc-tab-n { padding: 0 6px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--info) 18%, transparent); font-variant-numeric: tabular-nums; }
+.vtc-brief { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 8px; padding: 12px 14px;
+  border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass); }
+.vtc-brief div { min-width: 0; }
+.vtc-brief dt { font-size: var(--t-meta); color: var(--text-dim); }
+.vtc-brief dd { margin: 2px 0 0; color: var(--text); overflow-wrap: anywhere; }
+.vtc-frames { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.vtc-frame { margin: 0; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card);
+  background: var(--vt-glass); overflow: hidden; }
+.vtc-frame figcaption { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: var(--t-meta); border-bottom: 1px solid var(--vt-glass-line); }
+.vtc-frame-label { color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtc-frame-by { color: var(--text-dim); flex: none; }
+.vtc-frame-short { display: none; color: var(--text); font-weight: 600; white-space: nowrap; }
+.vtc-frame iframe { display: block; width: 100%; height: 232px; border: 0; background: #fff; }
+.vtc-frame-wait { position: relative; height: 232px; display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+.vtc-frame-skel { display: block; height: 14px; width: 70%; border-radius: 4px; background: color-mix(in srgb, var(--text-dim) 16%, transparent); overflow: hidden; position: relative; }
+.vtc-frame-skel.is-short { width: 42%; }
+.vtc-frame-skel.is-block { flex: 1; width: 100%; }
+.vtc-frame.is-drawing .vtc-frame-skel::after { content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--info) 22%, transparent), transparent);
+  animation: vtc-sweep 1.8s linear infinite; }
+.vtc-frame.is-drawing { border-color: color-mix(in srgb, var(--info) 45%, transparent); }
+.vtc-frame.is-failed { border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+.vtc-frame.is-failed .vtc-frame-skel { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.vtc-frame-word { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 3px 10px; border-radius: var(--r-pill);
+  background: var(--bg); font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-frame.is-failed .vtc-frame-word { color: var(--bad-ink, var(--bad)); }
+@keyframes vtc-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* ---- the crew strip --------------------------------------------------------- */
+.vtc-crew { grid-area: crew; position: relative; z-index: 4; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass-dim, var(--vt-glass)); }
+.vtc-chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.vtc-chip { --c: var(--info); position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  animation: vtc-in 380ms ease-out both; }
+.vtc-chip.is-ok { --c: var(--ok); }
+.vtc-chip.is-bad { --c: var(--bad); }
+.vtc-chip.is-paused { --c: var(--paused); }
+.vtc-chip.is-idle { --c: var(--text-dim); }
+.vtc-chip-btn { position: relative; display: inline-grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 0 7px; min-width: 0; max-width: 236px; text-align: left;
+  padding: 6px 10px 8px 8px; border-radius: var(--r-card); border: 1px solid color-mix(in srgb, var(--c) 40%, var(--vt-glass-line));
+  background: color-mix(in srgb, var(--c) 7%, var(--vt-glass)); color: var(--text); font: inherit; cursor: pointer; overflow: hidden; }
+.vtc-chip-btn:hover, .vtc-chip-btn[aria-expanded='true'] { border-color: color-mix(in srgb, var(--c) 75%, transparent); }
+.vtc-chip-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vtc-chip-ic { grid-row: span 2; position: relative; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); }
+.vtc-chip-ic .vtc-ic { width: 14px; height: 14px; }
+.vtc-chip-live { position: absolute; right: -1px; top: -1px; width: 7px; height: 7px; border-radius: 50%; background: var(--c);
+  box-shadow: 0 0 0 2px var(--bg); animation: vtc-pulse 1.4s ease-in-out infinite; }
+.vtc-chip-name { font-size: var(--t-meta); font-weight: 600; white-space: nowrap; }
+.vtc-chip-run { font-size: var(--t-meta); color: var(--c); white-space: nowrap; }
+.vtc-chip.is-idle .vtc-chip-run { color: var(--text-dim); }
+.vtc-chip-line { grid-column: 2 / -1; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtc-chip.is-bad .vtc-chip-run { color: var(--bad-ink, var(--bad)); }
+.vtc-chip.is-ok .vtc-chip-run { color: var(--ok-ink, var(--ok)); }
+.vtc-chip.is-live .vtc-chip-run { color: var(--info-ink, var(--info)); }
+.vtc-chip.is-paused .vtc-chip-run { color: var(--paused-ink, var(--paused)); }
+.vtc-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in srgb, var(--c) 14%, transparent); }
+.vtc-bar > span { display: block; height: 100%; background: var(--c); transition: width 900ms linear; }
+.vtc-chip.is-live .vtc-bar > span { background-image: linear-gradient(90deg, var(--c) 0 60%, color-mix(in srgb, var(--c) 50%, white) 80%, var(--c) 100%);
+  background-size: 200% 100%; animation: vtc-flow 1.6s linear infinite; }
+.vtc-chip.is-voice .vtc-chip-btn { padding-bottom: 6px; }
+.vtc-count { font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; }
+@keyframes vtc-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes vtc-pulse { 50% { opacity: .35; } }
+@keyframes vtc-flow { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* The card opens DOWN, over the captions for a moment: upward it would cover the Stage's progress marks it reports on,
+   and on a phone the chips above it. */
+.vtc-pop { position: absolute; z-index: 5; left: 0; top: calc(100% + 6px); width: max-content; max-width: min(300px, 86vw);
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-card);
+  border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.vtc-pop[hidden] { display: none; }
+.vtc-pop p { margin: 0; }
+.vtc-pop-head { display: flex; align-items: center; gap: 6px; color: var(--c); }
+.vtc-pop-head b { color: var(--text); }
+.vtc-pop-kind { font-size: var(--t-meta); color: var(--text-dim); }
+.vtc-pop-line { color: var(--text); font-size: var(--t-body); line-height: var(--lh-body); }
+.vtc-pop-meta { display: flex; align-items: center; gap: 10px; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-pop-meta .c-btn { margin-left: auto; }
+
+/* ---- paused: the orb folds into a mark at the head of the strip --------------- */
+.vtc-pausemark { flex: none; display: inline-flex; align-items: center; gap: 10px; padding: 6px 8px 6px 12px; border-radius: var(--r-pill);
+  border: 1px solid color-mix(in srgb, var(--paused) 45%, transparent); background: color-mix(in srgb, var(--paused) 9%, var(--vt-glass));
+  animation: vtc-fold 420ms ease-out both; }
+.vtc-pause-glyph { display: inline-flex; gap: 3px; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--paused) 70%, transparent); background: color-mix(in srgb, var(--paused) 12%, transparent);
+  animation: vtc-breathe 3.2s ease-in-out infinite; }
+.vtc-pause-glyph i { display: block; width: 3px; height: 9px; border-radius: 2px; background: var(--paused-ink, var(--paused)); }
+.vtc-pause-words { display: flex; flex-direction: column; gap: 2px; line-height: 1.2; }
+.vtc-pause-top { display: inline-flex; align-items: center; gap: 2px; }
+.vtc-pause-i.vtc-pause-i { width: 22px; height: 22px; min-height: 0; padding: 0; }
+.vtc-pause-words b { color: var(--paused-ink, var(--paused)); font-size: var(--t-body); }
+.vtc-pause-for { font-variant-numeric: tabular-nums; }
+.vtc-pause-meta { display: inline-flex; align-items: center; gap: 8px; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vtc-free { color: var(--ok-ink, var(--ok)); font-weight: 600; }
+.vtc-hear { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: var(--r-pill);
+  border: 1px dashed color-mix(in srgb, var(--paused) 45%, transparent); font-size: var(--t-meta); color: var(--text); white-space: nowrap; }
+.vtc-hear .vtc-ic { width: 13px; height: 13px; color: var(--paused-ink, var(--paused)); }
+@keyframes vtc-fold { from { opacity: 0; transform: scale(1.6); } to { opacity: 1; transform: none; } }
+@keyframes vtc-breathe { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--paused) 12%, transparent); } }
+
+/* ---- the voice orb ------------------------------------------------------------- */
+.vt-core.vtc-core { grid-area: core; min-height: 0; }
+.vtc-orb { margin: 0; position: relative; width: 168px; aspect-ratio: 1; color: var(--info); }
+.vtc-orb svg { width: 100%; height: 100%; overflow: visible; }
+.vtc-orb circle { fill: none; transform-origin: 100px 100px; }
+.vtc-orb-glow { fill: color-mix(in srgb, currentColor 10%, transparent) !important; filter: blur(10px); }
+.vtc-orb-ring { stroke: color-mix(in srgb, currentColor 55%, transparent); stroke-width: 1.5; }
+.vtc-orb-arc { stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 90 375; opacity: 0; }
+.vtc-orb-wave { stroke: currentColor; stroke-width: 1.2; opacity: 0; }
+.vtc-orb.is-thinking .vtc-orb-arc { opacity: 1; animation: vtc-spin 1.6s linear infinite; }
+.vtc-orb.is-speaking .vtc-orb-wave { animation: vtc-wave 1.8s ease-out infinite; }
+.vtc-orb.is-speaking .vtc-orb-wave.is-2 { animation-delay: .9s; }
+.vtc-orb.is-speaking .vtc-orb-ring { stroke-width: 3; stroke: currentColor; }
+.vtc-orb.is-ended { color: var(--text-dim); }
+.vtc-orb figcaption { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.vtc-orb-who { font-size: var(--t-meta); color: var(--text-dim); }
+.vtc-orb-state { font-size: var(--t-body); font-weight: 600; color: var(--text); }
+@keyframes vtc-spin { to { transform: rotate(360deg); } }
+@keyframes vtc-wave { from { opacity: .7; transform: scale(1); } to { opacity: 0; transform: scale(1.28); } }
+
+/* ---- the working card ------------------------------------------------------------ */
+.vtc .vt-subs-band { display: flex; flex-direction: column; gap: 8px; align-self: center; }
+.vtc-work { border: 1px solid color-mix(in srgb, var(--info) 35%, var(--vt-glass-line)); border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--info) 5%, var(--vt-glass)); }
+.vtc-work-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 0; background: none;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.vtc-work-head:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; border-radius: var(--r-card); }
+.vtc-work-live { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--info); animation: vtc-pulse 1.4s ease-in-out infinite; }
+.vtc-work-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtc-work-time { flex: none; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-chev { transition: transform 160ms; color: var(--text-dim); }
+.vtc-chev.is-open { transform: rotate(180deg); }
+.vtc-steps { margin: 0; padding: 2px 10px 10px; list-style: none; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--vt-glass-line);
+  max-height: 15em; overflow-y: auto; }
+.vtc-step { --c: var(--text-dim); display: grid; grid-template-columns: 34px 10px minmax(0, 1fr); align-items: center; gap: 8px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); padding-top: 3px; }
+.vtc-step.is-voice { --c: var(--info); }
+.vtc-step.is-planner { --c: var(--paused); }
+.vtc-step.is-builder { --c: var(--ok); }
+.vtc-step.is-workflow { --c: var(--warn); }
+.vtc-step-at { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-step-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.vtc-step-text { color: var(--text); overflow-wrap: anywhere; }
+.vtc-step.is-newest .vtc-step-dot { animation: vtc-pulse 1.4s ease-in-out infinite; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
+.vtc-step.is-newest .vtc-step-text { font-weight: 600; }
+
+/* ---- Projects' kept-work cell ------------------------------------------------------ */
+.vtc-keptcell { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--text); }
+.vtc-keptdots { display: inline-flex; }
+.vtc-keptdots i { width: 10px; height: 10px; border-radius: 50%; margin-left: -3px; border: 2px solid var(--surface);
+  background: color-mix(in srgb, var(--ok) 70%, var(--info)); }
+.vtc-keptdots i:first-child { margin-left: 0; background: var(--info); }
+
+@media (prefers-reduced-motion: reduce) {
+  .vtc *, .vtc *::after { animation: none !important; transition: none !important; }
+}
+
+@media (max-width: 760px) {
+  /* The strip stays under the Stage on a phone too; the Stage turns into three compact slots so both fit above the fold. */
+  .vt.vtc, .vt.vtc.is-paused { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "stage" "crew" "core" "subs"; }
+  .vt.vtc.is-paused { grid-template-areas: "hud" "stage" "crew" "subs"; }
+  .vtc-orb { width: 120px; }
+  .vtc-proj { flex-basis: 100%; margin: 2px 0 0; padding: 0; border: 0; }
+  .vtc-proj.is-first { flex-basis: auto; margin: 0; }
+  .vt-status.vt-status { flex-wrap: wrap; }
+  .vtc-frames { gap: 8px; }
+  .vtc-frame figcaption { padding: 4px 8px; }
+  .vtc-frame-label, .vtc-frame-by { display: none; }
+  .vtc-frame-short { display: block; overflow: hidden; text-overflow: ellipsis; }
+  .vtc-frame-wait { height: 112px; padding: 10px; gap: 8px; }
+  .vtc-frame-skel { height: 10px; }
+  .vtc-frame:has(iframe) { height: 142px; position: relative; }
+  /* A drawn version is its page at 400 px, shown as a thumbnail. */
+  .vtc-frame iframe { width: 400px; height: 400px; flex: none; transform: scale(.28); transform-origin: 0 0; }
+  .vtc-pausemark { flex-wrap: wrap; flex-basis: 100%; border-radius: var(--r-card); }
+  .vtc-pausemark .c-btn.is-primary { margin-left: auto; }
+  .vtc-chips { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .vtc-chip { display: flex; }
+  .vtc-chip-btn { flex: 1; max-width: none; }
+  .vtc-chip-run { justify-self: end; }
+  .vtc-count { display: none; }
+}

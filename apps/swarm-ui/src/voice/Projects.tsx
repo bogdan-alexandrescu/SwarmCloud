@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Banner, Button, Dash, EmptyState, LoadingState, Table, TypedConfirm, type Column } from '../components'
 import { read, route, write } from '../fetch'
 import { formatDateTime } from '../timezone'
+import { CREW_PROJECTS, CrewKept, crewMock, crewResume } from './CrewMock' // MOCK-HOOK
 
 /** The person's projects in the selected workspace, newest first. */
 export const VOICE_PROJECTS = '/v1/voice/projects'
@@ -156,6 +157,7 @@ export function VoiceProjects() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (crewMock()) return setProjects(CREW_PROJECTS) // MOCK-HOOK
     let live = true
     void read<unknown>(route(VOICE_PROJECTS), () => false).then((r) => {
       if (!live) return
@@ -251,13 +253,14 @@ export function VoiceProjects() {
           },
         ]
       : []),
+    ...(crewMock() ? [{ key: 'kept', head: 'Work kept', cell: (p: VoiceProject) => <CrewKept id={p.project_id} /> }] : []), // MOCK-HOOK
     { key: 'updated', head: 'Last changed', cell: (p) => <When at={p.updated_at} why="swarm-api served no time" /> },
     {
       key: 'actions',
       head: 'Actions',
       cell: (p) => (
         <span className="ob-acts">
-          <Button kind="primary" size="sm" onClick={() => resumeProject(p.project_id)}>
+          <Button kind="primary" size="sm" onClick={() => (crewMock() ? crewResume() : resumeProject(p.project_id))} /* MOCK-HOOK */>
             Resume
           </Button>
           <Button

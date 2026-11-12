@@ -112,6 +112,7 @@ import { Button, buttonClass, Segmented, ToneMark } from '../components'
 import { read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { CardList, type StreamEvent } from './CardList'
+import { crewMock, CrewTalk } from './CrewMock' // MOCK-HOOK
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { BudgetMeter } from './Meter'
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
@@ -935,6 +936,8 @@ export function TalkPane() {
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const booting = speechMode && boot.length > 0
   const state: ScopeState = phase === 'connecting' || booting ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
+
+  if (crewMock()) return <CrewTalk /> // MOCK-HOOK
 
   return (
     <div className={`vt has-stage${debug && turn !== null ? ' has-turn' : ''}`} data-state={state}>
