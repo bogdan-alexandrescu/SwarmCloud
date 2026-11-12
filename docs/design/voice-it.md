@@ -10,7 +10,11 @@ longer true. Phases one and two are largely built (the section, swarm-voice's
 Live sessions and planner, the session routes, the grant, the card catalogue
 and stream, the cards, Projects), and Phase 3's first act tool,
 `answer_question`. §3.12 lists what this design says that the code does not do
-yet, and the code wins wherever they disagree.
+yet, and the code wins wherever they disagree. §3.13 (the owner's asks of
+11 November on projects, many projects in a session, the catch-up and cards
+drawn by their content) lists what else the design said that the code does
+not do: no project state moves, the planner never writes the brief, and no
+person can act on a card.
 
 **A second engine (the owner, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
 Settings, Telemetry, spoken read-backs and visuals on the Talk page, is designed in
@@ -48,9 +52,10 @@ The owner answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | The OpenAI key | Decided at build time; design for a **personal secret** | (none) | §3.6, open question 1 |
 | Memory | **Saved, resumable projects**, plus the owner's **editable preferences** | (none) | §3.7, §3.11 |
 | Microphone | **Open mic with barge-in**, plus **mute** and **push-to-talk** | (none) | §3.10 |
-| Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.13 |
+| Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.14 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
 | Above the page (2026-11-11) | The session **follows him across the console** in a floating view; a **working card** between replies; the **agents pulled in** listed; the paid voice **pauses after about 15 s** waiting on delegated work and reopens on the result, his voice or Resume | (none; the pause was picked from options) | §3.12 |
+| Projects and cards (2026-11-11) | Projects **keep their state** (in progress, waiting, completed, cancelled, archived) and **resume with a catch-up**; one session **switches between projects**, starts new ones and takes side requests; cards **draw by their content**, in **"Cards and a viewer"**: compact cards in the list and a viewer that opens one full size with its actions | (none; the viewer was picked from two mock-up directions) | §3.13 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus the owner's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
 | Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs the owner | The command deck | §11 |
 
@@ -174,7 +179,7 @@ both there, with nothing for the page to override.
 | **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | The owner's choice |
 | **swarm-voice** (new) | One-replica StatefulSet in `swarm-system` on the GKE cluster | Each live session's sideband WebSocket, the planner loop, the session grant (in memory) | It holds long-lived outbound sockets for the length of a conversation, which no request-shaped service can (§3.4) |
 | **Text conversation** (no API key in the pool) | Inside swarm-voice (`swarm_voice/textchat.py`), calling the ChatGPT plan's Codex Responses route | Each text session's turns and its plan lease, in memory | OpenAI serves the plan text but refuses it Live (§3.6, "Both paths"), so the browser sends each spoken turn as text and swarm-voice answers it |
-| **Planner** | Inside swarm-voice, calling the Anthropic Messages API | Nothing between turns: every turn reads the project from Firestore through swarm-api | Opus always thinks [10], so it stays off the spoken path; the voice speaks while it works |
+| **Planner** | Inside swarm-voice, calling the Anthropic Messages API | Nothing between turns: every turn reads the project from Firestore through swarm-api. **Not built:** on `main` a turn reads the transcript and the delegation's text only; §3.13.3 adds the session context it reads | Opus always thinks [10], so it stays off the spoken path; the voice speaks while it works |
 | **swarm-api** (extended) | Cloud Run, as today | The Voice it routes, the session grant check, the card stream, the ledger, storage | The one authenticator: every action Voice it takes passes the same role floor, holds, refusals and tenant scope as a click |
 | **Firestore and GCS** | As today | Projects, sessions, cards, turns, starts, preferences; transcripts and large card bodies | Invariant 9: the tenant's documents and its own prefix |
 
@@ -225,7 +230,9 @@ sequenceDiagram
 GPT-Live's instructions (at most 16,384 tokens) and its voice cannot change
 once a session starts [5]. So the persona, the rules and the project brief go
 in at session start, and everything that changes later arrives as silent
-context. A Voice it session may span several GPT-Live sessions (a pause's
+context. **On `main`** the instructions are swarm-voice's fixed text and carry
+no brief, and no planner writes one (§3.13.1); §3.13.3 gives the brief its
+writer and reader, and a project switch arrives as silent context (§3.13.5). A Voice it session may span several GPT-Live sessions (a pause's
 wake, a rollover, a tier move: §3.12.7); each reopen is the one point where the
 instructions are refreshed.
 
@@ -256,7 +263,9 @@ page sends.**
   `note.upsert`, `focus` and, in debug mode, `trace.turn`; `session.state` and
   `meter.update` are declared but have no writer (`stream.py`). §3.12 adds
   `paused` and `waking` to the states and `work.step`, `work.delegation` and
-  `roster.update` to the events. Every event has a sequence number; the stream resumes from
+  `roster.update` to the events; §3.13 adds `project.switch` and
+  `card.action`, and every event carries the `project_id` it belongs to,
+  because one session may hold several projects (§3.13.5). Every event has a sequence number; the stream resumes from
   `Last-Event-ID`, which `EventSource` sends by itself on reconnect.
 * **Each stream ends itself after about nine minutes**, under swarm-api's
   660 s timeout, and the browser reconnects. Because every event is stored
@@ -566,11 +575,12 @@ prefix; another tenant's project is the same 404 as a missing one.
 
 | Collection or path | Holds | Notes |
 |---|---|---|
-| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, status (active, waiting, shipped, archived), the **brief** (goal, decisions, constraints, open questions; the planner keeps it at a few thousand tokens), references (repositories, issues, runs, workflows, agents, schedules), the tag `voice:<project>` | The resumable memory |
-| `…/cards/{card}` | The card envelope and body (§4), versioned | Large bodies go to GCS |
-| `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause | One live session per person |
+| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, state (in progress, waiting, completed, cancelled, archived; §3.13.2) and its `state_history`, the **brief** (goal, decided, open, next; at most 16 KiB; §3.13.3), references (repositories, issues, runs, workflows, agents, schedules), the tag `voice:<project>`, and `standing` for the person's Side requests project (§3.13.5) | The resumable memory. On `main` the status is one of active, waiting, shipped, archived and nothing moves it; those old names are read, never rewritten in bulk (§3.13.2) |
+| `…/cards/{card}` | The card envelope and body (§4), versioned, and the `outcome` of a person's deciding action (§3.13.8) | Large bodies go to GCS. A card lives under the project that was current when it was first drawn |
+| `…/cards/{card}/actions/{action}` | One person's action on the card: action, arguments, `via` (click or voice), session, card version, state (pending, sent, consumed), the turn that consumed it (§3.13.8) | Idempotent by `action_id` |
+| `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause, and the session's `current_project_id` and `open_project_ids` (§3.13.5) | One live session per person. It stays under its **home** project, the one it started in, whatever project is current |
 | `…/sessions/{session}/events/{seq}` | The stream's log | Sequence from a counter on the session document |
-| `…/turns/{turn}` | Each planner turn: state, the transcript window it read, cards out, spoken summary, usage, and each action with its idempotency key and reservation | A retried turn reads its own actions before acting again |
+| `…/turns/{turn}` | Each planner turn: state, the transcript window it read, cards out, spoken summary, usage, the brief change, and each action with its idempotency key and reservation | A retried turn reads its own actions before acting again. **Not written on `main`**: `record_turn` has no caller until §3.13.9's P3. Stored under the project current when the turn began |
 | `voice_starts/{id}` | One row per thing Voice it started: the agent, workflow or run id, project, session, the owner's day, the reservation | What the ledger reads (§3.8) |
 | `voice_preferences/vp_<hmac>` | The owner's editable preferences (§3.11) | The id is an HMAC no worker can compute, as `preferences.py` keys `user_preferences` |
 | `tenants/<tenant>/voice/<project>/transcripts/<session>/<part>.jsonl` | The redacted transcript | Create-only objects; a new part is a new name |
@@ -756,6 +766,10 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   hour, which is what keeps the planner near the research's cost estimate.
 * **After every turn** the planner updates the brief: decisions made, what
   is open, what was started. A crash costs at most the turn in flight.
+  **Not built** on `main` (2026-11-11): no planner turn reads or writes the
+  brief, so a resumed session has no summary. §3.13.3 defines the brief's
+  shape, its bound, its writer (a change with every `speak`) and its reader
+  (the session context).
 * **Rolling over.** `gpt-live-1`'s session reports an `expires_at`, and no
   maximum length is documented [5]. Before it expires, swarm-voice opens a
   new GPT-Live session with refreshed instructions, and the browser
@@ -765,11 +779,14 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   Rollover, the tier move and the pause's wake are one reopen path (§3.12.7).
 * **Ending and resuming.** Ending a session keeps all its work in its project;
   Voice it › Projects › Resume hands the project to Talk, whose next start
-  continues it (`Projects.tsx`, `takeResumedProject`).
+  continues it (`Projects.tsx`, `takeResumedProject`), and opens with a
+  catch-up (§3.13.4). With a session already live, Resume switches that
+  session to the project instead (§3.13.5).
 * **Preferences** (Voice it › Preferences, and by voice): the voice; the
   default mic mode; how brief to be; preferred stacks, hosting and
   repositories; how many options to propose; the grace window; the per-size
-  reservations. "Remember I prefer Postgres" saves a preference and shows a
+  reservations; the catch-up on resume (always, when something changed (the
+  default), never; §3.13.4). "Remember I prefer Postgres" saves a preference and shows a
   card with Undo. The voice itself is fixed per GPT-Live session [5], so a
   voice change takes effect at the next one.
 
@@ -799,7 +816,7 @@ disagree, the code is quoted and this section says what changes.
 |---|---|---|
 | **Leaving Talk ends the session.** Talk's unmount effect ("Leaving the page ends the session: a call nobody can hear is still billed per second") hangs up the call and posts the end | `apps/swarm-ui/src/voice/Talk.tsx` (the `mounted` effect), `App.tsx` (`case 'voice/talk': return <VoiceTalkScreen />`, rendered per route) | The call must move out of the routed screen, to a holder mounted above the routes (§3.12.2) |
 | The console navigates through one function: `go(to)` in `App.tsx` pushes the path and sets the route; `paths.ts` `FIXED` maps every fixed page's address to its path | `App.tsx` (`go`), `paths.ts` (`FIXED`) | The navigation offer names a `FIXED` key; the console builds the path itself (§3.12.3) |
-| Resume is a hand-over in the tab's session storage (`RESUME_KEY`), taken once by Talk's next Start | `voice/Projects.tsx` (`resumeProject`, `takeResumedProject`) | A later session continues a project's work; ending keeps it all (§3.12.8) |
+| Resume is a hand-over in the tab's session storage (`RESUME_KEY`), taken once by Talk's next Start | `voice/Projects.tsx` (`resumeProject`, `takeResumedProject`) | A later session continues a project's work; ending keeps it all (§3.12.8). With a session live, Resume switches it to the project instead (§3.13.5) |
 | The session stream is server-sent events, stored before sent, resumed by `Last-Event-ID`, ending itself before 540 s; it carries `card.upsert`, `card.remove`, `visual.upsert`, `note.upsert`, `focus`, and `trace.turn` (debug only) | `swarm_api/voice/stream.py` (`EVENT_TYPES`, `MAX_SECONDS`) | The working card, the roster and the marker ride this one stream: no new socket, no polling per item |
 | **`session.state` and `meter.update` are declared but nothing writes them.** `VOICE_STATES` is `listening, thinking, speaking, working, ended`; the only `append_event` callers are cards, visuals and the debug trace | `stream.py` (`SESSION_STATE`, `VOICE_STATES`), `voice/cards.py`, `voice/visuals.py`, `routes/voice_trace.py` | §3.5's "streams `session.state`" is a declaration, not behaviour. This section gives the state its first writer, and adds `paused` |
 | A grant works only while the session document is `live`; ending clears its hash | `swarm_api/voice/grant.py` (`resolve`), `sessions.py` (`_close`) | **Pausing must not end the session**: the planner and the delegated work keep acting through the grant while the voice is closed |
@@ -903,7 +920,8 @@ GPT-Live keeps its two tools (`delegate`, `stop`).
 the owner has not seen in the main view: a card drawn or changed by the planner
 or the platform into a state that is new to him (a Plan or Proposal
 `proposed`, a Review `waiting`, a Details, Credential, Budget or Stop card
-`waiting`, a Rescue `proposed`, a Mock-up or Diagram drawn), and a new visual.
+`waiting`, a Rescue `proposed`, a Mock-up, Wireframe, Diagram, Code, Diff,
+Document or Test results card drawn (§3.13.6)), and a new visual.
 A Work card moving between running states is progress, not an item; it shows
 on the working card and the roster. A navigation offer is not an item; it is
 answered where it is.
@@ -1146,7 +1164,478 @@ run whether the voice is open, paused or ended. Tenancy (9) is unchanged: every
 new event and route reads by session and checks the session's person. No
 caller picks anything but names (10): the Navigate card is a name from a list.
 
-### 3.13 "Talk it through"
+### 3.13 Projects that keep their state, many projects in one session, and cards drawn by their content
+
+**The owner's asks (11 November 2026).** Voice it › Projects must "reliably
+showcase the projects that are currently in progress, the ones that have been
+finalized in the past (different states like completed, canceled, in progress,
+etc) and allow the user to resume work on one", and the agent resumes "from
+where things were left off including being able to provide a catchup session".
+One session switches "back and forth between multiple projects ... via voice
+commands", starts "new tasks that are not related to the current project" and
+starts "a new project while a current one is being worked on". The cards
+"should be flexible and dynamic so they are able to render and present agent
+responses in many different formats depending on the content", "and it should
+be able to dynamically adjust to other types of work in the future". **Picked
+by the owner:** "Cards and a viewer": compact cards in the list, and a viewer
+that opens a card full size and draws its content by kind, with its actions
+(the variant code is on the branch `mockups/voice-cards-viewer`, §11).
+
+Read on `main`, 2026-11-11. Where this section and the code
+disagree, the code is quoted and this section says what changes.
+
+#### 3.13.1 What is true today
+
+| Fact | Where | What it forces |
+|---|---|---|
+| **Every project reads `active`, because nothing moves it.** The statuses are `active`, `waiting`, `shipped` and `archived` (no cancelled, no completed); `project_view` serves a missing status as `active`; the only writer of a status is `VoiceStore.update_project`, and its one caller (the notes' follow-up, `visuals.py` `_follow_up`) passes the brief alone | `swarm_api/voice/store.py` (`STATUSES`, `project_view`, `update_project`), `swarm_api/voice/visuals.py` | New states, their movers, and a reading of the old values (§3.13.2) |
+| **Projects draws no state at all.** `VoiceProject` in the console has no status field; the page lists title and last change, and the columns `last_session_at` and `open_cards`, which swarm-api does not serve, are not drawn | `apps/swarm-ui/src/voice/Projects.tsx` (`VoiceProject`, `asProject`), `store.py` (`project_view`) | Projects reads the state and the counts from swarm-api (§3.13.2) |
+| **The brief the design says the planner saves after every turn is never written by the planner.** §3.11 and §7 (invariant 8) say it is; on `main` a planner turn takes the transcript and the delegation's text only (`Planner.delegate(transcript=..., request=...)`), no grant route reads a project or writes its brief (`grant.py` `ALLOWED_ROUTES` has no `/v1/voice/projects` route; `WRITE_ROUTES` holds only the visuals' routes, whose notes' follow-up is the one brief write below), and `VoiceStore.record_turn` has no caller, so no `turns/{turn}` document exists. The only brief write is the notes' follow-up appending to `brief.open` | `swarm_voice/planner.py` (`delegate`, `_turn`), `swarm_api/voice/grant.py`, `store.py` (`record_turn`), `visuals.py` (`_follow_up`) | A resumed session has no summary: **the code is true and §3.11 is not**. The brief gets a shape, a writer and a reader (§3.13.3) |
+| **GPT-Live's instructions carry no project.** They are the module's fixed text (`INSTRUCTIONS`, `DELEGATE_INSTRUCTIONS`, `TURN_INSTRUCTIONS`); swarm-api passes the offer and nothing that shapes the session | `swarm_voice/live.py` | §3.3's "the project brief go[es] in at session start" is not built; §3.12.9's V2 (`instructions.py`) builds it, from the brief this section defines |
+| **A session belongs to one project.** The session document lives at `voice_projects/{project}/sessions/{session}`; the grant names `<project>/<session>` in `X-Swarm-Voice-Session`; a card write takes its project from the grant's session; Resume hands one project id to Talk's next Start through the tab's session storage (`RESUME_KEY`), and a person has one live session (`voice_live`) | `sessions.py`, `grant.py` (`_SESSION_RE`), `routes/voice.py` (`write_card`), `Projects.tsx` (`resumeProject`, `takeResumedProject`) | Many projects ride one session without moving it: a home project and a current one (§3.13.5) |
+| **Proposal and mock-up cards are one line.** `CardList.tsx` draws `work`, `review`, `plan`, `budget`, `stop` and `details_input`; every other kind is `NamedOnly` (its title and summary: "later lanes"). The catalogue has **13** kinds; §4's table listed 11 until this change: `readback` and `spec` came from voice-it-own-speech.md | `apps/swarm-ui/src/voice/CardList.tsx` (`RENDERERS`, `NamedOnly`), `swarm_api/voice/cards.py` (`KINDS`) | A renderer for every kind, through one registry (§3.13.6, §3.13.7) |
+| **Nobody can act on a card.** `cards.py` names each kind's actions and `allows_action` answers them, but only its test calls it; swarm-api has no route for a person's card action. The one person action on a drawn design is the Stage's frame approval of a **visual** (`POST /v1/voice/projects/{project_id}/visuals/{visual_id}/approval`, person only) | `cards.py` (`allows_action`), `routes/voice_visuals.py` (`approve_visual`) | One route for a person's card actions (§3.13.8); the visual approval is its precedent (person only, project path, `session_id` in the body) |
+| **Mock-up frames run no script.** The Stage draws each frame in `<iframe sandbox="">` with a content security policy (`FRAME_POLICY`: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:`) | `voice/Stage.tsx` (`FRAME_POLICY`, `framed`) | §4's `sandbox="allow-scripts"` is not what was built; **the code is true** and §4 now says so |
+| **The console has no Mermaid.** Its graph library is `vis-network` 10.1.2; it has a safe Markdown renderer, a code block and a diff block | `apps/swarm-ui/package.json`, `ArtifactViewer.tsx` (`Markdown`), `components/Code.tsx` (`CodeBlock`, `DiffBlock`, `parseDiff`) | The viewer's renderers reuse these; Mermaid stays Phase 2's unbuilt diagram lane (§10) |
+| **The picked viewer's mock-up** keys its viewers by a content type (`VIEWERS`), draws a type it does not know with a generic viewer from its fields, opens a second card beside the first, and puts each viewer's actions at its foot: Pick, Mix, Ask again on a proposal; Pick this page, Comment, Full size on a mock-up; Edit by voice, Full size, File issue on a diagram; Approve, Comment, Ask again on a wireframe or a document; Approve, Ask for changes, Comment on a diff; Rerun failed, File issue on test results | branch `mockups/voice-cards-viewer`, `apps/swarm-ui/src/voice/viewer/VoiceCardsViewer.tsx` (MOCK-HOOK code, never merged) | The registry below is that shape, held to swarm-api's catalogue |
+
+#### 3.13.2 Project states
+
+| State (stored) | Shown | The tooltip's one line | Moved there by |
+|---|---|---|---|
+| `in_progress` | In progress | Work on this project is going on; resume it to continue. | A new project; a session starting on it or switching to it; the planner (`set_project_state`); a person's Reopen; a merge or an answer that clears the last thing waiting |
+| `waiting` | Waiting on you | Nothing moves until you decide something; resume it to see what. | A session ending while a card of the project waits on the owner (a Proposal or Plan `proposed`, a Review, Details, Credential, Budget, Stop or Read-back `waiting`); the planner, when it cannot go on without the owner |
+| `completed` | Completed | Finished: what it set out to do is done. Reopen it to do more. | A person's Mark completed; the planner, only when nothing of the project runs and its brief has nothing open; the last merge of its work (below) |
+| `cancelled` | Cancelled | Stopped on purpose before it was finished, with the work it had running; its record is kept. | A person's Cancel only, which also cancels the project's running work. The planner never cancels a project |
+| `archived` | Archived | Put away: hidden from the default list, kept whole. | A person's Archive only, from any state; Unarchive returns it to the state it had |
+
+**What moves each, precisely.**
+
+* **The planner's tool** `set_project_state(state, why)` moves the current
+  project between `in_progress`, `waiting` and `completed`. swarm-api refuses
+  (409) `completed` while a start of the project is queued or running
+  (`voice_starts` read by id, follow-ups by the project's tag, as the roster
+  reads them, §3.12.6) or while the brief's `open` list is not empty, and
+  refuses any move of a `cancelled` or `archived` project: those are the
+  owner's.
+* **A person's action in Projects** (and in Talk's project menu): Mark
+  completed, Cancel, Archive, Unarchive, Reopen. Mark completed asks once;
+  it is not typed, because nothing is deleted.
+* **Cancelling a project also cancels its running work** (question 14).
+  Cancel asks once and names everything it will stop, as swarm-api resolves
+  it, never as the model said it: "Cancel Bakery website? This also cancels
+  its running work: run #412, workflow site-build". The list is the
+  project's starts that are queued or running, read as the roster and the
+  completion check read them (`voice_starts` by id, follow-ups by the
+  project's tag, §3.12.6). The confirmation is not typed: a cancel deletes
+  nothing, and every record and the project's brief are kept. On the
+  confirmation swarm-api moves the project to `cancelled` (`by: person`),
+  then cancels each start through the platform's own cancel for its kind
+  (`POST /v1/tasks/{id}/cancel` for an agent; the same route on an issue
+  run's running agent, since a run whose agent is cancelled ends cancelled,
+  `runs.py`, and there is no run cancel route; `POST
+  /v1/workflows/{id}/cancel` for a workflow), as the person, with the
+  person's own permission on each: a start the person may not cancel is
+  left running and named. The platform's cancel is the only path, so a
+  cancelled attempt's lease, its fencing generation and its capacity are
+  released as for any other cancel, and nothing new reserves or frees
+  capacity. Each start's Work card reads `cancelled`. A start that ended
+  between the list and the cancel is skipped; one whose cancel fails stays
+  listed on the project as still running, with its own Cancel, and the
+  failure is in the project's `voice_audit` row. The planner cannot do this:
+  it never cancels a project, and its own `stop` tool still cancels only its
+  turn and the actions in their grace window. In a session the person
+  cancels from Talk's project menu, with the same confirmation.
+* **A session ending** moves the session's open projects (§3.13.5) to
+  `waiting` when one of their cards waits on the owner, and leaves the rest as
+  they are. It never completes or cancels anything.
+* **A pull request merging.** When the last start of a project ends merged
+  (or done, for work with no pull request), nothing of the project runs, its
+  brief's `open` list is empty and no card waits on the owner, the project
+  moves to `completed` with `by: merge` (question 13). A merge that clears a
+  waiting Review moves `waiting` to `in_progress`. **Settled on read, no new
+  job:** swarm-api checks a project's starts when something reads the project
+  (Projects' list, a session start or switch, the catch-up, the follower's
+  tick while a session is live), and writes the move in a transaction that
+  holds only when the state is still what it read, so two readers never move
+  it twice. A project nobody reads keeps its state until it is read, which is
+  the only time the state is shown.
+
+**Every move is recorded.** The project document keeps `state_history`, the
+last 50 moves, each `{from, to, by: planner | person | session_end | merge,
+why, at}`; a person's move also writes a `voice_audit` row. The catch-up reads
+the history (§3.13.4).
+
+**How existing projects are read: no migration.** Nothing rewrites stored
+documents in bulk. `project_view` reads `active` as `in_progress`, `shipped`
+as `completed`, and `waiting` and `archived` as themselves; a missing status
+reads `in_progress`. The new value is written only by the next move of that
+project, with the move recorded as usual. `store.STATUSES` accepts only the
+new names for writes; the read mapping is the one place the old names live,
+and a test holds that every old name maps.
+
+**Projects shows** each project's title, state (with the tooltip line), last
+session, open cards, and what waits on the owner; a filter by state whose
+default is everything except `archived`; Resume on every state (resuming a
+`completed` or `cancelled` project asks once and reopens it to
+`in_progress`). swarm-api serves `state`, `last_session_at`, `open_cards` and
+`waiting_on_owner` in `project_view`, so the columns `Projects.tsx` already
+knows are drawn at last. **The look is the Projects mock-up pick's**, still
+being drawn: this section fixes the behaviour only.
+
+#### 3.13.3 The brief
+
+**What it holds** (`voice_projects/{project}.brief`):
+
+| Field | Holds | Bound |
+|---|---|---|
+| `goal` | What the project is for, in one paragraph | 600 characters |
+| `decided` | What was decided, each `{id, text, at, card_id?}`, newest last | 40 items of 300 characters |
+| `open` | What is open: questions, follow-ups and loose ends, each `{id, text, at, source?}` | 30 items of 300 characters |
+| `next` | The plan from here, in order | 10 items of 300 characters |
+| `updated_at`, `turn_id` | Which turn wrote it last | |
+
+The whole brief stays under **16 KiB, about 4,000 tokens** (question 15), well
+inside the store's `BRIEF_MAX_BYTES` (64 KiB), so it fits GPT-Live's 16,384
+instruction tokens beside the persona, the preferences and the open cards.
+Past a list's bound, the oldest `decided` items leave the brief (they stay in
+the turns they came from); `open` and `next` refuse a turn that would pass
+their bound (422), and the planner is told to close or merge items first.
+
+**Reading what is stored today.** `open` items written by the notes'
+follow-up (`{id, title, notes, visual_id, at}`) read as `text: title` and
+`source: visual:<visual_id>`; the follow-up keeps writing them, through the
+same merge. Constraints, which §3.7 named, are `decided` items.
+
+**Who writes it, and when: the planner, after every turn.** The `speak` tool
+the planner ends each turn with gains a `brief` argument: a **change**, never
+the whole brief: `{goal?, decide: [text], open: [text], close: [id], next?}`.
+swarm-voice posts it with the turn's id to a new grant write route,
+`POST /v1/voice/sessions/{session_id}/brief`; swarm-api merges it into the
+session's **current** project's brief (§3.13.5) in one transaction, checks
+every string with the card catalogue's redaction rule (`credential_refusal`:
+a match refuses the change, naming the field, never the text), and records
+the turn (`record_turn` gets its first caller: transcript window ids, cards
+out, the spoken summary, usage, the brief change). A change is idempotent by
+`turn_id`, so a retried turn never decides a thing twice. Writing a change
+costs a few hundred output tokens a turn, not the whole brief again. A turn
+that wrote nothing worth keeping sends an empty change; a turn that fails
+writes nothing, so a crash costs at most the turn in flight, as §3.11 says.
+
+**How a session loads it.** The planner's turn message (not the cached system
+prompt, which stays the same bytes on every turn, `prompts.py`) starts with
+the session context, read through a new grant read route
+`GET /v1/voice/sessions/{session_id}/context`: the current project's title,
+state and brief; the other open projects' titles and goals (one line each);
+the open cards' one-line summaries; actions waiting for the planner
+(§3.13.8). GPT-Live gets the same brief in its instructions at start and at
+every reopen (§3.12.7, V2's `instructions.py`), and on a project switch as
+`session.thinking.append` (§3.13.5).
+
+#### 3.13.4 The catch-up on resume
+
+**When.** A session that starts on a project (Resume, or a spoken "let's go
+back to the bakery site" that switches to one not yet opened in this
+session) opens with a catch-up when the project's last session ended at least
+10 minutes ago, or something changed since (a move in `state_history`, a
+start's state, a card's outcome). A project with nothing stored but its title
+gets no catch-up.
+
+**What the agent says,** in this order, and from which stored facts only:
+
+| Part | From |
+|---|---|
+| What it was for, and where it stands | `brief.goal`, the state and `state_history` since the last session |
+| What was done | The starts since the last session (`voice_starts` by project, follow-ups by tag) and their pull requests: merged, open, red, closed; cards that reached `done` |
+| What was decided | `brief.decided` since the last session, and the cards' outcomes: a pick, a mix, a picked frame (§3.13.8) |
+| What is open | `brief.open`, cards waiting on the owner, actions the owner took with no session live (stored `pending`, §3.13.8) |
+| The plan from here | `brief.next`, ending in one question ("shall I start with the checkout page?") |
+
+swarm-api assembles these facts as a **catch-up pack** inside the session
+context (`catchup` in `GET .../context`, §3.13.3), so the planner reads
+records, not memory. The planner's first turn draws one `document` card,
+"Catch-up: <project>", with the five parts as headings and every fact linked
+to its card, start or pull request, and speaks **about 30 seconds**: at most
+four sentences (question 16), the card holding the rest. It is the one turn
+whose spoken summary may pass §3.3's two sentences.
+
+**How the owner skips it.** Saying "skip the catch-up" or "let's just
+start", or Skip on the working card while it is drawn: the turn is cancelled
+like any turn (§3.9's Stop), and the catch-up card is still drawn from the
+pack without the planner, as a plain list, so nothing is lost. A preference
+(Voice it › Preferences: catch-up on resume: always, **when something
+changed** (the default), never) sets it for good.
+
+**What it costs.** One planner turn on a cold cache: about 40,000 tokens read
+(about $0.16 at Opus 5.5's $4 a million) and about 1,500 written ($0.03),
+plus about 30 seconds of GPT-Live ($0.025): **about 22 cents** a resume, and
+nothing when skipped before the planner starts. The pack itself is a handful
+of Firestore reads and one batched read of the starts.
+
+#### 3.13.5 Many projects in one session
+
+**The session's projects.** A session keeps its **home** project (the one it
+started in): the session document stays at
+`voice_projects/{home}/sessions/{session}`, the grant still names
+`<home>/<session>`, the stream, transcript and ledger are the session's, so
+nothing that exists moves. The session document gains:
+
+* `current_project_id`: where the next card, start, brief change and turn go;
+  the home project at start;
+* `open_project_ids`: the projects opened in this session, at most **six**
+  (question 17); opening a seventh closes the least recently used one
+  (closing a project in a session changes nothing stored; it leaves the list).
+
+Every project in the list belongs to the session's tenant and person: a
+project of another workspace is not opened (the planner says so and offers
+to end the session and start there), and another person's project is the same
+404 as a missing one (invariant 9).
+
+**The planner's tools** (swarm-voice's new `tools_projects.py`), all through
+the grant, writing only the grant's own session:
+
+| Tool | Does | Route |
+|---|---|---|
+| `list_projects(state?)` | The person's projects in the session's tenant: id, title, state, goal's first line, last session; at most 50 | `GET /v1/voice/sessions/{session_id}/projects` (read list) |
+| `switch_project(project_id)` | Makes it current, opening it if needed; a catch-up follows when §3.13.4 says so | `POST /v1/voice/sessions/{session_id}/projects` `{action: switch}` |
+| `start_project(title, goal)` | Creates a new project (`in_progress`, the goal as its brief), opens it and makes it current; the previous one stays open | `{action: start}` |
+| `take_side_request()` | Makes the person's standing **Side requests** project current, creating it on first use | `{action: side}` |
+| `set_project_state(state, why)` | §3.13.2 | `{action: state}` |
+
+A spoken name ("switch to the bakery one") is resolved by the planner over
+`list_projects`; two close matches draw a Details card with the candidates,
+never a guess. **Side requests** (question 18) is one project per person and
+workspace, flagged `standing: true`: it is never completed, cancelled or
+archived, is pinned at the top of Projects, and its brief keeps the side
+requests' `open` and `decided` like any other. Every card and start therefore
+still has a project, which is what the store, the ledger and the tag key on.
+A side request that grows ("this is really a project") is moved by
+`start_project` plus the planner's next brief change; cards already drawn stay
+where they were drawn.
+
+**Where each record says which project it belongs to.**
+
+| Record | Project |
+|---|---|
+| A card | The envelope's `project_id` (already server-set): the session's current project when the card is first written; an update of an existing `card_id` keeps the card's own project, whatever is current. Stored under that project, `voice_projects/{project}/cards/{card}` |
+| A start | `voice_starts.project_id`, the current project when the act ran, and the tag `voice:<project>` on what it submits |
+| A turn | `voice_projects/{project}/turns/{turn}` under the current project when the turn began; a turn that switched records `switched_to` |
+| A brief change | The current project when the turn ends |
+| A stream event | Stays on the session's stream; every event carries `project_id`, so Talk can group and filter, and a switch appends `project.switch` (`{from, to, by}`) |
+| The transcript | The session's, under the home project; each segment carries the current project id |
+| The ledger | Unchanged: $100 a session and $300 a day whatever the projects; a project's spend is read from its starts |
+
+**What Talk shows** (the look is the Projects mock-up pick's): the current
+project's name and state at the head of the main view, and a switcher that
+lists the open projects (a click is the same switch, through the person's
+cookie on the same route); a line in the captions where a switch happened
+("Now on: Bakery website"); the cards of the current project first and the
+other open projects' cards behind a filter; the attention count (§3.12.4)
+counts every open project's items. The floating view names the current
+project beside the ring, never its content.
+
+**Resume while a session is live.** Projects › Resume, with a live session in
+this tab, switches that session to the project (the person's switch on the
+same route) and opens Talk; it no longer hands the project over through
+`RESUME_KEY`, which stays for the case with no live session. Deleting a
+project that is open in a live session is the same 409 as deleting the
+session's home project today.
+
+**Switching costs** one planner turn (the context read is part of the turn)
+and one `session.thinking.append` to GPT-Live with the new project's title,
+goal and `next` (under 500 tokens), so the voice knows where it is without a
+reopen.
+
+#### 3.13.6 Cards by content: the content-type registry
+
+**Kind and content.** A card's **kind** says what it is for (its states, its
+actions, who may create it); its **content** says how its body is drawn. Each
+kind names one content type; several kinds may share one (a `spec` and a
+`document` are both Markdown). The registry is the catalogue that exists
+(`cards.py`), with one more attribute per kind:
+
+| Kind | Content | Fields (new kinds and new fields in bold) | Compact card | Viewer | Its own actions | Limits; what is sanitised |
+|---|---|---|---|---|---|---|
+| `proposal` | `options` | question, 2 to 4 options (label, gets right, costs, recommended, **`mockup_ref`**: a mock-up card and frame that shows the option), recommendation | The options as chips, the recommended one starred, Pick <recommended> | The options side by side, each with its mock-up thumbnail when it has one | pick, mix, ask_again | Text only; `mockup_ref` is a `vc_` id and a frame name of this project |
+| `mockup` | `frames` | drawn by, frames (name, html or blob key), **`viewport`** (desktop, phone), **`height`** | Scaled thumbnails of the pages, the picked one marked; "Review 3 pages" | One page at a time with page tabs, zoom, desktop or phone width, comment pins | pick_frame, comment | 12 frames of 200 KiB (`HTML_MAX`), larger as a blob; drawn only in `<iframe sandbox="">` under `FRAME_POLICY`: no script, no network, no form, no top navigation, no permission |
+| **`wireframe`** | `frames` | frames as a mock-up's, **`annotations`** (frame, point, text) | One thumbnail | As a mock-up, with the annotations shown as pins | approve, comment, ask_again | As a mock-up's; annotations are text |
+| `diagram` | `graph` | diagram type (architecture, **system**, flow, user flow, **product flow**, sequence, ER, state), graph (nodes with **`frame_ref`** for a product flow's screens, edges), source, blob key, repaired | The graph's outline | Pan and zoom, a node selected shows its label and edges; a product flow's nodes show their screens' thumbnails | edit_by_voice, file_issue_from_node | 200 nodes, 400 edges; labels are text. Architecture and system draw in `vis-network`; flows and state in the viewer's own layered drawing; sequence and ER as Mermaid source text until Phase 2's Mermaid lane renders them in its sandbox |
+| **`code`** | `code` | repository, path, ref, language, first line, text, **or** a reference to a file swarm-api reads (as `show_file` does) | Three lines | The console's `CodeBlock`, wrap on or off | comment, ask_again | 64 KiB, 2,000 lines; drawn as text, never as markup |
+| **`diff`** | `diff` | files (path, status, patch), **or** a pull request reference whose diff swarm-api reads (as `show_diff` does) | Files with their added and removed counts | `DiffBlock` per file, a file list | approve, ask_for_change, comment | 50 files, 64 KiB a patch, 512 KiB in all (larger as a blob); text only |
+| **`document`** | `markdown` | doc type (spec, notes, report, catch-up), markdown, headings | The first paragraph, sections and words | The console's `Markdown`, headings as a contents list | approve, comment, ask_again | 64 KiB (`SOURCE_MAX`); no raw HTML; only `http:` and `https:` become links, opening a new tab |
+| `spec` | `markdown` | as today | as a document | as a document | comment | as a document |
+| **`test_results`** | `tests` | source (agent, run or workflow step), totals, cases (name, status, duration, message, file) | Failed and passed counts and a tally bar | Failures first, filter by status, a case's message | rerun_failed, file_issue | 500 cases, 2,000 characters a message; text only |
+| `work`, `review`, `plan`, `budget`, `stop`, `details_input`, `credential_input`, `rescue`, `readback`, `navigate` (§3.12.3) | one content each, named after the kind | as §4 | as drawn today (the six built renderers) or one line until their renderer lands | The same renderer full size | as §4 | as §4 |
+| any kind this console does not know | `generic` | whatever the served schema names | Its field count and first short field | Its fields as labelled text, or as JSON | (the common actions only) | Every value drawn as text |
+
+**Every kind** also takes the **common actions**: `open_full_size` (the
+console's alone: it opens the viewer and calls nothing), `comment` (on the
+whole card or an anchor: the notes' anchor shapes, `point`, `region`, `part`,
+`lines`), `ask_about` (a spoken or typed question about this card, which goes
+to the planner like any action, §3.13.8) and `dismiss`.
+
+**Sanitised everywhere.** Every string of every card still passes the shared
+redaction rules on write and is refused on a match (`credential_refusal`).
+No renderer builds markup from a card string: HTML exists only inside the
+sandboxed frame, Markdown goes through the console's own renderer, and
+diagrams are data drawn by the console. A body over a document's size goes
+to the tenant's prefix as a create-only blob and is read back as text.
+
+**A new kind is added in one place on each side.** swarm-api: one `Kind`
+entry in `cards.py` naming its `content`. The console: one entry in
+`voice/cards.ts` (its fields, states, actions and `content`, as plain
+literals) and, only if its content is new, one renderer in
+`voice/viewer/registry.tsx`'s `RENDERERS` (a compact card, a viewer and the
+primary action). **`test_voice_cards.py` holds them together**, as it holds
+the kinds today: the two lists name the same kinds, fields, states, actions
+and contents, and every content named has a renderer in `RENDERERS` or is
+`generic`. Until a renderer lands, the kind is drawn by the generic viewer,
+so a new kind is never a blank card; a kind the console's bundle does not
+know yet (a newer server during a release) is drawn the same way.
+
+**How the planner chooses a kind** (the served tool descriptions, and a short
+table in `prompts.py`'s fixed system prompt): a choice between options is a
+`proposal` (a choice between screens: options with `mockup_ref`); screens in
+their look are a `mockup`, their layout without look a `wireframe`; how parts
+connect is a `diagram` (architecture or system for software, product flow for
+screens joined by actions, user flow for a person's path, state for a thing's
+states); exact code is `code`, a change is `diff` (an existing pull request's
+by reference); prose is a `document`; a run's results are `test_results`;
+what does not fit any is a `document`. Prefer updating a card (the same
+`card_id`) to drawing another; one card a turn that the voice points at.
+
+#### 3.13.7 The viewer and the compact cards
+
+The list keeps every card small: its kind's icon, its title, its compact body
+from the registry, its state, and its primary action (Pick <recommended> on a
+proposal, Review on a mock-up, See failures on test results). Opening a card
+shows it in the viewer, beside the list on a desktop and over it on a phone,
+with the tools its content needs and its actions pinned at the foot; a second
+card can be opened beside the first. The viewer is Talk's; Projects opens a
+project's cards in the same viewer, read-only for actions that need the
+planner when no session is live (they are stored, §3.13.8). The Stage's
+visuals (voice-it-own-speech.md §8) keep their own records and notes; the
+Stage draws a visual with the same content renderer the viewer uses, so a
+mock-up or a diagram looks the same on both.
+
+#### 3.13.8 A person's card actions
+
+**The route.**
+`POST /v1/voice/projects/{project_id}/cards/{card_id}/actions`, body
+`{action_id, action, card_version, args, session_id?}`:
+
+| Action | Kinds | `args` | Starts a planner turn |
+|---|---|---|---|
+| `pick` | proposal | `option` (index) | yes |
+| `mix` | proposal | `options` (two or more indexes), `text?` (500) | yes |
+| `ask_again` | proposal, wireframe, code, document | `text?` (500) | yes |
+| `pick_frame` | mockup | `frame` (a frame name of the card) | yes |
+| `approve` | wireframe, diff, document | none | yes |
+| `ask_for_change` | diff, review | `text` (2,000) | yes |
+| `comment` | every kind | `text` (2,000), `anchor?` | no: comments ride the next turn; **Send** on the viewer sends them now (question 19) |
+| `ask_about` | every kind | `text` (500) | yes |
+| `dismiss` | every kind | none | no |
+| `edit_by_voice`, `file_issue_from_node` | diagram | `node?`, `text?` | yes |
+| `rerun_failed`, `file_issue` | test_results | none | yes |
+| `start`, `change`, `split` | plan | `text?` | yes |
+| `fix_it`, `explain_more` | rescue | none | yes |
+| `accept` | navigate | none | no: §3.12.3, the holder navigates |
+| `open_full_size` | every kind | (none: the console's alone, never posted) | |
+
+The actions that already have a person's route keep it and are not posted
+here: Answer (the await-input route), Set it (the one-time secret form),
+Raise (the typed budget raise), Go and Not that (the read-back routes), Open
+in Work, Open diff and Open where you act (links), and a Review's Merge (the
+run's own merge, where the person merges).
+
+**Who may act.** The person, by cookie, in the console's selected workspace
+(`allowed_person`, `tenant_scope`), on a project that is theirs in that
+tenant (`VoiceStore._owned`: anything else is the same 404); a request that
+came through a grant is refused (403), as `approve_visual` refuses it, so the
+planner can never click for the owner. swarm-api checks the action against
+the kind (`allows_action`, which gets its first caller), the card's state (a
+pick only on a `proposed` proposal), `card_version` (an older version is 409:
+the card changed under the click) and `args` (unknown fields are 422, every
+text passes `credential_refusal`). `action_id` (`va_` and 32 hex) makes a
+retried click one action.
+
+**What is stored.** One document per action,
+`voice_projects/{project}/cards/{card}/actions/{action_id}`:
+`{action, args, by: person, via: click | voice, session_id, card_version,
+state: pending | sent | consumed, turn_id, at}`. A deciding action (pick,
+mix, pick_frame, approve, dismiss) also writes the card's server-set
+**`outcome`** (`{action, summary, by, at}`), bumps its version and appends
+`card.upsert`; a proposal picked is `done`. A spoken pick ("go with B") is
+recorded the same way with `via: voice` by the planner, through a grant write
+route `POST /v1/voice/sessions/{session_id}/cards/{card_id}/outcome` that
+takes only the deciding actions and only on the grant's own session's
+projects; anything that spends or changes the platform keeps §3.9's act
+tools, the ledger and the read-back gate.
+
+**How an action reaches the planner: it is the next planner turn's input.**
+With a live session (the body's `session_id`, checked live and the person's),
+swarm-api marks the action `sent` and calls swarm-voice's new
+`POST /internal/sessions/{session_id}/input` with the action's id; swarm-voice
+reads the session context (which lists the actions waiting) and runs one
+planner turn whose input is those actions, fenced as quoted data like every
+other input (§3.9), queued behind a turn in flight by the session's planner
+lock, and actions that arrive while it waits ride the same turn. The turn
+marks them `consumed` with its `turn_id`. Talk shows each action as a line in the captions from a `card.action`
+event ("You picked Warm on Home page direction"), the voice speaks the
+turn's summary, and a paused voice wakes on the result (§3.12.7). With no
+live session (Projects' viewer), the action stays `pending`; the next session
+on that project reads it in the catch-up (§3.13.4) and its first turn consumes
+it.
+
+**One router, and the order.** §3.12.9's V5 creates
+`swarm_api/routes/voice_cards.py` with Navigate's
+`POST /v1/voice/sessions/{id}/cards/{card}/accept`, and its include line in
+`swarm_api/main.py`. Lane **C3** (§3.13.9) comes **after V5** and adds the
+`/actions` route to the same router; `/accept` stays as V5 built it, and its
+handler becomes the `accept` action of the shared validation
+(`voice/cardactions.py`), so V5's test stays green and a person's card
+actions have one router and one rule.
+
+#### 3.13.9 The build lanes that follow
+
+Each lane owns its files; where two must share one, the order is named. The
+lanes start after §3.12.9's lanes they share a file with (V3 before
+`sessions.py` and `routes/voice.py`, V4 before `grant.py` and `stream.py`, V5 before
+`cards.py`, `routes/voice_cards.py`, `prompts.py` and swarm-api's
+`main.py`, V2 before swarm-voice's `live.py` and `main.py`, V7 before
+`Talk.tsx`, V9 before `CardList.tsx`). On `main`, `stream.frame()` drops any
+event type not in `EVENT_TYPES` and builds each payload from a per-type
+whitelist, so a lane that writes a new event lists `stream.py`.
+
+| Lane | Files | Needs | Red-first test | Waits for the owner |
+|---|---|---|---|---|
+| **P0. The Projects page is drawn as variants: states, filter, Resume, the current project and the switcher on Talk** | none in the repository (a mock-up lane's frames) | none | n/a | **the pick** |
+| **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check, a person's Cancel and the list of running starts it cancels), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; a person's Cancel cancels each queued or running start of the project through its kind's cancel route (a fake platform client records the calls) and leaves one whose cancel fails listed as running; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
+| **P2. The brief has a shape and a bound, and the session context serves it** | `swarm_api/voice/brief.py` (new: the shape, the change merge, the bounds, the old `open` items), `swarm_api/routes/voice_context.py` (new: `GET .../context`, `POST .../brief`), `swarm_api/voice/grant.py` (the two routes, after V4), `swarm_api/main.py` (its include line, after P1), `tests/unit/control_plane/test_voice_brief.py` | P1 | A change merges once per `turn_id`; past a bound `open` is 422 and `decided` drops its oldest; a fake key built at runtime in a change is refused naming the field; a follow-up's old item reads as text | the bound (question 15) |
+| **P3. The planner reads its context and saves the brief after every turn** | `swarm_voice/planner.py` (the context read; `speak`'s `brief`; the turn record), `swarm_voice/prompts.py` (the brief's rules and the kind choice table, after V5), `swarm_voice/tools_read.py` (the context read), `tests/unit/voice/test_planner_brief.py` | P2 | With a fake swarm-api: every turn posts one change with its `turn_id`; a failed turn posts none; the system prompt's bytes do not change with the brief | no |
+| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; Side requests is created once | the cap and Side requests (questions 17, 18) |
+| **P5. The planner switches, opens and starts projects and takes side requests by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a side request goes to Side requests | no |
+| **P6. A resumed project opens with a catch-up from stored facts, which the owner can skip** | `swarm_api/voice/catchup.py` (new: the pack), `swarm_api/routes/voice_context.py` (`catchup` in the context, after P2), `swarm_voice/planner.py` (the first turn, after P5), `swarm_api/voice/preferences.py` (`catchup`: `always`, `changed`, `never`; default `changed`), `voice/Preferences.tsx` (its choice), `tests/unit/control_plane/test_voice_catchup.py`, `__tests__/voice.preferences.test.tsx` | P3, P5 | The pack holds only facts since the last session; `catchup: never` gives none and an unknown value is 422; Preferences draws the choice; ten minutes and nothing changed gives none; a skip still draws the card from the pack | the length (question 16) |
+| **C1. The catalogue names each kind's content, and the new kinds join on both sides** | `swarm_api/voice/cards.py` (`content`; `wireframe`, `code`, `diff`, `document`, `test_results`; diagram types; `mockup_ref`, `frame_ref`, `viewport`; `outcome`; `CATALOGUE_VERSION` 3; after V5), `apps/swarm-ui/src/voice/cards.ts`, `tests/unit/control_plane/test_voice_cards.py` | V5 | Red until both sides name the same kinds, contents and actions, and every content has a renderer or is `generic` | no |
+| **C2. The viewer opens any card full size, and the list draws compact cards from one registry** | `voice/viewer/registry.tsx` (new: `RENDERERS`, the generic viewer), `voice/viewer/Viewer.tsx` (new: the shell, beside, the action foot), `voice/CardList.tsx` (the compact cards, after V9), `styles/voice-viewer.css` (new), `__tests__/voice.viewer.test.tsx` | C1 | An unknown kind draws the generic viewer as text; the action foot shows only the kind's actions; Open beside keeps the first card | no (the pick is made; the code ports `mockups/voice-cards-viewer`) |
+| **C3. A person acts on a card through one route, and the action becomes the planner's next input** | `swarm_api/voice/cardactions.py` (new), `swarm_api/routes/voice_cards.py` (`/actions`; `/accept` through the shared rule; after V5), `swarm_api/voice/sessions.py` (the client's `input` call, after P4), `swarm_api/voice/grant.py` (the spoken `outcome` route, after P4), `swarm_api/voice/stream.py` (`card.action` in `EVENT_TYPES` and its payload whitelist, after P4), `tests/unit/control_plane/test_voice_card_actions.py` | C1, P4 | A grant is 403; an action frames one `card.action` event with its `project_id`; an old `card_version` is 409; a pick on a `done` proposal is 409; a retried `action_id` is one action; with no live session it stays `pending` | no; **one security review** (a person's actions and the grant) |
+| **C4. swarm-voice runs a person's actions as the next planner turn** | `swarm_voice/main.py` (`/internal/sessions/{id}/input`, after V2), `swarm_voice/planner.py` (actions as fenced input, after P6), `tests/unit/voice/test_card_action_turn.py` | C3, P6 | Two actions during a turn ride one next turn; each is marked consumed once; an action's text cannot change the system prompt | no |
+| **C5. Each content type has its renderer** | `voice/viewer/kinds/` (new: options, frames, graph, code, diff, markdown, tests), `__tests__/voice.viewer.kinds.test.tsx` | C2 | A frame's markup is `sandbox=""` with the policy and no other attribute grants anything; a document's `javascript:` link is text; a diff over its bound reads from the blob | no |
+| **C6. Projects shows the states and Talk the open projects** | `voice/Projects.tsx` (states, filter, tooltips, Resume into a live session), `voice/Talk.tsx` (the current project, the switcher, the caption line on a switch and on each action; after V7), `voice/CardList.tsx` (`STREAM_EVENTS`: `project.switch`, `card.action`; after C2), `__tests__/voice.projects.test.tsx` | P1, P4, C2, C3, P0 | Each state draws its tooltip line; a `project.switch` event draws the caption line; archived is hidden by default; Resume with a live session switches it and writes no `RESUME_KEY` | **mock-up** (P0) |
+| **P7. Projects, the catch-up, a switch and a picked card run end to end on a deployment** | none in the repository: a recorded session on the epic resuming a project with its catch-up, switching to a second, taking a side request, picking a proposal and a mock-up page, and the project states after a merge | everything | n/a | no |
+
+**Invariants.** Nothing here creates infrastructure demand (1): a project's
+state, its brief, a switch and a card action are documents; what a turn
+starts goes through admission and fencing as before (2, 3, 5), and only the
+ledger's reservation lets it start. Nothing waits on the voice (4): an action
+with no live session is stored, not held. Tenancy (9): every project in a
+session is the session's tenant and person's; the action route reads the
+project through `_owned` and refuses a grant; the brief and every card string
+pass the redaction rule. No caller picks anything but names (10): a kind, an
+action and a state are names from lists, and no card field becomes markup, a
+URL or a command.
+
+### 3.14 "Talk it through"
 
 * **Where it appears:** a button on a failed or parked agent's panel
   (`AgentDetail.tsx`), on a failed or parked workflow (`WorkflowViews.tsx`),
@@ -1170,9 +1659,12 @@ caller picks anything but names (10): the Navigate card is a name from a list.
 **One schema, in swarm-api** (`swarm_api/voice/cards.py`). It is served to
 the planner as strict tool schemas, used by swarm-api to validate every
 write, and held to the console's renderers by a test, in the way
-`test_issue_forms.py` holds the forms to `SECTIONS`. The console renders only
-kinds it knows, with its own components. An unknown kind is not drawn and is
-logged. The shape follows Google's A2UI: declarative data drawn only from a
+`test_issue_forms.py` holds the forms to `SECTIONS`. The console renders kinds with its own components, chosen by each kind's
+**content** through one registry (§3.13.6). A kind this console does not know
+(a newer server during a release) is drawn by the generic viewer, its fields as
+text, and logged once; on `main` today it is not drawn at all (`CardList.tsx`).
+Cards sit compact in the list and open full size in the viewer the owner
+picked (§3.13.7). The shape follows Google's A2UI: declarative data drawn only from a
 catalogue of trusted components, "not executable code" [19].
 
 **Every card carries:** id, kind, project, session, version, state, title,
@@ -1183,28 +1675,44 @@ and the time.
 **Common states:** proposed, acting, waiting (on the platform or on the owner),
 done, failed, cancelled, dismissed. Each kind uses the ones that apply.
 
+**Common actions** on every kind: Open full size (the console's alone),
+Comment, Ask about it and Dismiss. A person's action goes through one route
+and becomes the planner's next input (§3.13.8); each kind's content, fields,
+limits and sanitising are §3.13.6's registry.
+
 | Kind | Shows | Created by | Actions | States |
 |---|---|---|---|---|
 | **Work** (filed or scheduled) | What was filed or started: issue, run, agent, workflow or schedule; repository; lanes; each step's reservation; live state | Planner on act; updated by swarm-voice following the tag | Open in Work, Cancel, Pause or resume (schedules), Hold (inside the grace window) | proposed, acting (grace window), waiting, done, failed, cancelled |
 | **Review** (finished work) | Pull request, change summary, checks, review verdict, merge and release state | swarm-voice when a step finishes | Open diff, Ask for a change (a fix round), Merge when the run's policy leaves it to a person | waiting, done, failed |
-| **Proposal** (design) | Two to four options, each with what it gets right, what it costs, and a recommendation | Planner (draw) | Pick, Mix, Ask again | proposed, done (picked), dismissed |
-| **Diagram** | Architecture map, flow, user flow, sequence, ER or state diagram | Planner (draw) | Edit by voice, Open full size, File an issue from a node (architecture maps) | proposed, done, failed (did not render after one repair) |
-| **Mock-up** | One or more frames of HTML | Planner for small sketches; a browser lane for real-product frames | Pick a frame, Comment, Open full size | proposed, waiting (the lane is drawing), done |
+| **Proposal** (design) | Two to four options, each with what it gets right, what it costs, and a recommendation; an option may point at a mock-up page that shows it (a mock-up proposal, one page or several) | Planner (draw) | Pick, Mix, Ask again | proposed, done (picked), dismissed |
+| **Diagram** | Architecture or system map, flow, user flow, product (UX/UI) flow whose nodes are screens, sequence, ER or state diagram | Planner (draw) | Edit by voice, Open full size, File an issue from a node | proposed, done, failed (did not render after one repair) |
+| **Mock-up** | One or more pages of HTML, desktop or phone width | Planner for small sketches; a browser lane for real-product frames | Pick a frame, Comment, Open full size | proposed, waiting (the lane is drawing), done |
+| **Wireframe** (new, §3.13.6) | A product's layout without its look: frames of HTML with annotations | Planner (draw) | Approve, Comment, Ask again | proposed, done, dismissed |
+| **Code** (new) | A code snippet: its language, path and lines, or a repository file swarm-api reads | Planner (draw) | Comment, Ask again | proposed, done |
+| **Diff** (new) | A code diff: files with their patches, or a pull request's diff swarm-api reads | Planner (draw); platform for a lane's change | Approve, Ask for a change, Comment | proposed, waiting, done |
+| **Document** (new) | A text document in Markdown (a spec, notes, a report, a catch-up), its headings addressable | Planner (draw) | Approve, Comment, Ask again | proposed, done |
+| **Test results** (new) | A run's tests: totals and each case's name, status, time and message, failures first | Planner from a read; platform when a step reports | Rerun failed, File an issue | waiting, done, failed |
 | **Details input** | A question with options or free text; a lane's waiting step reuses `AwaitInputCard` | Planner, or a lane's question | Answer (typed or spoken) | waiting, done |
 | **Credential input** | The secret's name, provider, why it is needed, set or missing. Never a value | Planner | Set it (opens the one-time form; the mic mutes) | waiting, done |
 | **Plan** | Goal, size, waves, lanes with territory, reservations, total against both caps | Planner (draw) | Start (act), Change, Split | proposed, acting, done |
 | **Budget** | Spent and reserved against $100 and $300, by line; what is not counted | swarm-api's ledger | Raise (a click and a typed amount) | waiting, done |
 | **Stop** (held for the owner) | What stopped, which rule (IAM, secrets, shared project, workflow file), where the owner acts | swarm-voice from a hold or a refusal | Open where the owner acts | waiting, done |
 | **Rescue** | What failed, the likely cause and its evidence, the proposed fix | Planner on Talk it through | Fix it (act), Explain more | proposed, acting, done |
+| **Read-back** (voice-it-own-speech.md §7.2) | What was heard and what will be done, held until Go or Not that | swarm-api, for a spoken cancel, merge, deploy, delete or approve | Go, Not that | waiting, acting, done, dismissed, cancelled |
+| **Spec** (voice-it-own-speech.md §8.1) | A written spec in Markdown; drawn as a Document | Planner | Comment, Open full size | proposed, done |
+| **Navigate** (§3.12.3, lane V5) | A console page from a fixed list | Planner | Open (a person's yes only) | proposed, accepted (V5 adds it to the common states), done, dismissed |
 
 **Rendering rules.**
 
-* **Mock-ups** render only inside an `<iframe sandbox="allow-scripts">` with
-  no `allow-same-origin`, so they run in an opaque origin that cannot read
-  the console's cookies or call its API. They also get no forms, popups, top
+* **Mock-ups** (and wireframes) render only inside an `<iframe sandbox="">`:
+  no scripts, no `allow-same-origin`, so they run in an opaque origin that
+  cannot read the console's cookies or call its API, and no forms, popups, top
   navigation or `allow` permissions (no mic, no camera). The page puts a
-  content security policy meta tag at the top of `srcdoc` with
-  `connect-src 'none'`, so a frame cannot send anything anywhere. This is the
+  content security policy at the top of `srcdoc` (`FRAME_POLICY`:
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src
+  data:`), so a frame cannot fetch or send anything. **Corrected 2026-11-11:**
+  this section said `sandbox="allow-scripts"`; what the Stage built
+  (`voice/Stage.tsx`) runs no script, and the viewer keeps that (question 20). This is the
   sandboxed-frame pattern MCP Apps uses [18]. The HTML is read from swarm-api
   as text, never served as HTML, which keeps `ArtifactViewer.tsx`'s rule that
   no screen builds HTML from artifact bytes.
@@ -1218,7 +1726,10 @@ done, failed, cancelled, dismissed. Each kind uses the ones that apply.
   generated diagrams failed to render in one project [17]. It renders with
   Mermaid's `sandbox` security level, which draws inside a sandboxed frame,
   so no SVG from model output enters the page. Mermaid loads only on the
-  Voice it page.
+  Voice it page. **Not built:** the console has no Mermaid dependency on
+  `main`; until Phase 2's diagram lane adds it, sequence and ER diagrams show
+  their source as text, and the other types are node and edge data the
+  viewer draws itself (§3.13.6).
 * **Architecture maps** are node and edge JSON from a strict tool schema,
   always well formed, drawn with the console's existing `vis-network`.
 * **A plan's lanes** reuse the workflow board's layout arithmetic
@@ -1340,7 +1851,9 @@ their reservations.
   their limits. Its CPU limit is at most `CPU_BURST_MAX_RATIO` times its
   request.
 * **8.** Lanes checkpoint as always. The conversation's own checkpoint is
-  the brief and the transcript, saved after every turn.
+  the brief and the transcript, saved after every turn. The brief's writer is
+  §3.13.3 (lane P3): on `main` no planner turn writes it, so until P3 merges
+  the checkpoint is the cards, the visuals and the notes alone.
 * **9.**
   * Projects, sessions, cards and starts carry the tenant and are read only
     in it.
@@ -1432,7 +1945,7 @@ is 128.
 
 ## 10. Implementation plan
 
-Lanes in four phases. Each phase ends in something the owner can use.
+Lanes in six phases. Each phase ends in something the owner can use.
 
 * **Size:** S is about three files; M is three to six. UI lanes stay at about
   three UI files.
@@ -1467,8 +1980,8 @@ is what stops OpenAI's per-second billing.
 | **The card stream resumes from the last sequence and ends itself before swarm-api's 660-second timeout** | `swarm_api/voice/stream.py`, `routes/voice.py`, tests | S | storage, catalogue | With a fake clock: resume after a given sequence; closes before 600 s; the tenant comes from the session | no |
 | **swarm-voice turns each delegation into cards and a spoken summary with Claude Opus and read-only tools** | `swarm_voice/planner.py`, `tools_read.py`, `prompts.py`, `terraform/infra/voice.tf` (accessor on the Anthropic secret), tests | M | grant, catalogue, stream | A fake Anthropic server: one delegation gives one card and at most two sentences; an unknown kind is refused | **IAM** (the second secret) |
 | **The console renders work, review, plan, budget, stop and details cards** | `voice/CardList.tsx`, `voice/cards/WorkCards.tsx`, `voice/cards/InputCards.tsx`, test | M | catalogue, stream | Each kind renders from a fixture; an unknown kind is not drawn | no |
-| **Diagram cards render Mermaid after a parse check, inside its sandbox, and architecture maps in vis-network** | `voice/cards/DiagramCard.tsx`, `apps/swarm-ui/package.json` and lock (Mermaid pinned), test | S | card renderers | A broken diagram asks for one repair, then shows its source | no |
-| **Mock-up cards render HTML only inside a sandboxed frame with no network, and credential cards open the one-time secret form and never carry a value** | `voice/cards/MockupCard.tsx`, `voice/cards/CredentialCard.tsx`, test | S | card renderers | The frame has no `allow-same-origin` and the CSP meta tag; the credential card's markup holds no value in any attribute | no; **in the security review** |
+| **Diagram cards render Mermaid after a parse check, inside its sandbox, and architecture maps in vis-network** (after §3.13.9's C5, as the `graph` renderer's Mermaid branch in `voice/viewer/kinds/`, not a `voice/cards/` file) | `voice/viewer/kinds/` (the diagram renderer, after C5), `apps/swarm-ui/package.json` and lock (Mermaid pinned), test | S | card renderers | A broken diagram asks for one repair, then shows its source | no |
+| **Mock-up cards render HTML only inside a sandboxed frame with no network, and credential cards open the one-time secret form and never carry a value** (the mock-up half is now §3.13.9's C5, through the viewer's registry) | `voice/cards/MockupCard.tsx`, `voice/cards/CredentialCard.tsx`, test | S | card renderers | The frame has no `allow-same-origin` and the CSP meta tag; the credential card's markup holds no value in any attribute | no; **in the security review** |
 | **Transcripts are redacted before they are stored, planned on or shown again, and a credential spoken aloud raises a rotate card** | `swarm_voice/transcript.py` (uses `apps/redaction`), `swarm_api/voice/transcript.py`, tests | S | storage, planner | A fake key built at runtime never reaches the planner request, Firestore or GCS | no; **in the security review** |
 | **Failed or parked agents and workflows, and inbox items, offer "Talk it through", which opens Voice it on that object** | `AgentDetail.tsx`, `WorkflowViews.tsx`, `ApprovalDecision.tsx`, `swarm_api/voice/rescue.py`, tests | M | planner, card renderers | The button shows only on failed or parked states; the rescue pack holds the last error and the findings | no |
 
@@ -1494,8 +2007,8 @@ grace window.
 |---|---|---|---|---|---|
 | **Code work Voice it starts ships through issue runs with auto-merge, so the platform's hard-stop holds apply** | `swarm_voice/ship.py` (issue bodies in the form's sections; runs with `plan_approval: required`, approved after reserving the plan; `auto_merge`), tests | M | act tools | A plan touching `**/iam*.tf` is never approved by Voice it and raises a Stop card | no |
 | **While a session is live, swarm-voice follows its project's work by tag and speaks only for a failure, a finished review or a stop** | `swarm_voice/follow.py`, tests | S | ship | A finished step updates its card and is said once; a running step is not said | no |
-| **A project resumes with its brief, open cards and last turns, and a session rolls over to a new GPT-Live session before it expires** | `swarm_voice/instructions.py`, `swarm_voice/live.py`, tests (built with §3.12.9's V2 and V3, which give the reopen its route; this row is then the `rollover` cause alone) | M | planner | Instructions stay under 16,384 tokens; a rollover keeps the session, ledger and grant | no |
-| **The Projects and Preferences panes list, resume, rename and delete projects and edit the owner's preferences** | `voice/Projects.tsx`, `voice/Preferences.tsx`, test | M | storage | Delete is typed (the body's `confirm` is the project's title; owner pick on an earlier issue) and removes the documents and the prefix; Undo restores a preference changed by voice | no |
+| **A project resumes with its brief, open cards and last turns, and a session rolls over to a new GPT-Live session before it expires** | `swarm_voice/instructions.py`, `swarm_voice/live.py`, tests (built with §3.12.9's V2 and V3, which give the reopen its route; this row is then the `rollover` cause alone; the brief it loads is written by §3.13.9's P2 and P3, and the catch-up is P6) | M | planner | Instructions stay under 16,384 tokens; a rollover keeps the session, ledger and grant | no |
+| **The Projects and Preferences panes list, resume, rename and delete projects and edit the owner's preferences** (built; the states, the filter and Resume into a live session are §3.13.9's C6) | `voice/Projects.tsx`, `voice/Preferences.tsx`, test | M | storage | Delete is typed (the body's `confirm` is the project's title; owner pick on an earlier issue) and removes the documents and the prefix; Undo restores a preference changed by voice | no |
 | **The planner splits a large project by territory into waves that each fit the remaining budget** | `swarm_voice/waves.py` (over `/territory` and `/search`), the Plan card's waves, tests | M | ship, follow | A fixture graph: two pieces editing one file become one lane; a wave never reserves past either cap | no |
 | **Voice it is documented for operators and readers** | `docs/voice-it.md`, `docs/web-ui/redesign.md`, this file's Status, `docs/mirrored-values.md` if the service address is mirrored | S | the phase's lanes | The docs guards named by the selection | no |
 | **Five scenarios run end to end on SwarmCloud** | none in the repository: a one-line fix, a feature, a rescue, an approvals walk and a new-app plan, each recorded on the epic issue with its spend | n/a | everything deployed | Each scenario's cards, spend and pull requests on the epic | no |
@@ -1504,6 +2017,16 @@ grace window.
 
 The lanes are §3.12.9's V1 to V10, by file, disjoint. The UI lanes V8 and V9
 wait for the owner's mock-up picks (V1).
+
+### Phase 6: projects that keep their state, many projects, and cards by content (the owner's asks of 11 November)
+
+The lanes are §3.13.9's P0 to P7 and C1 to C6, by file; where one shares a
+file with another or with a Phase 5 lane, §3.13.9 names the order. C2 ports
+the picked viewer (`mockups/voice-cards-viewer`); C6 waits for the Projects
+mock-up pick (P0). **Phase 6 is done when** the owner resumes a project and
+hears its catch-up, switches to a second project and back by voice, takes a
+side request, picks a proposal and a mock-up page from the viewer and hears the
+planner act on it, and sees a project move to Completed after its last merge.
 
 **Lanes that wait for the owner:**
 
@@ -1517,7 +2040,8 @@ wait for the owner's mock-up picks (V1).
     the broker admitting swarm-voice as a service holder on
     `POST /v1/accounts/assign`, which the owner approves as an access change.
 * **Workflow file:** the release, hotfix and security workflow lines.
-* **Frozen contract:** none.
+* **Frozen contract:** none. Phase 6 adds nothing to `apps/common/swarm_common/`:
+  states, briefs, actions and kinds are all swarm-api's own documents (§8).
 
 ---
 
@@ -1540,6 +2064,18 @@ stream before anything is committed. The questions the five directions answered:
 
 This design holds for any of them: it fixes the cards, the stream and the
 states, not where they are drawn.
+
+**The cards (2026-11-11).** Two directions for how cards present their
+content were drawn; the owner picked **"Cards and a viewer"**: compact cards
+in the list, each with its kind's icon, title, a live preview and its primary
+action, and one viewer that opens a card full size, draws its content by kind
+with the tools it needs and pins its actions at the foot; a second card opens
+beside the first, and a kind the console does not know is drawn by a generic
+viewer from its fields. Its variant code is on the branch
+`mockups/voice-cards-viewer` (MOCK-HOOK files, never merged); lane C2 ports it
+and C5 its renderers (§3.13.9), replacing the invented cards with the stream's.
+**The Projects page** (its states, its filter, Resume, and Talk's switcher) is
+still being drawn (P0); §3.13 fixes its behaviour, not its look.
 
 ---
 
@@ -1572,6 +2108,39 @@ states, not where they are drawn.
 11. **Own speech during a pause (§3.12.7):** the machine's idle rule runs from
     the pause and stops the machine, not the session (recommended); the
     machine runs for the whole pause; or it stops at once.
+12. **The project states' names (§3.13.2):** In progress, Waiting on you,
+    Completed, Cancelled, Archived (recommended); or the stored names kept as
+    they are (Active, Waiting, Shipped, Archived) with Cancelled added.
+13. **What a merge moves (§3.13.2):** the last merge of a project's work, with
+    nothing running, nothing open in the brief and no card waiting, moves it to
+    Completed (recommended); a merge never completes a project (only the
+    owner or the planner does); or every merge only moves Waiting to In
+    progress.
+14. **What Cancel does to running work (§3.13.2):** answered 11 November
+    2026: cancelling a project also cancels its running work. The one
+    confirmation names each queued or running start, and swarm-api cancels
+    each through the platform's own cancel for its kind (§3.13.2). The other
+    option was to cancel nothing and list what still runs, each with its own
+    Cancel.
+15. **The brief's size (§3.13.3):** at most 16 KiB, about 4,000 tokens (goal
+    600 characters, 40 decided, 30 open, 10 next) (recommended); 32 KiB; or
+    8 KiB.
+16. **How long the catch-up runs (§3.13.4):** about 30 seconds spoken (at most
+    four sentences) with the rest on a Catch-up document card, when something
+    changed or ten minutes passed (recommended); one sentence and the card;
+    or the whole catch-up spoken.
+17. **How many projects one session holds open (§3.13.5):** six, the least
+    used closing first (recommended); three; or no cap below Projects' 50.
+18. **Where side requests go (§3.13.5):** one standing Side requests project per
+    person and workspace (recommended); each side request its own small
+    project; or the session alone, with no project.
+19. **Whether a comment starts a planner turn (§3.13.8):** comments ride the
+    next turn, and Send on the viewer sends them now (recommended); every
+    comment starts a turn.
+20. **Scripts in mock-up frames (§4, §3.13.6):** none: `sandbox=""` under the
+    frame policy, as the Stage built it (recommended); or `allow-scripts`
+    (still no `allow-same-origin`, no network) so a mock-up can be a clickable
+    prototype.
 
 ---
 
