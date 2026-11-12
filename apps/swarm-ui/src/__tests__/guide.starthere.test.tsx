@@ -94,6 +94,36 @@ describe('what the deployment serves', () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe('/.well-known/swarmcloud')
   })
 
+  it('reads the plugin home as a plain owner/name from the same document', async () => {
+    const fetcher = vi.fn(answer(200, { schema: 1, plugin: { min_version: VERSION, home: HOME } }))
+    expect(await loadGuideServed(fetcher)).toEqual({ pluginHome: HOME, pluginVersion: VERSION })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(await loadGuideServed(answer(200, { plugin: { home: 'Example.Org-1/swarm_cloud.v2' } }))).toEqual({ pluginHome: 'Example.Org-1/swarm_cloud.v2' })
+  })
+
+  it('serves no home for a missing, empty or malformed one, and keeps the version', async () => {
+    const bad: unknown[] = [
+      undefined,
+      '',
+      '   ',
+      'example-org /swarmcloud',
+      'example org/swarmcloud',
+      'example-org/swarm/cloud',
+      'https://example.com/example-org/swarmcloud',
+      '<b>example-org</b>/swarmcloud',
+      'example-org/<img src=x>',
+      'example-org',
+      '/swarmcloud',
+      'example-org/',
+      42,
+      { owner: 'example-org' },
+    ]
+    for (const home of bad) {
+      const plugin = home === undefined ? { min_version: VERSION } : { min_version: VERSION, home }
+      expect(await loadGuideServed(answer(200, { plugin })), JSON.stringify(home)).toEqual({ pluginVersion: VERSION })
+    }
+  })
+
   it('serves nothing for a missing, refused or malformed document, and never throws', async () => {
     expect(await loadGuideServed(answer(404, { detail: 'Not Found' }))).toEqual({})
     expect(await loadGuideServed(answer(200, { plugin: { min_version: 'not a version; rm -rf' } }))).toEqual({})
@@ -101,6 +131,66 @@ describe('what the deployment serves', () => {
     expect(await loadGuideServed(async () => new Response('<html>', { status: 200 }))).toEqual({})
     expect(await loadGuideServed(async () => Promise.reject(new Error('offline')))).toEqual({})
   })
+})
+
+describe('the page, live', () => {
+  async function liveGuide(body: unknown) {
+    const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(body), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const live = await import('../Guide')
+    return { fetcher, Screen: live.GuideScreen }
+  }
+
+  it('fills every {{plugin-home}} with the served home, and every Copy, from one discovery request', async () => {
+    const writeText = vi.fn(async () => undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const { fetcher, Screen } = await liveGuide({ plugin: { min_version: VERSION, home: HOME } })
+    const { rerender } = render(<Screen slug="start-here" />)
+    await waitFor(() => expect(document.querySelectorAll('.guide-fill-missing')).toHaveLength(0))
+    const md = GUIDE_SOURCES['start-here'] ?? ''
+    const want = md.split('{{plugin-home}}').length - 1
+    expect(want).toBeGreaterThan(0)
+    const text = article().textContent ?? ''
+    expect(text.split(HOME).length - 1).toBeGreaterThanOrEqual(want)
+    expect(text).not.toContain('<owner/name>')
+    const homed = codeBlocks().filter((c) => (c.textContent ?? '').includes(HOME))
+    expect(homed.length).toBeGreaterThan(0)
+    for (const [i, c] of homed.entries()) {
+      fireEvent.click(within(c.closest('.guide-codebox') as HTMLElement).getByRole('button', { name: /^Copy/ }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(i + 1))
+      const copied = String((writeText.mock.calls[i] as unknown[])[0])
+      expect(copied).toContain(HOME)
+      expect(copied).not.toContain('<owner/name>')
+    }
+    rerender(<Screen slug="index" />)
+    rerender(<Screen slug="start-here" />)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/.well-known/swarmcloud')
+  })
+
+  for (const [what, home] of [
+    ['a missing home', undefined],
+    ['an empty home', ''],
+    ['a home with spaces', 'example org/swarm cloud'],
+    ['a home with two slashes', 'example-org/swarm/cloud'],
+    ['a URL', 'https://example.com/example-org/swarmcloud'],
+    ['markup', '<img src=x onerror=alert(1)>/swarmcloud'],
+  ] as const) {
+    it(`draws the marked placeholder for ${what}`, async () => {
+      const { fetcher, Screen } = await liveGuide({ plugin: home === undefined ? { min_version: VERSION } : { min_version: VERSION, home } })
+      render(<Screen slug="start-here" />)
+      await waitFor(() => expect(article().textContent ?? '').toContain(`@sc-v${VERSION}`))
+      const marks = Array.from(document.querySelectorAll<HTMLElement>('.guide-fill-missing'))
+      expect(new Set(marks.map((m) => m.textContent))).toEqual(new Set(['<owner/name>']))
+      const text = article().textContent ?? ''
+      expect(text).not.toContain('github.com/@')
+      if (home) expect(text).not.toContain(home)
+      expect(document.querySelector('.guide-article img')).toBeNull()
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    })
+  }
 })
 
 describe('Copy', () => {
