@@ -6,12 +6,12 @@
    row, an action or a Needs you strip. */
 
 .vtb { position: fixed; z-index: 24; display: flex; flex-direction: column; gap: 10px; pointer-events: none;
-  --vtb-size: 64px; --vtb-gap: 24px; max-width: calc(100vw - 2 * var(--vtb-gap)); }
+  --vtb-size: 64px; --vtb-gap: 24px; max-width: calc(100vw - 2 * var(--vtb-gap, 24px)); }
 .vtb > * { pointer-events: auto; }
-.vtb.is-br { right: var(--vtb-gap); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-end; }
-.vtb.is-bl { left: calc(var(--vtb-gap) + var(--vtb-left, 0px)); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-start; }
-.vtb.is-tr { right: var(--vtb-gap); top: calc(var(--vtb-gap) + 56px); align-items: flex-end; flex-direction: column-reverse; }
-.vtb.is-tl { left: calc(var(--vtb-gap) + var(--vtb-left, 0px)); top: calc(var(--vtb-gap) + 56px); align-items: flex-start; flex-direction: column-reverse; }
+.vtb.is-br { right: var(--vtb-gap, 24px); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-end; }
+.vtb.is-bl { left: calc(var(--vtb-gap, 24px) + var(--vtb-left, 0px)); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-start; }
+.vtb.is-tr { right: var(--vtb-gap, 24px); top: calc(var(--vtb-gap, 24px) + 56px); align-items: flex-end; flex-direction: column-reverse; }
+.vtb.is-tl { left: calc(var(--vtb-gap, 24px) + var(--vtb-left, 0px)); top: calc(var(--vtb-gap, 24px) + 56px); align-items: flex-start; flex-direction: column-reverse; }
 /* The band: the scroller stops short of the bubble, on the side it sits. */
 .sk-main:has(> .vtb.is-br) > .ctl-scroll, .sk-main:has(> .vtb.is-bl) > .ctl-scroll { margin-bottom: var(--vtb-band, 0px); }
 .sk-main:has(> .vtb.is-tr) > .ctl-scroll, .sk-main:has(> .vtb.is-tl) > .ctl-scroll { margin-top: var(--vtb-band, 0px); }
@@ -23,7 +23,7 @@
 .vtb.is-bl .vtb-row, .vtb.is-tl .vtb-row { flex-direction: row-reverse; }
 
 /* ---- the bubble ------------------------------------------------------------ */
-.vtb-orb { position: relative; width: var(--vtb-size); height: var(--vtb-size); flex: none; }
+.vtb-orb { position: relative; width: var(--vtb-size, 64px); height: var(--vtb-size, 64px); flex: none; }
 .vtb-core { display: block; width: 100%; height: 100%; padding: 0; border-radius: 50%; cursor: grab; touch-action: none;
   color: var(--info); border: 1.5px solid color-mix(in srgb, var(--info) 65%, var(--line));
   background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--info) 30%, var(--surface)) 0, color-mix(in srgb, var(--info) 12%, var(--surface)) 46%, var(--surface) 78%);
@@ -92,6 +92,6 @@
 /* ---- a phone ----------------------------------------------------------------- */
 @media (max-width: 760px) {
   .vtb { --vtb-size: 56px; --vtb-gap: 14px; }
-  .vtb-pill { max-width: calc(100vw - 2 * var(--vtb-gap) - var(--vtb-size) - 12px); }
+  .vtb-pill { max-width: calc(100vw - 2 * var(--vtb-gap, 24px) - var(--vtb-size, 64px) - 12px); }
   .vtb-pill .c-btn { min-height: 44px; }
 }
