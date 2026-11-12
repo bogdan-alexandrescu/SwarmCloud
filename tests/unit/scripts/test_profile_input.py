@@ -198,6 +198,10 @@ def test_the_fixture_has_a_test_that_passes():
 def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
     extra = profile_extra("generic")
     assert extra.get("repository_url") == FIXTURE_REPOSITORY, extra
+    # An anonymous HTTPS clone from GitHub, no userinfo: no tenant credential.
+    assert re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", FIXTURE_REPOSITORY), (
+        FIXTURE_REPOSITORY
+    )
     assert extra.get("repository_ref") == "main", extra
     from swarm_api.validation import check_repository_url
 

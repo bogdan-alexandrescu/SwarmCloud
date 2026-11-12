@@ -16,6 +16,7 @@ hand, so it cannot drift from the API the way the jq did.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import shutil
@@ -26,6 +27,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SMOKE = ROOT / "scripts" / "smoke-test.sh"
+
+_PH_SPEC = importlib.util.spec_from_file_location("placeholders", ROOT / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_PH_SPEC)
+_PH_SPEC.loader.exec_module(placeholders)
+#: The verification gate's account, in the placeholder project.
+VERIFY_EMAIL = placeholders.service_account("swarm-verify")
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
 
@@ -67,15 +74,15 @@ def _real_response() -> dict:
     tenant = Tenant(
         tenant_id="u-sw-c90291",
         kind="user",
-        principal="swarm-verify@example-project.iam.gserviceaccount.com",
+        principal=VERIFY_EMAIL,
         created_at=datetime(2026, 9, 21, 22, 44, 9, tzinfo=timezone.utc),
         display_name="Verification gate",
     )
     return {
         "tenant": tenant_to_api(tenant),
         "principal": {
-            "email": "swarm-verify@example-project.iam.gserviceaccount.com",
-            "domain": "example-project.iam.gserviceaccount.com",
+            "email": VERIFY_EMAIL,
+            "domain": VERIFY_EMAIL.split("@", 1)[1],
             "groups": [],
             "is_admin": False,
         },

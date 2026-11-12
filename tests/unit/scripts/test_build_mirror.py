@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 from .test_build_images_concurrency import FAKE_GCLOUD, TAG, _sandbox
+from .test_no_live_literals import _listed
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -189,6 +190,12 @@ def _mirror_repository(name: str, project: str, region: str) -> str:
     return done.stdout.strip()
 
 
+def _tracked_dockerfiles() -> list[str]:
+    return subprocess.run(
+        ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+
+
 #: A project's own Artifact Registry repository: `<location>-docker.pkg.dev/<project>/`.
 #: Any project a Dockerfile named would be named there, so no project id is needed here.
 _PROJECT_REGISTRY = re.compile(r"\b[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]*/")
@@ -199,10 +206,10 @@ def test_no_dockerfile_names_a_project() -> None:
     project's mirror builds only where that project's registry is readable.
     No tracked Dockerfile names the project or a mirror repository, and every
     `ARG MIRROR_*` default is empty: scripts/build-images.sh passes the mirror
-    of the project it builds for."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
-    ).stdout.split()
+    of the project it builds for. Which project is live comes from the
+    deployment pattern list (test_no_dockerfile_names_a_listed_value), never
+    from this file."""
+    tracked = _tracked_dockerfiles()
     assert sorted(tracked) == sorted(_rel(p) for p in DOCKERFILES), tracked
     assert len(tracked) == 20, tracked  # 20 since images/plugin-bundler/Dockerfile (managed plugins lane 14)
     hits = []
@@ -214,6 +221,22 @@ def test_no_dockerfile_names_a_project() -> None:
         for m in re.finditer(r"^[ \t]*ARG[ \t]+(MIRROR_[A-Za-z0-9_]*)(=[^\n]*)?$", text, re.M):
             if m.group(2) not in (None, "="):
                 hits.append(f"{rel}: ARG {m.group(1)} defaults to {m.group(2)[1:]}")
+    assert not hits, "\n".join(hits)
+
+
+def test_no_dockerfile_names_a_listed_value() -> None:
+    """The live project half of test_no_dockerfile_names_a_project: no tracked
+    Dockerfile line matches the deployment pattern list (read the way
+    test_no_live_literals.py reads it; skipped, saying why, with no list).
+    MUTATION: put the live project's mirror back in a FROM line -> red."""
+    entries = _listed()
+    hits = []
+    for rel in _tracked_dockerfiles():
+        for n, line in enumerate((REPO / rel).read_text().splitlines(), 1):
+            rule = next((f"list:{e.line}" for e in entries if e.pattern.search(line)), None)
+            if rule:
+                # Where, and which list line, never the value.
+                hits.append(f"{rel}:{n} {rule}")
     assert not hits, "\n".join(hits)
 
 

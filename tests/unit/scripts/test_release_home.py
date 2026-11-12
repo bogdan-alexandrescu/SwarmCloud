@@ -3,7 +3,7 @@
 
 The release home is project `swarmcloud-prod` (D25; display name `swarmcloud`; `swarmcloud-releases` if that
 id had been taken, D23): an Artifact Registry repository `swarmcloud` (us,
-Docker), a bucket `gs://swarmcloud` (uniform access, versioning) and a KMS key
+Docker), a bucket of the same name (uniform access, versioning) and a KMS key
 `swarmcloud-release/cosign` (asymmetric P-256) that signs the release, each
 labelled `managed-by=swarm-release`. The owner runs it; CLD does not create projects.
 
@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,20 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "release-home.sh"
 EXAMPLE_DENY_LIST = REPO / "scripts" / "lib" / "deny-list.example.json"
 
-PROJECT = "swarmcloud-prod"
-BUCKET = "gs://swarmcloud"
+
+def _script_value(name: str) -> str:
+    """The release home's NAME="value" as release-home.sh pins it (read, not restated here)."""
+    found = re.search(rf'^{name}="([^"]*)"$', SCRIPT.read_text(), re.MULTILINE)
+    assert found, f"{SCRIPT} no longer pins {name}"
+    return found.group(1)
+
+
+PROJECT = _script_value("PROJECT")
+BUCKET = _script_value("BUCKET")
+#: D23's alternate release project: the one RELEASE_PROJECTS admits besides PROJECT.
+(ALTERNATE_PROJECT,) = [p for p in re.findall(
+    r'"([^"]+)"', re.search(r"^RELEASE_PROJECTS=\(([^)]*)\)$", SCRIPT.read_text(), re.MULTILINE).group(1))
+    if p != PROJECT]
 ALL_USERS = "allUsers"
 
 #: The verbs that change something. Anything else the script calls is a read.
@@ -333,9 +346,9 @@ def test_refuses_a_project_that_is_not_the_release_home(tmp_path: Path) -> None:
 
 def test_alternate_release_project_is_admitted(tmp_path: Path) -> None:
     """D23: `swarmcloud-releases` if `swarmcloud` had been taken."""
-    proc = _run(tmp_path, {"exists": {}, "services": []}, "--project", "swarmcloud-releases", "--dry-run")
+    proc = _run(tmp_path, {"exists": {}, "services": []}, "--project", ALTERNATE_PROJECT, "--dry-run")
     assert proc.returncode == 0, proc.stderr
-    assert "--project=swarmcloud-releases" in proc.stdout
+    assert f"--project={ALTERNATE_PROJECT}" in proc.stdout
 
 
 # ---------------------------------------------------------------------------

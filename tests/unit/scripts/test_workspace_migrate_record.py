@@ -84,7 +84,7 @@ case "$*" in
     echo '{"spec": {"hard": {"pods": "100", "requests.cpu": "400", "requests.memory": "800Gi"}}}' ;;
   *) echo "unexpected kubectl call: $*" >&2; exit 9 ;;
 esac
-""".replace("@CONTEXT@", CONTEXT)
+""".replace("@CONTEXT@", CONTEXT).replace("@TENANT@", TENANT)
 
 
 def _tenant_doc() -> dict:
