@@ -496,6 +496,24 @@ context, so a long session costs roughly the square of its length, and
   nothing, and the last session runs to its end, so a lane stuck in a loop
   cannot restart forever. A stop with less than a minute of the step left
   starts nothing, and the result stands.
+* **The notes files are inlined, not only named (#2897).** The handoff names
+  the notes files the agent kept in `$SWARM_ARTIFACTS_DIR` (text files, one
+  directory deep, `handoff.md` aside) and, after the note, inlines their
+  contents under "Its notes and findings, as it last wrote them". A session
+  that is only told a file exists may not open it and rebuild its findings
+  instead, which is what #2897 reported. The newest-modified files go first.
+  Each file is cut at `NOTES_INLINE_FILE_MAX_BYTES` (8 KiB) and all of them at
+  `NOTES_INLINE_TOTAL_MAX_BYTES` (32 KiB), so the fresh session starts far
+  below the ceiling it was started to escape. A cut file ends in a visible
+  marker. A file past the budget is still named, as not inlined. Only the
+  attempt's own files are read: no symlinked file or directory is followed.
+  The run's secrets are scrubbed before the cut, so a secret at the cut is
+  replaced whole. The ceiling record's `notes_inlined` lists, per handoff,
+  each file inlined by name, bytes and whether it was cut, never its content,
+  so a deployed handoff can be checked from the result summary. Inlining is
+  on by default; `SWARM_CEILING_NOTES_INLINE=0` (or `false`, `no`, `off`)
+  turns it off, which is the rollback. The minimal handoff after a refused
+  first call never carries them.
 * **No session tail by default ([the owner], 2026-11-06).** The handoff also lists
   the notes files and the last todo list. It does **not** carry the previous
   session's own last messages unless `SWARM_CEILING_SESSION_TAIL=1`. That
