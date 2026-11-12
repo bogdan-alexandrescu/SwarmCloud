@@ -39,10 +39,16 @@ roll back (docs/design/day-one-plan.md §9.3, lane DAYONE-UPGRADE-1, part of
    step, `rebuild-bundles`, sits between the image copy and infra, because
    infra writes the new base's digests into `WORKER_IMAGE_REFS` and a queued
    step must find its pins on that base. The plan shows "bundles to rebuild:
-   N", N the bundle records (`plugin_bundles`) retention keeps. The bundle
-   build is started by swarm-api (lane 16 of the design's table 17.1); until
-   this installer can ask it for one, an upgrade with N above 0 is refused
-   before anything is applied, so no step loses its bundle to an upgrade.
+   N", N the bundle records (`plugin_bundles`) retention keeps. With N above
+   0 the step first applies the job `swarm-plugin-bundle` alone (a targeted
+   infra apply, so the job runs the new release's bundler image and nothing
+   else moves), then asks swarm-api's rebuild route, which starts one build of
+   a kept key on the new base per call, waits for that build, bounded, and
+   asks again until the route has nothing left to start; a build that
+   fails refuses the upgrade (`bundle_build_failed`, naming the bundle) before
+   anything past the step is applied. With N at 0 the step does nothing.
+   Kept bundles with the switch off (no job exists to build them) are refused
+   at the plan, before anything is applied.
    With the built-ins switch on (`tfvars.builtins_managed`), a release whose
    images carry no bundle manifests (it ships no `swarm-plugin-bundler`, the
    image lane 14 ships with them) is refused too (section 1.4.7).
@@ -73,6 +79,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import yaml
+from swarm_common.profiles import RUNNER_PROFILES
 
 from . import migrations as mig
 from . import tfvars
@@ -147,6 +154,26 @@ RETAINED_BUNDLE_STATES = frozenset({"building", "ready"})
 #: The image a release carrying `.swarm-bundle.json` ships beside its runner
 #: images (images/plugin-bundler, lane 14 of table 17.1 built both together).
 BUNDLER_IMAGE = "swarm-plugin-bundler"
+#: The bundle job (terraform/infra/plugin-bundles.tf), applied alone before
+#: the rebuilds so they run the new release's bundler image (section 1.4.4).
+BUNDLE_JOB_ADDRESS = "google_cloud_run_v2_job.plugin_bundle"
+#: The runner images a bundle is built on: the claude-code profiles' images,
+#: the set swarm-api's rebuild route checks (`pluginbundle.RUNNER_IMAGES`).
+BUNDLE_RUNNER_IMAGES: tuple[str, ...] = tuple(sorted({
+    p.image for name, p in RUNNER_PROFILES.items() if name == "claude-code" or name.startswith("claude-code-")}))
+#: The refusal of a build that did not end ready (section 1.4.4).
+BUNDLE_BUILD_FAILED = "bundle_build_failed"
+#: One bundle build, waited for after the one before it. The job's own
+#: timeout is 3600 seconds and swarm-api fails a record still building an
+#: hour after it started, so the bound waits that hour out with a margin.
+BUNDLE_WAIT = WaitSpec(
+    reason="a plugin bundle being built again on the new release's images",
+    expected="about ten minutes",
+    expected_s=10 * 60,
+    bound_s=70 * 60,
+    look_at="the console's Admin > Plugins page (the bundle's build) and the swarm-plugin-bundle job's executions",
+    interval_s=15,
+)
 
 _LOG_METRIC = "google_logging_metric"
 _CUSTOM_ROLE = re.compile(r"^google_.*_iam_custom_role$")
@@ -275,6 +302,15 @@ class UpgradeWorld(Protocol):
 
     def documents(self) -> mig.Documents: ...
 
+    def apply_bundle_job(self, version: str) -> None:
+        """Infra's latest pass with `version`'s inputs, targeted at `BUNDLE_JOB_ADDRESS` alone."""
+
+    def rebuild_bundles(self, base: Mapping[str, str]) -> Mapping[str, Any]:
+        """swarm-api's `POST /v1/admin/plugin-bundles/rebuild` on `base`: `started` and `building`."""
+
+    def bundle_status(self, bundle_id: str) -> Mapping[str, Any]:
+        """swarm-api's `GET /v1/admin/plugin-bundles/{bundle_id}`: the bundle's view."""
+
 
 class StateAccess(Protocol):
     def load(self) -> Any: ...
@@ -391,9 +427,43 @@ def carries_bundle_manifests(images: Mapping[str, str]) -> bool:
 
 
 def bundle_refusal(bundles: Sequence[str], target: str) -> str:
+    """Kept bundles with the built-ins switch off: no bundle job exists to build them."""
     return (f"{len(bundles)} plugin bundle(s) must be built again on {target}'s images before infra switches to them "
-            "(managed-plugins.md section 1.4.4), and this installer cannot start a bundle build until swarm-api's "
-            "bundle builds ship; nothing was applied by this step, and the running release keeps its bundles")
+            "(managed-plugins.md section 1.4.4), and the built-ins switch is off, so this deployment has no bundle "
+            "job to build them; nothing was applied, and the running release keeps its bundles")
+
+
+def bundle_base(project: str, region: str, images: Mapping[str, str]) -> dict[str, str]:
+    """The new base a kept bundle is built on: each runner image of the
+    release, this deployment's copy, by digest (`tfvars.image_refs`)."""
+    missing = [name for name in BUNDLE_RUNNER_IMAGES if name not in images]
+    if missing:
+        raise UpgradeRefused(f"{BUNDLE_BUILD_FAILED}: the release's images.json has no {', '.join(missing)}, so no "
+                             "bundle can be built on it; nothing past the image copy was applied")
+    return tfvars.image_refs(project, region, {name: images[name] for name in BUNDLE_RUNNER_IMAGES})
+
+
+def bundles_to_wait_for(answer: Mapping[str, Any], base: Mapping[str, str]) -> list[str]:
+    """The builds on `base` the rebuild route reports, in its order: the ones
+    it started, then any already building there (a run that stopped in this
+    step started them)."""
+    found: list[str] = []
+    for bundle_id in answer.get("started") or ():
+        if isinstance(bundle_id, str) and bundle_id not in found:
+            found.append(bundle_id)
+    for view in answer.get("building") or ():
+        bundle_id = view.get("bundle_id") if isinstance(view, Mapping) else None
+        if isinstance(bundle_id, str) and bundle_id not in found and view.get("base") == dict(base):
+            found.append(bundle_id)
+    return found
+
+
+def bundle_failed(bundle_id: str, view: Mapping[str, Any]) -> str:
+    refusal = view.get("refusal") if isinstance(view.get("refusal"), Mapping) else {}
+    code = refusal.get("code") or view.get("state") or "unknown"
+    return (f"{BUNDLE_BUILD_FAILED}: plugin bundle {bundle_id} did not build on the new release's images ({code}); "
+            "infra was not applied, so the running release keeps its images and its bundles. See the bundle on the "
+            "console's Admin > Plugins page, then run swarm upgrade again")
 
 
 def parse_images_json(data: bytes) -> dict[str, str]:
@@ -459,7 +529,7 @@ class Upgrade:
                 "switch is on: workers of that release could not run a step that names gstack or security-audit. "
                 "Turn builtins_managed off first (managed-plugins.md section 1.4.7); nothing was applied")
         bundles = retained_bundles(self.world.documents())
-        if bundles:
+        if bundles and tfvars.builtins_managed(self.store.load()) != "on":
             raise UpgradeRefused(bundle_refusal(bundles, target))
         terraform = {root: self.world.plan_root(root, target) for root in ("bootstrap", "infra")}
         iam: list[IamRow] = []
@@ -610,6 +680,48 @@ class Upgrade:
                                     "label change; GCP refuses to delete a metric an alert uses")
         self.world.apply_root("infra", target)
 
+    def _rebuild_bundles(self, target: str) -> None:
+        """Section 1.4.4: the job alone on the new bundler image, then one
+        build per kept key on the new base, each started by its own call to
+        the rebuild route and waited for before the next."""
+        # Read again: a platform admin may have applied an update since the plan.
+        bundles = retained_bundles(self.world.documents())
+        if not bundles:
+            return
+        if tfvars.builtins_managed(self.store.load()) != "on":
+            raise UpgradeRefused(bundle_refusal(bundles, target))
+        base = bundle_base(self.project, str(self.store.load().region or ""),
+                           parse_images_json(self.world.fetch(target, "images.json")))
+        self.world.apply_bundle_job(target)
+        # The route starts at most one build per call (the owner's pick on
+        # PR #3873's question 1), so it is asked again after each build ends
+        # ready, until it reports nothing new to wait for. Each ready build
+        # takes its key off the route's list and a failed one refuses, so the
+        # calls end; a build reported again is not waited for twice.
+        waited: set[str] = set()
+        while True:
+            fresh = [b for b in bundles_to_wait_for(self.world.rebuild_bundles(base), base) if b not in waited]
+            if not fresh:
+                return
+            for bundle_id in fresh:
+                waited.add(bundle_id)
+                self._wait_for_bundle(target, bundle_id)
+
+    def _wait_for_bundle(self, target: str, bundle_id: str) -> None:
+        self.out(f"  plugin bundle {bundle_id}: building on {target}'s images")
+
+        def built() -> str:
+            view = self.world.bundle_status(bundle_id)
+            state = view.get("state")
+            if state == "ready":
+                return "met"
+            if state == "building":
+                return "waiting"
+            raise UpgradeRefused(bundle_failed(bundle_id, view))
+
+        wait_until(f"upgrade.{REBUILD_BUNDLES}", BUNDLE_WAIT, built, clock=self.clock, events=self.events,
+                   on_poll=self.heartbeat, resume="swarm upgrade")
+
     def _verify(self) -> None:
         results = self.world.checks()
         bad = [f"{name}: {status} ({detail})" for name, status, detail in results if status != "met"]
@@ -625,10 +737,7 @@ class Upgrade:
         elif name == COPY_IMAGES:
             self.world.copy_images(target, parse_images_json(self.world.fetch(target, "images.json")))
         elif name == REBUILD_BUNDLES:
-            # Read again: a platform admin may have applied an update since the plan.
-            bundles = retained_bundles(self.world.documents())
-            if bundles:
-                raise UpgradeRefused(bundle_refusal(bundles, target))
+            self._rebuild_bundles(target)
         elif name == MIGRATIONS_ADDITIVE:
             self._migrate(mig.ADDITIVE, target)
         elif name == BOOTSTRAP:
@@ -736,8 +845,9 @@ class Upgrade:
 
 
 __all__ = [
-    "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "BUNDLER_IMAGE", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
+    "APP_DEFINITION_WAIT", "APP_INSTALLATION_WAIT", "AppInstallation", "BUNDLE_BUILD_FAILED", "BUNDLE_JOB_ADDRESS",
+    "BUNDLE_RUNNER_IMAGES", "BUNDLE_WAIT", "BUNDLER_IMAGE", "DRAIN_WAIT", "GithubApp", "IamRow", "ORDER",
     "ROLLED_BACK", "Upgrade", "UpgradeFailed", "UpgradePlan", "UpgradeRefused", "UpgradeWorld",
-    "app_permissions_url", "bundle_refusal", "carries_bundle_manifests", "iam_rows", "installation_url",
+    "app_permissions_url", "bundle_base", "bundle_failed", "bundle_refusal", "bundles_to_wait_for", "carries_bundle_manifests", "iam_rows", "installation_url",
     "missing_permissions", "policy_diff", "replaced_metrics", "retained_bundles", "version_key",
 ]

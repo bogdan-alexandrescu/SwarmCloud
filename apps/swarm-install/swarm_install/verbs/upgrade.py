@@ -34,6 +34,11 @@ plan review, the typed destroy approval), the policies through
 keys through `team.ensure_verify_keys`, and the checks through stage 14's
 quick checks. Dispatch is paused and resumed as the person (a platform admin
 signed in with `swarm login`) through `POST /v1/admin/dispatch/{pause,resume}`.
+Kept plugin bundles are rebuilt the same way, as that person: the bundle job
+applied alone through `apply_pass` with `BUNDLE_JOB_ADDRESS` as its one
+target, then `POST /v1/admin/plugin-bundles/rebuild` (one build started per
+call, called again after each build) and each build's
+`GET /v1/admin/plugin-bundles/{id}` (managed-plugins.md section 1.4.4).
 
 **The built-ins switch** (`--builtins-managed on|off`; managed-plugins.md
 sections 1.4.5 and 1.4.7, the owner's choice of 10 November 2026): a
@@ -78,8 +83,8 @@ from ..migrations import FirestoreMigrationDocuments, MigrationFailed
 from .. import tfvars
 from ..record import DATABASE
 from ..state import GcsObjectStore, StateStore, local_path, state_bucket
-from ..upgrade import (AppInstallation, GithubApp, Upgrade, UpgradeFailed, UpgradeRefused, carries_bundle_manifests,
-                       parse_images_json, retained_bundles, version_key)
+from ..upgrade import (BUNDLE_JOB_ADDRESS, AppInstallation, GithubApp, Upgrade, UpgradeFailed, UpgradeRefused,
+                       carries_bundle_manifests, parse_images_json, retained_bundles, version_key)
 from ..waits import SystemClock, WaitGaveUp
 
 NAME = "upgrade"
@@ -102,6 +107,9 @@ LOGGING = "https://logging.googleapis.com/v2"
 #: swarm-api's read of the GitHub App and its installation, as the App
 #: (`swarm_api.setup_app_read`): permissions only, never a token or a key.
 APP_ROUTE = "/v1/admin/setup/github-app/permissions"
+#: swarm-api's bundle builds (routes/plugin_bundles.py): the rebuild an upgrade
+#: asks for between its image copy and infra, and each build's status.
+BUNDLES_ROUTE = "/v1/admin/plugin-bundles"
 #: Set on the re-exec into V's engine: the release it was installed as, so a
 #: CLI that still is not V refuses rather than installing again.
 ENGINE_ENV = "SWARM_UPGRADE_ENGINE"
@@ -596,6 +604,22 @@ class LiveWorld:
 
     def resume_dispatch(self, reason: str) -> None:
         self._swarm_api().request("POST", "/v1/admin/dispatch/resume", payload={"reason": reason})
+
+    # -- the plugin bundles (managed-plugins.md section 1.4.4) ----------------------
+
+    def apply_bundle_job(self, version: str) -> None:
+        """The bundle job alone, on `version`'s bundler image: infra's latest
+        pass, targeted, so nothing else moves before the rebuilds."""
+        from ..steps import bootstrap
+
+        ctx = self.ctx(version)
+        bootstrap.apply_pass(ctx, self.deps, self._pass_for(ctx, "infra"), targets=(BUNDLE_JOB_ADDRESS,))
+
+    def rebuild_bundles(self, base: Mapping[str, str]) -> Mapping[str, Any]:
+        return self._swarm_api().request("POST", BUNDLES_ROUTE + "/rebuild", payload={"base": dict(base)})
+
+    def bundle_status(self, bundle_id: str) -> Mapping[str, Any]:
+        return self._swarm_api().request("GET", f"{BUNDLES_ROUTE}/{bundle_id}")
 
     def running(self) -> int:
         from google.cloud.firestore_v1.base_query import FieldFilter
