@@ -133,7 +133,9 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
 # -- LIGHTPANDA-POOLS (docs/design/lightpanda-runtime.md, part of #2688) ----------------------
 
 #: The live pool_limits the reference numbers mirror.
-DEV_TFVARS = Path(__file__).resolve().parents[3] / "terraform" / "environments" / "dev" / "dev.tfvars"
+#: A deployment's real dev.tfvars is private (the state bucket's config/ prefix,
+#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+DEV_TFVARS = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "tfvars" / "dev.tfvars.fixture"
 
 
 def _runner_profile_limit(text: str, profile: str) -> int | None:

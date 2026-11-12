@@ -39,7 +39,7 @@ ENTRY = re.compile(r'^\s*"?(?P<key>[A-Za-z][A-Za-z0-9_]*)"?\s*=\s*(?:true|false)
 
 
 def tfvars_files() -> list[Path]:
-    return sorted(ENVIRONMENTS.glob("*/*.tfvars"))
+    return sorted(ENVIRONMENTS.glob("*/*.tfvars.example"))
 
 
 def refusal_keys(text: str, where: str) -> list[str]:
@@ -100,8 +100,8 @@ def test_every_tfvars_refusal_names_a_switch(path: Path) -> None:
 # group workspace that manages secrets has a named workspace admin
 # (docs/design/workspace-roles.md §4.9). Read from the block's keys, not the
 # file's text: the comment above the block names role_admin_required on purpose.
-DEV_TFVARS = ENVIRONMENTS / "dev" / "dev.tfvars"
-PROD_TFVARS = ENVIRONMENTS / "prod" / "prod.tfvars"
+DEV_TFVARS = ENVIRONMENTS / "dev" / "dev.tfvars.example"
+PROD_TFVARS = ENVIRONMENTS / "prod" / "prod.tfvars.example"
 REACH = re.compile(r"^\s*platform_admin_reach\s*=\s*(?P<value>\S+)", re.MULTILINE)
 
 

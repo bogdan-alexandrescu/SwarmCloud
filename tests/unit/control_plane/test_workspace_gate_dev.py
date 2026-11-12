@@ -34,7 +34,7 @@ RENDER = re.compile(
 
 
 def _assignments(env: str) -> list[str]:
-    return [m.group("value") for m in ASSIGNMENT.finditer((ENVIRONMENTS / env / f"{env}.tfvars").read_text())]
+    return [m.group("value") for m in ASSIGNMENT.finditer((ENVIRONMENTS / env / f"{env}.tfvars.example").read_text())]
 
 
 def test_dev_turns_the_gate_on_exactly_once():
@@ -45,7 +45,7 @@ def test_dev_turns_the_gate_on_exactly_once():
 
 
 def test_dev_says_why_and_when_beside_the_value():
-    text = (ENVIRONMENTS / "dev" / "dev.tfvars").read_text()
+    text = (ENVIRONMENTS / "dev" / "dev.tfvars.example").read_text()
     head = text[: text.index("\nworkspace_gate")]
     comment = head[head.rindex("\n\n"):]
     for needle in ("WORKSPACE_GATE", "2026-10-13", "w-7f9285", "WD8"):
@@ -53,7 +53,7 @@ def test_dev_says_why_and_when_beside_the_value():
 
 
 def test_every_other_environment_leaves_the_gate_off():
-    for tfvars in sorted(ENVIRONMENTS.glob("*/*.tfvars")):
+    for tfvars in sorted(ENVIRONMENTS.glob("*/*.tfvars.example")):
         env = tfvars.parent.name
         if env == "dev":
             continue

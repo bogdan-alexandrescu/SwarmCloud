@@ -608,9 +608,16 @@ _ADDRESS_VARS = {
 }
 
 
-def _tfvars_front_door() -> str:
+#: Where the bridge reads dev's front door in developer mode. A deployment's
+#: real dev.tfvars is private (the state bucket's config/ prefix, docs/ci.md),
+#: so a checkout may hold no copy; the tracked placeholder has its shape.
+_DEV_TFVARS = _REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+_DEV_TFVARS_EXAMPLE = _REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
+
+
+def _tfvars_front_door(path: Path = _DEV_TFVARS_EXAMPLE) -> str:
     """dev.tfvars' frontend_hostname, parsed here rather than by the bridge."""
-    tfvars = (_REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
+    tfvars = path.read_text()
     assert not re.search(r"^\s*enable_frontend\s*=\s*false", tfvars, re.MULTILINE), (
         "dev.tfvars disables the front door; the probe below has nothing to find"
     )
@@ -732,6 +739,9 @@ def test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it(tmp_path):
     # that. The same two facts are held offline, against a simulated layout,
     # in tests/unit/mcp/test_bridge_outside_a_checkout.py.
     front_door = _tfvars_front_door()
+    # What the escape hatch must find in this checkout: its private dev.tfvars'
+    # front door when it holds one, and none when it does not.
+    checkout_front_door = _tfvars_front_door(_DEV_TFVARS) if _DEV_TFVARS.is_file() else ""
     probe_env = {key: value for key, value in env.items() if key not in _ADDRESS_VARS}
     # Both probes in DEVELOPER MODE, the only mode in which the bridge reads
     # tfvars at all since #61: the escape hatch must then find this checkout's
@@ -782,10 +792,10 @@ def test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it(tmp_path):
             f"escape hatch: the installed bridge takes {local['root']} for its "
             f"repository, not the checkout it was built from ({_REPO})"
         )
-    if local["host"] != front_door:
+    if local["host"] != checkout_front_door:
         problems.append(
             f"escape hatch: found front door {local['host']!r}; this checkout's "
-            f"dev.tfvars says {front_door!r}"
+            f"dev.tfvars says {checkout_front_door!r}"
         )
     # WHAT A READER IS TOLD TO RUN (#189), asked of the real installs. At
     # sc-v0.5.1 both answered `uv run swarm tail ...`, which outside a checkout

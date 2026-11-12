@@ -30,11 +30,36 @@ gke_master_cidr     = "172.16.32.0/28"
 nat_static_ip_count = 1
 restrict_egress     = false
 
+# The tailnet name the Tailscale add-on's forwarder dials (terraform/infra/
+# tailscale.tf): one MagicDNS name, <host>.<tailnet>.ts.net. Nothing reads it
+# until enable_tailscale_egress or internal_decision_api_enabled is on.
+tailscale_egress_target = "decision-api.example-tailnet.ts.net"
+
 # --- GKE Autopilot ---------------------------------------------------------
 enable_gke_autopilot        = true
 gke_release_channel         = "REGULAR"
 gke_enable_private_endpoint = false
 gke_master_authorized_cidrs = [{ cidr_block = "203.0.113.7/32", display_name = "installer" }]
+
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): on in dev,
+# with the image pinned BY NAME (never a /family/ path, which moves under a
+# stopped machine): a common CUDA image on Ubuntu 22.04 with an NVIDIA driver
+# of 580 or later. Nothing is made until voice_it is also "on".
+voice_speech = {
+  enabled = true
+  zones   = ["us-central1-a", "us-central1-b", "us-central1-c"]
+  image   = "projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-580-v20251001"
+}
+
+# The typesafe forwarder (terraform/infra/typesafe_fwd.tf,
+# docs/runbooks/typesafe-forwarder.md): created, served and enabled in dev for
+# the listed tenants only. Every attribute defaults to false.
+enable_typesafe_forwarder = true
+typesafe_forwarder = {
+  serve   = true
+  enabled = true
+  tenants = ["eng"]
+}
 
 # --- data ------------------------------------------------------------------
 firestore_database      = "swarm"
@@ -52,12 +77,49 @@ tenants = {
     max_active     = 10
     capacity_units = 20
   }
+  # The release acceptance tenant: a directory group whose principal slugs to
+  # "smoke"; acceptance_qa_tenant below names it.
+  smoke = {
+    kind            = "group"
+    principal       = "smoke@example.com"
+    directory_group = true
+    display_name    = "Smoke tests"
+    providers       = ["anthropic"]
+    max_active      = 4
+    capacity_units  = 8
+  }
 }
 
 api_invokers         = ["group:eng@example.com"]
 secret_admin_members = ["group:swarm-admins@example.com"]
 admin_users          = ["admin@example.com"]
 platform_owner       = "owner@example.com"
+
+# The platform admin's reach into workspaces (ROLES-ON-DEV): on in dev only.
+platform_admin_reach = true
+
+# The admission refusals swarm-api turns on (swarm_api.refusals.SWITCHES, one
+# `code = true` per line). Dev turns the viewer gate, role_member_required, on
+# and leaves role_admin_required off until every group workspace that manages
+# secrets has a named admin (docs/design/workspace-roles.md section 4.9).
+api_refusals = {
+  index_refresh_failed = true
+  role_member_required = true
+}
+
+# Repository grants (#780): a person's task is refused without a grant for its
+# repository; a service submission keeps the tenant token. On in dev; prod
+# turns it on only by the owner's answer, since it registers no GitHub App.
+repository_grants_enforced = true
+
+# WORKSPACE_GATE (W10, WD8; docs/workspaces.md section 5.5): on in dev only,
+# after the first workspace (w-7f9285) went end to end through the job, ready
+# on 2026-10-13. It ships off everywhere else.
+workspace_gate = true
+
+# The GitHub App (docs/runbooks/github-app.md): its client id from the App's
+# settings page. Not a secret; empty until the App is registered.
+github_app_client_id = ""
 
 # The shared project's other-team resources nothing may touch (rendered on
 # swarm-api as SWARM_SHARED_DENY_LIST). A project that shares nothing: [].
@@ -67,7 +129,26 @@ shared_deny_list = ["peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket", "p
 enable_frontend   = true
 frontend_hostname = "swarm.example.com"
 
+# The release acceptance job's QA case: the tenant it is granted and the
+# console it opens, this environment's own front door.
+enable_acceptance_fixture = true
+acceptance_qa_tenant      = "smoke"
+acceptance_console_url    = "https://swarm.example.com"
+
 # --- operations ------------------------------------------------------------
+# swarm-api runs two uvicorn workers an instance in dev; prod keeps the
+# default of one.
+api_workers = 2
+
+# The most instances each Cloud Run service scales to (docs/scaling.md).
+service_max_instances = {
+  "swarm-api"       = 8
+  "swarm-scheduler" = 2
+}
+
 create_alerts       = true
 alert_emails        = ["swarm-alerts@example.com"]
 spec_signature_mode = "enforce"
+# The KMS key version step specs are signed with (docs/runbooks/
+# spec-signing-rollout.md); enforce needs one named.
+spec_signing_key_version = 1

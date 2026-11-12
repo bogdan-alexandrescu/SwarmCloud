@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[3]
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 UNLABELABLE = REPO / "scripts" / "lib" / "unlabelable-types.json"
 RELEASE = REPO / ".github" / "workflows" / "release.yml"
 

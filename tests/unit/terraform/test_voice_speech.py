@@ -171,7 +171,7 @@ PINNED_IMAGE = re.compile(
 )
 
 
-@pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars.example")), ids=lambda p: p.parent.name)
 def test_own_speech_is_off_or_on_with_a_pinned_image(tfvars: Path) -> None:
     text = _code(tfvars.read_text())
     body = _block(text, r"^voice_speech\s*=")
@@ -235,7 +235,7 @@ def test_every_reference_to_the_template_handles_its_absence() -> None:
     assert re.search(r"^\s*template\s*=\s*" + TEMPLATE_GUARD + r".*:\s*null\s*$", output, re.M), output
 
 
-@pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars")), ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("tfvars", sorted((TF / "environments").glob("*/*.tfvars.example")), ids=lambda p: p.parent.name)
 def test_a_deployment_holding_the_template_back_says_why(tfvars: Path) -> None:
     # Dev held it back until its bootstrap granted the template permissions
     # (applied 2026-11-09); a deployment that holds it back again says why.

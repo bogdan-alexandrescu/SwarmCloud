@@ -1,0 +1,48 @@
+# A placeholder deployment's bootstrap tfvars, for the tests that hold a
+# property of a deployment's IAP accessors and of the deployer-scoping record
+# (tests/fixtures/tfvars/README.md). The real terraform.tfvars is private and
+# lives under the state bucket's config/ prefix (docs/ci.md). Placeholders only.
+
+project_id = "example-project"
+region     = "us-central1"
+location   = "US-CENTRAL1"
+
+# Who reaches the console through IAP: the people of the allowed domain, the
+# verification gate and the oracle API's account.
+frontend_iap_members = [
+  "domain:example.com",
+  "serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com",
+  "serviceAccount:oracle-api@example-project.iam.gserviceaccount.com",
+  "serviceAccount:qa-console@example-project.iam.gserviceaccount.com",
+]
+frontend_iap_backends = ["swarm-ui-backend"]
+
+# deployer_scoped_roles conditions the deployer's projectIamAdmin with
+# modifiedGrantsByRole hasOnly() over the grantable roles.
+#
+# NOT CLOSED BY IT -- so #68's goal, no route from CI to roles/owner, is NOT
+# reached by this line alone:
+#
+#   * roles/iam.roleAdmin bypassed this condition while it was on the deployer:
+#     one iam.roles.update adds resourcemanager.projects.setIamPolicy, which
+#     custom roles accept (measured 2026-09-25), to a custom role CI holds
+#     unconditioned, and every later project setIamPolicy, roles/owner
+#     included, is then authorised by THAT binding -- modifiedGrantsByRole is
+#     never evaluated. roleAdmin came off deployer_roles on 2026-09-25 (owner
+#     decision, #79), and a validation in variables.tf refuses it there, so
+#     the bypass is CLOSED IN CODE. Live, it held until the owner's bootstrap
+#     apply destroyed the deployer's roleAdmin binding, which
+#     docs/runbooks/custom-roles-to-bootstrap.md ("What actually happened")
+#     records on 2026-09-28 at 23:21Z. A live fact read on a date goes stale:
+#     a get-iam-policy read-back of the deployer's roles, showing no
+#     roles/iam.roleAdmin, is how to confirm it still holds. This is route 2
+#     in docs/ci.md -- including widening one of the grantable custom roles
+#     and granting it through this condition. This scoping by itself stops a
+#     direct grant, not one made through a custom-role update, which is why
+#     roleAdmin had to go rather than be scoped.
+#   * hasOnly limits which roles, never whose or with what condition, so CI
+#     can still grant ITSELF any of the 15 (#69); nothing above closes that.
+#
+# APPLY, in this exact order (owner decision 2026-09-28, after #275): create
+# the custom roles, then switch the condition on.
+deployer_scoped_roles = true

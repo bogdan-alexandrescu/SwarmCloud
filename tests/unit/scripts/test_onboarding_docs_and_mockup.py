@@ -367,6 +367,11 @@ def test_the_design_doc_links_its_mockup_and_its_siblings():
 @pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
 def test_every_cited_file_exists_in_doc_and_mockup(doc: Path):
     for path in _CITE.findall(_text(doc)):
+        # A deployment's real tfvars is private (the state bucket's config/
+        # prefix, docs/ci.md): a citation of one resolves to the tracked
+        # placeholder beside it.
+        if path.endswith(".tfvars"):
+            path += ".example"
         assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
     _assert_cites_resolve(doc)
 

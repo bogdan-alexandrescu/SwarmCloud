@@ -241,7 +241,7 @@ def test_acceptance_fixture_off_by_default() -> None:
     for name in ("acceptance_fixture", "acceptance_fixture_public_read"):
         assert re.search(rf"moved\s*\{{\s*from\s*=\s*\S+\.{name}\s*to\s*=\s*\S+\.{name}\[0\]", text), name
     for env in ("dev", "prod"):
-        tfvars = _text(TF / "environments" / env / f"{env}.tfvars")
+        tfvars = _text(TF / "environments" / env / f"{env}.tfvars.example")
         assert re.search(r"^enable_acceptance_fixture\s*=\s*true\s*$", tfvars, re.M), (
             f"{env}.tfvars must keep the live fixture (no change in the live plan)"
         )

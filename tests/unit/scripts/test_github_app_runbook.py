@@ -45,7 +45,7 @@ _spec.loader.exec_module(placeholders)
 RUNBOOK = REPO / "docs" / "runbooks" / "github-app.md"
 SECRET_MODULE = REPO / "terraform" / "modules" / "secret_manager"
 INFRA = REPO / "terraform" / "infra"
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 SCRIPT = REPO / "scripts" / "create-secrets.sh"
 
 SLOT_RE = re.compile(r"swarm-github-app-[a-z][a-z-]*[a-z]")

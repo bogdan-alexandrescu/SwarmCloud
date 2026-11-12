@@ -8,7 +8,8 @@ and held by
 dev ran them in **dry run** from 2026-10-21 (owner): Artifact Registry
 evaluated them and deleted nothing. **Since 2026-10-22 dev deletes for real**
 (`cleanup_dry_run = false` in
-[`terraform/environments/dev/dev.tfvars`](../../terraform/environments/dev/dev.tfvars);
+the deployment's `dev.tfvars`, kept in its private configuration; its shape is
+[`dev.tfvars.example`](../../terraform/environments/dev/dev.tfvars.example);
 owner, "Go live via a PR", the dry-run-off PR). Data Access audit logs were off, so the
 dry run wrote no list (§1); the owner approved the list computed by §2 from every
 version's tags and age against the live policies instead. At 06:50Z it held 4,233

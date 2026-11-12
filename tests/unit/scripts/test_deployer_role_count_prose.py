@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[3]
 CONDITIONS = REPO / "terraform" / "bootstrap" / "deployer_conditions.tf"
 
 CHECKED = [
-    REPO / "terraform" / "bootstrap" / "terraform.tfvars",
+    REPO / "terraform" / "bootstrap" / "terraform.tfvars.example",
     CONDITIONS,
     REPO / "scripts" / "iam-refusal-probe.sh",
     REPO / "docs" / "runbooks" / "iam-refusal-probe.md",
@@ -118,7 +118,7 @@ def gated_roles() -> dict[str, str]:
 def flags_on() -> set[str]:
     """The gated flags terraform/bootstrap/terraform.tfvars records as true: what
     an apply of the committed tfvars turns on."""
-    text = (BOOTSTRAP / "terraform.tfvars").read_text()
+    text = (BOOTSTRAP / "terraform.tfvars.example").read_text()
     return set(re.findall(r"^\s*(\w+)\s*=\s*true\s*$", text, re.M))
 
 
@@ -281,7 +281,7 @@ def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
         )
         assert re.search(
             rf"^\s*{flag}\s*=\s*true\s*$",
-            (BOOTSTRAP / "terraform.tfvars").read_text(),
+            (BOOTSTRAP / "terraform.tfvars.example").read_text(),
             re.M,
         ), f"terraform/bootstrap/terraform.tfvars must record {flag} = true, the value the owner applied"
 

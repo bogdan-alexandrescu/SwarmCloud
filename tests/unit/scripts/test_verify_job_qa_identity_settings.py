@@ -24,8 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 VERIFY_TF = ROOT / "terraform" / "infra" / "verify.tf"
 VARIABLES_TF = ROOT / "terraform" / "infra" / "variables.tf"
-DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
-PROD_TFVARS = ROOT / "terraform" / "environments" / "prod" / "prod.tfvars"
+DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars.example"
+PROD_TFVARS = ROOT / "terraform" / "environments" / "prod" / "prod.tfvars.example"
 GROUP = ROOT / "scripts" / "acceptance" / "groups" / "live-browser.sh"
 
 #: env name -> the terraform/infra variable it is rendered from.

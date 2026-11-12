@@ -37,7 +37,7 @@ def test_the_qa_account_can_own_a_service_workspace() -> None:
 
 
 def test_bootstrap_admits_the_same_account_at_iap() -> None:
-    tfvars = (REPO / "terraform" / "bootstrap" / "terraform.tfvars").read_text()
+    tfvars = (REPO / "terraform" / "bootstrap" / "terraform.tfvars.example").read_text()
     # The bootstrap's own project, read from the same file rather than restated.
     project = re.search(r'^project_id\s*=\s*"([^"]+)"', tfvars, flags=re.M)
     assert project, "terraform/bootstrap/terraform.tfvars no longer sets project_id"

@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 MAIN_TF = ROOT / "terraform" / "infra" / "main.tf"
-DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 SCALING = ROOT / "docs" / "scaling.md"
 
 

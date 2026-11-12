@@ -38,6 +38,11 @@ gke_release_channel         = "STABLE"
 gke_enable_private_endpoint = false
 gke_master_authorized_cidrs = []
 
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): off in prod.
+voice_speech = {
+  enabled = false
+}
+
 # --- data ------------------------------------------------------------------
 firestore_database      = "swarm"
 artifact_retention_days = 180
@@ -96,3 +101,8 @@ shared_deny_list = ["peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket", "p
 create_alerts       = true
 alert_emails        = ["swarm-alerts@example.com"]
 spec_signature_mode = "enforce"
+
+# The release acceptance job's fixture tenant and its accounts
+# (terraform/infra/acceptance.tf). The QA case stays skipped here: prod sets no
+# acceptance_qa_tenant or acceptance_console_url.
+enable_acceptance_fixture = true

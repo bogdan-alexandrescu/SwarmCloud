@@ -42,7 +42,11 @@ REQUESTS = DOCS / "contract-change-requests.md"
 CONTRACT = REPO / "CONTRACT.md"
 MAIN_TF = REPO / "terraform" / "infra" / "main.tf"
 LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
+#: The ceilings docs/scaling.md states are a deployment's (its services' max
+#: instances, its NAT addresses): a placeholder deployment's dev tfvars holds
+#: them, since the real one is private (tests/fixtures/tfvars/README.md).
+SCALING_TFVARS = REPO / "tests" / "fixtures" / "tfvars" / "dev.tfvars.fixture"
 NETWORK_TF = REPO / "terraform" / "modules" / "network" / "main.tf"
 RENDER_PY = REPO / "kubernetes" / "render.py"
 DISPATCH_PY = REPO / "apps" / "scheduler" / "scheduler" / "dispatch.py"
@@ -237,7 +241,7 @@ def test_scaling_ceilings_are_the_terraform_and_code_values():
 
     from swarm_common.config import Settings
 
-    tfvars = _text(DEV_TFVARS)
+    tfvars = _text(SCALING_TFVARS)
     api_max = _tf_number(tfvars, r'^\s*"swarm-api"\s*=\s*(\d+)')
     scheduler_max = _tf_number(tfvars, r'^\s*"swarm-scheduler"\s*=\s*(\d+)')
     nat_ips = _tf_number(tfvars, r"^nat_static_ip_count\s*=\s*(\d+)")
