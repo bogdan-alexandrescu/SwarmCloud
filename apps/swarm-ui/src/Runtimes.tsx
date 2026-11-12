@@ -763,6 +763,14 @@ function RuntimeCard({
             <b>weight</b>
             {spec.units}u
           </li>
+          {/* The Node the image carries (#3929). Null on a control_plane
+              profile, which runs no image, so the line is omitted there. */}
+          {runtime.node_version ? (
+            <li className="ctl-fact">
+              <b>node</b>
+              <span className="mono">{runtime.node_version}</span>
+            </li>
+          ) : null}
           {/* THE IMAGE HAS A LINE OF ITS OWN, AFTER THE SHORT FACTS (visual QA
               V088). It was second, in one ~220px track of the two-up grid --
               `.rt-fact-wide` said `flex-basis: 100%` to a grid -- so a digest
