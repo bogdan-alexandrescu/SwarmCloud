@@ -5,7 +5,8 @@ as server-sent events (docs/design/voice-it.md §3.5, §3.7, §10 phase 2).
         text/event-stream: `card.upsert`, `card.remove`, `session.state`,
         `meter.update`, the stage's `visual.upsert`, `note.upsert` and
         `focus` (visuals.py), and, while debug mode is on, `trace.turn`
-        (trace.py), each with `id: <seq>`
+        (trace.py), and `voice.tier.reopen` (a spent Live key's next tier,
+        sessions.py THE REOPEN), each with `id: <seq>`
 
 FIRESTORE IS THE MEETING POINT, NOT A RELAY. Every event is stored before it
 is sent (`store.VoiceStore.append_event`, numbered from the session's
@@ -40,7 +41,8 @@ NOTHING SECRET. A frame carries the event's own fields less the tenant and
 the person; cards were checked on write (`cards.validate`, which refuses a
 credential-shaped string). The stage's events are cut again to what the
 visual and note reads serve (`visuals.visual_view`, `visuals.note_view`; a
-focus is its visual id, anchor and caption), so a visual's frame names its
+focus is its visual id, anchor and caption), and a reopen is its tier's
+name and nothing else (REOPEN_TIERS: never a key or an account), so a visual's frame names its
 body's key, never the body, and a field a writer added is never sent. Logs
 name session ids and sequence numbers only.
 """
@@ -73,8 +75,10 @@ METER_UPDATE = "meter.update"
 #: The stage's three (visuals.py writes them): a visual drawn or drawn again,
 #: a note pinned, edited, resolved or made work, and the planner's focus.
 STAGE_TYPES = (vvis.VISUAL_UPSERT, vvis.NOTE_UPSERT, vvis.FOCUS)
+#: A spent Live key's next tier is held: the console offers again (sessions.py).
+TIER_REOPEN = vs.REOPEN_EVENT
 EVENT_TYPES = (vcards.CARD_UPSERT, vcards.CARD_REMOVE, SESSION_STATE, METER_UPDATE,
-               *STAGE_TYPES, vtrace.TRACE_TURN)
+               *STAGE_TYPES, vtrace.TRACE_TURN, TIER_REOPEN)
 
 #: What a `session.state` event may say.
 VOICE_STATES = ("listening", "thinking", "speaking", "working", "ended")
@@ -222,6 +226,12 @@ def frame(event: dict[str, Any], *, session_id: str) -> str | None:
             return None
         data = {"type": kind, "seq": seq, "at": event.get("at"),
                 **{k: event.get(k) for k in ("n", "drawn", "refused", "none")}}
+    elif kind == TIER_REOPEN:
+        # The tier's name, from the closed list, and nothing a writer added.
+        if event.get("tier") not in vs.REOPEN_TIERS:
+            log.warning("voice stream skipped a tier reopen session=%s seq=%s", session_id, seq)
+            return None
+        data = {"type": kind, "seq": seq, "at": event.get("at"), "tier": event["tier"]}
     elif kind in STAGE_TYPES:
         payload = stage_payload(event)
         if payload is None:

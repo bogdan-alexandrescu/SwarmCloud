@@ -612,6 +612,86 @@ def finish_sign_in(
     }
 
 
+class AccountDeviceSignInStart(StrictModel):
+    """Begin adding a ChatGPT plan with a device code. No provider: only a
+    plan signs in this way. No owner: the caller's workspace is the owner."""
+
+    label: str = Field(min_length=1, max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountDeviceSignInPoll(StrictModel):
+    """Ask whether the person approved it, by the state start answered."""
+
+    state: str = Field(min_length=8, max_length=256)
+
+
+#: What a device start may tell the browser, by allow-list: the code to type,
+#: where to type it, and the state to poll with. Never the device id.
+_DEVICE_START_FIELDS = (
+    "state",
+    "user_code",
+    "verification_uri",
+    "expires_in_seconds",
+    "interval_seconds",
+    "provider",
+)
+
+
+@router.post("/device/start")
+def begin_device_sign_in(
+    body: AccountDeviceSignInStart,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Start a ChatGPT plan's sign-in with a one-time code (`codex login
+    --device-auth`'s flow), for a browser that cannot catch the plan's
+    localhost redirect.
+
+    The tenant and the role are `begin_sign_in`'s: `_writer_tenant_id`, before
+    any broker call. The broker holds the device id it polls the vendor with;
+    this answer passes only `_DEVICE_START_FIELDS`.
+    """
+    result = pool.begin_device_sign_in(
+        owner_tenant=_writer_tenant_id(ctx, auth),
+        label=body.label,
+        lend_to=list(body.lend_to),
+    )
+    return {k: result.get(k) for k in _DEVICE_START_FIELDS}
+
+
+@router.post("/device/poll")
+def poll_device_sign_in(
+    body: AccountDeviceSignInPoll,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """`pending`, `expired`, or `filed` with the plan.
+
+    The ownership re-check is `finish_sign_in`'s: the CALLER's tenant goes as
+    `expected_owner` and the broker refuses, before it asks the vendor
+    anything, a poll by any tenant but the one that started the sign-in -- a
+    403 that leaves the sign-in to its owner. The broker files the plan, once;
+    a second poll reads it filed.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    result = pool.poll_device_sign_in(state=body.state, expected_owner=tenant_id)
+    status_word = result.get("status")
+    if status_word == "filed":
+        return {
+            "status": "filed",
+            "account": _own_view(result.get("account"), tenant_id),
+            **_registered(result),
+            "expires_at": result.get("expires_at"),
+            "note": "stored write-only; no read path in this API can return key material",
+        }
+    if status_word == "pending":
+        return {"status": "pending", "interval_seconds": result.get("interval_seconds")}
+    return {"status": "expired"}
+
+
 def _registered(result: dict) -> dict[str, Any]:
     """WHICH ORGANISATION THE ADD REGISTERED (#2222), by allow-list.
 
@@ -744,6 +824,36 @@ def set_lending(
             "an account is not lent to its own workspace; its own limit is per_workspace_max"
         )
     return _own_answer(pool.set_lending(account_id, lends=lends), tenant_id)
+
+
+class AccountSpendCap(StrictModel):
+    """An API key's monthly spend cap in US dollars, or null for none (§4.6).
+
+    Declared here, beside the one route that takes it. Required, so an empty
+    body is not read as "clear". What a cap may be (above 0, the ceiling) and
+    that a plan has none are the broker's: its 422 reaches the caller.
+    """
+
+    monthly_spend_cap_usd: StrictFloat | StrictInt | None
+
+
+@router.put("/{account_id}/spend-cap")
+def set_spend_cap(
+    account_id: str,
+    body: AccountSpendCap,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """An API key's monthly spend cap. Owner only, as lending is.
+
+    Metered by the broker from the workers' `cost_usd` estimates (Q5); a key
+    at its cap takes no new agent. Lowering it closes no hold.
+    """
+    tenant_id = _writer_tenant_id(ctx, auth)
+    _owned(pool, tenant_id, account_id)
+    cap = None if body.monthly_spend_cap_usd is None else float(body.monthly_spend_cap_usd)
+    return _own_answer(pool.set_spend_cap(account_id, monthly_spend_cap_usd=cap), tenant_id)
 
 
 class AccountModelClasses(StrictModel):

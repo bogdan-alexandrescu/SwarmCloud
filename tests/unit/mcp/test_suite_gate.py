@@ -187,10 +187,10 @@ def test_the_report_prompt_finds_the_blobs_in_the_checkouts_parent_not_its_root(
 
 def test_each_shard_runs_the_named_commands_from_working_dir_and_never_fixes_code():
     wire = _Wire()
-    _gate(wire, shards=2, project="chromium", env_file="web/.env.mock")
+    _gate(wire, shards=2, project="e2e", env_file="web/.env.mock")
     shard = _body(wire)["steps"][0]["input"]["prompt"]
     for line in ("cd web", "npm ci", "npx playwright install chromium",
-                 "npx playwright test --shard 1/2 --retries=1 --reporter=blob,line --project=chromium",
+                 "npx playwright test --shard 1/2 --retries=1 --reporter=blob,line --project=e2e",
                  "web/.env.mock"):
         assert line in shard, line
     # The image carries Chromium's libraries (FIX-2253); the agent is not root.

@@ -259,7 +259,7 @@ def test_the_gate_with_no_base_fails_on_every_finding(tmp_path):
 
 
 # --- the accept list the repository gate reads -------------------------------
-# BGD, 2026-11-05 (#2688): the repository gate accepts ONLY the .trivyignore.yaml
+# The owner, 2026-11-05 (#2688): the repository gate accepts ONLY the .trivyignore.yaml
 # entries scoped to apps/swarm-speech/uv.lock; every other acceptance keeps not
 # applying to it, as before, while the image scans keep reading the whole list.
 
@@ -429,7 +429,7 @@ def test_no_swarm_speech_acceptance_outlives_the_finding_it_accepted():
 
 
 # --- accept-list: the same filtered list, written for the SARIF scan ---------
-# BGD, 2026-11-05 (#2688): code scanning's `trivy-fs` alerts honour the gate's
+# The owner, 2026-11-05 (#2688): code scanning's `trivy-fs` alerts honour the gate's
 # accept list, so the workflow's SARIF scan passes what this subcommand writes
 # as --ignorefile. One filter (gate_ignores), never a second hand-kept list.
 
@@ -506,7 +506,7 @@ def test_accept_list_needs_exactly_one_path():
 # --- the vulnerability DB download: retried, then the upstream fallback ------
 # #2351: trivy (repo) read red when mirror.gcr.io answered 404 for the DB, a
 # transient fault with no finding behind it, and the merge step's free re-run
-# often read red again for the same reason. BGD, 2026-10-27 ("Both halves"):
+# often read red again for the same reason. The owner, 2026-10-27 ("Both halves"):
 # the job retries the download, then falls back to ghcr.io/aquasecurity/trivy-db.
 # A real finding still fails the job, through the gate, exactly as before.
 

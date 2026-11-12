@@ -70,7 +70,7 @@ def _direct_pr(db, worker_factory, monkeypatch, origin: Path):
 
 def _unchanged(base: str, names: list[str]) -> dict[str, Any]:
     return {
-        "artifacts": [{"name": name, "uri": f"gs://example-bucket/{name}"} for name in names],
+        "artifacts": [{"name": name, "uri": f"gs://swarm-artifacts-example-project/{name}"} for name in names],
         "git": {"published": False, "commit_count": 0, "dirty_count": 0, "base": base},
     }
 

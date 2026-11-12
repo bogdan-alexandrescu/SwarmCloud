@@ -300,13 +300,13 @@ run "the_tick_holds_no_grant_but_run_invoker_on_swarm_api" {
         "modules/scheduler/main.tf: account_id = module.service_account_ids.schedule_tick_id",
         "modules/scheduler/main.tf: schedule_tick_email = \"$${data.google_service_account.schedule_tick.account_id}@$${var.project_id}.iam.gserviceaccount.com\"",
         # DAYONE-BOOT-2: bootstrap creates the account (and adopts infra's,
-        # gated on adopt_from_infra_states), lists its address in an output,
-        # and infra forgets its old address without destroying it.
+        # gated on adopt_from_infra_states) and lists its address in an
+        # output. Infra's `removed` block for its old address was deleted on
+        # 2026-11-11, once the state held none of it.
         "bootstrap/platform_service_accounts.tf: account_id = module.service_account_ids.schedule_tick_id",
         "bootstrap/platform_service_accounts.tf: for_each = length(var.adopt_from_infra_states) > 0 ? toset([module.service_account_ids.schedule_tick_id]) : toset([])",
         "bootstrap/platform_service_accounts.tf: to = google_service_account.schedule_tick",
         "bootstrap/outputs.tf: (google_service_account.schedule_tick.account_id) = google_service_account.schedule_tick.email",
-        "infra/removed.tf: from = module.scheduler.google_service_account.schedule_tick",
         "modules/scheduler/outputs.tf: output \"schedule_tick_email\" {",
         "modules/scheduler/outputs.tf: value = local.schedule_tick_email",
         "infra/main.tf: member = \"serviceAccount:$${module.scheduler.schedule_tick_email}\"",

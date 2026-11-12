@@ -19,15 +19,21 @@
  * sheet; `?account=` opens that plan's Manage sheet. Its head is the page's
  * one head, titled "LLM Providers".
  *
- * API KEYS IS AN EMPTY STATE until the broker and swarm-api lanes (LP-B1,
- * LP-A1) ship the key calls: nothing reads keys yet, so there is no read mark
- * claiming one succeeded, and Add key is a disabled button whose (i) says why.
+ * API KEYS IS THE CARDS DIRECTION (lane LP-U3, LlmApiKeys.tsx; the owner's
+ * ask of 11 November 2026): one card a key, grouped by vendor, with its
+ * spend, holders, lends and controls. Its head is the page's one head, as
+ * Plans' is, with the tab's (i) and the strip under it.
+ *
  * No visible prose (§6.5): each explanation is a tooltip behind an (i).
  */
+import type { ReactNode } from 'react'
+import { loadApiKeys } from './api'
 import { Info } from './AccountsVerdict'
+import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
+import { LlmApiKeysBody } from './LlmApiKeys'
 import { LlmPlansScreen } from './LlmPlans'
-import { PageHead } from './Shell'
-import { Button, Segmented } from './components'
+import { Screen } from './Shell'
+import { Segmented } from './components'
 
 /** Capacity's tab id (App.tsx SECTIONS). */
 export const LLM_PROVIDERS_TAB = 'llm-providers'
@@ -64,21 +70,17 @@ const INFO = (
   <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />
 )
 
-/** API Keys' empty state: no key calls exist yet, so Add key is disabled and its (i) says why. */
-function ApiKeys() {
+/**
+ * API Keys: `Screen` draws the one head, titled with the tab's words, its (i)
+ * and the strip under it in every read state; the body is the key cards
+ * (LlmApiKeys.tsx) once the list has been read.
+ */
+function ApiKeysPage({ nav }: { nav: ReactNode }) {
   return (
-    <section className="c-emp" aria-label="API Keys">
-      <h3>
-        No API keys
-        <Info about="No API keys" tip="Agents fall back to keys only after the plans, so a page with none is valid." />
-      </h3>
-      <span className="c-btn-wrap">
-        <Button kind="primary" disabled>
-          Add key
-        </Button>
-        <Info about="Add key" tip="Adding a key opens once the broker and swarm-api take keys." />
-      </span>
-    </section>
+    // Re-read every 30 s (60 s on a phone), as Plans does, paused while the tab is hidden.
+    <Screen title="LLM Providers" info={INFO} nav={nav} load={loadApiKeys} pollMs={capacityPoll(ACCOUNTS_POLL_MS)}>
+      {(data) => <LlmApiKeysBody board={data} />}
+    </Screen>
   )
 }
 
@@ -89,28 +91,12 @@ export function LlmProvidersScreen({ sub }: { sub: LlmSubPage }) {
   // titled "LLM Providers", with its refresh and its age. `Screen` draws the
   // tab's (i) by the title and the strip under the head in every read state
   // (the owner's answer of 11 November 2026), so both show while the plans
-  // load and after their read failed. API Keys reads nothing and draws the
-  // head itself, (i) by the title, the same placement.
-  if (sub === 'plans') {
-    return (
-      <LlmPlansScreen
-        title="LLM Providers"
-        info={INFO}
-        nav={
-          <div className="cap-seg">
-            <SubPages sub={sub} />
-          </div>
-        }
-      />
-    )
-  }
-  return (
-    <>
-      <PageHead title="LLM Providers" info={INFO} />
-      <div className="cap-seg">
-        <SubPages sub={sub} />
-      </div>
-      <ApiKeys />
-    </>
+  // load and after their read failed. API Keys' cards draw the same head.
+  const nav = (
+    <div className="cap-seg">
+      <SubPages sub={sub} />
+    </div>
   )
+  if (sub === 'plans') return <LlmPlansScreen title="LLM Providers" info={INFO} nav={nav} />
+  return <ApiKeysPage nav={nav} />
 }

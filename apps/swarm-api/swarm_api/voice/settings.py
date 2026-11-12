@@ -66,8 +66,15 @@ deployment, in the Voice it pool alone, never lent; its state is the broker's
 each `available`, `no_quota_left` or `not_set_up` for the person, from the
 broker's `can_take_new_agent`. Only those words leave this module: no account
 id, owner workspace, key or secret name. A listing that could not be read is
-None everywhere, never "not set". Deleting the key waits on the broker's
-`DELETE /v1/accounts/{id}` for a key (LP-B1 stage (c)); nothing here offers it.
+None everywhere, never "not set". `can_delete` says whether the reader may
+delete it: a platform admin, while a key is set.
+
+DELETING THE DEDICATED KEY (§4.4) goes through the broker's
+`DELETE /v1/accounts/{id}`, which destroys its secret at once. The account is
+the one this listing names (`dedicated_account`), never one a caller names,
+and the label typed back must be its label. Each delete, done or refused by
+the broker, writes one `voice_audit` row (`audit_dedicated_key_delete`):
+who, when, the label and the outcome, never the key or its secret's name.
 """
 
 from __future__ import annotations
@@ -90,6 +97,10 @@ COLLECTION = "voice_settings"
 DOCUMENT = "platform"
 AUDIT = vs.AUDIT
 AUDIT_CHANGED = "voice_settings_changed"
+#: The audit action of a delete of the dedicated key (§4.4).
+AUDIT_DEDICATED_KEY_DELETED = "voice_dedicated_key_deleted"
+#: A delete's outcome in its audit row when the broker answered it.
+DELETED = "deleted"
 
 #: What a start applies to the stopped machine (§4.2 step 1, §11.4).
 MACHINE_FIELDS: tuple[str, ...] = ("machine", "stt_model", "tts_model", "idle", "zone")
@@ -407,6 +418,24 @@ def key_state(row: Mapping[str, Any]) -> str:
     return "available" if state == "AVAILABLE" else state.lower()
 
 
+def dedicated_account(listing: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """The broker's row for the dedicated Voice it key, or None when the
+    listing names none. Raises nothing; a listing that could not be read is
+    the caller's to tell apart (`_rows` is None)."""
+    return next((a for a in _rows(listing) or () if _is_dedicated(a)), None)
+
+
+def audit_dedicated_key_delete(db: Any, *, by: str, label: str, outcome: str,
+                               now: datetime) -> None:
+    """One `voice_audit` row for a delete of the dedicated key: who, when,
+    the label and the outcome (`DELETED`, or the broker's error code)."""
+    db.collection(AUDIT).document().set({
+        "action": AUDIT_DEDICATED_KEY_DELETED, "tenant_id": None, "by": by, "at": now,
+        "project_id": None, "session_id": None,
+        "detail": {"label": label, "outcome": outcome},
+    })
+
+
 def dedicated_key_status(listing: Mapping[str, Any] | None,
                          pool_answer: Mapping[str, Any] | None,
                          links: Iterable[Mapping[str, Any]], *, now: datetime,
@@ -420,15 +449,15 @@ def dedicated_key_status(listing: Mapping[str, Any] | None,
     its pool answer names this very account, else the last redeemed
     `voice-api-key` link for its label. `replace` is the one-time link that
     replaces it, `{kind, label}`, for a platform admin while a key is set; a
-    reader who is not one gets None, the read-only view."""
+    reader who is not one gets None, the read-only view. `can_delete` is
+    True for a platform admin while a key with a label is set."""
     rows = list(links)
     status: dict[str, Any] = {"set": None, "label": None, "display_name": None, "by": None,
                               "at": None, "state": None, "link": _open_link(rows, now),
-                              "replace": None}
-    accounts = _rows(listing)
-    if accounts is None:
+                              "replace": None, "can_delete": False}
+    if _rows(listing) is None:
         return status
-    dedicated = next((a for a in accounts if _is_dedicated(a)), None)
+    dedicated = dedicated_account(listing)
     if dedicated is None:
         return {**status, "set": False}
     label = dedicated.get("label") if isinstance(dedicated.get("label"), str) else None
@@ -449,7 +478,8 @@ def dedicated_key_status(listing: Mapping[str, Any] | None,
             "display_name": name if isinstance(name, str) else None, "by": by, "at": at,
             "state": key_state(dedicated),
             "replace": {"kind": sl.VOICE_API_KEY, "label": label}
-            if admin and label is not None else None}
+            if admin and label is not None else None,
+            "can_delete": admin and label is not None}
 
 
 def chain_status(listing: Mapping[str, Any] | None, person: str) -> list[dict[str, Any]]:
@@ -483,17 +513,21 @@ def chain_status(listing: Mapping[str, Any] | None, person: str) -> list[dict[st
 
 __all__ = [
     "AUDIT_CHANGED",
+    "AUDIT_DEDICATED_KEY_DELETED",
     "CHAIN_TIERS",
     "COLLECTION",
     "DEBUG",
+    "DELETED",
     "DOCUMENT",
     "KEY_PROVIDER",
     "KEY_STATES",
     "MACHINE_FIELDS",
     "VoiceSettings",
+    "audit_dedicated_key_delete",
     "chain_status",
     "check_changes",
     "debug_on",
+    "dedicated_account",
     "dedicated_key_status",
     "effective",
     "key_links",

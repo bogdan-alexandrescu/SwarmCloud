@@ -1,6 +1,6 @@
 """scripts/ci-select.sh and the application.yml steps that run it.
 
-BGD's pick, 2026-11-06 (part of #2688; docs/ci.md "The full suite runs once
+The owner's pick, 2026-11-06 (part of #2688; docs/ci.md "The full suite runs once
 per change, in the merge train"): a lane's pull request runs only the tests
 its change reaches, the merge train runs the full suite, and main's push skips
 its test jobs when a green, landed train tested its exact tree.

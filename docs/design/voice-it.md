@@ -5,6 +5,13 @@
 2026-10-31) was a session scratchpad file; the facts this design rests on are
 restated here with their sources (§13), so this file stands alone.
 
+**Status on 2026-11-11 (read on `main` at `217598f`):** "nothing built" is no
+longer true. Phases one and two are largely built (the section, swarm-voice's
+Live sessions and planner, the session routes, the grant, the card catalogue
+and stream, the cards, Projects), and Phase 3's first act tool,
+`answer_question`. §3.12 lists what this design says that the code does not do
+yet, and the code wins wherever they disagree.
+
 **A second engine (the owner, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
 Settings, Telemetry, spoken read-backs and visuals on the Talk page, is designed in
 [voice-it-own-speech.md](voice-it-own-speech.md).
@@ -41,8 +48,9 @@ The owner answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | The OpenAI key | Decided at build time; design for a **personal secret** | (none) | §3.6, open question 1 |
 | Memory | **Saved, resumable projects**, plus the owner's **editable preferences** | (none) | §3.7, §3.11 |
 | Microphone | **Open mic with barge-in**, plus **mute** and **push-to-talk** | (none) | §3.10 |
-| Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.12 |
+| Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.13 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
+| Above the page (2026-11-11) | The session **follows him across the console** in a floating view; a **working card** between replies; the **agents pulled in** listed; the paid voice **pauses after about 15 s** waiting on delegated work and reopens on the result, his voice or Resume | (none; the pause was picked from options) | §3.12 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus the owner's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
 | Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs the owner | The command deck | §11 |
 
@@ -162,7 +170,7 @@ both there, with nothing for the page to override.
 
 | Piece | Runs where | Holds | Why there |
 |---|---|---|---|
-| **Talk pane** | The owner's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
+| **Talk pane** | The owner's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list. From §3.12 the call is held by a session holder above the routed page, and Talk is its main view | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
 | **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | The owner's choice |
 | **swarm-voice** (new) | One-replica StatefulSet in `swarm-system` on the GKE cluster | Each live session's sideband WebSocket, the planner loop, the session grant (in memory) | It holds long-lived outbound sockets for the length of a conversation, which no request-shaped service can (§3.4) |
 | **Text conversation** (no API key in the pool) | Inside swarm-voice (`swarm_voice/textchat.py`), calling the ChatGPT plan's Codex Responses route | Each text session's turns and its plan lease, in memory | OpenAI serves the plan text but refuses it Live (§3.6, "Both paths"), so the browser sends each spoken turn as text and swarm-voice answers it |
@@ -217,7 +225,9 @@ sequenceDiagram
 GPT-Live's instructions (at most 16,384 tokens) and its voice cannot change
 once a session starts [5]. So the persona, the rules and the project brief go
 in at session start, and everything that changes later arrives as silent
-context.
+context. A Voice it session may span several GPT-Live sessions (a pause's
+wake, a rollover, a tier move: §3.12.7); each reopen is the one point where the
+instructions are refreshed.
 
 ### 3.4 Where the planner runs, and why
 
@@ -242,7 +252,11 @@ page sends.**
 
 * `GET /v1/voice/sessions/{id}/events` streams `card.upsert`, `card.remove`,
   `session.state` (listening, thinking, speaking, working, ended) and
-  `meter.update`. Every event has a sequence number; the stream resumes from
+  `meter.update`. **On `main` today** it also streams `visual.upsert`,
+  `note.upsert`, `focus` and, in debug mode, `trace.turn`; `session.state` and
+  `meter.update` are declared but have no writer (`stream.py`). §3.12 adds
+  `paused` and `waking` to the states and `work.step`, `work.delegation` and
+  `roster.update` to the events. Every event has a sequence number; the stream resumes from
   `Last-Event-ID`, which `EventSource` sends by itself on reconnect.
 * **Each stream ends itself after about nine minutes**, under swarm-api's
   660 s timeout, and the browser reconnects. Because every event is stored
@@ -575,7 +589,7 @@ drifted here before.
 
 | Line | Read from | Price |
 |---|---|---|
-| Talk | The session's seconds | `gpt-live-1` at $0.05 a minute, billed per second [1][2], silence included |
+| Talk | The session's seconds while the voice is open | `gpt-live-1` at $0.05 a minute, billed per second [1][2], silence included; time paused is not billed, and the estimate leaves it out (§3.12.8) |
 | Planner | Each turn's token usage | Opus 5.5 from the platform's `model_prices` (`swarm_api/modelprices.py`) |
 | Speech machine | The own-speech machine's minutes from the start call to the stop, per session, on the day the session started (`docs/design/voice-it-own-speech.md` §13) | The machine's catalogue price; a stop with no price is `unpriced_machine_sessions`, not $0 |
 | Work running | Each started item's step budgets, **times 1.2**, until it ends | The worker's guard kills a step at 120% of its budget (`docs/design/agent-budget.md` §5), so 120% is the true ceiling |
@@ -703,8 +717,8 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   enables the mic track only while the key or button is held. That works
   whatever turn mode `gpt-live-1` offers, which is not verified for push-to-
   talk (§9).
-* **Four states on screen:** listening, thinking, speaking, working in the
-  background.
+* **Five states on screen:** listening, thinking, speaking, working in the
+  background, and paused (§3.12.7).
 * **The oscilloscope.** An `AnalyserNode` (`fftSize` 2048) on the agent's
   remote track draws a time-domain trace while the agent speaks [13]. A
   smaller trace shows the mic. The analyser works without being connected to
@@ -723,7 +737,11 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   keeps the rule's intent: speech is proof someone is there.
 * **Silence ends a session.** After ten minutes in which neither side speaks,
   the agent asks once whether the owner is still there, then ends the GPT-Live
-  session to stop the meter. The project is kept.
+  session to stop the meter. The project is kept. **Not built for GPT-Live**
+  (on `main`, 2026-11-11, swarm-voice's `live.py` has no silence stop; text and
+  the fast front end after 900 s; an unattended session ends as `abandoned`
+  after 30 minutes without a heartbeat). §3.12.2 restates the rule: silence
+  counts only while the voice is open and no delegated work runs.
 * **Keyboard.** Hold Space (outside a text field) to talk, M to mute,
   Escape to stop.
 * **Headphones are advised** in the page's first-use note; echo cancellation
@@ -742,7 +760,12 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   maximum length is documented [5]. Before it expires, swarm-voice opens a
   new GPT-Live session with refreshed instructions, and the browser
   renegotiates with a short tone. The Voice it session, its ledger and its
-  grant carry on.
+  grant carry on. **Not built** on `main` (2026-11-11): what exists is the tier
+  move's `_reopen` in `swarm_voice/live.py`, with no route or browser side.
+  Rollover, the tier move and the pause's wake are one reopen path (§3.12.7).
+* **Ending and resuming.** Ending a session keeps all its work in its project;
+  Voice it › Projects › Resume hands the project to Talk, whose next start
+  continues it (`Projects.tsx`, `takeResumedProject`).
 * **Preferences** (Voice it › Preferences, and by voice): the voice; the
   default mic mode; how brief to be; preferred stacks, hosting and
   repositories; how many options to propose; the grace window; the per-size
@@ -750,7 +773,380 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   card with Undo. The voice itself is fixed per GPT-Live session [5], so a
   voice change takes effect at the next one.
 
-### 3.12 "Talk it through"
+### 3.12 Above the page: the session follows the owner, works and pauses
+
+**The owner's asks (11 November 2026).** Leaving Voice it collapses the
+session into a floating view (the voice animation and the mic controls). The
+floating view follows him into every section, keeps him informed of progress,
+and never ends or loses the session. Everything the agent produces stays in
+Voice it's main view; the floating view and the voice only say that a new item
+needs his review, and the spine's Voice it entry carries a marker while
+something waits. Asked "what is the state of our running agents", the agent
+answers by voice **and** offers to open that page; a spoken or clicked yes
+takes the console there from any section. Between voice replies a **working
+card** shows what the agent is doing. The **agents pulled in** (the planner,
+implementation agents and workflows) are listed with their state. **Picked by
+the owner:** the paid voice **pauses automatically** after about 15 seconds of
+waiting on delegated work, and **reopens** when the result is ready, when he
+starts talking, or on Resume.
+
+Read on `main` at `217598f`, 2026-11-11. Where this section and the code
+disagree, the code is quoted and this section says what changes.
+
+#### 3.12.1 What is true today
+
+| Fact | Where | What it forces |
+|---|---|---|
+| **Leaving Talk ends the session.** Talk's unmount effect ("Leaving the page ends the session: a call nobody can hear is still billed per second") hangs up the call and posts the end | `apps/swarm-ui/src/voice/Talk.tsx` (the `mounted` effect), `App.tsx` (`case 'voice/talk': return <VoiceTalkScreen />`, rendered per route) | The call must move out of the routed screen, to a holder mounted above the routes (§3.12.2) |
+| The console navigates through one function: `go(to)` in `App.tsx` pushes the path and sets the route; `paths.ts` `FIXED` maps every fixed page's address to its path | `App.tsx` (`go`), `paths.ts` (`FIXED`) | The navigation offer names a `FIXED` key; the console builds the path itself (§3.12.3) |
+| Resume is a hand-over in the tab's session storage (`RESUME_KEY`), taken once by Talk's next Start | `voice/Projects.tsx` (`resumeProject`, `takeResumedProject`) | A later session continues a project's work; ending keeps it all (§3.12.8) |
+| The session stream is server-sent events, stored before sent, resumed by `Last-Event-ID`, ending itself before 540 s; it carries `card.upsert`, `card.remove`, `visual.upsert`, `note.upsert`, `focus`, and `trace.turn` (debug only) | `swarm_api/voice/stream.py` (`EVENT_TYPES`, `MAX_SECONDS`) | The working card, the roster and the marker ride this one stream: no new socket, no polling per item |
+| **`session.state` and `meter.update` are declared but nothing writes them.** `VOICE_STATES` is `listening, thinking, speaking, working, ended`; the only `append_event` callers are cards, visuals and the debug trace | `stream.py` (`SESSION_STATE`, `VOICE_STATES`), `voice/cards.py`, `voice/visuals.py`, `routes/voice_trace.py` | §3.5's "streams `session.state`" is a declaration, not behaviour. This section gives the state its first writer, and adds `paused` |
+| A grant works only while the session document is `live`; ending clears its hash | `swarm_api/voice/grant.py` (`resolve`), `sessions.py` (`_close`) | **Pausing must not end the session**: the planner and the delegated work keep acting through the grant while the voice is closed |
+| **GPT-Live has no silence stop in swarm-voice.** The text conversation and the fast Claude front end after `IDLE_SECONDS = 900`; own speech's machine stops after Settings' idle (`IDLE`, default `5m`); a `live` session with no activity for `LIVE_STALE_SECONDS` (the longest idle, 900 s, plus 900 s: 30 minutes) is ended as `abandoned` by the next start or the sweep. The open stream writes `heartbeat_at` on every connect, so an open tab is never abandoned | `swarm_voice/textchat.py`, `claudefront.py`, `swarm_api/voice/speech_catalogue.py` (`IDLE`), `sessions.py` (`LIVE_STALE_SECONDS`, `ACTIVITY_FIELDS`), `routes/voice.py` (the heartbeat) | §3.10's "after ten minutes in which neither side speaks ... ends the GPT-Live session" is not built. §3.12.2 says what ends a session now |
+| **The tier reopen is built in swarm-voice only.** When a key's credit is spent, `Sessions.start` for a voice session that holds a next tier runs `_reopen`: a new Live session from a fresh browser offer, carrying the transcript segments, the grant, the planner model and the trace, then closing the spent one. Nothing in swarm-api or the console sends that second offer, and the `voice.tier.reopen` event has no reader | `swarm_voice/live.py` (`REOPEN_EVENT`, `_reopen`, `REOPEN_SECONDS`) | The pause's reopen is this path, given a route and a browser side (§3.12.7). §3.11's rollover is not built either; it becomes a third caller of the same path |
+| Delegations: GPT-Live's arrive as `session.delegation.created` and run `Planner.delegate`; the fast front's run in the background, one at a time, at most two waiting, each kept in memory for `GET /delegations/{id}`; swarm-api waits on it up to `DELEGATION_WAIT_SECONDS = 240` | `swarm_voice/live.py`, `planner.py` (`TurnResult.delegation_id`), `claudefront.py` (`Delegation`), `swarm_api/voice/sessions.py` | A delegation's id exists in both engines; neither is stored, so a reload loses it. §3.12.5 stores its lifecycle as events |
+| **Nothing Voice it starts is recorded yet.** `VoiceStore.record_start` writes `voice_starts` rows (`agent`, `workflow` or `run`, by id) and the ledger reads them, but no caller writes one: the planner's only act tool is `answer_question` | `swarm_api/voice/store.py` (`record_start`), `ledger.py`, `swarm_voice/tools_act.py`, `prompts.py` ("You cannot start, approve, cancel or spend anything") | The roster reads `voice_starts` by id and the project's tag; it shows starts as soon as Phase 3's act lane writes them, and follow-ups by tag today |
+| The ledger estimates talk from `live_at` to now while the session is `live`, unless swarm-voice reported `talk_seconds` | `swarm_api/voice/ledger.py` (`talk_seconds`) | A paused session is still `live`, so the estimate must leave paused time out (§3.12.8) |
+| The browser already runs Silero voice detection locally, with an energy fallback, for own speech | `voice/vad.ts` (`startVoiceDetection`, `SpeechGate`) | Waking on the owner's voice reuses it and costs nothing (§3.12.7) |
+
+#### 3.12.2 The session's lifetime once it lives above the page
+
+**The holder.** The call (the WebRTC peer or the speech socket, the mic, the
+player, voice detection), the session id, the project id and the stream
+subscription move out of `Talk.tsx` into one **session holder** mounted by the
+console's shell above the routed screen, for the whole life of the tab. Talk
+becomes a view of the holder: its main view. Any other section shows the
+**floating view**, drawn by the shell over the page. Nothing about the session
+depends on which screen is mounted, so changing section never touches the
+call.
+
+**The floating view** holds the voice animation (the ring, the same `Scope`
+trace at a small size), the mic controls (mute, push-to-talk, Stop), the
+working card's one line (§3.12.5), the attention count (§3.12.4), and "Open
+Voice it", which goes to Talk. It shows **no card content**: no plan, no diff,
+no mock-up. It can be collapsed to the ring alone and dragged to another
+corner; its place is kept in the tab. Keyboard: Escape stops as on Talk; Space
+and M work only while the floating view has focus, so the console's own
+shortcuts and text fields are never captured.
+
+**What ends a session now:**
+
+| Cause | Rule | Cause recorded |
+|---|---|---|
+| **End** | The End button (Talk or the floating view), Escape on Stop, or a spoken "stop the session" (`spokenAction`) | `ended_by_person` |
+| **The budget cap** | §3.8, unchanged | `budget_cap` |
+| **Silence, while the voice is open** | New for GPT-Live: ten minutes in which neither side speaks and **no delegated work is running** ends it; the voice asks once first. Own speech keeps its Settings idle rule; text keeps its 900 s. Time paused is not silence (§3.12.7) | `idle` |
+| **A long pause** | A paused session with no delegated work running and no activity from the owner for **60 minutes** ends (question 10). Paused time while work runs never ends it | `paused_idle` |
+| **Closing the tab** | `pagehide` sends the end with `fetch(..., {keepalive: true})`, which carries the session cookie and the workspace header (a beacon cannot send the header). If it never arrives: own speech ends after its 60 s socket grace (`tab_closed`); GPT-Live's peer is gone, and the abandonment rule ends the session after `LIVE_STALE_SECONDS` with no heartbeat | `tab_closed`, else `abandoned` |
+| **A reload** | Is a closed tab: a WebRTC peer cannot survive a page load. The project is kept, and Voice it › Projects › Resume continues it | as closing the tab |
+| **Signing out** | Ends it first, then signs out | `ended_by_person` |
+
+**What does not end it:** changing section; opening Voice it's Projects,
+Preferences or Settings; the console's fifteen-minute idle stop (speech still
+counts as input through `noteActivity`, and the stop pauses polling, not the
+session); a pause; a reconnect of the stream. Switching the console to another
+workspace keeps the session in its own workspace: the stream reads by session
+id, and the floating view names the session's workspace beside the ring.
+
+**What carries on unchanged:** one live session per person (`voice_live`), the
+grant's lifetime (it dies with the session, not with a pause), and Projects'
+refusal to delete a project with a live session (409).
+
+#### 3.12.3 The navigation offer
+
+**A Navigate card, from a fixed list.** The planner offers a page by drawing a
+new catalogue kind, **`navigate`**, created by the planner only:
+
+| Field | Type | Rule |
+|---|---|---|
+| `destination` | enum | One key of a fixed list served in the card schema: the `FIXED` keys of `paths.ts` that are pages a person reads (`overview/now`, `work/running`, `work/workflows`, `work/timeline`, `work/runs`, `automate/schedules`, `automate/approvals`, `capacity/pools`, and the rest of the reading pages), never a submit form, a callback or an admin page the person cannot open |
+| `object` | object, optional | One id from the envelope's `references` shape (`agent`, `workflow`, `run`, `schedule`, `approval`), checked by the same id patterns; the console builds that object's own page from it (`/agents/<id>`, `/runs/<id>`, `/automate/approvals/<id>`) |
+| `why` | line | One line the voice may read ("Running agents: three live, one waiting") |
+
+**There is no address field.** No string in the card becomes a URL: the
+console maps `destination` through `FIXED` and `object` through its own path
+builders, and anything else is not drawn. A test holds the schema's list to
+`paths.ts`, as `test_voice_cards.py` holds the kinds to `cards.ts`, so a page
+renamed in the console cannot leave a stale offer behind.
+
+**How a yes is confirmed.**
+
+* **Clicked:** "Open" on the card, in Talk or in the floating view's one line.
+  The click is the console's own `POST /v1/voice/sessions/{id}/cards/{card}/accept`
+  on the person's cookie.
+* **Spoken:** an offer is held like a read-back. The owner's next whole
+  utterance goes to the read-back gate (`/readbacks/answer`, the matcher of
+  [own speech §7.3](voice-it-own-speech.md#73-how-go-is-recognised)), which
+  already answers "go" and "not that" for both engines and for text mode. A
+  yes ("yes", "open it", "go", "show me") accepts the newest open offer; a no
+  dismisses it; anything else leaves it open and goes on as an ordinary turn.
+* **Only a person's route moves the state.** The planner can write a
+  `navigate` card only as `proposed`; `accepted` is set by swarm-api from the
+  click route or the gate, with `accepted_by: person`. The holder navigates
+  (through `go`) on an `accepted` card of its own session, once, and marks it
+  `done`.
+* **Nothing navigates without a yes.** One offer is open at a time; a newer
+  offer replaces it; an offer not answered within two minutes, or outlived by
+  the next turn's output, becomes `dismissed`. A card read from history (a
+  resumed project, a reload) is never acted on. When the console shows another
+  workspace than the session's, the card says so and offers no Open.
+
+**The voice and the offer.** The planner's spoken summary answers the
+question and then offers ("three are running and one waits on you; shall I
+open Running?"). The voice reads the offer; it never navigates by itself, and
+GPT-Live keeps its two tools (`delegate`, `stop`).
+
+#### 3.12.4 Attention items and the spine marker
+
+**What counts.** An **attention item** is something the agent produced that
+the owner has not seen in the main view: a card drawn or changed by the planner
+or the platform into a state that is new to him (a Plan or Proposal
+`proposed`, a Review `waiting`, a Details, Credential, Budget or Stop card
+`waiting`, a Rescue `proposed`, a Mock-up or Diagram drawn), and a new visual.
+A Work card moving between running states is progress, not an item; it shows
+on the working card and the roster. A navigation offer is not an item; it is
+answered where it is.
+
+**Seen.** The session document keeps `seen_seq`, the highest stream sequence
+the main view has shown. The holder posts it
+(`POST /v1/voice/sessions/{id}/seen`) when Talk is open and the tab is visible
+(`document.visibilityState`), at most once a second. Kept on the session, not
+in the tab, so a second window and a reload agree.
+
+**The marker** (the owner's pick is asked, question 9; this is the
+recommendation): the spine's Voice it entry and the floating view show **a
+number**: the attention items after `seen_seq`, drawn as `9+` past nine. Once
+seen, a card that **still waits on a decision** (a Review, a Plan or Proposal
+`proposed`, an input `waiting`, a Budget or Stop) leaves a **quiet dot** until
+he acts on it or dismisses it. Nothing at all when nothing waits.
+
+**How it clears.** The number clears when the main view has shown the items;
+the dot clears when the last waiting card leaves its waiting state. Ending the
+session clears both: the cards stay in the project, and Projects lists its
+open cards (`open_cards`).
+
+**The voice and the floating view only say that something needs review.** On a
+new item the floating view shows "New: Plan" (the kind, never the content) and
+the voice says one short line ("there's a new plan for you in Voice it"),
+spoken once per turn, never per card, and never over the owner. Content is
+never read from the floating view; the main view is where it is read.
+
+#### 3.12.5 The working card
+
+**When.** From a delegation's start until its next output (the planner's spoken
+summary, or the delegation ending without one), the main view shows one
+working card in the caption band, between the last reply and the next. The
+next output replaces it; its steps are not kept on screen (the cards it drew
+are). With two delegations in flight, the card follows the oldest and says "and
+1 more".
+
+**Collapsed (the default):** one line: a live indicator (a pulsing dot; a still
+dot under `prefers-reduced-motion`), what the agent is doing now, and the
+elapsed time since the delegation started ("Reading Running agents · 0:42").
+The floating view shows the same line.
+
+**Expanded:** the steps of the current delegation, newest last, at most 50 (the
+older folded into "and 12 earlier"), each a time and a phrase.
+
+**The feed: which stream events feed it.**
+
+| Event | Written by | Gives the card |
+|---|---|---|
+| `work.delegation` (new): `delegation_id`, `state` (`started`, `done`, `failed`, `refused`), `at` | swarm-voice, through a new grant write route `POST /v1/voice/sessions/{session_id}/work` | Start and end of the card; the elapsed time |
+| `work.step` (new): `delegation_id`, `phrase`, `ids`, `at` | **swarm-api's grant check itself**, for every call a grant makes: the route template is mapped to a phrase from a fixed table (`GET /v1/tasks` "Reading running agents"; `GET /v1/tasks/{task_id}/events` "Reading agent `<id>`'s events"; `GET /v1/repositories/{repo_id}` "Reading repository `<id>`"; `POST .../cards` "Drawing a `<kind>` card"; `POST /v1/tasks/{task_id}/answers` "Answering `<id>`'s question") | The step list and the collapsed line. A route missing from the table is "Reading SwarmCloud" (a test walks `ALLOWED_ROUTES` and `WRITE_ROUTES` against the table) |
+| `card.upsert`, `visual.upsert`, `note.upsert` | as today | A step "Drew a Plan card: `<title>`" |
+| `session.state` (first writer, plus `paused`) | swarm-api, from the delegation events and swarm-voice's pause and reopen | The indicator's word: working, paused |
+
+**What is masked.** A step carries the route's phrase and the ids the path
+named, nothing else: no query string, no request body, no response text, no
+transcript, no tool argument the model wrote. The planner never writes a step
+of its own, so no model text reaches the feed except a card's title, which the
+card catalogue already validated and checked with `credential_refusal`. The
+debug trace (`trace.turn`) stays behind Settings' Debug and never feeds the
+working card. Writing steps from the grant check, not from swarm-voice, also
+means the feed cannot claim work the grant did not do.
+
+**Cost.** One event document per grant call: a turn makes about ten, so about
+200 writes an hour at the typical twenty delegations (§6): cents.
+
+#### 3.12.6 The agent roster
+
+**What it lists:** the planner (each delegation of this session, from
+`work.delegation`), and everything the project set going: the agents,
+workflows and issue runs it started, and the follow-ups the platform started on
+their behalf (a run's planner, its lanes, fix rounds, merge steps), each with
+its kind, title, state (queued, running, waiting on the owner, done, failed,
+cancelled) and progress (a workflow's steps done of total; a run's lanes
+merged of total).
+
+**Where it is read from, by id.**
+
+* **Delegations:** the session's own `work.delegation` events, by
+  `delegation_id`.
+* **What Voice it started:** `voice_starts` rows (`kind`, `target_id`), read by
+  project. Each `target_id` is read by id through the existing reads
+  (`GET /v1/tasks/{id}`, `/v1/workflows/{id}`, `/v1/runs/{id}`).
+* **Follow-ups:** agents carrying the project's tag,
+  `metadata.claude_session == voice:<project>`, the query the ledger already
+  makes (`ledger.py`).
+
+**Followed without polling each one.** One follower per live session, in
+swarm-voice (Phase 4's `follow.py`), makes **one tag query and one batched
+read of the started ids** every 15 seconds, compares states with what it last
+saw, and writes one `roster.update` event (the changed rows only) through the
+grant's write route. The page never polls an item: it reads the roster once
+from `GET /v1/voice/projects/{id}/roster` when it mounts or its stream
+reconnects, then applies `roster.update` events. The follower runs while the
+voice is paused; it stops when the session ends. With no live session (a
+resumed project before Start) the Projects pane reads the same route once.
+
+**Where it is drawn:** the main view, beside the cards; the floating view shows
+only the counts ("2 running · 1 waiting on you"). Each row opens its own page
+through `go`, which is a click, not an offer.
+
+#### 3.12.7 The pause and the reopen
+
+**When it pauses (the owner's pick).** In a `live` (GPT-Live) session, when a
+delegation is in flight and **neither side has spoken for 15 seconds**
+(`PAUSE_AFTER_SECONDS = 15`, the owner's "about 15 seconds"), with no
+read-back pending and nothing playing, swarm-voice:
+
+1. appends one sentence for the voice to say ("I'll pause while that runs; I'll
+   be back when it's ready, or just start talking"), and waits for it to be
+   spoken, at most 8 s;
+2. closes the Live session (`session.close`), which stops GPT-Live's
+   per-second billing, and keeps its `usage.seconds`;
+3. writes `voice_state: paused` and `paused_at` on the session and a
+   `session.state: paused` event.
+
+The browser closes its peer connection on that event. The session stays `live`
+in swarm-api.
+
+**What keeps running:** the session, its grant and its ledger; the planner turn
+and the delegated work; the follower; the stream (so the working card, the
+cards, the roster and the marker keep updating); the Voice it pool lease (held
+and renewed, so a wake never waits for a key); the browser's mic stream, unless
+muted, for local voice detection only.
+
+**What wakes it.** Whichever comes first, once:
+
+* **The result is ready:** the delegation ends (`done`, `failed` or
+  `refused`); swarm-voice asks the holder to reopen through a
+  `session.state: waking` event with `cause: result`.
+* **The owner starts talking:** the holder runs `vad.ts`'s detector on the mic
+  while paused, and only its start-of-speech (`onStart`) is used. Frames are
+  never sent anywhere while paused; the detector runs in the browser and costs
+  nothing. Muted, the detector hears nothing; on push-to-talk, holding the key
+  wakes it.
+* **Resume:** the button on Talk or the floating view, or Space.
+
+**The reopen reuses the rollover path.** The holder makes a fresh offer and
+posts `POST /v1/voice/sessions/{id}/reopen` with the offer and the cause.
+swarm-api checks the person and the session (live, not ended) and forwards it
+to swarm-voice's new `POST /internal/sessions/{id}/reopen`, which runs the same
+`_reopen` the tier move runs today, generalised by cause (`tier`, `rollover`,
+`wake`): a new Live session on the held key, attached before the answer goes
+back, carrying the transcript segments, the grant, the planner model and the
+trace. Two things are new for a wake:
+
+* **Refreshed instructions.** GPT-Live's instructions are fixed per Live
+  session [5], so a reopen is the moment to refresh them: the persona and rules,
+  the preferences, the project brief as the planner last saved it, the open
+  cards' one-line summaries, and the last turns, under 16,384 tokens
+  (`swarm_voice/instructions.py`, Phase 4's row). What finished while paused is
+  in the brief and the cards, so the voice knows it without being told twice.
+* **The first words.** For `cause: result` the planner's summary goes in at
+  once as commentary and is spoken. For `cause: speech` the voice is told to
+  listen first: the page plays a short tone when the voice is back, and the
+  words said during the reopen (create and attach, inside `START_SECONDS`) are
+  **not heard**; the voice says "go ahead" if the owner stopped before it was
+  back. Not verified: how long a reopen takes (§9).
+
+The same route serves §3.11's rollover (the holder renegotiates before
+`expires_at`) and the tier move (`voice.tier.reopen` finally gets a reader: the
+holder makes the offer). One path, three causes, one test file.
+
+**If the result arrives while the owner is speaking.** Nothing interrupts him.
+Paused, his start of speech has already begun the wake; the result's summary
+is queued and spoken at the next silence after his utterance, as the fast
+front already speaks a delegation's sentences "at the next silence". Open, the
+same queue holds. The cards, the working card and the roster update at once
+either way, and one reopen serves both causes: a wake already in flight
+absorbs the other.
+
+**A failed reopen** (no key, OpenAI refusing, the start deadline passed) keeps
+the session paused and says one line on Talk and in the floating view with
+Resume, which tries again; a refusal from the key pool offers text mode, as a
+refused start does today.
+
+**Other engines.** A **text** session has no per-second voice to pause: it
+shows the working card and the roster and does not pause. **Own speech** has
+no per-second voice billing either; its cost is the machine. Recommended
+(question 11): the pause closes nothing on the machine, the machine's own idle
+rule counts from the pause (delegated work no longer counts as activity while
+paused), so after five minutes paused the machine stops while the session stays
+paused; a wake starts it again and the status line shows its boot phases.
+
+**What it costs paused.** GPT-Live: **nothing**; the Live session is closed,
+and the meter's talk line stops. The planner and the delegated work cost what
+they cost open. The stream costs its Firestore reads (about 3,600 an hour, as
+open). Voice detection is the browser's. Each pause and wake costs the few
+seconds of the pause sentence and the resumption, at $0.05 a minute: a
+three-minute delegation saves about 2 min 45 s, about 14 cents.
+
+#### 3.12.8 Cost and privacy
+
+* **The ledger counts only open time.** swarm-voice reports `talk_seconds` as
+  the sum of every Live session's `usage.seconds` in the voice session (a
+  reopen adds one); swarm-api's estimate counts from `live_at` to now **less
+  the paused intervals** kept on the session (`paused_at`, `woke_at` pairs).
+  Without that, a paused session would read as billing.
+* **The meter** shows "Paused: talk is not billed" while paused.
+* **The mic while paused.** The browser keeps the mic open, so its indicator
+  stays on; that is what lets him wake it by speaking. No audio leaves the
+  browser while paused: the detector decides only "speech started". The
+  floating view says "Paused · listening for you" so the open mic is never a
+  surprise; muting closes the track and leaves Resume as the only wake.
+* **What follows him.** The floating view shows the session's state, counts
+  and kinds, never card content, so a screen shared from another section shows
+  no plan, transcript or mock-up. Captions are shown only in the main view.
+* **The navigation offer** carries no address, so nothing the planner reads
+  can steer the console to a page outside the fixed list (§3.9: content is
+  data).
+* **The working card's feed** carries route phrases and ids only (§3.12.5).
+* **Ending** keeps every card, visual, note, start and the brief in the
+  project; Resume continues it. Nothing above changes retention (question 7).
+
+#### 3.12.9 The build lanes that follow
+
+Each lane owns its files; no two lanes share one. Lanes marked **mock-up**
+wait for the owner's pick among drawn variants (real console frames, both
+themes, desktop and phone, by a `claude-code-browser` lane, the mock-up lane
+below) before they build the look; their behaviour and tests may start first.
+
+| Lane | Files | Needs | Red-first test | Waits for the owner |
+|---|---|---|---|---|
+| **V1. The mock-ups: the floating view, the working card, the roster, the marker and the Navigate card are drawn as variants** | none in the repository (a mock-up lane's frames) | none | n/a | **the picks** |
+| **V2. swarm-voice pauses a Live session after 15 s waiting on a delegation and reopens it by cause, with refreshed instructions** | `apps/swarm-voice/swarm_voice/live.py` (the pause timer, `_reopen` by cause), `swarm_voice/instructions.py` (new), `swarm_voice/main.py` (`/internal/sessions/{id}/reopen`; the hook that starts and stops a session's follower, which V6 fills), `tests/unit/voice/test_live_pause.py` | none | With a fake clock and a fake Live API: 15 s of silence with a delegation in flight says the sentence and closes; a wake opens a new Live session carrying the segments and the grant; instructions stay under 16,384 tokens | no |
+| **V3. swarm-api keeps a paused session live, forwards a reopen, records seen items and counts only open talk** | `swarm_api/voice/sessions.py` (`voice_state`, paused intervals, `seen_seq`, `paused_idle`), `swarm_api/voice/ledger.py` (`talk_seconds` less paused time), `swarm_api/routes/voice.py` (`/reopen`, `/seen`), `tests/unit/control_plane/test_voice_pause.py` | V2 | A paused session's grant still resolves; its talk estimate leaves paused time out; a reopen of an ended session is 409; 60 minutes paused with nothing running ends it as `paused_idle` | no |
+| **V4. Every grant call writes a masked step, and delegations their lifecycle, on the session stream** | `swarm_api/voice/workfeed.py` (new: the route-phrase table, masking), `swarm_api/voice/grant.py` (the step hook; the `/work` write route), `swarm_api/voice/stream.py` (`work.step`, `work.delegation`, `roster.update`, `paused`), `tests/unit/voice/test_workfeed.py` | V3 | Every granted route has a phrase; a step carries no query, body or text; a fake key built at runtime in a query never reaches an event | no; **one security review** (the grant) |
+| **V5. A Navigate card offers a console page from a fixed list, and only a person's yes accepts it** | `swarm_api/voice/cards.py` (`navigate`), `swarm_api/voice/readback.py` (an open offer answered by the gate), `swarm_api/routes/voice_cards.py` (new: `/accept`), `swarm_api/main.py` (the include lines for both new routers, `voice_cards` and V6's `voice_roster`), `swarm_voice/prompts.py` (when to offer), `tests/unit/control_plane/test_voice_navigate.py` | V4 | The planner cannot write `accepted`; an unknown destination is 422; the schema's list equals `paths.ts`'s reading pages; a no dismisses | no |
+| **V6. One follower per live session updates the roster from one tag query and one batched read** | `swarm_voice/follow.py` (new), `swarm_api/voice/roster.py` (new), `swarm_api/routes/voice_roster.py` (new), `tests/unit/voice/test_follow.py` | V2, V4, V5 (its router's include line) | One query per tick whatever the count; a changed state is one event; nothing is written when nothing changed | no |
+| **V7. The session lives above the page: leaving Talk keeps the call, and only End, the rules and closing the tab end it** | `apps/swarm-ui/src/voice/session.tsx` (new: the holder, the wake detector, `pagehide`), `voice/Talk.tsx` (a view of the holder), `App.tsx` (mount the holder above the routes; hand it `go`), `__tests__/voice.session.test.tsx` | V3 | Changing route does not hang up; `pagehide` posts the end with `keepalive`; a reload starts no session by itself | no |
+| **V8. The floating view follows the owner, and the spine marks what waits** | `voice/Floating.tsx` (new), `Spine.tsx` (the marker on the `voice` item), `Shell.tsx` (draws the floating view off Talk), `__tests__/voice.floating.test.tsx` | V7, V1 | No card content in the floating view's markup; the number counts after `seen_seq`; the dot stays while a seen card waits | **mock-up** |
+| **V9. The working card, the roster and the Navigate card are drawn in the main view** | `voice/WorkingCard.tsx` (new), `voice/Roster.tsx` (new), `voice/cards/NavigateCard.tsx` (new), `voice/CardList.tsx` (`STREAM_EVENTS`), `__tests__/voice.working.test.tsx` | V4, V5, V6, V1 | Collapsed is one line; the next output replaces it; an accepted offer navigates once and a history card never does | **mock-up** |
+| **V10. The pause and the navigation run end to end on a deployment** | none in the repository: a recorded session on the epic with the pause, a spoken wake, a result wake, a spoken yes and the meter | everything | n/a | no |
+
+**Invariants.** A paused session holds no lease and no pool slot (invariant 1):
+it is a voice session, not an agent, and the Voice it pool key it keeps is not
+platform capacity. Delegated work goes through admission and fencing as before
+(2, 3, 5). Nothing waits on the voice (4): the follower and the delegations
+run whether the voice is open, paused or ended. Tenancy (9) is unchanged: every
+new event and route reads by session and checks the session's person. No
+caller picks anything but names (10): the Navigate card is a name from a list.
+
+### 3.13 "Talk it through"
 
 * **Where it appears:** a button on a failed or parked agent's panel
   (`AgentDetail.tsx`), on a failed or parked workflow (`WorkflowViews.tsx`),
@@ -933,7 +1329,7 @@ their reservations.
 
 * **1.** A voice session is not an agent: it holds no lease and no pool slot,
   so talking costs no capacity. What it submits is queued and costs nothing
-  until leased.
+  until leased. A paused session is the same (§3.12.9).
 * **2, 3 and 5.** Unchanged. Lanes go through ordinary admission and
   fencing.
 * **4.** swarm-voice is not a worker, and nothing in a lane waits on the
@@ -1019,6 +1415,10 @@ is 128.
 | That platform follow-ups (CI-fix rounds, conflict-fix rounds, merge steps) inherit the step budgets Voice it sets, and that an issue run's compiled steps can carry the plan's budgets | Count them by tag after the fact, reserve an allowance per run, and if needed a swarm-api change to write budgets onto compiled steps |
 | That agent and workflow submissions accept an idempotency key | A retried turn reads its own recorded actions first (§3.7) |
 | Chrome's echo cancellation in 2026 for this path (older community evidence only) | Agent audio plays from the WebRTC track; headphones advised |
+| How long a reopen takes (create, attach and the browser's renegotiation) after a pause | The words said while it reopens are not heard: a tone marks the voice's return, and the voice says "go ahead" (§3.12.7) |
+| That `session.closed`'s `usage.seconds` is per Live session, so a voice session's talk is the sum over its reopens | swarm-api's estimate less the paused intervals (§3.12.8) |
+| That the browser keeps the mic and the AudioWorklet running for voice detection while the tab is in the background | Resume, and the result's own wake, which needs no mic |
+| That an end sent with `fetch` `keepalive` on `pagehide` arrives | The abandonment rule after 30 minutes; own speech's 60 s socket grace |
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
 | Whether the research's per-hour figures hold for the owner's real talk | The meter measures them from the first session |
 | GKE and Cloud Run hourly rates | Shown as estimates |
@@ -1094,11 +1494,16 @@ grace window.
 |---|---|---|---|---|---|
 | **Code work Voice it starts ships through issue runs with auto-merge, so the platform's hard-stop holds apply** | `swarm_voice/ship.py` (issue bodies in the form's sections; runs with `plan_approval: required`, approved after reserving the plan; `auto_merge`), tests | M | act tools | A plan touching `**/iam*.tf` is never approved by Voice it and raises a Stop card | no |
 | **While a session is live, swarm-voice follows its project's work by tag and speaks only for a failure, a finished review or a stop** | `swarm_voice/follow.py`, tests | S | ship | A finished step updates its card and is said once; a running step is not said | no |
-| **A project resumes with its brief, open cards and last turns, and a session rolls over to a new GPT-Live session before it expires** | `swarm_voice/instructions.py`, `swarm_voice/live.py`, tests | M | planner | Instructions stay under 16,384 tokens; a rollover keeps the session, ledger and grant | no |
+| **A project resumes with its brief, open cards and last turns, and a session rolls over to a new GPT-Live session before it expires** | `swarm_voice/instructions.py`, `swarm_voice/live.py`, tests (built with §3.12.9's V2 and V3, which give the reopen its route; this row is then the `rollover` cause alone) | M | planner | Instructions stay under 16,384 tokens; a rollover keeps the session, ledger and grant | no |
 | **The Projects and Preferences panes list, resume, rename and delete projects and edit the owner's preferences** | `voice/Projects.tsx`, `voice/Preferences.tsx`, test | M | storage | Delete is typed (the body's `confirm` is the project's title; owner pick on an earlier issue) and removes the documents and the prefix; Undo restores a preference changed by voice | no |
 | **The planner splits a large project by territory into waves that each fit the remaining budget** | `swarm_voice/waves.py` (over `/territory` and `/search`), the Plan card's waves, tests | M | ship, follow | A fixture graph: two pieces editing one file become one lane; a wave never reserves past either cap | no |
 | **Voice it is documented for operators and readers** | `docs/voice-it.md`, `docs/web-ui/redesign.md`, this file's Status, `docs/mirrored-values.md` if the service address is mirrored | S | the phase's lanes | The docs guards named by the selection | no |
 | **Five scenarios run end to end on SwarmCloud** | none in the repository: a one-line fix, a feature, a rescue, an approvals walk and a new-app plan, each recorded on the epic issue with its spend | n/a | everything deployed | Each scenario's cards, spend and pull requests on the epic | no |
+
+### Phase 5: above the page (the owner's asks of 11 November)
+
+The lanes are §3.12.9's V1 to V10, by file, disjoint. The UI lanes V8 and V9
+wait for the owner's mock-up picks (V1).
 
 **Lanes that wait for the owner:**
 
@@ -1158,6 +1563,15 @@ states, not where they are drawn.
    (recommended), or expired after a set number of days? OpenAI keeps its own
    copy for 30 days either way.
 8. **The layout:** answered 2026-11-01, the Jarvis-like presence direction (§11).
+9. **The spine marker (§3.12.4):** a number for items not yet seen in the main
+   view, plus a quiet dot while a seen card still waits on a decision
+   (recommended); only the unseen number; or only cards waiting on a decision.
+10. **How long a paused session may wait (§3.12.2):** it ends after 60 minutes
+    with no delegated work running and no activity from the owner
+    (recommended); never while the tab is open; or after the idle setting.
+11. **Own speech during a pause (§3.12.7):** the machine's idle rule runs from
+    the pause and stops the machine, not the session (recommended); the
+    machine runs for the whole pause; or it stops at once.
 
 ---
 

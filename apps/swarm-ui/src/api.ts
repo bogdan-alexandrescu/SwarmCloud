@@ -8515,6 +8515,11 @@ async function fixtureState(
   fixtureAccounts = fixtureAccounts.map((a) =>
     a.account_id === accountId ? { ...a, state, reason } : a,
   )
+  // A key's state is the same route (API Keys' Pause, Drain and Resume);
+  // Resume also clears the out-of-credit mark, as the broker's does.
+  fixtureApiKeys = fixtureApiKeys.map((k) =>
+    k.account_id === accountId ? { ...k, state, reason, ...(state === 'AVAILABLE' ? { exhausted_at: null } : {}) } : k,
+  )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
 }
 
@@ -8556,9 +8561,239 @@ async function fixtureRefresh(accountId: string): Promise<Result<unknown>> {
 
 async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
   await new Promise((r) => setTimeout(r, 200))
+  if (fixtureApiKeys.some((k) => k.account_id === accountId)) {
+    // A key's secret is destroyed with it (docs/design/llm-providers.md §4.4).
+    fixtureApiKeys = fixtureApiKeys.filter((k) => k.account_id !== accountId)
+    return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId } }
+  }
   fixtureAccounts = fixtureAccounts.filter((a) => a.account_id !== accountId)
   return { status: 'ok', fetchedAt: Date.now(), data: { removed: accountId, secret: 'retained' } }
 }
+
+// ===========================================================================
+// API keys (Capacity › LLM Providers › API Keys; docs/design/llm-providers.md
+// §4 and §6.3)
+// ===========================================================================
+//
+// A KEY IS AN ACCOUNT of an `-api` provider: the same `GET /v1/accounts` list
+// the plans come from, its `kind` `api_key`. So the key controls are the plan
+// controls' routes (`setAccountState`, `removeAccount`, both above); only the
+// read and the add are the keys' own. The value is never in any of these: the
+// broker serves none, and the add sends it once, in the redeem POST body.
+
+/** The two key vendors' providers (`sl.API_KEY_PROVIDERS` in swarm-api). */
+export const API_KEY_PROVIDERS = ['anthropic-api', 'openai-api'] as const
+export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number]
+
+/** One lend of a key (`lends`): the borrower's agents cap and spend cap; `cap_set` false is a lend carried over with no cap yet. */
+export interface ApiKeyLend {
+  max_agents: number | null
+  monthly_spend_cap_usd: number | null
+  cap_set?: boolean
+}
+
+/** A key as `account_to_api` serves it: the plan fields plus the key's own (§4.6), its `lends` in a key's shape rather than a plan's `LendCap`. Absent: an older broker, said as unknown. */
+export type ApiKeyAccount = Omit<ServedAccount, 'lends'> & {
+  kind?: 'api_key' | 'plan' | string
+  vendor?: string
+  pools?: string[]
+  lends?: Record<string, ApiKeyLend>
+  monthly_spend_cap_usd?: number | null
+  /** Each workspace's cap on the agents it holds on the key (Q6). */
+  per_workspace_max?: Record<string, number>
+  month_spend_usd?: number | null
+  lend_spend_usd?: Record<string, number>
+  exhausted_at?: string | null
+  voice_dedicated?: boolean
+  tier?: string | null
+}
+
+export interface ApiKeysBoard {
+  keys: ApiKeyAccount[]
+  /** The workspace the list was read as, echoed from the verified token; null for every workspace. */
+  tenant: string | null
+  /** When this list was read, as a browser instant (see `AccountsBoard.readAt`). */
+  readAt: number
+}
+
+/** A key, not a plan: the broker's `kind`, or, from a broker older than it, an `-api` provider. */
+export function isApiKey(a: { kind?: string; provider: string }): boolean {
+  return a.kind !== undefined ? a.kind === 'api_key' : a.provider.endsWith('-api')
+}
+
+/**
+ * The developer keys this workspace sees, from `GET /v1/accounts`. Voice it's
+ * dedicated key is left out: it is managed in Voice it › Settings, never here
+ * (§4.4, Q9). Zero keys is an ok read with an empty list, not an empty state,
+ * so the page keeps its Add key.
+ */
+export async function loadApiKeys(): Promise<Result<ApiKeysBoard>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    return { status: 'ok', fetchedAt: Date.now(), data: { keys: fixtureApiKeys.filter(listedKey), tenant: 'u-owner', readAt: Date.now() } }
+  }
+  const r = await read<AccountsPage>(route('/v1/accounts'), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<ApiKeysBoard>
+  const keys = (r.data.accounts as ApiKeyAccount[]).filter(listedKey)
+  return { ...r, data: { keys, tenant: r.data.tenant_id, readAt: r.fetchedAt } } as Result<ApiKeysBoard>
+}
+
+function listedKey(a: ApiKeyAccount): boolean {
+  return isApiKey(a) && a.voice_dedicated !== true && a.tier !== 'voice_dedicated'
+}
+
+/**
+ * ADD A KEY, ONE STEP (§4.1): mint an `api-key` link for the reader's own
+ * email, then redeem it here with the value in the POST body. The value
+ * reaches swarm-api once and is kept nowhere; a refusal never quotes it.
+ * A failed mint sends nothing; a refused redeem leaves the link reopened by
+ * swarm-api, and this page simply asks again.
+ *
+ * `redeem` is SetupLink.tsx's `redeemSetupLink`, the one redemption path (as
+ * Accounts.tsx's Voice it key uses it), handed in because SetupLink.tsx
+ * imports this module.
+ */
+export type RedeemLink = (token: string, value: string) => Promise<Result<unknown>>
+
+export async function addApiKey(body: { provider: ApiKeyProvider; label: string; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const id = `u-owner:${body.label}`
+    if (fixtureApiKeys.some((k) => k.account_id === id)) return fixtureRefused(`the key was not added: there is already an account labelled ${body.label}`)
+    fixtureApiKeys = [...fixtureApiKeys, fixtureKey(body.label, body.provider)]
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.label, provider: body.provider, account_id: id, written: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.label, owner: body.owner, provider: body.provider })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return redeem(token, body.value)
+}
+
+/**
+ * REPLACE KEY (§4.5): the same one step as the add, for the key's own label
+ * and vendor, the link minted with `replace` so swarm-api refuses it unless a
+ * key of that vendor is on the label. The broker adds the value as a new
+ * version and expires the old one; holds, caps, lends and the Voice it share
+ * are untouched.
+ */
+export async function replaceApiKey(body: { key: ApiKeyAccount; owner: string; value: string }, redeem: RedeemLink): Promise<Result<unknown>> {
+  const provider = body.key.provider as ApiKeyProvider
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (!fixtureApiKeys.some((k) => k.account_id === body.key.account_id && k.provider === provider)) {
+      return fixtureRefused(`the key was not replaced: there is no ${provider} key labelled ${body.key.label} to replace`)
+    }
+    return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'api-key', label: body.key.label, provider, account_id: body.key.account_id, written: true, replaced: true } }
+  }
+  const m = await mintSetupLink({ kind: 'api-key', label: body.key.label, owner: body.owner, provider, replace: true })
+  if (m.status !== 'ok' && m.status !== 'stale') return m as Result<unknown>
+  const token = m.data.path.split('/').pop() ?? ''
+  return redeem(token, body.value)
+}
+
+/** `PUT /v1/accounts/{id}/spend-cap`: a key's monthly spend cap in US dollars, null for none (§4.6). Owner only. */
+export async function setKeySpendCap(accountId: string, usd: number | null): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    if (usd !== null && !(usd > 0 && usd <= 1_000_000)) return fixtureRefused('a monthly spend cap is above 0 and at most 1,000,000 US dollars')
+    return fixtureKeyWrite(accountId, { monthly_spend_cap_usd: usd })
+  }
+  return write(route('/v1/accounts/{account_id}/spend-cap', { account_id: accountId }), 'PUT', { monthly_spend_cap_usd: usd })
+}
+
+/** `PUT /v1/accounts/{id}/per-workspace-max`: each workspace's cap on the agents it holds on the key (Q6); `{}` clears them. Owner only. */
+export async function setKeyPerWorkspaceMax(accountId: string, caps: Readonly<Record<string, number>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    return fixtureKeyWrite(accountId, { per_workspace_max: { ...caps } })
+  }
+  return write(route('/v1/accounts/{account_id}/per-workspace-max', { account_id: accountId }), 'PUT', { per_workspace_max: caps })
+}
+
+/** `PUT /v1/accounts/{id}/lending` with `lends`: every lend of a key with its agents cap and spend cap (Q7), the whole map. Owner only. */
+export async function setKeyLends(accountId: string, lends: Readonly<Record<string, { max_agents: number; monthly_spend_cap_usd: number }>>): Promise<Result<unknown>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 160))
+    const full: Record<string, ApiKeyLend> = {}
+    for (const [ws, c] of Object.entries(lends)) full[ws] = { ...c, cap_set: true }
+    return fixtureKeyWrite(accountId, { lends: full, lend_to: Object.keys(lends).sort() })
+  }
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lends })
+}
+
+function fixtureKeyWrite(accountId: string, change: Partial<ApiKeyAccount>): Result<unknown> {
+  const found = fixtureApiKeys.find((k) => k.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account = { ...found, ...change }
+  fixtureApiKeys = fixtureApiKeys.map((k) => (k.account_id === accountId ? account : k))
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+/** A key's fixture row: an `-api` account, measured by spend rather than windows. */
+function fixtureKey(label: string, provider: ApiKeyProvider, extra: Partial<ApiKeyAccount> = {}): ApiKeyAccount {
+  return {
+    account_id: `u-owner:${label}`,
+    owner_tenant: 'u-owner',
+    label,
+    provider,
+    kind: 'api_key',
+    vendor: provider === 'openai-api' ? 'openai' : 'anthropic',
+    tier: 'api_key',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    lends: {},
+    assigned: 0,
+    max_agents: 4,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: ISO(-40 * 60_000),
+    model_classes: [],
+    monthly_spend_cap_usd: null,
+    month_spend_usd: 0,
+    lend_spend_usd: {},
+    exhausted_at: null,
+    voice_dedicated: false,
+    ...extra,
+  }
+}
+
+// ONE OF EACH TREATMENT a key card draws: a live key with a lend, a paused
+// one, one out of credit, one with no spend cap, and the other vendor.
+let fixtureApiKeys: ApiKeyAccount[] = [
+  fixtureKey('team-key', 'anthropic-api', {
+    display_name: 'Team key',
+    assigned: 3,
+    max_agents: 8,
+    monthly_spend_cap_usd: 400,
+    month_spend_usd: 212.5,
+    lend_to: ['smoke'],
+    lends: { smoke: { max_agents: 2, monthly_spend_cap_usd: 50, cap_set: true } },
+    lend_spend_usd: { smoke: 18.25 },
+  }),
+  fixtureKey('night-key', 'anthropic-api', {
+    state: 'PAUSED',
+    reason: 'paused for the weekend',
+    monthly_spend_cap_usd: 100,
+    month_spend_usd: 64,
+  }),
+  fixtureKey('spare-key', 'anthropic-api', {
+    max_agents: 2,
+    monthly_spend_cap_usd: 50,
+    month_spend_usd: 50,
+    exhausted_at: ISO(-2 * 3600_000),
+    can_take_new_agent: false,
+  }),
+  fixtureKey('codex-key', 'openai-api', {
+    assigned: 1,
+    max_agents: 3,
+    month_spend_usd: 31.4,
+    pools: ['accounts', 'voice-it'],
+  }),
+]
 
 // ===========================================================================
 // Overview (the landing screen) -- two reads nothing else needed
@@ -15114,8 +15349,11 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
+/**
+ * `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes.
+ * `api-key`: a developer key for the account pool (API Keys › Add), naming its vendor (`provider`), ten minutes.
+ */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key' | 'api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -15356,7 +15594,7 @@ export function createSetupTeam(body: { group: string; display_name?: string; fi
 }
 
 /** `POST /v1/admin/setup/links`: a one-time link for one named person. */
-export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string }): Promise<Result<SetupLink>> {
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string; provider?: ApiKeyProvider; replace?: boolean }): Promise<Result<SetupLink>> {
   return setupWrite(
     route('/v1/admin/setup/links'),
     'POST',
@@ -15365,7 +15603,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' || body.kind === 'api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 
@@ -17211,6 +17449,8 @@ export async function loadPluginUsage(p: PluginPlace): Promise<Result<PluginUsag
 export const VOICE_SETTINGS = '/v1/voice/settings'
 /** Every name a setting may take: the page offers these and nothing else. */
 export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+/** `DELETE {label}`: the dedicated key, its label typed back. Platform admins only. */
+export const VOICE_DEDICATED_KEY = '/v1/voice/settings/dedicated-key'
 
 /** The fields a write may name (speech_catalogue.FIELDS). */
 export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
@@ -17235,6 +17475,19 @@ export interface VoiceKeyStatus {
   link: { open: boolean; expires_at: string | null }
 }
 
+/** The dedicated Voice it key's status (`dedicated_key`): never the key or its secret. */
+export interface VoiceDedicatedKey {
+  /** null when the quota broker could not say. */
+  set: boolean | null
+  label: string | null
+  display_name: string | null
+  by: string | null
+  at: string | null
+  state: string | null
+  /** Whether the reader may delete it: a platform admin, while it is set. */
+  can_delete: boolean
+}
+
 export interface VoiceSettingsView {
   settings: Record<VoiceSettingField, string>
   /** Debug mode (`settings.debug`): each session that starts with it on keeps a turn-by-turn trace. */
@@ -17247,6 +17500,7 @@ export interface VoiceSettingsView {
   /** The machine fields the next start changes. */
   pending: VoiceSettingField[]
   openai_key: VoiceKeyStatus
+  dedicated_key: VoiceDedicatedKey
 }
 
 const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -17293,6 +17547,7 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
   const a = objOf(d.applied)
   const k = objOf(d.openai_key) ?? {}
   const link = objOf(k.link) ?? {}
+  const dk = objOf(d.dedicated_key) ?? {}
   return {
     settings,
     debug: s.debug === true,
@@ -17306,6 +17561,15 @@ export function normVoiceSettings(raw: unknown): VoiceSettingsView {
       by: strOf(k.by),
       at: strOf(k.at),
       link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+    dedicated_key: {
+      set: typeof dk.set === 'boolean' ? dk.set : null,
+      label: strOf(dk.label),
+      display_name: strOf(dk.display_name),
+      by: strOf(dk.by),
+      at: strOf(dk.at),
+      state: strOf(dk.state),
+      can_delete: dk.can_delete === true,
     },
   }
 }
@@ -17341,6 +17605,7 @@ function fixtureVoiceCatalogue(): unknown {
 }
 
 let fixtureVoiceSaved: { settings: Record<string, string>; debug: boolean; version: number; updated_at: string } | null = null
+let fixtureVoiceKeyDeleted = false
 
 function fixtureVoiceSettings(): unknown {
   const settings = fixtureVoiceSaved?.settings ?? {
@@ -17356,6 +17621,9 @@ function fixtureVoiceSettings(): unknown {
     applied,
     pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
     openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+    dedicated_key: fixtureVoiceKeyDeleted
+      ? { set: false, label: null, display_name: null, by: null, at: null, state: null, can_delete: false }
+      : { set: true, label: 'voice-openai', display_name: null, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), state: 'available', can_delete: fixtureIsAdmin },
   }
 }
 
@@ -17407,6 +17675,24 @@ export async function saveVoiceSettings(version: number, changes: VoiceSettingsC
     return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
   }
   const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/**
+ * `DELETE /v1/voice/settings/dedicated-key` with the label typed back:
+ * swarm-api deletes the broker's dedicated key, and only that one, and
+ * answers the settings read again. Platform admins only.
+ */
+export async function deleteVoiceDedicatedKey(label: string): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_DEDICATED_KEY)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    fixtureVoiceKeyDeleted = true
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'DELETE', { label })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
   return r as Result<VoiceSettingsView>
 }
@@ -17941,6 +18227,18 @@ export const VOICE_TRACE_SESSIONS = '/v1/voice/trace/sessions'
 export const VOICE_TRACE_SESSION = '/v1/voice/trace/sessions/{session_id}'
 /** The stream event a finished turn sends to Talk while debug mode is on (voice/stream.py). */
 export const VOICE_TRACE_TURN = 'trace.turn'
+
+/** The stream event a spent Live key's held next tier sends to Talk (swarm-api voice/stream.py `TIER_REOPEN`). */
+export const VOICE_TIER_REOPEN = 'voice.tier.reopen'
+/** The tiers a reopen names (swarm-api voice/sessions.py `REOPEN_TIERS`): a name, never a key. */
+export const VOICE_TIERS = ['plan', 'api_key', 'voice_dedicated'] as const
+export type VoiceTier = (typeof VOICE_TIERS)[number]
+/** `voice.tier.reopen`: the tier the session's next start opens on. */
+export interface VoiceTierReopenEvent {
+  type: typeof VOICE_TIER_REOPEN
+  seq: number
+  tier: VoiceTier
+}
 
 /** One card or mock-up a turn drew, or tried to: `refused` is the masked reason it was not. */
 export interface VoiceTraceDrawn {

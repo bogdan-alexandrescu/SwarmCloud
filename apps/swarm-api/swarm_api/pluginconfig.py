@@ -76,7 +76,8 @@ from .admins import AUDIT_COLLECTION
 from .codec import console_origin
 from .errors import UpstreamUnavailable, ValidationFailed
 from .judgment import MAC_FIELD, SettingsMac, block_mac, block_verifies
-from .plugincatalogue import BUILT_IN_PREFIX, builtin_entries
+from . import plugincatalogue
+from .plugincatalogue import BUILT_IN_PREFIX, SUPPORTED_MODES, builtin_entries
 from .plugins import ALLOWED, COLLECTION, FIELD
 
 log = logging.getLogger(__name__)
@@ -167,6 +168,12 @@ REFUSALS: dict[str, str] = {
     "plugin_profile_unsupported": "The plugin does not support the step's runner profile.",
     "plugin_setting_missing": "A required setting of the plugin has no value in this workspace.",
     "override_refused": "A step overrides only a plugin's non-secret values.",
+    # A bundled install with the built-ins switch on (managed-plugins.md
+    # section 1.4.5): the step's mode and skills are checked against the
+    # current version's `modes`, as check_step checks the code entry's.
+    "plugin_mode_unsupported": "That mode runs an interview with a person, which needs the question bridge; until it lands only unattended mode runs.",
+    "plugin_skill_not_offered": "The plugin's mode does not offer that skill.",
+    "plugin_skills_missing": "A step names at least one skill the plugin's mode offers.",
 }
 
 
@@ -902,23 +909,85 @@ def step_entry(install: Mapping[str, Any], version: Mapping[str, Any], config: M
     }, None
 
 
+def _bundled_modes(version: Mapping[str, Any]) -> dict[str, list[str]]:
+    """A bundled version's per-mode skills: its overlay's `modes` (1.4.1)."""
+    modes = (version.get("overlay") or {}).get("modes") if isinstance(version.get("overlay"), Mapping) else None
+    if not isinstance(modes, Mapping):
+        return {}
+    return {str(m): [s for s in skills if isinstance(s, str)] for m, skills in modes.items()
+            if isinstance(skills, list)}
+
+
+def bundled_entry(entry: dict[str, Any], version: Mapping[str, Any], wanted: Mapping[str, Any] | None,
+                  ) -> dict[str, Any]:
+    """A bundled install's signed entry (section 1.4.5): the managed entry
+    with `build: "image"`, its source digest (the bundle key), and the
+    step's mode and skills, checked against the version's `modes`. `wanted`
+    is the step's `{mode, skills}`; None for a default, which runs in
+    unattended mode with every skill that mode offers."""
+    modes = _bundled_modes(version)
+    if wanted is None:
+        mode, skills = SUPPORTED_MODES[0], list(modes.get(SUPPORTED_MODES[0], ()))
+    else:
+        mode, skills = wanted.get("mode"), list(wanted.get("skills") or ())
+        if mode not in SUPPORTED_MODES:
+            raise ConfigRefused("plugin_mode_unsupported", install_id=entry.get("name"))
+        extra = sorted(set(skills) - set(modes.get(mode, ())))
+        if extra:
+            raise ConfigRefused("plugin_skill_not_offered", install_id=entry.get("name"), skills=extra,
+                                offered=list(modes.get(mode, ())))
+    if not skills:
+        raise ConfigRefused("plugin_skills_missing", install_id=entry.get("name"),
+                            offered=list(modes.get(mode, ())))
+    return {**entry, "build": ps.BUILD_IMAGE, "source_sha256": version.get("source_sha256"),
+            "mode": mode, "skills": skills}
+
+
+def _bundled_install(store: ps.PluginStore, install_id: str) -> dict[str, Any] | None:
+    """The bundled install, seeded first when it is not there yet (section
+    1.4.1: a submission can be the first read after the switch is on)."""
+    install = store.install(install_id)
+    if install is None:
+        plugincatalogue.ensure_seeded(store)
+        install = store.install(install_id)
+    return install if ps.is_bundled(install) else None
+
+
 def step_plugins(store: ps.PluginStore, configs: PluginConfigs, *, tenant_id: str, runner_profile: str,
                  allowed: Iterable[str], added: Mapping[str, Mapping[str, Any] | None] | None = None,
-                 off: Iterable[str] = ()) -> dict[str, Any]:
+                 off: Iterable[str] = (), builtins_managed: bool = False) -> dict[str, Any]:
     """A step's plugin set at submission (section 7): `plugins` (managed
     installs, for `metadata.dispatch.plugins`), `built_ins` (names, for the
     work contract as today) and `skipped`: each default the step cannot run,
     with its fixed code (the owner's answer to Q6). A plugin the step itself
     adds (`added`: install id -> `{"overrides": {...}}`) and cannot run is
-    refused by the same code. `allowed` is the workspace's signed list."""
+    refused by the same code. `allowed` is the workspace's signed list.
+
+    With the built-ins switch on (`builtins_managed`, section 1.4.5) gstack
+    and security-audit, by name or by `builtin:` id, resolve to their
+    bundled installs' current versions as managed entries (`bundled_entry`),
+    keyed by the reserved id, and `built_ins` stays empty; a step that adds
+    one gives `{"mode", "skills"}` beside its overrides. Off, nothing here
+    changes."""
     allowed_set = set(allowed)
     turned_off = set(off)
     added = dict(added or {})
+    if builtins_managed:
+        # One spelling per bundled plugin: a default naming `gstack` and a
+        # step adding `builtin:gstack` are the same install.
+        def norm(name: str) -> str:
+            return plugincatalogue.bundled_id(name) or name if isinstance(name, str) else name
+
+        turned_off = {norm(n) for n in turned_off}
+        added = {norm(n): v for n, v in added.items()}
     plugins: dict[str, dict[str, Any]] = {}
     built_ins: list[str] = []
     skipped: list[dict[str, Any]] = []
     builtins = builtin_profiles()
-    order = [n for n in configs.defaults(tenant_id) if n not in turned_off and n not in added]
+    defaults = configs.defaults(tenant_id)
+    if builtins_managed:
+        defaults = list(dict.fromkeys(norm(n) for n in defaults))
+    order = [n for n in defaults if n not in turned_off and n not in added]
     wanted = [(n, True) for n in order] + [(n, False) for n in sorted(added)]
 
     def refuse_or_skip(name: str, is_default: bool, code: str, **detail: Any) -> None:
@@ -928,6 +997,40 @@ def step_plugins(store: ps.PluginStore, configs: PluginConfigs, *, tenant_id: st
                         **{k: v for k, v in detail.items() if v is not None}})
 
     for name, is_default in wanted:
+        bundled = plugincatalogue.bundled_id(name) if builtins_managed else None
+        if bundled is not None:
+            pin = plugincatalogue.BUNDLED_BY_ID[bundled]
+            if pin.entry.name not in allowed_set and bundled not in allowed_set:
+                refuse_or_skip(name, is_default, "plugin_not_allowed")
+                continue
+            install = _bundled_install(store, bundled)
+            if install is None:
+                refuse_or_skip(name, is_default, "plugin_not_found")
+                continue
+            if install.get("state") != ps.STATE_ACTIVE:
+                refuse_or_skip(name, is_default, "plugin_removed")
+                continue
+            version = store.current(install)
+            if version is None:
+                refuse_or_skip(name, is_default, "plugin_not_found")
+                continue
+            why = profile_refusal(version, runner_profile)
+            if why is not None:
+                refuse_or_skip(name, is_default, why[0], runtime=why[1])
+                continue
+            wanted_skills = None if is_default else added.get(name) or {}
+            entry, missing = step_entry(install, version, configs.config(tenant_id, bundled),
+                                        overrides=(wanted_skills or {}).get("overrides"))
+            if entry is None:
+                refuse_or_skip(name, is_default, "plugin_setting_missing", field=missing)
+                continue
+            try:
+                plugins[bundled] = bundled_entry(entry, version, wanted_skills)
+            except ConfigRefused:
+                if not is_default:
+                    raise
+                skipped.append({"install_id": name, "code": "plugin_skills_missing"})
+            continue
         if name in builtins or name.startswith(BUILT_IN_PREFIX):
             bare = name[len(BUILT_IN_PREFIX):] if name.startswith(BUILT_IN_PREFIX) else name
             if bare not in builtins or bare not in allowed_set:
@@ -1015,6 +1118,7 @@ __all__ = [
     "plugin_consumer",
     "profile_refusal",
     "secret_name",
+    "bundled_entry",
     "step_entry",
     "step_plugins",
     "values_view",

@@ -18,7 +18,7 @@
 #
 # THIS IS scripts/roll-live-relay.sh --component egress, AND NOTHING ELSE. The
 # apply (apply.sh's, with its manifest checks), the cluster checks, the
-# shared-project deny-list (scripts/lib/common.sh: never agents-staging), the
+# shared-project deny-list (scripts/lib/common.sh: never peer-cluster), the
 # rollout wait and the digest read-back live there once, for both
 # StatefulSets; a second copy here is how a deny-list check drifts. Every flag
 # is passed through. Off (enable_browser_egress false) is a notice and exit 0;

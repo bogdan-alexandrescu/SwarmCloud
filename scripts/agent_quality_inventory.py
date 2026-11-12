@@ -2,7 +2,7 @@
 """Re-check the agent quality baseline against the tree it was read from.
 
 docs/design/agent-quality/ is the agent quality program's baseline and
-capability inventory (BGD, 3 November 2026). This script makes it
+capability inventory (the owner, 3 November 2026). This script makes it
 reproducible: it reads only files under --root (and `git rev-parse` for the
 commit), never the network and never a cloud credential, and prints one JSON
 report:
@@ -29,7 +29,7 @@ report:
 
 known-failures.md lists skips and never counts them: two green changes that
 each add a skip and its row pass together, where two that each bump a count
-conflict or fail (BGD, 6 November 2026: merge-safe whole-tree checks).
+conflict or fail (the owner, 6 November 2026: merge-safe whole-tree checks).
 
 It exits 1 when anything cited is missing, a row is unnamed or a skip or
 quarantine row is missing or stale, so a renamed test can never keep

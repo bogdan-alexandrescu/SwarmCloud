@@ -67,7 +67,7 @@ REFUSED = [
     # The four bypasses the 2026-09-29 review found. Each OPENS the metadata
     # server, or its name, once a browser has parsed it.
     ("http://169.254.169.254\\@example.com/", "169.254.169.254", True),
-    ("http://metadata.google.interna%6c/", "metadata.google.internal", True),
+    ("http://metadata.google.%69nternal/", "metadata.google.internal", True),
     ("http://metadata.google.ｉｎｔｅｒｎａｌ/", "metadata.google.internal", True),
     ("http://169.254.169.254。/", "169.254.169.254", True),
     ("http://169254169254。/", None, True),

@@ -1,5 +1,5 @@
 """The swarm-verify job carries the QA identity case's two settings (lane
-QA-IDENTITY-WIRE, part of #1649; BGD's decision of 2026-10-27).
+QA-IDENTITY-WIRE, part of #1649; the owner's decision of 2026-10-27).
 
 `run_live_browser_qa` (scripts/acceptance/groups/live-browser.sh) SKIPs every
 check unless SWARM_ACCEPTANCE_QA_TENANT and SWARM_ACCEPTANCE_CONSOLE_URL are
@@ -10,7 +10,7 @@ its Terraform template's, so the settings are there or nowhere.
 * the job renders each from its variable, and only when the variable is set,
   so prod, which sets neither, keeps SKIPping rather than carrying an empty
   value;
-* dev sets them: the tenant BGD granted the QA identity (`smoke`) and the
+* dev sets them: the tenant the owner granted the QA identity (`smoke`) and the
   console's URL, which is `https://` + dev's own `frontend_hostname` -- the
   case judges "signed in" by that host, so a URL naming any other host would
   FAIL every run for a reason that is not the identity's.
@@ -80,6 +80,6 @@ def test_dev_sets_the_granted_tenant_and_its_own_console():
 
 
 def test_prod_leaves_the_case_skipped():
-    """Dev first (BGD, 2026-10-19, Q8): prod's acceptance has no QA tenant."""
+    """Dev first (the owner, 2026-10-19, Q8): prod's acceptance has no QA tenant."""
     for var in SETTINGS.values():
         assert _tfvar(PROD_TFVARS, var) is None, var

@@ -1404,15 +1404,23 @@ it grants nothing the release still uses.
 **Built (lane W9 of the workspace-deployer decisions epic, 2026-10-09). Not yet applied: nothing below has run
 against the project.** The pull request must not merge before the owner's go.
 
+**Retired 2026-11-11.** Both states applied the blocks below: on 2026-11-11 the dev
+infra state held none of the 71 addresses `terraform/infra/removed.tf` named, the
+bootstrap state none of the 10 `terraform/bootstrap/removed.tf` named, and no prod
+state existed. A block whose `from` is not in state is a no-op, so on the owner's
+"retire after apply" both files were deleted, with
+`tests/terraform/personal_tenant_removed.tftest.hcl` and its fixture. What follows
+is the record of the change as it was built.
+
 * `terraform/environments/dev/dev.tfvars` no longer names `example-tenant`; a dated
   comment in its place says why. The anthropic ceiling stays 120, above the
   new floor of 80 (eng and smoke).
-* `terraform/infra/removed.tf` forgets example-tenant's **33** instances: its
+* `terraform/infra/removed.tf` forgot example-tenant's **33** instances: its
   account, its Workload Identity, act-as and project grants, its three bucket
   grants, its image-pull and broker-invoke grants, its secret and refresh
   twin with their three authoritative bindings, its tenant document and two
   pool documents, its four Cloud Run jobs, its five scheduler jobs and its
-  wake-topic publisher grant. `terraform/bootstrap/removed.tf` forgets the
+  wake-topic publisher grant. `terraform/bootstrap/removed.tf` forgot the
   **5** grants the bootstrap made for it: the release deployer's
   `serviceAccountAdmin` on its account (`deployer_admin`), and the four
   user-slot grants (`forge_slot_version_adder`, `forge_slot_version_manager`,
@@ -1426,7 +1434,7 @@ against the project.** The pull request must not merge before the owner's go.
   as `terraform/infra/custom_roles_moved_to_bootstrap.tf` does for the
   broker's grant. A plan with example-tenant back in `dev.tfvars` fails ("Moved
   object still exists"), which is a guard against re-adding it.
-* `tests/terraform/personal_tenant_removed.tftest.hcl` holds it: dev.tfvars names no
+* `tests/terraform/personal_tenant_removed.tftest.hcl` held it until 2026-11-11: dev.tfvars names no
   example-tenant and the bootstrap plans no grant for it while it still plans eng's;
   terraform/infra plans no example-tenant resource while it still plans eng's;
   every instance a tenant shaped like example-tenant gets is a `moved` source; every

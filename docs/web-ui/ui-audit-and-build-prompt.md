@@ -71,7 +71,7 @@ usage; the rest predate the capture, so any total would understate.`
 blocked. It moves into the first buildable batch. The coverage caveats in
 `redesign-v2.md` §Panel 7 all still hold and are restated in §B6.4 — in
 particular that a run whose runner reported no usage records nothing, and those
-are the expensive ones. *(Corrected for #72: this paragraph first said spend was
+are the expensive ones. *(Corrected for spend on every exit: this paragraph first said spend was
 recorded on the clean-exit path only, so a parked or crashed attempt recorded
 nothing. No longer true of the worker.)* `lifecycle.py` `_upload_outputs`
 records spend on every exit that writes a terminal or parked state, and
@@ -1498,7 +1498,7 @@ without hovering.
 **Honesty cases:**
 - `null` cost/tokens → the existing sentence treatment, unchanged.
 - `0` checkpoints → a digit, unchanged.
-- **Spend coverage.** *(Corrected for #72: this note first said `record_spend`
+- **Spend coverage.** *(Corrected for spend on every exit: this note first said `record_spend`
   had one caller and that a park, a cancel, a SIGTERM, a crash and a fence all
   recorded nothing. No longer true of the worker.)* `lifecycle.py`
   `_upload_outputs` records spend "SPEND FIRST" on every exit that writes a

@@ -492,7 +492,7 @@ For limits beyond the Scale tier or custom pricing arrangements, [contact the sa
 Volume discounts may be available for high-volume users. These are negotiated on a case-by-case basis.
 
 * Standard usage tiers use the pricing shown in [Model pricing](https://platform.claude.com/docs/en/about-claude/pricing#model-pricing)
-* Enterprise customers can [contact sales](mailto:sales@anthropic.com) for custom pricing
+* Enterprise customers can [contact sales](https://claude.com/contact-sales) for custom pricing
 * Academic and research discounts may be available
 
 ### Enterprise pricing
@@ -504,7 +504,7 @@ For enterprise customers with specific needs:
 * Dedicated support
 * Custom terms
 
-Contact the sales team at [sales@anthropic.com](mailto:sales@anthropic.com) or through the [Claude Console](https://platform.claude.com/usage/limits) to discuss enterprise pricing options.
+Contact the [sales team](https://claude.com/contact-sales) or reach out through the [Claude Console](https://platform.claude.com/usage/limits) to discuss enterprise pricing options.
 
 ## Billing and payment
 
@@ -521,7 +521,7 @@ Tokens are pieces of text that models process. How many tokens the same text pro
 
 ### Are there free tiers or trials?
 
-New users receive a small amount of free credits to test the API. [Contact sales](mailto:sales@anthropic.com) for information about extended trials for enterprise evaluation.
+New users receive a small amount of free credits to test the API. [Contact sales](https://claude.com/contact-sales) for information about extended trials for enterprise evaluation.
 
 ### How do discounts stack?
 
@@ -531,4 +531,4 @@ Batch API and prompt caching discounts can be combined. For example, using both 
 
 Major credit cards are accepted for standard accounts. To buy credits or manage your payment methods, go to the [Billing](https://platform.claude.com/settings/billing) page (`platform.claude.com/settings/billing`) in the Claude Console. Enterprise customers can arrange invoicing and other payment methods.
 
-For additional questions about pricing, contact [support@anthropic.com](mailto:support@anthropic.com).
+For additional questions about pricing, contact [support](https://support.claude.com).

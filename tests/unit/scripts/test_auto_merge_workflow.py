@@ -50,6 +50,8 @@ _PLACEHOLDERS_SPEC.loader.exec_module(placeholders)
 WORKFLOWS = REPO / ".github" / "workflows"
 AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
 CI_DOC = REPO / "docs" / "ci.md"
+#: GitHub Actions' own app id, the same on every repository (swarm_api.forgewrite.GITHUB_ACTIONS_APP_ID).
+ACTIONS_APP = 15368
 
 REFUSED_PREFIX = "[swarm] task_"
 # Owner decision, 2026-09-28: branch protection requires only the checks that
@@ -391,7 +393,7 @@ def test_the_token_is_minted_and_the_merge_made_only_when_the_gate_says_merge(jo
 PROTECTED = {"name": "main", "protected": True, "protection": {"enabled": True, "required_status_checks": {
     "enforcement_level": "non_admins",
     "contexts": ["shellcheck", "trivy (repo)", "fmt / validate / tflint"],
-    "checks": [{"context": "shellcheck", "app_id": 15368}],
+    "checks": [{"context": "shellcheck", "app_id": ACTIONS_APP}],
 }}}
 UNPROTECTED = {"name": "main", "protected": False, "protection": {"enabled": False, "required_status_checks": {
     "enforcement_level": "off", "contexts": [], "checks": [],
@@ -413,7 +415,7 @@ RULESET_CHECKS = [
     "platform policy assertions",
     "ci-gate",
 ]
-_RULE_SOURCE = {"ruleset_source_type": "Repository", "ruleset_source": "bogdan-alexandrescu/SwarmCloud",
+_RULE_SOURCE = {"ruleset_source_type": "Repository", "ruleset_source": "example-org/example-repo",
                 "ruleset_id": 24160219}
 RULESET_RULES = [
     {"type": "deletion", **_RULE_SOURCE},
@@ -532,7 +534,7 @@ def run_gate(job: dict, tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "EVENT_NAME": event_name,
             "PR_NUMBER": "4242",
             "PR_TITLE": title,
@@ -562,7 +564,7 @@ def test_a_fact_style_title_on_a_protected_branch_passes_the_gate(run_gate):
     """The control: without it, every refusal below could be a gate that refuses everything."""
     proc, calls, comments = run_gate("The release fires after a label merge", PROTECTED)
     assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert "api repos/bogdan-alexandrescu/SwarmCloud/branches/main" in calls, calls
+    assert "api repos/example-org/example-repo/branches/main" in calls, calls
     assert "pr comment" not in calls and comments == "", comments
 
 
@@ -673,7 +675,7 @@ def test_classic_and_ruleset_checks_are_counted_once_each(run_gate):
     branch = {"name": "main", "protected": True, "protection": {"enabled": True, "required_status_checks": {
         "enforcement_level": "non_admins",
         "contexts": ["trivy (repo)", "shellcheck"],
-        "checks": [{"context": "trivy (repo)", "app_id": 15368}, {"context": "shellcheck", "app_id": 15368}],
+        "checks": [{"context": "trivy (repo)", "app_id": ACTIONS_APP}, {"context": "shellcheck", "app_id": ACTIONS_APP}],
     }}}
     proc, _calls, comments = run_gate("A fact-style headline", branch, rules=RULESET_RULES)
     assert proc.returncode == 0, proc.stderr + proc.stdout + comments
@@ -945,7 +947,7 @@ def test_the_self_exclusion_name_matches_the_jobs_actual_name(job: dict):
 def test_the_check_runs_are_read_for_the_exact_head_commit(run_gate):
     proc, calls, _comments = run_gate("A fact-style headline", PROTECTED, head_sha="cafef00d")
     assert proc.returncode == 0, _comments
-    assert "api repos/bogdan-alexandrescu/SwarmCloud/commits/cafef00d/check-runs" in calls, calls
+    assert "api repos/example-org/example-repo/commits/cafef00d/check-runs" in calls, calls
 
 
 # ---------------------------------------------------------------------------
@@ -1045,7 +1047,7 @@ def run_disable(disable_job: dict, tmp_path: Path):
     env = {
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
-        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "GH_REPO": "example-org/example-repo",
         "PR_NUMBER": "4242",
         "GH_TOKEN": DISABLE_WORKFLOW_IDENTITY,
         "APP_TOKEN": DISABLE_APP_IDENTITY,
@@ -1136,7 +1138,7 @@ def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run
     # hold every pull request that fell behind main forever.
     assert required["strict"] is False, required
     checks = required["checks"]
-    assert checks and all(check.get("app_id") == 15368 for check in checks), checks
+    assert checks and all(check.get("app_id") == ACTIONS_APP for check in checks), checks
     contexts = {check["context"] for check in checks}
 
     always_run = _job_check_names(WORKFLOWS / ALWAYS_RUN_WORKFLOW)
@@ -1277,7 +1279,7 @@ def test_a_required_check_must_be_success_or_skipped_where_gate_5_tolerates_neut
 
 
 #: A check's runs at one head, by (run id, conclusion, event); the event of
-#: each comes from its check suite's Actions run. BGD's decision of
+#: each comes from its check suite's Actions run. The owner's decision of
 #: 2026-10-22 (CHECK-RULE, part of #1999 and #1778): a check is decided by
 #: the latest run of EACH event; a re-run replaces the earlier runs of its
 #: own event, and a red push run is never outvoted by a green pull_request
@@ -1328,7 +1330,7 @@ def test_gate_5_and_the_merge_step_judge_the_latest_run_of_each_event(
 api_forgechecks: Any = _Imported("swarm_api.forgechecks")
 MERGE_TRAIN = REPO / "scripts" / "merge-train.sh"
 
-#: CHECK-RULE-2 (BGD, 2026-10-22, answering CHECK-RULE's two questions):
+#: CHECK-RULE-2 (the owner, 2026-10-22, answering CHECK-RULE's two questions):
 #: "Yes, a follow-up lane" -- the merge train's judge decides a check by the
 #: latest run of each event too -- and "Yes, one rule for every check" -- a
 #: check nothing requires follows the same rule. One table, through every
@@ -1371,7 +1373,7 @@ EVERY_CHECK_PARITY = [
 def _parity_runs(name: str, runs: list) -> tuple[list[dict], list[dict]]:
     """GitHub's check runs and the Actions runs at the head, for one row."""
     check_runs = [{"id": run_id, "name": name, "status": status, "conclusion": conclusion,
-                   "app": {"id": 15368}, "check_suite": {"id": 100 + run_id},
+                   "app": {"id": ACTIONS_APP}, "check_suite": {"id": 100 + run_id},
                    "html_url": f"https://github.com/o/r/actions/runs/{run_id}"}
                   for run_id, _event, status, conclusion in runs]
     workflow_runs = [{"id": 900 + run_id, "check_suite_id": 100 + run_id, "event": event}
@@ -1423,7 +1425,7 @@ def test_every_implementation_judges_every_check_by_the_latest_run_of_each_event
     assert (proc.returncode != 0 or decision != "merge") is holds, (case, decision, proc.stderr, comments)
 
     # The worker's merge step.
-    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=ACTIONS_APP,
                                      run_id=run_id, event=event, check_suite_id=100 + run_id)
              for run_id, event, status, conclusion in runs]
     if required:
@@ -1458,7 +1460,7 @@ def test_every_implementation_judges_every_check_by_the_latest_run_of_each_event
     assert (verdict != "green") is holds, (case, verdict)
 
 
-#: #1778's second expectation (BGD released bundle H09, 2026-10-27): "a check
+#: #1778's second expectation (the owner released bundle H09, 2026-10-27): "a check
 #: whose LATEST run is cancelled is still not green and waits, rather than
 #: failing the merge". Each judge's own answer, one row each, as STUCK_PARITY
 #: below: gate 5 refuses only a red latest run, and gate 6 waits on a
@@ -1510,7 +1512,7 @@ def test_every_judge_waits_on_a_cancelled_latest_run_and_red_still_wins(
     assert decision == gate, (case, decision, proc.stderr, comments)
 
     # The worker's merge step.
-    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=ACTIONS_APP,
                                      run_id=run_id, event=event, check_suite_id=100 + run_id)
              for run_id, event, status, conclusion in runs]
     if required:
@@ -1543,7 +1545,7 @@ def test_every_judge_waits_on_a_cancelled_latest_run_and_red_still_wins(
         assert worker != "green", case
 
 
-#: CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+#: CHECK-STUCK (the owner, 2026-10-23, part of #2031): a check run that carries a
 #: conclusion AND a completed_at is judged by its conclusion, whatever
 #: `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
 #: `conclusion: success` and a `completed_at`, and the worker's merge step
@@ -1584,7 +1586,7 @@ def test_every_judge_reads_a_run_with_a_conclusion_and_completed_at_as_finished(
 ):
     name = "ci-gate" if required else "terraform"
     run = {"id": 1, "name": name, "status": status, "conclusion": conclusion,
-           "completed_at": completed_at, "app": {"id": 15368}, "check_suite": {"id": 101},
+           "completed_at": completed_at, "app": {"id": ACTIONS_APP}, "check_suite": {"id": 101},
            "html_url": "https://github.com/o/r/actions/runs/1"}
 
     # Gate 5 and gate 6, the gate step's shell.
@@ -1598,7 +1600,7 @@ def test_every_judge_reads_a_run_with_a_conclusion_and_completed_at_as_finished(
     assert decision == gate, (case, decision, proc.stderr, comments)
 
     # The worker's merge step.
-    facts = worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+    facts = worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=ACTIONS_APP,
                                     run_id=1, check_suite_id=101, completed_at=completed_at)
     if required:
         got = worker_merge.required_check_state([facts.as_run()])
@@ -1922,7 +1924,7 @@ def run_requeue(requeue_job: dict, tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "RUN_HEAD_SHA": run_head_sha,
             "DEFAULT_BRANCH": "main",
             "GITHUB_STEP_SUMMARY": str(summary),
@@ -2028,7 +2030,7 @@ def test_the_body_edit_re_evaluation_dispatches_exactly_that_pull_request(requeu
     env = {
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
-        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "GH_REPO": "example-org/example-repo",
         "PR_NUMBER": "4242",
         "DEFAULT_BRANCH": "main",
         "GITHUB_STEP_SUMMARY": str(summary),
@@ -2106,7 +2108,7 @@ def run_resolve(job: dict, tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "EVENT_NAME": event_name,
             "PR_NUMBER": number,
             "EVENT_TITLE": event.get("title", ""),
@@ -2354,7 +2356,7 @@ def run_merge(job: dict, tmp_path: Path):
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
-            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "GH_REPO": "example-org/example-repo",
             "PR_NUMBER": "4242",
             "PR_TITLE": "A fact-style headline",
             "HEAD_SHA": HEAD,

@@ -49,19 +49,20 @@ COMMON = ROOT / "scripts" / "lib" / "common.sh"
 #: report): a workflow of its own, after release.yml completes.
 ACCEPT = ROOT / ".github" / "workflows" / "accept.yml"
 
-#: The repository the owner created for acceptance on 2026-10-05: private,
-#: default branch main.
-SANDBOX = "bogdan-alexandrescu/swarmcloud-sandbox"
+#: The deployment's acceptance sandbox: private, default branch main. It is
+#: configuration (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL), never a default.
+SANDBOX = "example-org/example-sandbox"
+SANDBOX_URL = f"https://github.com/{SANDBOX}.git"
 #: The public repository acceptance must never name. Named HERE, in the
 #: guard, and nowhere the suite runs. Spelled from two pieces so a grep of the
 #: suite's own tree for the name never matches this file by accident.
-PUBLIC = "bogdan-alexandrescu/" + "SwarmCloud"
+PUBLIC = "example-org/" + "SwarmCloud"
 #: The public name as it appears anywhere: any case, with or without `.git`,
 #: but not as the prefix of a longer name (the sandbox's own name starts with
 #: it, in lower case).
 PUBLIC_RE = re.compile(re.escape(PUBLIC) + r"(?![\w-])", re.IGNORECASE)
 
-SWARM_VERIFY = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+SWARM_VERIFY = "swarm-verify@example-project.iam.gserviceaccount.com"
 
 
 def _clean_env(**extra: str) -> dict[str, str]:
@@ -76,6 +77,8 @@ def _clean_env(**extra: str) -> dict[str, str]:
     # child names and stops without it.
     if "SWARM_DEPLOY_CONFIG_DIR" in os.environ:
         env["SWARM_DEPLOY_CONFIG_DIR"] = os.environ["SWARM_DEPLOY_CONFIG_DIR"]
+    # The deployment's sandbox, as accept.yml and the swarm-verify job pass it.
+    env["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"] = SANDBOX_URL
     env.update(extra)
     return env
 
@@ -119,6 +122,15 @@ def test_the_acceptance_config_resolves_to_the_smoke_tenant_and_the_sandbox():
     assert got["repo"] == SANDBOX
     assert got["url"] == f"https://github.com/{SANDBOX}.git"
     assert got["ref"] == "main"
+
+
+def test_an_unset_sandbox_is_refused_by_name_rather_than_defaulted():
+    # The sandbox is the deployment's own: with no setting there is no
+    # repository to fall back to, so the config names the variable and stops.
+    result = _config(SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL="")
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is not set" in result.stderr, result.stderr
+    assert "url=" not in result.stdout
 
 
 def test_the_config_refuses_the_repository_this_ci_run_is_for():

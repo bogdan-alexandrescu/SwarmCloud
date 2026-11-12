@@ -32,7 +32,8 @@
 # reads to create the account (platform_service_accounts.tf, DAYONE-BOOT-2,
 # design Q7) and to grant the release deployer roles/iam.serviceAccountAdmin on
 # it (#334). This root reads it. The live account was forgotten here, never
-# destroyed (removed.tf), and adopted by bootstrap's gated import; its email
+# destroyed (a `removed` block, deleted once the state held none of its
+# addresses), and adopted by bootstrap's gated import; its email
 # and unique id did not change, so no grant below moved.
 module "service_account_ids" {
   source = "../modules/service_account_ids"

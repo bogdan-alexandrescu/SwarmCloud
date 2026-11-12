@@ -4,7 +4,7 @@ MEASURED. The release of main's commit of 2026-11-06 11:28 UTC waited 16
 minutes for main's build, rebuilt 18 images (2 to 5 minutes each, four at a
 time) and swarm-speech alone in 28 minutes 50 seconds, then scanned for about
 7 minutes. Nothing in dev runs swarm-speech: the speech machine exists only
-while `voice_speech.enabled`, and dev.tfvars has it off. Bogdan's pick, 6
+while `voice_speech.enabled`, and dev.tfvars has it off. The owner's pick, 6
 November 2026: skip it in releases.
 
 Asserted against the REAL scripts, with a real tfvars file in the copied

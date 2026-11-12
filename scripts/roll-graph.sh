@@ -45,7 +45,7 @@
 #     on SHARED_DENY_LIST, checked BEFORE get-credentials and before apply.sh;
 #   * the context's kubeconfig cluster entry must be exactly
 #     gke_<PROJECT_ID>_<GKE_LOCATION>_<cluster>, so the cluster apply.sh writes
-#     to and the cluster this script waits on are one, and never agents-staging.
+#     to and the cluster this script waits on are one, and never peer-cluster.
 #
 # Exit: 0 swarm-graph runs the rendered digest (or it is not served, or a dry
 # run previewed); 1 anything refused, failed, timed out or on another image.
