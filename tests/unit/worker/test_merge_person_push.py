@@ -7,8 +7,10 @@ from an unknown branch-mate still refuses."
 
 The refusal itself is unchanged: `merge._accept` still takes no head a person
 made of content, and nothing merges. What changes is the code the step ends
-with. A head that is not a merge, that the platform did not commit, and that
-GitHub links to a person on the pull request (its author or an assignee) ends
+with. A head that is a single commit, or (#3601) a merge of the base onto an
+accepted head that the purity proof refuses, that the platform did not
+commit, and that GitHub links to a person on the pull request (its author or
+an assignee) ends
 `superseded_by_person_push`; every other head that is not accepted ends
 `head_moved` as before. `EndCause` is frozen, so until contract request
 139 (SUPERSEDED_BY_PERSON_PUSH) lands the step still ends FAILED/MERGE_REFUSED,
