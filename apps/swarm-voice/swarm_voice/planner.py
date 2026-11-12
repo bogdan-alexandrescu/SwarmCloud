@@ -75,6 +75,7 @@ from typing import Any
 import httpx
 
 from . import actledger, prompts, tools_act, tools_read, tools_visual
+from . import updates as vupdates
 from .accountlease import TIER_PLAN, VoiceBroker, build_broker
 from .claudeturn import ClaudeCode
 from .credential import CredentialError
@@ -278,8 +279,12 @@ class Planner:
 
     def __init__(self, http: httpx.AsyncClient, *, api_base: str, id_tokens: tools_read.IdTokens,
                  accounts: PlannerAccounts, claude: ClaudeCode | None = None,
-                 max_rounds: int = MAX_ROUNDS, turn_seconds: float = TURN_SECONDS) -> None:
+                 max_rounds: int = MAX_ROUNDS, turn_seconds: float = TURN_SECONDS,
+                 updates: vupdates.Board | None = vupdates.BOARD) -> None:
         self._http = http
+        #: THE UPDATES (updates.py): told the tool each call makes (a check-in's
+        #: phrase) and each card drawn (its kind and title); never its arguments.
+        self._updates = updates
         self._api_base = api_base
         self._id_tokens = id_tokens
         self._accounts = accounts
@@ -387,6 +392,8 @@ class Planner:
         done = asyncio.Event()
 
         async def handler(name: str, args: dict) -> tuple[str, bool]:
+            if self._updates is not None:
+                self._updates.calling(api.session_id, name)
             text, is_error, spoken_now = await self._tool(api, {"name": name, "input": args}, kinds, known,
                                                           result, transcript=transcript)
             if spoken_now is not None:
@@ -510,6 +517,9 @@ class Planner:
             return f"the card was not written: {exc}", True, None
         card = written.get("card") if isinstance(written.get("card"), dict) else written
         result.cards.append({"kind": kind, "card_id": card.get("card_id"), "title": card.get("title")})
+        if self._updates is not None:
+            # On screen as it is drawn; the voice names it at the next gap.
+            self._updates.drawn(api.session_id, kind, card.get("title"), card.get("card_id"))
         result.drawn.append({"kind": kind, "title": card.get("title") if isinstance(card.get("title"), str)
                              else _title(args)})
         return prompts.as_text({"written": True, "card_id": card.get("card_id"),
