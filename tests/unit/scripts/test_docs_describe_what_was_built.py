@@ -1615,7 +1615,7 @@ def _lb_53() -> str:
     return text[start: text.index("### 5.4 ", start)]
 
 
-def test_live_browser_5_3_records_bgds_decision_and_why():
+def test_live_browser_5_3_records_the_owners_decision_and_why():
     body = _flat(_lb_53())
     assert "The owner's decision, 2026-10-25" in body and LB_DECISION in body
     for cause in ("(GREY-TAIL)", "iframe boxes", "under BROWSER-ENFORCE (LIVE-BLANK)"):

@@ -31,6 +31,7 @@ stand-ins written to a temporary directory.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -63,6 +64,13 @@ pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is requir
 
 RULE_DOC = json.loads(RULES.read_text())
 CASE_DOC = json.loads(CASES.read_text())
+# The project the self-test's record lives in, read from the record itself, so
+# the env, the calls and the expectation below agree with the cases file.
+PROJECT = CASE_DOC["record"]["name"].split("/")[1]
+_PH_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+assert _PH_SPEC is not None and _PH_SPEC.loader is not None
+placeholders = importlib.util.module_from_spec(_PH_SPEC)
+_PH_SPEC.loader.exec_module(placeholders)
 CALL_CASES = [c["name"] for c in CASE_DOC["cases"]]
 RECORD_CASES = [c["name"] for c in CASE_DOC["expect_refusals"]]
 
@@ -76,7 +84,7 @@ def _env(tmp: Path, **extra: str) -> dict[str, str]:
     }
     env.update(
         SWARM_ENV_FILE=str(tmp / "no.env"),
-        PROJECT_ID="example-project",
+        PROJECT_ID=PROJECT,
         REGION="us-central1",
         ENVIRONMENT="dev",
         FIRESTORE_DATABASE="swarm",
@@ -359,18 +367,18 @@ def _ran(tmp: Path) -> list[str]:
 def test_an_allowed_call_runs_the_real_binary(tmp_path: Path, ready: dict[str, str]) -> None:
     env = _shim_env(ready, tmp_path)
     out = subprocess.run(
-        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", "example-project"],
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", PROJECT],
         capture_output=True, text=True, env=env, check=False,
     )
     assert out.returncode == 0, out.stderr
-    assert _ran(tmp_path) == ["gcloud iam service-accounts create swarm-agent-worker-u-alice --project example-project"]
+    assert _ran(tmp_path) == [f"gcloud iam service-accounts create swarm-agent-worker-u-alice --project {PROJECT}"]
     assert not Path(ready["SWARM_CALL_GUARD"] + ".stop").exists()
 
 
 def test_a_refused_call_never_runs_and_records_needs_owner(tmp_path: Path, ready: dict[str, str]) -> None:
     env = _shim_env(ready, tmp_path)
     out = subprocess.run(
-        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-bob", "--project", "example-project"],
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-bob", "--project", PROJECT],
         capture_output=True, text=True, env=env, check=False,
     )
     assert out.returncode == REFUSED
@@ -382,7 +390,7 @@ def test_a_refused_call_never_runs_and_records_needs_owner(tmp_path: Path, ready
 
     # Latched: the next call, allowed a moment ago, is refused too.
     again = subprocess.run(
-        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", "example-project"],
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", PROJECT],
         capture_output=True, text=True, env=env, check=False,
     )
     assert again.returncode == REFUSED and _ran(tmp_path) == []
@@ -393,7 +401,7 @@ def test_a_refused_call_never_runs_and_records_needs_owner(tmp_path: Path, ready
 def test_report_only_lets_the_owner_run_and_records_nothing(tmp_path: Path, ready: dict[str, str]) -> None:
     env = {**_shim_env(ready, tmp_path), "SWARM_CALL_GUARD_MODE": "report-only"}
     out = subprocess.run(
-        ["gcloud", "iam", "service-accounts", "delete", "swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com"],
+        ["gcloud", "iam", "service-accounts", "delete", f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"],
         capture_output=True, text=True, env=env, check=False,
     )
     assert out.returncode == 0, out.stderr
@@ -405,7 +413,7 @@ def test_report_only_lets_the_owner_run_and_records_nothing(tmp_path: Path, read
 def test_report_only_is_ignored_where_the_job_enforces(tmp_path: Path, ready: dict[str, str]) -> None:
     env = {**_shim_env(ready, tmp_path), "SWARM_CALL_GUARD_MODE": "report-only", "SWARM_CALL_GUARD_ENFORCE": "1"}
     out = subprocess.run(
-        ["gcloud", "iam", "service-accounts", "delete", "swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com"],
+        ["gcloud", "iam", "service-accounts", "delete", f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"],
         capture_output=True, text=True, env=env, check=False,
     )
     assert out.returncode == REFUSED and _ran(tmp_path) == []
@@ -420,7 +428,7 @@ def test_curl_reaches_the_real_binary_with_its_config_on_stdin(tmp_path: Path, r
         capture_output=True, text=True, check=True,
     ).stdout + "\n"
     url = (
-        "https://firestore.googleapis.com/v1/projects/example-project/databases/swarm/documents/"
+        f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/swarm/documents/"
         "workspaces/u-alice?updateMask.fieldPaths=state"
     )
     out = subprocess.run(
@@ -450,9 +458,9 @@ def test_the_expectation_is_private_and_names_the_workspace(ready: dict[str, str
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     exp = json.loads(path.read_text())
     assert exp["workspace_id"] == WORKSPACE and exp["tenant_id"] == "u-alice"
-    assert exp["worker_email"] == "swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com"
+    assert exp["worker_email"] == f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"
     assert exp["namespace"] == "swarm-tenant-u-alice"
-    assert exp["contexts"] == ["swarm-dev", "gke_example-project_us-central1_swarm-autopilot"]
+    assert exp["contexts"] == ["swarm-dev", f"gke_{PROJECT}_us-central1_swarm-autopilot"]
     assert "principal" not in exp and "alice@example.com" not in path.read_text()
 
 
@@ -557,15 +565,15 @@ def test_curl_runs_with_q_first_so_no_curlrc_joins_the_call(tmp_path: Path, read
 @pytest.mark.parametrize(
     "variable,value",
     [
-        ("CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "swarm-scheduler@example-project.iam.gserviceaccount.com"),
-        ("CLOUDSDK_CORE_PROJECT", "example-shared-project"),
+        ("CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
+        ("CLOUDSDK_CORE_PROJECT", placeholders.SHARED_PROJECT),
     ],
 )
 def test_gcloud_environment_that_changes_identity_or_project_is_refused(
     ready: dict[str, str], variable: str, value: str
 ) -> None:
     allowed = ("gcloud", "iam", "service-accounts", "describe",
-               "swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com", "--project", "example-project")
+               f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com", "--project", PROJECT)
     assert _guard("check", "--", *allowed, env=ready).returncode == 0
     out = _guard("check", "--", *allowed, env={**ready, variable: value})
     assert out.returncode == REFUSED and variable in out.stderr
@@ -576,7 +584,7 @@ def test_gcloud_environment_that_changes_identity_or_project_is_refused(
 # --------------------------------------------------------------------------
 
 QA_SECRET = "swarm-tenant-u-alice-qa"
-API_EMAIL = "swarm-api@example-project.iam.gserviceaccount.com"
+API_EMAIL = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
 
 
 def _kind_env(tmp: Path, tfvars: dict | None = None) -> dict[str, str]:
@@ -676,25 +684,25 @@ def test_a_group_or_service_expectation_names_no_qa_secret(tmp_path: Path, kind:
 
 
 def _qa_bind(name: str, member: str, role: str) -> list[str]:
-    return ["gcloud", "secrets", "add-iam-policy-binding", name, "--project", "example-project",
+    return ["gcloud", "secrets", "add-iam-policy-binding", name, "--project", PROJECT,
             "--member", member, "--role", role]
 
 
 def _qa_create(name: str, *extra: str) -> list[str]:
-    return ["gcloud", "secrets", "create", name, "--project", "example-project", *extra]
+    return ["gcloud", "secrets", "create", name, "--project", PROJECT, *extra]
 
 
 _LABELS = "managed-by=swarm-register-tenant,component=qa-target-credential,tenant=u-alice,swarm-tenant=u-alice"
-_WORKER_MEMBER = "serviceAccount:swarm-agent-worker-u-alice@example-project.iam.gserviceaccount.com"
+_WORKER_MEMBER = f"serviceAccount:swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"
 
 QA_CALLS = [
     # (why, argv, the verdict's rule or None for a refusal)
-    ("A6 reads the QA secret", ["gcloud", "secrets", "describe", QA_SECRET, "--project", "example-project",
+    ("A6 reads the QA secret", ["gcloud", "secrets", "describe", QA_SECRET, "--project", PROJECT,
                                 "--format=json"], "C1"),
-    ("A6 reads its policy", ["gcloud", "secrets", "get-iam-policy", QA_SECRET, "--project", "example-project",
+    ("A6 reads its policy", ["gcloud", "secrets", "get-iam-policy", QA_SECRET, "--project", PROJECT,
                              "--format=json"], "C1"),
     ("another person's QA secret is not read", ["gcloud", "secrets", "describe", "swarm-tenant-u-bob-qa",
-                                                "--project", "example-project"], None),
+                                                "--project", PROJECT], None),
     ("A6 creates it, empty and pinned", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
                                                    "--locations", "us-central1", "--labels", _LABELS), "C6"),
     ("not replicated automatically", _qa_create(QA_SECRET, "--replication-policy", "automatic",
@@ -714,7 +722,7 @@ QA_CALLS = [
                                     "roles/secretmanager.admin"), None),
     ("never a version manager", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
                                          "roles/secretmanager.secretVersionManager"), None),
-    ("never a look-alike account", _qa_bind(QA_SECRET, "serviceAccount:swarm-api@example-shared-project.iam.gserviceaccount.com",
+    ("never a look-alike account", _qa_bind(QA_SECRET, f"serviceAccount:swarm-api@{placeholders.SHARED_PROJECT}.iam.gserviceaccount.com",
                                             "roles/secretmanager.secretAccessor"), None),
     ("never a person", _qa_bind(QA_SECRET, "user:alice@example.com", "roles/secretmanager.secretAccessor"), None),
     ("never on another person's", _qa_bind("swarm-tenant-u-bob-qa", f"serviceAccount:{API_EMAIL}",
@@ -746,7 +754,7 @@ def test_a_team_workspace_may_not_create_or_bind_a_qa_secret(tmp_path: Path, kin
     for argv in (
         _qa_create(name, "--replication-policy", "user-managed", "--locations", "us-central1", "--labels", "x=y"),
         _qa_bind(name, f"serviceAccount:{API_EMAIL}", "roles/secretmanager.secretAccessor"),
-        ["gcloud", "secrets", "describe", name, "--project", "example-project"],
+        ["gcloud", "secrets", "describe", name, "--project", PROJECT],
     ):
         # A refusal latches every later call; each is judged on its own.
         Path(env["SWARM_CALL_GUARD"] + ".stop").unlink(missing_ok=True)
