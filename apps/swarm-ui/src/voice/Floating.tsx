@@ -34,7 +34,7 @@ import { route, write } from '../fetch'
 import { readSessionStream, specOf, type CardListState, type StreamEvent } from './CardList'
 import { typingIn } from './mic'
 import { useVoiceSession, type VoiceSession } from './session'
-import './floating.css'
+import '../styles/voice-floating.css'
 
 // ---- where it sits, kept for the tab ---------------------------------------------
 
