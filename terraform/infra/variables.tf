@@ -1519,6 +1519,14 @@ variable "discovery" {
     OAuth client id the plugin signs in with, and the oldest plugin version the
     deployment supports. The install engine writes it.
 
+    plugin_home is the repository the plugin is served from, as owner/name;
+    the document serves it as plugin.home so the user guide's Start here page
+    can fill its install command. EMPTY (the default) omits plugin.home from
+    the document and the guide keeps its marked placeholder: the repository
+    names no real one, so the operator sets the deployment's value in the
+    deployment's private Terraform values, never here. A value that is not
+    owner/name is refused at plan time.
+
     EMPTY oauth_client_id (the default) creates no swarm-discovery service and
     no discovery backend: apps/swarm-api/swarm_api/discovery.py builds the
     document at start-up and refuses to start without each field, so a service
@@ -1530,12 +1538,25 @@ variable "discovery" {
     version            = optional(string, "")
     oauth_client_id    = optional(string, "")
     plugin_min_version = optional(string, "")
+    plugin_home        = optional(string, "")
   })
   default = {}
 
   validation {
     condition     = var.discovery.oauth_client_id == "" || (var.discovery.version != "" && var.discovery.plugin_min_version != "" && var.discovery.name != "")
     error_message = "discovery.oauth_client_id is set, so discovery.version, discovery.plugin_min_version and discovery.name must be too: swarm-discovery refuses to start without any of them."
+  }
+
+  # GitHub's shapes: an owner of letters, digits and hyphens that does not
+  # start with a hyphen (at most 39); a name of letters, digits, '.', '_' and
+  # '-' that is not '.' or '..'.
+  # The same pattern apps/swarm-api/swarm_api/discovery.py refuses at start.
+  validation {
+    condition = var.discovery.plugin_home == "" || (
+      can(regex("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$", var.discovery.plugin_home)) &&
+      !contains([".", ".."], element(split("/", var.discovery.plugin_home), 1))
+    )
+    error_message = "discovery.plugin_home must be the plugin repository's owner/name (for example example-org/example-repo), not a URL or a path."
   }
 }
 
