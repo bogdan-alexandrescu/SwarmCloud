@@ -12,8 +12,8 @@
  * WHAT ENDS A SESSION. End (Talk's button, or the spoken "stop the session");
  * swarm-api's own rules (the budget cap, silence, a long pause), which the
  * call hears as its end; closing the tab, where `pagehide` sends the end with
- * `fetch(..., {keepalive: true})`, carrying the session cookie and the
- * workspace header a beacon cannot send; and signing out, which ends the
+ * `fetch(..., {keepalive: true})`, carrying the session cookie, the
+ * workspace header a beacon cannot send and the cause `tab_closed`; and signing out, which ends the
  * session before the page leaves for IAP's clear URL (signoutState.ts
  * `leave`). A reload is a closed tab: a fresh holder starts nothing by itself,
  * and Projects' Resume continues the project.
@@ -225,7 +225,9 @@ function startProblem(e: unknown): { line: string; tip: string | null } {
 /**
  * The end a closing tab sends: the session's end route, kept alive past the
  * page, with the session cookie and the workspace the session started in.
- * A `sendBeacon` cannot carry `X-Swarm-Tenant`, so it is a fetch.
+ * A `sendBeacon` cannot carry `X-Swarm-Tenant`, so it is a fetch. It names
+ * its cause, `tab_closed`; End names none, which swarm-api records as
+ * `ended_by_person`.
  */
 /** The session cookie goes with it: this origin's, as every request of the console's (fetch.ts `READ_INIT`). */
 const LEAVE_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
@@ -236,7 +238,8 @@ function endOnLeave(sessionId: string, tenant: string | null): void {
       method: 'POST',
       keepalive: true,
       credentials: LEAVE_INIT.sameOrigin,
-      headers: apiHeaders({ accept: 'application/json' }, tenant),
+      headers: apiHeaders({ accept: 'application/json', 'content-type': 'application/json' }, tenant),
+      body: JSON.stringify({ cause: 'tab_closed' }),
     }).catch(() => undefined)
   } catch {
     /* the page is going; swarm-api's own rules end what this could not */
