@@ -127,7 +127,7 @@ falls back to the train off or to the default window.
 **Invariants.** A parked step still holds no lease, no pool count and no
 execution (1, 3). Nothing here admits, reserves or runs an agent: the only
 writes are the board document and the one dispatch. The repository is the
-task's own `repository_url`, and the token is that tenant's own (9). No
+agent's own `repository_url`, and the token is that tenant's own (9). No
 caller picks the repository, the workflow, the ref or the token (10).
 
 ## 3. The setting
