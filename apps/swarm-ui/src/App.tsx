@@ -88,6 +88,7 @@ import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
+import { AutomateCards, automateCardsFrame } from './AutomateCards' // MOCK-HOOK
 import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -2650,8 +2651,10 @@ function SectionBody({
       return <RunsScreen view={view} go={go} />
 
     case 'automate/schedules':
+      if (automateCardsFrame() !== null) return <AutomateCards frame={automateCardsFrame() ?? 'landing'} /> // MOCK-HOOK
       return <SchedulesScreen view={view} go={go} />
     case 'automate/approvals':
+      if (automateCardsFrame() !== null) return <AutomateCards frame={automateCardsFrame() ?? 'approvals'} /> // MOCK-HOOK
       return <ApprovalsScreen view={view} go={go} />
 
     case 'capacity/pools':

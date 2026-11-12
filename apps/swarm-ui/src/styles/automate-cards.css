@@ -1,0 +1,222 @@
+/* MOCK-HOOK FILE */
+/* Automate, direction "cards" (mock-up only): every selector is `.acd-`, so
+   nothing here reaches another page. Tokens only; the 12px floor is
+   --t-micro; no all-caps. */
+
+.acd-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.acd-grow { flex: 1 1 auto; }
+.acd-dim { color: var(--text-dim); }
+.acd-strong { font-weight: 600; }
+.acd-mono { font-family: var(--mono); font-size: var(--t-meta); }
+.acd-num { text-align: right; font-variant-numeric: tabular-nums; }
+.acd-k { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 500; }
+
+/* ---- the answer row, Accounts A's lead: four tiles, figure first ---------- */
+.acd-answer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.acd-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-tile-v { font-size: 22px; line-height: 30px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.acd-tile-v .acd-dim { font-size: var(--t-meta); font-weight: 400; }
+.acd-tile > .acd-dim { font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.acd-huge { font-size: 28px; line-height: 32px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.acd-huge.is-ok { color: var(--s-live); }
+
+.acd-bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-width: 0; }
+.acd-bar-row > .c-seg { flex-wrap: wrap; max-width: 100%; }
+
+/* ---- the grid of cards --------------------------------------------------- */
+.acd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; min-width: 0; }
+.acd-grid.is-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.acd-card, .acd-acard {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+}
+/* A card that asks for something carries a left rule in its hue; the word in
+   the card says what it asks, so the hue is never the only signal. */
+.acd-card.is-warn, .acd-head.is-warn { box-shadow: inset 3px 0 0 var(--s-warn); }
+.acd-card.is-bad { box-shadow: inset 3px 0 0 var(--s-bad); }
+.acd-card.is-info, .acd-acard.is-info, .acd-head.is-info { box-shadow: inset 3px 0 0 var(--sk-ac); }
+.acd-card-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.acd-card-h > h3, .acd-card-h > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.acd-card-h > h3 { flex: 1 1 auto; }
+.acd-card-f { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line-soft, var(--line)); font-size: var(--t-micro); }
+.acd-card-f > .c-btn { margin-left: auto; }
+
+.acd-word { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acd-word.is-warn { color: var(--s-warn); }
+.acd-word.is-bad { color: var(--s-bad); }
+.acd-word.is-info { color: var(--sk-ac); }
+.acd-word .acd-dim { font-weight: 400; }
+
+.acd-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.acd-dot.is-ok { background: var(--s-live); }
+.acd-dot.is-warn { background: var(--s-warn); }
+.acd-dot.is-bad { background: var(--s-bad); }
+.acd-dot.is-info { background: var(--sk-ac); }
+.acd-dot.is-paused { background: transparent; border: 2px solid var(--text-dim); }
+
+.acd-next { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.acd-big { font-size: 22px; line-height: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.acd-big.is-none { font-size: var(--t-lead); line-height: 28px; color: var(--text-dim); font-weight: 500; }
+
+/* ---- spend against the tripwire: the track IS the per-day budget --------- */
+.acd-spend { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.acd-spend-t { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: var(--t-meta); }
+.acd-fig { font-weight: 600; font-variant-numeric: tabular-nums; }
+.acd-spend.is-big .acd-fig { font-size: 22px; line-height: 28px; }
+.acd-bar { position: relative; display: block; height: 8px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+.acd-bar > i { display: block; height: 100%; background: var(--sk-ac); border-radius: 3px 0 0 3px; }
+.acd-bar.is-warn > i { background: var(--s-warn); }
+.acd-bar.is-bad > i { background: var(--s-bad); }
+.acd-bar.is-ok > i { background: var(--s-live); }
+.acd-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, transparent 6px 12px); }
+.acd-why { font-size: var(--t-micro); color: var(--text-dim); }
+
+.acd-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acd-facts > dt { color: var(--text-dim); }
+.acd-facts > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.acd-facts.is-row { display: flex; flex-wrap: wrap; gap: 8px 32px; }
+.acd-facts.is-row > dd { margin-right: 14px; }
+.acd-facts.is-row > .acd-pair { display: flex; flex-direction: column; gap: 0; margin-right: 0; white-space: normal; }
+.acd-out { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---- panels on the detail pages ------------------------------------------ */
+.acd-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-panel .acd-card, .acd-panel .acd-acard { background: var(--bg); }
+.acd-panel-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.acd-panel-h > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.acd-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 24px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-head-t { display: flex; flex-direction: column; gap: 8px; flex: 1 1 420px; min-width: 0; }
+.acd-head .acd-card-h > h2 { font-size: 20px; line-height: 28px; }
+.acd-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.acd-expiry { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+.acd-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.acd-cols.is-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.acd-list { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.acd-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; height: 64px; align-items: end; }
+.acd-week-d { display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; height: 100%; gap: 2px; }
+.acd-week-d > i { display: block; background: var(--sk-acl, var(--sk-ac)); border-radius: 2px; }
+.acd-week-d > small { font-size: var(--t-micro); color: var(--text-dim); text-align: center; }
+
+.acd-firings { list-style: none; margin: 0; padding: 0; }
+.acd-firings > li { display: grid; grid-template-columns: 120px 72px 104px minmax(0, 1fr) 72px; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--t-meta); }
+.acd-work { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- approval ------------------------------------------------------------ */
+.acd-checks { display: flex; align-items: center; gap: 12px; }
+.acd-paths { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.acd-paths > li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-tile, 8px); background: var(--s-warnb); }
+.acd-paths .acd-mono { overflow-wrap: anywhere; min-width: 0; }
+.acd-decide { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); font-size: var(--t-body); }
+.acd-decide.is-ok { background: var(--s-liveb); }
+.acd-decide.is-bad { background: var(--s-badb); }
+.acd-quote { font-style: italic; }
+.acd-check { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-card); border: 1px solid var(--line); font-size: var(--t-meta); }
+.acd-check.is-bad { background: var(--s-badb); }
+.acd-check.is-warn { background: var(--s-warnb); }
+.acd-nothing { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+
+/* ---- edit ---------------------------------------------------------------- */
+.acd-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+
+.acd-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.acd-tpl { display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-tile, 8px); background: var(--bg); cursor: pointer; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+.acd-tpl.is-on { border-color: var(--sk-ac); box-shadow: inset 0 0 0 1px var(--sk-ac); background: var(--sk-acs); }
+.acd-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.acd-in { height: var(--h-ctl); padding: 0 10px; border: 1px solid var(--ctl-bd, var(--line)); border-radius: var(--r-ctl); background: var(--bg); color: var(--text); font: inherit; font-size: var(--t-body); min-width: 0; width: 100%; }
+.acd-field.is-bad .acd-in { border-color: var(--s-bad); }
+.acd-err { font-size: var(--t-micro); color: var(--s-bad); font-weight: 600; }
+.acd-row2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.acd-gates { display: grid; grid-template-columns: max-content max-content; gap: 8px 12px; align-items: center; }
+.acd-preview { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--r-tile, 8px); background: var(--bg); border: 1px solid var(--line); }
+.acd-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.acd-savebar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-reason { flex: 1 1 260px; width: auto; }
+
+@media (max-width: 1100px) {
+  .acd-answer { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .acd-grid.is-3, .acd-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---- the phone: one column, nothing wider than the screen ---------------- */
+@media (max-width: 560px) {
+  .acd-page { gap: 12px; }
+  .acd-answer { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .acd-tile { padding: 10px 12px; }
+  .acd-tile-v { font-size: 18px; line-height: 26px; }
+  .acd-huge { font-size: 22px; line-height: 26px; }
+  .acd-grid, .acd-grid.is-3, .acd-cols, .acd-cols.is-2, .acd-edit { grid-template-columns: minmax(0, 1fr); }
+  .acd-bar-row > .c-btn { width: 100%; }
+  .acd-head { padding: 14px; }
+  .acd-head .acd-card-h > h2 { font-size: var(--t-lead); line-height: var(--lh-lead); }
+  .acd-expiry { align-items: flex-start; text-align: left; }
+  .acd-acts { width: 100%; }
+  .acd-firings > li { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; }
+  .acd-firings > li > :nth-child(2) { display: none; }
+  .acd-firings > li > .acd-work { grid-column: 1 / -1; }
+  .acd-decide > .c-btn { flex: 1 1 auto; }
+}
+
+/* MOCK-HOOK: landing rows and the compact card line */
+.acd-next-v { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.acd-line { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; overflow-wrap: anywhere; }
+.acd-card-f .acd-out { color: var(--text); }
+.acd-panel.is-tight { gap: 6px; padding: 12px 14px; }
+.acd-wrows { list-style: none; margin: 0; padding: 0; }
+.acd-wrows > li { display: grid; grid-template-columns: 64px minmax(0, 1fr) 180px 170px auto; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-meta); }
+.acd-wrows > li > .c-tag { justify-self: start; }
+.acd-wt { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .acd-wrows > li { grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; padding: 10px 0; }
+  .acd-wrows > li > .acd-dim, .acd-wrows > li > .acd-exp { grid-column: 1 / -1; }
+  .acd-wrows > li > .c-btn { grid-column: 1 / -1; justify-self: stretch; }
+}
+/* MOCK-HOOK: pairs that never split, stacks, the wide detail row */
+.acd-pair { display: inline-flex; gap: 6px; margin-right: 14px; white-space: nowrap; min-width: 0; }
+.acd-pair > dd { white-space: normal; overflow-wrap: anywhere; }
+.acd-facts.is-row > .acd-pair > dd { margin-right: 0; }
+.acd-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.acd-cols.is-wide { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.acd-tab { font-variant-numeric: tabular-nums; }
+.acd-edit > .acd-stack > [aria-label='Type'] { grid-row: auto; }
+.acd-in.acd-mono { font-family: var(--mono); }
+@media (max-width: 560px) {
+  .acd-cols.is-wide { grid-template-columns: minmax(0, 1fr); }
+  .acd-pair { white-space: normal; flex-wrap: wrap; }
+  .acd-gates { grid-template-columns: max-content minmax(0, 1fr); }
+}
+/* MOCK-HOOK: the phone's answer reads as three lines, and each waiting row keeps its button beside its expiry */
+@media (max-width: 560px) {
+  .acd-answer { grid-template-columns: minmax(0, 1fr); gap: 0; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+  .acd-answer > .acd-tile { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0 10px; align-items: baseline; border: 0; border-radius: 0; background: none; }
+  .acd-answer > .acd-tile + .acd-tile { border-top: 1px solid var(--line); }
+  .acd-answer > .acd-tile > .acd-dim { grid-column: 2; }
+  .acd-wrows > li { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'tag tag' 'title title' 'from from' 'exp btn'; }
+  .acd-wrows > li > .c-tag { grid-area: tag; }
+  .acd-wrows > li > .acd-wt { grid-area: title; }
+  .acd-wrows > li > .acd-dim { grid-area: from; grid-column: auto; }
+  .acd-wrows > li > .acd-exp { grid-area: exp; grid-column: auto; }
+  .acd-wrows > li > .c-btn { grid-area: btn; grid-column: auto; justify-self: end; }
+}
+/* MOCK-HOOK: on the phone the facts are label and value per line, and the decision sits under the head */
+@media (max-width: 560px) {
+  .acd-facts.is-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
+  .acd-facts.is-row > .acd-pair { display: contents; }
+  .acd-page > .acd-decide { order: 2; }
+  .acd-page > .acd-cols { order: 3; }
+}
+/* MOCK-HOOK (fix-cards): the card head never wraps its chip under the title;
+   an approval card's kind chip always sits above its title; facts in a row are
+   label over value, one column per pair; decided, expired and superseded share a row */
+.acd-card .acd-card-h, .acd-acard .acd-card-h { flex-direction: column; align-items: flex-start; gap: 4px; }
+.acd-card .acd-card-h > h3 { flex: none; }
+.acd-facts dd { margin: 0; }
+.acd-grid.is-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.acd-lapsed { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+@media (max-width: 1100px) {
+  .acd-lapsed { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .acd-lapsed > [aria-label='Decided'] { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .acd-lapsed, .acd-grid.is-2 { grid-template-columns: minmax(0, 1fr); }
+}
