@@ -329,12 +329,6 @@ class ReadbackNotPending(Conflict):
     code = "readback_not_pending"
 
 
-class OfferNotOpen(Conflict):
-    """409: the navigation offer was answered, replaced, outlived or timed out."""
-
-    code = "offer_not_open"
-
-
 # ---- the store --------------------------------------------------------------
 
 
@@ -761,7 +755,8 @@ class Offers:
     def accept(self, where: Where, card_id: str) -> dict[str, Any]:
         """The person's click on Open: `card_id` must be the session's open
         offer. NotFound when no navigate card of this session has that id;
-        OfferNotOpen when it was answered, replaced, outlived or timed out."""
+        a 409 (the established `conflict`, never a new refusal code) when it
+        was answered, replaced, outlived or timed out."""
         snap = self._cards_ref(where).document(card_id).get()
         doc = (snap.to_dict() or {}) if snap.exists else {}
         if (doc.get("kind") != "navigate" or doc.get("tenant_id") != where.tenant_id
@@ -771,5 +766,5 @@ class Offers:
         open_id = self.settle(where)
         moved = self._move(where, card_id, vcards.ACCEPTED) if open_id == card_id else None
         if moved is None:
-            raise OfferNotOpen(f"voice card {card_id!r} is not an open offer; nothing was opened")
+            raise Conflict(f"voice card {card_id!r} is not an open offer; nothing was opened")
         return moved
