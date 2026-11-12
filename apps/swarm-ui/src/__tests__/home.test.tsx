@@ -399,7 +399,7 @@ describe('Home opens on what waits on the signed-in person', () => {
     api.loadProfile.mockResolvedValue(ok({ ...profile(null), workspaces: [] }))
     window.history.replaceState(null, '', '/')
     render(<HomeScreen now={NOW} />)
-    await waitFor(() => expect(screen.getByText('No workspace yet.')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/^No workspace yet\./)).toBeTruthy())
     // MUTATION: drop the button from the no-workspace line -> this fails.
     const guide = screen.getByRole('link', { name: 'Read the starter guide' })
     // A real button in the theme's style, not a text link.
@@ -414,7 +414,7 @@ describe('Home opens on what waits on the signed-in person', () => {
     serve({ tasks: [running], approvals: [], people: refused(403), role: null })
     render(<HomeScreen now={NOW} />)
     await waitFor(() => expect(screen.getByText('Ada · member of your own workspace')).toBeTruthy())
-    expect(screen.queryByText('No workspace yet.')).toBeNull()
+    expect(screen.queryByText(/^No workspace yet\./)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Read the starter guide' })).toBeNull()
   })
 
