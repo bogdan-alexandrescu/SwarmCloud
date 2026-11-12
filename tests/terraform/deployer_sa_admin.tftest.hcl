@@ -63,8 +63,9 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
   # Every account terraform/infra manages today, by name. A control that the
   # modules and dev.tfvars were read at all; the exact set is the fixture run's.
   # swarm-agent-worker-u-pat left this list with lane W9 (#847,
-  # 2026-10-09): u-pat is a workspace now, and its grant is forgotten by
-  # terraform/bootstrap/removed.tf (u_pat_removed.tftest.hcl).
+  # 2026-10-09): u-pat is a workspace now, and its grant was forgotten by a
+  # `removed` block in terraform/bootstrap (deleted on 2026-11-11, once the
+  # state held none of its addresses).
   assert {
     condition = alltrue([
       for id in [

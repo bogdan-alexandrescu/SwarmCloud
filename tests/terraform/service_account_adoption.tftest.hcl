@@ -23,8 +23,9 @@ mock_provider "google" {
 # Since DAYONE-BOOT-2 the platform accounts, swarm-tick, swarm-verify,
 # swarm-schedule-tick and swarm-rollup-sweeper are terraform/bootstrap's
 # (platform_service_accounts.tf); terraform/infra and its modules only READ
-# them (data "google_service_account") and forget their old addresses with
-# `removed { destroy = false }` (terraform/infra/removed.tf). The promise
+# them (data "google_service_account"); infra forgot their old addresses with
+# `removed { destroy = false }`, blocks deleted on 2026-11-11 once the state
+# held none of them. The promise
 # stays: no account is ever taken over by name on a 409. Bootstrap adopts the
 # accounts infra created only through its `import` blocks, and only while
 # adopt_from_infra_states names infra's state; with it empty nothing is

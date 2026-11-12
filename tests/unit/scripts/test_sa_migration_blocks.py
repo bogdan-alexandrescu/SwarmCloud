@@ -5,7 +5,8 @@ bootstrap's grants name accounts that terraform/infra used to create, so a
 fresh project's first bootstrap apply needed "later" switches. Every platform
 account now lives in bootstrap; the live deployment moves with zero destroys:
 
-* infra forgets each account with `removed { ... destroy = false }`;
+* infra forgot each account with `removed { ... destroy = false }`, and the
+  blocks were deleted on 2026-11-11 once neither state held their addresses;
 * bootstrap adopts each one with an `import {}` gated on
   `adopt_from_infra_states`, as platform_roles.tf does for the custom roles;
 * infra reads the accounts as data sources and declares none of them.
@@ -75,20 +76,27 @@ def _bootstrap_accounts() -> set[str]:
     }
 
 
-def test_every_platform_sa_has_removed_destroy_false() -> None:
-    removed = _root_blocks("infra", "removed")
-    missing = []
-    for address in MIGRATED:
-        hits = [
-            b
-            for b in removed
-            if re.search(rf"^\s*from\s*=\s*{re.escape(address)}\s*$", b, re.M)
-        ]
-        if len(hits) != 1 or not re.search(r"destroy\s*=\s*false", hits[0]):
-            missing.append(address)
-    assert not missing, (
-        "terraform/infra must forget each platform account, never destroy it "
-        f"(plan §8, Q7); no `removed {{ ... destroy = false }}` for: {missing}"
+def test_no_root_carries_the_applied_forget_blocks() -> None:
+    """The `moved`/`removed` blocks retired after both states applied them.
+
+    On 2026-11-11 the dev infra state held none of the addresses
+    terraform/infra/removed.tf named (BOOT-2's five accounts and W9's personal
+    tenant), the bootstrap state none of terraform/bootstrap/removed.tf's, and
+    no prod state existed, so each block was a no-op and both files went. A
+    block whose `from` is gone from state changes no plan; one left behind is
+    dead text that names a tenant's old addresses.
+    """
+    gone = [f"terraform/{r}/removed.tf" for r in ("infra", "bootstrap") if (TF / r / "removed.tf").exists()]
+    assert not gone, f"retired after apply (2026-11-11); delete: {gone}"
+    stale = []
+    for root in ("infra", "bootstrap"):
+        for block in _root_blocks(root, "removed") + _root_blocks(root, "moved"):
+            for address in re.findall(r"^\s*(?:from|to)\s*=\s*(\S+)\s*$", block, re.M):
+                if address in MIGRATED or "_w9_" in address:
+                    stale.append(f"{root}: {address}")
+    assert not stale, (
+        "terraform/infra forgot the platform accounts and W9's tenant once; no "
+        f"state holds those addresses any more, so no block may name them: {stale}"
     )
 
 

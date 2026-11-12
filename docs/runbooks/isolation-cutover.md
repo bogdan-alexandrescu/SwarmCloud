@@ -128,8 +128,9 @@ none of the numbers below is a baseline anyone has measured yet.
 
 ## a. example-tenant
 
-example-tenant is not a Terraform tenant (lane W9: `terraform/infra/removed.tf`
-forgot its instances with `destroy = false`), so its binding is live but
+example-tenant is not a Terraform tenant (lane W9's `removed` blocks forgot its
+instances with `destroy = false`; the blocks were deleted on 2026-11-11, once
+the state held none of their addresses), so its binding is live but
 unmanaged, and its switch is swarm-api's list, not the tenancy module's.
 
 ### a1. Switch its state path
