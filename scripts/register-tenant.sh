@@ -814,15 +814,25 @@ ws_load_names() {
   # SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>). A group's or a
   # service's namespace must carry the key the expectation names, so that key's
   # prefix is the render's, and a configured prefix naming another is refused
-  # rather than either one guessed. With no prefix at all the run stops here,
+  # rather than either one guessed. A personal workspace's expectation names no
+  # key: its prefix is the deployment's tfvars one, a configured prefix that
+  # differs refused the same way (owner, 12 November 2026, "Tfvars everywhere";
+  # common.sh resolved_label_prefix). With no prefix at all the run stops here,
   # before any write past A1: A7's render would refuse anyway, and A9 must never
   # read a namespace back under a guessed key.
-  local configured=""
-  configured="$(python3 "${REPO_ROOT}/kubernetes/label_prefix.py" 2>/dev/null)" || configured=""
+  local configured="" status=0
   if [[ -n "${WS_NAMESPACE_LABEL}" ]]; then
+    configured="$(python3 "${REPO_ROOT}/kubernetes/label_prefix.py" 2>/dev/null)" || configured=""
     [[ -z "${configured}" || "${configured}/workspace" == "${WS_NAMESPACE_LABEL}" ]] \
       || die "the configured label-key prefix is not the one this deployment's tfvars name; nothing past A1 can run"
     export SWARM_LABEL_PREFIX="${WS_NAMESPACE_LABEL%/workspace}"
+  else
+    resolved_label_prefix || status=$?
+    case "${status}" in
+      0) export SWARM_LABEL_PREFIX="${RESOLVED_LABEL_PREFIX}" ;;
+      2) die "the configured label-key prefix is not the one this deployment's tfvars name; nothing past A1 can run" ;;
+      *) die "the label-key prefix is not configured (above); nothing past A1 can run" ;;
+    esac
   fi
   python3 "${REPO_ROOT}/kubernetes/label_prefix.py" >/dev/null \
     || die "the label-key prefix is not configured (above); nothing past A1 can run"

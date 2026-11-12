@@ -373,6 +373,21 @@ if [[ "${MODE}" == "swarm-voice" ]]; then
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
 
+# --- 0. the label-key prefix -------------------------------------------------
+# Every mode renders under one prefix, resolved once here, before kubectl is
+# even located (owner, 12 November 2026, "Tfvars everywhere"; common.sh
+# resolved_label_prefix): the deployment's tfvars name it, a configured
+# SWARM_LABEL_PREFIX or SWARM_ORG_DOMAIN that differs is refused, and only
+# unreadable tfvars leave the configured one. Exported, so every render.py,
+# network_parity.py read and fill of terraform's renders below uses it.
+LABEL_PREFIX_STATUS=0
+resolved_label_prefix || LABEL_PREFIX_STATUS=$?
+case "${LABEL_PREFIX_STATUS}" in
+  0) export SWARM_LABEL_PREFIX="${RESOLVED_LABEL_PREFIX}" ;;
+  2) die "the configured label-key prefix is not the one this deployment's tfvars name; nothing was applied." ;;
+  *) die "the label-key prefix is not configured (above); nothing was applied." ;;
+esac
+
 # --- 1. the right kubectl ----------------------------------------------------
 # `kubectl_bin` from common.sh, not a second copy of the same search: it already
 # knows that 1.22 (EKS) and 1.25 (Docker Desktop) win $PATH on this machine and
@@ -593,9 +608,10 @@ read_swarm_api_egress() {
 PYTHON="${PYTHON_BIN:-python3}"
 
 # THE LABEL-KEY PREFIX IN TERRAFORM'S RENDERS. Every label and annotation key
-# is `<prefix>/<name>`, the prefix being configuration (owner, 8 November 2026):
-# SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>, else a refusal -- never a
-# guessed key, which the live admission policies would not match.
+# is `<prefix>/<name>`, the prefix being configuration (owner, 8 November 2026),
+# resolved in step 0 from the deployment's tfvars, else SWARM_LABEL_PREFIX, else
+# swarm.<SWARM_ORG_DOMAIN>, else a refusal -- never a guessed key, which the
+# live admission policies would not match.
 # kubernetes/label_prefix.py holds the rule and render.py fills the tenant,
 # policy and swarm-system renders; terraform/infra fills its six swarm-system
 # manifests' own placeholders and leaves `__LABEL_PREFIX__`, which this fills

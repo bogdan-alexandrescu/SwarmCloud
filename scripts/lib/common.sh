@@ -1105,6 +1105,34 @@ deployment_label_prefix() {
   printf '%s' "${prefix}"
 }
 
+# resolved_label_prefix -> sets RESOLVED_LABEL_PREFIX to the prefix a deploy or
+# a personal workspace's job renders under (owner, 12 November 2026, "Tfvars
+# everywhere"): this deployment's tfvars (deployment_label_prefix) when they
+# name one, else the configured one (kubernetes/label_prefix.py:
+# SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>). Returns 2, printing
+# nothing, when both are present and differ: the caller refuses with its own
+# fixed sentence, naming neither value. Returns 1 when there is none (the one
+# rule's fixed refusal on stderr) or a configured value is not a key prefix.
+# Not called in $(...): RESOLVED_LABEL_PREFIX must reach the caller's shell.
+resolved_label_prefix() {
+  local rule="${REPO_ROOT}/kubernetes/label_prefix.py" python="${PYTHON_BIN:-python3}" tfvars="" configured=""
+  RESOLVED_LABEL_PREFIX=""
+  # Unreadable tfvars, or tfvars naming neither setting, are "no tfvars prefix".
+  tfvars="$(deployment_label_prefix 2>/dev/null)" || tfvars=""
+  if [[ -n "$(printf '%s' "${SWARM_LABEL_PREFIX:-}${SWARM_ORG_DOMAIN:-}" | tr -d '[:space:]')" ]]; then
+    configured="$("${python}" "${rule}")" || return 1
+  fi
+  if [[ -n "${tfvars}" ]]; then
+    [[ -z "${configured}" || "${configured}" == "${tfvars}" ]] || return 2
+    # Through the rule as well, which holds the tfvars value to a key prefix's shape.
+    configured="$(SWARM_LABEL_PREFIX="${tfvars}" "${python}" "${rule}")" || return 1
+  elif [[ -z "${configured}" ]]; then
+    "${python}" "${rule}" >/dev/null || return 1
+  fi
+  # shellcheck disable=SC2034  # read by the callers: kubernetes/apply.sh, scripts/register-tenant.sh
+  RESOLVED_LABEL_PREFIX="${configured}"
+}
+
 # Usage: tf_var_args; tf -chdir="$(tf_root)" plan "${TF_VAR_ARGS[@]}"
 # shellcheck disable=SC2034  # consumed by the scripts that source this library
 TF_VAR_ARGS=()
