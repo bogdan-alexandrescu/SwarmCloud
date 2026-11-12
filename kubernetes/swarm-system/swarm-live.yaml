@@ -98,8 +98,8 @@ metadata:
   labels:
     managed-by: swarm-terraform
   annotations:
-    swarm.saga.xyz/network-source: terraform/__PROJECT_ID__/subnet_cidr
-    swarm.saga.xyz/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
+    __LABEL_PREFIX__/network-source: terraform/__PROJECT_ID__/subnet_cidr
+    __LABEL_PREFIX__/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
 spec:
   podSelector:
     matchLabels:

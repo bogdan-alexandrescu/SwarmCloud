@@ -333,7 +333,7 @@ run "served_swarm_api_mints_and_the_manifest_renders" {
   assert {
     condition = (
       output.swarm_graph_manifest != null
-      && length(regexall("__[A-Z0-9_]+__", output.swarm_graph_manifest)) == 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.swarm_graph_manifest, "__LABEL_PREFIX__", ""))) == 0
       && strcontains(output.swarm_graph_manifest, "swarm-graph@sha256:dddd")
       && strcontains(output.swarm_graph_manifest, "value: projects/example-project/secrets/swarm-graph-ticket-key/versions/latest")
       && strcontains(output.swarm_graph_manifest, "value: swarm-artifacts-example-project")

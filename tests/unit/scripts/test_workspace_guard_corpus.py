@@ -18,8 +18,8 @@ file existed, the kubeconfig's context, the two CLOUDSDK_ variables and the WD9
 switch -- and the verdict the guard gave it then: allow or refuse, the rule,
 the command words and the reason, byte for byte.
 
-Temporary paths are written `{dir}` (one directory per call here) and the one
-line of a curl config `{auth_config}`, filled at run time from common.sh's own
+Temporary paths are written `{dir}` (one directory per call here), the
+label-key prefix `{label_prefix}` and the one line of a curl config `{auth_config}`, filled at run time from common.sh's own
 auth_config around a token made here: nothing in the corpus is a path on the
 machine that recorded it, or looks like a credential.
 
@@ -76,7 +76,9 @@ def _fill(text: str | None, where: Path, token: str) -> str | None:
     if "{auth_config}" in text:
         head, tail = _auth_shape()
         text = text.replace("{auth_config}", head + token + tail)
-    return text.replace("{dir}", str(where))
+    # The label-key prefix (kubernetes/label_prefix.py): the placeholder
+    # organisation's, as the replay's SWARM_ORG_DOMAIN names it.
+    return text.replace("{dir}", str(where)).replace("{label_prefix}", f"swarm.{os.environ['SWARM_ORG_DOMAIN']}")
 
 
 #: The replay is split this many ways so `pytest -n auto` judges the shards side

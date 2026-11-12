@@ -110,6 +110,13 @@ from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import CPU_BURST_MAX_RATIO, RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
 
+# THE LABEL-KEY PREFIX is configuration (owner, 8 November 2026): every
+# `__LABEL_PREFIX__` below is SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>,
+# else the render refuses. label_prefix.py beside this file holds the rule, for
+# apply.sh, network_parity.py and the workspace scripts too.
+sys.path.insert(0, str(HERE))
+import label_prefix as _label_prefix  # noqa: E402
+
 #: The frozen contract's default, read from the dataclass rather than restated.
 #: A deployment that sets DISPATCH_TIMEOUT_SECONDS passes the same value as
 #: `--dispatch-timeout-seconds`.
@@ -212,6 +219,9 @@ class RenderError(SystemExit):
 #: exposure -- it does not make an unvalidated interpolation into a safe one,
 #: and this file renders every tenant-isolation object the platform has.
 _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
+    # The prefix of every label and annotation key (label_prefix.py): a DNS
+    # subdomain, so nothing but a key prefix reaches the YAML or the policies' CEL.
+    "LABEL_PREFIX": _label_prefix.PREFIX,
     # RFC 1123 label, which is what a namespace, a service account and a label
     # value all have to be anyway.
     "TENANT_ID": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
@@ -629,6 +639,10 @@ def substitute(text: str, values: dict[str, str]) -> str:
     `name: __NAMESPACE__` is a valid-looking string that would create a real
     namespace called `__NAMESPACE__`, so that fails loudly too.
     """
+    if _label_prefix.PLACEHOLDER in text and "LABEL_PREFIX" not in values:
+        # Only a text that holds the token needs the setting, and one that
+        # does refuses without it: a guessed key is no key the live policies match.
+        values = {**values, "LABEL_PREFIX": label_prefix()}
     check_values(values)
     for key, value in values.items():
         text = text.replace(f"__{key}__", str(value))
@@ -1044,20 +1058,62 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
     )
 
 
+#: The prefix an OFFLINE render's keys carry when none is configured: the
+#: placeholder organisation's (example.com is reserved, so it is no
+#: deployment's). Offline is `policies`, `tenant` or `job` with no `--project`:
+#: the lint callers (`make lint`, security.yml, the worker's pre-publish
+#: checkov), whose identities already name OFFLINE_PROJECT, which is no
+#: project. A render given a project is one a cluster may receive, and with
+#: no prefix configured it refuses: a guessed key is no key the live policies
+#: match. The renderer says so on stderr, as it does for OFFLINE_NETWORK.
+OFFLINE_LABEL_PREFIX = "swarm.example.com"
+#: Set by main(): whether this render is offline, and whether it said so yet.
+_OFFLINE = {"render": False, "warned": False}
+
+
+def label_prefix() -> str:
+    """The configured label-key prefix (label_prefix.py), OFFLINE_LABEL_PREFIX
+    for an offline render that has none, or a RenderError."""
+    try:
+        return _label_prefix.label_prefix()
+    except _label_prefix.LabelPrefixError as exc:
+        if _OFFLINE["render"] and str(exc) == _label_prefix.UNSET:
+            if not _OFFLINE["warned"]:
+                _OFFLINE["warned"] = True
+                print(
+                    f"# render: WARNING: no label-key prefix is configured, so this offline render "
+                    f"(no --project) writes its keys under {OFFLINE_LABEL_PREFIX}. Fine for lint; "
+                    "wrong for a cluster, whose renders name a project and refuse without a prefix.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return OFFLINE_LABEL_PREFIX
+        raise RenderError(f"render: {exc}") from None
+
+
+def label_key(name: str) -> str:
+    """`<prefix>/<name>`, for a key written here rather than in a template."""
+    return f"{label_prefix()}/{name}"
+
+
 #: The label that marks a namespace the workspace job created
 #: (docs/design/workspace-kinds.md §3.1, §4.3 step A7). The deployer's scope
 #: policy admits a Namespace outside `swarm-tenant-u-*`, and objects inside one,
 #: only when it carries this label; policies/workspace-provisioner-scope.yaml
 #: spells it too, and test_workspace_provisioner_scope.py runs that policy
-#: against this render.
-WORKSPACE_LABEL = "swarm.saga.xyz/workspace"
+#: against this render. `<prefix>/workspace`, the prefix being configuration.
+WORKSPACE_LABEL_NAME = "workspace"
+
+
+def workspace_label() -> str:
+    return label_key(WORKSPACE_LABEL_NAME)
 
 #: A workspace id, as the job's entry point admits it (images/workspace-apply).
 _WORKSPACE_ID = re.compile(r"w-[0-9a-f]{6}")
 
 
 def label_workspace(manifest: str, workspace_id: str) -> str:
-    """The tenant render with WORKSPACE_LABEL on its Namespace, and nowhere else.
+    """The tenant render with workspace_label() on its Namespace, and nowhere else.
 
     The Namespace is the render's first document (TENANT_FILES), and its
     `labels:` is the one two-space-indented mapping in it. Inserted as text,
@@ -1075,7 +1131,7 @@ def label_workspace(manifest: str, workspace_id: str) -> str:
     anchor = "\n  labels:\n"
     if "\nkind: Namespace\n" not in first or first.count(anchor) != 1:
         raise RenderError("render: the tenant render's first document is not one labelled Namespace")
-    first = first.replace(anchor, f"{anchor}    {WORKSPACE_LABEL}: {workspace_id}\n")
+    first = first.replace(anchor, f"{anchor}    {workspace_label()}: {workspace_id}\n")
     return first + separator + rest
 
 
@@ -1419,7 +1475,7 @@ def render_spec_verify_keys(data: dict[str, str], values: dict[str, str]) -> str
         f"    swarm-tenant: {names['TENANT_ID']}",
         "    app.kubernetes.io/part-of: swarm",
         "  annotations:",
-        "    swarm.saga.xyz/rationale: >-",
+        f"    {label_key('rationale')}: >-",
         "      The step-spec public keys (contract request 34), from terraform/infra's",
         "      spec_verify_keys_configmap output. Mounted read-only by worker pods;",
         "      written only by kubernetes/apply.sh with the deployer's credentials.",
@@ -1615,8 +1671,9 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
         "--workspace-id",
         default="",
         help=(
-            f"the workspace the job is building (w- and six hex digits): rendered as "
-            f"{WORKSPACE_LABEL} on the Namespace and nowhere else. The workspace deployer's "
+            "the workspace the job is building (w- and six hex digits): rendered as "
+            "<prefix>/workspace on the Namespace and nowhere else (the prefix is "
+            "SWARM_LABEL_PREFIX, else swarm.<SWARM_ORG_DOMAIN>). The workspace deployer's "
             "scope policy admits a namespace outside swarm-tenant-u-* only with it "
             "(docs/design/workspace-kinds.md §4.3, A7). Omitted for a personal namespace "
             "and for a Terraform tenant's, which render as they always have."
@@ -1924,6 +1981,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    # An offline render (see OFFLINE_LABEL_PREFIX): one that names no project.
+    _OFFLINE["render"] = args.command in ("policies", "tenant", "job") and not str(getattr(args, "project", "") or "")
 
     if args.command == "tenant":
         require_cluster_inputs(tenant, args)

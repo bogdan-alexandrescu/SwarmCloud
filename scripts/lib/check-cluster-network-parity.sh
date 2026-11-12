@@ -109,6 +109,12 @@ ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/
 [[ -n "${ACCOUNT}" ]] || skip "no active gcloud credentials"
 info "account  ${ACCOUNT}"
 require_project
+# The policies' annotations are read under one prefix, resolved before kubectl
+# is located exactly as kubernetes/apply.sh's step 0 does (common.sh
+# require_label_prefix): the deployment's tfvars name it, a configured one that
+# differs is refused. A caller's export (apply.sh, the tenant policy sweep) is
+# the same value, so it resolves the same way here.
+require_label_prefix "nothing was compared"
 # The never-touch list is the project's (config/<env>/deny-list.json), so it is
 # read once there is a project and credentials, and before any cluster is: a
 # list that cannot be read stops the run here (deny_list_require).
