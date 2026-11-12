@@ -1389,26 +1389,31 @@ def stored_answers(client: SwarmClient, task: dict[str, Any]) -> tuple[set[int],
     Read the way `swarm_check` reads a parked task's (`check._parked_questions`):
     one `GET /v1/tasks/{id}/questions` per call, never cached, since an answer
     can be given at any time -- `swarm_task_answer` and the console store it,
-    and a task document read before that does not carry it. The task's own
-    `owner_answers` count too. `why` is set when the route could not be read
-    or did not serve the questions: the indexes are then only what the task
-    document carried, and the rest cannot be told answered or open.
+    and a task document read before that does not carry it.
+
+    When the route reads ok, its answers are the answer: it serves only an
+    answer to the question now asked at its index (#3349), so the task
+    document's `owner_answers` never add an index it served unanswered -- a
+    later attempt may have asked another question there. `why` is set when
+    the route could not be read or did not serve the questions: the indexes
+    are then the task document's `owner_answers` by index, as before, since
+    the document alone does not hold the question now asked, and the rest
+    cannot be told answered or open.
     """
     known = {a.get("question_index") for a in owner_answers(task)}
-    indexes = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
+    documented = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
     tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
     try:
         served = client.request("GET", QUESTIONS_ROUTE.format(task_id=tid))
     except SwarmError as exc:
-        return indexes, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
+        return documented, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
     if (not isinstance(served, dict) or served.get("status") != "ok"
             or not isinstance(served.get("questions"), list)):
         status = served.get("status") if isinstance(served, dict) else None
-        return indexes, clip(f"its stored answers could not be read: the questions route says {status}",
+        return documented, clip(f"its stored answers could not be read: the questions route says {status}",
                              ANSWER_UNKNOWN_CHARS)
-    for index, question in enumerate(served["questions"]):
-        if isinstance(question, dict) and question.get("answer") is not None:
-            indexes.add(index)
+    indexes = {index for index, question in enumerate(served["questions"])
+               if isinstance(question, dict) and question.get("answer") is not None}
     return indexes, None
 
 
