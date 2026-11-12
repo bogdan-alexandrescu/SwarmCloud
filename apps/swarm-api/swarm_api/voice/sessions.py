@@ -248,6 +248,7 @@ from swarm_common.admission import _snapshot
 
 from ..errors import ApiError, Conflict, Forbidden, NotFound, RateLimited, UpstreamUnavailable
 from . import speech_catalogue as cat
+from . import workfeed as vwork
 
 log = logging.getLogger(__name__)
 
@@ -308,6 +309,8 @@ VOICE_PAUSED = "paused"
 VOICE_REPORTS = ("paused", "waking", "listening")
 #: What wakes a paused voice from the browser (swarm_voice.live.WAKE_CAUSES).
 REOPEN_CAUSES = ("result", "speech", "resume")
+#: A session's stream events (store.EVENTS; store imports this module).
+_EVENTS = "events"
 #: The closed pause intervals kept on the document; a session that pauses
 #: more often folds the oldest into `paused_seconds_before`, so the document
 #: stays small whatever its length.
@@ -1444,7 +1447,10 @@ class VoiceSessions:
         """swarm-voice's report through the grant (THE PAUSE): `paused`,
         `waking` or `listening`, at this service's clock. `NotFound` when the
         session is not this person's in this tenant; 409 when it is not a live
-        Live session. Repeating a report changes nothing."""
+        Live session. Repeating a report changes nothing. A change of the
+        reported state appends one `paused` stream event ({voice_state,
+        cause}, stream.py's whitelist) in the same transaction and keeps the
+        state as `voice_report`; a repeated report appends none."""
         if state not in VOICE_REPORTS:
             raise ValueError(f"no Voice it voice state {state!r}")
         session_ref = self._session_ref(project_id, session_id)
@@ -1469,6 +1475,20 @@ class VoiceSessions:
                 fields = _closed_pauses(data, now)
                 if cause == "result":
                     fields.update({"work_running": False, "work_done_at": now})
+            # The stream's `paused` event, once per change of the reported
+            # state (`voice_report`, the last one; before any, what
+            # voice_state says): its state and a known cause, nothing else.
+            last = data.get("voice_report") or ("paused" if data.get("voice_state") == VOICE_PAUSED
+                                                else "listening")
+            if state != last:
+                seq = int(data.get("event_seq") or 0) + 1
+                fields.update({"voice_report": state, "event_seq": seq})
+                event: dict[str, Any] = {"type": vwork.PAUSED, "voice_state": state}
+                if cause in REOPEN_CAUSES:
+                    event["cause"] = cause
+                txn.set(session_ref.collection(_EVENTS).document(f"{seq:012d}"), {
+                    **event, "seq": seq, "tenant_id": tenant_id, "person": data.get("person"),
+                    "at": now})
             if fields:
                 txn.update(session_ref, fields)
             return {**data, **fields}
