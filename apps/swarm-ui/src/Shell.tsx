@@ -19,7 +19,6 @@ import { HelpCard, type HelpTopicsLead } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
 import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { VoiceFloatLayer } from './voice/Floating'
 
 /**
  * How often a screen re-reads: a fixed interval, or one chosen from what was
@@ -267,11 +266,13 @@ function noteInput(): void {
 
 /**
  * VOICE IT FOLLOWS THE OWNER (docs/design/voice-it.md §3.12.2): the shell
- * draws the floating view over every screen but Talk while a session is live.
- * Talk is the Voice it section's `talk` tab; its bare address lands there.
+ * draws the floating view (voice/Floating.tsx) over every screen but Talk
+ * while a session is live. Talk is the Voice it section's `talk` tab; its bare
+ * address lands there. A rule, not the drawing: voice/session.tsx imports this
+ * file, so this file importing the view would make a cycle.
  */
-export function ShellVoice({ section, tab, go }: { section: string | null; tab: string; go: (to: string) => void }) {
-  return <VoiceFloatLayer onTalk={section === 'voice' && (tab === 'talk' || tab === '')} go={go} />
+export function onVoiceTalk(section: string | null, tab: string): boolean {
+  return section === 'voice' && (tab === 'talk' || tab === '')
 }
 
 /**
