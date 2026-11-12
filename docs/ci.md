@@ -1979,8 +1979,17 @@ never names a version. It refuses anything that is not `X.Y.Z`.
   when the unit shards and the lock / contract / bridge-install checks passed
   on this commit, or were skipped by their own `if:`: a tree main reuses was
   proven job by job on its pull request ([Main reuses the tested
-  tree](#main-reuses-the-tested-tree)). The job's `if:` names
-  `needs.python.result == 'success'` and no status function.
+  tree](#main-reuses-the-tested-tree)).
+
+  So the job runs after a green `format / unit tests` on a push to main,
+  whatever upstream jobs were skipped. Its `if:` is `!cancelled() && ... &&
+  needs.python.result == 'success'`. Without a status function, GitHub adds
+  an implicit `success()`, and that is false when any job up the `needs:`
+  chain was skipped. A tree main reuses skips the unit shards and the lock /
+  contract checks, so until 2026-11-11 the job was skipped on every main
+  build and tags were pushed by hand.
+  [`test_workflow_needs_result_status.py`](../tests/unit/scripts/test_workflow_needs_result_status.py)
+  holds every job that reads a `needs.<job>.result` to a status function.
 * **Why not the release any more** (owner decision, [the owner], 2026-11-04: "Tag
   once tests pass"). Until then `release.yml` made the tag, and
   on a push it waited for `images and scan`, which waits for CI's whole image

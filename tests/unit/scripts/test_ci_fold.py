@@ -388,6 +388,10 @@ def _pool_jobs_on_a_pull_request(file: str) -> list[str]:
     found = []
     for job_id, job in _jobs(file).items():
         condition = str(job.get("if") or "")
+        # `${{ !cancelled() && <rest> }}` gates on <rest> for the event: the
+        # status function says nothing about which event runs the job.
+        condition = re.sub(r"^\$\{\{\s*(.*?)\s*\}\}$", r"\1", condition.strip(), flags=re.S)
+        condition = re.sub(r"^!cancelled\(\)\s*&&\s*", "", condition)
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
             continue
         if re.fullmatch(r"github\.event_name == 'push' && [^|]*", condition):
