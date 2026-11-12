@@ -162,7 +162,11 @@ def test_an_unknown_key_is_dropped_and_the_question_still_counted(
     assert "rm -rf" not in json.dumps(summary)
 
 
-def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_cli):
+def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_cli, monkeypatch):
+    # The browser image's note (`claude_code.BROWSER_NOTE`) also names the
+    # folder; it is added only where that image set the variable, so a run on
+    # it would count the folder twice.
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
     _seed(db, {"echo_prompt": True})
 
     assert _run(worker_factory) == ExitCode.OK
