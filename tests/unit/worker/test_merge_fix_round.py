@@ -815,19 +815,24 @@ def _actions_unreadable(world: MergeWorld) -> None:
     pytest.param(lambda w: _rerun_run(w, "in_progress") or w.workflow_runs[0].update(id=42),
                  id="another-run-running"),
 ])
+@pytest.mark.parametrize("accepted", [1, 2])
 def test_red_after_a_no_change_round_with_a_lapsed_rerun_not_running_is_checks_failed(
-    tmp_path, mutate,
+    tmp_path, mutate, accepted,
 ):
     """Once the re-run's attempt completed, or its status cannot be read, the
-    600 s window alone decides: past it, the red reading refuses."""
+    600 s window alone decides: past it, the red reading is the re-run's
+    answer. It parks CI_RERUN_DUE for another while fewer than
+    RERUNS_PER_HEAD_MAX accepted re-runs are recorded (#3080), and refuses
+    at the bound."""
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun={"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5})
+    if accepted == 2:
+        _another_accepted_rerun(world)
     mutate(world)
 
     outcome = merge.run_merge(world.context())
 
-    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
-    assert "round 1" in outcome.summary["refusal"]["message"]
+    _expect_rerun_due_or_refusal(outcome, world, accepted)
 
 
 def test_red_after_a_no_change_round_with_a_settling_rerun_parks_pending(tmp_path):
