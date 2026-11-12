@@ -11,28 +11,34 @@
 .ny { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-sizing: border-box; }
 .ny.has-some { border-color: var(--s-park); border-left-width: 4px; }
 
-.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
-.ny-all { border: 0; background: none; padding: 2px var(--ctl-s1) 2px 0; font: inherit; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+/* THE HEADER ROW IS THE TOGGLE when something waits (a button, as
+   WorkflowNeedsCard's header in styles/workflow-questions.css: the whole row
+   presses, the caret at its end, the focus ring inside it). With nothing
+   waiting it is the same row, not a button. */
+.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; width: 100%; padding: 0; border: 0; background: none; font: inherit; color: var(--text); text-align: left; box-sizing: border-box; }
+.ny.has-some .ny-bar { cursor: pointer; }
+.ny.has-some .ny-bar:hover .ny-all b { text-decoration: underline; }
+.ny-bar:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ny-all { flex: none; padding: 2px var(--ctl-s1) 2px 0; color: var(--text); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ny-caret { flex: none; margin-left: auto; padding-left: var(--ctl-s1); font: 400 var(--t-meta) / 1.3 var(--font); color: var(--text-dim); }
 .ny-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--s-park); color: var(--surface); font-weight: 700; font-size: var(--t-meta); font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .ny:not(.has-some) .ny-n { background: var(--line); color: var(--text); }
 .ny-plus { margin-left: -4px; color: var(--text-dim); font-weight: 700; }
 
-.ny-chip { display: inline-flex; align-items: baseline; gap: 4px; border: 0; background: none; padding: 2px 4px; font: 400 var(--t-meta) / 1.3 var(--font); color: var(--text); cursor: pointer; white-space: nowrap; }
+.ny-chip { display: inline-flex; align-items: baseline; gap: 4px; padding: 2px 4px; font: 400 var(--t-meta) / 1.3 var(--font); color: var(--text); white-space: nowrap; }
 .ny-chip b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .ny-chip::before { content: ''; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--paused-ink, var(--s-park)); flex: none; }
 .ny-chip.is-failed::before { background: var(--bad-ink, var(--bad)); }
 .ny-chip.is-zero, .ny-chip.is-faint { color: var(--text-dim); }
 .ny-chip.is-zero::before, .ny-chip.is-faint::before { background: var(--line); }
-.ny-chip.is-faint { cursor: default; }
-.ny-chip:hover:not(.is-faint), .ny-all:hover { text-decoration: underline; }
-.ny-chip[aria-pressed='true'], .ny-all[aria-pressed='true'] b { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
-.ny-chip[aria-pressed='true'] { background: var(--s-parkb, var(--surface)); border-radius: 2px; }
-.ny-all:focus-visible, .ny-chip:focus-visible, .ny-morebtn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ny-morebtn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 
 .ny-glyph { display: none; font-weight: 700; }
 .ny-chip.is-failed .ny-glyph, .ny-kind.is-failed .ny-glyph { color: var(--bad-ink, var(--bad)); }
 .ny-chip .ny-glyph, .ny-kind .ny-glyph { color: var(--paused-ink, var(--s-park)); }
 
+/* The rows under the header, a line between, as the card's body. */
+.ny-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 6px; border-top: 1px solid var(--line); }
 .ny-quiet { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
 .ny-listwrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ny-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-width: 0; }
@@ -131,6 +137,21 @@
    list. 560px is the Work screens' phone (agents.css); the gap is --ctl-s1. */
 @media (max-width: 560px) {
   .ny-bar { flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
+  /* The toggle does not scroll: a button with a scrollbar pushed its caret, the
+     only open/closed cue, past the screen's edge. Nor does it cut: every count
+     stays whole. As WorkflowNeedsCard draws only the kinds with something
+     waiting, a zero chip is not drawn in the collapsed header, and a faint
+     "not known" mark is its glyph alone, its words in the tooltip and its
+     label; what is left fits on one line beside "Needs you" and the caret, and
+     wraps to a second line rather than clip if it does not. */
+  .ny.has-some .ny-bar { flex-wrap: wrap; overflow: visible; }
+  .ny.has-some .ny-bar > .ny-chip { flex: none; }
+  .ny.has-some .ny-bar > .ny-chip.is-zero { display: none; }
+  .ny.has-some .ny-bar > .ny-chip.is-faint > b { display: none; }
   .ny:not(.has-some) { padding: 0; border: 0; background: none; }
   .ny:not(.has-some) > .ny-quiet { display: none; }
 }
+
+/* A COLLAPSED STRIP'S BODY IS NOT DRAWN: `hidden` must win over the body's
+   own display (flex, or grid beside parked plugin steps). */
+.ny-body[hidden] { display: none; }
