@@ -14,6 +14,12 @@
 // draws a thumbnail); pass no `paceMs` (the pace reads 0); rank browser agents
 // above asking ones (the parked agent is no longer first); drop AGENT_CAP's
 // slice (eight rows, no Show more); drop the phone rule (two columns at 390).
+//
+// THE OWNER'S PICKS ON PR #3901: a workflow an open approval names says
+// Review, a link to that approval; its pull request carries the checks dot the
+// workflow read serves (`workflow.pull_request`), and only for the same number.
+// MUTATIONS: match approvals on `subject.run_id` (no Review); drop the
+// number check in `rowPull` (another pull request's reading is drawn).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
@@ -56,6 +62,8 @@ vi.mock('../LiveThumb', async (importOriginal) => {
 import { HomeScreen } from '../Home'
 import { AGENT_CAP, HOME_THUMB_PACE_MS, WORKFLOW_CAP } from '../HomeWorkLists'
 import { addressToPath } from '../paths'
+import { approvalAddress } from '../Approvals'
+import type { WorkflowPullRequestChecks } from '../types'
 
 const NOW = Date.parse('2026-11-11T12:00:00.000Z')
 const iso = (ms: number): string => new Date(ms).toISOString()
@@ -315,5 +323,77 @@ describe('Your work on a 390 phone', () => {
     const widths = [...WORKLISTS_CSS.matchAll(/(?:^|[;{\s])(?:min-)?width:\s*(\d+)px/g)].map((m) => Number(m[1]))
     expect(widths.length).toBeGreaterThan(0)
     expect(Math.max(...widths)).toBeLessThan(390)
+  })
+})
+
+describe("Your work's workflow rows: Review and the pull request's checks (PR #3901)", () => {
+  const step = task('task_step1', 'RUNNING', { workflow_id: 'wf_one', step_id: 'build', metadata: { title: 'Build the fix' } })
+  const other = task('task_step2', 'RUNNING', { workflow_id: 'wf_two', step_id: 'build', metadata: { title: 'Build the other' } })
+  const integrator = (wf: string, number: number) =>
+    task(`task_int_${wf}`, 'SUCCEEDED', {
+      workflow_id: wf,
+      step_id: 'integrate',
+      completed_at: iso(NOW - 60_000),
+      result_summary: { git: { role: 'integrator', pull_request: { number, url: `https://github.com/example-org/widgets/pull/${number}` } } } as Task['result_summary'],
+    })
+  const pull = (number: number, checks: WorkflowPullRequestChecks['checks']): WorkflowPullRequestChecks => ({
+    number,
+    url: `https://github.com/example-org/widgets/pull/${number}`,
+    head_sha: 'a'.repeat(40),
+    checks,
+    check_counts: { passed: 5, failed: 1, pending: 0, skipped: 2 },
+    checked_at: iso(NOW - 120_000),
+    merged: false,
+  })
+  const withPull = (read: ReturnType<typeof workflowRead>, pr: WorkflowPullRequestChecks | null) => ({ ...read, workflow: { ...read.workflow, pull_request: pr } })
+  const wfRow = (id: string) => work().querySelector(`[data-workflow="${id}"]`) as HTMLElement
+
+  it('says Review, a link to the approval, on the workflow an open approval names', async () => {
+    serve([step, other], [workflowRead('wf_one', [{ step: 'build', task: step }]), workflowRead('wf_two', [{ step: 'build', task: other }])])
+    api.loadApprovals.mockResolvedValue(
+      ok({
+        approvals: [
+          { approval_id: 'apr_merge_1', kind: 'merge', subject: { run_id: 'run_1', workflow_id: 'wf_two', pr: 41 }, summary: 'widgets#7: pull request #41 waits to merge', state: 'pending', requested_at: iso(NOW - 60_000), expires_at: null },
+        ],
+      }),
+    )
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(within(wfRow('wf_two')).getByRole('link', { name: /^Review/ })).toBeTruthy())
+    const review = within(wfRow('wf_two')).getByRole('link', { name: /^Review/ })
+    expect(review.textContent).toBe('Review')
+    expect(review.getAttribute('href')).toBe(addressToPath(approvalAddress('apr_merge_1', 'merge')))
+    expect(within(wfRow('wf_one')).queryByRole('link', { name: /^Review/ })).toBeNull()
+    // The workflow that waits on a review sorts first.
+    const order = [...within(workflows()).getAllByRole('listitem')].map((li) => li.getAttribute('data-workflow')).filter(Boolean)
+    expect(order[0]).toBe('wf_two')
+  })
+
+  it("draws the served reading as a dot on the same pull request, the number alone without one", async () => {
+    const int1 = integrator('wf_one', 41)
+    const int2 = integrator('wf_two', 52)
+    serve(
+      [step, other],
+      [
+        withPull(workflowRead('wf_one', [{ step: 'build', task: step }, { step: 'integrate', task: int1 }]), pull(41, 'red')),
+        withPull(workflowRead('wf_two', [{ step: 'build', task: other }, { step: 'integrate', task: int2 }]), pull(99, 'green')),
+      ],
+    )
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(wfRow('wf_one')?.querySelector('.wl-pr')).toBeTruthy())
+    const dot = wfRow('wf_one').querySelector('.wl-checks') as HTMLElement
+    expect(dot.getAttribute('data-checks')).toBe('red')
+    expect(dot.getAttribute('aria-label')).toBe('Checks failing · 5 passed · 1 failed · 0 pending')
+    expect(wfRow('wf_one').querySelector('.wl-pr')!.textContent).toContain('#41')
+    // Another pull request's reading is never put on this one.
+    expect(wfRow('wf_two').querySelector('.wl-pr')!.textContent).toContain('#52')
+    expect(wfRow('wf_two').querySelector('.wl-checks')).toBeNull()
+  })
+
+  it('draws a pull request the workflow read alone serves, with its dot', async () => {
+    serve([step], [withPull(workflowRead('wf_one', [{ step: 'build', task: step }]), pull(41, 'pending'))])
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(wfRow('wf_one')?.querySelector('.wl-checks')).toBeTruthy())
+    expect(wfRow('wf_one').querySelector('.wl-checks')!.getAttribute('data-checks')).toBe('pending')
+    expect(wfRow('wf_one').querySelector('a.wl-pr')!.getAttribute('href')).toBe('https://github.com/example-org/widgets/pull/41')
   })
 })

@@ -78,6 +78,15 @@
 .wl-pr { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-micro); font-variant-numeric: tabular-nums; color: var(--text); text-decoration: none; padding: 2px 6px; border: 1px solid var(--line); border-radius: 99px; white-space: nowrap; }
 .wl-pr:hover { border-color: var(--info); color: var(--info); }
 .wl-pr svg { width: 12px; height: 12px; color: var(--ok); }
+/* the checks dot on the pull request: the issue run's last CI reading (PR #3901) */
+.wl-checks { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
+.wl-checks.is-green { background: var(--ok); }
+.wl-checks.is-red { background: var(--bad); }
+.wl-checks.is-pending { background: var(--warn); }
+.wl-checks.is-none { background: transparent; border: 1.5px solid var(--text-dim); }
+/* the Review word: an open approval names this workflow */
+.wl-review { font-size: var(--t-micro); font-weight: 600; color: var(--warn-ink); text-decoration: none; white-space: nowrap; }
+.wl-review:hover, .wl-review:focus-visible { text-decoration: underline; }
 .wl-wf.is-open { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .wl-wfopen { grid-column: 2 / -1; padding: 6px 0 4px; }
 .wl-stagelist { list-style: none; margin: 0; padding: 0; position: relative; }

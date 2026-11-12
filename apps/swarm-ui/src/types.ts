@@ -3978,6 +3978,25 @@ export interface Workflow {
    * also writes `text`: the sentence the list row and the page head print.
    */
   after_pull_requests?: WorkflowPullRequestWait
+  /**
+   * The pull request the issue run that started this workflow opened, with
+   * the run's last stored CI reading (`swarm_api.workflowpr`, PR #3901). Null
+   * when no issue run started it; ABSENT from an older API.
+   */
+  pull_request?: WorkflowPullRequestChecks | null
+}
+
+/** `workflow.pull_request` (PR #3901): the run's pull request and its last CI reading. */
+export interface WorkflowPullRequestChecks {
+  number: number
+  /** http(s) only, else null. */
+  url: string | null
+  head_sha: string | null
+  /** `forgechecks`' state at `head_sha`; null when no reading was stored. */
+  checks: 'green' | 'pending' | 'red' | 'none' | null
+  check_counts: { passed: number; failed: number; pending: number; skipped: number } | null
+  checked_at: string | null
+  merged: boolean | null
 }
 
 /** `workflow.after_pull_requests` (SPEED-D3). */

@@ -8,6 +8,13 @@
  * its pull request, a segmented step bar, the current step and the elapsed
  * time; the chevron opens its steps and which of its agents are where.
  *
+ * THE OWNER'S PICKS ON PR #3901. A workflow row says Review, a link to the
+ * approval, while an open approval of the inbox Home reads names it
+ * (`subject.workflow_id`, served on every kind). Its pull request carries a
+ * checks dot when the workflow read serves the issue run's last CI reading
+ * (`workflow.pull_request`); a pull request with no stored reading is its
+ * number alone.
+ *
  * THE DATA IS WHAT HOME READS: the person's newest tasks (`mine`), the owner
  * questions held on them (answered in place, as Needs you answers them), and
  * for the workflows those tasks belong to, one by-id workflow read
@@ -20,7 +27,8 @@
  * only for a RUNNING browser agent (`showsLiveThumb`).
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { answerQuestion, loadWorkflowsById, WORKFLOW_IDS_PER_READ, type WorkflowRead } from './api'
+import { answerQuestion, loadWorkflowsById, WORKFLOW_IDS_PER_READ, type ApprovalItem, type WorkflowRead } from './api'
+import { approvalAddress } from './Approvals'
 import { Button, ButtonLink, Card, Tooltip } from './components'
 import type { ApiError } from './fetch'
 import { errorHeading } from './fetch'
@@ -29,7 +37,7 @@ import { LIVE_BROWSER_PROFILES, LiveThumb, browserTabPath, showsLiveThumb } from
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
 import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
-import type { Task, Workflow } from './types'
+import type { Task, Workflow, WorkflowPullRequestChecks } from './types'
 import { workflowName } from './WorkflowFacts'
 import './styles/home-worklists.css'
 
@@ -249,13 +257,38 @@ function AgentRow({ t, q, ctx }: { t: Task; q: AskedQuestion | null; ctx: Ctx })
 
 type StepMark = 'done' | 'now' | 'todo' | 'bad'
 
+/** The row's pull request: the step results' number and link, with the served CI reading when there is one. */
+export interface RowPull {
+  number: number
+  href: string | null
+  checks: WorkflowPullRequestChecks['checks']
+  counts: WorkflowPullRequestChecks['check_counts']
+}
+
 /** One workflow row's facts: its steps in order, each with the task the read served for it. */
 export interface WorkRow {
   id: string
   name: string
   steps: { id: string; mark: StepMark; task: Task | null }[]
-  pr: WorkflowPullRequest | null
+  pr: RowPull | null
   since: string | null
+}
+
+/**
+ * The step results' pull request beside the one the workflow read serves
+ * (`workflow.pull_request`). The served reading is drawn only for the same
+ * number: a reading of another pull request is never put on this one.
+ */
+export function rowPull(fromSteps: WorkflowPullRequest | null, served: WorkflowPullRequestChecks | null | undefined): RowPull | null {
+  const sameOrOnly = served != null && (fromSteps === null || fromSteps.number === served.number)
+  if (fromSteps === null && !sameOrOnly) return null
+  const servedHref = served?.url != null && /^https?:\/\//i.test(served.url) ? served.url : null
+  return {
+    number: fromSteps?.number ?? served!.number,
+    href: fromSteps?.href ?? (sameOrOnly ? servedHref : null),
+    checks: sameOrOnly ? served.checks : null,
+    counts: sameOrOnly ? served.check_counts : null,
+  }
 }
 
 function markOf(task: Task | null): StepMark {
@@ -278,7 +311,7 @@ export function workRow(id: string, read: WorkflowRead | null, mine: readonly Ta
         const task = s.task_id ? (byId.get(s.task_id) ?? null) : null
         return { id: s.step_id, mark: markOf(task), task }
       }),
-      pr: workflowPullRequest(wf, byId),
+      pr: rowPull(workflowPullRequest(wf, byId), wf.pull_request),
       since: wf.created_at,
     }
   }
@@ -292,7 +325,22 @@ export function workRow(id: string, read: WorkflowRead | null, mine: readonly Ta
   }
 }
 
-function PrChip({ pr }: { pr: WorkflowPullRequest | null }) {
+const CHECKS_WORD: Record<NonNullable<RowPull['checks']>, string> = {
+  green: 'Checks passed',
+  red: 'Checks failing',
+  pending: 'Checks running',
+  none: 'No checks reported',
+}
+
+/** The checks dot: the served reading's state as its tooltip, with the counts when stored. */
+function ChecksDot({ pr }: { pr: RowPull }) {
+  if (pr.checks === null) return null
+  const c = pr.counts
+  const word = `${CHECKS_WORD[pr.checks]}${c === null ? '' : ` · ${c.passed} passed · ${c.failed} failed · ${c.pending} pending`}`
+  return <span className={`wl-checks is-${pr.checks}`} role="img" aria-label={word} data-checks={pr.checks} />
+}
+
+function PrChip({ pr }: { pr: RowPull | null }) {
   if (pr === null) return null
   const body = (
     <>
@@ -303,10 +351,11 @@ function PrChip({ pr }: { pr: WorkflowPullRequest | null }) {
         <path d="M4 5.1v5.8M12 10.9V6.5a2 2 0 0 0-2-2H7.5m1.6-1.6L7.5 4.5l1.6 1.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       </svg>
       #{pr.number}
+      <ChecksDot pr={pr} />
     </>
   )
   return (
-    <Tooltip tip={`Pull request #${pr.number}`}>
+    <Tooltip tip={`Pull request #${pr.number}${pr.checks === null ? '' : `: ${CHECKS_WORD[pr.checks].toLowerCase()}`}`}>
       {pr.href === null ? (
         <span className="wl-pr" tabIndex={0}>
           {body}
@@ -353,7 +402,18 @@ function StepAgent({ t, asks, why }: { t: Task; asks: boolean; why: (t: Task) =>
   )
 }
 
-function WorkflowRow({ w, asksOf, ctx }: { w: WorkRow; asksOf: (t: Task) => boolean; ctx: Ctx }) {
+/** The Review word: the open approval naming this workflow, a link to it. */
+function ReviewLink({ a }: { a: ApprovalItem }) {
+  return (
+    <Tooltip tip={a.summary}>
+      <a className="wl-review" href={addressToPath(approvalAddress(a.approval_id, a.kind))} aria-label={`Review: ${a.summary}`}>
+        Review
+      </a>
+    </Tooltip>
+  )
+}
+
+function WorkflowRow({ w, review, asksOf, ctx }: { w: WorkRow; review: ApprovalItem | null; asksOf: (t: Task) => boolean; ctx: Ctx }) {
   const [open, setOpen] = useState(false)
   const asking = w.steps.filter((s) => s.task !== null && asksOf(s.task)).length
   return (
@@ -369,6 +429,7 @@ function WorkflowRow({ w, asksOf, ctx }: { w: WorkRow; asksOf: (t: Task) => bool
             {w.name}
           </a>
           <span className="wl-meta">
+            {review !== null && <ReviewLink a={review} />}
             <PrChip pr={w.pr} />
           </span>
         </span>
@@ -468,6 +529,7 @@ function useWorkflowReads(ids: readonly string[], round: number): ReadonlyMap<st
 export function WorkLists({
   mine,
   questions,
+  approvals,
   now,
   round,
   why,
@@ -478,6 +540,8 @@ export function WorkLists({
   mine: readonly Task[] | null
   /** The owner questions still open (Home's `ownerQuestionsOf`, less what was answered here). */
   questions: readonly AskedQuestion[] | null
+  /** The approvals inbox still open, as Home read it; null while not read. */
+  approvals: readonly ApprovalItem[] | null
   now: number
   round: number
   why: (t: Task) => string
@@ -501,7 +565,15 @@ export function WorkLists({
   const wfIds = [...new Set(going.map((t) => t.workflow_id).filter((x): x is string => x !== null))].sort()
   const reads = useWorkflowReads(wfIds, round)
   const rows = wfIds.map((id) => workRow(id, reads?.get(id) ?? null, mine ?? []))
-  const asking = (w: WorkRow) => w.steps.some((s) => s.task !== null && asks(s.task))
+  const reviewOf = useMemo(() => {
+    const m = new Map<string, ApprovalItem>()
+    for (const a of approvals ?? []) {
+      const wf = a.subject.workflow_id
+      if (typeof wf === 'string' && wf !== '' && !m.has(wf)) m.set(wf, a)
+    }
+    return m
+  }, [approvals])
+  const asking = (w: WorkRow) => reviewOf.has(w.id) || w.steps.some((s) => s.task !== null && asks(s.task))
   const sortedWf = [...rows].sort((a, b) => Number(asking(b)) - Number(asking(a)) || (Date.parse(b.since ?? '') || 0) - (Date.parse(a.since ?? '') || 0))
   const shownWf = allWf ? sortedWf : sortedWf.slice(0, WORKFLOW_CAP)
   const ctx: Ctx = { now, why, onDone, wfNames: new Map(rows.map((w) => [w.id, w.name])) }
@@ -554,7 +626,7 @@ export function WorkLists({
             ) : (
               <ul className="wl-list">
                 {shownWf.map((w) => (
-                  <WorkflowRow key={w.id} w={w} asksOf={asks} ctx={ctx} />
+                  <WorkflowRow key={w.id} w={w} review={reviewOf.get(w.id) ?? null} asksOf={asks} ctx={ctx} />
                 ))}
               </ul>
             )}

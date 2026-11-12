@@ -423,6 +423,7 @@ export function HomeScreen({ now: fixedNow }: { now?: number } = {}) {
           <WorkLists
             mine={mine}
             questions={questions}
+            approvals={openApprovals}
             now={now}
             round={round}
             why={waitWhy}

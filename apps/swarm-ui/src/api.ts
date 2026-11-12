@@ -13303,7 +13303,8 @@ export interface ScheduleAuditEntry {
 export interface ApprovalItem {
   approval_id: string
   kind: string
-  subject: { run_id?: string; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
+  /** `workflow_id`: the workflow the item waits in (a run's, once it started one; an await-input or contract step's own). */
+  subject: { run_id?: string; workflow_id?: string | null; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
   summary: string
   state: string
   requested_at: string | null
