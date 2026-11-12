@@ -1,8 +1,10 @@
 # plugin.home in the discovery document (discovery.tf, variables.tf): the
 # repository the plugin is served from, as owner/name, so the user guide's
-# Start here page can fill its install command. It is set from the same
-# variable as plugin.min_version, empty by default, and a value that is not
-# owner/name is refused at plan time rather than served to every plugin.
+# Start here page can fill its install command. It is set from its own
+# variable, discovery_plugin_home, not a field of var.discovery: the install
+# engine writes the whole discovery object and would overwrite it. Empty by
+# default, and a value that is not owner/name is refused at plan time rather
+# than served to every plugin.
 
 mock_provider "google" {
   source = "./mocks/google"
@@ -41,8 +43,8 @@ run "the_plugin_home_reaches_swarm_discovery" {
       oauth_client_id    = "123456789012-example.apps.googleusercontent.com"
       version            = "2026.11.0"
       plugin_min_version = "2026.11.0"
-      plugin_home        = "example-org/example-repo"
     }
+    discovery_plugin_home = "example-org/example-repo"
   }
 
   assert {
@@ -50,7 +52,7 @@ run "the_plugin_home_reaches_swarm_discovery" {
       for e in google_cloud_run_v2_service.discovery[0].template[0].containers[0].env : e.value
       if e.name == "DISCOVERY_PLUGIN_HOME"
     ]) == "example-org/example-repo"
-    error_message = "swarm-discovery must read DISCOVERY_PLUGIN_HOME from var.discovery.plugin_home"
+    error_message = "swarm-discovery must read DISCOVERY_PLUGIN_HOME from var.discovery_plugin_home"
   }
 }
 
@@ -72,8 +74,8 @@ run "the_plugin_home_defaults_to_empty" {
   }
 
   assert {
-    condition     = var.discovery.plugin_home == ""
-    error_message = "plugin_home defaults to empty, so the document omits plugin.home and the guide keeps its placeholder"
+    condition     = var.discovery_plugin_home == ""
+    error_message = "discovery_plugin_home defaults to empty, so the document omits plugin.home and the guide keeps its placeholder"
   }
 
   assert {
@@ -81,7 +83,7 @@ run "the_plugin_home_defaults_to_empty" {
       for e in google_cloud_run_v2_service.discovery[0].template[0].containers[0].env : e
       if e.name == "DISCOVERY_PLUGIN_HOME"
     ]) == 0
-    error_message = "an unset plugin_home renders no DISCOVERY_PLUGIN_HOME, so the document omits plugin.home"
+    error_message = "an unset discovery_plugin_home renders no DISCOVERY_PLUGIN_HOME, so the document omits plugin.home"
   }
 }
 
@@ -93,12 +95,10 @@ run "a_plugin_home_with_no_owner_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "example-repo"
-    }
+    discovery_plugin_home = "example-repo"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_no_name_is_refused" {
@@ -109,12 +109,10 @@ run "a_plugin_home_with_no_name_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "example-org/"
-    }
+    discovery_plugin_home = "example-org/"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_no_owner_before_the_slash_is_refused" {
@@ -125,12 +123,10 @@ run "a_plugin_home_with_no_owner_before_the_slash_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "/example-repo"
-    }
+    discovery_plugin_home = "/example-repo"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_a_path_past_the_name_is_refused" {
@@ -141,12 +137,10 @@ run "a_plugin_home_with_a_path_past_the_name_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "example-org/example-repo/extra"
-    }
+    discovery_plugin_home = "example-org/example-repo/extra"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_a_url_is_refused" {
@@ -157,12 +151,10 @@ run "a_plugin_home_with_a_url_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "https://github.com/example-org/example-repo"
-    }
+    discovery_plugin_home = "https://github.com/example-org/example-repo"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_a_space_is_refused" {
@@ -173,12 +165,10 @@ run "a_plugin_home_with_a_space_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "example org/example-repo"
-    }
+    discovery_plugin_home = "example org/example-repo"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_an_owner_starting_with_a_hyphen_is_refused" {
@@ -189,12 +179,10 @@ run "a_plugin_home_with_an_owner_starting_with_a_hyphen_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "-example-org/example-repo"
-    }
+    discovery_plugin_home = "-example-org/example-repo"
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }
 
 run "a_plugin_home_with_a_dot_dot_name_is_refused" {
@@ -205,10 +193,8 @@ run "a_plugin_home_with_a_dot_dot_name_is_refused" {
   }
 
   variables {
-    discovery = {
-      plugin_home = "example-org/.."
-    }
+    discovery_plugin_home = "example-org/.."
   }
 
-  expect_failures = [var.discovery]
+  expect_failures = [var.discovery_plugin_home]
 }

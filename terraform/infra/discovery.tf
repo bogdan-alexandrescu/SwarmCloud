@@ -128,7 +128,7 @@ resource "google_cloud_run_v2_service" "discovery" {
       # Rendered only when set: unset, the document omits plugin.home and the
       # guide keeps its placeholder.
       dynamic "env" {
-        for_each = var.discovery.plugin_home == "" ? [] : [var.discovery.plugin_home]
+        for_each = var.discovery_plugin_home == "" ? [] : [var.discovery_plugin_home]
         content {
           name  = "DISCOVERY_PLUGIN_HOME"
           value = env.value
