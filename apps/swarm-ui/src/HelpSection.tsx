@@ -103,7 +103,8 @@ export function HelpScreen({ topic }: { topic: string }) {
 
       {/* THE GUIDE (Guide.tsx): the long form, from day one to everyday work. */}
       <p className="help-guide">
-        New to SwarmCloud? <GuideLink>Read the user guide</GuideLink>: setup, a quick start, everyday work and fixes.
+        No workspace yet? <GuideLink slug="start-here">Start here</GuideLink>, then <GuideLink>the user guide</GuideLink>: setup,
+        everyday work and fixes.
       </p>
 
       {/* ON A PHONE THE PANEL IS BEHIND THE MENU, so the group is a select

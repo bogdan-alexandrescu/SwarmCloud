@@ -148,7 +148,9 @@ describe('everything the guide names exists on main', () => {
       }
       for (const m of md.matchAll(/https?:\/\/([^/\s)`"]+)(\/[^\s)`"]*)?/g)) {
         const host = m[1] ?? ''
-        const ok = /(^|\.)example\.com$/.test(host) || (host === 'github.com' && (m[2] ?? '').startsWith('/example-org/'))
+        // `{{plugin-home}}` is a token Guide.tsx fills from the deployment, not a value.
+        const path = m[2] ?? ''
+        const ok = /(^|\.)example\.com$/.test(host) || (host === 'github.com' && (path.startsWith('/example-org/') || path.startsWith('/{{plugin-home}}@')))
         expect(ok, `${page}.md: ${m[0]}`).toBe(true)
       }
     }

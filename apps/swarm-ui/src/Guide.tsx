@@ -12,8 +12,19 @@
  * Not a section and not a tab, like the join page: Help and the setup
  * checklist link here, and it sits behind the console's own sign-in. The
  * console's no-prose rule is for console pages; these pages are the prose.
+ *
+ * REAL VALUES WITHOUT REAL VALUES IN THE REPOSITORY. A page may write three
+ * tokens -- `{{console}}`, `{{plugin-home}}` (owner/name), `{{plugin-version}}`
+ * -- and they are filled here, at render time: the console address from the
+ * page's own origin; the plugin's version from the deployment's public
+ * discovery document (`/.well-known/swarmcloud`, `plugin.min_version`, the
+ * oldest plugin it accepts, whose `sc-v<version>` tag the release pushed). No
+ * read serves the plugin's home yet, so it is the marked placeholder
+ * `<owner/name>` the reader replaces. A value nothing served is never an empty
+ * string: `github.com/@sc-v#` reads as a command and is not one.
  */
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { USE_FIXTURES } from './api'
 import { GUIDE_SOURCES } from './guidePages'
 import './styles/guide.css'
 
@@ -61,6 +72,153 @@ export function headingId(text: string): string {
     .replace(/[^a-z0-9 -]/g, '')
     .trim()
     .replace(/\s+/g, '-')
+}
+
+// ------------------------------------------------------------ the tokens
+
+/** What fills a page's tokens. Absent (or blank) means nothing served it. */
+export type GuideValues = { console?: string; pluginHome?: string; pluginVersion?: string }
+
+/** What the deployment serves, beside the origin the page already knows. */
+export type GuideServed = Omit<GuideValues, 'console'>
+
+const TOKENS: Readonly<Record<string, { key: keyof GuideValues; placeholder: string }>> = {
+  console: { key: 'console', placeholder: '<console-address>' },
+  'plugin-home': { key: 'pluginHome', placeholder: '<owner/name>' },
+  'plugin-version': { key: 'pluginVersion', placeholder: '<version>' },
+}
+
+const TOKEN = /\{\{([a-z-]+)\}\}/g
+
+/** Why a placeholder is drawn, on the placeholder itself. */
+const MISSING = 'This deployment does not publish this value: ask your platform team for it and type it here.'
+
+type Filled = string | { placeholder: string }
+
+/** A text's tokens, each filled or, when nothing served it, its placeholder. */
+function fillParts(text: string, values: GuideValues): Filled[] {
+  const out: Filled[] = []
+  let last = 0
+  for (const m of text.matchAll(TOKEN)) {
+    const token = TOKENS[m[1] ?? '']
+    if (token === undefined) continue
+    const at = m.index ?? 0
+    if (at > last) out.push(text.slice(last, at))
+    const value = values[token.key]?.trim() ?? ''
+    out.push(value === '' ? { placeholder: token.placeholder } : value)
+    last = at + m[0].length
+  }
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
+/** A text with its tokens filled, as Copy hands it over. */
+export function fillGuide(text: string, values: GuideValues): string {
+  return fillParts(text, values)
+    .map((p) => (typeof p === 'string' ? p : p.placeholder))
+    .join('')
+}
+
+const GuideValuesContext = createContext<GuideValues>({})
+
+/** A text with its tokens filled, a placeholder marked as one. */
+function FilledText({ text }: { text: string }) {
+  const values = useContext(GuideValuesContext)
+  return (
+    <>
+      {fillParts(text, values).map((p, j) =>
+        typeof p === 'string' ? (
+          p
+        ) : (
+          <mark key={j} className="guide-fill-missing" title={MISSING}>
+            {p.placeholder}
+          </mark>
+        ),
+      )}
+    </>
+  )
+}
+
+/** Where the deployment publishes the plugin's version: public, beside the console. */
+export const DISCOVERY_PATH = '/.well-known/swarmcloud'
+
+/** A plain release version, the shape the `sc-v<version>` tag carries. */
+const VERSION = /^\d+\.\d+\.\d+$/
+
+/**
+ * What the deployment serves for the tokens. Never rejects: a missing,
+ * refused or malformed document serves nothing, and the page draws the
+ * placeholders.
+ */
+export async function loadGuideServed(fetcher: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<GuideServed> {
+  try {
+    const res = await fetcher(DISCOVERY_PATH, { headers: { Accept: 'application/json' } })
+    if (!res.ok) return {}
+    const body: unknown = JSON.parse(await res.text())
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return {}
+    const plugin: unknown = (body as { plugin?: unknown }).plugin
+    const version: unknown = typeof plugin === 'object' && plugin !== null ? (plugin as { min_version?: unknown }).min_version : undefined
+    return typeof version === 'string' && VERSION.test(version.trim()) ? { pluginVersion: version.trim() } : {}
+  } catch {
+    return {}
+  }
+}
+
+let served: Promise<GuideServed> | null = null
+
+/** The served values, read once per console load; nothing on the fixture build. */
+function useGuideServed(given: GuideServed | undefined): GuideServed {
+  const [got, setGot] = useState<GuideServed>({})
+  const read = given === undefined && !USE_FIXTURES
+  useEffect(() => {
+    if (!read) return
+    let live = true
+    served ??= loadGuideServed()
+    void served.then((v) => {
+      if (live) setGot(v)
+    })
+    return () => {
+      live = false
+    }
+  }, [read])
+  return given ?? got
+}
+
+/** How long Copy's "copied ✓" stays. */
+const COPY_SAID_MS = 2000
+
+/** A command block, its tokens filled, with a Copy button that copies what it shows. */
+function CodeBlock({ text }: { text: string }) {
+  const values = useContext(GuideValuesContext)
+  const [said, setSaid] = useState('')
+  useEffect(() => {
+    if (said === '') return
+    const id = setTimeout(() => setSaid(''), COPY_SAID_MS)
+    return () => clearTimeout(id)
+  }, [said])
+  const copy = () => {
+    const c = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (c === undefined) return setSaid('could not copy; select the text instead')
+    c.writeText(fillGuide(text, values)).then(
+      () => setSaid('copied'),
+      () => setSaid('could not copy; select the text instead'),
+    )
+  }
+  return (
+    <div className="guide-codebox">
+      <pre className="guide-code" tabIndex={0}>
+        <code>
+          <FilledText text={text} />
+        </code>
+      </pre>
+      <button type="button" className="guide-copy" onClick={copy} aria-label="Copy this command">
+        {said === 'copied' ? 'copied ✓' : 'Copy'}
+      </button>
+      <span className="guide-copy-said" role="status">
+        {said === 'copied' ? '' : said}
+      </span>
+    </div>
+  )
 }
 
 // ------------------------------------------------------------ the reader
@@ -200,9 +358,14 @@ export function inline(text: string, key = 'i'): ReactNode[] {
   let n = 0
   for (const m of text.matchAll(re)) {
     const at = m.index ?? 0
-    if (at > last) out.push(text.slice(last, at))
+    if (at > last) out.push(plain(text.slice(last, at), `${key}-t${n}`))
     const k = `${key}-${n++}`
-    if (m[1] !== undefined) out.push(<code key={k}>{m[1]}</code>)
+    if (m[1] !== undefined)
+      out.push(
+        <code key={k}>
+          <FilledText text={m[1]} />
+        </code>,
+      )
     else if (m[2] !== undefined) out.push(<strong key={k}>{inline(m[2], k)}</strong>)
     else {
       const href = guideHref(m[4] ?? '')
@@ -221,8 +384,13 @@ export function inline(text: string, key = 'i'): ReactNode[] {
     }
     last = at + m[0].length
   }
-  if (last < text.length) out.push(text.slice(last))
+  if (last < text.length) out.push(plain(text.slice(last), `${key}-t${n}`))
   return out
+}
+
+/** Plain text as written, or filled when it carries a token. */
+function plain(text: string, key: string): ReactNode {
+  return text.includes('{{') ? <FilledText key={key} text={text} /> : text
 }
 
 function BlockView({ block, k, tight }: { block: Block; k: string; tight?: boolean }) {
@@ -236,11 +404,7 @@ function BlockView({ block, k, tight }: { block: Block; k: string; tight?: boole
     case 'para':
       return tight ? <>{inline(block.text, k)}</> : <p>{inline(block.text, k)}</p>
     case 'code':
-      return (
-        <pre className="guide-code" tabIndex={0}>
-          <code>{block.text}</code>
-        </pre>
-      )
+      return <CodeBlock text={block.text} />
     case 'table':
       return (
         <div className="guide-table" tabIndex={0} role="region" aria-label={block.head.join(', ')}>
@@ -301,8 +465,14 @@ export function GuideLink({ slug = '', children, className = 'ctl-link', label }
   )
 }
 
-export function GuideScreen({ slug }: { slug: string }) {
+/**
+ * One guide page. `served` is what the deployment serves for the tokens; left
+ * out, it is read once from the deployment (never on the fixture build).
+ */
+export function GuideScreen({ slug, served: given }: { slug: string; served?: GuideServed }) {
   const pages = useMemo(() => guidePages(), [])
+  const got = useGuideServed(given)
+  const values: GuideValues = { ...got, console: window.location.origin }
   const page = slug === '' ? GUIDE_INDEX : slug
   const markdown = GUIDE_SOURCES[page]
   const at = pages.findIndex((p) => p.slug === page)
@@ -323,54 +493,56 @@ export function GuideScreen({ slug }: { slug: string }) {
   }, [page])
 
   return (
-    <div className="guide" ref={top}>
-      <nav className="guide-bar" aria-label="User guide">
-        <GuideLink className="guide-home">User guide</GuideLink>
-        <label className="guide-search">
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${pages.length} page titles`}
-            aria-label="Search the guide's page titles"
-          />
-        </label>
-      </nav>
-      {q !== '' && (
-        <section className="guide-hits" aria-label="Pages found">
-          {hits.length === 0 ? (
-            <p>No page title mentions “{query.trim()}”.</p>
-          ) : (
-            <ul>
-              {hits.map((p) => (
-                <li key={p.slug}>
-                  <GuideLink slug={p.slug}>{p.title}</GuideLink>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-      {markdown === undefined ? (
-        <article className="guide-article">
-          <h1>No guide page is called {slug}</h1>
-          <p>
-            <GuideLink>Open the guide's first page</GuideLink>
-          </p>
-        </article>
-      ) : (
-        <GuideArticle markdown={markdown} />
-      )}
-      {(prev !== undefined || next !== undefined) && (
-        <nav className="guide-pager" aria-label="Previous and next page">
-          {prev !== undefined ? (
-            <GuideLink slug={prev.slug}>← {prev.title}</GuideLink>
-          ) : (
-            <span />
-          )}
-          {next !== undefined && <GuideLink slug={next.slug}>{next.title} →</GuideLink>}
+    <GuideValuesContext.Provider value={values}>
+      <div className="guide" ref={top}>
+        <nav className="guide-bar" aria-label="User guide">
+          <GuideLink className="guide-home">User guide</GuideLink>
+          <label className="guide-search">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${pages.length} page titles`}
+              aria-label="Search the guide's page titles"
+            />
+          </label>
         </nav>
-      )}
-    </div>
+        {q !== '' && (
+          <section className="guide-hits" aria-label="Pages found">
+            {hits.length === 0 ? (
+              <p>No page title mentions “{query.trim()}”.</p>
+            ) : (
+              <ul>
+                {hits.map((p) => (
+                  <li key={p.slug}>
+                    <GuideLink slug={p.slug}>{p.title}</GuideLink>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+        {markdown === undefined ? (
+          <article className="guide-article">
+            <h1>No guide page is called {slug}</h1>
+            <p>
+              <GuideLink>Open the guide's first page</GuideLink>
+            </p>
+          </article>
+        ) : (
+          <GuideArticle markdown={markdown} />
+        )}
+        {(prev !== undefined || next !== undefined) && (
+          <nav className="guide-pager" aria-label="Previous and next page">
+            {prev !== undefined ? (
+              <GuideLink slug={prev.slug}>← {prev.title}</GuideLink>
+            ) : (
+              <span />
+            )}
+            {next !== undefined && <GuideLink slug={next.slug}>{next.title} →</GuideLink>}
+          </nav>
+        )}
+      </div>
+    </GuideValuesContext.Provider>
   )
 }
