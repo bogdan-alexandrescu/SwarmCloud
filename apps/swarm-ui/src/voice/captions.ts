@@ -167,6 +167,17 @@ export function closeCaption(lines: readonly CaptionLine[], side: CaptionSide): 
 }
 
 /**
+ * Whether `after` has a line closed that `before` had open, or had not at all:
+ * a line closed without a final (a pause, the other side, the end of a turn)
+ * is a segment someone spoke, so it counts as activity for the idle stop just
+ * as a final does (the owner's pick on #3956, 12 November 2026).
+ */
+export function closedLine(before: readonly CaptionLine[], after: readonly CaptionLine[]): boolean {
+  const wasFinal = new Set(before.filter((l) => l.final).map((l) => l.id))
+  return after.some((l) => l.final && !wasFinal.has(l.id))
+}
+
+/**
  * The lines after one event. A delta grows its side's open line, or closes it
  * and starts one when its key differs; it closes the other side's open line
  * when that line names no item. A final replaces its segment's lines (every

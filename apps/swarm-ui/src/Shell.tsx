@@ -266,8 +266,8 @@ function noteInput(): void {
 
 /**
  * Input that is not a key, a pointer or a wheel: speech. Voice it's Talk pane
- * calls this on every final caption from either side while a session is live
- * (docs/design/voice-it.md §3.10), so a person who is only talking is not
+ * calls this on every final caption from either side while a session is live,
+ * and on every caption line closed without one (docs/design/voice-it.md §3.10), so a person who is only talking is not
  * taken for someone who left. When the session ends nothing calls it, and the
  * fifteen-minute rule applies again.
  */

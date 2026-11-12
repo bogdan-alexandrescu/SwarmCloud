@@ -57,6 +57,7 @@ import {
   closeCaption,
   trimCaptions,
   CAPTION_PAUSE_MS,
+  closedLine,
   type CaptionLine,
   type CaptionSide,
 } from './captions'
@@ -114,6 +115,16 @@ export type PaneMode = TalkMode | 'speech'
 function clearPauses(timers: { current: Partial<Record<CaptionSide, ReturnType<typeof setTimeout>>> }): void {
   for (const t of Object.values(timers.current)) clearTimeout(t)
   timers.current = {}
+}
+
+/**
+ * `after`, having noted activity when it closed a line: a segment closed with
+ * no final (a pause, the other side, the end of a turn) is speech as much as a
+ * final is. Calling it twice, as React may an updater, notes the same moment.
+ */
+function noted(before: readonly CaptionLine[], after: CaptionLine[]): CaptionLine[] {
+  if (closedLine(before, after)) noteActivity()
+  return after
 }
 
 /** The caption of the phrase a text session is hearing right now. */
@@ -428,17 +439,17 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     if (type !== null && VOICE_STARTED.has(type)) setVoicePlaying(true)
     if (type !== null && VOICE_STOPPED.has(type)) setVoicePlaying(false)
     const ended = captionEnd(data)
-    if (ended !== null) setLines((l) => closeCaption(l, ended))
+    if (ended !== null) setLines((l) => noted(l, closeCaption(l, ended)))
     const ev = captionEvent(data)
     if (ev === null) return
     // Speech is proof someone is there; a word still being spoken is not yet a segment.
     if (ev.final) noteActivity()
-    setLines((l) => trimCaptions(applyCaption(l, ev)))
+    setLines((l) => trimCaptions(noted(l, applyCaption(l, ev))))
     const side = ev.side
     clearTimeout(captionPause.current[side])
     if (!ev.final) {
       captionPause.current[side] = setTimeout(() => {
-        if (mounted.current) setLines((l) => trimCaptions(closeCaption(l, side)))
+        if (mounted.current) setLines((l) => trimCaptions(noted(l, closeCaption(l, side))))
       }, CAPTION_PAUSE_MS)
     }
   }, [])
