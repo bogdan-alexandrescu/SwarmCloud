@@ -4,7 +4,9 @@
 // rather than wraps. It was built for Work › Agents alone (agents.css, scoped
 // to `.wi[data-screen='agents']`), so the Workflows list and the workflow page
 // still drew the boxed, wrapped, three-line row; it lives in needs-you.css now,
-// unscoped. When something waits the row keeps its box, its chips and its list.
+// unscoped. When something waits the row keeps its box and its chips, and is
+// the toggle (the owner's ask, 11 November 2026): collapsed it is one line,
+// its list in a body opened from the header.
 //
 // And on the phone every faint "not known" chip drops its kind word
 // (`.ny-word`), so it is named by an aria-label, as the counted chips are
@@ -13,9 +15,12 @@
 // MUTATIONS: scope the rest rule back to `.wi[data-screen='agents']` (the
 // Workflows list and the workflow page come to three lines); drop
 // `.ny:not(.has-some)` from it, so a waiting row loses its box; drop the faint
-// chip's aria-label.
+// chip's aria-label; let the body's own display win over `hidden`; draw the
+// zero chips in the collapsed header, or spell out a faint chip's "not known";
+// let a chip shrink and cut its count (min-width 0, overflow hidden), or stop
+// the header wrapping when its chips do not fit.
 
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import AGENTS_CSS from '../styles/agents.css?raw'
@@ -169,18 +174,61 @@ describe('the Needs-you row on a phone, on every Work screen', () => {
         expect(h, `${at.name}'s row at rest is ${h}px`).toBe(22)
       })
 
-      it(`keeps its box, its chips and its list on ${at.name} at 390 when a question waits (${theme})`, () => {
+      it(`is one boxed line, collapsed, every count whole, on ${at.name} at 390 when a question waits, and opens its list from the header (${theme})`, () => {
         const ny = draw([question], at)
         expect(ny.classList.contains('has-some')).toBe(true)
+        const bar = ny.querySelector<HTMLElement>('.ny-bar')!
+        expect(bar.tagName, 'the header row is not the toggle').toBe('BUTTON')
+        expect(bar.getAttribute('aria-expanded')).toBe('false')
         const chips = [...ny.querySelectorAll('.ny-bar > .ny-chip')]
         expect(chips.length).toBe(NEED_KINDS.length)
-        for (const c of chips) expect(shown(c, theme), `${c.className} is hidden`).toBe(true)
-        expect(screen.getByRole('button', { name: 'Question: 1' })).toBeTruthy()
+        // As WorkflowNeedsCard: a kind with nothing waiting is not drawn in the
+        // collapsed header, so the counts that are drawn fit whole.
+        for (const c of chips) {
+          expect(shown(c, theme), `${c.className} is ${c.classList.contains('is-zero') ? 'drawn at zero' : 'hidden'}`).toBe(!c.classList.contains('is-zero'))
+        }
+        expect(within(bar).getByRole('img', { name: 'Question: 1' })).toBeTruthy()
+        // The faint "not known" mark is its glyph alone, its words in the tooltip.
+        const faint = bar.querySelector<HTMLElement>('.ny-chip.is-approval.is-faint')!
+        expect(shown(faint, theme), 'the faint mark is hidden').toBe(true)
+        expect(shown(faint.querySelector('.ny-glyph')!, theme), "the faint mark's glyph is hidden").toBe(true)
+        expect(shown(faint.querySelector('b')!, theme), '"not known" is spelled out in the header').toBe(false)
+        expect(faint.title).toMatch(/not known/)
+        expect(shown(bar.querySelector('.ny-caret')!, theme), 'the caret is hidden').toBe(true)
         expect(borderY(ny, theme), 'the waiting row lost its box').toBeGreaterThan(0)
         expect(vertical(won(ny, 'padding', theme), 'padding')).toBeGreaterThan(0)
-        expect(shown(ny.querySelector('.ny-listwrap')!, theme), 'the list is hidden').toBe(true)
+        // NO COUNT IS CLIPPED: the toggle neither scrolls nor cuts, a chip never
+        // shrinks below its content, and if the chips do not fit they wrap to a
+        // second line; "Needs you" and the caret keep their width.
+        expect(won(bar, 'flex-wrap', theme), 'the header cannot wrap, so a count is cut').toBe('wrap')
+        expect(won(bar, ['overflow', 'overflow-x'], theme) ?? 'visible', 'the toggle cuts or scrolls').toBe('visible')
+        const all = bar.querySelector('.ny-all')!
+        expect(won(all, 'white-space', theme), '"Needs you" wraps').toBe('nowrap')
+        expect(won(all, ['flex', 'flex-shrink'], theme), '"Needs you" shrinks').toBe('none')
+        const caret = bar.querySelector('.ny-caret')!
+        expect(won(caret, ['flex', 'flex-shrink'], theme), 'the caret shrinks off the row').toBe('none')
+        for (const c of chips) {
+          expect(won(c, ['flex', 'flex-shrink'], theme), `${c.className} shrinks below its count`).toBe('none')
+          expect(won(c, 'white-space', theme), `${c.className} breaks inside its count`).toBe('nowrap')
+          const clips = won(c, 'min-width', theme) === '0' && won(c, ['overflow', 'overflow-x'], theme) === 'hidden'
+          expect(clips, `${c.className} is cut at its edge`).toBe(false)
+          expect(won(c, ['overflow', 'overflow-x'], theme) ?? 'visible', `${c.className} hides its overflow`).toBe('visible')
+        }
+        expect(won(ny, 'max-width', theme)).toBe('100%')
+        const body = ny.querySelector<HTMLElement>('.ny-body')!
+        expect(body.hidden).toBe(true)
+        expect(shown(body, theme), 'the collapsed body is drawn').toBe(false)
+        const { px: h, barLines } = rowHeight(ny, theme)
+        expect(barLines).toBe(1)
+        expect(h, 'the collapsed row is more than one line').toBe(vertical(won(ny, 'padding', theme), 'padding') + borderY(ny, theme) + 22)
+        expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+
+        fireEvent.click(bar)
+        expect(bar.getAttribute('aria-expanded')).toBe('true')
+        expect(body.hidden).toBe(false)
+        expect(shown(body, theme), 'the opened body is hidden').toBe(true)
         expect(within(ny).getByRole('list', { name: 'Needs you' }).children.length).toBe(1)
-        expect(rowHeight(ny, theme).px, 'the waiting row is only one line').toBeGreaterThan(22)
+        expect(rowHeight(ny, theme).px, 'the opened row is only one line').toBeGreaterThan(h)
       })
     }
   }
