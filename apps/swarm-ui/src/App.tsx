@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
+import { AutomateTimeline } from './AutomateTimeline' // MOCK-HOOK
 import { createPortal } from 'react-dom'
 import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { ActivityScreen, TenantsScreen } from './Activity'
@@ -2650,8 +2651,10 @@ function SectionBody({
       return <RunsScreen view={view} go={go} />
 
     case 'automate/schedules':
+      if (new URLSearchParams(window.location.search).get('automate') === 'timeline') return <AutomateTimeline tab="schedules" /> // MOCK-HOOK
       return <SchedulesScreen view={view} go={go} />
     case 'automate/approvals':
+      if (new URLSearchParams(window.location.search).get('automate') === 'timeline') return <AutomateTimeline tab="approvals" /> // MOCK-HOOK
       return <ApprovalsScreen view={view} go={go} />
 
     case 'capacity/pools':
