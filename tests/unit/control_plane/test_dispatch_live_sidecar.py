@@ -51,11 +51,16 @@ from swarm_common.profiles import (
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     Backend,
+    LiveShare,
+    ResourceSize,
+    default_sizes,
     resolve_backend,
 )
 
 from scheduler import dispatch
+from scheduler import sizes
 from scheduler.dispatch import WORKER_UID, GkeJobDispatcher, GkeTarget
+from scheduler.sizes import Sized
 from scheduler.settings import SchedulerSettings
 
 from .conftest import PROJECT, scheduler_settings
@@ -82,7 +87,7 @@ def tenant() -> Tenant:
 
 
 def _job(tenant: Tenant, profile_name: str = PROFILE, *, live: bool = True,
-         resource_class: str | None = None) -> dict[str, Any]:
+         resource_class: str | None = None, sized: Sized | None = None) -> dict[str, Any]:
     settings = scheduler_settings(live_browser_sidecar=live)
     dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
                                   batch_api=object())
@@ -90,7 +95,8 @@ def _job(tenant: Tenant, profile_name: str = PROFILE, *, live: bool = True,
     if resource_class is not None:
         task = dataclasses.replace(task, resource_class=resource_class)
     return dispatcher._manifest(task=task, lease=make_lease(task),
-                                profile=RUNNER_PROFILES[profile_name], tenant=tenant)
+                                profile=RUNNER_PROFILES[profile_name], tenant=tenant,
+                                sized=sized)
 
 
 def _spec(job: dict[str, Any]) -> dict[str, Any]:
@@ -247,6 +253,39 @@ def test_a_live_browser_pod_requests_two_cores_each_and_bursts_worker_4_display_
     assert (display["requests"]["cpu"], display["limits"]["cpu"]) == ("2000m", "3000m")
     assert worker["requests"]["memory"] == worker["limits"]["memory"] == "3Gi"
     assert display["requests"]["memory"] == display["limits"]["memory"] == "5Gi"
+
+
+#: A stored version whose browser class is 4 cores / 10 GiB, split worker
+#: 5 GiB / display 5 GiB: the deployment's version when #3104 was filed.
+BROWSER_10 = ResourceSize(
+    cpu_request=4, cpu_limit=8, memory_gib=10, disk_gib=4,
+    live_split=(LiveShare(cpu_request=2, cpu_limit=4, memory_gib=5),
+                LiveShare(cpu_request=2, cpu_limit=3, memory_gib=5)),
+)
+
+
+@pytest.mark.parametrize("version", [
+    sizes.DEFAULTS,
+    sizes.SizeVersion(version=7, classes={**default_sizes(), "browser": BROWSER_10}),
+], ids=["defaults", "stored-10GiB"])
+def test_a_live_browser_pods_worker_gets_at_least_the_memory_floor(tenant, version):
+    """#3104: a live-browser step running a Next dev server, a stub API, the
+    CLI and Playwright was OOMKilled at the worker's 5 GiB (3 GiB at the code
+    default). Admission raises the worker to LIVE_WORKER_MEMORY_FLOOR_GIB and
+    the pod renders exactly what admission sized; the display keeps its 5."""
+    floor = dispatch.LIVE_WORKER_MEMORY_FLOOR_GIB
+    task = make_task(PROFILE)
+    sized = sizes.for_task(version, task, backend=Backend.GKE_AUTOPILOT, live=True)
+    spec = _spec(_job(tenant, sized=sized))
+    worker, display = _worker(spec)["resources"], _display(spec)["resources"]
+    # MUTATION: drop the with_worker_floor call from sizes.for_task (or
+    # _default) and the worker reads 3Gi / 5Gi.
+    assert worker["requests"]["memory"] == worker["limits"]["memory"]
+    assert _gib(worker["limits"]["memory"]) >= floor
+    assert display["requests"]["memory"] == display["limits"]["memory"] == "5Gi"
+    # The pod is the size admission charged: its memories sum to it.
+    assert (_gib(worker["limits"]["memory"]) + _gib(display["limits"]["memory"])
+            == sized.size.memory_gib)
 
 
 def test_the_non_live_browser_pod_is_byte_for_byte_what_the_old_split_rendered(

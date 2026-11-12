@@ -240,9 +240,12 @@ def test_a_live_browser_attempt_records_the_split_its_manifest_renders(db, batch
                           "memory_gib": gib(r["requests"]["memory"])}
     # MUTATION: render the split from LIVE_DISPLAY_SHARE scaled to the size
     # (drop `split=` from with_live_display's call in _manifest, or the stored
-    # split from `live_split_for`) and the worker reads 4 / 8 / 7.
-    assert rendered == {"worker": {"cpu_request": 3, "cpu_limit": 6, "memory_gib": 6},
+    # split from `live_split_for`) and the worker reads 4 / 8 / 7. The stored
+    # worker's 6 GiB is raised to LIVE_WORKER_MEMORY_FLOOR_GIB at admission
+    # (#3104), and the pinned size with it, to 14 GiB: still 2 units.
+    assert rendered == {"worker": {"cpu_request": 3, "cpu_limit": 6, "memory_gib": 8},
                         "display": {"cpu_request": 3, "cpu_limit": 4, "memory_gib": 6}}
+    assert lease_of(db, "task_live")["units"] == 2
     attempt = attempt_of(db, "task_live")
     # MUTATION: record the version's split while the dispatcher renders
     # another and the record stops describing the pod.
@@ -250,8 +253,8 @@ def test_a_live_browser_attempt_records_the_split_its_manifest_renders(db, batch
     assert attempt["size_version"] == 2
     env = {e["name"]: e.get("value") for e in container(job, "worker")["env"]}
     # MUTATION: tell the worker the CLASS's numbers on a live pod and it reads
-    # a 12 GiB ceiling in a 6 GiB container.
-    assert (env["SWARM_SIZED_CPU_LIMIT"], env["SWARM_SIZED_MEMORY_GIB"]) == ("6", "6")
+    # a 14 GiB ceiling in an 8 GiB container.
+    assert (env["SWARM_SIZED_CPU_LIMIT"], env["SWARM_SIZED_MEMORY_GIB"]) == ("6", "8")
 
 
 def test_a_live_capable_profile_with_the_sidecar_off_records_no_split(db, batch, cloud_run):
