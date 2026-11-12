@@ -55,7 +55,7 @@ def _load(name: str, path: Path):
 
 mcp = _load("acceptance_caller_mcp", JUDGE_PATH)
 
-INVOKER = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+INVOKER = "swarm-verify@example-project.iam.gserviceaccount.com"
 URL = "https://swarm-mcp-echo-abc123-uc.a.run.app/mcp"
 AUD = "https://swarm-mcp-echo-abc123-uc.a.run.app"
 
@@ -104,7 +104,7 @@ def test_the_suite_mints_its_own_token_and_impersonates_nobody(tmp_path: Path) -
     assert len(calls) == 1 and calls[0][1].startswith(mcp.METADATA_IDENTITY_URL + "?")
     assert not any("iamcredentials" in c[1] for c in calls)
     # A runtime identity that is not the invoker gets no credential.
-    other = "swarm-accept@saga-agents-staging.iam.gserviceaccount.com"
+    other = "swarm-accept@example-project.iam.gserviceaccount.com"
     assert mcp.token(base, other, mcp.fake_google(AUD, INVOKER)) is False
     src = JUDGE_PATH.read_text()
     assert "generateIdToken" not in src and "serviceAccountOpenIdTokenCreator" not in src.split(
@@ -237,7 +237,7 @@ def test_only_a_masked_jwt_where_only_this_credential_goes_is_counted_as_it() ->
     masked = credential[:mcp.JWT_KEPT] + mcp.MASK
     # Every Google ID token's header starts the same, so its masked form is
     # every such token's: on its own it names no credential.
-    assert mcp.fake_id_token(AUD, "other@x.iam.gserviceaccount.com")[:mcp.JWT_KEPT] \
+    assert mcp.fake_id_token(AUD, "other@example-shared-project.iam.gserviceaccount.com")[:mcp.JWT_KEPT] \
         == credential[:mcp.JWT_KEPT]
     loose = [f"Authorization: Bearer {masked}", f'{{"token": "{masked}"}}']
     tied = [f'{{"mcp_credentials": {{"acc-echo": "{masked}"}}}}',

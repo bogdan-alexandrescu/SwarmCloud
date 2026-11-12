@@ -11,7 +11,7 @@ container and renders the refusal as HTTP 404.
 
 Measured against the live deployment on 2026-09-22:
 
-    curl https://swarm-api-abcdefghij-uc.a.run.app/readyz                 -> 404
+    curl https://swarm-api-xxxxxxxxxx-uc.a.run.app/readyz                 -> 404
     curl -H 'Authorization: Bearer <id token>'  .../readyz                -> 404
     curl .../v1/workflows                                                 -> 404
     curl .../definitely-not-a-route                                       -> 404
@@ -72,7 +72,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 PROJECT = "swarm-test-project"
-RUN_URL = "https://swarm-api-abcdefghij-uc.a.run.app"
+RUN_URL = "https://swarm-api-xxxxxxxxxx-uc.a.run.app"
 
 #: The live shape: ingress restricted to the load balancer. `describe` is asked
 #: for the url and the ingress annotation in one call, separated by `|`.

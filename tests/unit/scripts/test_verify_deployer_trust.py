@@ -43,7 +43,7 @@ REPOSITORY = "acme/swarm-test"
 PROJECT_NUMBER = "123456789012"
 POOL = f"projects/{PROJECT_NUMBER}/locations/global/workloadIdentityPools/swarm-github"
 PROVIDER = f"{POOL}/providers/swarm-github-oidc"
-DEPLOYER_EMAIL = "swarm-tf-deployer@swarm-trust-test.iam.gserviceaccount.com"
+DEPLOYER_EMAIL = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
 MAIN = "refs/heads/main"
 ROLE = "roles/iam.workloadIdentityUser"
 GOOD_CONDITION = f'assertion.repository == "{REPOSITORY}" && (assertion.ref == "{MAIN}")'
@@ -191,7 +191,7 @@ class Verifier:
                 "FAKE_TRUST_STATE": str(self.state_file),
                 # A path with nothing at it: no developer's .env is sourced.
                 "SWARM_ENV_FILE": str(self.tmp / "no-env-file"),
-                "PROJECT_ID": "swarm-trust-test",
+                "PROJECT_ID": "example-project",
                 "NO_COLOR": "1",
             }
         )
@@ -338,7 +338,7 @@ def test_the_provider_is_described_with_the_project_id_not_its_number(tmp_path):
     ]
     assert describes, "the verifier never described the provider"
     for call in describes:
-        assert "--project=swarm-trust-test" in call, call
+        assert "--project=example-project" in call, call
         assert f"--project={PROJECT_NUMBER}" not in call, call
 
 

@@ -139,7 +139,7 @@
 set -euo pipefail
 # --affected-by and --inputs touch no project: they read the checkout, and
 # the pull-request job runs them before it authenticates, with no PROJECT_ID.
-# They say so, so common.sh (no default project, DAYONE-DESAGA-2) does not
+# They say so, so common.sh (no default project, the Day One project-defaults lane) does not
 # stop on an unset PROJECT_ID. Every other mode still needs one; combining
 # either with another flag is refused below, before anything is built.
 # --local too: it is a mode of --build-only (refused below without it) that
@@ -453,7 +453,7 @@ REUSE_CHECK=0
 # source upload and gcloud's polling. Nothing about any of those builds waited
 # on another except one pair (see build_after below).
 #
-# Bounded because saga-agents-staging is a SHARED project: its Cloud Build
+# Bounded because example-project is a SHARED project: its Cloud Build
 # concurrency quota is shared with the other team in it, so a release should
 # take what it needs and no more. And 4 is what it needs. agent-runtime-browser
 # and agent-runtime-indexer cannot be submitted until agent-runtime-base has
@@ -469,7 +469,7 @@ POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"
 # which only the tests use). Main's image build failed 27 times on 2026-10-20
 # and 2026-10-21 on `429 RESOURCE_EXHAUSTED` for
 # cloudbuild.googleapis.com/get_requests: the per-minute status-read quota of
-# saga-agents-staging, a project SHARED with another team that draws on the
+# example-project, a project SHARED with another team that draws on the
 # same quota. Each image was a blocking `gcloud builds submit`, which polls its
 # own build while it streams the log, so four images were four pollers, per
 # commit, and every main commit runs its own build. Now one `builds list
@@ -570,7 +570,7 @@ if [[ -n "${REUSE_CI}" ]]; then
   [[ "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 ]] \
     || die "--reuse-ci cannot be combined with --digests-only or --async"
 fi
-# A RELEASE DOES NOT REBUILD WHAT ITS ENVIRONMENT SWITCHES OFF (Bogdan's pick,
+# A RELEASE DOES NOT REBUILD WHAT ITS ENVIRONMENT SWITCHES OFF (the owner's pick,
 # 2026-11-06). The release of 2026-11-06 11:28 UTC rebuilt swarm-speech for 29
 # of its ~75 minutes, and scanned it, for dev, where voice_speech is off and
 # nothing runs it. Under --reuse-ci, outside prod, an image whose switch
@@ -1087,7 +1087,7 @@ build_seconds_of() {
   if [[ "${secs}" =~ ^[0-9]+$ ]]; then printf '%s' "${secs}"; else printf 'null'; fi
 }
 
-# LAYER CACHE (BGD, 2026-11-06): the images built with BuildKit's inline
+# LAYER CACHE (the owner, 2026-11-06): the images built with BuildKit's inline
 # cache, FROM their previous digest. swarm-speech's third-party closure
 # (torch, vLLM) is gigabytes; its Dockerfile installs it from the lock alone,
 # in a stage with no APT_REFRESH and no source, and copies it in before the
@@ -1539,7 +1539,7 @@ row_of() {
   return 1
 }
 
-# SLOWEST FIRST (BGD, 2026-11-06). Submitted in ALL_TARGETS order,
+# SLOWEST FIRST (the owner, 2026-11-06). Submitted in ALL_TARGETS order,
 # swarm-speech -- 1,717 s and 1,521 s that morning, every other image 1-4
 # min -- started in the last batch of BUILD_PARALLELISM, and the release
 # waited ~45 min for it. queue_order sorts by each image's recorded
@@ -2064,7 +2064,7 @@ show_log() {
 # Whether gcloud's output in a file is Cloud Build refusing on QUOTA: the 429
 # RESOURCE_EXHAUSTED that main's image build failed on 27 times on 2026-10-20
 # and 2026-10-21 (cloudbuild.googleapis.com/get_requests, shared with the other
-# team in saga-agents-staging). gcloud prints the HTTP status and the API's
+# team in example-project). gcloud prints the HTTP status and the API's
 # status name; either is enough, and nothing else prints them.
 quota_exhausted() {
   [[ -s "$1" ]] || return 1

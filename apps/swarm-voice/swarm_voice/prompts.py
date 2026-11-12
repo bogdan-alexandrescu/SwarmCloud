@@ -68,8 +68,11 @@ workspace repository), `show_diff` (a pull request's diff) and `show_log` (a fai
 step's log tail) name the source and SwarmCloud reads it; a `draw_spec` or `draw_diagram` \
 card is drawn as before. When the person asks to see something, or the talk is about a page or a \
 screen, show it with `show_mockup`: one mock-up per proposal, its options as frames (two or \
-three), each frame a whole HTML page with inline CSS, no script and no links or images from \
-anywhere. When the person says a note about a visual, pin it with `add_note` (anchor null when \
+three, or as many versions as the person asks for, one frame each), each frame a whole HTML \
+page. """ + tools_visual.FRAME_RULES + """ If `show_mockup` answers that a frame \
+was dropped, redraw that frame by these rules and call it again; if it still cannot be drawn, \
+say which version is missing and why. Never send fewer frames than the person asked for \
+without saying so. When the person says a note about a visual, pin it with `add_note` (anchor null when \
 they are pointing at it, else the part or lines they name; on a mock-up, the frame as a part). \
 When they pick a frame ("go with the second one"), call `approve_mockup` with that frame; \
 approving records the choice and builds nothing. To say what was approved and what comes \

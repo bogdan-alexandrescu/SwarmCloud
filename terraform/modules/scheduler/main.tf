@@ -225,8 +225,9 @@ resource "google_pubsub_subscription_iam_member" "dlq_subscriber" {
 #
 # The account is terraform/bootstrap's (platform_service_accounts.tf,
 # DAYONE-BOOT-2, design Q7); this module reads it. The live account was
-# forgotten here, never destroyed (terraform/infra/removed.tf), and adopted by
-# bootstrap's gated import; its email and unique id did not change.
+# forgotten here, never destroyed (a `removed` block in terraform/infra, deleted
+# once the state held none of its addresses), and adopted by bootstrap's gated
+# import; its email and unique id did not change.
 #
 # The job itself is lane S4's (jobs.tf).
 data "google_service_account" "schedule_tick" {

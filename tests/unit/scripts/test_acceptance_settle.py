@@ -87,6 +87,8 @@ source {shlex.quote(str(LIB))}
         SWARM_ACCEPTANCE_TIMEOUT=str(timeout),
         SWARM_ACCEPTANCE_ADMIT_WAIT=str(admit_wait),
         SWARM_POLL_INTERVAL_SECONDS="0.05",
+        # The placeholder deployment's sandbox: config.sh has no default for it.
+        SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL=os.environ["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"],
     )
     started = time.monotonic()
     result = subprocess.run(

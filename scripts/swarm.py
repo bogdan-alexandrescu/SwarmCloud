@@ -34,11 +34,15 @@ import sys
 import time
 from typing import Any
 
-os.environ.setdefault("PROJECT_ID", "saga-agents-staging")
+# No default project (scripts/lib/common.sh, load_env): the deployment names its own,
+# in the environment or .env, and an unset one stops here instead of being guessed.
+if not os.environ.get("PROJECT_ID"):
+    raise SystemExit("PROJECT_ID is not set, and no script here guesses it; export PROJECT_ID=<your-gcp-project>")
 os.environ.setdefault("REGION", "us-central1")
 os.environ.setdefault("ENVIRONMENT", "dev")
 os.environ.setdefault("FIRESTORE_DATABASE", "swarm")
-os.environ.setdefault("ARTIFACT_BUCKET", "swarm-artifacts-saga-agents-staging")
+# Derived from the project, as common.sh derives it.
+os.environ.setdefault("ARTIFACT_BUCKET", f"swarm-artifacts-{os.environ['PROJECT_ID']}")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

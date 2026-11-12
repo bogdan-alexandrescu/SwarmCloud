@@ -159,6 +159,10 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # planner turn of a session started with debug on; the route refuses any
     # caller that did not come through a grant.
     ("POST", "/v1/voice/sessions/{session_id}/trace"),
+    # llm-providers.md §5.3: a spent Live key's next tier, held for the
+    # reopen (routes/voice.py `tier_reopen`); the route refuses any caller
+    # that did not come through a grant.
+    ("POST", "/v1/voice/sessions/{session_id}/reopen"),
 })
 
 

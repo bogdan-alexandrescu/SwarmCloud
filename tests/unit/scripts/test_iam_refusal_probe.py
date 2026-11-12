@@ -47,7 +47,7 @@ PROJECT = "swarm-probe-test"
 DEPLOYER_EMAIL = f"swarm-tf-deployer@{PROJECT}.iam.gserviceaccount.com"
 DEPLOYER = f"serviceAccount:{DEPLOYER_EMAIL}"
 # Another team's identity in the shared project. It must never reach a log.
-SENTINEL = "serviceAccount:their-sentinel-7f3a@other-team.iam.gserviceaccount.com"
+SENTINEL = "serviceAccount:their-sentinel-7f3a@example-shared-project.iam.gserviceaccount.com"
 SCOPED_ROLE = "roles/resourcemanager.projectIamAdmin"
 
 pytestmark = pytest.mark.skipif(
@@ -884,7 +884,7 @@ def test_no_step_prints_the_project_policy_or_asks_for_a_token(tmp_path):
 # if the condition were broken, the deployer would hold project-wide
 # secrets.setIamPolicy over the other team's secrets until the revert.
 
-SECRET_LISTER = "projects/saga-agents-staging/roles/swarmSecretLister"
+SECRET_LISTER = "projects/example-project/roles/swarmSecretLister"
 
 
 def test_preflight_stops_when_a_chunk_lists_swarm_secret_lister(tmp_path):

@@ -8,7 +8,7 @@
 #      a production context in it, and `kubectl delete` against the wrong current
 #      context is the classic way to have a very bad afternoon.
 #   2. It REFUSES to fetch credentials for any cluster on the shared deny-list.
-#      agents-staging is a live cluster owned by another team in this same
+#      peer-cluster is a live cluster owned by another team in this same
 #      project; this repo must never hold credentials for it.
 #
 # The kubeconfig is written 0600. It carries a bearer credential for a
@@ -105,7 +105,7 @@ if [[ "${MERGE}" -eq 1 ]]; then
   MERGE_TARGET="${KUBECONFIG:-${HOME}/.kube/config}"
   warn "--merge writes the swarm context into ${MERGE_TARGET}, alongside your other contexts."
   warn "That is the shared-kubeconfig hazard this script exists to avoid: on this workstation the"
-  warn "ACTIVE context was another team's live agents-staging cluster, with agents-prod in the same"
+  warn "ACTIVE context was another team's live peer-cluster cluster, with agents-prod in the same"
   warn "file. Every later 'kubectl delete' is then one 'use-context' away from the wrong cluster."
   warn "The isolated file at ${KUBECONFIG_PATH} needs no flag and every script here picks it up."
   # A safety-reducing action gets the same typed confirmation as a destructive
@@ -136,7 +136,7 @@ fi
 # CHECKED, NOT `|| true`. Both use-context calls used to be allowed to fail in
 # silence, leaving whatever context was current before -- and under --merge
 # that is the operator's own kubeconfig, whose active context on the reference
-# workstation was another team's agents-staging. The line below then printed
+# workstation was another team's peer-cluster. The line below then printed
 # `ok context <their cluster>` and the /readyz probe that follows ran against
 # it. The rename above may legitimately fail (the context is already renamed);
 # ending up anywhere but the swarm cluster may not.

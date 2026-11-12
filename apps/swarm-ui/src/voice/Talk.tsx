@@ -86,11 +86,28 @@
  * by swarm-api on our own engine (the relay's read-back matcher); in text
  * mode the page posts a phrase that can answer one to the read-back answer
  * route first, and sends it as a turn only when it answered nothing.
+ *
+ * A SPENT LIVE KEY REOPENS (docs/design/llm-providers.md §5.3, §5.4). When
+ * the key's credit is gone, swarm-api streams `voice.tier.reopen` with the
+ * next tier's name; the page makes a fresh offer to the same session at once
+ * (rtc.ts `reopenTalk`), keeps the captions and the cards, and shows one
+ * caption naming the tier, never a modal. A reopen that fails ends the talk
+ * with its reason. A peer that drops waits REOPEN_WAIT_MS for that event
+ * before it ends the talk: the spent Live session can close before the event
+ * reaches the page.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { normVoiceSettings, normVoiceTraceTurnEvent, USE_FIXTURES, VOICE_SETTINGS, type VoiceTraceTurnEvent } from '../api'
+import {
+  normVoiceSettings,
+  normVoiceTraceTurnEvent,
+  USE_FIXTURES,
+  VOICE_SETTINGS,
+  VOICE_TIERS,
+  type VoiceTier,
+  type VoiceTraceTurnEvent,
+} from '../api'
 import { Button, buttonClass, Segmented, ToneMark } from '../components'
 import { read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
@@ -99,7 +116,7 @@ import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './ca
 import { BudgetMeter } from './Meter'
 import { micEnabled, micWord, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
-import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
+import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
 import {
@@ -168,6 +185,31 @@ function TurnLine({ turn, sessionId }: { turn: VoiceTraceTurnEvent; sessionId: s
     </div>
   )
 }
+
+/** Each tier by the name the session's header gives it (llm-providers.md §5.4). */
+export function tierName(tier: VoiceTier): string {
+  if (tier === 'plan') return 'Plan'
+  if (tier === 'voice_dedicated') return 'Voice it key'
+  return 'Shared key'
+}
+
+/** The one caption a tier change draws. */
+export function tierCaption(tier: VoiceTier): string {
+  return `Moved to ${tierName(tier)}`
+}
+
+/** A `voice.tier.reopen` event's tier, or null when it names none Talk knows. */
+export function reopenTier(ev: StreamEvent): VoiceTier | null {
+  const tier = ev.data.tier
+  return typeof tier === 'string' && (VOICE_TIERS as readonly string[]).includes(tier) ? (tier as VoiceTier) : null
+}
+
+/**
+ * How long a dropped peer waits for `voice.tier.reopen` before the talk ends:
+ * swarm-voice's lease of the next tier (the broker's 10 s timeout) and the
+ * stream's one-second poll, with room to spare.
+ */
+export const REOPEN_WAIT_MS = 15_000
 
 /** The call the page holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
@@ -426,6 +468,8 @@ export function TalkPane() {
   const [speechState, setSpeechState] = useState<string | null>(null)
   // Why this session is in text mode instead of on its engine; null once dismissed.
   const [fallback, setFallback] = useState<SpeechFallback | null>(null)
+  // The one caption of a tier change mid-session (§5.4).
+  const [tierLine, setTierLine] = useState<string | null>(null)
   // Kept apart from `fallback`, which Dismiss clears: the status line must not change with it.
   const [onPlan, setOnPlan] = useState(true)
   // A text session's spoken reply, 0..1, or null when nothing is spoken.
@@ -520,7 +564,16 @@ export function TalkPane() {
     return c
   }, [closeSpeech])
 
+  // A drop waits for a reopen; a reopen in flight is not a drop.
+  const dropTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reopening = useRef(false)
+  const clearDrop = useCallback(() => {
+    if (dropTimer.current !== null) clearTimeout(dropTimer.current)
+    dropTimer.current = null
+  }, [])
+
   const end = useCallback(async () => {
+    clearDrop()
     const c = hangUp()
     if (c === null) return
     setPhase('ending')
@@ -532,7 +585,55 @@ export function TalkPane() {
         : `swarm-api did not confirm the end (${refused.message}). The call here is closed; Voice it ends a session after ten minutes of silence.`,
     )
     setPhase('idle')
-  }, [hangUp])
+  }, [hangUp, clearDrop])
+
+  const dropped = useCallback(() => {
+    if (reopening.current || dropTimer.current !== null) return
+    dropTimer.current = setTimeout(() => {
+      dropTimer.current = null
+      void end()
+    }, REOPEN_WAIT_MS)
+  }, [end])
+
+  /** The reopen: a fresh offer to the same session, on the tier swarm-api named. */
+  const reopen = useCallback(
+    async (tier: VoiceTier) => {
+      const c = call.current
+      if (c === null || reopening.current || c.mode !== 'live' || !('dropPeer' in c)) return
+      reopening.current = true
+      clearDrop()
+      setVoicePlaying(false)
+      try {
+        const next = await reopenTalk({ onEvent, onVoice: (s) => setVoice(s), onDropped: dropped }, c)
+        if (!mounted.current || call.current !== c) {
+          // Ended or left while the offer was out: the new peer goes too.
+          next.hangUp()
+          if (!mounted.current) void endVoiceSession(next.sessionId)
+          return
+        }
+        call.current = next
+        setTierLine(tierCaption(tier))
+      } catch (e) {
+        if (!mounted.current || call.current !== c) return
+        // A reopen that fails ends the talk with its reason, as a spent key does.
+        await end()
+        if (!mounted.current) return
+        const said = startProblem(e)
+        setProblem(said.line)
+        setProblemTip(said.tip)
+      } finally {
+        reopening.current = false
+      }
+    },
+    [onEvent, dropped, clearDrop, end],
+  )
+  const onTierEvent = useCallback(
+    (ev: StreamEvent) => {
+      const tier = reopenTier(ev)
+      if (tier !== null) void reopen(tier)
+    },
+    [reopen],
+  )
 
   /** One turn of a text session: caption it, send it, caption and speak the reply. */
   const say = useCallback(
@@ -736,6 +837,7 @@ export function TalkPane() {
     setTyped(null)
     setDraft('')
     setFallback(null)
+    setTierLine(null)
     setPhase('connecting')
     if (resumed.current === undefined) resumed.current = takeResumedProject()
     setProjectId(resumed.current)
@@ -749,7 +851,7 @@ export function TalkPane() {
               {
                 onEvent,
                 onVoice: (s) => setVoice(s),
-                onDropped: () => void end(),
+                onDropped: dropped,
               },
               resumed.current,
             )
@@ -781,13 +883,15 @@ export function TalkPane() {
       setProblemTip(said.tip)
       setPhase('idle')
     }
-  }, [onEvent, end, beginText, beginSpeech])
+  }, [onEvent, dropped, beginText, beginSpeech])
 
   // Leaving the page ends the session: a call nobody can hear is still billed per second.
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
+      if (dropTimer.current !== null) clearTimeout(dropTimer.current)
+      dropTimer.current = null
       listener.current?.close()
       listener.current = null
       speaker.current?.cancel()
@@ -884,6 +988,11 @@ export function TalkPane() {
             </button>
           </p>
         )}
+        {live && tierLine !== null && (
+          <p className="vt-note" role="status">
+            {tierLine}
+          </p>
+        )}
         {textMode && typed !== null && <p className="vt-note">{typed}</p>}
         {problem !== null && (
           <p className="vt-problem" role="alert">
@@ -977,7 +1086,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} onTraceEvent={onTraceEvent} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={feed.emit} onTraceEvent={onTraceEvent} onTierEvent={onTierEvent} />
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}

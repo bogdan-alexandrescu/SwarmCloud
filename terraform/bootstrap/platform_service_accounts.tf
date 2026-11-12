@@ -14,8 +14,9 @@
 # infra/verify.tf) and declares none of them.
 #
 # THE LIVE DEPLOYMENT MOVES WITH ZERO DESTROYS (Q7). The custom-roles move again
-# (platform_roles.tf): terraform/infra/removed.tf forgets each account with
-# `destroy = false`, and the `import` blocks below adopt them into this root
+# (platform_roles.tf): terraform/infra forgot each account with a `removed`
+# block (`destroy = false`; the blocks were deleted on 2026-11-11, once no state
+# held their addresses), and the `import` blocks below adopt them into this root
 # while adopt_from_infra_states is set. The migration changes no account's email
 # or unique id, so no grant, Workload Identity binding or RBAC subject moves
 # (lesson 29). Every argument below is the value terraform/infra gave the

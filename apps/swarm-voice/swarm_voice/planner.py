@@ -162,6 +162,9 @@ class TurnResult:
     drawn: list[dict[str, Any]] = field(default_factory=list)
     #: Debug mode's trace: each read, {tool, target}; never what it returned.
     read_targets: list[dict[str, Any]] = field(default_factory=list)
+    #: Each mock-up some of whose frames were not drawn (tools_visual.frames_of):
+    #: {title, asked, drawn, dropped: [{n, label, why}]}; said by `frames_not_drawn`.
+    frames_dropped: list[dict[str, Any]] = field(default_factory=list)
     #: The tier the turn ran on (accountlease.TIERS; also `usage["tier"]`).
     tier: str | None = None
     #: claudeturn.SPENT_CREDIT or SPENT_RATE when the turn ended on a spent
@@ -186,9 +189,52 @@ def drew(result: "TurnResult") -> str:
     return f"I drew {listed} on screen."
 
 
+_COUNTS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+           "eleven", "twelve")
+_ORDINALS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+             "ninth", "tenth", "eleventh", "twelfth")
+
+
+def _word(words: tuple[str, ...], n: int) -> str:
+    return words[n - 1] if 1 <= n <= len(words) else str(n)
+
+
+def frames_not_drawn(result: "TurnResult") -> str:
+    """What the voice says about each mock-up frame that could not be drawn
+    ("I drew two of the three versions; the third, Minimal, was refused
+    because ..."), or "" when every frame asked for was drawn."""
+    said: list[str] = []
+    for mockup in result.frames_dropped:
+        asked, shown = mockup["asked"], mockup["drawn"]
+        lead = (f"I drew {_word(_COUNTS, shown)} of the {_word(_COUNTS, asked)} versions"
+                if shown else "I couldn't draw the mock-up")
+        why = "; ".join(f"the {_word(_ORDINALS, d['n'])}, {d['label']}, was refused because {d['why']}"
+                        for d in mockup["dropped"])
+        said.append(f"{lead}; {why}.")
+    return " ".join(said)
+
+
+def _same_mockup(mockup: dict[str, Any], args: dict[str, Any]) -> bool:
+    """Whether a `show_mockup` call with `args` redraws the mock-up a
+    `frames_dropped` entry records: the same visual_id, or the same title."""
+    visual_id = args.get("visual_id")
+    if visual_id and visual_id == mockup.get("visual_id"):
+        return True
+    title = _title(args)
+    return title is not None and mockup.get("title") == title
+
+
+def _redrawn(result: "TurnResult", args: dict[str, Any]) -> bool:
+    """Whether an earlier call this turn already recorded what this mock-up
+    left out; a refused redraw then changes nothing on screen, and the
+    earlier entry still says which version is missing."""
+    return any(_same_mockup(m, args) for m in result.frames_dropped)
+
+
 def _failed(result: "TurnResult") -> str:
     """SAY_FAILED, unless the turn had put something on screen before it failed."""
-    return SAY_FAILED if drew(result) == NOTHING_DRAWN else f"The planner couldn't finish that one. {drew(result)}"
+    said = SAY_FAILED if drew(result) == NOTHING_DRAWN else f"The planner couldn't finish that one. {drew(result)}"
+    return f"{said} {frames_not_drawn(result)}".strip()
 
 
 def _scrub_all(value: Any, known: tuple[str, ...]) -> Any:
@@ -370,10 +416,10 @@ class Planner:
             return result
         text = said[-1] if said else outcome.result_text
         said_text = prompts.spoken(text or "", secrets_=known)
-        if not said_text and drew(result) == NOTHING_DRAWN:
+        if not said_text and drew(result) == NOTHING_DRAWN and not result.frames_dropped:
             result.spoken = SAY_FAILED
         else:
-            result.spoken = f"{said_text} {drew(result)}".strip()
+            result.spoken = f"{said_text} {drew(result)} {frames_not_drawn(result)}".strip()
         log.info("voice session %s: planner turn drew %d card(s) [%s], refused %d, read %d",
                  api.session_id, len(result.cards), ",".join(c.get("kind", "?") for c in result.cards),
                  len(result.refused), len(result.reads))
@@ -400,9 +446,23 @@ class Planner:
                 if name in VISUAL_KINDS:
                     result.drawn.append({"kind": VISUAL_KINDS[name], "title": _title(args),
                                          "refused": str(exc)})
+                if isinstance(exc, tools_visual.FramesRefused) and not _redrawn(result, args):
+                    self._frames_dropped(api, result, args, 0, exc.dropped)
                 return str(exc), True, None
             if name in VISUAL_KINDS and isinstance(body, dict) and body.get("visual_id"):
                 result.drawn.append(_visual_drawn(name, args))
+                if isinstance(body.get("frames"), list) and "frames" in result.drawn[-1]:
+                    # The frames swarm-api drew, so a frame left out is not traced as drawn.
+                    result.drawn[-1]["frames"] = [str(f.get("label"))[:200] for f in body["frames"]
+                                                  if isinstance(f, dict)]
+                if name == tools_visual.SHOW_MOCKUP:
+                    # A redraw that drew this mock-up supersedes what an earlier
+                    # call left out, so the voice names only a version still missing.
+                    result.frames_dropped = [m for m in result.frames_dropped
+                                             if not _same_mockup(m, args)]
+                if body.get("dropped"):
+                    self._frames_dropped(api, result, args, len(body.get("frames") or []),
+                                         body["dropped"], visual_id=body.get("visual_id"))
             result.visuals.append({"tool": name, **{k: body.get(k) for k in (
                 "visual_id", "note_id", "work") if isinstance(body, dict) and body.get(k)}})
             return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
@@ -455,6 +515,20 @@ class Planner:
         return prompts.as_text({"written": True, "card_id": card.get("card_id"),
                                 "version": card.get("version")}), False, None
 
+
+    @staticmethod
+    def _frames_dropped(api: tools_read.SwarmApi, result: TurnResult, args: dict[str, Any],
+                        drawn: int, dropped: list[dict[str, Any]],
+                        visual_id: Any = None) -> None:
+        """Record the frames a mock-up left out, for the voice to say; log
+        their numbers and reasons, never their HTML."""
+        frames = args.get("frames")
+        asked = len(frames) if isinstance(frames, list) else drawn + len(dropped)
+        result.frames_dropped.append({"title": _title(args), "asked": asked, "drawn": drawn,
+                                      "dropped": dropped, "visual_id": visual_id})
+        log.warning("voice session %s: a mock-up drew %d of %d frames; left out: %s",
+                    api.session_id, drawn, asked,
+                    "; ".join(f"frame {d['n']} {d['why']}" for d in dropped))
 
     async def _point(self, api: tools_read.SwarmApi, result: TurnResult, point_at: Any,
                      caption: str) -> None:

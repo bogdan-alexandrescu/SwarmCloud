@@ -49,7 +49,7 @@
 set -euo pipefail
 # --from-json re-analyses a capture on disk and touches no project (bench.sh
 # --self-test runs it that way). It says so, so common.sh (no default project,
-# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID. Every other mode
+# the Day One project-defaults lane) does not stop on an unset PROJECT_ID. Every other mode
 # still needs one.
 for arg in "$@"; do
   [[ "${arg}" != "--from-json" ]] || SWARM_NO_PROJECT=1

@@ -86,7 +86,7 @@ def test_an_unreachable_backend_with_no_usable_address_reads_no_route(address):
 @pytest.mark.parametrize("url", ["", "http://decision-api.example-tailnet.ts.net",
                                  "https://decision-api.example-tailnet.ts.net:8443",
                                  "https://decision-api.example-tailnet.ts.net/jev",
-                                 "https://user@decision-api.example-tailnet.ts.net",
+                                 "https://user:@decision-api.example-tailnet.ts.net",
                                  "https://decision-api.example.com"])
 def test_the_internal_backends_off_or_misnamed_read_no_route(url):
     resolved = _internal(url=url)

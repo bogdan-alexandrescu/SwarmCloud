@@ -59,10 +59,21 @@ TENANT_POLICY = KUBERNETES / TENANT_POLICY_FILE
 TAILSCALE_TF = REPO / "terraform" / "infra" / "tailscale.tf"
 RELAY_TEMPLATE = KUBERNETES / "swarm-system" / "swarm-live.yaml"
 
-TARGET = "decision-api-staging.taile0bda9.ts.net"
+TARGET = "decision-api.example-tailnet.ts.net"
 POD_LABEL = {"swarm-judge": "internal"}
 APP = {"app.kubernetes.io/name": "decision-api-egress"}
 FORWARD_PORT = 8443
+
+
+def _annotation_domain() -> str:
+    """The domain the manifests' swarm annotation keys carry, read from
+    kubernetes/network_parity.py's SOURCE_ANNOTATION rather than restated: the
+    lane that owns kubernetes/ owns that value."""
+    text = (REPO / "kubernetes" / "network_parity.py").read_text()
+    match = re.search(r'^SOURCE_ANNOTATION = "([^"/]+)/network-source"$', text, re.M)
+    assert match, "kubernetes/network_parity.py no longer names SOURCE_ANNOTATION"
+    return match.group(1)
+
 SERVICE_PORT = 443
 #: What the rendering fills in for swarm-api's route (jev-contract.md section
 #: 4.1): the load balancer's reserved address and swarm-api's egress range.
@@ -118,9 +129,10 @@ def test_the_template_has_four_placeholders_and_terraform_fills_every_one():
     assert '"__SWARM_API_EGRESS_CIDR__", local.decision_api_swarm_api_cidr' in tf
     # swarm-api's range is the one the relay's and the graph's policies admit.
     assert re.search(r"^\s*decision_api_swarm_api_cidr\s*=\s*var\.subnet_cidr$", tf, re.M)
-    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
+    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet
+    # (its value is the deployment's, so it is matched by shape, not restated).
     tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
-    assert f'tailscale_egress_target = "{TARGET}"' in tfvars
+    assert re.search(r'^tailscale_egress_target = "[a-z0-9.-]+\.ts\.net"$', tfvars, re.M)
 
 
 def test_everything_is_in_swarm_system_labelled_and_holds_no_rbac_or_secret():
@@ -241,7 +253,7 @@ def test_one_service_decision_api_on_443_to_the_forwarder():
     assert service["spec"]["ports"] == [
         {"name": "https", "protocol": "TCP", "port": SERVICE_PORT, "targetPort": FORWARD_PORT}
     ]
-    assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"][f"{_annotation_domain()}/tailnet-fqdn"] == TARGET
     ports = [p["containerPort"] for c in _pod()["containers"] for p in c.get("ports", [])]
     assert ports == [FORWARD_PORT]
 
@@ -265,7 +277,7 @@ def test_swarm_api_reaches_the_same_forwarder_through_an_internal_passthrough_lo
     spec = service["spec"]
     assert spec["type"] == "LoadBalancer"
     assert service["metadata"]["annotations"]["networking.gke.io/load-balancer-type"] == "Internal"
-    assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"][f"{_annotation_domain()}/tailnet-fqdn"] == TARGET
     assert spec["loadBalancerIP"] == ROUTE_ADDRESS
     assert spec["externalTrafficPolicy"] == "Cluster"
     assert spec["selector"] == APP

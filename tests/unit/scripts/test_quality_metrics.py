@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -35,9 +36,9 @@ assert _spec.loader is not None
 sys.modules["quality_metrics"] = qm
 _spec.loader.exec_module(qm)
 
-WORKER = "bogdan"
-OPERATOR = "bogdan-alexandrescu"
-MAIN_AUTHOR = "Bogdan Alexandrescu"
+WORKER = "owner"
+OPERATOR = "example-org"
+MAIN_AUTHOR = "Example Owner"
 
 
 # --------------------------------------------------------------------------
@@ -509,9 +510,36 @@ def _write(dirpath: Path, name: str, data) -> None:
     (dirpath / name).write_text(json.dumps(data), encoding="utf-8")
 
 
-def _cli(*args, cwd=None):
+def _cli(*args, cwd=None, operators=None):
+    env = {k: v for k, v in os.environ.items() if k != qm.OPERATORS_VARIABLE}
+    if operators is not None:
+        env[qm.OPERATORS_VARIABLE] = operators
     return subprocess.run([sys.executable, str(HELPER), *args], capture_output=True, text=True,
-                          cwd=cwd, check=False)
+                          cwd=cwd, env=env, check=False)
+
+
+def _one_hand_fixed_lane(dirpath: Path) -> None:
+    _write(dirpath, "lanes.json", [_pr(1)])
+    _write(dirpath, "runs.json", [])
+    (dirpath / "commits").mkdir()
+    (dirpath / "commits" / "1.log").write_text(
+        _log(("1" * 40, ["a" * 40], OPERATOR, "2026-10-12T09:30:00+00:00", ["x"])), encoding="utf-8")
+
+
+def test_the_operator_identity_is_configuration_not_a_default(tmp_path):
+    # No identity named: M6 says so instead of counting against a person the
+    # code once named, and instead of a zero that reads as "no hand fix-ups".
+    _one_hand_fixed_lane(tmp_path)
+    proc = _cli("report", "--dir", str(tmp_path), "--json")
+    assert proc.returncode == 0, proc.stderr
+    hand = json.loads(proc.stdout)["hand_fixup"]
+    assert hand["operators"] == [] and hand["measured"] is False and hand["m6_prs"] == 0
+    text = _cli("report", "--dir", str(tmp_path)).stdout
+    assert "M6  hand fix-up                not measured" in text, text
+    # Named through the deployment's setting, the same commit counts.
+    proc = _cli("report", "--dir", str(tmp_path), "--json", operators=f" {OPERATOR} ,other")
+    hand = json.loads(proc.stdout)["hand_fixup"]
+    assert hand["operators"] == [OPERATOR, "other"] and hand["measured"] is True and hand["m6_prs"] == 1
 
 
 def test_cli_report_reads_a_recorded_directory(tmp_path):

@@ -1157,7 +1157,7 @@ _FILES_SLOT = SecretSlot(
           "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
 )
 
-#: CONTRACT REQUEST 117, accepted by BGD 2026-10-26 (CF-ACCESS-TOKEN, #2442):
+#: CONTRACT REQUEST 117, accepted by the owner 2026-10-26 (CF-ACCESS-TOKEN, #2442):
 #: a Cloudflare Access service token, declared on `claude-code-browser` only.
 #: Optional: a step whose workspace granted none starts and reaches the site
 #: signed out.
@@ -2020,7 +2020,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         supports_max_turns=True,   # contract request 133
         runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
-    # CONTRACT REQUEST 147, accepted by the owner 2026-11-06 (BGD's pick after
+    # CONTRACT REQUEST 147, accepted by the owner 2026-11-06 (the owner's pick after
     # the 7-day load analysis): claude-code on the `medium` class (6 CPU
     # requested, 12 limit, 16 GiB, memory request == limit, 2 units), the size
     # 96% of the large attempts fit. Every other field is claude-code's,
@@ -2315,7 +2315,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=True,
         runtime_capabilities=(),
     ),
-    # CONTRACT REQUEST 124, accepted by BGD 2026-10-27 (FL-CONTRACT,
+    # CONTRACT REQUEST 124, accepted by the owner 2026-10-27 (FL-CONTRACT,
     # docs/design/fix-loop.md §7 request A, Q1 and Q10): a workflow step that
     # runs review-fix rounds until the review says MERGE or `max_rounds`.
     # control_plane (request 93): no container runs it, swarm-api drives its

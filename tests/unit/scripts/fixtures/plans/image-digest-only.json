@@ -13,15 +13,15 @@
         "actions": ["update"],
         "before": {
           "name": "swarm-api",
-          "project": "saga-agents-staging",
+          "project": "example-project",
           "labels": {"managed-by": "swarm-terraform"},
-          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]}]
+          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/example-project/swarm/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]}]
         },
         "after": {
           "name": "swarm-api",
-          "project": "saga-agents-staging",
+          "project": "example-project",
           "labels": {"managed-by": "swarm-terraform"},
-          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-api@sha256:2222222222222222222222222222222222222222222222222222222222222222"}]}]
+          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/example-project/swarm/swarm-api@sha256:2222222222222222222222222222222222222222222222222222222222222222"}]}]
         },
         "after_unknown": {},
         "before_sensitive": {},
@@ -40,15 +40,15 @@
         "actions": ["update"],
         "before": {
           "name": "swarm-worker",
-          "project": "saga-agents-staging",
+          "project": "example-project",
           "labels": {"managed-by": "swarm-terraform"},
-          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-worker@sha256:3333333333333333333333333333333333333333333333333333333333333333"}]}]}]
+          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/example-project/swarm/swarm-worker@sha256:3333333333333333333333333333333333333333333333333333333333333333"}]}]}]
         },
         "after": {
           "name": "swarm-worker",
-          "project": "saga-agents-staging",
+          "project": "example-project",
           "labels": {"managed-by": "swarm-terraform"},
-          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-worker@sha256:4444444444444444444444444444444444444444444444444444444444444444"}]}]}]
+          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/example-project/swarm/swarm-worker@sha256:4444444444444444444444444444444444444444444444444444444444444444"}]}]}]
         },
         "after_unknown": {},
         "before_sensitive": {},
@@ -65,8 +65,8 @@
       "provider_name": "registry.terraform.io/hashicorp/google",
       "change": {
         "actions": ["no-op"],
-        "before": {"project": "saga-agents-staging", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"},
-        "after": {"project": "saga-agents-staging", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"},
+        "before": {"project": "example-project", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"},
+        "after": {"project": "example-project", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"},
         "after_unknown": {},
         "before_sensitive": {},
         "after_sensitive": {}
