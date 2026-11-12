@@ -15,8 +15,8 @@
 /* The band: the scroller stops short of the bubble, on the side it sits. */
 .sk-main:has(> .vtb.is-br) > .ctl-scroll, .sk-main:has(> .vtb.is-bl) > .ctl-scroll { margin-bottom: var(--vtb-band, 0px); }
 .sk-main:has(> .vtb.is-tr) > .ctl-scroll, .sk-main:has(> .vtb.is-tl) > .ctl-scroll { margin-top: var(--vtb-band, 0px); }
-/* The spine is 90px wide on a desktop: a left corner sits clear of it. */
-@media (min-width: 761px) { .vtb { --vtb-left: 90px; } }
+/* A left corner starts at the page's left edge (`--vtb-left`, measured in
+   Floating.tsx), clear of the spine and the side panel. */
 
 .vtb-row { display: flex; align-items: center; gap: 12px; pointer-events: none; }
 .vtb-row > * { pointer-events: auto; }

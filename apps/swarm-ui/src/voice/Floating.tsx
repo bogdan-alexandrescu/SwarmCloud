@@ -528,6 +528,27 @@ export function FloatingView({ held, go }: { held: VoiceSession; go: (to: string
     }
   }, [corner, collapsed])
 
+  // A LEFT CORNER STARTS WHERE THE PAGE DOES: `--vtb-left` is the page's
+  // (`.sk-main`) left edge, so the bubble sits clear of the spine and of the
+  // side panel, open or folded, never over its switcher or its theme button.
+  useEffect(() => {
+    const el = box.current
+    const main = el?.closest('.sk-main')
+    if (el == null || main == null) return
+    const publish = () => {
+      const v = `${Math.max(0, Math.round(main.getBoundingClientRect().left))}px`
+      if (el.style.getPropertyValue('--vtb-left') !== v) el.style.setProperty('--vtb-left', v)
+    }
+    publish()
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(publish) : null
+    ro?.observe(main)
+    window.addEventListener('resize', publish)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', publish)
+    }
+  }, [])
+
   const textMode = talkMode === 'text'
   const speaking = textMode ? level !== null : voicePlaying || lines.some((l) => l.side === 'agent' && !l.final)
   const stateWord = mic.muted ? 'muted' : speaking ? 'speaking' : 'listening'

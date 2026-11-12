@@ -9,11 +9,13 @@
 //   * Escape inside the view stops the session;
 //   * Space and M do nothing unless the view has focus;
 //   * folded and dragged, it stays so across a route change;
+//   * a left corner starts at the page's left edge, clear of the side panel;
 //   * nothing is drawn with no live session, nor on Talk.
 //
 // MUTATIONS: draw the card's title beside "New:"; count every item whatever
 // `seen_seq` says; drop the dot once seen; bind Escape, Space or M on the
-// window; keep the fold or the corner in component state.
+// window; keep the fold or the corner in component state; offset a left
+// corner by the spine's width alone.
 
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -363,6 +365,36 @@ describe('where it sits', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Voice it, listening/ }), { detail: 0 })
     fireEvent.click(screen.getByRole('button', { name: 'Open Voice it' }))
     expect(go).toHaveBeenCalledWith('voice/talk')
+  })
+})
+
+describe('a left corner', () => {
+  it('sits clear of the side panel: it starts at the page\'s left edge, wherever the panel ends', () => {
+    held.current = fake().session
+    window.sessionStorage.setItem(PLACE_KEY, JSON.stringify({ corner: 'tl', collapsed: false }))
+    // The spine (84px) and the open side panel (236px) end where the page begins.
+    let left = 320
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('sk-main') ? new DOMRect(left, 0, 1120, 900) : new DOMRect(0, 0, 0, 0)
+    })
+    try {
+      const { container } = render(
+        <div className="sk-main">
+          <VoiceFloatLayer onTalk={false} go={vi.fn()} />
+        </div>,
+      )
+      const box = container.querySelector<HTMLElement>('.vtb')
+      expect(box?.className).toContain('is-tl')
+      expect(box?.style.getPropertyValue('--vtb-left')).toBe('320px')
+      // The panel folded: the page starts at the spine, and so does the corner.
+      left = 84
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+      expect(box?.style.getPropertyValue('--vtb-left')).toBe('84px')
+    } finally {
+      rect.mockRestore()
+    }
   })
 })
 
