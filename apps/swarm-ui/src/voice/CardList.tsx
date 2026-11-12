@@ -16,7 +16,16 @@
  *
  * ONE CARD, ONE PLACE. Cards stand in the order their first event arrived;
  * a later `card.upsert` of the same `card_id` replaces it in place, and only
- * when its `version` is newer. `card.remove` takes it away.
+ * when its `version` is newer. `card.remove` takes it away. A card is drawn on
+ * its first event, while the planner is still working: the planner writes
+ * each card when it draws it, and a mock-up frame by frame, each frame the
+ * next version of the same card (owner, 12 November 2026).
+ *
+ * A WORK CARD IS LIVE. The roster follower's `roster.update` rows (swarm_api/
+ * voice/workfeed.py `roster_row`: kind, id, state, done, total) are held by
+ * kind and id, and a Work card whose agent, workflow or run has a row shows
+ * that row's state and steps as they change, with no reload. A row changes
+ * only its own card; a row that comes before its card is used when it comes.
  *
  * ONLY THE CATALOGUE IS DRAWN (cards.ts, held to swarm-api's schema by
  * tests/unit/control_plane/test_voice_cards.py). A card of a kind the
@@ -33,7 +42,7 @@
  * three.
  */
 
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { memo, useEffect, useReducer, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
 import { Button } from '../components'
@@ -45,7 +54,7 @@ import { BudgetCard, PlanCard, ReviewCard, StopCard, VoiceCardFrame, WorkCard } 
 export const VOICE_EVENTS = '/v1/voice/sessions/{id}/events'
 
 /** The events the card list reads (swarm_api/voice/stream.py `EVENT_TYPES`, less the stage's). */
-export const STREAM_EVENTS = ['card.upsert', 'card.remove', 'session.state', 'meter.update'] as const
+export const STREAM_EVENTS = ['card.upsert', 'card.remove', 'session.state', 'meter.update', 'roster.update'] as const
 
 /** The events the Talk stage reads (swarm_api/voice/stream.py `STAGE_TYPES`). */
 export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
@@ -86,6 +95,56 @@ export interface CardProps {
   card: VoiceCard
   spec: CardKindSpec
   body: Readonly<Record<string, unknown>>
+  /** A Work card's agent, workflow or run as the roster last reported it. */
+  live?: RosterRow | null
+}
+
+/** One roster row as the stream carries it (swarm_api/voice/workfeed.py `roster_row`). */
+export interface RosterRow {
+  kind: 'delegation' | 'agent' | 'workflow' | 'run'
+  id: string
+  state: 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'cancelled'
+  done: number | null
+  total: number | null
+}
+
+const ROSTER_KINDS: readonly string[] = ['delegation', 'agent', 'workflow', 'run']
+const ROSTER_STATES: readonly string[] = ['queued', 'running', 'waiting', 'done', 'failed', 'cancelled']
+
+function count(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null
+}
+
+function asRosterRow(v: unknown): RosterRow | null {
+  if (typeof v !== 'object' || v === null) return null
+  const r = v as Record<string, unknown>
+  if (typeof r.kind !== 'string' || !ROSTER_KINDS.includes(r.kind)) return null
+  if (typeof r.id !== 'string' || r.id === '' || typeof r.state !== 'string' || !ROSTER_STATES.includes(r.state)) return null
+  return { kind: r.kind as RosterRow['kind'], id: r.id, state: r.state as RosterRow['state'], done: count(r.done), total: count(r.total) }
+}
+
+/** The key a roster row is held under, and a Work card looks it up by. */
+export function rosterKey(kind: string, id: string): string {
+  return `${kind}:${id}`
+}
+
+/** The roster row a Work card follows: its target, else the agent, workflow or run it references. */
+export function liveRowOf(card: VoiceCard, roster: Readonly<Record<string, RosterRow>>): RosterRow | null {
+  if (card.kind !== 'work') return null
+  const body = card.body ?? {}
+  const refs = card.references ?? {}
+  const pairs: [unknown, unknown][] = [
+    [body.target_kind, body.target_id],
+    ['agent', refs.agent],
+    ['workflow', refs.workflow],
+    ['run', refs.run],
+  ]
+  for (const [kind, id] of pairs) {
+    if (typeof kind !== 'string' || typeof id !== 'string' || id === '') continue
+    const row = roster[rosterKey(kind, id)]
+    if (row !== undefined) return row
+  }
+  return null
 }
 
 const BY_KIND: ReadonlyMap<string, CardKindSpec> = new Map(CARD_KINDS.map((k) => [k.kind, k]))
@@ -108,9 +167,11 @@ export interface CardListState {
   /** The highest sequence seen; a reconnect asks for what comes after it. */
   lastSeq: number
   cards: VoiceCard[]
+  /** The roster's rows by `rosterKey`; a row not reported again keeps its object, so its card is not drawn again. */
+  roster: Readonly<Record<string, RosterRow>>
 }
 
-export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [] }
+export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [], roster: {} }
 
 /** One stream event as it arrives: its type, its sequence and its data. */
 export interface StreamEvent {
@@ -139,16 +200,24 @@ export function applyStreamEvent(s: CardListState, ev: StreamEvent): CardListSta
     if (card === null || specOf(card.kind) === null) return { ...s, lastSeq }
     const at = s.cards.findIndex((c) => c.card_id === card.card_id)
     const held = s.cards[at]
-    if (held === undefined) return { lastSeq, cards: [...s.cards, card] }
+    if (held === undefined) return { ...s, lastSeq, cards: [...s.cards, card] }
     if (card.version <= held.version) return { ...s, lastSeq }
     const cards = s.cards.slice()
     cards[at] = card
-    return { lastSeq, cards }
+    return { ...s, lastSeq, cards }
   }
   if (ev.type === 'card.remove') {
     const nested = asCard(ev.data.card)
     const id = typeof ev.data.card_id === 'string' ? ev.data.card_id : nested?.card_id ?? null
-    return { lastSeq, cards: id === null ? s.cards : s.cards.filter((c) => c.card_id !== id) }
+    return { ...s, lastSeq, cards: id === null ? s.cards : s.cards.filter((c) => c.card_id !== id) }
+  }
+  if (ev.type === 'roster.update') {
+    // A row that does not fit is skipped; the others still land.
+    const rows = (Array.isArray(ev.data.rows) ? ev.data.rows : []).map(asRosterRow).filter((r): r is RosterRow => r !== null)
+    if (rows.length === 0) return { ...s, lastSeq }
+    const roster = { ...s.roster }
+    for (const r of rows) roster[rosterKey(r.kind, r.id)] = r
+    return { ...s, lastSeq, roster }
   }
   return { ...s, lastSeq }
 }
@@ -257,12 +326,15 @@ const RENDERERS: Readonly<Record<string, (p: CardProps) => JSX.Element>> = {
 }
 
 /** One card, or nothing when its kind is not in the catalogue. */
-export function VoiceCardView({ card }: { card: VoiceCard }) {
+export function VoiceCardView({ card, live = null }: { card: VoiceCard; live?: RosterRow | null }) {
   const spec = specOf(card.kind)
   if (spec === null) return null
   const Draw = RENDERERS[spec.kind] ?? NamedOnly
-  return <Draw card={card} spec={spec} body={catalogueBody(card, spec)} />
+  return <Draw card={card} spec={spec} body={catalogueBody(card, spec)} live={live} />
 }
+
+/** Drawn again only when its card or its roster row changed, so a roster.update redraws its own Work card alone. */
+const ListedCard = memo(VoiceCardView)
 
 // ---- the list -------------------------------------------------------------------
 
@@ -368,7 +440,7 @@ export function CardList({
             : 'No cards in this session yet.'}
         </p>
       ) : (
-        cards.map((c) => <VoiceCardView key={c.card_id} card={c} />)
+        cards.map((c) => <ListedCard key={c.card_id} card={c} live={liveRowOf(c, s.roster)} />)
       )}
     </div>
   )

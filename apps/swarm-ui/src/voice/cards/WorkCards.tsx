@@ -14,6 +14,10 @@
  * goes only to the console's own pages or to `https://github.com/`
  * (`githubUrl`); any other address is shown as text, never as a link.
  * Cancel, pause, merge, start, raise and the rest act, and are phase three.
+ *
+ * A WORK CARD IS LIVE. CardList.tsx hands it its agent's, workflow's or run's
+ * latest `roster.update` row (`live`); the card's state chip, its "Now" and
+ * its steps done of total follow that row as it changes, with no reload.
  */
 
 import type { ReactNode } from 'react'
@@ -23,7 +27,7 @@ import { workflowHref } from '../../agentlist'
 import { ButtonLink, Card, Chip, Dash, Tag, UsageBar, type ChipTone } from '../../components'
 import { inspectorHref } from '../../decision'
 import type { CardKindSpec, CardState } from '../cards'
-import type { CardProps, VoiceCard } from '../CardList'
+import type { CardProps, RosterRow, VoiceCard } from '../CardList'
 
 // ---- reading the body, without trusting it ------------------------------------
 
@@ -68,6 +72,15 @@ const STATE_WORD: Readonly<Record<CardState, string>> = {
   accepted: 'accepted',
 }
 
+/** A roster state as a card state; a queued row leaves the card's own. */
+const LIVE_CARD_STATE: Readonly<Partial<Record<RosterRow['state'], CardState>>> = {
+  running: 'acting',
+  waiting: 'waiting',
+  done: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
+}
+
 const CREATOR_WORD: Readonly<Record<string, string>> = { planner: 'the planner', platform: 'the platform', person: 'you' }
 
 function When({ iso }: { iso: string | null }) {
@@ -93,10 +106,33 @@ export function allows(spec: CardKindSpec, action: string): boolean {
  * the body, the links out, and who drew it when. An `<article>` named by its
  * title, so a reader can move card to card.
  */
-export function VoiceCardFrame({ card, spec, children, actions }: { card: VoiceCard; spec: CardKindSpec; children?: ReactNode; actions?: ReactNode }) {
-  const state = STATE_WORD[card.state] !== undefined ? card.state : null
+export function VoiceCardFrame({
+  card,
+  spec,
+  children,
+  actions,
+  live = null,
+}: {
+  card: VoiceCard
+  spec: CardKindSpec
+  children?: ReactNode
+  actions?: ReactNode
+  /** The roster row the card follows: its state chip moves with it. */
+  live?: RosterRow | null
+}) {
+  const followed = live === null ? undefined : LIVE_CARD_STATE[live.state]
+  const shown = followed ?? card.state
+  const state = STATE_WORD[shown] !== undefined ? shown : null
   return (
-    <article className="vt-card" data-kind={spec.kind} data-card-id={card.card_id} data-state={state ?? ''} aria-label={`${spec.label}: ${card.title}`}>
+    <article
+      className="vt-card"
+      data-kind={spec.kind}
+      data-card-id={card.card_id}
+      data-version={card.version}
+      data-state={state ?? ''}
+      data-live-state={live?.state}
+      aria-label={`${spec.label}: ${card.title}`}
+    >
       <Card
         level={3}
         title={card.title}
@@ -220,16 +256,27 @@ function Lanes({ lanes, label }: { lanes: unknown[]; label: string }) {
 
 const TARGET_WORD: Readonly<Record<string, string>> = { issue: 'Issue', run: 'Issue run', agent: 'Agent', workflow: 'Workflow', schedule: 'Schedule' }
 
-export function WorkCard({ card, spec, body }: CardProps) {
+const LIVE_WORD: Readonly<Record<RosterRow['state'], string>> = {
+  queued: 'queued',
+  running: 'running',
+  waiting: 'waiting on you',
+  done: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
+}
+
+export function WorkCard({ card, spec, body, live: row = null }: CardProps) {
   const target = str(body.target_kind)
   const targetId = str(body.target_id)
   const repo = str(body.repository)
-  const live = str(body.live_state)
+  const live = row !== null ? LIVE_WORD[row.state] : str(body.live_state)?.toLowerCase() ?? null
+  const steps = row !== null && row.done !== null && row.total !== null ? `${row.done} of ${row.total}` : null
   const href = allows(spec, 'open_in_work') ? openInWork(card, body) : null
   return (
     <VoiceCardFrame
       card={card}
       spec={spec}
+      live={row}
       actions={href !== null && <ButtonLink size="sm" href={href}>Open in Work</ButtonLink>}
     >
       <dl className="vt-card-facts">
@@ -248,7 +295,13 @@ export function WorkCard({ card, spec, body }: CardProps) {
         {live !== null && (
           <>
             <dt>Now</dt>
-            <dd>{live.toLowerCase()}</dd>
+            <dd>{live}</dd>
+          </>
+        )}
+        {steps !== null && (
+          <>
+            <dt>{row?.kind === 'run' ? 'Lanes merged' : 'Steps'}</dt>
+            <dd>{steps}</dd>
           </>
         )}
       </dl>
