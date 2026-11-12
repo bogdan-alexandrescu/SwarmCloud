@@ -113,6 +113,7 @@ from .routes import addon_probe
 from .routes import voice
 from .routes import voice_cards
 from .routes import voice_readback
+from .routes import voice_roster
 from .routes import voice_settings
 from .routes import voice_telemetry
 from .routes import voice_trace
@@ -664,6 +665,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.include_router(voice_readback.router)
     # A person's click on a card: Open on a navigation offer (voice-it.md §3.12.3).
     app.include_router(voice_cards.router)
+    # Its agent roster (voice-it.md §3.12.6): read once on mount or reconnect.
+    app.include_router(voice_roster.router)
     # Voice it's Settings (docs/design/voice-it-own-speech.md §11): read by a
     # Voice it person or an admin, written by a platform admin alone.
     app.include_router(voice_settings.router)

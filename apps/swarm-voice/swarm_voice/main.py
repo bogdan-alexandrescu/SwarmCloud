@@ -144,9 +144,11 @@ voice, and until swarm-api forwards the reopen and writes the paused state
 wake a paused session. Off, nothing pauses and nothing else changes.
 
 THE FOLLOWER HOOK. Each session's start and end runs `Followers.start` and
-`Followers.stop`, every registered pair in turn (lane V6 registers the roster's
-follower). With nothing registered they do nothing; a follower's failure is
-logged and never fails the start or the end.
+`Followers.stop`, every registered pair in turn. With nothing registered they
+do nothing; a follower's failure is logged and never fails the start or the
+end. The app built from the environment registers the roster's follower
+(follow.py, lane V6) when SWARM_API_URL is set, and stops every one at
+shutdown; it is `app.state.roster` (None without it).
 """
 
 from __future__ import annotations
@@ -163,6 +165,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from . import readback
+from .follow import build_roster
 from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
                            build_broker)
 from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
@@ -576,11 +579,17 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
                 app.state.texts = build_texts(http, app.state.sessions)
             if app.state.fronts is None:
                 app.state.fronts = build_fronts(app.state.sessions)
+            if followers is None:
+                app.state.roster = build_roster(http)
+                if app.state.roster is not None:
+                    app.state.followers.register(app.state.roster.start, app.state.roster.stop)
         if app.state.verify_caller is None:
             app.state.verify_caller = build_caller_check()
         try:
             yield
         finally:
+            if app.state.roster is not None:
+                await app.state.roster.stop_all()
             # A shutdown closes every session: one left open would bill with no sideband.
             await app.state.sessions.end_all()
             if app.state.texts is not None:
@@ -597,6 +606,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     app.state.texts = texts
     app.state.fronts = fronts
     app.state.followers = followers if followers is not None else Followers()
+    app.state.roster = None
 
     def held_elsewhere(voice_id: str, *, but: str) -> bool:
         """Whether another of the three conversations holds this voice id."""
