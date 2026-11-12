@@ -1539,6 +1539,37 @@ variable "discovery" {
   }
 }
 
+variable "discovery_plugin_home" {
+  description = <<-EOT
+    The repository the plugin is served from, as owner/name; the discovery
+    document serves it as plugin.home so the user guide's Start here page can
+    fill its install command. EMPTY (the default) omits plugin.home from the
+    document and the guide keeps its marked placeholder: the repository names
+    no real one, so the operator sets the deployment's value in the
+    deployment's private Terraform values, never here. A value that is not
+    owner/name is refused at plan time.
+
+    A variable of its own, not a field of var.discovery: the install engine
+    (apps/swarm-install/swarm_install/tfvars.py) writes the whole discovery
+    object, so a field the operator set inside it would be overwritten on the
+    next install run. The engine never writes this one.
+  EOT
+  type        = string
+  default     = ""
+
+  # GitHub's shapes: an owner of letters, digits and hyphens that does not
+  # start with a hyphen (at most 39); a name of letters, digits, '.', '_' and
+  # '-' that is not '.' or '..'.
+  # The same pattern apps/swarm-api/swarm_api/discovery.py refuses at start.
+  validation {
+    condition = var.discovery_plugin_home == "" || (
+      can(regex("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$", var.discovery_plugin_home)) &&
+      !contains([".", ".."], element(split("/", var.discovery_plugin_home), 1))
+    )
+    error_message = "discovery_plugin_home must be the plugin repository's owner/name (for example example-org/example-repo), not a URL or a path."
+  }
+}
+
 variable "discovery_serves_client_secret" {
   description = <<-EOT
     Serve the IAP Desktop client's secret in the discovery document (design

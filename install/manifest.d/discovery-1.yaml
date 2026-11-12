@@ -21,3 +21,5 @@ env:
     setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:119; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
   DISCOVERY_SERVE_CLIENT_SECRET:
     setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:121; rendered by the swarm-discovery service''s environment, which DAYONE-TF-2 adds (terraform/infra/discovery.tf); until then nothing deploys the discovery app'
+  DISCOVERY_PLUGIN_HOME:
+    setter: 'internal: read at apps/swarm-api/swarm_api/discovery.py:128; rendered by the swarm-discovery service''s environment only when var.discovery_plugin_home is set (terraform/infra/discovery.tf); unset, the document omits plugin.home'
