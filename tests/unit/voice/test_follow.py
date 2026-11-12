@@ -10,6 +10,9 @@ session's agents current from one tag query and one batched read a tick
 * Through swarm-api: the tag query is `GET /v1/tasks?claude_session=voice:
   <project>`, each started id is read by its own existing route, and the
   write is the grant's work route, every call carrying the session grant.
+* Every call carries the quiet header, so through swarm-api's grant path a
+  tick writes its `roster.update` and no `work.step`, and a tick with nothing
+  changed adds nothing to the session's stream.
 * Its state table is swarm-api's roster table.
 
 Offline: fake reads, a fake swarm-api over httpx.MockTransport, the pause
@@ -37,7 +40,16 @@ from swarm_voice.main import Followers, create_app  # noqa: E402
 from test_live_pause import (AUDIO, PERSON, PERSON_DELTA, VOICE_FINAL, World, _caller_ok,  # noqa: E402
                              _offer, _said, _until)
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from control_plane.conftest import db, group_map, objects, seed_task, tokens  # noqa: E402,F401
+from control_plane.test_voice_grant import VOICE_TOKEN, _build, _start  # noqa: E402
+from control_plane.test_voice_sessions import FakeVoice  # noqa: E402
+
+from swarm_api.voice import grant as api_grant  # noqa: E402
 from swarm_api.voice import roster as api_roster  # noqa: E402
+from swarm_api.voice import sessions as api_sessions  # noqa: E402
+from swarm_api.voice import store as api_store  # noqa: E402
 from swarm_api.voice import workfeed as vwork  # noqa: E402
 
 
@@ -331,6 +343,7 @@ def test_the_reads_and_the_write_go_through_the_existing_routes_with_the_grant()
     post = seen[-1]
     assert post.method == "POST" and len(seen) == 6
     for request in seen:
+        assert request.headers[follow.QUIET_HEADER] == follow.QUIET_ROSTER
         assert request.headers[GRANT_HEADER] == grant.headers()[GRANT_HEADER]
         assert request.headers[SESSION_HEADER] == f"{grant.project_id}/{grant.session_id}"
     rows = json.loads(post.content)["roster"]
@@ -342,6 +355,61 @@ def test_the_reads_and_the_write_go_through_the_existing_routes_with_the_grant()
     ]
     for row in rows:
         assert vwork.roster_row(row) == row
+
+
+def _stream(db, call) -> list[dict]:
+    prefix = (f"{api_sessions.PROJECTS}/{call.project_id}/{api_sessions.SESSIONS}/"
+              f"{call.session_id}/{api_store.EVENTS}/")
+    rows = [row for path, row in db.docs.items() if path.startswith(prefix)]
+    return sorted(rows, key=lambda r: r["seq"])
+
+
+def test_through_swarm_apis_grant_a_tick_writes_its_roster_event_and_no_steps(
+        db, tokens, group_map, objects):
+    voice = FakeVoice()
+    client = _build(db, tokens, group_map, objects, voice)
+    call = _start(client, voice)
+    seed_task(db, task_id="t-tag", tenant_id="eng", state="PARKED")
+    db.docs["tasks/t-tag"]["metadata"] = {"claude_session": "voice:" + call.project_id}
+    seed_task(db, task_id="t-1", tenant_id="eng", state="RUNNING")
+    grant = SessionGrant(project_id=call.project_id, session_id=call.session_id, value=call.grant)
+    audits = lambda: [row for path, row in db.docs.items()  # noqa: E731
+                      if path.startswith(api_sessions.AUDIT + "/")
+                      and row.get("action") == api_grant.AUDIT_GRANT_USED]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent = client.request(request.method, request.url.raw_path.decode(),
+                              headers=dict(request.headers), content=request.content)
+        return httpx.Response(sent.status_code, content=sent.content,
+                              headers={"content-type": "application/json"})
+
+    async def tokens_() -> str:
+        return VOICE_TOKEN
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+            api = follow.RosterApi(http, base_url="http://api", id_tokens=tokens_, grant=grant)
+            follower = follow.Follower(voice_id=grant.session_id, project_id=grant.project_id,
+                                       reads=follow.ApiReads(api))
+            follower.note("agent", "t-1")
+            first = await follower.tick()
+            after_first = list(_stream(db, call))
+            second = await follower.tick()
+            return first, after_first, second
+
+    first, after_first, second = asyncio.run(scenario())
+    assert [r["id"] for r in first] == ["t-tag", "t-1"]
+    assert [e["type"] for e in after_first] == [vwork.ROSTER_UPDATE]
+    assert second == []
+    assert _stream(db, call) == after_first
+    # Every read is still audited: two a tick, the write once.
+    assert len(audits()) == 5
+    assert sum(1 for row in audits() if row["quiet"]) == 4
+
+
+def test_the_quiet_header_matches_swarm_apis():
+    assert follow.QUIET_HEADER == api_grant.QUIET_HEADER
+    assert follow.QUIET_ROSTER == api_grant.QUIET_ROSTER
 
 
 def test_the_follower_maps_states_as_swarm_apis_roster_does():

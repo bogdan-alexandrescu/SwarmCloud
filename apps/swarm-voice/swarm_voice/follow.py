@@ -16,6 +16,11 @@ EVERY 15 SECONDS (`TICK_SECONDS`) IT MAKES TWO READS, whatever the count:
      something) read by id through the existing reads, `GET /v1/tasks/{id}`,
      `/v1/workflows/{id}` and `/v1/runs/{id}`, sent together.
 
+Each read carries `X-Swarm-Voice-Quiet: roster` (`QUIET_HEADER`), so
+swarm-api writes its audit row and no `work.step` for it: the tick's reads
+never reach the working card (the owner's pick, 12 November 2026;
+swarm_api/voice/grant.py A QUIET READ).
+
 It compares each row with what it last wrote and writes ONE `roster.update`
 event carrying the changed rows only, through the grant's write route
 (`POST /v1/voice/sessions/{session_id}/work {roster: [rows]}`;
@@ -80,6 +85,10 @@ READ_ROUTES: Mapping[str, str] = {
     "run": "/v1/runs/{run_id}",
 }
 WORK_ROUTE = "/v1/voice/sessions/{session_id}/work"
+#: The header that keeps a grant read off the working card (swarm_api/voice/grant.py
+#: QUIET_HEADER and QUIET_ROSTER; a test holds them equal).
+QUIET_HEADER = "X-Swarm-Voice-Quiet"
+QUIET_ROSTER = "roster"
 
 QUEUED, RUNNING, WAITING, DONE, FAILED, CANCELLED = (
     "queued", "running", "waiting", "done", "failed", "cancelled")
@@ -126,7 +135,11 @@ class RosterReads(Protocol):
 
 class RosterApi(SwarmApi):
     """swarm-api through the session grant (tools_read.SwarmApi), plus the
-    roster's write through the grant's work route."""
+    roster's write through the grant's work route. Every call is marked
+    quiet; swarm-api honours it on the reads only."""
+
+    async def _headers(self) -> dict[str, str]:
+        return {**await super()._headers(), QUIET_HEADER: QUIET_ROSTER}
 
     async def write_roster(self, rows: list[Row]) -> None:
         path = WORK_ROUTE.format(session_id=self.session_id)

@@ -6,6 +6,8 @@
   state and progress; a started item another tenant holds is left out.
 * Another person's project, another tenant's and a missing one are 404.
 * The session grant does not reach it.
+* A grant read marked quiet (the roster follower's) is audited and writes no
+  `work.step`; only a GET marked `roster` is quiet.
 * It reads: one starts query, one tag query, and batched reads, never a read
   per row.
 
@@ -19,9 +21,11 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from swarm_api.voice import grant as vg
 from swarm_api.voice import roster as vroster
 from swarm_api.voice import sessions as vs
 from swarm_api.voice import store as vstore
+from swarm_api.voice import workfeed as vworkfeed
 
 from .conftest import auth_header, seed_task
 from .test_voice_grant import _build, _grant_headers, _start
@@ -134,6 +138,34 @@ def test_the_session_grant_does_not_reach_the_roster(client, db, voice):
     call = _start(client, voice)
     response = client.get(ROSTER.format(project_id=call.project_id), headers=_grant_headers(call))
     assert response.status_code == 403, response.text
+
+
+def _steps(db, call) -> list[dict]:
+    prefix = f"{vs.PROJECTS}/{call.project_id}/{vs.SESSIONS}/{call.session_id}/{vstore.EVENTS}/"
+    return [row for path, row in db.docs.items()
+            if path.startswith(prefix) and row.get("type") == vworkfeed.WORK_STEP]
+
+
+def test_a_quiet_grant_read_is_audited_and_writes_no_work_step(client, db, voice):
+    call = _start(client, voice)
+    quiet = {**_grant_headers(call), vg.QUIET_HEADER: vg.QUIET_ROSTER}
+    assert client.get(f"/v1/tasks?claude_session=voice:{call.project_id}",
+                      headers=quiet).status_code == 200
+    assert _steps(db, call) == []
+    audited = [row for path, row in db.docs.items()
+               if path.startswith(vs.AUDIT + "/") and row.get("action") == vg.AUDIT_GRANT_USED]
+    assert [row["quiet"] for row in audited] == [True]
+
+
+def test_only_a_get_marked_roster_is_quiet(client, db, voice):
+    call = _start(client, voice)
+    headers = _grant_headers(call)
+    assert client.get("/v1/tasks", headers=headers).status_code == 200
+    assert client.get("/v1/tasks", headers={**headers, vg.QUIET_HEADER: "other"}).status_code == 200
+    client.post(f"/v1/voice/sessions/{call.session_id}/cards",
+                json={"card": {"kind": "work", "title": "Export"}},
+                headers={**headers, vg.QUIET_HEADER: vg.QUIET_ROSTER})
+    assert [s["class"] for s in _steps(db, call)] == ["read", "read", "write"]
 
 
 def test_the_roster_batches_its_reads(db):
