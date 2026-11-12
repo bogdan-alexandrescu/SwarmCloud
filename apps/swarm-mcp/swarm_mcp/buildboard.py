@@ -236,7 +236,7 @@ class _Reader:
         # documents need not carry it. Read on every refresh, once per task
         # (`progress.stored_answers`); a read that failed keeps the questions
         # no answer is known for, each saying why.
-        answered, why = progress.stored_answers(self.client, task)
+        answered, why = progress.stored_answers(self.client, task, questions=kept["questions"])
         live = {**kept, "answered": sorted(answered)}
         if why:
             live["answer_unknown_because"] = why

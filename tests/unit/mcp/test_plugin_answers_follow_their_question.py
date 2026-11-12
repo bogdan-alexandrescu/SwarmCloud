@@ -111,3 +111,31 @@ def test_the_listing_counts_an_answer_without_its_question_by_index_when_the_rou
     indexes, why = progress.stored_answers(client, _task(_answer(None)))
     assert indexes == {0} and why
     assert [q["answered"] for q in _listed(_answer(None), client)] == [True]
+
+
+def test_the_listing_never_reads_a_reasked_index_answered_when_the_route_fails():
+    # The document's answer names another question: not answered, and since
+    # the route could not say, not known open either.
+    client = _Client(SwarmError("boom"))
+    (entry,) = _listed(_answer(EARLIER), client)
+    # MUTATION: the fallback by index alone reads this True.
+    assert entry["answered"] is None and entry["answer_unknown_because"]
+    indexes, why = progress.stored_answers(client, _task(_answer(EARLIER)), questions=[_asked(LATER)])
+    assert indexes == set() and why
+
+
+def test_the_listing_reads_the_same_question_answered_when_the_route_fails():
+    client = _Client({"status": "error"})
+    assert [q["answered"] for q in _listed(_answer(LATER), client)] == [True]
+    # Without the questions asked now, a recorded question cannot be matched.
+    assert progress.stored_answers(client, _task(_answer(LATER)))[0] == set()
+
+
+def test_the_board_lists_a_reasked_index_open_when_the_route_fails():
+    reader = buildboard._Reader(_Client(SwarmError("boom")), {"tasks": {
+        "task_a": {"pull_request": None, "questions": [_asked(LATER)], "ended": None}}}, None)
+    done = reader.finished(_task(_answer(EARLIER)))
+    assert done["answered"] == [] and done["answer_unknown_because"]
+    lane = {"id": "wf_1", "label": "Lane 1"}
+    items = [item["item"] for item in buildboard._questions(lane, [("review", _task(_answer(EARLIER)), done)])]
+    assert items == [LATER]
