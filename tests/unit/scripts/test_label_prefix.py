@@ -368,3 +368,83 @@ def test_register_tenant_stops_after_a1_when_no_prefix_is_configured() -> None:
     assert mismatch < resolved < end
     assert "|| die \"the label-key prefix is not configured (above); nothing past A1 can run\"" in \
         text[resolved:resolved + 200]
+
+
+# --------------------------------------------------------------------------
+# every entry point that renders the token resolves the prefix one way
+# --------------------------------------------------------------------------
+#
+# A deploy step that renders a template holding the token, or reads a prefixed
+# key back, with neither setting in its environment refuses -- release and
+# hotfix ran scripts/apply-tenant-network-policies.sh that way. Every script
+# that runs one of the renderers or readers therefore resolves the prefix
+# through common.sh require_label_prefix (the deployment's tfvars, a differing
+# configured prefix refused), or is listed below with why it needs none.
+
+RENDERERS = re.compile(r"render\.py|tenant_netpol\.py|network_parity\.py|label_prefix\.py")
+#: Scripts that run a renderer but need no deployment prefix, and why.
+NEEDS_NO_PREFIX = {
+    # Touches no project: renders under the offline placeholder when nothing is set.
+    "scripts/lib/validate-manifests.sh": 'export SWARM_LABEL_PREFIX="swarm.example.com"',
+    # Asks render.py which namespace a tenant has; renders no template.
+    "scripts/workspace-migrate-record.sh": "kubernetes/render.py\" identity --tenant",
+}
+#: The cluster sweeps: resolved once, at top level, before kubectl is located.
+AT_TOP = ("kubernetes/apply.sh", "scripts/apply-tenant-network-policies.sh",
+          "scripts/lib/check-cluster-network-parity.sh")
+
+
+def _code_lines(path: Path) -> list[str]:
+    return [line for line in path.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _entry_points() -> dict[str, Path]:
+    found = {}
+    for path in sorted([*REPO.glob("scripts/**/*.sh"), *KUBERNETES.glob("*.sh")]):
+        if any(RENDERERS.search(line) for line in _code_lines(path)):
+            found[str(path.relative_to(REPO))] = path
+    return found
+
+
+def test_every_script_that_renders_the_token_resolves_the_prefix_through_the_shared_helper() -> None:
+    found = _entry_points()
+    # The control: the scan finds the deploy's own entry points.
+    assert {*AT_TOP, "scripts/register-tenant.sh"} <= set(found), sorted(found)
+    for name, path in found.items():
+        lines = _code_lines(path)
+        if name in NEEDS_NO_PREFIX:
+            assert any(NEEDS_NO_PREFIX[name] in line for line in lines), name
+            continue
+        calls = [line for line in lines if re.search(r"\brequire_label_prefix\b", line)]
+        assert calls, f"{name} renders the label-key token without common.sh require_label_prefix"
+        assert not any("resolved_label_prefix" in line for line in lines), (
+            f"{name} calls resolved_label_prefix itself: a second copy of the one rule")
+        if name in AT_TOP:
+            assert len(calls) == 1 and not calls[0].startswith((" ", "\t")), (name, calls)
+            text = path.read_text()
+            assert text.index(calls[0]) < text.index('KUBECTL="$(kubectl_bin)"'), name
+
+
+def test_an_unreadable_config_folder_is_reported_before_the_refusal(tmp_path: Path) -> None:
+    """resolved_label_prefix prints the tfvars fetch's own error, then the refusal."""
+    config = tmp_path / "config"
+    (config / "dev").mkdir(parents=True, mode=0o700)
+    config.chmod(0o700)
+    tfvars = config / "dev" / "dev.tfvars"
+    tfvars.write_text(f'allowed_domains = ["{ORG_DOMAIN}"]\n')
+    tfvars.chmod(0o666)  # world-writable: config_fetch refuses to read it
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o700)
+    env = {k: v for k, v in os.environ.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+    env.update(SWARM_NO_PROJECT="1", PROJECT_ID="example-project", ENVIRONMENT="dev", NO_COLOR="1",
+               SWARM_DEPLOY_CONFIG_DIR=str(config), XDG_CACHE_HOME=str(cache),
+               SWARM_ENV_FILE=str(tmp_path / "no-such.env"), PYTHON_BIN=sys.executable)
+    done = subprocess.run(
+        ["bash", "-c", 'source scripts/lib/common.sh; rc=0; resolved_label_prefix || rc=$?; echo "rc=${rc}"'],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert "rc=1" in done.stdout, done.stdout + done.stderr
+    assert "group- or world-writable" in done.stderr, done.stderr
+    assert UNSET in done.stderr
+    assert done.stderr.index("world-writable") < done.stderr.index(UNSET)
+    assert "repository variable" not in done.stderr.lower()
