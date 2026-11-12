@@ -7,6 +7,12 @@
         -> the same, with `tier`: the reopen of a live Live session (below)
     POST /v1/voice/sessions/{session_id}/reopen  {tier}   (swarm-voice's grant only)
         -> {session_id, tier}
+    POST /v1/voice/sessions/{session_id}/reopen  {state, cause?}   (swarm-voice's grant only)
+        -> {session_id, voice_state}: the pause and the wake, reported
+    POST /v1/voice/sessions/{session_id}/reopen  {offer_sdp, cause}   (the session's person)
+        -> {project_id, session_id, state, voice_state, mode, answer_sdp, cause}
+    POST /v1/voice/sessions/{session_id}/seen  {seq}
+        -> {session_id, seen_seq, changed}
     POST /v1/voice/sessions/{session_id}/turns  {text}
         -> {turn_id, reply, cards, delegation_id (speech, when delegated)}
     POST /v1/voice/sessions/{session_id}/end
@@ -151,6 +157,22 @@ session's own person in the selected workspace while a reopen is held, and
 409 `conflict` otherwise, as a second start always was. A reopen takes no
 engine from Settings: it is Live by definition.
 
+THE PAUSE (docs/design/voice-it.md §3.12.4, §3.12.7; voice/sessions.py THE
+PAUSE). `/reopen` serves three bodies, told apart by the caller. Through the
+grant, swarm-voice reports the voice's state as its `session.state` names it
+(`{state: paused|waking|listening, cause?}`), or the held tier as above; the
+person may send neither (403). The session's own person, in the selected
+workspace, reopens a paused voice with a fresh offer and the cause
+(`{offer_sdp, cause: result|speech|resume}`): the route forwards it to
+swarm-voice with the project's brief and the session's open cards'
+one-liners, and answers swarm-voice's SDP answer; the grant may not (403). An
+ended session's reopen is 409 `conflict` (`voice_session_not_live`); another
+person's session, or another workspace's, is the same 404 as a missing one.
+The caller names a cause and nothing else: no model, no instructions, no
+account. `/seen` records the highest stream sequence the person's main view
+has shown (`{seq}`, 0 or more); a lower one is ignored, never moving
+`seen_seq` back. It is not on the grant's lists: the grant is refused there.
+
 swarm-voice's client is `app.state.voice_client` when one is set (a test's
 fake), else the deployment's from SWARM_VOICE_URL, else none.
 """
@@ -245,11 +267,28 @@ class StartSession(BaseModel):
     session_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
 
 
-class TierReopen(BaseModel):
+class Reopen(BaseModel):
+    """`/reopen`'s bodies (THE PAUSE): swarm-voice's `{tier}` or
+    `{state, cause?}` through the grant, the person's `{offer_sdp, cause}`."""
+
+    #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
     #: The tier's name (sessions.REOPEN_TIERS), never a key.
-    tier: str = Field(min_length=1, max_length=32)
+    tier: str | None = Field(default=None, min_length=1, max_length=32)
+    #: swarm-voice's voice state (sessions.VOICE_REPORTS).
+    state: str | None = Field(default=None, min_length=1, max_length=32)
+    #: Why: the person's reopen cause (sessions.REOPEN_CAUSES), or the cause a
+    #: grant's `waking`/`listening` names.
+    cause: str | None = Field(default=None, min_length=1, max_length=32)
+    #: The person's fresh offer.
+    offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
+
+
+class Seen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int = Field(ge=0)
 
 
 class TextTurn(BaseModel):
@@ -371,34 +410,80 @@ async def start_session(
 
 
 @router.post("/sessions/{session_id}/reopen")
-async def tier_reopen(
+async def reopen(
     session_id: str,
-    body: TierReopen,
+    body: Reopen,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
 ) -> dict:
-    """swarm-voice's held next tier for its own session (the reopen)."""
+    """swarm-voice's held tier or voice state for its own session, or the
+    person's reopen of a paused voice (THE PAUSE)."""
     if auth.via != vgrant.VIA:
-        raise vgrant.RouteNotGranted("only swarm-voice tells a Voice it session its next tier")
+        if body.tier is not None:
+            raise vgrant.RouteNotGranted("only swarm-voice tells a Voice it session its next tier")
+        if body.state is not None:
+            raise vgrant.RouteNotGranted("only swarm-voice reports a Voice it session's voice state")
+        return await _person_reopen(session_id, body, auth, ctx, client)
     if auth.voice_session != session_id:
         raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
+    if body.offer_sdp is not None or (body.tier is None) == (body.state is None):
+        raise vgrant.RouteNotGranted("a Voice it grant names a tier or a voice state, and never reopens")
     _check_id(session_id, "vs_", "session_id")
-    if body.tier not in vs.REOPEN_TIERS:
+    if body.tier is not None and body.tier not in vs.REOPEN_TIERS:
         raise ValidationFailed("tier is not a Voice it tier", detail={"field": "tier"})
+    if body.state is not None and body.state not in vs.VOICE_REPORTS:
+        raise ValidationFailed("state is not a Voice it voice state", detail={"field": "state"})
     person = auth.email.strip().lower()
 
     def _hold() -> dict:
         found = vstream.find_session(ctx.db, person=person, session_id=session_id,
                                      tenants=frozenset({auth.tenant_id}))
+        if body.state is not None:
+            return _service(ctx, client).report_voice_state(
+                tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+                session_id=found.session_id, state=body.state, cause=body.cause)
+        tier = str(body.tier)
         _service(ctx, client).hold_reopen(tenant_id=found.tenant_id, person=person, project_id=found.project_id,
-                            session_id=found.session_id, tier=body.tier)
+                            session_id=found.session_id, tier=tier)
         vstore.VoiceStore(ctx.db, now=ctx.now).append_event(
             tenant_id=found.tenant_id, person=person, project_id=found.project_id,
-            session_id=found.session_id, event={"type": vs.REOPEN_EVENT, "tier": body.tier})
-        return {"session_id": found.session_id, "tier": body.tier}
+            session_id=found.session_id, event={"type": vs.REOPEN_EVENT, "tier": tier})
+        return {"session_id": found.session_id, "tier": tier}
 
     return await run_in_threadpool(_hold)
+
+
+async def _person_reopen(session_id: str, body: Reopen, auth: AuthContext, ctx: AppContext,
+                         client: Any) -> dict:
+    """The person's reopen: the same guards as every Voice it action (the
+    Voice it list, the selected workspace, the session the caller's own)."""
+    person = allowed_person(auth, ctx)
+    tenant_id = tenant_scope(auth, ctx)
+    service = _service(ctx, client)
+    _check_id(session_id, "vs_", "session_id")
+    if body.cause not in vs.REOPEN_CAUSES:
+        raise ValidationFailed("cause is not a Voice it reopen cause", detail={"field": "cause"})
+    if body.offer_sdp is None or not body.offer_sdp.startswith("v=0"):
+        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
+    offer, cause = body.offer_sdp, body.cause
+    return await run_in_threadpool(lambda: service.reopen_paused(
+        tenant_id=tenant_id, person=person, session_id=session_id, offer=offer, cause=cause))
+
+
+@router.post("/sessions/{session_id}/seen")
+async def seen(
+    session_id: str,
+    body: Seen,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+) -> dict:
+    service = _service(ctx, client)
+    _check_id(session_id, "vs_", "session_id")
+    return await run_in_threadpool(
+        service.mark_seen, tenant_id=tenant_id, person=person, session_id=session_id, seq=body.seq)
 
 
 @router.post("/sessions/{session_id}/turns")
