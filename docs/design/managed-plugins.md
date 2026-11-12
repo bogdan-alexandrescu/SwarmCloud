@@ -387,8 +387,9 @@ owner's call.
 **Quota and reads (review finding 3).** The job uses **no Cloud Build quota**, so no build of another team's waits
 behind a bundle build or competes with one. It draws on the region's Cloud Run job quotas, which the platform's
 worker jobs already use: one execution per Apply, one at a time per deployment (swarm-api refuses a second Apply while
-a bundle is `building`, and `swarm upgrade` runs its rebuilds one after another). swarm-api reads a bundle's state from
-**its own bundle record**; it calls `executions.get` only for a record in `building`, at most once per bundle per 15
+a bundle is `building`, and `swarm upgrade` runs its rebuilds one after another: the rebuild route starts one build
+per call, none while a rebuild is building on the new base, and the upgrade calls it again after each build ends).
+swarm-api reads a bundle's state from **its own bundle record**; it calls `executions.get` only for a record in `building`, at most once per bundle per 15
 seconds, the time of the last call kept on the record and claimed in a transaction, so any number of open pages and
 reloads make at most one call per bundle per 15 seconds. The record leaves `building` when the execution has ended
 (`ready` after the check above, else `failed`), and a record still `building` an hour after it started is failed

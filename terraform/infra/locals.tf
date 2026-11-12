@@ -849,7 +849,19 @@ locals {
     "REFUSAL_${trim(replace(upper(code), "/[^A-Z0-9]+/", "_"), "_")}" => on ? "on" : "off"
   }
 
+  # The bundle job swarm-api runs for a bundle build (swarm_api.pluginbundle
+  # JOB_ENV; managed-plugins.md section 1.4.2), by name, only where the job
+  # exists (plugin-bundles.tf: the switch on and the bundler image's digest
+  # known). Absent otherwise, as it was before this line: swarm-api then
+  # answers every bundle route 503 bundle_build_unconfigured rather than run
+  # a job that is not there.
+  api_plugin_bundle_env = local.plugin_bundle_job_on ? {
+    PLUGIN_BUNDLE_JOB = local.plugin_bundle_job_name
+  } : {}
+
   service_env = {
+    # local.api_plugin_bundle_env: PLUGIN_BUNDLE_JOB, the bundle job's name
+    # (plugin-bundles.tf), only where the job exists.
     # local.api_browser_egress_env: the browser egress switch (egress.tf).
     # local.api_grant_attestation_env: GRANT_ATTESTATION_REQUIRED (workspace_grant_key.tf).
     # local.settings_mac_env / scheduler_settings_mac_env: the one
@@ -860,7 +872,7 @@ locals {
     # local.api_decision_route_env: INTERNAL_DECISION_API_ADDRESS, swarm-api's
     # route to the decision API through the tailnet egress's internal load
     # balancer (tailscale.tf; jev-contract.md section 4.1).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, local.api_plugin_bundle_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -1077,11 +1089,20 @@ locals {
       # contract only through the signed reference swarm-api attaches.
       SWARM_WORK_CONTRACTS = var.work_contracts
 
-      # SWARM_BUILTINS_MANAGED (var.builtins_managed) and
-      # PLUGIN_BUNDLE_REPOSITORY (local.plugin_bundle_repository) are set here
-      # by lane 17 of managed-plugins.md section 17.1, with the swarm-api code
-      # that reads them: scripts/lib/check-env-parity.sh refuses a variable
-      # terraform sets and nothing reads.
+      # The bundle repository (swarm_api.pluginbundle REPOSITORY_ENV;
+      # managed-plugins.md section 1.4.3): the one image path a bundle build
+      # pushes to and a bundle record's digest may name. "" while
+      # var.builtins_managed is off (plugin-bundles.tf), which is also what
+      # swarm-api read before this line, when nothing set it: off, every
+      # bundle route answers 503 bundle_build_unconfigured, as it did. The
+      # job's name comes with it in local.api_plugin_bundle_env, only where
+      # the job exists.
+      #
+      # SWARM_BUILTINS_MANAGED (var.builtins_managed) is not set here yet:
+      # nothing in apps/swarm-api reads it, and scripts/lib/check-env-parity.sh
+      # refuses a variable terraform sets and nothing reads. It comes with the
+      # swarm-api code that reads it (lane 17 of section 17.1).
+      PLUGIN_BUNDLE_REPOSITORY = local.plugin_bundle_repository
 
       # The platform's plugins switch (swarm_api.plugins SWITCH_ENV;
       # var.plugins_switch says what each value does): "off" refuses every

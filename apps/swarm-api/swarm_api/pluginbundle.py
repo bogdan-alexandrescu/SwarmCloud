@@ -1124,15 +1124,18 @@ def start_apply(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, r
 
 def rebuild(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, registry: BundleRegistry,
             config: BundleSettings, base: Mapping[str, Any], *, by: str) -> list[dict[str, Any]]:
-    """`swarm upgrade`'s step (section 1.4.4): one build per retained key on
-    the new `base` (the new release's images, already copied into this
-    deployment's registry), none for a key already ready or building on it.
-    Moves no `current_version`."""
+    """`swarm upgrade`'s step (section 1.4.4): at most ONE build per call, of
+    the first retained key not yet ready or building on the new `base` (the
+    new release's images, already copied into this deployment's registry),
+    and none while a rebuild is still building on it, so the job runs one
+    execution at a time. The caller waits for the build and calls again
+    until a call starts nothing and nothing is building on the base (the
+    owner's pick on PR #3873's question 1). Moves no `current_version`."""
     new_base = check_base(base, config.project, config.region, like=config.base)
-    _building(bundles)
+    if any(b.get("reason") == REASON_REBUILD and b.get("base") == new_base for b in _building(bundles)):
+        return []
     on_base = {b.get("key_sha256") for b in bundles.bundles() if b.get("base") == new_base
                and b.get("state") in (STATE_BUILDING, STATE_READY)}
-    started: list[dict[str, Any]] = []
     for kept in retention(bundles)["keep"]:
         if kept.get("key_sha256") in on_base or kept.get("state") != STATE_READY:
             continue
@@ -1143,11 +1146,9 @@ def rebuild(store: ps.PluginStore, bundles: BundleStore, jobs: BundleJobs, regis
                 break
             versions[entry["install_id"]] = version
         else:
-            on_base.add(kept.get("key_sha256"))
-            started.append(_start(bundles, jobs, registry, config, base=new_base, versions=versions,
-                                  reason=REASON_REBUILD, by=by, install_id=None, version_id=None,
-                                  previous_version=None))
-    return started
+            return [_start(bundles, jobs, registry, config, base=new_base, versions=versions,
+                           reason=REASON_REBUILD, by=by, install_id=None, version_id=None, previous_version=None)]
+    return []
 
 
 # --- the finish ------------------------------------------------------------------

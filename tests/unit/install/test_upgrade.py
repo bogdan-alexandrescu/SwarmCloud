@@ -648,14 +648,141 @@ def test_rebuild_bundles_sits_between_the_image_copy_and_infra(tmp_path: Path) -
     assert "  bundles to rebuild: 0" in lines
 
 
-def test_retained_bundles_refuse_the_upgrade_before_anything_is_applied(tmp_path: Path) -> None:
-    world = FakeWorld()
+RUNNERS = ("agent-runtime-base", "agent-runtime-browser", "agent-runtime-lightpanda")
+
+
+class Rebuilding(BundlerRelease):
+    """The bundler release, its runner images, and swarm-api's rebuild route:
+    `answers` are the route's replies, one per call in turn (an empty reply
+    once they run out: nothing left to start), `statuses[id]` each read of a
+    bundle's status in turn (the last repeats)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.answers: list[dict[str, Any]] = []
+        self.statuses: dict[str, list[dict[str, Any]]] = {}
+
+    def fetch(self, version: str, name: str) -> bytes:
+        found = json.loads(super().fetch(version, name))
+        found.update({image: digest(f"{image}-{version}") for image in RUNNERS})
+        return json.dumps(found).encode()
+
+    def apply_bundle_job(self, version: str) -> None:
+        self.calls.append(("apply_bundle_job", version))
+
+    def rebuild_bundles(self, base: Mapping[str, str]) -> dict[str, Any]:
+        self.calls.append(("rebuild_bundles", dict(base)))
+        answer = self.answers.pop(0) if self.answers else {"started": [], "building": []}
+        return json.loads(json.dumps(answer))
+
+    def bundle_status(self, bundle_id: str) -> dict[str, Any]:
+        self.calls.append(("bundle_status", bundle_id))
+        queue = self.statuses[bundle_id]
+        return dict(queue.pop(0) if len(queue) > 1 else queue[0])
+
+
+def _kept(world: FakeWorld) -> None:
     world.docs.data = {f"{up.BUNDLES_COLLECTION}/b1": {"state": "ready"},
                        f"{up.BUNDLES_COLLECTION}/b2": {"state": "building"},
                        f"{up.BUNDLES_COLLECTION}/b3": {"state": "failed"},
                        f"{up.BUNDLES_COLLECTION}/b4": {"state": "retired"}}
     world.docs.times = dict.fromkeys(world.docs.data, 1)
+
+
+def _new_base() -> dict[str, str]:
+    return {image: f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/{image}@{digest(f'{image}-{NEW}')}"
+            for image in RUNNERS}
+
+
+def _bundle_calls(world: FakeWorld) -> list[tuple[Any, ...]]:
+    wanted = ("copy_images", "apply_bundle_job", "rebuild_bundles", "bundle_status", "apply_root")
+    return [c[:2] if c[0] == "copy_images" else c for c in world.calls if c[0] in wanted]
+
+
+def test_kept_bundles_rebuild_on_the_new_base_one_after_another_before_infra(tmp_path: Path) -> None:
+    world = Rebuilding()
+    _kept(world)
+    other = {**_new_base(), "agent-runtime-base": "us-central1-docker.pkg.dev/x/swarm-images/agent-runtime-base@"
+             + digest("old")}
+    # The route starts one build per call; the upgrade waits for it, then asks again.
+    world.answers = [{"started": [],
+                      # A build a run that stopped here started on the new base: waited for first.
+                      "building": [{"bundle_id": "n0", "base": _new_base()},
+                                   # One on another base is not this upgrade's.
+                                   {"bundle_id": "x9", "base": other}]},
+                     {"started": ["n1"], "building": [{"bundle_id": "n1", "base": _new_base()},
+                                                      {"bundle_id": "x9", "base": other}]},
+                     # n0 reported again (a stale read) is not waited for twice.
+                     {"started": ["n2"], "building": [{"bundle_id": "n0", "base": _new_base()},
+                                                      {"bundle_id": "n2", "base": _new_base()}]}]
+    world.statuses = {"n1": [{"state": "building"}, {"state": "ready"}], "n2": [{"state": "ready"}],
+                      "n0": [{"state": "ready"}]}
+    flow, store, lines = make(tmp_path, world)
+    _switch(store, "on")
+    assert flow.run(NEW) == ExitCode.OK
+    assert "  bundles to rebuild: 2" in lines
+    calls = _bundle_calls(world)
+    route = ("rebuild_bundles", _new_base())
+    assert calls[:11] == [("copy_images", NEW), ("apply_bundle_job", NEW),
+                          route, ("bundle_status", "n0"),
+                          route, ("bundle_status", "n1"), ("bundle_status", "n1"),
+                          route, ("bundle_status", "n2"),
+                          route, ("apply_root", "bootstrap", NEW)]
+    assert ("apply_root", "infra", NEW) in calls[11:]
+    assert ("bundle_status", "x9") not in calls
+
+
+def test_a_failed_rebuild_refuses_the_upgrade_naming_the_bundle_before_infra(tmp_path: Path) -> None:
+    world = Rebuilding()
+    _kept(world)
+    world.answers = [{"started": ["n1"], "building": []}, {"started": ["n2"], "building": []}]
+    world.statuses = {"n1": [{"state": "building"},
+                             {"state": "failed", "refusal": {"code": "bundle_manifest_mismatch"}}],
+                      "n2": [{"state": "ready"}]}
+    flow, store, _ = make(tmp_path, world)
+    _switch(store, "on")
+    with pytest.raises(up.UpgradeRefused, match="bundle_build_failed: plugin bundle n1") as refused:
+        flow.run(NEW)
+    assert "bundle_manifest_mismatch" in str(refused.value)
+    assert ("bundle_status", "n2") not in world.calls, "the next build is not waited for"
+    assert len([c for c in world.calls if c[0] == "rebuild_bundles"]) == 1, "nor started"
+    assert not [c for c in world.calls if c[0] == "apply_root"], "nothing past the rebuild was applied"
+    assert world.calls[-1] == ("resume_dispatch",)
+    assert store.load().outputs[up.UPGRADE_KEY]["failed"] == up.REBUILD_BUNDLES
+
+
+def test_a_rebuild_that_never_ends_gives_up_before_infra(tmp_path: Path) -> None:
+    world = Rebuilding()
+    _kept(world)
+    world.answers = [{"started": ["n1"], "building": []}]
+    world.statuses = {"n1": [{"state": "building"}]}
+    flow, store, _ = make(tmp_path, world)
+    _switch(store, "on")
+    with pytest.raises(up.WaitGaveUp) as gave_up:
+        flow.run(NEW)
+    assert gave_up.value.step == "upgrade.rebuild-bundles"
+    assert up.BUNDLE_WAIT.bound_s >= 3600, "a build may run its job's whole hour"
+    assert not [c for c in world.calls if c[0] == "apply_root"]
+    assert store.load().outputs[up.UPGRADE_KEY]["failed"] == up.REBUILD_BUNDLES
+
+
+def test_no_kept_bundle_applies_no_job_and_calls_no_route(tmp_path: Path) -> None:
+    for value in ("on", "off"):
+        world = Rebuilding()
+        world.docs.data = {f"{up.BUNDLES_COLLECTION}/b3": {"state": "failed"}}
+        world.docs.times = dict.fromkeys(world.docs.data, 1)
+        flow, store, lines = make(tmp_path / value, world)
+        _switch(store, value)
+        assert flow.run(NEW) == ExitCode.OK
+        assert "  bundles to rebuild: 0" in lines
+        assert not [c for c in world.calls if c[0] in ("apply_bundle_job", "rebuild_bundles", "bundle_status")]
+
+
+def test_kept_bundles_with_the_switch_off_refuse_before_anything_is_applied(tmp_path: Path) -> None:
+    world = Rebuilding()
+    _kept(world)
     flow, store, _ = make(tmp_path, world, answer=PROJECT)
+    _switch(store, "off")
     with pytest.raises(up.UpgradeRefused, match="2 plugin bundle"):
         flow.run(NEW)
     assert not [c for c in world.calls if c[0] not in ("plan", "read_app")], "nothing applied"
@@ -663,20 +790,23 @@ def test_retained_bundles_refuse_the_upgrade_before_anything_is_applied(tmp_path
     assert up.retained_bundles(world.docs) == [f"{up.BUNDLES_COLLECTION}/b1", f"{up.BUNDLES_COLLECTION}/b2"]
 
 
-def test_a_bundle_made_after_the_plan_stops_before_infra_and_resumes_there(tmp_path: Path) -> None:
-    class Late(FakeWorld):
+def test_a_bundle_made_after_the_plan_is_rebuilt_before_infra(tmp_path: Path) -> None:
+    class Late(Rebuilding):
         def copy_images(self, version: str, images: Mapping[str, str]) -> None:
             super().copy_images(version, images)
             self.docs.data[f"{up.BUNDLES_COLLECTION}/late"] = {"state": "ready"}
             self.docs.times[f"{up.BUNDLES_COLLECTION}/late"] = 1
 
     world = Late()
-    flow, store, _ = make(tmp_path, world)
-    with pytest.raises(up.UpgradeRefused, match="1 plugin bundle"):
-        flow.run(NEW)
-    assert not [c for c in world.calls if c[0] == "apply_root"], "infra never moved to the new base"
-    assert world.calls[-1] == ("resume_dispatch",)
-    assert store.load().outputs[up.UPGRADE_KEY]["failed"] == up.REBUILD_BUNDLES
+    world.answers = [{"started": ["n1"], "building": []}]
+    world.statuses = {"n1": [{"state": "ready"}]}
+    flow, store, lines = make(tmp_path, world)
+    _switch(store, "on")
+    assert flow.run(NEW) == ExitCode.OK
+    assert "  bundles to rebuild: 0" in lines
+    calls = _bundle_calls(world)
+    assert calls.index(("apply_bundle_job", NEW)) < calls.index(("bundle_status", "n1")) \
+        < calls.index(("apply_root", "infra", NEW))
 
 
 def test_switch_on_refuses_a_release_without_bundle_manifests(tmp_path: Path) -> None:
@@ -696,3 +826,48 @@ def test_switch_on_refuses_a_release_without_bundle_manifests(tmp_path: Path) ->
     flow3, store3, _ = make(tmp_path / "off", off)
     _switch(store3, "off")
     assert flow3.run(NEW) == ExitCode.OK
+
+
+# -- the live world's bundle calls (managed-plugins.md section 1.4.4) ---------------
+
+
+def test_the_bundle_job_is_applied_alone_with_the_new_releases_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import bootstrap
+
+    from .test_terraform_runner import FakeCtx
+
+    ctx = FakeCtx()
+    for pass_name in ("infra-1", "infra-2", "infra-3"):
+        ctx.state.outputs[bootstrap.applied_key(pass_name)] = "digest"
+    seen: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr(bootstrap, "apply_pass", lambda c, deps, pass_name, **kw: seen.append(
+        (pass_name, tuple(kw.get("targets") or ()))))
+    asked: list[str | None] = []
+    world = object.__new__(verb.LiveWorld)
+    world.deps = object()
+    monkeypatch.setattr(verb.LiveWorld, "ctx", lambda self, release=None: asked.append(release) or ctx)
+    world.apply_bundle_job(NEW)
+    assert asked == [NEW]
+    assert seen == [("infra-3", (up.BUNDLE_JOB_ADDRESS,))]
+    assert up.BUNDLE_JOB_ADDRESS == "google_cloud_run_v2_job.plugin_bundle"
+
+
+class _BundleApi:
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.asked: list[tuple[str, str, Any]] = []
+
+    def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        self.asked.append((method, path, kwargs.get("payload")))
+        return self.answer
+
+
+def test_the_rebuild_and_the_status_go_through_swarm_apis_bundle_routes() -> None:
+    world = object.__new__(verb.LiveWorld)
+    world._api = _BundleApi({"started": ["n1"], "building": []})
+    base = {"agent-runtime-base": "ref"}
+    assert world.rebuild_bundles(base) == {"started": ["n1"], "building": []}
+    world._api.answer = {"bundle_id": "n1", "state": "ready"}
+    assert world.bundle_status("n1") == {"bundle_id": "n1", "state": "ready"}
+    assert world._api.asked == [("POST", "/v1/admin/plugin-bundles/rebuild", {"base": base}),
+                                ("GET", "/v1/admin/plugin-bundles/n1", None)]

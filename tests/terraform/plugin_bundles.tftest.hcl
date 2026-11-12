@@ -32,8 +32,11 @@
 #   * the job's logs go to the platform's log bucket, filtered to that job;
 #   * the control plane reads the bundle repository and a tenant pulls from it
 #     without enumerating, as from the platform repository;
-#   * no service is handed SWARM_BUILTINS_MANAGED or PLUGIN_BUNDLE_REPOSITORY
-#     yet: lanes 17 and 18 set them with the code that reads them;
+#   * swarm-api, and no other service, is handed PLUGIN_BUNDLE_REPOSITORY
+#     (the bundle image path, "" while off) and, only where the job exists,
+#     PLUGIN_BUNDLE_JOB, the job's name; no service is handed
+#     SWARM_BUILTINS_MANAGED yet (nothing reads it: lane 17 sets it with its
+#     reader) and the scheduler's PLUGIN_BUNDLE_REPOSITORY comes with lane 18;
 #   * any value but "on" or "off" is refused.
 
 mock_provider "google" {
@@ -100,6 +103,14 @@ run "off_by_default_plans_nothing" {
     condition     = local.plugin_bundle_repository == ""
     error_message = "off spells no bundle image path: no bundle digest is accepted"
   }
+
+  assert {
+    condition = (
+      local.service_env["swarm-api"]["PLUGIN_BUNDLE_REPOSITORY"] == ""
+      && !contains(keys(local.service_env["swarm-api"]), "PLUGIN_BUNDLE_JOB")
+    )
+    error_message = "off, swarm-api reads an empty bundle repository and no job name, so every bundle route answers bundle_build_unconfigured"
+  }
 }
 
 run "on_makes_the_builder_and_its_repositories" {
@@ -146,12 +157,18 @@ run "on_makes_the_builder_and_its_repositories" {
   }
 
   assert {
+    condition     = local.service_env["swarm-api"]["PLUGIN_BUNDLE_REPOSITORY"] == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
+    error_message = "swarm-api is handed the bundle repository it pushes to and checks a bundle's digest against (pluginbundle.REPOSITORY_ENV)"
+  }
+
+  assert {
     condition = alltrue([
       for svc in keys(local.service_env) :
       !contains(keys(local.service_env[svc]), "SWARM_BUILTINS_MANAGED")
-      && !contains(keys(local.service_env[svc]), "PLUGIN_BUNDLE_REPOSITORY")
+      && (svc == "swarm-api" || !contains(keys(local.service_env[svc]), "PLUGIN_BUNDLE_REPOSITORY"))
+      && (svc == "swarm-api" || !contains(keys(local.service_env[svc]), "PLUGIN_BUNDLE_JOB"))
     ])
-    error_message = "no service is handed SWARM_BUILTINS_MANAGED or PLUGIN_BUNDLE_REPOSITORY before the code that reads it (scripts/lib/check-env-parity.sh)"
+    error_message = "only swarm-api is handed the bundle settings, and no service SWARM_BUILTINS_MANAGED before the code that reads it (scripts/lib/check-env-parity.sh)"
   }
 }
 
@@ -297,6 +314,14 @@ run "the_job_waits_for_the_switch_and_the_bundler_image" {
     )
     error_message = "the job, swarm-api's run of it and its log sink wait for the bundler image's digest (images.json gates swarm-plugin-bundler)"
   }
+
+  assert {
+    condition = (
+      !contains(keys(local.service_env["swarm-api"]), "PLUGIN_BUNDLE_JOB")
+      && local.service_env["swarm-api"]["PLUGIN_BUNDLE_REPOSITORY"] == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
+    )
+    error_message = "with no job, swarm-api is handed no job name to run (only the repository)"
+  }
 }
 
 run "the_job_runs_as_the_builder_and_swarm_api_may_only_run_it" {
@@ -321,6 +346,16 @@ run "the_job_runs_as_the_builder_and_swarm_api_may_only_run_it" {
       && google_cloud_run_v2_job.plugin_bundle[0].labels["managed-by"] == "swarm-terraform"
     )
     error_message = "the job is swarm-plugin-bundle, in the deployment's region, managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition = (
+      local.service_env["swarm-api"]["PLUGIN_BUNDLE_JOB"] == google_cloud_run_v2_job.plugin_bundle[0].name
+      && local.service_env["swarm-api"]["PLUGIN_BUNDLE_JOB"] == "swarm-plugin-bundle"
+      && local.service_env["swarm-api"]["PLUGIN_BUNDLE_REPOSITORY"] == "us-central1-docker.pkg.dev/example-project/swarm-plugin-bundles"
+      && !contains(keys(local.service_env["swarm-api"]), "SWARM_BUILTINS_MANAGED")
+    )
+    error_message = "with the job on, swarm-api is handed the job's name and the bundle repository (pluginbundle.JOB_ENV, REPOSITORY_ENV)"
   }
 
   assert {
