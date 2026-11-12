@@ -378,15 +378,10 @@ fi
 # even located (owner, 12 November 2026, "Tfvars everywhere"; common.sh
 # resolved_label_prefix): the deployment's tfvars name it, a configured
 # SWARM_LABEL_PREFIX or SWARM_ORG_DOMAIN that differs is refused, and only
-# unreadable tfvars leave the configured one. Exported, so every render.py,
-# network_parity.py read and fill of terraform's renders below uses it.
-LABEL_PREFIX_STATUS=0
-resolved_label_prefix || LABEL_PREFIX_STATUS=$?
-case "${LABEL_PREFIX_STATUS}" in
-  0) export SWARM_LABEL_PREFIX="${RESOLVED_LABEL_PREFIX}" ;;
-  2) die "the configured label-key prefix is not the one this deployment's tfvars name; nothing was applied." ;;
-  *) die "the label-key prefix is not configured (above); nothing was applied." ;;
-esac
+# unreadable tfvars leave the configured one. Exported (common.sh
+# require_label_prefix), so every render.py, network_parity.py read and fill of
+# terraform's renders below uses it.
+require_label_prefix "nothing was applied"
 
 # --- 1. the right kubectl ----------------------------------------------------
 # `kubectl_bin` from common.sh, not a second copy of the same search: it already

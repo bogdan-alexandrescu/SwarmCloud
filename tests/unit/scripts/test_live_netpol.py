@@ -762,7 +762,7 @@ def test_apply_with_neither_refuses_with_the_fixed_sentence_before_any_kubectl_c
 def test_every_mode_resolves_the_prefix_once_before_kubectl() -> None:
     """One call, at top level, before the first kubectl: every mode passes it."""
     text = APPLY.read_text()
-    calls = [line for line in text.splitlines() if "resolved_label_prefix" in line and not line.lstrip().startswith("#")]
+    calls = [line for line in text.splitlines() if "require_label_prefix" in line and not line.lstrip().startswith("#")]
     assert len(calls) == 1, calls
     assert not calls[0].startswith((" ", "\t")), calls
     assert text.index(calls[0]) < text.index('KUBECTL="$(kubectl_bin)"')

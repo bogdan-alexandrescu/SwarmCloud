@@ -410,6 +410,9 @@ def test_every_script_that_renders_the_token_resolves_the_prefix_through_the_sha
     found = _entry_points()
     # The control: the scan finds the deploy's own entry points.
     assert {*AT_TOP, "scripts/register-tenant.sh"} <= set(found), sorted(found)
+    # The rule's home: it defines both functions, and is not an entry point.
+    common = found.pop("scripts/lib/common.sh")
+    assert "require_label_prefix() {" in common.read_text()
     for name, path in found.items():
         lines = _code_lines(path)
         if name in NEEDS_NO_PREFIX:
