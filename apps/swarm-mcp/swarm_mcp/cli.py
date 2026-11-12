@@ -1450,6 +1450,9 @@ def cmd_profiles(_client, args) -> int:
             f"  {mark} {entry['name']:<{width}} {entry['backend']:<15} "
             f"{entry['resource_class']:<9} {entry['cpu']:g} cpu / "
             f"{memory}  timeout {entry['timeout_seconds']}s"
+            # The Node the image carries (#3929); none for a control_plane
+            # profile, which runs no container.
+            + (f"  node {entry['node_version']}" if entry.get("node_version") else "")
         )
         if entry.get("provider"):
             print(f"       provider {entry['provider']} -- needs a registered credential")
