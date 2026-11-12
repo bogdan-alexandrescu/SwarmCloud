@@ -19,12 +19,15 @@
 .sg-row.is-head { align-items: end; }
 
 /* No side padding: 4px of it cut `workflows` (56px of text) to `workfl…` in the 57px an eighth column gets at
-   1440 with the inspector open. The 4px column gap keeps two headers apart. */
-.sg-col { min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
-.sg.is-marks .sg-col { writing-mode: vertical-rl; transform: rotate(180deg); justify-self: center; max-height: 6.5em; padding: 2px 0; }
+   1440 with the inspector open. The 4px column gap keeps two headers apart.
+   NEVER A BARE ELLIPSIS (the graph review): a name longer than its column wraps, at its `-` first and inside a
+   word only when one word is wider than the column, so `workflows-overview` reads whole; the title keeps it too. */
+.sg-col { min-width: 0; padding: 0; overflow-wrap: anywhere; line-height: 1.2; font-size: var(--t-meta); color: var(--text-dim); }
+/* Vertical, it runs its whole length: a cap cut `workflows-overview` to `workflows-o…` on a phone. */
+.sg.is-marks .sg-col { writing-mode: vertical-rl; transform: rotate(180deg); justify-self: center; padding: 2px 0; }
 
 .sg-stage { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; font-size: var(--t-meta); color: var(--text); }
-.sg-stage-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.sg-stage-name { overflow-wrap: anywhere; font-weight: 600; }
 .sg-tally { display: flex; flex-wrap: wrap; gap: 0 5px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
 button.sg-tally { cursor: pointer; border-radius: var(--ctl-radius-sm, 6px); }
 button.sg-tally:hover { text-decoration: underline; }

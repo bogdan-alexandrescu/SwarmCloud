@@ -187,7 +187,7 @@ describe('StageGrid', () => {
     const { workflow, taskById } = fixture()
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
     expect(row('build').getAttribute('aria-label')).toBe('build: 7 done, 1 failed, 2 running, 0 waiting')
-    expect(row('review').getAttribute('aria-label')).toBe('review: 3 done, 0 failed, 3 running, 3 waiting, 1 parked')
+    expect(row('review').getAttribute('aria-label')).toBe('review: 3 done, 0 failed, 3 running, 3 waiting, 1 parked: provider quota')
     expect(row('fix').getAttribute('aria-label')).toBe('fix: 0 done, 0 failed, 1 running, 8 waiting, 1 not known')
     expect(row('re-review').getAttribute('aria-label')).toBe('re-review: 0 done, 0 failed, 0 running, 10 waiting')
     expect([...row('build').querySelectorAll('.sg-n')].map((n) => n.textContent)).toEqual(['succeeded7', 'failed1', 'running2'])
@@ -346,12 +346,48 @@ describe('StageGrid', () => {
     expect(tallyOf(['parked', 'waiting', 'parked'])).toMatchObject({ waiting: 1, parked: 2 })
   })
 
-  it('draws a step parked behind its dependencies as waiting, and a step parked for any other reason as parked', () => {
+  it('draws every parked step as parked, whatever it is parked on: none of them waits for a person', () => {
     const parked = (park_reason: Task['park_reason']) =>
       chipKindOf({ kind: 'state', state: 'PARKED', task: task('task_p', 'p', 'PARKED', { park_reason }) })
-    expect(parked('DEPENDENCY_INCOMPLETE')).toBe('waiting')
+    expect(parked('DEPENDENCY_INCOMPLETE')).toBe('parked')
+    expect(parked('SCHEDULED_RETRY')).toBe('parked')
     expect(parked('HUMAN_REQUIRED')).toBe('parked')
     expect(parked(null)).toBe('parked')
+  })
+
+  it('says what a parked step waits on, by its park reason, in its chip and its stage count', () => {
+    const s = (id: string, deps: string[], task_id: string | null): WorkflowStep => ({ step_id: id, runner_profile: 'p', resource_class: 'r', depends_on: deps, input_from: {}, task_id })
+    const wf = {
+      workflow_id: WF,
+      state: 'RUNNING',
+      steps: [s('implement', [], 't_i'), s('review-a', ['implement'], 't_a'), s('review-b', ['implement'], 't_b'), s('review-c', ['implement'], 't_c'), s('merge', ['review-a', 'review-b', 'review-c'], 't_m')],
+    } as unknown as Workflow
+    const never = { attempt_count: 0, started_at: null }
+    const taskById = new Map([
+      task('t_i', 'implement', 'RUNNING', { started_at: ago(4) }),
+      task('t_a', 'review-a', 'PARKED', { park_reason: 'DEPENDENCY_INCOMPLETE', ...never }),
+      task('t_b', 'review-b', 'PARKED', { park_reason: 'DEPENDENCY_INCOMPLETE', ...never }),
+      task('t_c', 'review-c', 'PARKED', { park_reason: 'PROVIDER_QUOTA_EXHAUSTED', ...never }),
+      task('t_m', 'merge', 'PARKED', { park_reason: 'DEPENDENCY_INCOMPLETE', ...never }),
+    ].map((t) => [t.id, t]))
+    render(<StageGrid workflow={wf} taskById={taskById} onSelect={() => undefined} now={NOW} />)
+    expect(chip('review-a').className).toContain('is-parked')
+    expect(chip('review-a').className).not.toContain('is-waiting')
+    expect(chip('review-a').title).toContain('review-a (review): parked · parked: waiting on a step')
+    expect(row('review').getAttribute('aria-label')).toBe('review: 0 done, 0 failed, 0 running, 0 waiting, 3 parked: 2 waiting on a step, 1 provider quota')
+    expect(row('merge').getAttribute('aria-label')).toBe('merge: 0 done, 0 failed, 0 running, 0 waiting, 1 parked: waiting on a step')
+    // The count is the park mark, never the waiting one.
+    expect(row('review').querySelector('.sg-n.is-waiting')).toBeNull()
+    expect(row('review').querySelector('.sg-n.is-parked')!.textContent).toBe('parked3')
+  })
+
+  it('reads a one-step stage alone in its column as that stage: no header names the column after its step', () => {
+    const s = (id: string, deps: string[]): WorkflowStep => ({ step_id: id, runner_profile: 'p', resource_class: 'r', depends_on: deps, input_from: {}, task_id: null })
+    const steps = [s('implement', []), s('review-login', ['implement']), s('review-search', ['implement']), s('merge', ['review-login', 'review-search'])]
+    expect(stageGridOf(steps).columns.map((c) => [c.label, c.heading])).toEqual([['implement', ''], ['login', 'login'], ['search', 'search']])
+    render(<StageGrid workflow={{ workflow_id: 'wf_one', state: 'RUNNING', steps } as unknown as Workflow} taskById={null} onSelect={() => undefined} now={NOW} />)
+    expect([...document.querySelectorAll('.sg-col')].map((c) => c.textContent)).toEqual(['', 'login', 'search'])
+    expect(row('implement').querySelector('[data-step="implement"]')).not.toBeNull()
   })
 
   it('keeps the times of a four-feature grid at a width where ten features lose them', () => {
@@ -363,6 +399,27 @@ describe('StageGrid', () => {
   it('gives a column header the whole column: no side padding to cut a word that fits', async () => {
     const STYLES = (await import('./stage-grid.css?raw')).default as string
     expect(STYLES).toMatch(/\n\.sg-col \{[^}]*padding: 0;/)
+  })
+
+  it('never cuts a column header or a stage name to a bare ellipsis: it wraps, and a vertical label runs its whole length', async () => {
+    const STYLES = (await import('./stage-grid.css?raw')).default as string
+    const rule = (sel: string) => STYLES.match(new RegExp(`\\n${sel.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`))?.[1] ?? ''
+    for (const sel of ['.sg-col', '.sg-stage-name', '.sg.is-marks .sg-col']) {
+      expect(rule(sel), sel).not.toMatch(/text-overflow: ellipsis|white-space: nowrap|max-height/)
+    }
+    expect(rule('.sg-col')).toMatch(/overflow-wrap: anywhere;/)
+    expect(rule('.sg-stage-name')).toMatch(/overflow-wrap: anywhere;/)
+    // The whole name stays in the tooltip too.
+    const { workflow, taskById } = fixture()
+    render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
+    expect([...document.querySelectorAll<HTMLElement>('.sg-col')].map((c) => c.title)).toEqual([...FEATURES])
+  })
+
+  it('keeps a grid of eight long feature names inside a 390px phone', async () => {
+    const STYLES = (await import('./stage-grid.css?raw')).default as string
+    // Nothing in the grid holds a fixed width: every column is a share of the row, each label may shrink to nothing.
+    expect(STYLES).toMatch(/grid-template-columns: var\(--sg-stage\) repeat\(var\(--sg-cols, 1\), minmax\(0, 1fr\)\)/)
+    expect(STYLES).not.toMatch(/\b(min-)?width: \d{3,}px/)
   })
 
   it('turns the column labels vertical only when marks are all that is left', async () => {
