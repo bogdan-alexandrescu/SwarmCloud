@@ -57,7 +57,7 @@
 # run inside release.yml's prod deploy, behind `approval (prod)`, unchanged.
 #
 # ITS IDENTITY IS NOT THE DEPLOYER. Every job that reaches Google federates as
-# vars.GCP_ACCEPT_SA, an account terraform/bootstrap/acceptance.tf binds to
+# secrets.GCP_ACCEPT_SA, an account terraform/bootstrap/acceptance.tf binds to
 # THIS file on refs/heads/main and nothing else, holding only what this file
 # does: execute the swarm-verify job and the per-tenant worker jobs (the
 # suites run INSIDE the VPC as swarm-verify, which has its own identity),
@@ -71,7 +71,7 @@
 # HOW THE SUITE IS SPLIT. Six of the seven groups run as matrix jobs, one
 # swarm-verify execution each, in TWO WAVES rather than six at once (the
 # seventh, live-browser, runs on a schedule: below): the smoke tenant's
-# ceiling is 20 concurrent tasks (terraform/environments/dev/dev.tfvars,
+# ceiling is 20 concurrent tasks (the dev tfvars, config/dev/ in the state bucket:
 # tenants.smoke, max_active = capacity_units = 20), and the groups' peaks
 # summed are about 37 (mock submits 12 tasks and a workflow at once, generic
 # 8, workflow 4 roots, claude-code 3, browser 3, live-browser 1, git-tools 5).
@@ -133,9 +133,9 @@ permissions:
 
 env:
   ENVIRONMENT: dev
-  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION }}
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
   # Every swarm-verify execution this run starts carries it (verify-remote.sh
   # passes it as an environment override), so a later run's quiesce cancels
   # this run's executions and never an operator's `make verify-remote`, which
@@ -143,7 +143,7 @@ env:
   SWARM_VERIFY_ORIGIN: accept-${{ github.run_id }}
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression, in its SHORT form: only the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
 # GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
@@ -172,8 +172,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -237,8 +237,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -320,8 +320,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -366,7 +366,7 @@ jobs:
 
       - name: workspace roles probe (ROLES-ACCEPT, inside the VPC)
         # docs/design/workspace-roles.md §6 row 6 (#1518), in this job by
-        # BGD's decision of 2026-10-28, not as a new acceptance group: a
+        # the owner's decision of 2026-10-28, not as a new acceptance group: a
         # viewer's submission is 403 role_member_required and its read 200,
         # the viewer grant and its revocation are in the workspace's audit, a
         # platform admin's write there is platform_admin_acted, and another
@@ -380,8 +380,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SWARM_ACCEPTANCE_ROLES_TENANT: ${{ vars.ROLES_TENANT }}
-          SWARM_ACCEPTANCE_ROLES_VIEWER_SA: ${{ vars.ROLES_VIEWER_SA }}
-          SWARM_ACCEPTANCE_ROLES_ADMIN_SA: ${{ vars.ROLES_ADMIN_SA }}
+          SWARM_ACCEPTANCE_ROLES_VIEWER_SA: ${{ secrets.ROLES_VIEWER_SA }}
+          SWARM_ACCEPTANCE_ROLES_ADMIN_SA: ${{ secrets.ROLES_ADMIN_SA }}
           SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE: ${{ vars.ROLES_OTHER_WORKSPACE }}
         run: ./scripts/verify-remote.sh acceptance/groups/roles
 
@@ -400,8 +400,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SWARM_ACCEPTANCE_JOIN_TENANT: ${{ vars.JOIN_TENANT }}
-          SWARM_ACCEPTANCE_JOIN_ADMIN_SA: ${{ vars.JOIN_ADMIN_SA }}
-          SWARM_ACCEPTANCE_JOIN_PERSON: ${{ vars.JOIN_PERSON }}
+          SWARM_ACCEPTANCE_JOIN_ADMIN_SA: ${{ secrets.JOIN_ADMIN_SA }}
+          SWARM_ACCEPTANCE_JOIN_PERSON: ${{ secrets.JOIN_PERSON }}
           SWARM_ACCEPTANCE_JOIN_PERSON_SECRET: ${{ vars.JOIN_PERSON_SECRET }}
         run: ./scripts/verify-remote.sh acceptance/groups/join
 
@@ -439,7 +439,7 @@ jobs:
     name: put the deployed commit's fixtures on the sandbox
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The sandbox token (SWARM_SANDBOX_GITHUB_TOKEN) lives in environment
-    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # `repo-secrets`, whose deployment branches are `main` only (the owner,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
     # by a workflow on ANY pushed branch, before any review or hold.
     # Every trigger here runs on main's ref -- workflow_run after release,
@@ -509,8 +509,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -570,8 +570,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -638,8 +638,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -763,8 +763,8 @@ jobs:
         continue-on-error: true
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
         if: steps.auth.outcome == 'success'
@@ -810,8 +810,8 @@ jobs:
 
       - uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_ACCEPT_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
