@@ -32,18 +32,22 @@
  * broker serves no `lends` draws no figure. A spend cap is a key's, not a
  * plan's (a plan's price is flat).
  *
- * WHAT IS NOT DRAWN, because no route serves it yet: adding a ChatGPT plan
- * from the browser (its sign-in is the plugin's `sc account add --provider
- * openai`). It is a question in the lane's PR, not a dead control.
+ * ADD PLAN CHOOSES ITS VENDOR FIRST (§6: "a vendor choice, then today's
+ * sign-in for that vendor"). Claude is chosen when the sheet opens and its
+ * sign-in is as it was. A ChatGPT plan signs in with a device code
+ * (`beginDeviceSignIn`, then `pollDeviceSignIn` at the interval served)
+ * until it is filed, the code expires or the sheet closes.
  *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   beginAccountSignIn,
+  beginDeviceSignIn,
   finishAccountSignIn,
   loadAccountsBoard,
   mintSetupLink,
+  pollDeviceSignIn,
   refreshAccount,
   removeAccount,
   setAccountLending,
@@ -53,6 +57,7 @@ import {
   setAccountPerWorkspaceMax,
   setAccountState,
   type AccountsBoard,
+  type DeviceSignIn,
   type ServedAccount,
 } from './api'
 import { accountName } from './accountName'
@@ -80,6 +85,9 @@ const VENDORS: readonly { provider: string; label: string; plan: string }[] = [
   { provider: 'anthropic', label: 'Anthropic', plan: 'Claude' },
   { provider: 'openai', label: 'OpenAI', plan: 'ChatGPT' },
 ]
+
+/** The vendors Add plan offers, in the choice's order: Claude's sign-in, then the ChatGPT plan's device code. */
+const ADD_VENDORS = ['anthropic', 'openai'] as const
 
 /** A plan is a subscription sign-in; an `-api` provider is a developer key, API Keys' page. */
 export function isPlan(a: { provider: string }): boolean {
@@ -1019,7 +1027,17 @@ function openSignIn(url: string): void {
   window.open(url, '_blank', 'noopener')
 }
 
+/** The vendors a plan can be added for, Claude first: its sign-in is the one the sheet opens on. */
+type AddVendor = 'anthropic' | 'openai'
+
+/**
+ * A device sign-in in flight: the start's answer, and when its code stops
+ * working (null when the start did not say).
+ */
+type Device = DeviceSignIn & { deadline: number | null }
+
 function AddPlan({ close, done }: { close: () => void; done: () => Promise<void> }) {
+  const [vendor, setVendor] = useState<AddVendor>('anthropic')
   const [how, setHow] = useState<'here' | 'link'>('here')
   const [label, setLabel] = useState('')
   const [max, setMax] = useState(String(DEFAULT_MAX_AGENTS))
@@ -1027,6 +1045,8 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
   const [code, setCode] = useState('')
   const [auth, setAuth] = useState<{ url: string; state: string } | null>(null)
   const [link, setLink] = useState<string | null>(null)
+  const [device, setDevice] = useState<Device | null>(null)
+  const [expired, setExpired] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
 
@@ -1043,6 +1063,22 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
     else setError(failed(r))
   }
 
+  /** The plan is added: its max agents set when changed, then the sheet closes and the list reloads. */
+  const added = async (account: { account_id: string } | null | undefined) => {
+    if (maxN !== DEFAULT_MAX_AGENTS) {
+      const refused =
+        account?.account_id === undefined
+          ? { kind: 'server_error' as const, httpStatus: 200, code: null, message: 'the platform did not name the plan' }
+          : failed(await setAccountMaxAgents(account.account_id, maxN))
+      if (refused !== null) {
+        setBusy(false)
+        setError({ ...refused, message: `Plan ${clean} added; max agents not set: ${refused.message}` })
+        return
+      }
+    }
+    await done()
+  }
+
   const finish = async () => {
     if (auth === null) return
     setBusy(true)
@@ -1053,15 +1089,80 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
       setError(failed(r))
       return
     }
-    if (maxN !== DEFAULT_MAX_AGENTS) {
-      const refused = failed(await setAccountMaxAgents(r.data.account.account_id, maxN))
-      if (refused !== null) {
-        setBusy(false)
-        setError({ ...refused, message: `Plan ${clean} added; max agents not set: ${refused.message}` })
+    await added(r.data.account)
+  }
+
+  // The run below outlives renders; it files with the max agents on screen when the plan lands.
+  const addedNow = useRef(added)
+  addedNow.current = added
+
+  /** Starts (or starts again) the device sign-in; a refusal leaves the sheet as it was. */
+  const startDevice = async () => {
+    setBusy(true)
+    setError(null)
+    const r = await beginDeviceSignIn({ label: clean, lend_to: [] })
+    setBusy(false)
+    if (r.status !== 'ok') {
+      setError(failed(r))
+      return
+    }
+    const ttl = r.data.expires_in_seconds
+    setDevice({ ...r.data, deadline: ttl === null ? null : Date.now() + ttl * 1000 })
+    setExpired(false)
+  }
+
+  // THE POLL: one at a time, each after the interval the last answer named
+  // (the start's when a pending answer names none). A failed poll says why
+  // and the next one goes on; a code past its deadline reads expired whatever
+  // the polls said. Closing the sheet, switching vendor or a restart ends this
+  // run, and an answer that lands after it is dropped.
+  useEffect(() => {
+    if (device === null || expired) return
+    let live = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const wait = (seconds: number) => {
+      timer = setTimeout(() => void poll(), seconds * 1000)
+    }
+    const poll = async () => {
+      const r = await pollDeviceSignIn({ state: device.state })
+      if (!live) return
+      const late = device.deadline !== null && Date.now() >= device.deadline
+      if (r.status !== 'ok') {
+        if (late) {
+          setError(null)
+          setExpired(true)
+        } else {
+          setError(failed(r))
+          wait(device.interval_seconds)
+        }
         return
       }
+      setError(null)
+      if (r.data.status === 'filed') {
+        live = false
+        setBusy(true)
+        await addedNow.current(r.data.account)
+      } else if (r.data.status === 'expired' || late) {
+        setExpired(true)
+      } else {
+        wait(r.data.interval_seconds ?? device.interval_seconds)
+      }
     }
-    await done()
+    wait(device.interval_seconds)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [device, expired])
+
+  const pickVendor = (v: AddVendor) => {
+    setVendor(v)
+    setHow('here')
+    setAuth(null)
+    setLink(null)
+    setDevice(null)
+    setExpired(false)
+    setError(null)
   }
 
   const mint = async () => {
@@ -1074,34 +1175,88 @@ function AddPlan({ close, done }: { close: () => void; done: () => Promise<void>
   }
 
   return (
-    <SheetFrame title="Add plan" sub={<span>Claude</span>} onClose={close}>
+    <SheetFrame title="Add plan" onClose={close}>
       <Failure error={error} />
-      <Field label="Signed in by">
-        <Radios
-          label="Signed in by"
-          value={how}
-          onPick={(h) => {
-            setHow(h)
-            setError(null)
-          }}
-          options={[
-            { key: 'here', label: 'Me, here' },
-            { key: 'link', label: "The plan's owner" },
-          ]}
-        />
-      </Field>
+      {/* The choice names the vendor, so neither a field label nor the head's sub line repeats it. */}
+      <Radios
+        label="Vendor"
+        value={vendor}
+        onPick={pickVendor}
+        options={ADD_VENDORS.map((v) => ({ key: v, label: vendorOf(v)?.plan ?? v }))}
+      />
+      {vendor === 'anthropic' && (
+        <Field label="Signed in by">
+          <Radios
+            label="Signed in by"
+            value={how}
+            onPick={(h) => {
+              setHow(h)
+              setError(null)
+            }}
+            options={[
+              { key: 'here', label: 'Me, here' },
+              { key: 'link', label: "The plan's owner" },
+            ]}
+          />
+        </Field>
+      )}
       <Field label="Label" info="The plan's secret is named after it, so it is fixed once added; the display name can change later.">
         <input
           className="llp-in mono"
           aria-label="Label"
           autoComplete="off"
           spellCheck={false}
-          disabled={auth !== null || link !== null}
+          disabled={auth !== null || link !== null || device !== null}
           value={label}
           onChange={(e) => setLabel(e.target.value)}
         />
       </Field>
-      {how === 'here' ? (
+      {vendor === 'openai' ? (
+        <>
+          <Field label="Max agents">
+            <input className="llp-in llp-in-n" type="number" min={1} max={MAX_AGENTS_LIMIT} aria-label="Max agents" value={max} onChange={(e) => setMax(e.target.value)} />
+          </Field>
+          <ol className="llp-steps">
+            <li className={device === null ? 'is-now' : 'is-done'}>
+              <span className="llp-step-n">1</span>
+              <span className="llp-step-t">ChatGPT sign-in</span>
+              {device === null ? (
+                <Button size="sm" disabled={clean === '' || !maxOk || busy} onClick={() => void startDevice()}>
+                  Start sign-in
+                </Button>
+              ) : (
+                <Button size="sm" onClick={() => openSignIn(device.verification_uri)}>
+                  Open sign-in
+                </Button>
+              )}
+              <Info about="ChatGPT sign-in" tip="Opens the device page in a new tab. Sign in with the plan's account and type the code; the plan is added once it is accepted." />
+            </li>
+            {device !== null && (
+              <li className="is-now">
+                <span className="llp-step-n">2</span>
+                {expired ? (
+                  <>
+                    <span className="llp-step-t">Code expired</span>
+                    <Button size="sm" disabled={busy} onClick={() => void startDevice()}>
+                      Start again
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="llp-step-t">Code</span>
+                    <input className="llp-in mono" aria-label="Device code" readOnly value={device.user_code} onFocus={(e) => e.currentTarget.select()} />
+                  </>
+                )}
+              </li>
+            )}
+          </ol>
+          <div className="llp-btnrow">
+            <Button kind="ghost" onClick={close}>
+              Cancel
+            </Button>
+          </div>
+        </>
+      ) : how === 'here' ? (
         <>
           <Field label="Max agents">
             <input className="llp-in llp-in-n" type="number" min={1} max={MAX_AGENTS_LIMIT} aria-label="Max agents" value={max} onChange={(e) => setMax(e.target.value)} />
