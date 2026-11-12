@@ -112,6 +112,7 @@ import { micWord, type MicMode } from './mic'
 import { TURN_MAX } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { useVoiceSession } from './session'
+import { WorkingCard } from './WorkingCard'
 import { type BootPhase, type SpeechFallback } from './speechSocket'
 import { TalkStage, TalkTip } from './Stage'
 import '../styles/talk-pane.css'
@@ -400,6 +401,7 @@ export function TalkPane() {
         </div>
         <div className="vt-subs-band">
           <Captions lines={lines} />
+          <WorkingCard work={cards.work} />
           {textMode && (
             <form
               className="c-field"
@@ -462,7 +464,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={streamId} fixtures={heldCards} />
+        <CardList sessionId={streamId} fixtures={heldCards} projectId={projectId} navigate={held.navigate} />
       </section>
     </div>
   )
