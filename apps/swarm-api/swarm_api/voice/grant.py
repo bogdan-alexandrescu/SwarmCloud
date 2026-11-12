@@ -84,6 +84,14 @@ its path names (`workfeed.step_event`), never a query, a body or any text. A
 step that cannot be written is logged by class name and the route still runs:
 the audit row is the gate, the step is what the working card shows.
 
+A QUIET READ writes its audit row and no step: a GET swarm-voice's roster
+follower sends with `X-Swarm-Voice-Quiet: roster` (`QUIET_HEADER`), its tick's
+tag query and started-id reads every 15 seconds (voice-it.md §3.12.6), which
+would otherwise fill the working card with 1 + N steps a tick while nothing
+changed (the owner's pick, 12 November 2026). The roster's own event is
+`roster.update`, written through the work route. Only a GET is quiet: a write
+always writes its step, and the header changes nothing else.
+
 `record_work` is swarm-voice's write for a delegation's lifecycle (`started`,
 `progress`, then `done`, `failed` or `refused`) and the roster's changed rows,
 under the same grant: it writes only to the grant's own session (anything
@@ -123,6 +131,9 @@ log = logging.getLogger(__name__)
 
 GRANT_HEADER = "X-Swarm-Voice-Grant"
 SESSION_HEADER = "X-Swarm-Voice-Session"
+#: A grant read that writes no work step (A QUIET READ above), and its one value.
+QUIET_HEADER = "X-Swarm-Voice-Quiet"
+QUIET_ROSTER = "roster"
 
 #: What `AuthContext.via` and every audit row written under a grant carry.
 VIA = "voice-it"
@@ -296,26 +307,31 @@ def resolve(db: Any, *, session_header: str | None, grant: str | None) -> GrantS
 
 
 def audit_row(session: GrantSession, *, method: str, route: str,
-              path_params: Mapping[str, Any], at: datetime) -> dict[str, Any]:
-    """The `voice_audit` row a grant request writes before its route runs."""
+              path_params: Mapping[str, Any], at: datetime,
+              quiet: str | None = None) -> dict[str, Any]:
+    """The `voice_audit` row a grant request writes before its route runs;
+    `quiet` is the request's `QUIET_HEADER`, honoured on a GET only."""
     return {
         "action": AUDIT_GRANT_USED, "via": VIA, "session_id": session.session_id,
         "project_id": session.project_id, "tenant_id": session.tenant_id,
         "by": session.person, "at": at, "method": method, "route": route,
         "path_params": {str(k): str(v) for k, v in path_params.items()},
         "delegation_id": session.delegation_id,
+        "quiet": method.upper() == "GET" and quiet == QUIET_ROSTER,
     }
 
 
 def write_audit(db: Any, row: dict[str, Any]) -> None:
-    """The audit row, then the call's masked work step (THE WORK FEED)."""
+    """The audit row, then the call's masked work step (THE WORK FEED),
+    none for a quiet read (A QUIET READ)."""
     try:
         db.collection(vs.AUDIT).document().set(row)
     except Exception as exc:  # noqa: BLE001 - any failure means no audit, so no route
         raise GrantAuditUnavailable(
             f"the Voice it audit row could not be written ({type(exc).__name__}); "
             "nothing was done") from None
-    write_step(db, row)
+    if not row.get("quiet"):
+        write_step(db, row)
 
 
 def write_step(db: Any, row: Mapping[str, Any]) -> int | None:
