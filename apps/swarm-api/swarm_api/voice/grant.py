@@ -186,6 +186,10 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # reopen (routes/voice.py `tier_reopen`); the route refuses any caller
     # that did not come through a grant.
     ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+    # voice-it.md §3.12.5: a delegation's lifecycle and the roster's changed
+    # rows (`record_work`, routes/voice.py `work`); the route refuses any
+    # caller that did not come through a grant, and any other session.
+    vwork.WORK_ROUTE,
 })
 
 

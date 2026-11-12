@@ -59,6 +59,8 @@ def test_the_write_list_is_the_card_route_alone_and_apart_from_the_reads(client)
         ("POST", "/v1/voice/sessions/{session_id}/trace"),
         # A spent Live key's next tier, held for the reopen (routes/voice.py).
         ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+        # The work feed: a delegation's lifecycle and the roster (voice/workfeed.py).
+        ("POST", "/v1/voice/sessions/{session_id}/work"),
     })
     assert not vg.WRITE_ROUTES & vg.ALLOWED_ROUTES
     assert all(method == "GET" for method, _ in vg.ALLOWED_ROUTES)

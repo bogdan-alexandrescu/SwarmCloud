@@ -295,3 +295,41 @@ def test_an_ended_sessions_grant_writes_nothing(client, db, voice):
         vg.record_work(db, grant, session_id=call.session_id, at=NOW,
                        body={"delegation": {"delegation_id": "call_1", "state": "started"}})
     assert _events(db, call) == []
+
+
+# ---- the work route ---------------------------------------------------------
+
+
+def _work_url(session_id: str) -> str:
+    return f"/v1/voice/sessions/{session_id}/work"
+
+
+def test_the_work_route_is_on_the_grant_and_writes_no_step_of_its_own(client, db, voice):
+    assert wf.WORK_ROUTE in vg.WRITE_ROUTES
+    call = _start(client, voice)
+    headers = _grant_headers(call)
+    for state in ("started", "done"):
+        response = client.post(_work_url(call.session_id), headers=headers,
+                               json={"delegation": {"delegation_id": "call_1", "state": state}})
+        assert response.status_code == 200, response.text
+        assert response.json()["type"] == wf.WORK_DELEGATION
+    assert [(e["type"], e.get("state")) for e in _events(db, call)] == [
+        (wf.WORK_DELEGATION, "started"), (wf.WORK_DELEGATION, "done")]
+    out_of_order = client.post(_work_url(call.session_id), headers=headers,
+                               json={"delegation": {"delegation_id": "call_1",
+                                                    "state": "progress"}})
+    assert out_of_order.status_code == 409
+    assert client.post(_work_url(call.session_id), headers=headers,
+                       json={"note": "x"}).status_code == 422
+
+
+def test_the_work_route_refuses_a_person_and_another_sessions_grant(client, db, voice):
+    mine = _start(client, voice)
+    other = _start(client, voice, user="root")
+    body = {"delegation": {"delegation_id": "call_1", "state": "started"}}
+    assert client.post(_work_url(mine.session_id), json=body,
+                       headers=auth_header("alice")).status_code == 403
+    assert client.post(_work_url(other.session_id), json=body,
+                       headers=_grant_headers(mine)).status_code == 403
+    assert [e for e in _events(db, other) if e["type"] == wf.WORK_DELEGATION] == []
+    assert [e for e in _events(db, mine) if e["type"] == wf.WORK_DELEGATION] == []
