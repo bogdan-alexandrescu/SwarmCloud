@@ -95,6 +95,44 @@
   padding: 0;
   background: none;
 }
+/* A command block's Copy: in the box's top-right corner, over the code's
+   own padding, so the code keeps its full width. */
+.guide-codebox {
+  position: relative;
+}
+.guide-codebox .guide-code {
+  padding-right: 64px;
+}
+.guide-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-meta);
+  cursor: pointer;
+}
+.guide-copy-said:empty {
+  display: none;
+}
+.guide-copy-said {
+  display: block;
+  margin: calc(-1 * var(--ctl-s2)) 0 var(--ctl-s3);
+  font-size: var(--t-meta);
+  color: var(--text-dim);
+}
+/* A value the deployment does not publish: the reader types their own. */
+.guide-fill-missing {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  outline: 1px dashed var(--text-dim);
+}
 .guide-table {
   margin: 0 0 var(--ctl-s3);
   overflow-x: auto;
