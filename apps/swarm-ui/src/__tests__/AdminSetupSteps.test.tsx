@@ -1178,11 +1178,11 @@ describe('epic findings: the console setup page', () => {
   })
 
   it('an installation that covers no repository links to its settings page on GitHub', async () => {
-    await mountSteps(state(teamWith({ grant: { state: 'waiting_for_repositories', account: 'example-org', installation_id: 51877204 } })))
+    await mountSteps(state(teamWith({ grant: { state: 'waiting_for_repositories', account: 'example-org', installation_id: 7 } })))
     const fact = within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Repository grant').closest('li') as HTMLElement
     // MUTATION: plain text with no link -> the person hunts for the installation on GitHub.
     const link = within(fact).getByRole('link', { name: 'Choose repositories on GitHub' })
-    expect(link.getAttribute('href')).toBe('https://github.com/organizations/example-org/settings/installations/51877204')
+    expect(link.getAttribute('href')).toBe('https://github.com/organizations/example-org/settings/installations/7')
   })
 
   it('one signed-in account is enough: the accounts row says the rest are optional', async () => {
