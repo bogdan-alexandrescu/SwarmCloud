@@ -401,7 +401,7 @@ export function TalkPane() {
         </div>
         <div className="vt-subs-band">
           <Captions lines={lines} />
-          <WorkingCard work={cards.work} />
+          <WorkingCard work={cards.work ?? []} />
           {textMode && (
             <form
               className="c-field"

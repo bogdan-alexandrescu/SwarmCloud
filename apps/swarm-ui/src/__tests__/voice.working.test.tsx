@@ -80,7 +80,7 @@ const STARTED_AT = new Date(Date.now() - 42_000).toISOString()
 function Band() {
   const [s, setS] = useState<CardListState>(EMPTY_LIST)
   useEffect(() => readSessionStream(SESSION, 0, { types: STREAM_EVENTS, onEvent: (ev) => setS((x) => applyStreamEvent(x, ev)) }), [])
-  return <WorkingCard work={s.work} />
+  return <WorkingCard work={s.work ?? []} />
 }
 
 let seq = 0

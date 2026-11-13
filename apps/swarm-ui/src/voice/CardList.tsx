@@ -153,10 +153,13 @@ export interface CardListState {
   /** The highest sequence seen; a reconnect asks for what comes after it. */
   lastSeq: number
   cards: VoiceCard[]
-  /** The delegations in flight, oldest first: the working card follows the first. */
-  work: Delegation[]
-  /** The crew strip's rows, in the order they first appeared. */
-  roster: RosterRow[]
+  /**
+   * The delegations in flight, oldest first: the working card follows the first.
+   * Optional so a state built as `{ lastSeq, cards }` still is one; absent reads as none.
+   */
+  work?: Delegation[]
+  /** The crew strip's rows, in the order they first appeared; absent reads as none. */
+  roster?: RosterRow[]
 }
 
 export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [], work: [], roster: [] }
@@ -206,7 +209,7 @@ function mergeRows(roster: RosterRow[], rows: readonly RosterRow[]): RosterRow[]
  * later than that keeps the event's state (and takes the route's title).
  */
 export function seedRoster(s: CardListState, served: readonly RosterRow[], since: number): CardListState {
-  const newer = s.roster.filter((r) => r.seq > since)
+  const newer = (s.roster ?? []).filter((r) => r.seq > since)
   const rows = served.map((row) => {
     const moved = newer.find((r) => r.kind === row.kind && r.id === row.id)
     return moved === undefined ? row : { ...moved, title: moved.title ?? row.title }
@@ -220,36 +223,37 @@ const DELEGATION_ENDS: readonly string[] = ['done', 'failed', 'refused']
 /** The working card and the roster after one work feed event. */
 function applyWork(s: CardListState, ev: StreamEvent): CardListState {
   const at = text(ev.data.at)
+  const held = { work: s.work ?? [], roster: s.roster ?? [] }
   if (ev.type === 'work.delegation') {
     const id = text(ev.data.delegation_id)
     const state = typeof ev.data.state === 'string' ? DELEGATION_STATE[ev.data.state] : undefined
     if (id === null || state === undefined) return s
-    const roster = mergeRows(s.roster, [{ kind: 'delegation', id, title: null, state, done: null, total: null, seq: ev.seq }])
+    const roster = mergeRows(held.roster, [{ kind: 'delegation', id, title: null, state, done: null, total: null, seq: ev.seq }])
     // Its end is the next output: the card goes, and its steps with it.
-    if (DELEGATION_ENDS.includes(String(ev.data.state))) return { ...s, roster, work: s.work.filter((d) => d.delegation_id !== id) }
-    if (s.work.some((d) => d.delegation_id === id)) return { ...s, roster }
-    return { ...s, roster, work: [...s.work, { delegation_id: id, at, steps: [], folded: 0 }] }
+    if (DELEGATION_ENDS.includes(String(ev.data.state))) return { ...s, roster, work: held.work.filter((d) => d.delegation_id !== id) }
+    if (held.work.some((d) => d.delegation_id === id)) return { ...s, roster }
+    return { ...s, roster, work: [...held.work, { delegation_id: id, at, steps: [], folded: 0 }] }
   }
   if (ev.type === 'work.step') {
     const phrase = text(ev.data.phrase)
-    if (phrase === null || s.work.length === 0) return s
+    if (phrase === null || held.work.length === 0) return s
     const id = text(ev.data.delegation_id)
     // A step names its delegation; one that names none belongs to the one the card follows.
-    const which = id === null ? 0 : s.work.findIndex((d) => d.delegation_id === id)
-    const d = s.work[which]
+    const which = id === null ? 0 : held.work.findIndex((d) => d.delegation_id === id)
+    const d = held.work[which]
     if (d === undefined) return s
     const raw = typeof ev.data.ids === 'object' && ev.data.ids !== null ? (ev.data.ids as Record<string, unknown>) : {}
     const ids: Record<string, string> = {}
     for (const [k, v] of Object.entries(raw)) if (typeof v === 'string') ids[k] = v
     const steps = [...d.steps, { seq: ev.seq, phrase, ids, at }]
     const over = Math.max(0, steps.length - STEPS_KEPT)
-    const work = s.work.slice()
+    const work = held.work.slice()
     work[which] = { ...d, steps: steps.slice(over), folded: d.folded + over }
     return { ...s, work }
   }
   if (ev.type === 'roster.update') {
     const rows = Array.isArray(ev.data.rows) ? ev.data.rows.flatMap((r) => asRosterRow(r, ev.seq) ?? []) : []
-    return rows.length === 0 ? s : { ...s, roster: mergeRows(s.roster, rows) }
+    return rows.length === 0 ? s : { ...s, roster: mergeRows(held.roster, rows) }
   }
   return s
 }
@@ -510,7 +514,7 @@ export function CardList({
   return (
     <NavigateTo.Provider value={navigate}>
     <div className="vt-card-list">
-      <Roster rows={s.roster} navigate={navigate} />
+      <Roster rows={s.roster ?? []} navigate={navigate} />
       {link === 'closed' && sessionId !== null && (
         <p className="c-hint" role="status">
           The card stream closed.{' '}
