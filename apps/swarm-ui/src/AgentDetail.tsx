@@ -1067,8 +1067,11 @@ export function nowParts(run: AgentRun, now: number): string[] {
   }
   const said = newest === null ? null : nonBlank(newest.detail?.message) ?? nonBlank(newest.detail?.summary)
   const news = newest === null ? null : cutText(said === null ? eventWord(newest) : `${eventWord(newest)}: ${said}`, 80)
+  // EACH WORD ONCE (epic 2596, comments 19 and 241): a DISPATCHED agent with
+  // no start has the state word as its elapsed figure, and its newest event
+  // said the same word, so the line read `starting · dispatched · dispatched`.
   const el = elapsed(task, now)
-  return [phase, ...(news === null || news === phase ? [] : [news]), el.text]
+  return [phase, ...(news === null || news === phase || news === el.text ? [] : [news]), ...(el.text === phase ? [] : [el.text])]
 }
 
 function DtNowLine({ run, now }: { run: AgentRun; now: number }) {
