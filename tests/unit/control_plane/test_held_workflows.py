@@ -21,6 +21,8 @@ No credentials, no network, no emulator. Every token is built at runtime.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -260,6 +262,21 @@ def test_another_tenants_workflow_is_refused_as_a_missing_one(world, db):
     assert other.value.code == missing.value.code == "not_found"
     assert other.value.message.replace(theirs, "X") == missing.value.message.replace(
         "wf_doesnotexist", "X")
+    assert not _paths(db, f"{heldworkflows.HELD_WORKFLOWS}/")
+
+
+def test_a_continuation_scoped_account_cannot_hold_new_work(world, db):
+    # The release submits as an ordinary member, so the scope is held at hold.
+    ctx, api = world
+    before = _submit(api)
+    auth = dataclasses.replace(ctx.authenticator.authenticate("Bearer token-alice"),
+                               member_scope="continuation")
+
+    with pytest.raises(ApiError) as refused:
+        heldworkflows.hold(ctx, auth, HeldWorkflowCreate.model_validate(
+            _spec(after_merge=[{"workflow_id": before}])))
+    assert refused.value.status_code == 403
+    assert "continues_task" in refused.value.message
     assert not _paths(db, f"{heldworkflows.HELD_WORKFLOWS}/")
 
 

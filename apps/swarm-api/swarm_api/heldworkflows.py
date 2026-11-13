@@ -56,7 +56,7 @@ from swarm_common.models import new_id
 from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge_limits
-from .errors import ApiError, NotFound, ValidationFailed
+from .errors import ApiError, Forbidden, NotFound, ValidationFailed
 from .forgewrite import ForgeRateLimited, ForgeWriteNotFound
 from .mergetrain import ENTRIES_COLLECTION, LANDED, entry_id_for
 from .schemas import HeldWorkflowCreate, WorkflowCreate
@@ -166,15 +166,26 @@ def _refuse_cycle(db: Any, tenant_id: str, own_id: str, named: list[str]) -> Non
 def hold(ctx: Any, auth: Any, body: HeldWorkflowCreate) -> dict[str, Any]:
     """Write `body` as a HELD row of the caller's tenant; no workflow, no task.
 
-    The caller's role floor and tenant are the submission path's own
-    (`require_member`, `tenant_for`). Refused before anything is written:
-    another tenant's or a missing workflow (in the same words), a cycle, a
-    duplicate entry, a `pull_request` beside a repository not on github.com,
-    and per-run MCP credentials, which a ledger row must not keep.
+    The caller's role floor, scope and tenant are the submission path's own
+    (`require_member`, `submit_workflow`'s continuation-scope refusal,
+    `tenant_for`). Refused before anything is written: a continuation-scoped
+    caller without `continues_task`, another tenant's or a missing workflow
+    (in the same words), a cycle, a duplicate entry, a `pull_request` beside
+    a repository not on github.com, and per-run MCP credentials, which a
+    ledger row must not keep.
     """
     from .routes.tasks import require_member
 
     require_member(ctx, auth)
+    # The release submits as the submitter through `run_owner_auth`, an
+    # ordinary member (member_scope ""), so a continuation-scoped account
+    # (contract request 30) is held to its scope here, at hold, or it could
+    # start new work by holding it. The words and code are submit_workflow's.
+    if getattr(auth, "member_scope", "") == "continuation" and body.continues_task is None:
+        raise Forbidden(
+            "a continuation-scoped account may only submit a workflow with "
+            "continues_task; it cannot start new work"
+        )
     tenant = ctx.submissions.tenant_for(auth)
     tenant_id = tenant.tenant_id
     db = ctx.store.db
