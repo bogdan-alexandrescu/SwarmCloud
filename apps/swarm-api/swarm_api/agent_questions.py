@@ -31,7 +31,11 @@ read; nothing here acts on it.
 `[]` IS NEVER AMBIGUOUS. A task that asked none answers `status: "none"` with
 no object read; a counted file that could not be read answers
 `status: "unavailable"` with `unavailable_because`, so "asked none" and "asked
-some we could not read" are different answers -- neither is a 404.
+some we could not read" are different answers -- neither is a 404. A file the
+worker rejected (`questions_rejected` beside a count of 0) is not "asked
+none" either: it answers `unavailable` with the worker's reason, redacted, and
+`rejected: {file, reason}`, and an answer to it is a 409 naming the file and
+the reason (#3086). `none` is kept for a task that wrote no file at all.
 
 `POST /v1/tasks/{id}/answers`: THE OWNER ANSWERS ON THE TASK (owner decision
 2026-10-13 ~05:25 PDT, "Yes, pick an option on the task"; lane TASK-ANSWERS).
@@ -226,6 +230,10 @@ QUESTIONS_KEY = "questions"
 #: (`agent_worker.questions.DIGESTS_KEY`), and the stored answer's copy of
 #: the one at its index when it was given (`question_digests`).
 QUESTION_DIGESTS_KEY = "question_digests"
+#: The worker's reason for not taking the file as questions, beside a count
+#: of 0 (`agent_worker.questions.REJECTED_KEY`): a file the platform could
+#: not take, which is not a task that asked none (#3086).
+QUESTIONS_REJECTED_KEY = "questions_rejected"
 ASKED_DIGEST_KEY = "asked_digest"
 
 #: The worker takes no file larger than this (`agent_worker.questions.MAX_BYTES`);
@@ -817,6 +825,23 @@ def question_digests(summary: dict[str, Any] | None) -> list[str] | None:
     return raw
 
 
+def rejected_questions(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The worker's rejection of this task's file, redacted, else None.
+
+    `{reason, uploaded}`: the worker's reason, masked as every served text
+    is (it can quote the file), and whether the file is in the task's
+    manifest. None when the summary holds no reason: a task that wrote no
+    file at all, which alone reads as having asked none.
+    """
+    reason = (summary or {}).get(QUESTIONS_REJECTED_KEY)
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    artifacts = (summary or {}).get("artifacts")
+    uploaded = isinstance(artifacts, list) and any(
+        isinstance(a, dict) and a.get("name") == QUESTIONS_NAME for a in artifacts)
+    return {"reason": redact(reason).text, "uploaded": uploaded}
+
+
 def answers_digest(entry: dict[str, Any], index: int, digests: list[str]) -> bool:
     """Whether the stored answer `entry` at `index` answers the question the
     worker's `digests` say is asked there now. An answer stored before it was
@@ -1062,9 +1087,21 @@ def read_questions(
     }
     if count == 0:
         wait, adopted = current_wait(task)
-        if wait is None:
+        if wait is not None:
+            return _serve_wait(task, wait, adopted, out)
+        rejected = rejected_questions(task.result_summary)
+        if rejected is None:
             return {**out, "status": "none"}
-        return _serve_wait(task, wait, adopted, out)
+        where = "it is in" if rejected["uploaded"] else "it is not in"
+        return {
+            **out,
+            "status": "unavailable",
+            "unavailable_because": (
+                f"the worker did not take {QUESTIONS_NAME} as questions: {rejected['reason']}; "
+                f"{where} the task's artifacts"
+            ),
+            "rejected": {"file": QUESTIONS_NAME, "reason": rejected["reason"]},
+        }
 
     why: str | None = None
     parsed: Any = None
@@ -1229,6 +1266,10 @@ def answer_question(
     )
     if read["status"] == "none":
         raise ValidationFailed("this task's agent asked no questions; there is nothing to answer")
+    if read.get("rejected"):
+        # The agent wrote a file the worker did not take: name it and the
+        # reason, never "asked no questions" (#3086).
+        raise Conflict(f"there is no question here to answer: {read.get('unavailable_because')}")
     if read["status"] != "ok":
         raise Conflict(
             "this task's questions could not be read, so an answer cannot be checked against them: "
