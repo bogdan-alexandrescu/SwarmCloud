@@ -109,6 +109,16 @@ export function questionCount(task: Partial<Pick<Task, 'result_summary' | 'block
 }
 
 /**
+ * The worker's reason for not taking the task's `questions.json`
+ * (`questions: 0` with `questions_rejected`, #3086), or null when it took the
+ * file or there was none.
+ */
+export function questionsRejected(task: Partial<Pick<Task, 'result_summary'>> | null): string | null {
+  const why = (task?.result_summary as Record<string, unknown> | null | undefined)?.questions_rejected
+  return typeof why === 'string' && why.trim() !== '' ? why : null
+}
+
+/**
  * Who asked a plugin step's question: the skill's name in a chip, the way
  * Needs you says it; nothing at all when the read served none (no new visible
  * prose, the console rule of 5 November 2026).
@@ -389,10 +399,12 @@ function Question({
  * The card, at the top of Details; nothing when the agent asked none. `id` is
  * the section's id, `questions` by default (the agent page's `#questions`); a
  * page that mounts one card per step passes its own, so ids never repeat.
+ * A `questions.json` the worker did not take counts 0 and is still drawn
+ * (#3086): the read answers `unavailable` with the reason, never "none".
  */
 export function QuestionsCard({ task, id = 'questions' }: { task: Task; id?: string }) {
   const count = questionCount(task)
-  if (count === 0) return null
+  if (count === 0 && questionsRejected(task) === null) return null
   return <AskedCard task={task} count={count} id={id} />
 }
 
@@ -430,10 +442,16 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
         </span>
       </div>
       {data?.status === 'ok' && data.waiting && <WaitingNote wait={data.waiting} taskId={task.id} />}
-      <p className="dt-note">
-        {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
-        answer is stored on this agent, where {launcher(task)} reads it with swarm_result.
-      </p>
+      {count === 0 ? (
+        <p className="dt-note" data-questions-rejected="">
+          {who} wrote questions.json and the platform did not take it, so nothing in it can be answered here.
+        </p>
+      ) : (
+        <p className="dt-note">
+          {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
+          answer is stored on this agent, where {launcher(task)} reads it with swarm_result.
+        </p>
+      )}
       {data !== null && data.status === 'ok' && roleGate !== null && (
         <p className="dt-note qc-why-not" data-role-gate="member">
           {roleGate}
@@ -449,7 +467,9 @@ function AskedCard({ task, count, id }: { task: Task; count: number; id: string 
       ) : state.status === 'error' ? (
         <p className="dt-note">The questions could not be read: {errorHeading(state.error)}</p>
       ) : data === null || data.status === 'none' ? (
-        <p className="dt-note">The questions could not be read: the API served none.</p>
+        <p className="dt-note">
+          The questions could not be read: {count === 0 ? questionsRejected(task) : 'the API served none'}.
+        </p>
       ) : data.status === 'unavailable' ? (
         <p className="dt-note">The questions could not be read: {data.unavailable_because ?? 'the API did not say why'}.</p>
       ) : (
