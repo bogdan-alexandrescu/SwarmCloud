@@ -71,7 +71,7 @@ describe('Platform counts, over time, while a Run reads', () => {
     expect(document.querySelector('.pot-notrun [role="progressbar"]')).not.toBeNull()
     for (const t of ticks) expect(text(t)).toBe('reading 0:12')
     await act(async () => {
-      land({ status: 'error', error: { kind: 'server', httpStatus: 500, code: null, message: 'broke' }, fetchedAt: Date.now() } as Result<PlatformTime>)
+      land({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'broke' } } as Result<PlatformTime>)
     })
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0)
   })
