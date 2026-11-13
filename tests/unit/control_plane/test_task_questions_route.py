@@ -117,7 +117,8 @@ def test_a_task_that_asked_none_answers_an_empty_list_not_a_404(client, db, obje
 
 
 def test_a_file_the_worker_rejected_is_not_served_as_questions(client, db, objects) -> None:
-    """The worker's count is the validation verdict: 0 with a reason is none."""
+    """The worker's count is the validation verdict: 0 with a reason is not
+    served as questions, and is unavailable with that reason, not none (#3086)."""
     raw = json.dumps(_questions()).encode()
     _finished(
         db, objects, files={"questions.json": raw},
@@ -126,8 +127,9 @@ def test_a_file_the_worker_rejected_is_not_served_as_questions(client, db, objec
 
     body = _get(client).json()
 
-    assert body["status"] == "none"
+    assert body["status"] == "unavailable"
     assert body["questions"] == []
+    assert "question 1: a key other than" in body["unavailable_because"]
 
 
 def test_a_counted_file_that_disagrees_with_the_count_is_unavailable(client, db, objects) -> None:
