@@ -56,7 +56,7 @@
 
 .acd-next { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .acd-big { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
-.acd-big.is-none { font-size: var(--t-lead); line-height: var(--lh-figure); color: var(--text-dim); font-weight: 500; }
+.acd-big.is-none { font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text-dim); font-weight: 500; }
 
 /* ---- spend against the tripwire: the track IS the per-day budget --------- */
 .acd-spend { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -94,9 +94,8 @@
 /* ---- the phone: one column, nothing wider than the screen ---------------- */
 @media (max-width: 560px) {
   .acd-page { gap: 12px; }
-  .acd-answer { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .acd-tile { padding: 10px 12px; }
-  .acd-tile-v { font-size: var(--t-title); line-height: var(--lh-figure); }
+  .acd-tile-v { font-size: var(--t-title); line-height: var(--lh-title); }
   .acd-huge { font-size: var(--t-figure); line-height: var(--lh-figure); }
   .acd-grid, .acd-grid.is-3 { grid-template-columns: minmax(0, 1fr); }
   .acd-bar-row > .c-btn { width: 100%; }
@@ -111,11 +110,6 @@
 .acd-wrows > li { display: grid; grid-template-columns: 64px minmax(0, 1fr) 180px 170px auto; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-meta); }
 .acd-wrows > li > .c-tag { justify-self: start; }
 .acd-wt { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
-@media (max-width: 560px) {
-  .acd-wrows > li { grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; padding: 10px 0; }
-  .acd-wrows > li > .acd-dim, .acd-wrows > li > .acd-exp { grid-column: 1 / -1; }
-  .acd-wrows > li > .c-btn { grid-column: 1 / -1; justify-self: stretch; }
-}
 /* ---- pairs that never split, stacks, the wide detail row ---------------- */
 /* ---- the phone: the answer reads as three lines, each waiting row keeps its button beside its expiry */
 @media (max-width: 560px) {
@@ -123,7 +117,7 @@
   .acd-answer > .acd-tile { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0 10px; align-items: baseline; border: 0; border-radius: 0; background: none; }
   .acd-answer > .acd-tile + .acd-tile { border-top: 1px solid var(--line); }
   .acd-answer > .acd-tile > .acd-dim { grid-column: 2; }
-  .acd-wrows > li { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'tag tag' 'title title' 'from from' 'exp btn'; }
+  .acd-wrows > li { gap: 4px 8px; padding: 10px 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'tag tag' 'title title' 'from from' 'exp btn'; }
   .acd-wrows > li > .c-tag { grid-area: tag; }
   .acd-wrows > li > .acd-wt { grid-area: title; }
   .acd-wrows > li > .acd-dim { grid-area: from; grid-column: auto; }
