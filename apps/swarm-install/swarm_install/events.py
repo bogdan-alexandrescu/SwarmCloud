@@ -116,6 +116,13 @@ def _human_line(event: dict[str, Any]) -> str:
     return line
 
 
+#: The human view prints a wait's countdown again only after this long, or
+#: sooner when the check's state, reason or detail changes: a 6-hour wait
+#: polled every 10 s would otherwise print ~2,160 lines (audit).
+#: `--json-events` keeps every poll, for a face that draws the countdown.
+COUNTDOWN_EVERY_S = 5 * 60
+
+
 class Events:
     """Emits events to a sink: JSON lines for `--json-events`, else text.
 
@@ -134,6 +141,7 @@ class Events:
         self._json = json_lines
         self._out = out
         self.record: list[dict[str, Any]] = []
+        self._countdown: dict[Any, tuple[float, Any]] = {}
 
     def emit(self, kind: str, **fields: Any) -> dict[str, Any]:
         event = build(kind, self._clock(), fields)
@@ -141,10 +149,25 @@ class Events:
         out = self._out if self._out is not None else sys.stdout
         if self._json:
             out.write(json.dumps(event, sort_keys=True) + "\n")
-        else:
+        elif self._shown(event):
             out.write(_human_line(event) + "\n")
         out.flush()
         return event
+
+    def _shown(self, event: dict[str, Any]) -> bool:
+        """Whether the human view prints `event`: every kind but a countdown,
+        which prints on a wait's first poll, when its state, reason or detail
+        changes, and then once every `COUNTDOWN_EVERY_S`."""
+        if event["event"] != "wait_countdown":
+            return True
+        wait = (event.get("step"), event.get("started"))  # one wait: its step and when it started
+        at, state = float(event["at"]), (event.get("state"), event.get("reason"))
+        last = self._countdown.get(wait)
+        if (last is not None and not event.get("detail") and state == last[1]
+                and at - last[0] < COUNTDOWN_EVERY_S):
+            return False
+        self._countdown[wait] = (at, state)
+        return True
 
     def of_kind(self, kind: str) -> list[dict[str, Any]]:
         return [e for e in self.record if e["event"] == kind]
