@@ -184,3 +184,18 @@ def test_the_infra_effect_renders_voice_only_when_terraform_would(voice_it, rend
         "enable_live_browser": True, "enable_graph_service": False, "graph_service": {"serve": True},
         "voice_it": "off", "image_refs": {}})
     assert imageless == {"swarm_live_manifest": None, "swarm_graph_manifest": None, "swarm_voice_manifest": None}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_verify_connects_github_when_the_deployment_says_it_is_not_connected(mode, monkeypatch, tmp_path, capsys):
+    """Epic 2806, comment 83: on a new deployment the person has not connected
+    GitHub in the first workspace yet, so `sc access repos` is refused with
+    swarm-api's github_not_connected; verify runs `swarm sc setup` once (the
+    browser connection) and reads the repositories again."""
+    world, code = walked(mode, monkeypatch, tmp_path, capsys)
+    assert code == 0, world.said[-1][-3000:]
+    sc = [" ".join(argv[1:4]) for argv in world.commands
+          if Path(str(argv[0])).name == "swarm" and argv[1:2] == ["sc"]]
+    assert sc == ["sc access repos", "sc setup --context", "sc access repos"], sc
+    assert world.deployment.github_connected == {world.first_workspace}
+    assert world.person.asked_to_run_elsewhere() == []
