@@ -81,6 +81,10 @@ RECEIVER_WAIT = WaitSpec(
 )
 
 
+class ReceiverNotServing(RuntimeError):
+    """Infra pass 4 applied, and its receiver is not serving."""
+
+
 def app_document(ctx: Any) -> dict[str, Any]:
     return dict(ctx.read_console(GITHUB_APP) or {})
 
@@ -167,10 +171,27 @@ class Pass4Step(PassStep):
     def trigger(self, ctx: Any) -> bool:
         return ctx.state.done("github.pass-3") and bool((app_document(ctx).get("self_check") or {}).get("ok"))
 
+    def check(self, ctx: Any) -> Observation:
+        """Pass 4 applied is not enough: the hook runs only once its apply
+        reported the receiver serving, so one that did not is applied again."""
+        found = super().check(ctx)
+        if found.status == MET and not ctx.outputs.get("github_hooks_serving"):
+            return Observation(UNMET, f"{self.pass_name} applied, and its receiver was not reported serving")
+        return found
+
     def apply(self, ctx: Any, plan: Plan) -> None:
         outputs = bootstrap.apply_pass(ctx, self.deps, self.pass_name, targets=self.targets) or {}
         hooks = outputs.get("github_hooks") or {}
-        remember(ctx, outputs={"github_hooks_serving": bool(hooks.get("serving"))})
+        serving = bool(hooks.get("serving"))
+        remember(ctx, outputs={"github_hooks_serving": serving})
+        if not serving:
+            # Terraform serves the receiver once enable_github_hooks is on and the
+            # release names its image (terraform/infra/github_hooks.tf); waiting
+            # changes neither, and the webhook stays off until it serves.
+            raise ReceiverNotServing(
+                f"{self.pass_name} applied, and the GitHub push receiver is not serving: the release's image_refs "
+                "name no swarm-github-hooks image, so the App's webhook stays off. Run swarm install again with "
+                "a release that ships it.")
 
 
 def build_triggered(deps: Deps = DEPS) -> tuple[Any, ...]:

@@ -202,3 +202,24 @@ def test_no_message_names_a_flag_install_does_not_have() -> None:
     named = [str(path.relative_to(root)) for path in sorted(root.rglob("*.py"))
              if "swarm install --resume" in path.read_text(encoding="utf-8")]
     assert named == []
+
+
+def test_the_resume_line_names_the_install_and_no_bang_in_a_terminal() -> None:
+    """The person runs the line in their own terminal: it names this install's
+    --project and --env (a bare `swarm install` resumes whatever install the
+    home last pointed at, or none), and the `!` Claude Code needs is only in
+    the event's `command`, which the skill hands on in its own session."""
+    from swarm_install.engine import _Stop
+
+    from .test_terraform_runner import FakeCtx
+
+    ctx = FakeCtx()
+    with pytest.raises(_Stop) as stopped:
+        secret_entry.needs_terminal(ctx, "edge.desktop-client", "the client secret")
+    line = f"swarm install --project {ctx.project} --env {ctx.environment}"
+    assert stopped.value.outcome == "paused"
+    assert stopped.value.message.endswith(f"In your own terminal run: {line}")
+    assert "!" not in stopped.value.message
+    paused = ctx.events.of_kind("step_paused")
+    assert [e["command"] for e in paused] == [f"! {line}"]
+    assert paused[0]["reason"] == NEEDS_TERMINAL and paused[0]["message"] == stopped.value.message
