@@ -99,7 +99,7 @@ if tool == "gcloud" and args[:2] == ["storage", "cp"]:
             dest = dest + "/" + os.path.basename(source)
         state.setdefault("written", []).append([dest, args])
         # Keep what a small upload held, so a test (and a read back) sees it.
-        if source in objects or (os.path.isfile(source) and os.path.getsize(source) < 4096):
+        if source in objects or (os.path.isfile(source) and os.path.getsize(source) < 65536):
             held = objects[source] if source in objects else open(source).read()
             held = state.get("lands", {}).get(dest, held)
             state.setdefault("uploaded", {})[dest] = held
@@ -598,26 +598,85 @@ def _as_candidate(bundle: Path) -> Path:
     return bundle
 
 
-@pytest.mark.parametrize("candidate", [False, True], ids=["final", "candidate"])
-def test_every_publish_puts_install_sh_at_the_root(tmp_path: Path, bundle: Path, assembled: tuple[Path, Path],
-                                                   candidate: bool) -> None:
-    """Every publish, a candidate's included, copies the bundle's install.sh to
-    the bucket root, uncached, after SHA256SUMS: `curl .../install.sh |
-    SWARM_CHANNEL=rc sh` must work before any promotion, since a promotion
-    needs an install of the candidate first (audit finding N10)."""
-    version = CANDIDATE if candidate else VERSION
-    proc = _publish(tmp_path, _as_candidate(bundle) if candidate else bundle, assembled[1], typed=version)
+def test_a_final_publish_puts_install_sh_at_the_root(tmp_path: Path, bundle: Path,
+                                                    assembled: tuple[Path, Path]) -> None:
+    """A final release's publish copies the bundle's install.sh to the bucket
+    root, uncached, after SHA256SUMS. The root install.sh is what every stable
+    install runs, so only a stable publish (and `--promote`) writes it."""
+    proc = _publish(tmp_path, bundle, assembled[1])
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     calls = _calls(tmp_path)
     dest = _destinations(calls)
     # MUTATION: copy install.sh to the root only in --promote again and this fails.
     assert f"{BUCKET}/install.sh" in dest, dest
-    assert dest.index(f"{BUCKET}/install.sh") > dest.index(f"{BUCKET}/releases/{version}/SHA256SUMS"), dest
+    assert dest.index(f"{BUCKET}/install.sh") > dest.index(f"{RELEASE}/SHA256SUMS"), dest
     (call,) = [c for c in _writes(calls) if c[0] == "gcloud" and _destinations([c]) == [f"{BUCKET}/install.sh"]]
     assert "--cache-control=no-cache" in call, call
     assert [a for a in call[3:] if not a.startswith("-")][0] == str(bundle / "install.sh"), call
     # The script it puts there reads whichever channel it is asked for.
     assert "channels/${CHANNEL}" in (bundle / "install.sh").read_text()
+
+
+@pytest.mark.parametrize("ci", [False, True], ids=["typed", "ci"])
+def test_a_candidate_publish_leaves_the_root_install_sh_alone(tmp_path: Path, bundle: Path,
+                                                              assembled: tuple[Path, Path], ci: bool) -> None:
+    """A candidate's publish never writes the root install.sh: that is what
+    every stable install runs, and a candidate's script must not replace it
+    before the candidate is tested and promoted."""
+    stable_script = "the stable release's install.sh\n"
+    state = {"objects": {f"{BUCKET}/install.sh": stable_script}}
+    if ci:
+        proc = _run(tmp_path, state, "--bundle", str(_as_candidate(bundle)), "--source-images", str(assembled[1]),
+                    "--ci", typed=None, extra_env=_actions(version=CANDIDATE))
+    else:
+        proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], state=state, typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    # MUTATION: write the root install.sh on every publish again and this fails.
+    assert f"{BUCKET}/install.sh" not in _destinations(_calls(tmp_path))
+    assert json.loads((tmp_path / "state.json").read_text())["objects"][f"{BUCKET}/install.sh"] == stable_script
+
+
+def test_a_candidate_publish_writes_its_own_install_sh(tmp_path: Path, bundle: Path,
+                                                       assembled: tuple[Path, Path]) -> None:
+    """A candidate's publish writes its install.sh as `channels/rc.install.sh`,
+    beside `channels/rc.marketplace.json`, uncached, after SHA256SUMS and
+    before the channel line: `curl .../channels/rc.install.sh |
+    SWARM_CHANNEL=rc sh` installs the candidate before any promotion (N10)."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    dest = _objects(tmp_path)
+    rc_install = f"{BUCKET}/channels/rc.install.sh"
+    # MUTATION: drop the rc install.sh write and this fails.
+    assert rc_install in dest, dest
+    assert dest.index(f"{CANDIDATE_RELEASE}/SHA256SUMS") < dest.index(rc_install) < dest.index(
+        f"{BUCKET}/channels/rc"), dest
+    (call,) = _object_writes(tmp_path, rc_install)
+    assert "--cache-control=no-cache" in call, call
+    uploaded = json.loads((tmp_path / "state.json").read_text()).get("uploaded", {})
+    assert uploaded[rc_install] == (bundle / "install.sh").read_text()
+
+
+def test_a_candidate_publish_reads_its_install_sh_back(tmp_path: Path, bundle: Path,
+                                                       assembled: tuple[Path, Path]) -> None:
+    """The candidate's self-test reads its own path, `channels/rc.install.sh`,
+    after every write, never the root install.sh."""
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], typed=CANDIDATE)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    calls = _calls(tmp_path)
+    read = ["gcloud", "storage", "cat", f"{BUCKET}/channels/rc.install.sh"]
+    # MUTATION: drop the read back and this fails.
+    assert read in calls, calls[-5:]
+    last_cp = max(i for i, c in enumerate(calls) if c[:3] == ["gcloud", "storage", "cp"])
+    assert calls.index(read) > last_cp
+    assert ["gcloud", "storage", "cat", f"{BUCKET}/install.sh"] not in calls
+
+
+def test_a_candidate_publish_fails_when_its_install_sh_does_not_read_back(tmp_path: Path, bundle: Path,
+                                                                          assembled: tuple[Path, Path]) -> None:
+    state = {"lands": {f"{BUCKET}/channels/rc.install.sh": "#!/bin/sh\nexit 0\n"}}
+    proc = _publish(tmp_path, _as_candidate(bundle), assembled[1], state=state, typed=CANDIDATE)
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-3000:]
+    assert f"{BUCKET}/channels/rc.install.sh" in proc.stderr, proc.stderr[-2000:]
 
 
 def test_candidate_publish_writes_the_rc_marketplace(tmp_path: Path, bundle: Path,
@@ -695,7 +754,8 @@ def test_candidate_publish_writes_exactly_the_channel_objects(tmp_path: Path, bu
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     channel_objects = [d for d in _objects(tmp_path) if d.startswith(f"{BUCKET}/channels/")]
     # MUTATION: copy $WORK/rc to $BUCKET/channels/rc again and the rc1-prefix case fails.
-    assert channel_objects == [f"{BUCKET}/channels/rc.marketplace.json", f"{BUCKET}/channels/rc"], channel_objects
+    assert channel_objects == [f"{BUCKET}/channels/rc.install.sh", f"{BUCKET}/channels/rc.marketplace.json",
+                               f"{BUCKET}/channels/rc"], channel_objects
     objects = json.loads((tmp_path / "state.json").read_text())["objects"]
     assert objects[f"{BUCKET}/channels/rc"] == f"{CANDIDATE}\n"
 
