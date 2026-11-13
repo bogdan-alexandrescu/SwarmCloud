@@ -150,9 +150,14 @@ reported"). The tick reads `mergeable`/`mergeable_state` from the same
 pull request read, BEFORE the checks; on a conflict it hands the pull
 request to a conflict fix round exactly as a red reading goes to a CI-fix
 round: claimed in `merge_fix.conflict_rounds` under the same guard, at most
-`MERGE_CONFLICT_ROUNDS_MAX` of them whatever the workflow asked for, as the
-merge task's submitter while still a member, only for a pull request on the
-root's own branch. The round is a one-step claude-code continuation of that
+`MERGE_CONFLICT_ROUNDS_MAX` SPENT ones whatever the workflow asked for, as
+the merge task's submitter while still a member, only for a pull request on
+the root's own branch. A round is spent when it failed or was refused, was
+never submitted, or its task pushed no head other than the one it was given
+(`_conflict_rounds_spent`, #3073); one that resolved its conflict and pushed
+a new head is not, for the next conflict is the base moving again, not that
+round failing. Because MERGE_CI_MAX_SECONDS starts again at every new head,
+`MERGE_CONFLICT_ROUNDS_TOTAL_MAX` rounds of any outcome is the ceiling. The round is a one-step claude-code continuation of that
 branch (`conflict_fix_continuation`) that merges the base in and resolves
 the conflicts keeping both sides' intent. Its pushed head is a fix round's
 head to the worker (`agent_worker.merge._fix_round_heads`). With no round
@@ -526,11 +531,17 @@ FIX_ROUND_LOST = "fix_round_lost"
 CONFLICTING = "conflicting"
 #: The conflict fix rounds' list in `metadata.merge_fix`, beside the CI-fix
 #: `rounds` and counted apart from them, and its bound: the PR-side CI
-#: fixer's own (`cifix.DEFAULT_MAX_ATTEMPTS`). Held equal to
-#: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` by
+#: fixer's own (`cifix.DEFAULT_MAX_ATTEMPTS`), counting SPENT rounds only
+#: (`_conflict_rounds_spent`, #3073), and the ceiling on rounds of any
+#: outcome: SIX, because MERGE_CI_MAX_SECONDS is measured per head and starts
+#: again whenever a round moves the head, so it alone does not bound rounds
+#: across a base that keeps moving. Held equal to
+#: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` /
+#: `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` by
 #: tests/unit/worker/test_merge_conflict_round.py.
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
 MERGE_CONFLICT_ROUNDS_MAX = 2
+MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 #: The one step of a conflict fix round's workflow.
 CONFLICT_FIX_STEP = "conflict-fix"
 #: The re-runs of failing Actions jobs in `metadata.merge_fix`, one accepted
@@ -1941,7 +1952,13 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
         early = first()
         if early is not None:
             return early
-    if len(rounds) >= asked:
+    if key == CONFLICT_ROUNDS_KEY:
+        # A conflict round that moved the head is not spent (#3073); the
+        # ceiling bounds them all. `seen` below is still the round NUMBER.
+        if (len(rounds) >= MERGE_CONFLICT_ROUNDS_TOTAL_MAX
+                or _conflict_rounds_spent(ctx, tenant_id, rounds) >= asked):
+            return _WAKE, spent
+    elif len(rounds) >= asked:
         return _WAKE, spent
     return _submit_round(ctx, db, tenant, doc, head, read, now, key=key, asked=asked,
                          seen=len(rounds), spent=spent, label=label, build=build)
@@ -2095,6 +2112,31 @@ def conflict_fix_continuation(
             **metadata,
         },
     })
+
+
+def _conflict_rounds_spent(ctx: Any, tenant_id: str, rounds: list[Mapping[str, Any]]) -> int:
+    """How many conflict `rounds` count against MERGE_CONFLICT_ROUNDS_MAX (#3073).
+
+    Spent: an `error` (failed or refused), no task (never submitted), or a
+    task -- read under the merge's own tenant, as `_pushed_by` reads it --
+    that is gone or pushed no head other than the entry's `head`. A round
+    whose task pushed a new head moved the head and is not spent. Held
+    equal to `agent_worker.merge._conflict_rounds_spent`.
+    """
+    spent = 0
+    for entry in rounds:
+        fix_task = entry.get("task_id")
+        pushed = None
+        if not entry.get("error") and isinstance(fix_task, str) and TASK_ID_RE.match(fix_task):
+            try:
+                task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+            except NotFound:
+                task = None
+            git = _mapping(_mapping(getattr(task, "result_summary", None)).get("git"))
+            pushed = git.get("pushed_head")
+        if not isinstance(pushed, str) or not pushed or pushed == entry.get("head"):
+            spent += 1
+    return spent
 
 
 def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> str | None:
