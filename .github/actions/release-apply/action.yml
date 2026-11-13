@@ -119,9 +119,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # The values the tracked tfvars may not hold (scripts/lib/private-tfvars.sh):
+        # the never-touch list from the reviewed config/<env>/deny-list.json the
+        # guard below reads too, and the alert addresses. Without it swarm-api's
+        # SWARM_SHARED_DENY_LIST_SET renders "0" and the alerts notify nobody.
+        ./scripts/lib/private-tfvars.sh --out "${GITHUB_WORKSPACE}/build/private-${ENVIRONMENT}.tfvars.json"
         terraform -chdir="${TF_ROOT}" plan -input=false -lock-timeout="${TF_LOCK_TIMEOUT}" \
           -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
           -var-file="${GITHUB_WORKSPACE}/build/image-refs-${ENVIRONMENT}.tfvars.json" \
+          -var-file="${GITHUB_WORKSPACE}/build/private-${ENVIRONMENT}.tfvars.json" \
           -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
         terraform -chdir="${TF_ROOT}" show -json plan.tfplan > "${TF_ROOT}/plan.json"
 
