@@ -241,6 +241,29 @@ def dispatchable() -> list[str]:
     return sorted(name for name, p in RUNNER_PROFILES.items() if p.available)
 
 
+#: THE BRIDGE'S COPY of the Node each runner image carries (#3929), keyed by
+#: `RunnerProfile.image` -- the key looks the version up and is never served.
+#: Every runner image is built FROM agent-runtime-base, which pins Node by
+#: `ARG NODE_VERSION=` in images/agent-runtime-base/Dockerfile (the build
+#: asserts `node --version` equals it); these are a copy of that line,
+#: held equal to it by tests/unit/mcp/test_profiles_node_version.py.
+NODE_VERSIONS: dict[str, str] = {
+    "agent-runtime-base": "24.22.3",
+    "agent-runtime-browser": "24.22.3",
+    "agent-runtime-indexer": "24.22.3",
+    "agent-runtime-lightpanda": "24.22.3",
+}
+
+
+def node_version(name: str) -> str | None:
+    """The Node the profile's image carries; None for a control_plane profile.
+
+    A control_plane profile names an image it never pulls, so it has no Node.
+    """
+    profile = RUNNER_PROFILES[name]
+    return None if profile.control_plane else NODE_VERSIONS.get(profile.image)
+
+
 def public_profile(name: str) -> dict[str, Any]:
     """One profile, in the fields a chooser needs and no others.
 
@@ -281,6 +304,8 @@ def public_profile(name: str) -> dict[str, Any]:
         "units": size.units,
         "size_version": 0,
         "timeout_seconds": profile.timeout_seconds,
+        # The Node the image carries, so a brief can rely on it (#3929).
+        "node_version": node_version(name),
         # WHETHER a credential is needed, never WHICH VALUE. `secrets` holds
         # variable NAMES and no material, but serving the names invites a
         # session to go looking for the values, and this bridge has no business
@@ -526,6 +551,9 @@ def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
         # profile reads 0 whatever an admin set.
         "size_version": resources.get("size_version"),
         "timeout_seconds": served.get("timeout_seconds"),
+        # The platform's, like the size: None from a platform that predates
+        # it (#3929), never the copy's, which may be another image's.
+        "node_version": served.get("node_version"),
         "needs_provider_credential": served.get("provider") is not None,
         "provider": served.get("provider"),
     }
