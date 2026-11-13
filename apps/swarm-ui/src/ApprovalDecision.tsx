@@ -850,8 +850,8 @@ function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: s
   const runId = typeof s.run_id === 'string' && s.run_id !== '' ? s.run_id : null
   const scheduleId = typeof s.schedule_id === 'string' && s.schedule_id !== '' ? s.schedule_id : null
   // Who decided, through `PersonName` (user-profile.md §4.4): their name, when
-  // they set one, always beside the email that decided.
-  const by = a.decided_by ? <PersonName email={a.decided_by} name={a.decided_by_name} /> : <Dash why="who decided is not served" />
+  // they set one, always beside the email that decided, at `ap-decided`.
+  const by = <span data-testid="ap-decided">{a.decided_by ? <PersonName email={a.decided_by} name={a.decided_by_name} /> : <Dash why="who decided is not served" />}</span>
   const at = (iso: string | null | undefined) => (iso ? <span title={iso}>{when(iso)}</span> : <Dash why="when is not served" />)
   const openRun =
     runId === null ? null : (
