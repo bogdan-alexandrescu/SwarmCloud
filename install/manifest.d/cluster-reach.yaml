@@ -15,8 +15,8 @@ entries:
   apply: steps/cluster.py cluster.workloads reads terraform/infra's swarm_graph_manifest output (terraform output -json as swarm-tf-deployer, terraform.read_outputs), applies it server-side with the pinned kubectl and waits on kubectl rollout status deployment/swarm-graph; a null output (graph_service.serve off) applies nothing
   verify: kubectl -n swarm-system get pods -l app=swarm-graph shows Running; swarm-api's graph ticket mint+verify round-trips
   explain: the shared code graph service workload (4 of ~5); the only one with its own PodDisruptionBudget
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-graph-ticket-key.value
@@ -49,8 +49,8 @@ entries:
   apply: steps/cluster.py cluster.workloads reads terraform/infra's swarm_live_manifest output (terraform output -json as swarm-tf-deployer, terraform.read_outputs), applies it server-side with the pinned kubectl and waits on kubectl rollout status statefulset/swarm-live; a null output (enable_live_browser off) applies nothing
   verify: kubectl -n swarm-system get pods -l app=swarm-live shows Running; a live session reaches it
   explain: the live-browser relay workload (3 of ~5)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-live-key.value
