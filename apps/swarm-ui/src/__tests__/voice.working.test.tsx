@@ -109,6 +109,13 @@ describe("Voice it's working card", () => {
     expect(STREAM_EVENTS).toEqual(expect.arrayContaining(['work.delegation', 'work.step', 'roster.update']))
   })
 
+  it('takes a list state built without work or roster, as callers before it wrote one', () => {
+    const before: CardListState = { lastSeq: 0, cards: [] }
+    const s = applyStreamEvent(before, { type: 'work.delegation', seq: 1, data: { delegation_id: 'dl_1', state: 'started', at: STARTED_AT } })
+    expect(s.work?.map((d) => d.delegation_id)).toEqual(['dl_1'])
+    expect(s.roster?.map((r) => r.id)).toEqual(['dl_1'])
+  })
+
   it('is one line collapsed: the live dot, what it does now and the elapsed time', () => {
     const { container } = render(<Band />)
     delegation('dl_1', 'started')
