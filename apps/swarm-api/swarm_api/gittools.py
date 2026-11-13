@@ -361,7 +361,7 @@ class _FencedMidCall(Exception):
 
 #: gitexec's codes, as answers: what the agent can act on is a refusal.
 _EXEC_STATUS = {
-    "bad_ref": 422, "bad_bundle": 422, "too_large": 422, "non_fast_forward": 422,
+    "bad_ref": 422, "bad_depth": 422, "bad_bundle": 422, "too_large": 422, "non_fast_forward": 422,
     "remote_rejected": 422, "busy": 503, "timed_out": 504, "bad_remote": 502, "failed": 502,
     # A bundle's base the remote did not answer for, twice: the worker asks
     # again on a 5xx, and a forge outage heals (a peer application's report, 2026-11-06).
@@ -399,6 +399,11 @@ class FetchBody(_Body):
     #: them `foreign_author`. Answered `{"confirmed": [...]}` from the forge
     #: (`GitExec.confirm_shas`); nothing is fetched into the clone.
     confirm: list[str] = Field(default_factory=list, max_length=MAX_HAVES)
+    #: #2442: 1 asks for the tip alone, delivered as a pack the worker indexes
+    #: into its clone and records in `.git/shallow` (`GitExec.fetch_bundle`),
+    #: so a before render of the base branch fits under the bundle cap. Any
+    #: other value is `bad_depth`; a rebase never takes one.
+    depth: StrictInt | None = None
 
 
 class PushBody(_Body):
@@ -1010,6 +1015,9 @@ class GitTools:
                                             "both, and a rebase names a ref")
         if body.ref is None:
             raise GitToolRefused("bad_ref", f"a {call.tool} names a ref")
+        if body.depth is not None and (body.depth != 1 or call.tool != FETCH):
+            raise GitToolRefused("bad_depth", "a git_fetch's depth is 1 (the tip alone) or not "
+                                              "given, and a rebase takes none")
         attempt = call.attempt
         ref = task_repository(task)
         call.fields.update(repository=ref.repository, ref=body.ref)
@@ -1042,9 +1050,10 @@ class GitTools:
             return {"bundle_object": key, "bundle_sha256": digest}
 
         haves = list(dict.fromkeys(reversed(body.haves)))[:MAX_HAVES]
+        shallow = {"depth": 1} if body.depth == 1 else {}
         fetched = self.gitexec.fetch_bundle(url=self.remote_url(ref), token=token, ref=body.ref,
-                                            haves=haves, deliver=deliver)
-        call.fields.update(resolved_sha=fetched.sha, bytes=fetched.size)
+                                            haves=haves, deliver=deliver, **shallow)
+        call.fields.update(resolved_sha=fetched.sha, bytes=fetched.size, **shallow)
         # "Or the tip at the attempt's first fetch" (Q1 = A): the branch this
         # task may push, as the forge had it, when nothing is recorded yet.
         try:
@@ -1054,7 +1063,7 @@ class GitTools:
         if policy.pushes and body.ref == policy.branch \
                 and self.recorded_tip(attempt, policy.branch) is None:
             self.record_tip(attempt, policy.branch, fetched.sha)
-        answer: dict[str, Any] = {"ref": body.ref, "resolved_sha": fetched.sha}
+        answer: dict[str, Any] = {"ref": body.ref, "resolved_sha": fetched.sha, **shallow}
         answer.update(fetched.delivered or {})
         return answer
 
