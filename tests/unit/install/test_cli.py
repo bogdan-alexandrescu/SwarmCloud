@@ -269,3 +269,65 @@ def test_status_without_any_state_is_not_fine(home, monkeypatch, steps, capsys):
     assert code == ExitCode.TROUBLE
     assert "could not be read" in captured.err
     assert "no credentials" in captured.err
+
+
+def test_status_ready_screen_for_one_person_names_no_teammates(home, bucket, steps, capsys):
+    state = _state_with("preflight", "state-bucket", ready=True)
+    state.outputs["sizing"] = {"mode": "individual", "members": 1}
+    bucket.objects[STATE_OBJECT] = (state.to_bytes(), 3)
+
+    code = cli.main(["install", "--status", "--project", "example-project", "--env", "prod"])
+
+    out = capsys.readouterr().out
+    assert code == ExitCode.OK
+    assert "Ready." in out and "swarm doctor" in out
+    assert "Teammates" not in out and "claude plugin marketplace add" not in out
+
+
+def test_a_fresh_laptop_is_told_stage_0_signs_it_in_not_a_bucket_error(home, monkeypatch, steps, capsys):
+    """No application-default credentials before stage 0's sign-in is the
+    expected first run: one plain line, never the raw exception and its link."""
+    from google.auth.exceptions import DefaultCredentialsError
+
+    def no_credentials(project):
+        raise DefaultCredentialsError(
+            "Your default credentials were not found. To set up Application Default Credentials, "
+            "see https://cloud.google.com/docs/authentication/external/set-up-adc for more information.")
+
+    monkeypatch.setattr(install, "open_bucket", no_credentials)
+
+    code = cli.main(["install", "--project", "example-project", "--env", "prod"])
+
+    captured = capsys.readouterr()
+    assert code == ExitCode.OK
+    assert "could not be read" not in captured.err
+    assert "DefaultCredentialsError" not in captured.out + captured.err
+    assert "cloud.google.com" not in captured.out + captured.err
+    assert "not signed in yet; stage 0 signs you in" in captured.out
+
+
+def test_a_state_bucket_not_made_yet_is_not_a_read_failure(home, monkeypatch, steps, capsys):
+    from google.api_core.exceptions import NotFound
+
+    def no_bucket(project):
+        raise NotFound("The specified bucket does not exist.")
+
+    monkeypatch.setattr(install, "open_bucket", no_bucket)
+
+    code = cli.main(["install", "--project", "example-project", "--env", "prod"])
+
+    captured = capsys.readouterr()
+    assert code == ExitCode.OK
+    assert "could not be read" not in captured.err and "NotFound" not in captured.err
+
+
+def test_a_signed_in_read_failure_is_still_said(home, monkeypatch, steps, capsys):
+    def refused(project):
+        raise PermissionError("403 storage.objects.get denied")
+
+    monkeypatch.setattr(install, "open_bucket", refused)
+
+    cli.main(["install", "--project", "example-project", "--env", "prod"])
+
+    err = capsys.readouterr().err
+    assert "could not be read" in err and "storage.objects.get denied" in err
