@@ -356,6 +356,25 @@ slot:
   goes to its conflict fix round, and a red check at its head to its CI-fix
   round; a round's new head is labelled `ready` afresh. Green and still not
   `ready`, which removed it decides:
+  * **A person:** FAILED `ready_removed_by_person` (`merge_refused`) at
+    once, naming them and quoting their latest comment on the pull request.
+    Who removed `ready` is read from the issue timeline's latest `unlabeled`
+    event for it (`GET /issues/{n}/timeline`), not from the comments: a
+    person who takes a pull request off the train by hand writes a comment
+    without the ejection marker, and reading only the platform's comments
+    once refused such a step `train_ejected`, quoting a stale bot comment
+    from hours before. Both platform removers -- auto-merge.yml's gate and
+    `merge-train.sh eject_pr` -- use the workflow's `github.token`, so their
+    actor is `github-actions[bot]`, a Bot; only a `User` actor is a person.
+    Why a distinct code: the owner's deliberate removal is a decision, not a
+    defect, so failure-review's `person_ready_removal` rule skips it, as
+    `person_push` skips `superseded_by_person_push`. The frozen `EndCause`
+    has no member for it, so the step still ends FAILED. Not a person's,
+    though a `User` removed it: a pull request carrying `review-not-yet`,
+    whose `ready` the platform's own NOT_YET path took off, possibly under a
+    person's forge token. That, a Bot's removal, no such event, or a
+    timeline read that fails (recorded as `removal_unread` in the step's
+    `repository_train`) falls to the comments, below, exactly as before.
   * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
     the latest comment an App wrote. What the gate refused (a closing
     keyword, a dependency not landed) does not change by waiting.
