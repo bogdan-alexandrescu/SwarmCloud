@@ -40,9 +40,10 @@ import {
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
 import { addressToPath } from './paths'
-import { Absent, Mark } from './primitives'
-import { scheduleWords, type RepoRecord } from './RepositoriesData'
-import { Button, Card, Dialog, Segmented, ToneMark, UsageTrack, buttonClass } from './components'
+import { Mark } from './primitives'
+import type { RepoRecord } from './RepositoriesData'
+import { Button, Dialog, EmptyState, Segmented, Tag, buttonClass } from './components'
+import { Info } from './AccountsVerdict'
 import { APPROVALS_ADDRESS, APPROVAL_KIND, approvalAddress } from './Approvals'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
@@ -52,6 +53,7 @@ import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
 import './styles/automate-landing.css'
+import './styles/automate-cards.css'
 
 /**
  * The list's address, and one schedule's (`/automate/schedules/<id>`,
@@ -677,14 +679,13 @@ function noNextFiring(s: Listed): string {
 /** The words that need a look: their rows sort first and are tinted (frame A1). */
 const NEEDS_LOOK: ReadonlySet<StateWord> = new Set<StateWord>(['waiting_on_approval', 'paused_by_tripwire', 'failing'])
 
-type Filter = 'all' | 'waiting_on_approval' | 'active' | 'failing' | 'paused' | 'never_fired'
+type Filter = 'all' | 'needs' | 'active' | 'paused' | 'never_fired'
 
-/** The filter's segments, in the frame's order; Paused holds both paused words. */
+/** The filter's segments, in the cards mock-up's order; Needs you holds the three words that ask for something. */
 const FILTERS: readonly { key: Exclude<Filter, 'all'>; label: string; words: readonly StateWord[] }[] = [
-  { key: 'waiting_on_approval', label: 'Waiting on approval', words: ['waiting_on_approval'] },
+  { key: 'needs', label: 'Needs you', words: ['waiting_on_approval', 'paused_by_tripwire', 'failing'] },
   { key: 'active', label: 'Active', words: ['active'] },
-  { key: 'failing', label: 'Failing', words: ['failing'] },
-  { key: 'paused', label: 'Paused', words: ['paused', 'paused_by_tripwire'] },
+  { key: 'paused', label: 'Paused', words: ['paused'] },
   { key: 'never_fired', label: 'Never fired', words: ['never_fired'] },
 ]
 
@@ -723,151 +724,155 @@ function wordLine(s: Listed, word: StateWord, mine: ApprovalItem[], now: number)
   }
 }
 
-function StateCell({ s, mine, now }: { s: Listed; mine: ApprovalItem[]; now: number }) {
-  // AN API OLDER THAN PR 2500 SERVES NO WORD: a dash with its reason, never
-  // a word derived here. The pause note it does serve is still said.
-  const line = s.state_word === undefined ? stateLine(s) : wordLine(s, s.state_word, mine, now)
+/**
+ * THE WORD, ONLY WHERE THE SCHEDULE ASKS FOR SOMETHING (the cards pick,
+ * 2026-11-12): waiting on approval, paused by its tripwire and failing carry
+ * their word; active, paused and never fired say nothing, so a word on a card
+ * always means "look". The tooltip carries what the word means.
+ */
+export const ASKS: Readonly<Partial<Record<StateWord, { word: string; tone: 'info' | 'warn' | 'bad'; tip: string }>>> = {
+  waiting_on_approval: { word: 'Waiting on approval', tone: 'info', tip: 'A firing holds work until an approver decides. It expires if nobody does.' },
+  paused_by_tripwire: { word: 'Paused by its tripwire', tone: 'warn', tip: 'Spend reached a tripwire, so the schedule paused itself. It stays paused until someone resumes it.' },
+  failing: { word: 'Failing', tone: 'bad', tip: 'The last firings failed in a row. At the limit the schedule pauses itself.' },
+}
+
+/** The card's word and the API's own line for it as the word's tooltip; nothing for a word that asks for nothing. */
+export function AskWord({ s, mine, now }: { s: Listed; mine: ApprovalItem[]; now: number }) {
+  const ask = s.state_word === undefined ? undefined : ASKS[s.state_word]
+  if (ask === undefined) return null
+  const line = wordLine(s, s.state_word!, mine, now)
   return (
-    <>
-      {s.state_word === undefined ? (
-        <i className="ctl-em" title="This API serves no state_word.">&mdash; not served</i>
-      ) : (
-        <ToneMark tone={WORD_TONE[s.state_word]} className="al-word">
-          {STATE_WORD_SAID[s.state_word]}
-        </ToneMark>
-      )}
-      <DryRunChip s={s} />
-      {line !== null && <span className="sc-sub sc-why">{line}</span>}
-    </>
+    <span className={`acd-word is-${ask.tone}`} data-testid="acd-word">
+      <span className={`acd-dot is-${ask.tone}`} aria-hidden />
+      {ask.word}
+      {s.state_word === 'failing' && <span className="acd-dim"> &middot; {s.consecutive_failures ?? 0} in a row</span>}
+      <Info about={ask.word} tip={line === null ? ask.tip : `${line}. ${ask.tip}`} />
+    </span>
   )
 }
 
-/** Spend today against the day budget, the bar only when there is one. */
-function SpendCell({ s }: { s: Schedule }) {
-  const day = s.budget.per_day_usd
+/**
+ * SPEND TODAY AGAINST THE TRIPWIRE: the bar's full width IS the per-day
+ * budget, so a full bar is a schedule at its tripwire. A spend the API did
+ * not serve is a dash with its reason, never $0.00; a schedule with no
+ * per-day budget draws its figure and no bar, since there is no width to
+ * measure it against.
+ */
+export function SpendBar({ spend, perDay, big = false }: { spend: Schedule['spend_today'] | undefined; perDay: number | undefined; big?: boolean }) {
+  const cap = perDay !== undefined && perDay > 0 ? perDay : null
+  if (spend === undefined || spend === null) {
+    return (
+      <div className={`acd-spend${big ? ' is-big' : ''}`} data-testid="acd-spend">
+        <div className="acd-spend-t">
+          <span className="acd-fig">&mdash;</span>
+          <span className="acd-why">not served by this API</span>
+        </div>
+      </div>
+    )
+  }
+  const used = spend.reported_usd
+  const pct = cap === null ? 0 : Math.min(100, (used / cap) * 100)
+  const tone = pct >= 100 ? ' is-bad' : pct >= 80 ? ' is-warn' : ''
   return (
-    <>
-      <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
-      {day !== undefined && day > 0 && (
-        <span className="al-track">
-          <UsageTrack pct={(s.spend_today.reported_usd / day) * 100} tone={s.state === 'auto_paused' ? 'is-warn' : undefined} />
+    <div className={`acd-spend${big ? ' is-big' : ''}`} data-testid="acd-spend">
+      <div className="acd-spend-t">
+        <span className="acd-fig">{usd(used)}</span>
+        <span className="acd-dim">{cap === null ? 'today · no tripwire' : `of ${usd(cap)} tripwire today`}</span>
+        {spend.unreported_attempts > 0 && (
+          <Info about="Unreported" tip={`${pluralise(spend.unreported_attempts, 'attempt')} did not report a cost, so the figure is a floor.`} />
+        )}
+      </div>
+      {cap !== null && (
+        <span
+          className={`acd-bar${tone}`}
+          role="meter"
+          aria-valuenow={used}
+          aria-valuemin={0}
+          aria-valuemax={cap}
+          aria-label="spend today against the tripwire"
+        >
+          <i style={{ width: `${pct}%` }} />
         </span>
       )}
-      <span className="sc-sub">{day === undefined ? 'no day budget' : `of ${usd(day)} a day`}</span>
-    </>
+    </div>
   )
 }
 
-/** What waits on this schedule: the count it serves, and which kinds from the inbox when that was read. */
-function WaitingCell({ s, mine, inboxRead }: { s: Schedule; mine: ApprovalItem[]; inboxRead: boolean }) {
-  if (s.pending_approvals === 0) return <span className="al-dim">none</span>
-  const kinds = [...new Set(mine.map((i) => (APPROVAL_KIND[i.kind] ?? i.kind).toLowerCase()))]
+function Outcome({ outcome }: { outcome: string | null }) {
+  if (outcome === null) return <span className="acd-out"><span className="acd-dot is-live" aria-hidden />in progress</span>
   return (
-    <>
-      <b className="al-fig">{s.pending_approvals}</b>
-      <span className="sc-sub">{inboxRead ? kinds.join(', ') : 'which, not read'}</span>
-    </>
+    <span className="acd-out">
+      <span className={`acd-dot is-${OUTCOME_TONE[outcome] ?? 'paused'}`} aria-hidden />
+      {outcome}
+    </span>
   )
 }
 
-function ScheduleList({
-  rows,
-  names,
-  inbox,
-  go,
-  open,
-}: {
-  rows: Listed[]
-  names: ReadonlyMap<string, string> | null
-  /** The inbox's items, or null when it was not read. */
-  inbox: ApprovalItem[] | null
-  go: (to: string) => void
-  /** The schedule open in the sheet beside the list (frame A2), or null. */
-  open: string | null
-}) {
+function ScheduleCard({ s, names, mine, go, open, now }: { s: Listed; names: ReadonlyMap<string, string> | null; mine: ApprovalItem[]; go: (to: string) => void; open: string | null; now: number }) {
+  const ask = s.state_word === undefined ? undefined : ASKS[s.state_word]
+  const lastAt = s.last_firing === null ? null : s.last_firing.ended_at ?? s.last_firing.slot
+  return (
+    <section
+      className={`acd-card${ask === undefined ? '' : ` is-${ask.tone}`}${s.schedule_id === open ? ' is-open' : ''}`}
+      aria-label={s.name}
+      data-schedule={s.schedule_id}
+      data-word={s.state_word}
+    >
+      <div className="acd-card-h">
+        <Tag title={s.tier ?? undefined}>{s.type}</Tag>
+        <h3>{s.name}</h3>
+        <DryRunChip s={s} />
+      </div>
+      <AskWord s={s} mine={mine} now={now} />
+      <div className="acd-next" data-testid="acd-next">
+        <span className="acd-k">Next firing</span>
+        {s.next_run_at === null ? (
+          <span className="acd-big is-none">&mdash; {noNextFiring(s)}</span>
+        ) : (
+          <span className="acd-next-v">
+            <span className="acd-big">{untilWords(s.next_run_at, now)}</span>
+            <span className="acd-dim">{firingWallTime(s.next_run_at, s.timezone)}</span>
+          </span>
+        )}
+      </div>
+      <SpendBar spend={s.spend_today} perDay={s.budget.per_day_usd} />
+      <p className="acd-line">
+        <span>{slashBreaks(scopeWords(s, names))}</span>
+        <span className="acd-dim" title={`${s.cron} · ${s.timezone}`}>{s.words ?? s.cron}</span>
+      </p>
+      <div className="acd-card-f">
+        {s.last_firing === null ? (
+          <span className="acd-dim">never fired</span>
+        ) : (
+          <span className="acd-dim">
+            <Outcome outcome={s.last_firing.outcome} /> {lastAt !== null && <span title={localTime(lastAt)}>{timeAgo(lastAt, now)}</span>}
+          </span>
+        )}
+        <InApp go={go} to={scheduleAddress(s.schedule_id)} className={`acd-manage ${buttonClass({ kind: 'secondary', size: 'sm' })}`} current={s.schedule_id === open}>
+          Manage
+        </InApp>
+      </div>
+    </section>
+  )
+}
+
+/** The card grid, the ones that ask for something first, then by name as the API lists them. */
+function ScheduleCards({ rows, names, inbox, go, open }: { rows: Listed[]; names: ReadonlyMap<string, string> | null; inbox: ApprovalItem[] | null; go: (to: string) => void; open: string | null }) {
   const now = useNow()
-  const table = useRef<HTMLTableElement | null>(null)
+  const grid = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (open !== null || closedSheet === null) return
     const id = closedSheet
     closedSheet = null
-    const tr = [...(table.current?.querySelectorAll<HTMLElement>('tr[data-schedule]') ?? [])].find((r) => r.dataset.schedule === id)
-    tr?.querySelector<HTMLElement>('a.al-name')?.focus()
+    const card = [...(grid.current?.querySelectorAll<HTMLElement>('[data-schedule]') ?? [])].find((r) => r.dataset.schedule === id)
+    card?.querySelector<HTMLElement>('a.acd-manage')?.focus()
   }, [open])
-  // NEEDS A LOOK FIRST, THEN BY NAME (frame A1). The API lists by name, and a
-  // stable sort keeps that order inside each half.
   const sorted = [...rows].sort((a, b) => Number(NEEDS_LOOK.has(b.state_word!)) - Number(NEEDS_LOOK.has(a.state_word!)))
   return (
-    <div className="sc-table-wrap al-wrap">
-      <table className="sc-table al-table" ref={table}>
-        <thead>
-          <tr>
-            <th scope="col" data-col="name">Schedule</th>
-            <th scope="col" data-col="target">Target</th>
-            <th scope="col" data-col="when">When</th>
-            <th scope="col" data-col="next">Next firing</th>
-            <th scope="col" data-col="last">Last firing</th>
-            <th scope="col" data-col="spend">Spend today</th>
-            <th scope="col" data-col="waiting">Waiting</th>
-            <th scope="col" data-col="state">State</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((s) => {
-            const mine = itemsOf(inbox, s.schedule_id)
-            const need = s.state_word !== undefined && NEEDS_LOOK.has(s.state_word)
-            const lastAt = s.last_firing === null ? null : s.last_firing.ended_at ?? s.last_firing.slot
-            return (
-              <tr
-                key={s.schedule_id}
-                className={`sc-row al-row${s.schedule_id === open ? ' is-open' : need ? ' is-need' : ''}`}
-                data-schedule={s.schedule_id}
-                data-word={s.state_word}
-              >
-                <td data-label="Schedule" className="al-c-name">
-                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-name al-name" current={s.schedule_id === open}>{s.name}</InApp>
-                  <span className="sc-sub">
-                    {s.tier === null ? s.type : `${s.type} · ${s.tier}`}
-                    <span className="al-ph"> · {s.words ?? s.cron}</span>
-                  </span>
-                </td>
-                <td data-label="Target" className="al-c-more">{slashBreaks(scopeWords(s, names))}</td>
-                <td data-label="When" className="al-c-more">
-                  <span title={`${s.cron} · ${s.timezone}`}>{s.words ?? s.cron}</span>
-                  <span className="sc-sub al-mono">{s.cron}</span>
-                  <span className="sc-sub sc-zone">{slashBreaks(s.timezone)}</span>
-                </td>
-                <td data-label="Next firing" className="al-c-next">
-                  {s.next_run_at === null ? (
-                    <i className="ctl-em">&mdash; {noNextFiring(s)}</i>
-                  ) : (
-                    <span title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
-                  )}
-                </td>
-                <td data-label="Last firing" className="al-c-more">
-                  {s.last_firing === null ? (
-                    <i className="ctl-em">&mdash; never fired</i>
-                  ) : (
-                    <>
-                      {s.last_firing.outcome === null ? (
-                        <ToneMark tone="live">in progress</ToneMark>
-                      ) : OUTCOME_TONE[s.last_firing.outcome] === undefined ? (
-                        <span>{s.last_firing.outcome}</span>
-                      ) : (
-                        <ToneMark tone={OUTCOME_TONE[s.last_firing.outcome]!}>{s.last_firing.outcome}</ToneMark>
-                      )}
-                      {lastAt !== null && <span className="sc-sub" title={localTime(lastAt)}>{timeAgo(lastAt, now)}</span>}
-                    </>
-                  )}
-                </td>
-                <td data-label="Spend today" className="al-c-spend"><SpendCell s={s} /></td>
-                <td data-label="Waiting" className="al-c-more"><WaitingCell s={s} mine={mine} inboxRead={inbox !== null} /></td>
-                <td data-label="State" className="al-c-state"><StateCell s={s} mine={mine} now={now} /></td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+    <div className="acd-grid" ref={grid}>
+      {sorted.map((s) => (
+        <ScheduleCard key={s.schedule_id} s={s} names={names} mine={itemsOf(inbox, s.schedule_id)} go={go} open={open} now={now} />
+      ))}
     </div>
   )
 }
@@ -881,29 +886,26 @@ function wordCounts(rows: Listed[], summary: ListSummary | null): Partial<Record
   return counts
 }
 
-/** "All · 7 | Waiting on approval · 2 | …": a segment for each word some schedule wears. */
+/** "All · 7 | Needs you · 3 | …": a segment for each filter some schedule falls in. */
 function WordFilter({ rows, counts, value, onChange }: { rows: Listed[]; counts: Partial<Record<StateWord, number>>; value: Filter; onChange: (f: Filter) => void }) {
   const options = [
     { key: 'all' as Filter, label: 'All', count: rows.length },
     ...FILTERS.map((f) => ({ key: f.key as Filter, label: f.label, count: f.words.reduce((n, w) => n + (counts[w] ?? 0), 0) })).filter((o) => o.count > 0),
   ]
-  return (
-    <div className="al-filter">
-      <Segmented<Filter> label="Schedules by state" small value={value} options={options} onChange={onChange} />
-      <span className="al-order">Needs a look first, then by name</span>
-    </div>
-  )
+  return <Segmented<Filter> label="Show" small value={value} options={options} onChange={onChange} />
 }
 
-/** The inbox's oldest item as this page read it, when it read one. */
+/** The inbox as this page read it: its items, oldest first, or why it was not read. */
 interface InboxRead {
   items: ApprovalItem[] | null
   /** Why the inbox was not read, when it was not. */
   why: string | null
 }
 
+const askedAt = (i: ApprovalItem) => (i.requested_at === null ? Number.POSITIVE_INFINITY : new Date(i.requested_at).getTime())
+
 function readInbox(r: Result<{ approvals: ApprovalItem[] }>): InboxRead {
-  if (r.status === 'ok' || r.status === 'stale') return { items: r.data.approvals, why: null }
+  if (r.status === 'ok' || r.status === 'stale') return { items: [...r.data.approvals].sort((a, b) => askedAt(a) - askedAt(b)), why: null }
   if (r.status === 'empty') return { items: [], why: null }
   if (r.status === 'error') return { items: null, why: `GET /v1/approvals failed: ${errorHeading(r.error)}` }
   return { items: null, why: 'the approvals read had not finished' }
@@ -915,268 +917,138 @@ function pendingCount(summary: ListSummary | null, inbox: InboxRead): number | n
   return inbox.items === null ? null : inbox.items.length
 }
 
-/** The oldest item's expiry: the summary's, else the inbox's first item's. */
-function oldestExpiry(summary: ListSummary | null, inbox: InboxRead): string | null {
-  if (summary !== null) return summary.oldest_expires_at
-  return inbox.items?.[0]?.expires_at ?? null
+function unreadWhy(summary: ListSummary | null, inbox: InboxRead): string {
+  return summary?.unread ?? inbox.why ?? 'the approvals inbox could not be read'
 }
 
-function Expiry({ at, now }: { at: string | null; now: number }) {
-  if (at === null) return <span>does not expire</span>
-  return <span title={localTime(at)}>{untilWords(at, now) === 'due now' ? 'expiring now' : untilWords(at, now).replace(/^in /, '')}</span>
-}
-
-/** "A, B and C". */
-function listWords(parts: string[]): string {
-  return parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
-}
-
-/**
- * THE LEAD (frame A1): what needs the reader across both tabs, in one
- * sentence, and the one button that starts on it. The approvals count is
- * every inbox item; the schedules named are the ones paused by their
- * tripwire or failing. When the inbox could not be read, the lead says so
- * rather than counting nothing (frame A6c).
- */
-function LandingLead({ rows, summary, inbox, go }: { rows: Listed[]; summary: ListSummary | null; inbox: InboxRead; go: (to: string) => void }) {
-  const now = useNow()
-  const pending = pendingCount(summary, inbox)
-  const tripped = rows.filter((s) => s.state_word === 'paused_by_tripwire')
-  const failing = rows.filter((s) => s.state_word === 'failing')
-  if (pending === null) {
-    const why = summary?.unread ?? inbox.why ?? 'the approvals inbox could not be read'
-    return (
-      <Lead tone="bad" kicker="Could not read" title="Approvals could not be read, so the items waiting on you cannot be opened.">
-        {`${why[0]!.toUpperCase()}${why.slice(1)}. The schedules were read; how many items wait, and when the oldest expires, is not known until the read works.`}
-      </Lead>
-    )
-  }
-  const parts: string[] = []
-  if (pending > 0) parts.push(`${pending === 1 ? '1 approval waits' : `${pending} approvals wait`} on you`)
-  if (tripped.length === 1) parts.push(`${tripped[0]!.name} is paused by its tripwire`)
-  if (tripped.length > 1) parts.push(`${tripped.length} schedules are paused by their tripwires`)
-  if (failing.length === 1) parts.push(`${failing[0]!.name} is failing`)
-  if (failing.length > 1) parts.push(`${failing.length} schedules are failing`)
-  if (parts.length === 0) {
-    return (
-      <Lead tone="ok" kicker="Nothing needs you" title="No approval waits, and no schedule is failing or paused by its tripwire.">
-        Waiting items hold no capacity, so an empty inbox does not mean anything is stuck.
-      </Lead>
-    )
-  }
-  const oldest = inbox.items?.[0] ?? null
-  const expires = oldestExpiry(summary, inbox)
-  const said: ReactNode[] = []
-  if (pending > 0) {
-    const what = oldest === null ? 'The oldest' : `The oldest, ${oldest.summary},`
-    said.push(
-      expires === null ? (
-        <Fragment key="exp">{what} does not expire. </Fragment>
-      ) : (
-        <Fragment key="exp">
-          {what} expires <span title={localTime(expires)} data-testid="al-oldest-expiry">{untilWords(expires, now) === 'due now' ? 'now' : untilWords(expires, now)}</span>.{' '}
-        </Fragment>
-      ),
-    )
-  }
-  if (tripped.length === 1) {
-    const s = tripped[0]!
-    said.push(
-      <Fragment key="trip">
-        {s.name} stopped{s.pause?.at ? ` ${timeAgo(s.pause.at, now)}` : ''}{s.pause?.reason ? `: ${s.pause.reason}` : ''}. Resume it from its page once you have read why.
-      </Fragment>,
-    )
-  }
-  const action =
-    pending > 0 ? (
-      <InApp go={go} to={oldest === null ? APPROVALS_ADDRESS : approvalAddress(oldest.approval_id)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
-        {oldest === null ? 'Open Approvals' : 'Review the oldest approval'}
-      </InApp>
-    ) : (
-      <InApp go={go} to={scheduleAddress((tripped[0] ?? failing[0])!.schedule_id)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
-        Open {(tripped[0] ?? failing[0])!.name}
-      </InApp>
-    )
-  const title = listWords(parts)
+/** A figure that was not read: a dash, and its reason beside it and in its title. */
+function Unread({ why }: { why: string }) {
   return (
-    <Lead tone="warn" kicker="Needs you" title={`${title[0]!.toUpperCase()}${title.slice(1)}.`} action={action}>
-      {said}
-    </Lead>
+    <span className="acd-unread" data-testid="acd-unread">
+      <span className="acd-fig" title={why}>&mdash;</span> <span className="acd-why">{why}</span>
+    </span>
   )
 }
 
-/** The lead's frame: a kicker, one sentence, what explains it, and its one action. */
-function Lead({ tone, kicker, title, action, children }: { tone: 'warn' | 'bad' | 'ok' | 'info'; kicker: string; title: string; action?: ReactNode; children: ReactNode }) {
+function Tile({ k, children, sub, tip, testid }: { k: string; children: ReactNode; sub?: ReactNode; tip?: string; testid: string }) {
   return (
-    <section className={`al-lead is-${tone}`} aria-label={kicker} data-testid="al-lead">
-      <div className="al-lead-t">
-        <span className="al-lead-k">{kicker}</span>
-        <h2>{title}</h2>
-        <p>{children}</p>
+    <div className="acd-tile" data-testid={testid}>
+      <span className="acd-k">
+        {k}
+        {tip !== undefined && <Info about={k} tip={tip} />}
+      </span>
+      <span className="acd-tile-v">{children}</span>
+      {sub !== undefined && sub !== null && <span className="acd-dim">{sub}</span>}
+    </div>
+  )
+}
+
+/**
+ * THE ANSWER-FIRST ROW: how many schedules need the reader, the next firing
+ * anywhere, and today's spend across every schedule. A count the API did not
+ * serve (no `state_word`, no `spend_today`) is a dash with its reason.
+ */
+function AnswerRow({ rows, summary, inbox }: { rows: Listed[]; summary: ListSummary | null; inbox: InboxRead }) {
+  const now = useNow()
+  const pending = pendingCount(summary, inbox)
+  const worded = !rows.some((s) => s.state_word === undefined)
+  const needs = rows.filter((s) => s.state_word !== undefined && NEEDS_LOOK.has(s.state_word))
+  const tripped = rows.filter((s) => s.state_word === 'paused_by_tripwire').length
+  const failing = rows.filter((s) => s.state_word === 'failing').length
+  const parts = [
+    pending === null ? null : pending > 0 ? pluralise(pending, 'approval') : null,
+    tripped > 0 ? pluralise(tripped, 'tripwire') : null,
+    failing > 0 ? `${failing} failing` : null,
+  ].filter((p): p is string => p !== null)
+  const next = rows.filter((s) => s.next_run_at !== null).sort((a, b) => new Date(a.next_run_at!).getTime() - new Date(b.next_run_at!).getTime())[0]
+  const unspent = rows.some((s) => s.spend_today === undefined || s.spend_today === null)
+  const spent = unspent ? 0 : rows.reduce((n, s) => n + s.spend_today.reported_usd, 0)
+  const caps = rows.reduce((n, s) => n + (s.budget.per_day_usd ?? 0), 0)
+  return (
+    <div className="acd-answer">
+      <Tile k="Needs you" testid="acd-needs" sub={worded && parts.length > 0 ? parts.join(' · ') : undefined}>
+        {worded ? (
+          <>
+            <span className="acd-huge">{needs.length}</span>
+            <span className="acd-dim"> of {pluralise(rows.length, 'schedule')}</span>
+          </>
+        ) : (
+          <Unread why="this API serves no state_word" />
+        )}
+      </Tile>
+      <Tile k="Next firing" testid="acd-next-any" sub={next === undefined ? undefined : `${next.name} · ${firingWallTime(next.next_run_at!, next.timezone)}`}>
+        {next === undefined ? <span className="acd-dim">&mdash; none scheduled</span> : untilWords(next.next_run_at!, now)}
+      </Tile>
+      <Tile
+        k="Spend today"
+        testid="acd-spend-today"
+        tip="Reported spend today, summed over every schedule. Each schedule pauses itself at its own per-day budget."
+        sub={unspent || caps === 0 ? undefined : `of ${usd(caps)} across every tripwire`}
+      >
+        {unspent ? <Unread why="a schedule's spend is not served by this API" /> : usd(spent)}
+      </Tile>
+    </div>
+  )
+}
+
+/**
+ * WAITING ON YOU: every inbox item, oldest first, each with its expiry and
+ * Review, which opens the item's own page -- where `may_decide` holds the
+ * approvers rule and the expiry. Nothing is approved or denied from here. An
+ * inbox that was not read is a dash with its reason, never "nothing waiting".
+ */
+function WaitingPanel({ summary, inbox, rows, go }: { summary: ListSummary | null; inbox: InboxRead; rows: Listed[]; go: (to: string) => void }) {
+  const now = useNow()
+  const pending = pendingCount(summary, inbox)
+  const names = new Map(rows.map((s) => [s.schedule_id, s.name]))
+  const all = (
+    <InApp go={go} to={APPROVALS_ADDRESS} className={buttonClass({ kind: 'secondary', size: 'sm' })}>
+      All approvals
+    </InApp>
+  )
+  return (
+    <section className="acd-panel is-tight" aria-label="Waiting on you" data-testid="acd-waiting">
+      <div className="acd-panel-h">
+        <h2>Waiting on you</h2>
+        {pending !== null && pending > 0 && <span className="acd-dim" data-testid="acd-pending">{pending}, oldest first</span>}
+        <span className="acd-grow" />
+        {all}
       </div>
-      {action !== undefined && <div className="al-lead-a">{action}</div>}
+      {pending === null || inbox.items === null ? (
+        <p className="acd-nothing">
+          <Unread why={pending === null ? unreadWhy(summary, inbox) : inbox.why ?? 'the approvals inbox could not be read'} />
+        </p>
+      ) : inbox.items.length === 0 ? (
+        <p className="acd-nothing" data-testid="acd-nothing-waiting">
+          <span className="acd-dot is-ok" aria-hidden /> Nothing waiting
+        </p>
+      ) : (
+        <ul className="acd-wrows">
+          {inbox.items.map((item) => {
+            const sid = item.subject.schedule_id
+            return (
+              <li key={item.approval_id} data-approval={item.approval_id}>
+                <Tag>{APPROVAL_KIND[item.kind] ?? item.kind}</Tag>
+                <span className="acd-wt">{item.summary}</span>
+                <span className="acd-dim">{typeof sid === 'string' && sid !== '' ? names.get(sid) ?? sid : 'by hand'}</span>
+                <span className="acd-exp">
+                  <span className="acd-k">Expires</span> <span className="acd-strong"><Expiry at={item.expires_at} now={now} /></span>
+                </span>
+                <InApp go={go} to={approvalAddress(item.approval_id)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+                  Review
+                </InApp>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </section>
   )
 }
 
-/** How many inbox rows the card draws; the rest are one click away on Approvals. */
-const CARD_ITEMS = 5
-
-/**
- * THE APPROVALS CARD (frame A1): how many items wait -- every inbox item --
- * when the oldest expires, and the oldest few, each opening its decision
- * page. It draws no Approve or Reject: those are on the item's own page,
- * where `may_decide` says who may. A count that was not read is a dash with
- * its reason, never 0 (frame A6c).
- */
-function ApprovalsCard({ summary, inbox, rows, go }: { summary: ListSummary | null; inbox: InboxRead; rows: Listed[]; go: (to: string) => void }) {
-  const now = useNow()
-  const pending = pendingCount(summary, inbox)
-  const open = (
-    <InApp go={go} to={APPROVALS_ADDRESS} className={buttonClass({ kind: 'secondary', size: 'sm' })}>
-      Open Approvals
-    </InApp>
-  )
-  if (pending === null) {
-    const why = summary?.unread ?? inbox.why ?? 'the approvals inbox could not be read'
-    return (
-      <Card className="al-card al-approvals" title={<>Approvals · <span className="al-dim">&mdash; not read</span></>} action={open}>
-        <p className="al-empty" data-testid="al-pending">
-          &mdash; <span className="al-dim">not read: {why}</span>
-        </p>
-        <p className="al-note">Not 0: nothing was read. When the oldest expires is unknown too.</p>
-      </Card>
-    )
-  }
-  const names = new Map(rows.map((s) => [s.schedule_id, s.name]))
-  const expires = oldestExpiry(summary, inbox)
-  const shown = (inbox.items ?? []).slice(0, CARD_ITEMS)
-  return (
-    <Card className="al-card al-approvals" title={<span data-testid="al-pending">{`Approvals · ${pending} waiting`}</span>} action={open}>
-      {pending === 0 ? (
-        <p className="al-note">Nothing waits on you: the inbox was read and is empty. Waiting items hold no capacity.</p>
-      ) : (
-        <>
-          <p className="al-note" data-testid="al-card-expiry">
-            {expires === null ? (
-              'The oldest does not expire.'
-            ) : (
-              <>
-                The oldest expires <span title={localTime(expires)}>{untilWords(expires, now) === 'due now' ? 'now' : untilWords(expires, now)}</span>.
-              </>
-            )}{' '}
-            Waiting items hold no capacity.
-          </p>
-          {inbox.items === null ? (
-            <p className="al-note">Which items they are was not read: {inbox.why}.</p>
-          ) : (
-            shown.length > 0 && (
-              <div className="sc-table-wrap">
-                <table className="sc-table al-table is-inbox">
-                  <thead>
-                    <tr>
-                      <th scope="col" data-col="what">What</th>
-                      <th scope="col" data-col="from">From</th>
-                      <th scope="col" data-col="expires">Expires in</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shown.map((item, i) => {
-                      const sid = item.subject.schedule_id
-                      return (
-                        <tr key={item.approval_id} className={`sc-row al-row${i === 0 ? ' is-need' : ''}`} data-approval={item.approval_id}>
-                          <td data-label="What">
-                            <InApp go={go} to={approvalAddress(item.approval_id)} className="sc-name al-name">{item.summary}</InApp>
-                            <span className="sc-sub">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
-                          </td>
-                          <td data-label="From">
-                            {typeof sid === 'string' && sid !== '' ? names.get(sid) ?? sid : <span className="al-dim">not from a schedule</span>}
-                          </td>
-                          <td data-label="Expires in" className="al-fig"><Expiry at={item.expires_at} now={now} /></td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )
-          )}
-          {inbox.items !== null && inbox.items.length > shown.length && (
-            <p className="al-note">The oldest {shown.length} of {inbox.items.length}; the rest are on Approvals.</p>
-          )}
-        </>
-      )}
-    </Card>
-  )
-}
-
-/** The index's cadence in §8.3's words: "24 h + on change, at most every 30 min". */
-function indexCadence(r: RepoRecord): string | null {
-  const words = scheduleWords(r.index)
-  if (words === null) return null
-  const gap = r.index.min_change_interval_minutes
-  return gap !== null && r.index.on_change !== 'off' && r.index.paused !== true ? `${words}, at most every ${gap} min` : words
-}
-
-/**
- * THE BUILT-IN ROWS (§8.3, SD7): each registration's index cadence, read-only,
- * linking to the repository's Settings where it is changed. They are not
- * schedules and the tick never reads them; they are here so that every
- * recurring thing this tenant has is in one list.
- */
-function BuiltInRows({ repos, go }: { repos: Result<RepoRecord[]>; go: (to: string) => void }) {
-  const now = useNow()
-  if (repos.status === 'loading') return <p className="sb-note">Reading the built-in rows…</p>
-  if (repos.status === 'error') {
-    return (
-      <Absent kind="failed" heading="Built-in rows not read" say={`The repositories read failed: ${errorHeading(repos.error)}`}>
-        The index cadence of each repository is shown here once the repositories read succeeds.
-      </Absent>
-    )
-  }
-  const list = repos.status === 'empty' ? [] : repos.data
-  if (list.length === 0) {
-    return <p className="sb-note">No repository is registered, so the index runs nothing on its own.</p>
-  }
-  return (
-    <div className="sc-table-wrap">
-      <table className="sc-table is-builtin">
-        <thead>
-          <tr>
-            <th scope="col" data-col="name">Built in</th>
-            <th scope="col" data-col="when">When</th>
-            <th scope="col" data-col="next">Next run</th>
-            <th scope="col" data-col="settings">Where it is set</th>
-          </tr>
-        </thead>
-        <tbody>
-          {list.map((r) => {
-            const cadence = indexCadence(r)
-            return (
-              <tr key={r.repo_id} className="sc-row" data-builtin={r.repo_id}>
-                <td data-label="Built in"><span className="sc-built">Index · {slashBreaks(`${r.owner}/${r.repo}`)}</span></td>
-                <td data-label="When">
-                  {cadence === null ? <i className="ctl-em" title="The registration did not serve its index interval.">&mdash; not served</i> : cadence}
-                </td>
-                <td data-label="Next run">
-                  {r.index.next_run_at === null ? (
-                    <i className="ctl-em" title="The registration did not serve a next run.">&mdash; not served</i>
-                  ) : (
-                    <span title={localTime(r.index.next_run_at)}>{untilWords(r.index.next_run_at, now)}</span>
-                  )}
-                </td>
-                <td data-label="Where it is set">
-                  <InApp go={go} to={`work/repositories?${new URLSearchParams({ repo: r.repo_id, tab: 'settings' }).toString()}`}>
-                    Repository Settings
-                  </InApp>
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
+function Expiry({ at, now }: { at: string | null; now: number }) {
+  if (at === null) return <span>never</span>
+  return <span title={localTime(at)}>{untilWords(at, now) === 'due now' ? 'now' : untilWords(at, now)}</span>
 }
 
 /** What the landing read: the list and its summary, the inbox, and the built-in rows. */
@@ -1246,17 +1118,22 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
     )
   if (d.notServed) {
     return (
-      <div className="sc-list al-page">
-        <Lead tone="info" kicker="Not served here" title="This deployment does not serve Automate.">
-          GET /v1/schedules answered 404, not found, so there are no schedules or approvals to show, and nothing here is counted. Schedules need an
-          API with the schedules routes.
-        </Lead>
-        <Card className="al-card" title="Schedules">
-          <p className="al-empty" data-testid="al-not-served">
-            &mdash; <span className="al-dim">not served by this deployment</span>
-          </p>
-          <p className="al-note">The count is a dash, not 0: no list was read.</p>
-        </Card>
+      <div className="acd-page" data-testid="acd-not-served">
+        <EmptyState kind="failed" heading="Automate is not served here">
+          <span className="acd-mono">GET /v1/schedules</span> answered 404{' '}
+          <Info about="Not served" tip="This deployment's API has no schedule routes. Schedules and approvals appear once it serves them." />
+        </EmptyState>
+      </div>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="acd-page" data-testid="acd-none">
+        {scopeSwitch !== null && <div className="acd-bar-row">{scopeSwitch}</div>}
+        <EmptyState kind="empty" heading="No schedules" action={newSchedule}>
+          <Info about="Schedules" tip="A schedule fires work on a cron, from a type. Nothing runs until you make one." />
+        </EmptyState>
+        <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
       </div>
     )
   }
@@ -1264,37 +1141,16 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
   const words = FILTERS.find((f) => f.key === filter)?.words ?? null
   const shown = words === null ? rows : rows.filter((s) => s.state_word !== undefined && words.includes(s.state_word))
   return (
-    <div className="sc-list al-page">
-      {/* With no schedule, New schedule is the lead's one button (frame A6a), not drawn twice. */}
-      <div className="c-acts sc-acts">
+    <div className="acd-page">
+      <AnswerRow rows={rows} summary={d.summary} inbox={inbox} />
+      <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
+      <div className="acd-bar-row">
+        {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
         {scopeSwitch}
-        {rows.length > 0 && newSchedule}
+        <span className="acd-grow" />
+        {newSchedule}
       </div>
-      {rows.length === 0 ? (
-        <>
-          <Lead tone="info" kicker="Nothing scheduled yet" title="This workspace has no schedules. Make the first one." action={newSchedule}>
-            A schedule fires work on a cron: an issue sweep, a docs check, a visual QA run. Nothing runs until you make one.
-          </Lead>
-          <Card className="al-card" title="Schedules · 0">
-            <Absent kind="zero" heading="No schedules yet" say="This workspace has no schedules: the list was read and is empty.">
-              Each firing makes ordinary work: an issue run, an agent or a workflow, listed in Work like any other.
-            </Absent>
-          </Card>
-        </>
-      ) : (
-        <>
-          <LandingLead rows={rows} summary={d.summary} inbox={inbox} go={go} />
-          {counts !== null && <WordFilter rows={rows} counts={counts} value={filter} onChange={setFilter} />}
-          <ScheduleList rows={shown} names={names} inbox={inbox.items} go={go} open={open} />
-        </>
-      )}
-      <div className="al-g2">
-        <ApprovalsCard summary={d.summary} inbox={inbox} rows={rows} go={go} />
-        <Card className="al-card al-builtin" title="Built-in recurring work">
-          <p className="al-note">Repository index refreshes run on each repository’s own schedule and are set in its Settings, not here.</p>
-          <BuiltInRows repos={repos} go={go} />
-        </Card>
-      </div>
+      <ScheduleCards rows={shown} names={names} inbox={inbox.items} go={go} open={open} />
     </div>
   )
 }

@@ -1,0 +1,145 @@
+/* AUTOMATE AS CARDS (the picked direction, 2026-11-12): the Schedules landing,
+   one schedule and the new or edited schedule. Every selector is `.acd-`, so
+   nothing here reaches another page. Tokens only, so light and dark both
+   follow the theme; the 12px floor is --t-micro; no all-caps. */
+
+.acd-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.acd-grow { flex: 1 1 auto; }
+.acd-dim { color: var(--text-dim); }
+.acd-strong { font-weight: 600; }
+.acd-mono { font-family: var(--mono); font-size: var(--t-meta); }
+.acd-k { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 500; }
+
+/* ---- the answer row, Accounts A's lead: four tiles, figure first ---------- */
+.acd-answer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.acd-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-tile-v { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.acd-tile-v .acd-dim { font-size: var(--t-meta); font-weight: 400; }
+.acd-tile > .acd-dim { font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.acd-huge { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
+.acd-huge.is-ok { color: var(--s-live); }
+
+.acd-bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-width: 0; }
+.acd-bar-row > .c-seg { flex-wrap: wrap; max-width: 100%; }
+
+/* ---- the grid of cards --------------------------------------------------- */
+.acd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; min-width: 0; }
+.acd-grid.is-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.acd-card {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+}
+/* A card that asks for something carries a left rule in its hue; the word in
+   the card says what it asks, so the hue is never the only signal. */
+.acd-card.is-warn { box-shadow: inset 3px 0 0 var(--s-warn); }
+.acd-card.is-bad { box-shadow: inset 3px 0 0 var(--s-bad); }
+.acd-card.is-info { box-shadow: inset 3px 0 0 var(--sk-ac); }
+.acd-card-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.acd-card-h > h3, .acd-card-h > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.acd-card-h > h3 { flex: 1 1 auto; }
+.acd-card-f { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line-soft, var(--line)); font-size: var(--t-micro); }
+.acd-card-f > .c-btn { margin-left: auto; }
+
+.acd-word { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.acd-word.is-warn { color: var(--s-warn); }
+.acd-word.is-bad { color: var(--s-bad); }
+.acd-word.is-info { color: var(--sk-ac); }
+.acd-word .acd-dim { font-weight: 400; }
+
+.acd-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.acd-dot.is-ok { background: var(--s-live); }
+.acd-dot.is-warn { background: var(--s-warn); }
+.acd-dot.is-bad { background: var(--s-bad); }
+.acd-dot.is-info { background: var(--sk-ac); }
+.acd-dot.is-paused { background: transparent; border: 2px solid var(--text-dim); }
+
+.acd-next { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.acd-big { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
+.acd-big.is-none { font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text-dim); font-weight: 500; }
+
+/* ---- spend against the tripwire: the track IS the per-day budget --------- */
+.acd-spend { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.acd-spend-t { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: var(--t-meta); }
+.acd-fig { font-weight: 600; font-variant-numeric: tabular-nums; }
+.acd-spend.is-big .acd-fig { font-size: var(--t-figure); line-height: var(--lh-figure); }
+.acd-bar { position: relative; display: block; height: 8px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+.acd-bar > i { display: block; height: 100%; background: var(--sk-ac); border-radius: 3px 0 0 3px; }
+.acd-bar.is-warn > i { background: var(--s-warn); }
+.acd-bar.is-bad > i { background: var(--s-bad); }
+.acd-bar.is-ok > i { background: var(--s-live); }
+.acd-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, transparent 6px 12px); }
+.acd-why { font-size: var(--t-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+
+.acd-out { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---- panels on the detail pages ------------------------------------------ */
+.acd-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.acd-panel .acd-card { background: var(--bg); }
+.acd-panel-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.acd-panel-h > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+
+
+/* ---- checks and notices ------------------------------------------------- */
+.acd-nothing { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+
+/* ---- edit ---------------------------------------------------------------- */
+
+
+@media (max-width: 1100px) {
+  .acd-answer { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .acd-grid.is-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---- the phone: one column, nothing wider than the screen ---------------- */
+@media (max-width: 560px) {
+  .acd-page { gap: 12px; }
+  .acd-tile { padding: 10px 12px; }
+  .acd-tile-v { font-size: var(--t-title); line-height: var(--lh-title); }
+  .acd-huge { font-size: var(--t-figure); line-height: var(--lh-figure); }
+  .acd-grid, .acd-grid.is-3 { grid-template-columns: minmax(0, 1fr); }
+  .acd-bar-row > .c-btn { width: 100%; }
+}
+
+/* ---- the landing's card line and the waiting rows ----------------------- */
+.acd-next-v { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.acd-line { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; overflow-wrap: anywhere; }
+.acd-card-f .acd-out { color: var(--text); }
+.acd-panel.is-tight { gap: 6px; padding: 12px 14px; }
+.acd-wrows { list-style: none; margin: 0; padding: 0; }
+.acd-wrows > li { display: grid; grid-template-columns: 64px minmax(0, 1fr) 180px 170px auto; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-meta); }
+.acd-wrows > li > .c-tag { justify-self: start; }
+.acd-wt { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+/* ---- pairs that never split, stacks, the wide detail row ---------------- */
+/* ---- the phone: the answer reads as three lines, each waiting row keeps its button beside its expiry */
+@media (max-width: 560px) {
+  .acd-answer { grid-template-columns: minmax(0, 1fr); gap: 0; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+  .acd-answer > .acd-tile { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0 10px; align-items: baseline; border: 0; border-radius: 0; background: none; }
+  .acd-answer > .acd-tile + .acd-tile { border-top: 1px solid var(--line); }
+  .acd-answer > .acd-tile > .acd-dim { grid-column: 2; }
+  .acd-wrows > li { gap: 4px 8px; padding: 10px 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'tag tag' 'title title' 'from from' 'exp btn'; }
+  .acd-wrows > li > .c-tag { grid-area: tag; }
+  .acd-wrows > li > .acd-wt { grid-area: title; }
+  .acd-wrows > li > .acd-dim { grid-area: from; grid-column: auto; }
+  .acd-wrows > li > .acd-exp { grid-area: exp; grid-column: auto; }
+  .acd-wrows > li > .c-btn { grid-area: btn; grid-column: auto; justify-self: end; }
+}
+/* ---- the phone: facts are label and value per line ---------------------- */
+/* ---- the card head never wraps its chip under the title; facts in a row are
+   label over value, one column per pair ------------------------------------ */
+.acd-card .acd-card-h { flex-direction: column; align-items: flex-start; gap: 4px; }
+.acd-card .acd-card-h > h3 { flex: none; }
+.acd-grid.is-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 560px) {
+  .acd-grid.is-2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- the real pages' additions ------------------------------------------- */
+.acd-dot.is-live { background: var(--sk-ac); }
+.acd-card.is-open { border-color: var(--sk-ac); }
+.acd-unread { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px 6px; min-width: 0; font-size: var(--t-meta); font-weight: 400; }
+.acd-unread > .acd-fig { font-size: inherit; }
+.acd-card-f > .acd-manage { margin-left: auto; }
+.acd-card-h > .sc-dry { align-self: flex-start; }
+/* One schedule's sections are cards: the sheet's ruled section takes the card's box. */
+.as-sec.acd-panel { padding: 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
