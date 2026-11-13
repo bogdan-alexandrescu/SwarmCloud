@@ -161,3 +161,80 @@ def test_fragment_rule_fails_on_a_new_unstepped_fragment_entry(tmp_path: Path) -
     files = {fragment.name: m.parse_file(fragment)}
     assert _unstepped(files) == ["some-lane.yaml: other.unstepped"]
     assert _unknown_steps(files, _step_ids()) == ["some-lane.yaml: other.misstepped -> infra.pass-9"]
+
+
+#: Entries whose stage is deliberately not their step's, and why. Every other
+#: entry carries the stage of the step its `step:` names.
+STAGE_EXCEPTIONS: dict[str, str] = {
+    # install/manifest.d/edge-2.yaml's header: what it records is stage 7's
+    # product (pass 2's front end behind IAP); its wait step runs first in
+    # stage 8 only because within a stage the engine keeps registration order.
+    "other.console-through-iap": "stage 7's product, checked by the first step of stage 8",
+}
+
+#: Registered steps no entry names, and why none is right: each re-applies
+#: another step's pass or records what an entry's own step already makes.
+NO_ENTRY_STEPS: dict[str, str] = {
+    "infra.pass-identity": "infra pass 2 again in stage 8 with the admin group; its entries name infra.pass-2",
+    "handoff.sign-in-bootstrap": "bootstrap pass 2 again with the Desktop client; its entries name bootstrap.pass-2",
+    "handoff.sign-in-infra": "the latest infra pass again with the Desktop client; its entries name the pass",
+    "handoff.sign-in-client": "records the Desktop client oauth-client.desktop-sc names edge.desktop-client for",
+}
+
+
+def _stage_mismatches(files: dict[str, m.ManifestFile], stages: dict[str, int]) -> list[str]:
+    """Entries whose stage is not the stage of the step they name."""
+    return sorted(
+        f"{name}: {e.id} is stage {e.stage}, its step {e.step} is stage {stages[e.step]}"
+        for name, file in files.items()
+        for e in file.entries
+        if e.step in stages and e.stage != stages[e.step] and e.id not in STAGE_EXCEPTIONS
+    )
+
+
+def test_every_entry_carries_its_steps_stage() -> None:
+    stages = {step.id: step.stage for step in _all_steps()}
+    wrong = _stage_mismatches({m.MANIFEST_PATH.name: _base(), **_fragments()}, stages)
+    assert not wrong, f"{len(wrong)} entries carry a stage other than their step's: {wrong}"
+
+
+def test_stage_exceptions_are_still_exceptions() -> None:
+    """An excused entry exists and still differs from its step, so the
+    exception list never outlives its reason."""
+    stages = {step.id: step.stage for step in _all_steps()}
+    by_id = m.load().by_id()
+    stale = sorted(i for i in STAGE_EXCEPTIONS if i not in by_id or by_id[i].stage == stages.get(by_id[i].step or ""))
+    assert not stale, stale
+
+
+def test_every_step_is_named_by_an_entry_or_excused() -> None:
+    named = {e.step for e in m.load().entries if e.step}
+    unnamed = sorted(_step_ids() - named - set(NO_ENTRY_STEPS))
+    assert not unnamed, f"steps no manifest entry names, so doctor and --repair cannot reach them: {unnamed}"
+    stale = sorted(set(NO_ENTRY_STEPS) & named)
+    assert not stale, f"excused steps an entry now names; drop them from NO_ENTRY_STEPS: {stale}"
+
+
+def test_no_field_holds_the_string_null() -> None:
+    """A field with no value is YAML null (or absent), never the string 'null'."""
+    files = {m.MANIFEST_PATH.name: _base(), **_fragments()}
+    quoted = sorted(
+        f"{name}: {e.id}.{field}"
+        for name, file in files.items()
+        for e in file.entries
+        for field, value in e.model_dump().items()
+        if value == "null"
+    )
+    assert not quoted, f"{len(quoted)} fields hold the string 'null': {quoted[:20]}"
+
+
+def test_stage_rule_fails_on_a_misstaged_entry(tmp_path: Path) -> None:
+    fragment = tmp_path / "some-lane.yaml"
+    fragment.write_text(
+        "entries:\n- {id: other.misstaged, kind: other, scope: core, stage: 7, provider: engine, step: preflight.region}\n",
+        encoding="utf-8",
+    )
+    files = {fragment.name: m.parse_file(fragment)}
+    assert _stage_mismatches(files, {"preflight.region": 0}) == [
+        "some-lane.yaml: other.misstaged is stage 7, its step preflight.region is stage 0"
+    ]
