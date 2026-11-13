@@ -90,7 +90,7 @@ describe('R15: the issue preview\'s meta never ends on a dot', () => {
       if (items.length > 0) expect(visible(items[items.length - 1]!)).not.toMatch(/·$/)
     }
     expect(visible(container)).toContain('3 comments')
-    expect(visible(container.querySelector('.in-read-at'))).toMatch(/^read .* with this tenant’s forge credential$/)
+    expect(visible(container.querySelector('.in-read-at'))).toMatch(/^read .* with this workspace’s forge credential$/)
   })
 })
 
@@ -121,7 +121,7 @@ describe('R15: your recent submissions', () => {
     // `timeAgo(it.at)` alone again and the first two lose their state.
     expect([...recent.querySelectorAll('.sb-recent-at')].map((el) => visible(el).replace(/ · .*$/, ' ·'))).toEqual(['done ·', 'succeeded ·', expect.not.stringContaining('·')])
     // QA1 runs-submit-26: what is listed is counted before the windows it was found in.
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Listed: 1 agent, 1 workflow, 1 issue run, newest first. Found among your newest 4 agents, the tenant’s newest 2 workflows, its newest 2 issue runs.')
+    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Listed: 1 agent, 1 workflow, 1 issue run, newest first. Found among your newest 4 agents, the workspace’s newest 2 workflows, its newest 2 issue runs.')
   })
 
   it('lists nothing, and says why, when who you are was not read', async () => {

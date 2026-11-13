@@ -239,7 +239,7 @@ describe('RT-6: the list\'s chip and search are its address', () => {
     run({ id: 'run_b', state: 'DONE' }),
     run({ id: 'run_c', state: 'NOT_READY', workflow_id: null }),
   ]
-  const rowIds = (c: HTMLElement) => [...c.querySelectorAll('.rn-row td[data-label="Run"]')].map(visible)
+  const rowIds = (c: HTMLElement) => [...c.querySelectorAll('.rn-row td[data-label="Run"] > span:first-child')].map(visible)
 
   it('reads `?state=` and `?q=` back on mount, as Back to the list does', async () => {
     const { runListQuery, runListQueryString } = await import('../Runs')
