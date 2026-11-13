@@ -14,6 +14,8 @@
 //
 // Fixtures only; no network. Fake values are built at runtime.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { StrictMode } from 'react'
@@ -468,6 +470,29 @@ describe('Admin › Setup says only what exists', () => {
     expect((within(row).getByLabelText('Pick the test repository') as HTMLSelectElement).value).toBe('')
     // MUTATION: say why on the surface instead of behind the (i).
     expect(within(row).getByRole('button', { name: 'About the test repository' })).toBeTruthy()
+  })
+
+  it('on a phone an (i) tip spans the viewport, never past 390 (review finding)', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    for (const name of ['About the test repository', 'About the repository grant']) {
+      const host = within(row).getByRole('button', { name }).closest('.ob-about')
+      // MUTATION: drop the `ob-about` wrapper, so the tip keeps the shared left-anchored 240px box.
+      expect(host?.querySelector('.c-tip')).toBeTruthy()
+    }
+    const sheet = readFileSync(join(__dirname, '..', 'styles', 'onboarding.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const phone = sheet.slice(sheet.indexOf('@media (max-width: 719px)'))
+    const rule = /\.ob-about \.c-tip \{([^}]*)\}/.exec(phone)?.[1] ?? ''
+    // MUTATION: anchor the tip at the (i) (`position: absolute; left: 0`), which ran to x=479 at 390.
+    expect(rule).toMatch(/position: fixed/)
+    expect(rule).toMatch(/left: 16px/)
+    expect(rule).toMatch(/right: 16px/)
+    expect(rule).toMatch(/max-width: none/)
   })
 
   it('the invite control opens the Google Admin members page and waits for them to join', async () => {

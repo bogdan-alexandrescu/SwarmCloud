@@ -911,14 +911,17 @@ function teamPeople(team: SetupTeam): SetupMember[] {
 /** An (i) whose words are help, kept out of the surface (`Tooltip`'s `data-help-description`). */
 function About({ about, tip }: { about: string; tip: string }) {
   return (
-    <Tooltip tip={tip}>
-      <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={`About ${about}`} style={{ marginBlock: -6, verticalAlign: 'middle' }}>
-        <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 11v5.5M12 7.75v.01" />
-        </svg>
-      </button>
-    </Tooltip>
+    // `ob-about`: on a phone its tip spans the viewport (onboarding.css), never past 390.
+    <span className="ob-about">
+      <Tooltip tip={tip}>
+        <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={`About ${about}`} style={{ marginBlock: -6, verticalAlign: 'middle' }}>
+          <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 11v5.5M12 7.75v.01" />
+          </svg>
+        </button>
+      </Tooltip>
+    </span>
   )
 }
 
