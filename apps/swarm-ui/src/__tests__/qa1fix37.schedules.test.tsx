@@ -136,11 +136,12 @@ describe('automate-03: the sheet takes focus, closes on Escape anywhere, and giv
   async function openFromRow() {
     const s = schedule('sch_a')
     const m = await mount(routes(s), null)
-    fireEvent.click(await screen.findByRole('link', { name: 'Sweep sch_a' }, WAIT))
+    await waitFor(() => expect(rowLink()).not.toBeNull(), WAIT)
+    fireEvent.click(rowLink()!)
     const h = await screen.findByRole('heading', { name: 'Sweep sch_a', level: 1 }, WAIT)
     return { ...m, h }
   }
-  const rowLink = () => document.querySelector<HTMLElement>('tr[data-schedule="sch_a"] a.al-name')
+  const rowLink = () => document.querySelector<HTMLElement>('section[data-schedule="sch_a"] a.acd-manage')
 
   it('opens with focus on the sheet’s own heading', async () => {
     const { h } = await openFromRow()
