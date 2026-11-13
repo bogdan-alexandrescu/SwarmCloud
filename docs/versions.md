@@ -22,7 +22,7 @@ the failure is silent.
 | kubectl | **1.36.3** | `kubectl version --client` | `/opt/homebrew/bin/kubectl` |
 | Python | **3.11** | `.python-version` | `requires-python = ">=3.11"` |
 | uv | **0.11.7** | `uv --version` | pinned image in the Dockerfiles |
-| Node | **24 LTS** (see note) | `node --version` in the image | `NODE_IMAGE` digest pin |
+| Node | **24.22.3** (24 LTS, floor 24.22.1; see §1) | `node --version` in the image | `NODE_VERSION`, asserted against the `NODE_IMAGE` digest at build |
 | gcloud SDK | **483.0.0** | `gcloud version` | `prerequisites.sh` |
 | shellcheck | **0.11.0** | `shellcheck --version` | `make lint`, CI |
 | jq | **1.7.1** | `jq --version` | `prerequisites.sh` |
@@ -46,7 +46,7 @@ provider builds and get two different results.
 | Image | Tag | Digest (truncated) |
 |---|---|---|
 | Python | `python:3.11-slim-bookworm` | `sha256:528257d4...` |
-| Node | `node:24-bookworm-slim` | `sha256:2fe369e9...` |
+| Node | `node:24-bookworm-slim` (Node 24.22.3, npm 11.19.1) | `sha256:dc26ae92...` |
 | uv | `ghcr.io/astral-sh/uv:0.11.7` | `sha256:240fb85a...` |
 | Playwright | `playwright==1.63.0` (pip) | — |
 | Claude Code CLI | `@anthropic-ai/claude-code@2.1.283` | — |
@@ -104,7 +104,23 @@ LTS**, because Node 20 reached end of life in April 2026 and 24 is the current
 LTS line. Pinning an EOL runtime would mean shipping an agent runtime that
 receives no security updates — in an image that runs other people's code.
 
-If a runner genuinely requires Node 20, change `NODE_IMAGE` in
+**The exact version is 24.22.3, and 24.22.1 is the floor.** Every coding
+runner image (agent-runtime-base, and agent-runtime-browser, -lightpanda and
+-indexer built FROM it) takes Node from one `NODE_IMAGE` digest in
+`images/agent-runtime-base/Dockerfile`. Beside it, `ARG NODE_VERSION` states
+the version that digest carries, and the build fails unless `node --version`
+prints exactly `v${NODE_VERSION}`, so the stated version and the shipped one
+cannot drift. The floor is 24.22.1 because ContextOS's CLI startup guard exits
+78 on any older Node; the previous digest (`sha256:2fe369e9...`) was 24.21.0
+and failed that guard (#3929). Re-resolved 2026-11-12: `node:24-bookworm-slim`
+and `node:24.22.3-bookworm-slim` returned the same index digest, whose amd64
+and arm64 configs carry `NODE_VERSION=24.22.3`.
+`tests/unit/scripts/test_runner_node_version.py` holds `NODE_VERSION` at or
+above the floor and below 25. plugin-bundler and swarm-voice share the same
+digest (their tests hold them equal to the base); swarm-ui keeps its own
+`NODE_IMAGE` line, held only to the major, because it is not a runner.
+
+If a runner genuinely requires Node 20, change `NODE_IMAGE` (and `NODE_VERSION`) in
 `images/agent-runtime-base/Dockerfile` to a Node 20 digest and record why here.
 Do not silently downgrade: the CLIs the `claude-code` and `codex` profiles run
 are pinned against the Node in this image and are tested there.
