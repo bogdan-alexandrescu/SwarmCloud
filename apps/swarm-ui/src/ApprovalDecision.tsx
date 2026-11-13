@@ -37,6 +37,7 @@ import { Screen, timeAgo } from './Shell'
 import { useNow } from './useNow'
 import './styles/schedules.css'
 import './styles/automate-approvals.css'
+import { MOCK_PLAN_ITEM, MarginPlanScreen, marginMock } from './MarginPlan' // MOCK-HOOK
 
 /**
  * The page's address, and one item's (`/automate/approvals/<id>`, paths.ts). The
@@ -1237,7 +1238,7 @@ function BriefCard({ id, title, aside, tone, children }: { id: string; title: st
 }
 
 /** The header card: the question, the purpose, why, the four facts, what it touches, and the decision. */
-function BriefHead({ d, b, kind, go, onDecided }: { d: Decision; b: PlanBrief; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+function BriefHead({ d, b, kind, go, onDecided, bar }: { d: Decision; b: PlanBrief; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; bar?: ReactNode }) { // MOCK-HOOK
   const a = d.approval
   const now = useNow()
   const size = sizeOf(b)
@@ -1331,7 +1332,7 @@ function BriefHead({ d, b, kind, go, onDecided }: { d: Decision; b: PlanBrief; k
           ))}
         </p>
       )}
-      {a.state === 'pending' ? <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} /> : <Outcome d={d} kind={kind} go={go} />}
+      {bar !== undefined ? bar /* MOCK-HOOK */ : a.state === 'pending' ? <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} /> : <Outcome d={d} kind={kind} go={go} />}
     </section>
   )
 }
@@ -1657,14 +1658,16 @@ function RawFold({ steps }: { steps: BriefStep[] }) {
 }
 
 /** A plan's decision page as its brief. */
-function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+// MOCK-HOOK: `bar` replaces the head's decision, `part` draws a part's margin after it
+export function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided, bar, part }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; bar?: ReactNode; part?: (id: string) => ReactNode }) { // MOCK-HOOK
   const a = d.approval
   const b = planBrief(plan, pulls)
   const hold = a.hold ?? null
   const multi = b.steps.length > 1
   return (
     <section className="ap-detail ad-page ab-page" data-testid="ap-detail" data-state={a.state} aria-label={`${APPROVAL_KIND[a.kind] ?? a.kind}: ${a.summary}`}>
-      <BriefHead d={d} b={b} kind={kind} go={go} onDecided={onDecided} />
+      <BriefHead d={d} b={b} kind={kind} go={go} onDecided={onDecided} bar={bar} /> {/* MOCK-HOOK */}
+      {part?.('ab-head') /* MOCK-HOOK */}
       {hold !== null && (
         <BriefCard id="ab-hold" title="Why it is held" tone="medium">
           <HoldBody hold={hold} itemApprovers={a.approvers} />
@@ -1684,14 +1687,18 @@ function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decis
           <PlanChangeMap nodes={b.nodes} edges={b.edges} changes={b.changes} multi={multi} />
         </BriefCard>
       )}
+      {b.changes.length > 0 && part?.('ab-map') /* MOCK-HOOK */}
       {(b.risk !== null || b.validation !== null) && (
         <div className="ab-pair">
           {b.risk !== null && <RiskCard risk={b.risk} frozen={b.frozen} />}
           {b.validation !== null && <ValidationCard v={b.validation} requirements={b.requirements} />}
         </div>
       )}
+      {(b.risk !== null || b.validation !== null) && part?.('ab-pair') /* MOCK-HOOK */}
       {b.steps.length > 0 && <StepsCard b={b} />}
+      {b.steps.length > 0 && part?.('ab-steps') /* MOCK-HOOK */}
       {b.overlaps.length > 0 && <OverlapsCard overlaps={b.overlaps} changes={b.changes} />}
+      {b.overlaps.length > 0 && part?.('ab-over') /* MOCK-HOOK */}
       <BriefCard id="ab-asked" title="What asked for it">
         <AskedBy d={d} go={go} />
       </BriefCard>
@@ -1799,6 +1806,7 @@ async function servedPlan(d: Decision): Promise<ServedPlan | null> {
  * expired, lands on what became of it (AUT-6) rather than on the list.
  */
 export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: { itemId: string; kind: string | null; round: number; go: (to: string) => void; onDecided: (word: string) => void }) {
+  if (marginMock() && itemId === MOCK_PLAN_ITEM) return <MarginPlanScreen go={go} /> // MOCK-HOOK
   return (
     <Screen
       key={`approval:${itemId}:${round}`}

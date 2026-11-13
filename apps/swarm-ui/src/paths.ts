@@ -267,6 +267,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   // `/automate/schedules` (APPROVALS-MOVE, owner 2026-10-26, VQ-030). One item is
   // `/automate/approvals/<id>`, below; the old `/approvals` and
   // `/approvals/<id>` land on them (`pathToAddress`).
+  'automate/pipeline': '/automate/pipeline', // MOCK-HOOK
   'automate/approvals': '/automate/approvals',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',

@@ -1,3 +1,4 @@
+import { PipelineMockScreen } from './PipelineMock' // MOCK-HOOK
 import {
   Fragment,
   useCallback,
@@ -394,6 +395,7 @@ export const SECTIONS: SectionDef[] = [
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
     tabs: [
       { id: 'schedules', label: 'Schedules' },
+      { id: 'pipeline', label: 'Pipeline' }, // MOCK-HOOK
       { id: 'approvals', label: 'Approvals' },
     ],
   },
@@ -1376,7 +1378,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
   // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
-  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind', 'plans', 'mock', 'chat', 'ask', 'from', 'source', 'state', 'waits'] // MOCK-HOOK
+  if (sectionId === AUTOMATE && tab === 'pipeline') return ['plans', 'mock', 'source', 'state', 'waits'] // MOCK-HOOK
   // GitHub access' Choose repositories tab (GA-MOVE-VIEWS): the page reads
   // `view` off the bar. People and roles' Members' GitHub was the other; it is
   // a fold of the workspace page's People tab now.
@@ -2651,6 +2654,8 @@ function SectionBody({
 
     case 'automate/schedules':
       return <SchedulesScreen view={view} go={go} />
+    case 'automate/pipeline': // MOCK-HOOK
+      return <PipelineMockScreen go={go} /> // MOCK-HOOK
     case 'automate/approvals':
       return <ApprovalsScreen view={view} go={go} />
 

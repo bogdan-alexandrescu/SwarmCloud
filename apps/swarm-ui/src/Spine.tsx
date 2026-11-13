@@ -40,6 +40,7 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
+import { mockScrub } from './marginFixture' // MOCK-HOOK
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
@@ -138,6 +139,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // the inbox count, as the section does on the spine.
   automate: [
     { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'pipeline', label: 'Pipeline', icon: 'approvals', to: 'automate/pipeline' }, // MOCK-HOOK
     { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ],
   capacity: [
@@ -352,6 +354,7 @@ export function adminGroups(pages: readonly PanelPage[]): AdminGroup[] {
 export function inAutomateLinks(platformAdmin: boolean): readonly PanelPage[] {
   return [
     { key: 'schedules', label: 'Schedules', icon: 'schedules', to: platformAdmin ? 'automate/schedules?scope=all' : 'automate/schedules' },
+    { key: 'pipeline', label: 'Pipeline', icon: 'approvals', to: 'automate/pipeline' }, // MOCK-HOOK
     { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ]
 }
@@ -1054,7 +1057,7 @@ export function meterOf(c: Capacity | null): {
     hot.name,
     c.pools.map((p) => p.name),
   )
-  return { active: g.active, limit: g.effective_limit, warn: `a pool is ${state}: ${label}`, warnPool: hot.name, warnLabel: label }
+  return { active: g.active, limit: g.effective_limit, warn: mockScrub(`a pool is ${state}: ${label}`), warnPool: mockScrub(hot.name), warnLabel: mockScrub(label) } // MOCK-HOOK: mockScrub
 }
 
 /** One count beside a panel row: a measurement, or a dash with its reason. */
