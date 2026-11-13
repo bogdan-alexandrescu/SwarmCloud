@@ -1754,14 +1754,18 @@ def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, re
         if session.ownership(session.owner_of(task), sid, record=record, ident=ident,
                              in_repository=_in_scope(scope, [task.get("repository_url")])) != "own":
             continue
-        answered = {a.get("question_index") for a in progress.owner_answers(task)}
+        # Only an answer that records no question is known answered without
+        # the read: one that records it answers that question, and a later
+        # attempt may ask another at its index (#3349).
+        answered = progress.answered_by_document(task, None)
         if all(index in answered for index in range(count)):
             continue  # every counted question has an answer: no read
-        wanted.append((task, {i for i in answered if isinstance(i, int)}))
+        wanted.append((task, answered))
 
     def read(job: tuple[dict[str, Any], set[int]]) -> tuple[dict[str, Any], set[int], Any, str | None]:
-        task, answered = job
+        task, _ = job
         questions, why = _questions_of(client, task)
+        answered = progress.answered_by_document(task, questions) if questions is not None else set()
         return task, answered, questions, why
 
     entries: list[dict[str, Any]] = []
