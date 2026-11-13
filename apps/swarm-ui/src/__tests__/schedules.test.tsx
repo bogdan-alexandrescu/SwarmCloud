@@ -138,7 +138,7 @@ function media(phone: boolean): void {
   }))
 }
 
-const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-schedule="${id}"]`)
+const rowOf = (id: string) => document.querySelector<HTMLElement>(`section.acd-card[data-schedule="${id}"]`)
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -178,27 +178,23 @@ describe('the Automate section', () => {
 })
 
 describe('the list', () => {
-  it('draws one row per schedule with the columns the owner listed', async () => {
+  it('draws one card per schedule with what the cards mock-up draws', async () => {
     await mountList({
       '/v1/schedules': { status: 200, body: { schedules: [schedule('sch_a', { pending_approvals: 2 })], tenant_id: 'eng' } },
       '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
     })
     await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    // Frame A1's columns (AUTO-A1, part of #2417): the actions moved to the schedule's own page.
-    const heads = [...document.querySelectorAll('.al-table:not(.is-inbox) thead th')].map((th) => th.textContent)
-    expect(heads).toEqual(['Schedule', 'Target', 'When', 'Next firing', 'Last firing', 'Spend today', 'Waiting', 'State'])
     const row = rowOf('sch_a')!
     expect(visible(row)).toContain('Schedule sch_a')
-    expect(visible(row)).toContain('issue-sweep · R2')
+    expect(visible(row)).toContain('issue-sweep')
     expect(visible(row)).toContain('at 09:00, Monday through Friday')
-    expect(visible(row)).toContain('Europe/London')
     expect(visible(row)).toContain('$3.10')
-    expect(visible(row.querySelector('td[data-label="Waiting"] .al-fig'))).toBe('2')
-    expect(visible(row.querySelector('.al-word'))).toBe('active')
+    // Active asks for nothing, so its card carries no word.
+    expect(row.querySelector('.acd-word')).toBeNull()
     await waitFor(() => expect(visible(row)).toContain('example-org/example-api'), WAIT)
   })
 
-  it('marks a spend some attempt never reported as partial, with the count', async () => {
+  it('marks a spend some attempt never reported in its (i), with the count', async () => {
     // MUTATION: draw `reported_usd` alone when coverage is partial.
     await mountList({
       '/v1/schedules': {
@@ -208,10 +204,9 @@ describe('the list', () => {
       '/v1/repositories': { status: 200, body: { repositories: [] } },
     })
     await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    const cell = rowOf('sch_a')!.querySelector('td[data-label="Spend today"]')!
-    expect(cell.querySelector('.ctl-mark.is-partial')).not.toBeNull()
-    expect(visible(cell)).toContain('$3.10')
-    expect(visible(cell)).toContain('2 attempts unreported')
+    const cell = rowOf('sch_a')!.querySelector('[data-testid="acd-spend"]')!
+    expect(visible(cell.querySelector('.acd-fig'))).toBe('$3.10')
+    expect(cell.querySelector('.c-tip-host')!.textContent).toContain('2 attempts did not report a cost')
   })
 
   it('says a never-fired, paused schedule has no last run and no next run, rather than 0', async () => {
@@ -227,35 +222,17 @@ describe('the list', () => {
     })
     await waitFor(() => expect(rowOf('sch_b')).not.toBeNull(), WAIT)
     const row = rowOf('sch_b')!
-    expect(visible(row.querySelector('td[data-label="Last firing"]'))).toBe('— never fired')
-    expect(visible(row.querySelector('td[data-label="Next firing"]'))).toContain('paused')
-    expect(visible(row.querySelector('td[data-label="State"]'))).toContain('holiday')
+    expect(visible(row.querySelector('.acd-card-f'))).toContain('never fired')
+    expect(visible(row.querySelector('[data-testid="acd-next"]'))).toContain('paused')
   })
 
-  it('draws the Absent state for a tenant with no schedule, and still the built-in rows', async () => {
+  it('draws the empty state for a tenant with no schedule', async () => {
     await mountList({
       '/v1/schedules': { status: 200, body: { schedules: [], tenant_id: 'eng' } },
       '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
     })
-    await screen.findByText('No schedules yet', undefined, WAIT)
-    expect(document.querySelector('.sc-table:not(.is-builtin)')).toBeNull()
-    const builtIn = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('tr[data-builtin="repo_a"]')
-      expect(el).not.toBeNull()
-      return el!
-    }, WAIT)
-    expect(visible(builtIn)).toContain('Index · example-org/example-api')
-    expect(visible(builtIn)).toContain('24 h + on change')
-    expect(visible(builtIn)).toContain('at most every 30 min')
-    expect(within(builtIn).getByRole('link', { name: /Settings/ }).getAttribute('href')).toBe('/config/repositories/repo_a/settings')
-  })
-
-  it('says the built-in rows were not read when the repositories read fails', async () => {
-    await mountList({
-      '/v1/schedules': { status: 200, body: { schedules: [schedule('sch_a')], tenant_id: 'eng' } },
-      '/v1/repositories': { status: 500, body: { code: 'internal', message: 'boom' } },
-    })
-    await screen.findByText('Built-in rows not read', undefined, WAIT)
+    await screen.findByRole('heading', { name: 'No schedules' }, WAIT)
+    expect(document.querySelector('section.acd-card')).toBeNull()
   })
 
   it('opens a schedule by its address', async () => {
@@ -263,28 +240,11 @@ describe('the list', () => {
       '/v1/schedules': { status: 200, body: { schedules: [schedule('sch_a')], tenant_id: 'eng' } },
       '/v1/repositories': { status: 200, body: { repositories: [] } },
     })
-    const link = await screen.findByRole('link', { name: 'Schedule sch_a' }, WAIT)
+    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
+    const link = within(rowOf('sch_a')!).getByRole('link', { name: 'Manage' })
     expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
     fireEvent.click(link)
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
-  })
-
-  it('keeps the built-in rows a record on a phone, every cell named', async () => {
-    media(true)
-    await mountList({
-      '/v1/schedules': { status: 200, body: { schedules: [], tenant_id: 'eng' } },
-      '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
-    })
-    const row = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('tr[data-builtin="repo_a"]')
-      expect(el).not.toBeNull()
-      return el!
-    }, WAIT)
-    expect(painted(row, 'display', PHONE)).toBe('block')
-    for (const td of row.querySelectorAll<HTMLElement>('td')) {
-      expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
-      expect(painted(td, 'display', PHONE)).toBe('block')
-    }
   })
 })
 
@@ -740,16 +700,17 @@ describe('live QA: automate, the list and the page', () => {
   it('labels a dry-run schedule as one in the list and in the head (AUT-3)', async () => {
     const dry = schedule('sch_a', { name: 'Dry sweep', state: 'paused', state_word: 'paused', next_run_at: null, policy: { dry_run: true } })
     const list = await mountList({ '/v1/schedules': { status: 200, body: { schedules: [dry, schedule('sch_b')], tenant_id: 'eng' } }, '/v1/repositories': { status: 200, body: { repositories: [REPO] } } })
-    await waitFor(() => expect(document.querySelector('tr[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
-    // MUTATION: drop `DryRunChip` from the State cell and the row says only "paused".
-    expect(visible(document.querySelector('tr[data-schedule="sch_a"] td[data-label="State"]'))).toContain('dry run')
-    expect(document.querySelector('tr[data-schedule="sch_b"] [data-testid="sc-dry"]')).toBeNull()
+    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
+    // MUTATION: drop `DryRunChip` from the card's head and the card says nothing of it.
+    expect(visible(rowOf('sch_a')!.querySelector('.acd-card-h'))).toContain('dry run')
+    expect(rowOf('sch_b')!.querySelector('[data-testid="sc-dry"]')).toBeNull()
     list.unmount()
     await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: dry, firings: [] } } })
     await screen.findByRole('heading', { name: 'Dry sweep', level: 1 }, WAIT)
     // The sheet's head line (frame A2) carries the state word and the chip.
     const state = await screen.findByTestId('as-meta', undefined, WAIT)
-    expect(visible(state.querySelector('.as-word'))).toBe('paused')
+    // Paused asks for nothing, so the head carries the chip and no word.
+    expect(state.querySelector('[data-testid="acd-word"]')).toBeNull()
     expect(visible(state)).toContain('dry run')
   })
 
@@ -801,12 +762,12 @@ describe('live QA: automate, the list and the page', () => {
     expect(screen.queryByText('This schedule was deleted')).toBeNull()
   })
 
-  it('re-reads the built-in rows with the list on ⟳ (AUT-19)', async () => {
+  it('re-reads the repositories the cards name with the list on ⟳ (AUT-19)', async () => {
     const { calls } = await mountList({
-      '/v1/schedules': { status: 200, body: { schedules: [], tenant_id: 'eng' } },
+      '/v1/schedules': { status: 200, body: { schedules: [schedule('sch_a')], tenant_id: 'eng' } },
       '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
     })
-    await waitFor(() => expect(document.querySelector('tr[data-builtin="repo_a"]')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(visible(rowOf('sch_a'))).toContain('example-org/example-api'), WAIT)
     const before = reads(calls, '/v1/repositories')
     refresh()
     // MUTATION: read the repositories in the body's own effect again and ⟳ never asks for them.

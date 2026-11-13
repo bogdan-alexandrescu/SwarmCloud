@@ -159,7 +159,6 @@ function media({ phone = false, narrow = false }: { phone?: boolean; narrow?: bo
   }))
 }
 
-const rowOf = (id: string) => document.querySelector<HTMLElement>(`tr[data-schedule="${id}"]`)
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -172,25 +171,17 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('the schedules list at 1440 (V166, V167)', () => {
-  it('V166: wraps a partial spend inside its column and keeps only the figure whole', async () => {
-    // MUTATION: `.sc-spend { white-space: nowrap }` back, or the figure loses `.sc-usd`.
+  it('V166: wraps a partial spend inside its card and says its unreported attempts in its (i)', async () => {
+    // MUTATION: `.acd-spend-t { flex-wrap: wrap }` dropped, or the (i) on an unreported attempt.
     await mountSchedules(null, schedulesRoutes())
-    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
-    const spend = rowOf('sch_a')!.querySelector<HTMLElement>('td[data-label="Spend today"] .sc-spend')!
-    expect(visible(spend)).toContain('2 attempts unreported')
-    expect(painted(spend, 'white-space', WIDE)).not.toBe('nowrap')
-    const figure = spend.querySelector<HTMLElement>('.sc-usd')!
-    expect(visible(figure)).toBe('$3.10')
-    expect(painted(figure, 'white-space', WIDE)).toBe('nowrap')
+    await waitFor(() => expect(document.querySelector('section[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
+    const spend = document.querySelector<HTMLElement>('section[data-schedule="sch_a"] .acd-spend-t')!
+    expect(painted(spend, 'flex-wrap', WIDE)).toBe('wrap')
+    expect(visible(spend.querySelector('.acd-fig'))).toBe('$3.10')
+    expect(spend.querySelector('.c-tip-host')!.textContent).toContain('2 attempts did not report a cost')
   })
 })
 
-// ---------------------------------------------------------------------------
-// One schedule
-// ---------------------------------------------------------------------------
-
-// V241 (the figures 12px below the head's meta line) is retired with frame
-// A2, whose sheet draws no figure strip (pr-comment.md).
 describe("one schedule's sheet (V168, V171, V239, V242, V243)", () => {
   it('V168: lets a firing’s partial cost wrap in its cell instead of clipping it and scrolling the table', async () => {
     // MUTATION: `.sc-spend { white-space: nowrap }` back.
