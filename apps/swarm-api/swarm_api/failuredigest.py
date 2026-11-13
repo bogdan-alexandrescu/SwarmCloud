@@ -47,6 +47,11 @@ under its name in `skipped`. No rule exists that the agent can add:
                          steps a fail_workflow sweep or cancelled_parent cascade
                          ended because of one, and a workflow failed only by them
   fix_round_live         a running fix round already covers it
+  person_push            a merge step a person's push superseded, and a
+                         workflow failed only because of one
+  person_ready_removal   a merge step whose train-parked pull request a person
+                         took `ready` off (#3602), and a workflow failed only
+                         because of one
 
 WHAT AN ENTRY CARRIES (§3). For every tenant, only what the platform wrote:
 state, end cause, codes, exit codes, timings, memory figures, event types and
@@ -149,8 +154,9 @@ PERSON_CANCEL = "person_cancel"
 QUESTION_UNANSWERED = "question_unanswered"
 FIX_ROUND_LIVE = "fix_round_live"
 PERSON_PUSH = "person_push"
+PERSON_READY_REMOVAL = "person_ready_removal"
 SKIP_RULES = (SELF, ACCEPTANCE_DELIBERATE, VERIFY_FENCE, PERSON_CANCEL, QUESTION_UNANSWERED,
-              FIX_ROUND_LIVE, PERSON_PUSH)
+              FIX_ROUND_LIVE, PERSON_PUSH, PERSON_READY_REMOVAL)
 
 #: `scripts/acceptance/lib.sh` marks every acceptance submission with this source.
 ACCEPTANCE_SOURCE = "acceptance"
@@ -177,6 +183,16 @@ QUESTION_UNANSWERED_ERROR = "owner question unanswered"
 #: needs no change when it lands. An unknown branch-mate's head is
 #: `head_moved`, and reviewed.
 SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+#: §2 `person_ready_removal` (#3602): a merge step whose train-parked pull
+#: request a person took `ready` off by hand -- a deliberate decision, not a
+#: defect. The worker's refusal code (`agent_worker.merge.
+#: READY_REMOVED_BY_PERSON`, held equal by
+#: tests/unit/control_plane/test_failure_digest.py) in `result_summary.merge.
+#: refusal.code`; the step ends FAILED merge_refused while the frozen
+#: `EndCause` has no member for it, and the same string as the end cause is
+#: matched too. The platform's own removal (the gate's or the train's) is
+#: `train_ejected`, and reviewed.
+READY_REMOVED_BY_PERSON = "ready_removed_by_person"
 
 #: The events whose `detail.requested_by` names who cancelled.
 CANCEL_EVENTS = frozenset({EventType.CANCELLED.value, EventType.CANCEL_REQUESTED.value})
@@ -679,6 +695,13 @@ def _person_push(task: Mapping[str, Any]) -> bool:
     return _mapping(merge.get("refusal")).get("code") == SUPERSEDED_BY_PERSON_PUSH
 
 
+def _person_ready_removal(task: Mapping[str, Any]) -> bool:
+    if task.get("end_cause") == READY_REMOVED_BY_PERSON:
+        return True
+    merge = _mapping(_mapping(task.get("result_summary")).get("merge"))
+    return _mapping(merge.get("refusal")).get("code") == READY_REMOVED_BY_PERSON
+
+
 def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
     """The first of §2's rules that skips `task`, by name; None when it is reviewed."""
     if _is_self(task, docs):
@@ -695,6 +718,8 @@ def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
         return FIX_ROUND_LIVE
     if _person_push(task):
         return PERSON_PUSH
+    if _person_ready_removal(task):
+        return PERSON_READY_REMOVAL
     return None
 
 
