@@ -7,8 +7,10 @@ from an unknown branch-mate still refuses."
 
 The refusal itself is unchanged: `merge._accept` still takes no head a person
 made of content, and nothing merges. What changes is the code the step ends
-with. A head that is not a merge, that the platform did not commit, and that
-GitHub links to a person on the pull request (its author or an assignee) ends
+with. A head that is a single commit, or (#3601) a merge of the base onto an
+accepted head that the purity proof refuses, that the platform did not
+commit, and that GitHub links to a person on the pull request (its author or
+an assignee) ends
 `superseded_by_person_push`; every other head that is not accepted ends
 `head_moved` as before. `EndCause` is frozen, so until contract request
 139 (SUPERSEDED_BY_PERSON_PUSH) lands the step still ends FAILED/MERGE_REFUSED,
@@ -352,15 +354,154 @@ def test_a_commit_under_the_platforms_own_identity_ends_head_moved(tmp_path):
         assert outcome.summary["refusal"]["code"] == "head_moved", email
 
 
-def test_a_persons_merge_the_proof_refuses_still_ends_head_moved(tmp_path):
-    """the owner's decision is about a person's content commit. A two-parent merge
-    the purity proof refuses stays head_moved: the proof may refuse what git
-    accepts, and that is the platform's to look at."""
+#: #3601, 2026-11-06 23:25Z: the owner merged main into six train-parked
+#: pull requests by hand and resolved real conflicts. The merge base, the
+#: pinned head and main's tip; both parents change notes.txt, and the
+#: person's merge holds a third blob there, so the purity proof refuses it
+#: ('both parents change notes.txt') though it is the person's own content.
+MERGE_BASE = "1" * 40
+#: A head a person pushed that is not the pinned head nor a round's.
+STRAY = "5" * 40
+#: The person's hand merge of the base.
+HAND_MERGE = "7" * 40
+_FILES = {
+    MERGE_BASE: {"readme.txt": b"widgets\n", "notes.txt": b"one\ntwo\n"},
+    PINNED: {"readme.txt": b"widgets\n", "notes.txt": b"ONE\ntwo\n"},
+    merge_world.BASE_TIP: {"readme.txt": b"widgets\n", "notes.txt": b"one\nTWO\n"},
+    STRAY: {"readme.txt": b"widgets, stray\n", "notes.txt": b"one\ntwo\n"},
+}
+#: The person's resolution: neither parent's notes.txt.
+RESOLVED = {"readme.txt": b"widgets\n", "notes.txt": b"ONE\nTWO\n"}
+
+
+def _blob_sha(content: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(content).hexdigest()[:40]
+
+
+def _serve_tree(world: MergeWorld, commit_sha: str, files: dict[str, bytes]) -> str:
+    """Serve `files` as `commit_sha`'s tree, every blob in it, and return the
+    tree's sha (test_merge_action.py's `_serve_tree`)."""
+    import base64
+    entries = []
+    for path, content in sorted(files.items()):
+        sha = _blob_sha(content)
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": sha,
+                        "size": len(content)})
+        world.github.route("GET", f"{API}/git/blobs/{sha}", (200, {}, {
+            "sha": sha, "size": len(content), "encoding": "base64",
+            "content": base64.b64encode(content).decode()}))
+    tree = _blob_sha(commit_sha.encode())
+    world.github.route("GET", f"{API}/git/trees/{tree}", (200, {}, {
+        "sha": tree, "tree": entries, "truncated": False}))
+    return tree
+
+
+def _serve_commit(world: MergeWorld, sha: str, parents: list[str], files: dict[str, bytes], *,
+                  committer: dict[str, str] | None = None, login: str = PAT_LOGIN,
+                  message: str = "Merge main, keeping both changes to notes.txt") -> None:
+    """Serve `GET .../commits/<sha>` with its tree, as `_person_commit` does."""
+    committer = committer or PAT
+    world.github.route("GET", f"{API}/commits/{sha}", (200, {}, {
+        "sha": sha, "parents": [{"sha": p} for p in parents],
+        "commit": {"committer": dict(committer), "author": dict(committer), "message": message,
+                   "verification": {"verified": False},
+                   "tree": {"sha": _serve_tree(world, sha, files)}},
+        "committer": _account(login), "author": _account(login)}))
+
+
+def _person_merge(world: MergeWorld, *, first: str = PINNED,
+                  parents: list[str] | None = None, on_main: bool = True,
+                  **commit: Any) -> str:
+    """A person's hand merge of main's tip into `first`, resolving the
+    conflict on notes.txt, with everything the walk and the proof read
+    served (test_merge_action.py's `_person_merge`)."""
+    for sha in (MERGE_BASE, PINNED, merge_world.BASE_TIP):
+        _serve_commit(world, sha, [] if sha == MERGE_BASE else [MERGE_BASE], _FILES[sha],
+                      committer=merge_world.GITHUB_COMMITTER, login="web-flow")
+    if first == STRAY:
+        _serve_commit(world, STRAY, [MERGE_BASE], _FILES[STRAY])
+    second = merge_world.BASE_TIP
+    world.github.route("GET", f"{API}/compare/{first}...{second}", (200, {}, {
+        "status": "diverged", "merge_base_commit": {"sha": MERGE_BASE}}))
+    world.on_base(second, status="behind" if on_main else "diverged")
+    _serve_commit(world, HAND_MERGE, parents or [first, second], RESOLVED, **commit)
+    world.serve_checks(HAND_MERGE)
+    return HAND_MERGE
+
+
+def test_a_persons_merge_the_proof_refuses_ends_superseded_by_person_push(tmp_path):
+    """#3601: the pull request's author merged main into the pinned head and
+    resolved the conflict on notes.txt by hand. The purity proof refuses it
+    -- both parents change notes.txt -- and until 2026-11-12 the step ended
+    head_moved and failure-review filed it. A person on the pull request
+    made that merge on top of an accepted head: it is their content (#2505),
+    so the step is superseded, still merges nothing, and keeps the proof's
+    reason in the commit record."""
     world = _world(tmp_path)
-    world.pr["head"]["sha"] = _person_commit(world, parents=[PINNED, merge_world.BASE_TIP])
-    world.on_base(merge_world.BASE_TIP)
+    world.pr["head"]["sha"] = _person_merge(world)
+    outcome = merge.run_merge(world.context())
+
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == merge.SUPERSEDED_BY_PERSON_PUSH, refusal
+    assert refusal["person"] == PAT_LOGIN
+    assert refusal["commit"]["sha"] == HAND_MERGE
+    assert refusal["commit"]["first_parent_accepted"] is True
+    assert refusal["commit"]["why"] == "both parents change notes.txt"
+    assert world.merge_calls() == []
+    assert world.update_calls() == []
+    # FROZEN: until the contract request lands, the cause stays MERGE_REFUSED.
+    assert outcome.state is TaskState.FAILED
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+
+
+def test_a_branch_mates_refused_merge_still_ends_head_moved(tmp_path):
+    """The controls: the same merge by a login not on the pull request, under
+    the platform's own committer address, or carrying the worker's line for
+    a task that is no person's lane, is not a person's push."""
+    cases: dict[str, dict[str, Any]] = {
+        "mallory": dict(committer=MALLORY, login=MALLORY_LOGIN),
+        "worker_line": dict(message="Merge main\n\n" + merge.WORKER_COMMIT_LINE + "task_abc."),
+    }
+    for email in sorted(merge.PLATFORM_COMMITTER_EMAILS):
+        cases[email] = dict(committer={"name": "bot", "email": email})
+    for name, kwargs in cases.items():
+        world = _world(tmp_path / name.replace("@", "_"))
+        world.pr["head"]["sha"] = _person_merge(world, **kwargs)
+        outcome = merge.run_merge(world.context())
+        assert outcome.summary["refusal"]["code"] == "head_moved", name
+        assert "person" not in outcome.summary["refusal"], name
+        assert world.merge_calls() == [] and world.update_calls() == [], name
+
+
+def test_a_persons_merge_onto_an_unaccepted_head_still_ends_head_moved(tmp_path):
+    """The author's merge of main into a head the step never accepted: the
+    merge carries more than the person's resolution, so it stays head_moved."""
+    world = _world(tmp_path)
+    world.pr["head"]["sha"] = _person_merge(world, first=STRAY)
+    outcome = merge.run_merge(world.context())
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == "head_moved"
+    assert refusal["commit"]["why"] == "its first parent is not an accepted head"
+    assert world.merge_calls() == []
+
+
+def test_a_persons_merge_whose_second_parent_is_off_the_base_still_ends_head_moved(tmp_path):
+    world = _world(tmp_path)
+    world.pr["head"]["sha"] = _person_merge(world, on_main=False)
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "head_moved"
+    assert outcome.summary["refusal"]["commit"]["why"] == "its second parent is not on main"
+    assert world.merge_calls() == []
+
+
+def test_a_persons_octopus_merge_still_ends_head_moved(tmp_path):
+    world = _world(tmp_path)
+    world.pr["head"]["sha"] = _person_merge(
+        world, parents=[PINNED, merge_world.BASE_TIP, MERGE_BASE])
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "head_moved"
+    assert world.merge_calls() == []
 
 
 def test_a_person_push_while_mergeability_is_read_ends_superseded(tmp_path):
@@ -407,6 +548,32 @@ def test_a_branch_mates_push_while_mergeability_is_read_stays_head_moved(tmp_pat
     world.github.route("GET", PR, pull)
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "head_moved"
+
+def test_a_persons_refused_merge_while_mergeability_is_read_ends_superseded(tmp_path):
+    """#3601 at the second head_moved: the author's refused hand merge onto
+    the accepted head lands while mergeability is read."""
+    world = _world(tmp_path)
+    _person_merge(world)
+    reads = {"n": 0}
+
+    def pull(_seen):
+        reads["n"] += 1
+        body = dict(world.pr)
+        body["head"] = dict(world.pr["head"])
+        if reads["n"] == 1:
+            body["mergeable"] = None
+        else:
+            body["head"]["sha"] = HAND_MERGE
+        return 200, {}, body
+
+    world.github.route("GET", PR, pull)
+    outcome = merge.run_merge(world.context())
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == merge.SUPERSEDED_BY_PERSON_PUSH, refusal
+    assert refusal["person"] == PAT_LOGIN
+    assert refusal["commit"]["why"] == "both parents change notes.txt"
+    assert world.merge_calls() == [] and world.update_calls() == []
+
 
 
 def test_the_platform_identities_are_the_workers_own():
