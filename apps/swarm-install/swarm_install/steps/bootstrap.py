@@ -43,6 +43,7 @@ import tarfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ from ..api_client import application_default, deployer_email
 from ..exitcodes import MET, UNMET
 from ..state import state_bucket
 from ..terraform import AS_PERSON, Exec, Guards, Terraform, TerraformRefused, run_pass, subprocess_exec
+from ..waits import WaitSpec, cloud_page, wait_until
 from . import Observation, Plan
 from .preflight import RELEASE_HOME, parse_sums
 
@@ -66,6 +68,22 @@ RELEASE_KEY = Path(__file__).resolve().parent.parent / "release_key.pub"
 IMPERSONATION_WAIT_S = 600.0
 #: The pause between two generateAccessToken attempts while it waits.
 IMPERSONATION_POLL_S = 10.0
+
+
+def _impersonation_look_at(ctx: Any) -> str:
+    return (f"the deployer's permissions page, {cloud_page('iam-admin/serviceaccounts', ctx)}: your "
+            "roles/iam.serviceAccountTokenCreator grant on swarm-tf-deployer listed there is still propagating")
+
+
+#: The wait for that grant; past it the run pauses and `swarm install` resumes it.
+IMPERSONATION = WaitSpec(
+    reason="your token-creator grant on the deployer to take effect",
+    expected="up to 2 min, at times 7 or more",
+    expected_s=120,
+    bound_s=IMPERSONATION_WAIT_S,
+    look_at=_impersonation_look_at,
+    interval_s=IMPERSONATION_POLL_S,
+)
 #: The output bootstrap pass 1 records once the person can mint the deployer's tokens.
 IMPERSONABLE_KEY = "deployer_impersonable"
 
@@ -177,10 +195,6 @@ def can_mint_token(email: str) -> bool:
     return True
 
 
-class ImpersonationPending(RuntimeError):
-    """The person still cannot mint the deployer's tokens after the wait."""
-
-
 def account(name: str, project: str) -> str:
     return f"{name}@{project}.iam.gserviceaccount.com"
 
@@ -231,6 +245,7 @@ class Deps:
     mint_token: Callable[[str], bool] = can_mint_token
     sleep: Callable[[float], None] = time.sleep
     monotonic: Callable[[], float] = time.monotonic
+    today: Callable[[], date] = lambda: datetime.now(UTC).date()
 
     def module_root(self, ctx: Any, root: str) -> Path:
         if self.root_dir is not None:
@@ -411,10 +426,7 @@ class BootstrapPass1Step(PassStep):
             for role in roles.undeleted:
                 ctx.events.emit("step_apply", step=self.id, message=f"undeleted custom role {role}")
             if roles.blocked:
-                raise TerraformRefused(
-                    f"custom roles {', '.join(roles.blocked)} were deleted more than 7 days ago; their ids are "
-                    "held for 37 days and cannot be undeleted or reused. Wait, or install into a new project"
-                )
+                raise TerraformRefused(held_roles(roles.blocked, self.deps.today()))
 
         if self._pending(ctx) is not None:
             apply_pass(ctx, self.deps, self.pass_name, before_plan=adopt_first)
@@ -430,22 +442,56 @@ def await_impersonation(ctx: Any, deps: Deps, deployer: str, *, step: str) -> No
     """
     from .preflight import remember
 
-    deadline = deps.monotonic() + IMPERSONATION_WAIT_S
     waiting = False
-    while not deps.mint_token(deployer):
-        if deps.monotonic() >= deadline:
-            raise ImpersonationPending(
-                f"bootstrap pass 1 granted you roles/iam.serviceAccountTokenCreator on {deployer}, but Google "
-                f"still refuses you its token after {int(IMPERSONATION_WAIT_S) // 60} minutes; run swarm install "
-                "again to keep waiting"
-            )
+
+    def minted() -> str:
+        nonlocal waiting
+        if deps.mint_token(deployer):
+            return MET
         if not waiting:
             ctx.events.emit("step_apply", step=step,
                             message=f"waiting for your token-creator grant on {deployer} to take effect")
             waiting = True
-        deps.sleep(IMPERSONATION_POLL_S)
+        return UNMET
+
+    # Past the bound wait_until raises WaitGaveUp, which the engine records as
+    # a pause (exit 4) that `swarm install` resumes, not a failure (exit 1).
+    wait_until(step, IMPERSONATION, minted, clock=_DepsClock(deps), events=ctx.events, ctx=ctx)
     ctx.events.emit("step_apply", step=step, message=f"you can impersonate {deployer}")
     remember(ctx, outputs={IMPERSONABLE_KEY: True})
+
+
+#: IAM holds a deleted custom role's id for 37 days and lets it be undeleted
+#: for the first 7; past those a held id comes free within the remaining 30.
+ROLE_ID_HOLD_DAYS = 37
+ROLE_UNDELETE_DAYS = 7
+
+
+def held_roles(blocked: Sequence[str], today: date) -> str:
+    """Why bootstrap stops on roles deleted past their undelete window, and the
+    latest date their ids come free. IAM reports no deletion time, so the date
+    is the bound: a role refused its undelete was deleted at least 7 days ago,
+    so its id is free again at most 30 days from today."""
+    free = today + timedelta(days=ROLE_ID_HOLD_DAYS - ROLE_UNDELETE_DAYS)
+    return (
+        f"custom roles {', '.join(blocked)} were deleted more than {ROLE_UNDELETE_DAYS} days ago; IAM holds "
+        f"their ids for {ROLE_ID_HOLD_DAYS} days after deletion, and they cannot be undeleted or reused before "
+        f"then. They come free by {free.isoformat()} at the latest: run swarm install again on or after that "
+        "date to resume here, or install into a new project now"
+    )
+
+
+class _DepsClock:
+    """The step's injected clock, as `waits.wait_until` reads one."""
+
+    def __init__(self, deps: Deps) -> None:
+        self._deps = deps
+
+    def now(self) -> float:
+        return self._deps.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        self._deps.sleep(seconds)
 
 
 def _swarm_roles(gcp: Any, project: str) -> list[str]:
