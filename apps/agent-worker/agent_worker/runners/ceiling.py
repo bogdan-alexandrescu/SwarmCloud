@@ -162,6 +162,24 @@ NOTES_LIST_MAX = 40
 #: What a handoff lists of $SWARM_ARTIFACTS_DIR: the files an agent keeps
 #: notes and findings in. Its captures (`*.log`) and images are not notes.
 NOTES_SUFFIXES = (".md", ".json", ".txt", ".yml", ".yaml", ".csv", ".jsonl")
+#: The most of ONE notes file a handoff inlines (#2897: named, not inlined, was
+#: the owner's open point). 8 KiB is a page or two of findings -- the head of
+#: a long file says what it holds, and the file is named for the rest -- and
+#: keeps one huge capture from taking the whole budget.
+NOTES_INLINE_FILE_MAX_BYTES = 8 * 1024
+#: The most of ALL notes files one handoff inlines, newest-modified first. 32
+#: KiB is ~8-10k tokens: with the 16 KiB note file it keeps a fresh session's
+#: first context a small fraction of the 200k ceiling it was started to
+#: escape; the files past it are still named.
+NOTES_INLINE_TOTAL_MAX_BYTES = 32 * 1024
+#: Whether a handoff inlines the notes files: ON unless this is
+#: "0"/"false"/"no"/"off". On by default because the notes are the handoff's
+#: point (#2897); a first-call refusal already falls back to the minimal
+#: handoff, which leaves them out; this setting is the rollback.
+NOTES_INLINE_ENV = "SWARM_CEILING_NOTES_INLINE"
+#: How far past a cap a notes file is read before its secrets are scrubbed,
+#: so a secret that straddles the cut is replaced whole, not left as a prefix.
+_NOTES_SCRUB_MARGIN_BYTES = 4 * 1024
 
 #: The most lines of `git diff --stat` and of `git log` a handoff carries.
 DIFF_STAT_LINES = 60
@@ -198,6 +216,11 @@ def session_tail_enabled(environ: Mapping[str, str]) -> bool:
     """Whether a handoff carries the previous session's last words
     (`SESSION_TAIL_ENV`, off by default)."""
     return environ.get(SESSION_TAIL_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def notes_inline_enabled(environ: Mapping[str, str]) -> bool:
+    """Whether a handoff inlines the notes files (`NOTES_INLINE_ENV`, on by default)."""
+    return environ.get(NOTES_INLINE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
 def first_call_refusal(parsed: Any) -> str | None:
@@ -270,6 +293,10 @@ class CeilingWatcher:
         #: Fresh sessions refused on their first call and started once more
         #: from the minimal handoff (`minimal_handoff_prompt`).
         self.refusal_restarts: list[dict[str, Any]] = []
+        #: What each handoff inlined of the notes files (#2897): the session
+        #: it started, and each file's name, bytes and whether it was cut --
+        #: never the content -- so a deployed handoff can be checked.
+        self.notes_inlined: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._fed: list[bytes] = []
         self._partial = b""
@@ -557,6 +584,7 @@ class CeilingWatcher:
             "stops": list(self.stops),
             "skipped": self.skipped,
             "refusal_restarts": list(self.refusal_restarts),
+            "notes_inlined": list(self.notes_inlined),
             **self.sessions_record(),
         }
 
@@ -796,14 +824,16 @@ def agent_note(artifacts_dir: Path) -> str | None:
     return text or None
 
 
-def notes_files(artifacts_dir: Path) -> list[str]:
-    """The files the agent keeps notes and findings in, as `name (N bytes)`:
-    $SWARM_ARTIFACTS_DIR's own text files, one directory deep, sorted, at
-    most `NOTES_LIST_MAX` (#2897). The attempt's own directory and nothing
-    else: a link is not followed, so no other tenant's or attempt's file is
-    named. The note file itself is in the handoff already."""
+def _notes_paths(artifacts_dir: Path) -> list[tuple[str, Path]]:
+    """The files the agent keeps notes and findings in, as `(name, path)`
+    sorted by name: $SWARM_ARTIFACTS_DIR's own text files, one directory
+    deep (#2897). The attempt's own directory and nothing else: a link is not
+    followed, so no other tenant's or attempt's file is named or read. The
+    note file itself is in the handoff already. `notes_files` and
+    `notes_contents` both walk this, so what is named and what is inlined
+    are filtered alike."""
     root = Path(artifacts_dir)
-    found: list[str] = []
+    found: list[tuple[str, Path]] = []
     try:
         if root.is_symlink() or not root.is_dir():
             return []
@@ -817,12 +847,122 @@ def notes_files(artifacts_dir: Path) -> list[str]:
                         or path.suffix.lower() not in NOTES_SUFFIXES
                         or path.relative_to(root).as_posix() == AGENT_HANDOFF_NAME):
                     continue
-                found.append(f"{path.relative_to(root).as_posix()} ({path.stat().st_size} bytes)")
+                found.append((path.relative_to(root).as_posix(), path))
     except OSError:
         pass
+    return found
+
+
+def notes_files(artifacts_dir: Path) -> list[str]:
+    """The notes files (`_notes_paths`) as `name (N bytes)`, at most
+    `NOTES_LIST_MAX`."""
+    found: list[str] = []
+    for name, path in _notes_paths(artifacts_dir):
+        try:
+            found.append(f"{name} ({path.stat().st_size} bytes)")
+        except OSError:
+            continue
     if len(found) > NOTES_LIST_MAX:
         return [*found[:NOTES_LIST_MAX], f"... and {len(found) - NOTES_LIST_MAX} more"]
     return found
+
+
+@dataclass(frozen=True)
+class NoteContent:
+    """One notes file as a handoff inlines it: its name under
+    $SWARM_ARTIFACTS_DIR, its text (None when the budget was spent before
+    it), the bytes of it inlined, and whether it was cut."""
+
+    name: str
+    text: str | None
+    bytes: int
+    cut: bool
+
+
+def _head(text: str, limit: int) -> str:
+    """`text`'s first `limit` bytes of UTF-8, a character split at the cut dropped."""
+    return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+
+
+def notes_contents(
+    artifacts_dir: Path, scrub: Callable[[str], str] | None = None,
+) -> list[NoteContent]:
+    """The notes files' contents (#2897), newest-modified first: each cut at
+    `NOTES_INLINE_FILE_MAX_BYTES`, all of them at
+    `NOTES_INLINE_TOTAL_MAX_BYTES`; a file past the budget comes back with
+    no text, to be named as not inlined. The same files as `notes_files`.
+
+    `scrub` is applied to what was read BEFORE the cut, read a margin past
+    it, so a secret at the cut is replaced whole rather than left as a
+    prefix; the caps count the scrubbed text."""
+    dated: list[tuple[float, str, Path]] = []
+    for name, path in _notes_paths(artifacts_dir):
+        try:
+            dated.append((path.stat().st_mtime, name, path))
+        except OSError:
+            continue
+    dated.sort(key=lambda item: (-item[0], item[1]))
+    left = NOTES_INLINE_TOTAL_MAX_BYTES
+    out: list[NoteContent] = []
+    for _, name, path in dated:
+        limit = min(NOTES_INLINE_FILE_MAX_BYTES, left)
+        if limit <= 0:
+            out.append(NoteContent(name, None, 0, True))
+            continue
+        try:
+            with path.open("rb") as handle:
+                data = handle.read(limit + _NOTES_SCRUB_MARGIN_BYTES + 1)
+        except OSError:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        if scrub is not None:
+            text = scrub(text)
+        head = _head(text, limit)
+        cut = head != text
+        size = len(head.encode("utf-8"))
+        left -= size
+        out.append(NoteContent(name, head, size, cut))
+    return out
+
+
+def _fenced(text: str) -> str:
+    """`text` in a code fence longer than any run of backticks in it."""
+    longest = run = 0
+    for char in text:
+        run = run + 1 if char == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text.rstrip(chr(10))}\n{fence}"
+
+
+#: What follows a notes file the caps cut short, outside its fence.
+NOTES_CUT_MARKER = (
+    f"\n... (cut: a handoff inlines at most {NOTES_INLINE_FILE_MAX_BYTES // 1024} KiB of "
+    f"one file and {NOTES_INLINE_TOTAL_MAX_BYTES // 1024} KiB of all of them; "
+    "the file holds the rest)"
+)
+
+
+def _notes_section(notes: list[NoteContent]) -> str | None:
+    blocks: list[str] = []
+    left_out: list[str] = []
+    for item in notes:
+        if item.text is None:
+            left_out.append(item.name)
+            continue
+        marker = NOTES_CUT_MARKER if item.cut else ""
+        blocks.append(f"### {item.name}\n\n{_fenced(item.text)}{marker}")
+    if not blocks and not left_out:
+        return None
+    if left_out:
+        blocks.append(
+            f"Not inlined (the {NOTES_INLINE_TOTAL_MAX_BYTES // 1024} KiB budget for the "
+            "notes was spent on newer files); read them if you need them: "
+            + ", ".join(left_out))
+    return ("## Its notes and findings, as it last wrote them\n\n"
+            "The files above, newest-modified first, as they were when it stopped. "
+            "Continue from them; do not rebuild what they hold.\n\n"
+            + "\n\n".join(blocks))
 
 
 def _todo_lines(todos: Any) -> str | None:
@@ -849,11 +989,14 @@ def handoff_prompt(
     session_tail: str | None = None,
     todos: Any = None,
     files: list[str] | None = None,
+    notes: list[NoteContent] | None = None,
 ) -> str:
     """The prompt a fresh session starts from: the handoff, then the task.
 
     It carries the previous session's notes (#2897): its note file, the
-    notes files it kept in $SWARM_ARTIFACTS_DIR (`files`), its last todo
+    names of the notes files it kept in $SWARM_ARTIFACTS_DIR (`files`) and
+    their contents (`notes`, from `notes_contents`: capped, newest first,
+    already scrubbed; left out when `NOTES_INLINE_ENV` is off), its last todo
     list (`todos`) and, only when `SESSION_TAIL_ENV` turns it on, its own
     last words (`session_tail`) -- off by default, because that text fed back
     as user input got the fresh session's first call refused."""
@@ -890,6 +1033,9 @@ def handoff_prompt(
             "Read the ones you need before you redo any of their work.\n\n"
             + "\n".join(f"- {name}" for name in files)
         )
+    notes_text = _notes_section(notes or [])
+    if notes_text:
+        parts.append(notes_text)
     todo_text = _todo_lines(todos)
     if todo_text:
         parts.append(f"## Its todo list, as it last wrote it\n\n{todo_text}")
