@@ -560,40 +560,172 @@ def test_red_after_a_no_change_round_and_the_rerun_due_park_is_checks_failed(tmp
     assert "round 1" in outcome.summary["refusal"]["message"]
 
 
+def _another_accepted_rerun(world: MergeWorld) -> None:
+    """A second accepted re-run at PINNED, of job 7 again, claimed after the
+    first and past RERUN_SETTLE_SECONDS: the head's RERUNS_PER_HEAD_MAX-th."""
+    reruns = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY]
+    first = reruns[0]
+    later = datetime.now(timezone.utc) - timedelta(seconds=merge.RERUN_SETTLE_SECONDS + 5)
+    first["claimed_at"] = first["requested_at"] = later - timedelta(seconds=60)
+    reruns.append({**first, "claimed_at": later, "requested_at": later})
+
+
+def _expect_rerun_due_or_refusal(outcome, world: MergeWorld, accepted: int) -> None:
+    """#3080: after a no_change round the head may be re-run up to
+    RERUNS_PER_HEAD_MAX accepted times; the red answer of the last refuses."""
+    if accepted < merge.RERUNS_PER_HEAD_MAX:
+        _parked(outcome, merge.CI_RERUN_DUE, PINNED)
+        assert "round 1" in outcome.summary["wait"]["message"]
+        assert world.merge_calls() == []
+    else:
+        assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+        assert "round 1" in outcome.summary["refusal"]["message"]
+
+
+@pytest.mark.parametrize("accepted", [1, 2])
 @pytest.mark.parametrize("rerun, answered", [
     pytest.param({}, True, id="new-run-id"),
     pytest.param({"ago": merge.RERUN_SETTLE_SECONDS + 5}, False, id="settled"),
 ])
 def test_red_after_a_no_change_round_and_its_red_rerun_is_checks_failed(tmp_path, rerun,
-                                                                         answered):
+                                                                         answered, accepted):
+    """#3080 (owner decision 2026-11-12): one answered re-run at the head no
+    longer refuses after a no_change round -- it parks CI_RERUN_DUE for a
+    second; the second's red answer is `checks_failed`."""
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun=rerun)
+    if accepted == 2:
+        _another_accepted_rerun(world)
     if answered:
         _rerun_answered_red(world)
 
     outcome = merge.run_merge(world.context())
 
-    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
-    assert "round 1" in outcome.summary["refusal"]["message"]
+    _expect_rerun_due_or_refusal(outcome, world, accepted)
 
 
+@pytest.mark.parametrize("accepted", [1, 2])
 @pytest.mark.parametrize("rerun, answered", [
     pytest.param({"runs": [41]}, True, id="run-rerun-answered-red"),
     pytest.param({"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5}, False,
                  id="run-rerun-settled"),
 ])
 def test_red_after_a_no_change_round_with_an_answered_rerun_at_this_head_is_checks_failed(
-    tmp_path, rerun, answered,
+    tmp_path, rerun, answered, accepted,
 ):
     """#2841: the tick now asks GitHub to re-run the failed jobs of the
     failing check's workflow run and records the run ids as `runs` beside the
     failing check ids in `jobs`. A re-run GitHub accepted at this head --
-    answered red, or settled with its run's status unread -- is the one free
-    re-run, so a no_change round's red still refuses."""
+    answered red, or settled with its run's status unread -- counts against
+    the head's RERUNS_PER_HEAD_MAX (#3080): with one recorded a no_change
+    round's red parks CI_RERUN_DUE for another, with two it refuses."""
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun=rerun)
+    if accepted == 2:
+        _another_accepted_rerun(world)
     if answered:
         _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    _expect_rerun_due_or_refusal(outcome, world, accepted)
+
+
+def _answered_on_other_jobs(world: MergeWorld) -> None:
+    """The accepted re-run at PINNED re-ran job 7 (A), past
+    RERUN_SETTLE_SECONDS, and its run answered red under a new failing id
+    (B): the reading is no longer the one it replaces, so it is not settling."""
+    _no_change_round(world, rerun={"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5})
+    world.runs[0]["id"] = 8
+
+
+def _rerun_due_park(world: MergeWorld, *, after_rerun: bool) -> None:
+    """The step's own last park: CI_RERUN_DUE at PINNED, made before the
+    newest re-run at the head was claimed or after it."""
+    entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][-1]
+    shift = timedelta(seconds=30 if after_rerun else -30)
+    world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": merge.CI_RERUN_DUE, "head": PINNED, "parked_at": entry["claimed_at"] + shift}
+
+
+@pytest.mark.parametrize("park", [
+    pytest.param(None, id="no-park"),
+    pytest.param({"code": merge.CI_FIX_RUNNING, "head": PINNED}, id="round-running-park"),
+    pytest.param("before", id="rerun-due-park-the-rerun-answered"),
+    pytest.param("iso-text", id="rerun-due-park-served-as-iso-text"),
+])
+def test_red_after_a_no_change_round_with_a_rerun_answered_red_on_other_jobs_parks_ci_rerun_due(
+    tmp_path, park,
+):
+    """#3080 (PR #3049 at dd72fa3e, PR #3055 at d82d2635): the tick's free
+    re-run, spent before the round on one flake, answered red on another;
+    the round read it as a flake and pushed nothing. Fewer than
+    RERUNS_PER_HEAD_MAX accepted re-runs are recorded at the head, so the
+    step parks CI_RERUN_DUE for one more rather than refusing -- even when
+    its last park was CI_RERUN_DUE, since the tick has re-run since then."""
+    world = MergeWorld(tmp_path)
+    _answered_on_other_jobs(world)
+    if park in ("before", "iso-text"):
+        _rerun_due_park(world, after_rerun=False)
+        if park == "iso-text":
+            wait = world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY]
+            wait["parked_at"] = wait["parked_at"].isoformat()
+    elif park is not None:
+        world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY] = park
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_DUE, PINNED)
+    assert "round 1" in outcome.summary["wait"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_red_after_a_no_change_round_with_the_per_head_reruns_answered_red_is_checks_failed(
+    tmp_path,
+):
+    """#3080's bound: RERUNS_PER_HEAD_MAX accepted re-runs at the head, each
+    answered red, refuse `checks_failed` naming the round -- even when the
+    step's last CI_RERUN_DUE park was answered by the second -- so a
+    persistent red cannot loop."""
+    world = MergeWorld(tmp_path)
+    _answered_on_other_jobs(world)
+    _another_accepted_rerun(world)
+    _rerun_due_park(world, after_rerun=False)
+    reruns = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY]
+    assert len(reruns) == merge.RERUNS_PER_HEAD_MAX
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert "round 1" in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+@pytest.mark.parametrize("parked_at", [
+    pytest.param("after", id="parked-after-the-rerun"),
+    pytest.param(None, id="park-instant-missing"),
+    pytest.param("forged-future-claim", id="rerun-claimed-in-the-future"),
+])
+def test_red_after_a_no_change_round_whose_rerun_due_park_got_no_rerun_is_checks_failed(
+    tmp_path, parked_at,
+):
+    """The guard against a second park (#2351) still holds after #3080: the
+    step's last park was CI_RERUN_DUE at the head and no re-run was recorded
+    there since -- the tick found nothing to re-run and woke the step red --
+    so it refuses rather than parking again, though fewer than
+    RERUNS_PER_HEAD_MAX are recorded. A park whose instant cannot be read,
+    or a re-run claimed in the future (the document is tenant-writable),
+    proves no re-run since either."""
+    world = MergeWorld(tmp_path)
+    _answered_on_other_jobs(world)
+    _rerun_due_park(world, after_rerun=True)
+    wait = world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY]
+    if parked_at is None:
+        wait.pop("parked_at")
+    elif parked_at == "forged-future-claim":
+        entry = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY][-1]
+        wait["parked_at"] = entry["claimed_at"] - timedelta(seconds=30)
+        entry["claimed_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
 
     outcome = merge.run_merge(world.context())
 
@@ -683,19 +815,24 @@ def _actions_unreadable(world: MergeWorld) -> None:
     pytest.param(lambda w: _rerun_run(w, "in_progress") or w.workflow_runs[0].update(id=42),
                  id="another-run-running"),
 ])
+@pytest.mark.parametrize("accepted", [1, 2])
 def test_red_after_a_no_change_round_with_a_lapsed_rerun_not_running_is_checks_failed(
-    tmp_path, mutate,
+    tmp_path, mutate, accepted,
 ):
     """Once the re-run's attempt completed, or its status cannot be read, the
-    600 s window alone decides: past it, the red reading refuses."""
+    600 s window alone decides: past it, the red reading is the re-run's
+    answer. It parks CI_RERUN_DUE for another while fewer than
+    RERUNS_PER_HEAD_MAX accepted re-runs are recorded (#3080), and refuses
+    at the bound."""
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun={"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5})
+    if accepted == 2:
+        _another_accepted_rerun(world)
     mutate(world)
 
     outcome = merge.run_merge(world.context())
 
-    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
-    assert "round 1" in outcome.summary["refusal"]["message"]
+    _expect_rerun_due_or_refusal(outcome, world, accepted)
 
 
 def test_red_after_a_no_change_round_with_a_settling_rerun_parks_pending(tmp_path):
@@ -742,6 +879,7 @@ def test_the_tick_and_the_worker_read_the_same_keys_and_codes():
     assert merge.MERGE_FIX_ROUNDS_MAX == mergewake.MERGE_FIX_ROUNDS_MAX
     assert merge.RERUNS_KEY == mergewake.RERUNS_KEY == "reruns"
     assert merge.RERUN_SETTLE_SECONDS == mergewake.RERUN_SETTLE_SECONDS
+    assert merge.RERUNS_PER_HEAD_MAX == mergewake.RERUNS_PER_HEAD_MAX == 2
 
 
 # ---------------------------------------------------------------------------
