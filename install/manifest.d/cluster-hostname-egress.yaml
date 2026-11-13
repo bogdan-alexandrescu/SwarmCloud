@@ -25,7 +25,7 @@ entries:
   - terraform/modules/gke_autopilot/variables.tf
   - terraform/environments/dev/dev.tfvars
   - tests/terraform/gke_fqdn_network_policy.tftest.hcl
-  notes: 'null'
+  notes: null
   refs:
     variable:
     - infra/gke_enable_fqdn_network_policy

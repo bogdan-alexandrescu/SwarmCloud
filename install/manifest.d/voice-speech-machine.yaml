@@ -162,7 +162,7 @@ entries:
 - id: compute.voice-speech-machine
   kind: other
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud compute instance-templates list --regions=$REGION --filter="name~^${name_prefix}-speech-" --project=$P
@@ -224,7 +224,7 @@ entries:
 - id: network.voice-speech-address
   kind: network
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud compute addresses describe ${name_prefix}-speech --region=$REGION --project=$P
@@ -243,7 +243,7 @@ entries:
 - id: network.fw-voice-speech
   kind: network
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud compute firewall-rules describe ${name_prefix}-fw-allow-speech --project=$P && gcloud compute
@@ -267,7 +267,7 @@ entries:
 - id: iam-binding.voice-speech
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter=bindings.members:swarm-speech@
@@ -293,7 +293,7 @@ entries:
 - id: firestore.voice-speech-samples-ttl
   kind: firestore
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud firestore fields ttls list --collection-group=samples --database=$FIRESTORE_DB --project=$P
