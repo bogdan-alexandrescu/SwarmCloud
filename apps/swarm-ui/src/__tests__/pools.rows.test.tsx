@@ -30,7 +30,11 @@ import type { Result } from '../fetch'
 import type { Capacity, Pool } from '../types'
 import { THEMES, painted } from './marks'
 
-const api = vi.hoisted(() => ({ loadCapacity: vi.fn() }))
+const api = vi.hoisted(() => ({
+  loadCapacity: vi.fn(),
+  // An admin's session: `limit` links to Pool limits for an admin only (#3015).
+  loadMe: vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })),
+}))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
 const { CapacityScreen } = await import('../Capacity')
@@ -133,13 +137,15 @@ describe('a Pools row is one click from its holders and its limit (#125)', () =>
 
   it('links limit to that pool\'s Pool limits row', async () => {
     await renderPools()
-    const links = [...rowOf('runner:zeta').querySelectorAll('td.cap-links a')]
-    const limit = links.find((a) => a.textContent === 'limit')
-    expect(limit).toBeTruthy()
+    // The session read lands after the board: wait for the admin's link.
+    const limitOf = () => [...rowOf('runner:zeta').querySelectorAll('td.cap-links a')].find((a) => a.textContent === 'limit')
+    await waitFor(() => expect(limitOf()).toBeTruthy(), WAIT)
+    const limit = limitOf()
     expect(limit!.getAttribute('href')).toBe(`#admin/limits?pool=${encodeURIComponent('runner:zeta')}`)
     // `N holders` when the lease read could count them, `holders` when not,
     // `no lease rows` when units are on the counter and no lease names the
     // pool (QA2-FIX-14, capacity-02).
+    const links = [...rowOf('runner:zeta').querySelectorAll('td.cap-links a')]
     const holders = links.find((a) => /holders?$|^no lease rows$/.test(a.textContent ?? ''))
     expect(holders!.getAttribute('href')).toBe(`#capacity/holders?pool=${encodeURIComponent('runner:zeta')}`)
   })
