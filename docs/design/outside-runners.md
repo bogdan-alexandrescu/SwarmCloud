@@ -3,7 +3,7 @@
 **Status: design (2026-11-13). Nothing here is built.** The frozen half is a
 request, [section 11](#11-the-contract-change-request), not an edit
 (CLAUDE.md rule 1). Every fact in section 2 was read on 2026-11-13 at
-`139e213`; lines move, so each is cited by file and symbol, the thing to search
+`11f8d83`, the commit that adds this file and changes no code; lines move, so each is cited by file and symbol, the thing to search
 for when the line has gone. Provider prices in section 6 are list prices read
 the same day and must be read again before any order.
 
@@ -14,11 +14,11 @@ the same day and must be read again before any order.
 | # | Fork | Recommended | Rejected | Why, in one line |
 | --- | --- | --- | --- | --- |
 | D1 | Backend shape | **The outside worker PULLS offers of already-LEASED work from swarm-api over outbound HTTPS** | SwarmCloud pushes over SSH; a Pub/Sub pull subscription | Admission, the fence and release stay in the Firestore transactions that exist; the machine needs no inbound port and SwarmCloud holds no shell on it |
-| D2 | Identity and credentials | **A per-host enrolment key (Ed25519, generated on the host) proves the HOST; a per-attempt, one-hour token for the TENANT's worker account is minted by a narrow broker and handed to that job's VM only** | Workload identity federation from the provider's instance identity; a service-account key file | Works at every provider, no long-lived Google credential exists outside Google Cloud, and a stolen host reaches at most the tenants of the two jobs it holds, for under an hour |
+| D2 | Identity and credentials | **A per-host enrolment key (Ed25519, generated on the host) proves the HOST; a per-attempt, 15-minute access token for the TENANT's worker account is minted by a narrow broker, refreshed while the lease holds, and handed to that job's VM only** | Workload identity federation from the provider's instance identity; a service-account key file | Works at every provider, no long-lived Google credential exists outside Google Cloud, and a stolen host reaches at most the tenants of the two jobs it holds, for at most 15 minutes after suspension, which also bounds a lost host's retry delay |
 | D3 | Per-job isolation | **A fresh macOS virtual machine per job, an APFS copy-on-write clone of a golden image (two per host)** | A fresh local user per job; one long-lived VM reset between jobs | A guest has its own kernel, users and network stack, so an agent cannot reach the host's key, and `sandbox-exec` behaves in it exactly as on a plain Mac |
 | D4 | Provider for the first worker | **Scaleway Apple silicon, Mac mini M4 with 32 GB** | AWS EC2 Mac dedicated host (the fallback); MacStadium bare metal | Hourly billing with the licence's 24-hour minimum, an API to create and delete, enough memory for two guests, the lowest list price |
 | D5 | Worker software | **A versioned golden image built by a script, pinned by digest in configuration, rolled out by draining; Node 24.22.1 and Python 3.12 installed by the job under `$HOME` from a read-only, checksum-verified cache the image carries** | Toolchains preinstalled system-wide; every job downloading from the internet | The image is reproducible and rolled like a container digest; the job's own toolchain stays the job's, and installs are offline and fast |
-| D6 | Operations | **A worker registry in Firestore, written only by swarm-api: enrol, ACTIVE, DRAINING, DRAINED, LOST; a host heartbeat every 30 s; a vanished host is LOST after 3 missed beats and its jobs are reclaimed by the reconciler's existing stale-lease path** | Operator-maintained pool limits; a second, outside-only reconciler | Capacity tracks the machines that are alive, and the fence plus retry that already recover a lost pod recover a lost Mac |
+| D6 | Operations | **A worker registry in Firestore, written only by swarm-api: enrol, ACTIVE, DRAINING, DRAINED, LOST; a host heartbeat every 30 s; a vanished host is LOST after 3 missed beats and its jobs are reclaimed by the reconciler's existing stale-lease path once termination is confirmed (suspension plus access-token expiry)** | Operator-maintained pool limits; a second, outside-only reconciler | Capacity tracks the machines that are alive, and the fence plus retry that already recover a lost pod recover a lost Mac |
 
 The profile is generic: `claude-code-macos` runs any tenant's macOS work. No
 project, account, domain or machine name appears in the catalogue, the image or
@@ -247,10 +247,21 @@ What is new is that the `backend:OUTSIDE_PULL` pool's limit must follow the
 fleet: it is the sum of the free slots of ACTIVE hosts (two per macOS host).
 swarm-api's registry transaction (section 8) writes that limit when a host
 becomes ACTIVE, DRAINING, DRAINED or LOST, reading `active` in the same
-transaction. Lowering a limit below `active` admits nothing new until leases
+transaction. The field it writes is the pool document's `adaptive_target`,
+never `hard_limit`: `SlotPool.effective_limit` (`models.py`) is the minimum of
+`hard_limit`, `adaptive_target` and `quota_derived_limit`, so the fleet can
+lower the limit but never raise it past the ceiling. Today only the quota
+broker writes `adaptive_target`, and only on `provider:` pools (`aimd.py`), so
+nothing else contends for it on `backend:OUTSIDE_PULL`; `quota_derived_limit`
+stays unset. Lowering a limit below `active` admits nothing new until leases
 drain; it never revokes a lease. Terraform keeps `hard_limit` as the
 **ceiling** the registry may not exceed (`locals.tf`, `pool_backends`), which is
-also the cost ceiling in slots (section 8.6). One pool per machine class
+also the cost ceiling in slots (section 8.6). A Terraform apply does not
+overwrite the registry's value: the pool document is created once with
+`ignore_changes = [fields]` (`terraform/modules/firestore/bootstrap.tf`,
+`google_firestore_document.pool`), so neither `adaptive_target` nor `active`
+is ever reset by an apply; raising the ceiling is an operator's edit of
+`hard_limit`, as for every pool today. One pool per machine class
 (`resource:macos-vm`) separates macOS slots from any later outside class.
 
 **Concurrency from LEASED (invariant 3).** The slot is taken at admission, before
@@ -279,10 +290,14 @@ from the host's disk.
 record of each host's running VMs (reported in its heartbeat);
 `terminate` writes a kill request the host acts on at its next poll and
 acknowledges. For a LOST host, `terminate` returns confirmed once the host's
-credential is suspended **and** the longest per-attempt token it was given has
-expired (section 4): past that point the VM can neither call swarm-api nor
-read a secret or an object, so releasing the slot cannot double-run a job with
-effect.
+credential is suspended **and** the longest-lived access token any of its jobs
+was given has expired (section 4.2: 15 minutes from its last refresh): past
+that point the VM can neither call swarm-api with effect (its attempt is fenced
+and its host suspended) nor read a secret or an object, so releasing the slot
+cannot double-run a job with effect. This is what `Reconciler._terminate`
+(`repair.py`) already demands of every backend: no release before a confirmed
+stop, except for a worker that never started. Section 8.4 gives the delay this
+puts on a retry.
 
 ---
 
@@ -323,9 +338,20 @@ its own service account, the only principal holding Token Creator on the
 tenants' worker accounts, scoped by an IAM condition to accounts named
 `swarm-agent-worker-*` — for:
 
-* a one-hour **access token** for `worker_service_account_id(tenant)`, and
-* a one-hour **ID token** for that account with swarm-api's audience (what the
-  state routes' first check reads, `attemptstate.py`).
+* a 15-minute **access token** for `worker_service_account_id(tenant)` (the
+  IAM Credentials `generateAccessToken` call takes a `lifetime`; one hour is
+  only its default), and
+* an **ID token** for that account with swarm-api's audience (what the state
+  routes' first check reads, `attemptstate.py`). Its one-hour life is fixed by
+  `generateIdToken`, but it reaches nothing except swarm-api's state routes,
+  which refuse a fenced attempt (409) and a suspended host's jobs, so it does
+  not hold a release.
+
+The access token is short on purpose: it is what reads secrets and objects, so
+its lifetime is the wait between a host vanishing and its jobs' slots being
+released (sections 3.3 and 8.4). Fifteen minutes keeps that wait small against
+a two-hour step; the worker refreshes at ten, so a live job never sees it
+lapse.
 
 The broker mints only for a lease that is `DISPATCHED` to the asking host, at
 the lease's generation, and records the mint on the attempt. The host passes
@@ -351,8 +377,8 @@ secret store; rejected.
 
 | Stolen | Reaches | For how long | Stops when |
 | --- | --- | --- | --- |
-| A job VM | Its own tenant's secrets, `tenants/<id>/` and the state routes for its own attempt | Under an hour | The attempt is fenced (refresh refused) and the token expires |
-| A host | The tokens of the at most two jobs it holds (two tenants); new offers for the outside profile | Its host token's 15 minutes, renewable only with the host key | An operator suspends the host in the registry (one command, section 8.2); its job tokens then lapse within the hour |
+| A job VM | Its own tenant's secrets, `tenants/<id>/` and the state routes for its own attempt | At most 15 minutes after its last refresh | The attempt is fenced (refresh refused) and the access token expires |
+| A host | The tokens of the at most two jobs it holds (two tenants); new offers for the outside profile | Its host token's 15 minutes, renewable only with the host key | An operator suspends the host in the registry (one command, section 8.2); its job access tokens then lapse within 15 minutes |
 | The host key | The same as the host, from elsewhere | Until suspended | Suspension; the key is useless without the registry's ACTIVE row |
 
 Not reachable from any of them: Firestore (no client, no role), other tenants'
@@ -458,7 +484,7 @@ matters more than elasticity: it has no hourly billing and no ordering API, so
 the fleet could not scale by day.
 
 The backend does not depend on the provider: a host is a host once enrolled.
-Only the provisioning script (lane L6) is provider-specific, behind one
+Only the provisioning script (lane L7) is provider-specific, behind one
 interface (create, delete, list, with the provider credential in Secret
 Manager, never in the repository).
 
@@ -529,8 +555,9 @@ no Firestore access). A row holds the host id (random, never a provider name),
 public key, machine class, slots, allowed tenants (empty: any), image digest,
 state, last heartbeat and the VMs it reports. States:
 `PENDING → ACTIVE ⇄ DRAINING → DRAINED`, and `LOST` from ACTIVE or DRAINING.
-Every state change and the `backend:OUTSIDE_PULL` pool's limit are written in
-one transaction (section 3.3). Only ACTIVE hosts may claim.
+Every state change and the `backend:OUTSIDE_PULL` pool's `adaptive_target` are
+written in one transaction (section 3.3); `hard_limit` is Terraform's and the
+registry never writes it. Only ACTIVE hosts may claim.
 
 ### 8.2 Registering and draining
 
@@ -558,14 +585,33 @@ one transaction (section 3.3). Only ACTIVE hosts may claim.
 1. Its host beats stop. After 3 missed beats (90 s) swarm-api's sweep marks it
    LOST, lowers the pool limit and suspends its host token.
 2. Its jobs' leases stop being extended. After `heartbeat_grace_seconds` (90),
-   `detect_stale_leases` finds them; `fence_release_repair` bumps the
-   generation, releases every pool the lease named and requeues the agent with
-   `requeue_backoff_seconds`, within `max_attempts`.
-3. The retry runs on any ACTIVE host from the last checkpoint in GCS.
-4. If the vanished host comes back, its VMs' next state call meets the new
+   `detect_stale_leases` finds them, but finding is not releasing: the repair
+   releases only after a confirmed terminate (`Reconciler._terminate`,
+   `repair.py`), and for a LOST host terminate is confirmed only once the host
+   is suspended **and** every access token its jobs held has expired (section
+   3.3). Until then each pass records the finding as held
+   (`termination_unconfirmed`) and the slots stay taken. A worker that never
+   started is the one exception, released on that evidence as today.
+3. Once confirmed, `fence_release_repair` bumps the generation, releases every
+   pool the lease named and requeues the agent with `requeue_backoff_seconds`,
+   within `max_attempts`.
+4. The retry runs on any ACTIVE host from the last checkpoint in GCS.
+5. If the vanished host comes back, its VMs' next state call meets the new
    generation and gets 409: the worker exits without touching the lease
-   (invariant 5). Its job tokens cannot be refreshed and expire within the
-   hour. The host itself stays suspended until an operator re-enrols it.
+   (invariant 5). Its job access tokens cannot be refreshed and expire within
+   15 minutes. The host itself stays suspended until an operator re-enrols it.
+
+**The retry delay.** Suspension comes at 90 s; the access token was refreshed
+at most ten minutes before the host vanished and lives 15 minutes (section
+4.2), so in the worst case the release comes about 15 minutes after the host
+vanished, plus one reconciler pass, then `requeue_backoff_seconds`. Against a
+two-hour step that is the cost of a lost host on top of the work since the last
+checkpoint, and the retry is a new attempt with its own `timeout_seconds`. With
+a one-hour token the same wait would be up to an hour, half the step, which is
+why the token is short. Meanwhile the held leases still count in the pool's
+`active` while the LOST transaction has already taken the host's two slots out
+of `adaptive_target`, so for those minutes the fleet admits up to two fewer
+jobs than it has free guests; it never oversubscribes.
 
 ### 8.5 Cost controls
 
@@ -619,13 +665,13 @@ Each lane pushes its tests alone first and lets CI show them red.
 
 | Lane | Files | Red-first test | Waits on |
 | --- | --- | --- | --- |
-| L0 Contract | `apps/common/swarm_common/profiles.py`, `docs/contract-change-requests.md` (applied by the owner) | `tests/unit/contract/test_outside_backend.py`: `Backend.OUTSIDE_PULL` exists; `claude-code-macos` names it, `macos-vm`, `full_clone=True`, `timeout_seconds=7200`, `ON_DEMAND_ONLY` | The owner accepting section 11 |
-| L1 Registry and offers | `apps/swarm-api/swarm_api/outsidehosts.py` (new), its routes, `apps/scheduler/scheduler/dispatch.py` (`OutsidePullDispatcher`, `BackendRouter.for_backend`) | `tests/unit/swarm_api/test_outside_hosts.py`: a claim of a lease at an old generation is refused; a DRAINING host cannot claim; a state change and the pool limit commit together or not at all; an unclaimed offer is released by `dispatch_deadline` | L0 |
-| L2 Reconciler | `apps/reconciler/reconciler/backends.py` (`OutsideBackend.list_executions`, `terminate`), `repair.py` | `tests/unit/reconciler/test_outside_backend.py`: a LOST host's lease is fenced, released and requeued; `terminate` is unconfirmed until suspension plus token expiry | L1 |
-| L3 Host agent and VM manager | `apps/outside-host/` (new): poll, claim, clone, boot, inject tokens, destroy, heartbeat | `tests/unit/outside_host/test_lifecycle.py` against a fake VM manager: a VM is destroyed on every exit code (0, 70, 75, 1); a VM name carries the generation; nothing is claimed with a full disk | L1 |
-| L4 Golden image | `images/macos-runner/` (new build script and self-test) | `tests/unit/images/test_macos_runner_manifest.py`: pinned versions and checksums are present and no credential-shaped line exists; the self-test script includes the `sandbox-exec` network-deny probe | L3 for the host side; a macOS build host |
-| L5 Broker and job tokens | `apps/swarm-broker-tokens/` (new service), its Terraform under `terraform/infra/` with `managed-by=swarm-terraform`, the refresh route in `attemptstate.py` | `tests/unit/broker/test_outside_tokens.py`: no mint for a lease not DISPATCHED to the asking host, at another generation, or for an account outside `swarm-agent-worker-*`; a fenced attempt's refresh is refused | L1; owner decision 3 |
-| L6 Worker full clone | `apps/agent-worker/agent_worker/gitops.py` (`full_clone_at_commit`), the runner's clone call | `tests/unit/agent_worker/test_full_clone.py`: on a local bare repository, the clone has full history, `HEAD` is the pin, the tree is clean | L0 |
+| L0 Contract | `apps/common/swarm_common/profiles.py`, `docs/contract-change-requests.md` (applied by the owner) | `tests/unit/common/test_outside_backend_contract.py`: `Backend.OUTSIDE_PULL` exists; `claude-code-macos` names it, `macos-vm`, `full_clone=True`, `timeout_seconds=7200`, `ON_DEMAND_ONLY` | The owner accepting section 11 |
+| L1 Registry and offers | `apps/swarm-api/swarm_api/outsidehosts.py` (new), its routes, `apps/scheduler/scheduler/dispatch.py` (`OutsidePullDispatcher`, `BackendRouter.for_backend`) | `tests/unit/control_plane/test_outside_hosts.py`: a claim of a lease at an old generation is refused; a DRAINING host cannot claim; a state change and the pool's `adaptive_target` commit together or not at all, and `hard_limit` is never written; an unclaimed offer is released by `dispatch_deadline` | L0 |
+| L2 Reconciler | `apps/reconciler/reconciler/backends.py` (`OutsideBackend.list_executions`, `terminate`), `repair.py` | `tests/unit/reconciler/test_outside_backend.py`: a LOST host's lease is fenced, released and requeued; `terminate` is unconfirmed, and the slot held, until suspension plus access-token expiry | L1 |
+| L3 Host agent and VM manager | `apps/outside-host/` (new): poll, claim, clone, boot, inject tokens, destroy, heartbeat | `tests/unit/worker/test_outside_host_lifecycle.py` against a fake VM manager: a VM is destroyed on every exit code (0, 70, 75, 1); a VM name carries the generation; nothing is claimed with a full disk | L1 |
+| L4 Golden image | `images/macos-runner/` (new build script and self-test) | `tests/unit/scripts/test_macos_runner_image.py`: pinned versions and checksums are present and no credential-shaped line exists; the self-test script includes the `sandbox-exec` network-deny probe | L3 for the host side; a macOS build host |
+| L5 Broker and job tokens | `apps/swarm-broker-tokens/` (new service), its Terraform under `terraform/infra/` with `managed-by=swarm-terraform`, the refresh route in `attemptstate.py` | `tests/unit/broker/test_outside_tokens.py`: no mint for a lease not DISPATCHED to the asking host, at another generation, or for an account outside `swarm-agent-worker-*`; an access token asks for a 15-minute lifetime; a fenced attempt's refresh is refused | L1; owner decision 3 |
+| L6 Worker full clone | `apps/agent-worker/agent_worker/gitops.py` (`full_clone_at_commit`), the runner's clone call | `tests/unit/worker/test_full_clone.py`: on a local bare repository, the clone has full history, `HEAD` is the pin, the tree is clean | L0 |
 | L7 Provider and operations | `scripts/outside-host-enrol.sh`, `scripts/outside-host-drain.sh`, `scripts/outside-fleet.sh` (provider create/delete/list), `docs/operations.md` | `tests/unit/scripts/test_outside_host_scripts.py`: `set -euo pipefail` first, typed confirmation required and `SWARM_ASSUME_YES` ignored, no provider credential read from anything but Secret Manager | L1; owner decisions 1 and 2 |
 | L8 Live proof | `scripts/concurrency-test.sh`, `scripts/race-test.sh` extended for the backend | Run against one enrolled host: two jobs run, a third waits in `READY` holding no slot; a killed host's job retries elsewhere from its checkpoint; a network-denied `sandbox-exec` probe fails to connect | L1-L7 |
 
