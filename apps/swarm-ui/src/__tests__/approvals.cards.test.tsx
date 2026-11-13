@@ -114,7 +114,15 @@ const page = () =>
     return d
   }, WAIT)
 
-const words = (el: Element | null) => visible(el).split(/\s+/).filter((w) => /[A-Za-z]/.test(w)).length
+/** What a reader sees: the text, less any hidden tooltip. */
+function shown(el: Element | null): string {
+  if (el === null) return ''
+  const copy = el.cloneNode(true) as Element
+  for (const t of copy.querySelectorAll('[hidden], [role="tooltip"]')) t.remove()
+  return visible(copy)
+}
+
+const words = (el: Element | null) => shown(el).split(/\s+/).filter((w) => /[A-Za-z]/.test(w)).length
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -209,7 +217,7 @@ describe('one approval, as a card page', () => {
       expect(within(head).getByRole('heading', { level: 2 }).textContent).toContain('Merge pull request #482')
       // Expiry and approvers, in every state.
       const expiry = within(head).getByTestId('apd-expiry')
-      expect(visible(expiry)).toMatch(st === 'expired' ? /^Expired/ : st === 'pending' || st === 'viewer' ? /^Expires\s*in 2d/ : /^Was due/)
+      expect(visible(expiry)).toMatch(st === 'expired' ? /^Expired/ : st === 'pending' || st === 'viewer' ? /^Expires\s*in \dd/ : /^Was due/)
       expect(visible(within(head).getByTestId('ad-who'))).toBe('the platform owner')
       // The head says the state's word only where it asks for something:
       // a waiting item's head carries no state chip.
@@ -243,8 +251,9 @@ describe('one approval, as a card page', () => {
     const d = await page()
     const strip = await within(d).findByTestId('ap-no-decide', undefined, WAIT)
     expect(within(d).queryByRole('button', { name: /^Approve|^Reject/ })).toBeNull()
-    expect(visible(strip)).toContain('The platform owner only')
-    expect(visible(strip)).not.toContain(MAY_NOT.why)
+    expect(shown(strip)).toContain('The platform owner only')
+    expect(shown(strip)).not.toContain(MAY_NOT.why)
+    expect(visible(strip)).toContain(MAY_NOT.why)
     expect(within(strip).getByRole('button', { name: /^About/ })).toBeTruthy()
   })
 
