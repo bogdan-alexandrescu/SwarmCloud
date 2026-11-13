@@ -244,7 +244,13 @@ load_env() {
   # never-touch list): putting our state in it would make our teardown depend
   # on their retention policy. config/<env>/ in it holds the deployment's
   # configuration (config_fetch below).
-  TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
+  #
+  # Resolution: TF_STATE_BUCKET (an explicit override), then STATE_BUCKET_NAME,
+  # then the default. STATE_BUCKET_NAME is the deployment's configured name,
+  # set in .env when terraform/bootstrap's state_bucket_name gave the bucket a
+  # suffix; without it a suffixed deployment's scripts looked for a default
+  # bucket that was never created. config_source below resolves the same way.
+  TF_STATE_BUCKET="${TF_STATE_BUCKET:-${STATE_BUCKET_NAME:-swarm-tfstate-${PROJECT_ID}}}"
   TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
   # terraform/bootstrap's state, in the same bucket (#827). Not overridable and
   # not per-environment: there is one bootstrap layer per project, and its
@@ -319,7 +325,7 @@ config_source() {
   if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
     printf '%s/%s' "${SWARM_DEPLOY_CONFIG_DIR}" "$1"
   else
-    printf 'gs://%s/config/%s' "${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID:-}}" "$1"
+    printf 'gs://%s/config/%s' "${TF_STATE_BUCKET:-${STATE_BUCKET_NAME:-swarm-tfstate-${PROJECT_ID:-}}}" "$1"
   fi
 }
 
