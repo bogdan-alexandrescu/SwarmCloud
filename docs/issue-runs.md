@@ -316,11 +316,11 @@ So the tick settles one (`routes/runs.py` `_settle_submission`), once its
 bound the tick leaves the run alone, because a submission may still be in flight.
 
 Past the bound, the tick **adopts before it fails**. A compiled workflow's step
-tasks carry `metadata.issue_run.run_id`, so a step task of the **run's own
+agents carry `metadata.issue_run.run_id`, so a step agent of the **run's own
 tenant** linked to the run (filtered on `tenant_id`, invariant 9) means the
 workflow *was* stored and only the `RUNNING` write was lost: the run moves to
 `RUNNING` with that workflow and follows it as usual. Failing it instead would
-leave a workflow running that no run tracks. With no such task, the run moves
+leave a workflow running that no run tracks. With no such agent, the run moves
 to `FAILED`, by `swarm-api`, with an error saying its workflow submission was
 never stored. `FAILED` creates no demand (invariant 1), so the only effect is
 that the runs behind it are released. Both writes re-check, inside their
