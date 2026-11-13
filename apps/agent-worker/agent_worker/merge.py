@@ -121,7 +121,11 @@ it spares a `question_wait` or `release_wait` one, so it never dead-letters
 at `human_park_max_seconds`. Its pull request merged or closed outside the
 workflow ends it instead (MERGE-OUTSIDE-ENDS, #2441): swarm-api's wake tick
 marks the hold, the scheduler wakes it, and `_ended_outside` reads the pull
-request before any question and ends the step SUCCEEDED or CANCELLED. The review's `open_questions`, the ones it
+request before any question and ends the step SUCCEEDED or CANCELLED. A
+closed-unmerged pull request read on the wake of any park, marked or not,
+ends CANCELLED the same way (`_closed_outside`, #3603): the tick never marks
+a merge-train or merge-slot park, and PR #3333's train wait woke on its
+fallback, read its pull request closed and ended FAILED `merge_refused`. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
@@ -2986,7 +2990,9 @@ def _ended_outside(run: _Run, target: MergeTarget,
       * open (a forged or stale mark), not this workflow's pull request, or
         unreadable: None, and the hold parks again exactly as before.
 
-    No mark, no read: an ordinary hold stays credential-free.
+    No mark, no read: an ordinary hold stays credential-free. An unmarked
+    park still ends CANCELLED when its wake reads its own pull request closed
+    unmerged: `_with_forge` ends it with `_closed_outside`, as here (#3603).
     """
     ctx, summary = run.ctx, run.summary
     wait = _mapping(_mapping(_own_doc(ctx).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
@@ -3039,12 +3045,17 @@ def _ended_outside(run: _Run, target: MergeTarget,
                         "outcome": words})
         return _outcome(TaskState.SUCCEEDED, None, summary, words)
     if pr.state == "closed":
-        message = (f"pull request #{number} was closed without merging, outside the "
-                   "workflow; there is nothing left to merge")
-        summary["refusal"] = {"code": "pull_request_closed", "message": message}
-        return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
-                        f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
+        return _closed_outside(summary, number)
     return None
+
+
+def _closed_outside(summary: dict[str, Any], number: int) -> ActionOutcome:
+    """The CANCELLED end of a step whose own pull request was closed unmerged."""
+    message = (f"pull request #{number} was closed without merging, outside the "
+               "workflow; there is nothing left to merge")
+    summary["refusal"] = {"code": "pull_request_closed", "message": message}
+    return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
+                    f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
 
 
 def _answer_of(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
@@ -3878,6 +3889,19 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("merged_at_other_head",
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
     if pr.state != "open":
+        # A step woken from a park -- train, slot, CI or any other, marked by
+        # the tick or not -- whose own pull request a person closed meanwhile
+        # ends CANCELLED, as `_ended_outside` ends a marked hold (#3603). A
+        # first attempt, or another branch's pull request, is refused.
+        parked = _mapping(_mapping((own or {}).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+        if parked.get("code") and not pr.merged and pr.head_repo is not None \
+                and pr.head_repo.lower() == (pr.base_repo or "").lower() \
+                and (branch is None or pull_request_belongs(
+                    {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
+                     "base": {"repo": {"full_name": pr.base_repo}}},
+                    author_branch=branch)):
+            summary["pull_request"] = number
+            return _closed_outside(summary, number)
         return run.refuse("pull_request_closed", f"pull request #{number} is closed, not merged")
     if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
         return run.refuse("from_fork",

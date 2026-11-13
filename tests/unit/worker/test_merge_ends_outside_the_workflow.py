@@ -13,19 +13,30 @@ owner-questions hold, because a merged pull request needs no answers:
 
 An unmarked hold stays credential-free, as #2070 made it.
 
+A park of any kind, marked or not, ends the same way once woken (#3603): the
+merge-train wait of PR #3333 was never marked -- the tick skips train and slot
+parks -- so it woke on its fallback, read its own pull request closed unmerged
+and ended FAILED `merge_refused`. A step resumed from any `merge_wait` park that
+reads its own pull request closed unmerged ends CANCELLED as above; a first
+attempt, or a closed pull request that is not this workflow's, still refuses
+FAILED `pull_request_closed`.
+
 `merge_world.MergeWorld` is green in every respect; each test adds the hold.
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
-from agent_worker import merge
+import pytest
+
+from agent_worker import merge, mergetrain
 from agent_worker.errors import ExitCode
-from swarm_common.models import EndCause
+from swarm_common.models import EndCause, utcnow
 from swarm_common.states import TaskState
 
-from merge_world import MERGED, OPENER, PR, TASK, WORKFLOW, MergeWorld
+from merge_world import MERGED, NUMBER, OPENER, PINNED, PR, TASK, WORKFLOW, MergeWorld
 
 IMPLEMENT = "task_impl"
 QUESTION = {"task_id": IMPLEMENT, "step_id": "implement", "question_index": 1,
@@ -138,3 +149,61 @@ def test_the_merge_facts_carry_who_merged_and_when(tmp_path):
     assert facts.merged and facts.merged_by == "example-user"
     assert facts.merged_at == "2026-10-26T07:25:00Z"
     assert OPENER in (facts.head_ref or "")
+
+
+# ---------------------------------------------------------------------------
+# A park of any kind, marked or not (#3603)
+
+
+def _parked(tmp_path, code: str) -> MergeWorld:
+    """The step's own record after a park the tick never marked: no `wake_reason`."""
+    world = MergeWorld(tmp_path)
+    world.docs[TASK]["metadata"] = {merge.MERGE_WAIT_METADATA_KEY: {
+        "code": code, "head": PINNED, "pull_request": NUMBER, "pending": [],
+        "train_waits": 1, "first_parked_at": utcnow() - timedelta(minutes=20)}}
+    return world
+
+
+@pytest.mark.parametrize("code", [mergetrain.TRAIN_WAITING, merge.CI_FIX_PENDING])
+def test_an_unmarked_park_whose_pull_request_was_closed_ends_cancelled(tmp_path, code):
+    world = _parked(tmp_path, code)
+    world.pr.update(state="closed", merged=False)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse every closed pull request (the #3603 bug) and this ends FAILED.
+    assert outcome.state is TaskState.CANCELLED, outcome.message
+    assert outcome.exit_code == ExitCode.CANCELLED
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "pull_request_closed"
+    assert outcome.summary["pull_request"] == NUMBER
+    assert "closed without merging" in outcome.message
+    # MUTATION: end it after merging or parking for a fix round and this fails.
+    assert world.merge_calls() == []
+    assert outcome.ci_wait is None and outcome.owner_wait is None
+
+
+def test_a_first_attempt_on_a_closed_pull_request_still_refuses_failed(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.pr.update(state="closed", merged=False)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: end every closed pull request CANCELLED and this one is not refused.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "pull_request_closed"
+    assert world.merge_calls() == []
+
+
+def test_a_parked_step_whose_closed_pull_request_is_another_branch_is_not_cancelled(tmp_path):
+    world = _parked(tmp_path, mergetrain.TRAIN_WAITING)
+    world.pr.update(state="closed", merged=False)
+    world.pr["head"] = dict(world.pr["head"], ref="someone-else/branch")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: skip the branch check and an opener's forged number ends the step.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.summary["refusal"]["code"] == "pull_request_closed"
+    assert world.merge_calls() == []
