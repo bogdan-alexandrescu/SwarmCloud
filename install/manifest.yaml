@@ -1,10 +1,9 @@
 # SwarmCloud Day One: the dependency manifest (DAYONE-MANIFEST-1; part of #2688)
 #
 # Every dependency a from-scratch install of SwarmCloud into a new Google Cloud
-# project needs. The installer, `swarm doctor`, the console's Admin > Setup and
-# the generated install guide read it through `swarm_install.manifest`
-# (docs/design/day-one-install.md sections 2 and 3; docs/design/day-one-plan.md
-# section 1).
+# project needs. The installer and `swarm doctor` read it through
+# `swarm_install.manifest` (docs/design/day-one-install.md sections 2 and 3;
+# docs/design/day-one-plan.md section 1).
 #
 # What this file holds. The P0 draft's entries
 # (docs/design/day-one/manifest.draft.yaml), less the 13 that DAYONE-P2 added
@@ -38,6 +37,20 @@
 #           patterns; swarm_install/manifest.py documents each key's shape)
 #   expand  per_tenant | per_profile | per_account, for a template entry
 # and `new: true` on an `api.*` entry no API list holds yet.
+#
+# What code reads. `swarm install --repair` reads `step`; `swarm doctor` reads
+# `probe`, `step`, `explain` and `check`; the completeness test reads `refs`;
+# the loader checks `depends_on`. `apply`, `verify`, `guards`, `secret_entry`,
+# `evidence` and `notes` are provenance for whoever maintains an entry: where
+# the dependency is made in this tree (a Terraform address, a create-secrets.sh
+# option, a command the engine runs), never instructions to an operator, who
+# runs `swarm install` and is told what to do by the step `step` names. A
+# field with no value is YAML null (unquoted), never the string 'null'.
+#
+# `stage` is the stage of the step `step` names
+# (tests/unit/install/test_manifest_steps.py holds them equal, with its
+# reasoned exceptions), and every registered step is named by some entry or
+# excused there.
 #
 # The test fails on an unlisted dependency: every Terraform resource and data
 # source, API, service environment variable, secret id, create-secrets.sh
@@ -106,21 +119,19 @@ counts:
     company-external: 3
   stage:
     '0': 28
-    '1': 39
-    '2': 10
-    '3': 42
+    '1': 37
+    '2': 5
+    '3': 40
     '4': 31
-    '5': 59
-    '6': 38
-    '7': 112
+    '5': 85
+    '6': 11
+    '7': 120
     '8': 10
-    '9': 20
+    '9': 10
     '10': 17
-    '11': 19
-    '12': 1
-    '13': 6
-    '14': 5
-    '15': 10
+    '13': 42
+    '14': 9
+    '15': 2
   total:
     entries: 447
 
@@ -580,7 +591,7 @@ entries:
 - id: bucket.state_logs
   kind: bucket
   scope: core
-  stage: 1
+  stage: 3
   provider: engine
   check: gcloud storage buckets describe gs://swarm-tfstate-logs-$P --project=$P
   apply: terraform/bootstrap/state_bucket.tf resource "google_storage_bucket" "state_logs"
@@ -1161,7 +1172,7 @@ entries:
 - id: iam-binding.state-logs-writer
   kind: iam-binding
   scope: core
-  stage: 1
+  stage: 3
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://swarm-tfstate-logs-$P
   apply: terraform/bootstrap/state_bucket.tf resource "google_storage_bucket_iam_member" "log_writer"
@@ -1314,7 +1325,7 @@ entries:
 - id: other.shared-project-literal-in-both-envs
   kind: other
   scope: core
-  stage: 1
+  stage: 5
   provider: engine
   check: grep -n '^project_id' terraform/environments/dev/dev.tfvars terraform/environments/prod/prod.tfvars
   apply: terraform/environments/dev/dev.tfvars:8 and terraform/environments/prod/prod.tfvars:13 BOTH hardcode project_id = "example-shared-project"
@@ -1331,7 +1342,7 @@ entries:
 - id: switch.manage_project_services
   kind: switch
   scope: core
-  stage: 1
+  stage: 5
   provider: engine
   check: terraform -chdir=terraform/bootstrap show -json | jq '.values.root_module.resources[]? | select(.address=="module.project_services")'
   apply: 'terraform/bootstrap/main.tf module.project_services count = var.manage_project_services ? 1 : 0'
@@ -1381,7 +1392,7 @@ entries:
 - id: declared-value.frontend_iap_backends
   kind: declared-value
   scope: core
-  stage: 2
+  stage: 7
   provider: engine
   check: grep -n frontend_iap_backends terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/variables.tf:503-525, default ["swarm-ui-backend", "swarm-ui-ui-backend"]; absent from terraform.tfvars (default used)
@@ -1434,7 +1445,7 @@ entries:
 - id: api.dns
   kind: gcp-api
   scope: core
-  stage: 2
+  stage: 1
   provider: engine
   check: gcloud services list --enabled --project=$P --filter=config.name=dns.googleapis.com
   apply: 'NEW: enabled only when the installer says the hostname''s zone is in Cloud DNS'
@@ -1455,7 +1466,7 @@ entries:
 - id: api.iap
   kind: gcp-api
   scope: core
-  stage: 2
+  stage: 1
   provider: engine
   check: gcloud services list --enabled --project=$P --filter=config.name=iap.googleapis.com
   apply: module.project_services (terraform/infra/main.tf:49)
@@ -1477,7 +1488,7 @@ entries:
 - id: iap-setting.frontend-programmatic-clients
   kind: iap-setting
   scope: core
-  stage: 2
+  stage: 7
   provider: engine
   check: gcloud iap settings get --resource-type=compute --service=swarm-ui-backend --project=$P
   apply: 'terraform/bootstrap/iap_programmatic_clients.tf resource "google_iap_settings" "frontend_programmatic_clients" (for_each frontend_iap_backends, only while frontend_iap_programmatic_clients is non-empty) ALSO: terraform/bootstrap/iap_programmatic_clients.tf, targeted apply: scripts/bootstrap.sh --target ''google_iap_settings.frontend_programmatic_clients["swarm-ui-backend"]'' --target ''...["swarm-ui-ui-backend"]'''
@@ -1526,7 +1537,7 @@ entries:
 - id: oauth-brand.iap
   kind: oauth-brand
   scope: core
-  stage: 2
+  stage: 13
   provider: engine
   check: gcloud iap oauth-brands list --project=$P
   apply: 'NOT created by Terraform -- google_iap_brand cannot be deleted, so this repository does not manage it; one-time human step: gcloud iap oauth-brands create ... (terraform/modules/frontend/main.tf:29-57) ALSO: console: Google Auth Platform -> Branding, then Audience -> Internal (one brand per project, created once; cannot be edited back to External without deleting IAP-dependent resources in some cases)'
@@ -1804,7 +1815,7 @@ entries:
 - id: declared-value.deployer_service_account
   kind: declared-value
   scope: core
-  stage: 3
+  stage: 5
   provider: engine
   check: grep -n deployer_service_account terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:1123, string, default ""
@@ -2116,7 +2127,7 @@ entries:
 - id: other.spec-signing-keys
   kind: kms-key
   scope: core
-  stage: 3
+  stage: 5
   provider: engine
   check: gcloud kms keys list --keyring=<swarm-keyring> --location=$R --project=$P
   apply: terraform/infra/spec_signing.tf:95 module.spec_signing_key, :111 data.google_kms_crypto_key_versions.step_spec (reads existing versions, does not create them)
@@ -2180,7 +2191,7 @@ entries:
 - id: sa.mcp-test-server
   kind: service-account
   scope: addon:ci
-  stage: 3
+  stage: 5
   provider: engine
   check: gcloud iam service-accounts describe swarm-mcp-test-server@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/infra/mcp_test_server.tf:110 google_service_account.mcp_test_server
@@ -2391,7 +2402,7 @@ entries:
 - id: sa.tenant-worker
   kind: service-account
   scope: core
-  stage: 3
+  stage: 5
   provider: engine
   check: gcloud iam service-accounts describe swarm-agent-worker-<tenant>@$P.iam.gserviceaccount.com --project=$P
   apply: module.tenancy -> terraform/modules/tenancy/main.tf:109 google_service_account.worker, for_each var.tenants, named swarm-agent-worker-<tenant_id> (terraform/modules/service_account_ids/main.tf:67-69)
@@ -2452,7 +2463,7 @@ entries:
 - id: bucket.build-mirror
   kind: bucket
   scope: core
-  stage: 4
+  stage: 5
   provider: engine
   check: gcloud storage buckets describe gs://${name_prefix}-build-mirror-${project_id} --project=$P
   apply: terraform/infra/build_mirror.tf:92 google_storage_bucket.build_mirror
@@ -2479,7 +2490,7 @@ entries:
   verify: a build in a brand-new project either succeeds because that project's Cloud Build SA has artifactregistry.reader on example-shared-project's swarm-mirror-ghcr/swarm-mirror-dockerhub repos, or fails pulling the syntax frontend / FROM base with a permission error
   explain: EVERY Dockerfile's first line is `# syntax=us-central1-docker.pkg.dev/example-shared-project/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...`, and every Dockerfile that declares them defaults ARG MIRROR_DOCKER_HUB / ARG MIRROR_GHCR to `us-central1-docker.pkg.dev/example-shared-project/swarm-mirror-{dockerhub,ghcr}` -- all pointing at the SHARED staging project's Artifact Registry remote-repository cache (terraform/infra/build_mirror.tf), not at the new project's own mirror
   guards: 'CLAUDE.md rule 2 (example-shared-project is a shared project); OPS-MIRROR, part of #1030'
-  secret_entry: 'null'
+  secret_entry: null
   depends_on: []
   evidence:
   - images/swarm-api/Dockerfile:1
@@ -2560,7 +2571,7 @@ entries:
   verify: the built image's npm layer excludes the 129.7 MB codex package
   explain: agent-runtime-browser is built FROM this, not from agent-runtime-base, because a derived image cannot drop an inherited layer (BROWSER-NO-CODEX, owner decision 2026-10-13)
   guards: docs/browser-startup-speed.md §2.3
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - image.agent-runtime-base
   evidence:
@@ -2579,8 +2590,8 @@ entries:
   apply: images/agent-runtime-browser/Dockerfile, FROM agent-runtime-base-nocodex
   verify: a browser-profile worker Job starts Chromium with the required /dev/shm size
   explain: the browser-capable worker runtime
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - image.agent-runtime-base-nocodex
   evidence:
@@ -2601,15 +2612,15 @@ entries:
   apply: images/agent-runtime-indexer/Dockerfile
   verify: the repo-indexing job it backs completes against a sample repository
   explain: builds the code-graph index artifact consumed by swarm-graph
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
   - scripts/build-images.sh:169
   - images/agent-runtime-indexer/Dockerfile:1
   - images/agent-runtime-indexer/Dockerfile:49
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2662,7 +2673,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:2-7 lists it under "platform" ALSO: images/swarm-api/Dockerfile'
   verify: cloud-run-service.swarm-api's image matches local.image["swarm-api"]
   explain: 'Platform images (swarm-api, swarm-scheduler, swarm-quota-broker, swarm-reconciler, swarm-ui, swarm-verify) are not behind a feature switch -- they are always required for a day-one plan to succeed. ALSO: the API''s own image'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2671,7 +2682,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-api/Dockerfile:1
   - images/swarm-api/Dockerfile:44-45
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2687,7 +2698,7 @@ entries:
   verify: the StatefulSet in swarm-egress.yaml runs it and proxies a CONNECT
   explain: the browser egress forwarder's image; upgrades OS packages so rebuilt on every build
   guards: EGRESS-BUILD, owner decision 2026-10-14
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
@@ -2695,7 +2706,7 @@ entries:
   - scripts/build-images.sh:169
   - apps/swarm-egress/Dockerfile:1
   - apps/swarm-egress/Dockerfile:44-45
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2726,8 +2737,8 @@ entries:
   apply: apps/swarm-github-hooks/Dockerfile; terraform/infra/github_hooks.tf deploys the Cloud Run service only once image_refs has this digest
   verify: a GitHub webhook delivery's signature verifies and the receiver processes it
   explain: 'the public GitHub push receiver''s image (GS-HOOKS, part of #1384); copies apps/common and apps/redaction, nothing of the worker'
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
@@ -2735,7 +2746,7 @@ entries:
   - scripts/build-images.sh:169
   - apps/swarm-github-hooks/Dockerfile:1
   - apps/swarm-github-hooks/Dockerfile:52-53
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2766,8 +2777,8 @@ entries:
   apply: apps/swarm-graph/Dockerfile; copies apps/agent-worker in, so a worker change rebuilds it too; terraform/infra/graph_service.tf renders its manifest only once image_refs has this digest
   verify: the Deployment in swarm-graph.yaml runs it and answers a graph query
   explain: 'the shared graph service''s image (GS-INFRA, part of #1384)'
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   - image.agent-runtime-base
@@ -2776,7 +2787,7 @@ entries:
   - scripts/build-images.sh:169
   - apps/swarm-graph/Dockerfile:1
   - apps/swarm-graph/Dockerfile:53-54
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2807,8 +2818,8 @@ entries:
   apply: apps/swarm-live/Dockerfile (Track B owns images/ and the service Dockerfiles both; find_recipe() accepts either layout)
   verify: kubernetes/swarm-system/swarm-live.yaml's StatefulSet runs this digest and serves a tunnel ticket
   explain: the live-browser relay's image
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
@@ -2816,7 +2827,7 @@ entries:
   - scripts/build-images.sh:181-195
   - apps/swarm-live/Dockerfile:1
   - apps/swarm-live/Dockerfile:54-55
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2847,7 +2858,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:5 ALSO: images/swarm-quota-broker/Dockerfile'
   verify: cloud-run-service.swarm-quota-broker's image matches local.image["swarm-quota-broker"]
   explain: 'See image.swarm-api. ALSO: the quota broker''s image'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2856,7 +2867,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-quota-broker/Dockerfile:1
   - images/swarm-quota-broker/Dockerfile:44-45
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2871,7 +2882,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:6 ALSO: images/swarm-reconciler/Dockerfile'
   verify: cloud-run-service.swarm-reconciler's image matches local.image["swarm-reconciler"]
   explain: 'See image.swarm-api. ALSO: the reconciler''s image'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2880,7 +2891,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-reconciler/Dockerfile:1
   - images/swarm-reconciler/Dockerfile:46-47
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2895,7 +2906,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:4 ALSO: images/swarm-scheduler/Dockerfile'
   verify: cloud-run-service.swarm-scheduler's image matches local.image["swarm-scheduler"]
   explain: 'See image.swarm-api. ALSO: the dispatcher/scheduler image'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2904,7 +2915,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-scheduler/Dockerfile:1
   - images/swarm-scheduler/Dockerfile:46-47
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2919,8 +2930,8 @@ entries:
   apply: apps/swarm-typesafe-fwd/Dockerfile; terraform/infra/typesafe_fwd.tf renders its manifest only once image_refs has this digest
   verify: the Deployment in swarm-typesafe-fwd.yaml runs it and verifies a minted ticket
   explain: 'the TypeSafe forwarder''s image (SEC-INJECT-B, part of #1347)'
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
@@ -2928,7 +2939,7 @@ entries:
   - scripts/build-images.sh:169
   - apps/swarm-typesafe-fwd/Dockerfile:1
   - apps/swarm-typesafe-fwd/Dockerfile:48-49
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2959,7 +2970,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:7 ALSO: images/swarm-ui/Dockerfile'
   verify: cloud-run-service.swarm-ui's image matches local.image["swarm-ui"]
   explain: 'See image.swarm-api. ALSO: the console frontend''s image; VITE_* vars are baked at image build time, not read at container runtime (see p3-envvars.md)'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2968,7 +2979,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-ui/Dockerfile:1
   - images/swarm-ui/Dockerfile:62
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -2983,7 +2994,7 @@ entries:
   apply: 'platform image, terraform/infra/images.json:8 ALSO: images/swarm-verify/Dockerfile'
   verify: cloud-run-job.verify's image matches local.image["swarm-verify"]
   explain: 'Runs the acceptance/smoke gate (cloud-run-job.verify). ALSO: the smoke/verify identity''s image'
-  guards: 'null'
+  guards: null
   secret_entry: null
   depends_on:
   - registry.swarm
@@ -2992,7 +3003,7 @@ entries:
   - scripts/build-images.sh:169
   - images/swarm-verify/Dockerfile:1
   - images/swarm-verify/Dockerfile:58
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -3007,8 +3018,8 @@ entries:
   apply: images/workspace-apply/Dockerfile
   verify: the keyless swarm-workspace-apply Cloud Build job runs this digest and renders a personal tenant's namespace
   explain: the image the workspace deployer (WORKSPACE_DEPLOYER_ACCOUNT, kubernetes/render.py:524) runs as
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
@@ -3926,7 +3937,7 @@ entries:
 - id: registry.swarm
   kind: registry
   scope: core
-  stage: 5
+  stage: 4
   provider: engine
   check: gcloud artifacts repositories describe ${artifact_registry_repository} --project=$P --location=$R
   apply: module.artifact_registry -> terraform/modules/artifact_registry/main.tf:6 google_artifact_registry_repository.this
@@ -4331,7 +4342,7 @@ entries:
 - id: addon.tailscale-egress-target
   kind: addon
   scope: addon:tailscale
-  stage: 6
+  stage: 5
   provider: org-admin
   check: terraform state show var.tailscale_egress_target 2>/dev/null; grep -n tailscale_egress_target terraform/environments/*/*.tfvars
   apply: terraform/infra/tailscale.tf:84 variable "tailscale_egress_target", default 'decision-api.example-tailnet.ts.net'
@@ -4351,7 +4362,7 @@ entries:
 - id: cloud-run-job.verify
   kind: cloud-run-job
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud run jobs describe verify --project=$P --region=$R
   apply: terraform/infra/verify.tf:146 google_cloud_run_v2_job.verify
@@ -4373,7 +4384,7 @@ entries:
 - id: cloud-run-service.github-hooks
   kind: cloud-run-service
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud run services describe ${name_prefix}-github-hooks --project=$P --region=$R
   apply: terraform/infra/github_hooks.tf:201 google_cloud_run_v2_service.github_hooks, gated by var.enable_github_hooks and an image digest in image_refs
@@ -4395,7 +4406,7 @@ entries:
 - id: cloud-run-service.mcp-test-server
   kind: cloud-run-service
   scope: addon:ci
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud run services describe swarm-mcp-test-server --project=$P --region=$R
   apply: terraform/infra/mcp_test_server.tf:128 google_cloud_run_v2_service.mcp_test_server
@@ -4452,7 +4463,7 @@ entries:
 - id: declared-value.pubsub_kms_key_name
   kind: declared-value
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: grep -n pubsub_kms_key_name terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:969
@@ -4501,7 +4512,7 @@ entries:
 - id: other.allowed-users-literal
   kind: other
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: grep -n 'ALLOWED_USERS' terraform/infra/locals.tf
   apply: terraform/infra/locals.tf:1012-1015 (comment + usage inside local.api_secret_env / service env construction) -- the ALLOWED_USERS env var itself is NOT set by any .tf or .tfvars file in this track today
@@ -4518,7 +4529,7 @@ entries:
 - id: sched.forge-refresh
   kind: scheduler-job
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud scheduler jobs describe ${name_prefix}-forge-refresh --project=$P --location=$R
   apply: terraform/modules/scheduler/jobs.tf:489 google_cloud_scheduler_job.forge_refresh, count gated by var.enable_forge_refresh (default false), target=api_endpoint + var.forge_refresh_path, schedule default '*/15 * * * *'
@@ -4541,7 +4552,7 @@ entries:
 - id: sched.mcp-credentials-sweep
   kind: scheduler-job
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud scheduler jobs describe ${name_prefix}-mcp-credentials-sweep --project=$P --location=$R
   apply: terraform/modules/scheduler/jobs.tf:787 google_cloud_scheduler_job.mcp_credentials_sweep, count gated by var.enable_mcp_credentials_sweep (= var.mcp_servers_enabled, not a separate switch), target=api_endpoint + '/v1/admin/mcp-credentials/sweep', schedule literal '3-59/10 * * * *'
@@ -4564,7 +4575,7 @@ entries:
 - id: secret.swarm-child-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-child-key --project=$P
   apply: 'terraform/infra/child_tasks.tf:163 google_secret_manager_secret.child_key ALSO: terraform/infra/child_tasks.tf'
@@ -4580,7 +4591,7 @@ entries:
   - terraform/infra/child_tasks.tf:163-192
   - scripts/create-secrets.sh:42-49
   - apps/swarm-api/swarm_api/mcp_credentials.py:22-26
-  notes: 'null'
+  notes: null
   probe:
     type: secret_exists
     secret_id: swarm-child-key
@@ -4594,7 +4605,7 @@ entries:
 - id: secret.swarm-egress-credential.container
   kind: secret-container
   scope: addon:bright-data-egress
-  stage: 6
+  stage: 5
   provider: human-in-console
   check: gcloud secrets describe swarm-egress-credential --project=$P
   apply: 'terraform/infra/egress.tf:201 google_secret_manager_secret.browser_egress ALSO: terraform/infra/egress.tf'
@@ -4624,13 +4635,13 @@ entries:
 - id: secret.swarm-egress-key.container
   kind: secret-container
   scope: addon:bright-data-egress
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-egress-key --project=$P
   apply: 'terraform/infra/egress.tf:236 google_secret_manager_secret.egress_key ALSO: terraform/infra/egress.tf'
   verify: swarm-api mints and swarm-egress verifies tickets signed with this key; swarm-egress cannot mint a live or typesafe ticket with it
   explain: 'HMAC key swarm-api mints attempt-egress tickets with; deliberately its own key, separate from swarm-live-key and swarm-typesafe-fwd-key, so a service that can verify one ticket type cannot mint another. ALSO: swarm-api mints browser egress tickets with it; swarm-egress verifies them'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --egress-key --stdin
   depends_on:
   - api.secretmanager
@@ -4651,7 +4662,7 @@ entries:
 - id: secret.swarm-github-app-client-secret.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-github-app-client-secret --project=$P
   apply: 'terraform/modules/secret_manager/main.tf:254 google_secret_manager_secret.github_app["client-secret"], gated by var.github_app_secrets_enabled (= var.enable_github_app) ALSO: terraform (modules/secret_manager, per platform_secrets.py:96-97 TERRAFORM marker)'
@@ -4667,7 +4678,7 @@ entries:
   - terraform/infra/variables.tf:34-42
   - terraform/modules/secret_manager/main.tf:225-258
   - apps/swarm-api/swarm_api/platform_secrets.py:96-98
-  notes: 'null'
+  notes: null
   probe:
     type: secret_exists
     secret_id: swarm-github-app-client-secret
@@ -4681,13 +4692,13 @@ entries:
 - id: secret.swarm-github-app-private-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-github-app-private-key --project=$P
   apply: 'terraform/modules/secret_manager/main.tf:254 google_secret_manager_secret.github_app["private-key"] ALSO: terraform (terraform/infra, modules/secret_manager per platform_secrets.py:92-93 TERRAFORM marker); applied by the operator''s bootstrap/infra pass'
   verify: same as the client-secret sibling
   explain: 'Signs the JWT that reads the GitHub App''s installations. ALSO: swarm-api reads this to mint GitHub App installation tokens for every forge call; without it every GitHub App-authenticated route fails'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --github-app private-key --stdin
   depends_on:
   - switch.enable_github_app
@@ -4696,7 +4707,7 @@ entries:
   evidence:
   - terraform/modules/secret_manager/main.tf:225-258
   - apps/swarm-api/swarm_api/platform_secrets.py:92-95
-  notes: 'null'
+  notes: null
   probe:
     type: secret_exists
     secret_id: swarm-github-app-private-key
@@ -4710,13 +4721,13 @@ entries:
 - id: secret.swarm-github-app-webhook-secret.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe ${github_hooks_secret_id} --project=$P
   apply: 'terraform/infra/github_hooks.tf:136 google_secret_manager_secret.github_webhook_secret, gated by var.enable_github_hooks ALSO: terraform/infra/github_hooks.tf (enable_github_hooks)'
   verify: a webhook signed with the current version's value is accepted by swarm-github-hooks; one signed with no value (no version yet) cannot be, since the container ships with none
   explain: 'HMAC secret GitHub signs push-event webhooks with; swarm-github-hooks verifies against it. ALSO: the HMAC key GitHub signs X-Hub-Signature-256 with; the public receiver swarm-github-hooks verifies deliveries against it'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --github-webhook-secret --stdin
   depends_on:
   - switch.enable_github_hooks
@@ -4725,7 +4736,7 @@ entries:
   - terraform/infra/github_hooks.tf:80-96
   - terraform/infra/github_hooks.tf:136-175
   - scripts/create-secrets.sh:103-114
-  notes: 'null'
+  notes: null
   probe:
     type: secret_exists
     secret_id: swarm-github-app-webhook-secret
@@ -4739,7 +4750,7 @@ entries:
 - id: secret.swarm-graph-ticket-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-graph-ticket-key --project=$P
   apply: 'terraform/infra/graph_service.tf:183 google_secret_manager_secret.graph_ticket_key ALSO: terraform/infra/graph_service.tf (enable_graph_service)'
@@ -4769,13 +4780,13 @@ entries:
 - id: secret.swarm-live-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-live-key --project=$P
   apply: 'terraform/infra/live.tf:144 google_secret_manager_secret.live_key ALSO: terraform/infra/live.tf'
   verify: the live relay's KSA (swarm-live in swarm-system) can read it; nothing else can
   explain: 'Ticket-signing key for the live-browser relay (docs/design/live-browser.md). The task brief lists ''live'' as an expected Cloud Run service; it is actually a GKE StatefulSet (kubernetes/swarm-system/swarm-live.yaml) that Terraform only grants secrets/bucket access to and renders a manifest for (swarm_live_manifest output) -- see notes. ALSO: swarm-api mints live-browser tunnel/viewer tickets with it; swarm-live verifies them'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --live-key --stdin
   depends_on:
   - switch.enable_live_browser
@@ -4804,7 +4815,7 @@ entries:
   apply: scripts/create-secrets.sh --search-api-key --stdin (the script itself creates the container if missing, replicated to the region)
   verify: gcloud secrets get-iam-policy swarm-search-api-key shows swarm-api alone as secretAccessor
   explain: the one secret in platform_secrets.py's catalogue NOT created by terraform; swarm-api reads it only while SEARCH_TOOL_ENABLED is on
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --search-api-key --stdin
   depends_on: []
   evidence:
@@ -4822,7 +4833,7 @@ entries:
 - id: secret.swarm-settings-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-settings-key --project=$P
   apply: 'terraform/infra/settings_mac.tf:39 google_secret_manager_secret.settings_mac_key ALSO: terraform (per #1457, docs/design/tenant-settings-integrity.md §5)'
@@ -4850,13 +4861,13 @@ entries:
 - id: secret.swarm-tailscale-oauth.container
   kind: secret-container
   scope: addon:tailscale
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-tailscale-oauth --project=$P
   apply: 'terraform/infra/tailscale.tf:116 google_secret_manager_secret.tailscale_oauth ALSO: terraform/infra/tailscale.tf'
   verify: the tailscale forwarder authenticates to the tailnet and can reach tailscale.tf:84's target
   explain: 'Tailscale OAuth client credential the forwarder uses to join the tailnet that fronts decision-api. ALSO: the Tailscale OAuth client (tag:swarmcloud) the tailnet egress logs in with'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --tailscale-oauth --stdin
   depends_on:
   - api.secretmanager
@@ -4878,13 +4889,13 @@ entries:
 - id: secret.swarm-typesafe-fwd-key.container
   kind: secret-container
   scope: addon:typesafe
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-typesafe-fwd-key --project=$P
   apply: 'terraform/infra/typesafe_fwd.tf:146 google_secret_manager_secret.typesafe_fwd_key ALSO: terraform/infra/typesafe_fwd.tf'
   verify: only swarm-api (mints) and the forwarder's KSA (verifies) can read it
   explain: 'HMAC key for the TypeSafe forwarder''s ticket scheme (docs/design/workspace-secrets.md §3.5, ''inject'' delivery mode, #1347). Dials tailscale.tf''s single target, decision-api.example-tailnet.ts.net. ALSO: swarm-api mints attempt TypeSafe tickets; the forwarder verifies them (docs/design/workspace-secrets.md §3.5)'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --typesafe-fwd-key --stdin
   depends_on:
   - api.secretmanager
@@ -4907,13 +4918,13 @@ entries:
 - id: secret.swarm-workspace-grant-key.container
   kind: secret-container
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud secrets describe swarm-workspace-grant-key --project=$P
   apply: 'terraform/infra/workspace_grant_key.tf:65 google_secret_manager_secret.workspace_grant_key ALSO: terraform/infra/workspace_grant_key.tf'
   verify: a workspace-secret grant signed under the current version verifies; one signed under previous_version still verifies until the attest route re-signs it
   explain: 'SEC-GRANT-ATTEST: signs workspace-secret grants so a grant cannot be forged or silently widened. ALSO: swarm-api MACs every workspace-secret grant with it and verifies at release (SEC-GRANT-ATTEST)'
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --workspace-grant-key --stdin
   depends_on:
   - switch.workspace_grant_attestation-serve
@@ -4921,7 +4932,7 @@ entries:
   evidence:
   - terraform/infra/workspace_grant_key.tf:40-92
   - scripts/create-secrets.sh:58-64
-  notes: 'null'
+  notes: null
   probe:
     type: secret_exists
     secret_id: swarm-workspace-grant-key
@@ -4941,13 +4952,13 @@ entries:
   apply: scripts/create-secrets.sh --child-key; 48 random bytes generated in-script, never shown
   verify: a freshly dispatched child task's registration nonce verifies
   explain: nothing to paste and nothing to leak from a clipboard
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --child-key
   depends_on:
   - secret.swarm-child-key.container
   evidence:
   - scripts/create-secrets.sh:42-49
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -4961,7 +4972,7 @@ entries:
   apply: scripts/create-secrets.sh --egress-credential --stdin [--overwrite swarm-egress-credential] < credential.json
   verify: swarm-egress's vendor.py parses the JSON without error and a proxied CONNECT succeeds
   explain: stdin only, never an argument/file argument/tfvars/env var; a replace needs the same typed confirmation as the key
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --egress-credential --stdin
   depends_on:
   - secret.swarm-egress-credential.container
@@ -4981,13 +4992,13 @@ entries:
   apply: scripts/create-secrets.sh --egress-key [--overwrite swarm-egress-key]; value generated in-script (48 random bytes), never typed
   verify: swarm-egress's KeyRing accepts a ticket minted under the new version
   explain: generated, never shown; a replace of an enabled version needs a typed confirmation of the secret's own name
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --egress-key
   depends_on:
   - secret.swarm-egress-key.container
   evidence:
   - scripts/create-secrets.sh:117-134
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5001,13 +5012,13 @@ entries:
   apply: scripts/create-secrets.sh --graph-ticket-key; generated, never read/shown
   verify: a minted ticket verifies against swarm-graph
   explain: same generation pattern as the typesafe-fwd key
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --graph-ticket-key
   depends_on:
   - secret.swarm-graph-ticket-key.container
   evidence:
   - scripts/create-secrets.sh:75-83
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5021,13 +5032,13 @@ entries:
   apply: scripts/create-secrets.sh --live-key; 48 random bytes generated in-script
   verify: a live session ticket minted under the new version verifies at swarm-live
   explain: a rotation refuses every ticket minted under the old version, ending every open live session; both ends reconnect fresh
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --live-key
   depends_on:
   - secret.swarm-live-key.container
   evidence:
   - scripts/create-secrets.sh:50-57
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5041,7 +5052,7 @@ entries:
   apply: scripts/create-secrets.sh --search-api-key --stdin
   verify: a search tool call from a worker succeeds once SEARCH_TOOL_ENABLED is set
   explain: Brave Search API key, read from stdin only
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --search-api-key --stdin
   depends_on:
   - secret.swarm-search-api-key.container
@@ -5061,7 +5072,7 @@ entries:
   apply: scripts/create-secrets.sh --settings-mac-key [--overwrite swarm-settings-key]; generated, never read back
   verify: a workspace_settings write's MAC verifies at the scheduler
   explain: a NEW version invalidates every stored MAC until scripts/resign-workspace-settings.sh --apply re-signs them
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --settings-mac-key
   depends_on:
   - secret.swarm-settings-key.container
@@ -5081,13 +5092,13 @@ entries:
   apply: scripts/create-secrets.sh --tailscale-oauth --stdin; refused unless shaped like tskey-client-...
   verify: kubernetes/apply.sh --swarm-system --confirm copies it into the cluster; the tailnet device registers
   explain: storing it alone changes nothing until the swarm-system apply copies it into the cluster
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --tailscale-oauth --stdin
   depends_on:
   - secret.swarm-tailscale-oauth.container
   evidence:
   - scripts/create-secrets.sh:84-91
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5095,13 +5106,13 @@ entries:
 - id: secret.swarm-tenant-provider.value
   kind: secret-value
   scope: core
-  stage: 6
+  stage: 13
   provider: human-in-terminal
   check: gcloud secrets versions list swarm-tenant-$T-anthropic --project $P --filter=state:ENABLED
   apply: scripts/create-secrets.sh --tenant $T --provider anthropic --stdin (or --from-file, or --subscription for a Claude subscription credential JSON); also PUT via swarm-api's credential route calling credentials.py:put_credential
   verify: the tenant's worker mounts the version and a dispatched attempt authenticates with the provider
   explain: --subscription stores the Claude keychain JSON (refreshToken required, fatal if absent) in the -refresh secret; the quota broker republishes a short-lived access token to the plain secret the worker mounts
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --tenant <t> --provider <p> --stdin
   depends_on:
   - secret.swarm-tenant-provider.container
@@ -5123,13 +5134,13 @@ entries:
   apply: scripts/create-secrets.sh --typesafe-fwd-key [--overwrite swarm-typesafe-fwd-key]; generated, never read/shown
   verify: a minted TypeSafe ticket verifies at swarm-typesafe-fwd
   explain: replacing an enabled version needs the same typed confirmation
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --typesafe-fwd-key
   depends_on:
   - secret.swarm-typesafe-fwd-key.container
   evidence:
   - scripts/create-secrets.sh:65-73
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5143,13 +5154,13 @@ entries:
   apply: scripts/create-secrets.sh --workspace-grant-key [--overwrite swarm-workspace-grant-key]; generated, never read/shown
   verify: the attest route verifies a freshly-signed grant
   explain: a rotation runbook keeps the replaced version as workspace_grant_attestation.previous_version until every grant is re-signed
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --workspace-grant-key
   depends_on:
   - secret.swarm-workspace-grant-key.container
   evidence:
   - scripts/create-secrets.sh:58-64
-  notes: 'null'
+  notes: null
   step: secrets.platform-keys
   refs:
     secret_flag:
@@ -5157,7 +5168,7 @@ entries:
 - id: switch.enable_child_tasks
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: terraform -chdir=terraform/infra show -json | jq '.values.root_module.resources[] | select(.address=="var.enable_child_tasks")' ; grep -n enable_child_tasks terraform/environments/*/*.tfvars
   apply: terraform/infra/child_tasks.tf:58, type bool, default false
@@ -5195,7 +5206,7 @@ entries:
 - id: switch.enable_live_browser
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: grep -n enable_live_browser terraform/environments/*/*.tfvars
   apply: terraform/infra/live.tf:87, type bool, default false
@@ -5216,7 +5227,7 @@ entries:
 - id: switch.graph_service-enabled
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: curl -s $H/v1/graph/status (expect 503 disabled unless both serve and enabled are true)
   apply: terraform/infra/graph_service.tf:86, graph_service.enabled, default false
@@ -5235,7 +5246,7 @@ entries:
 - id: switch.graph_service-serve
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: grep -n 'graph_service' terraform/environments/*/*.tfvars
   apply: terraform/infra/graph_service.tf:86, object({serve=optional(bool,false), enabled=optional(bool,false)}), default {} (both off)
@@ -5252,7 +5263,7 @@ entries:
 - id: switch.settings_mac_key_ready
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: grep -n settings_mac_key_ready terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:1292, type bool, default false
@@ -5272,7 +5283,7 @@ entries:
 - id: switch.workspace_grant_attestation-serve
   kind: switch
   scope: core
-  stage: 6
+  stage: 7
   provider: engine
   check: grep -n workspace_grant_attestation terraform/environments/*/*.tfvars
   apply: terraform/infra/workspace_grant_key.tf:40, object({serve, previous_version, required}), default {} (all off/empty)
@@ -6258,13 +6269,13 @@ entries:
   apply: terraform/modules/tenancy/main.tf:309-317 google_service_account_iam_member.workload_identity, roles/iam.workloadIdentityUser, member = serviceAccount:$P.svc.id.goog[swarm-tenant-$T/swarm-agent-worker]
   verify: a pod running as the worker KSA in swarm-tenant-$T successfully obtains a token for the tenant GSA from the metadata server
   explain: the Workload Identity binding that lets the GKE KSA impersonate the tenant's GCP service account; namespace is part of the principal so another tenant's pod cannot guess its way in even with the same KSA name
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - namespace-object.worker-ksa
   evidence:
   - terraform/modules/tenancy/main.tf:296-317
-  notes: 'null'
+  notes: null
   step: infra.pass-2
   refs:
     terraform:
@@ -6780,7 +6791,7 @@ entries:
 - id: secret.swarm-account.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-account-'
   apply: quota-broker's SecretStore (apps/quota-broker/quota_broker/secretstore.py:257 create_secret), named by accounts.py:330-331 secret_name(owner_tenant, label) = swarm-account-<tenant>--<label> (TWO dashes)
@@ -6808,7 +6819,7 @@ entries:
 - id: secret.swarm-tenant-browser.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-tenant-$T-browser-'
   apply: swarm-api's BrowserSlots.provision (browser_slots.py:175-236 SecretManagerSlotVault.provision), reached only via POST /v1/tasks/{task_id}/browser-session/slot, WORKER ONLY, under swarmBrowserSessionProvisioner's PROJECT-LEVEL create (terraform/bootstrap/browser_logins.tf)
@@ -6831,14 +6842,14 @@ entries:
 - id: secret.swarm-tenant-git-r.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-tenant-$T-git-r-'
   apply: swarm-api at repository registration (gittokens.py / extrarepos.py), under the same project-level unconditioned secrets.create grant forge_user_slots.tf documents
   verify: gcloud secrets get-iam-policy swarm-tenant-$T-git-r-<hex> shows only the tenant worker as accessor
   explain: a repository's own forge token slot, `git-r-<16 hex of repo_id>`, used when the repository registered its own credential instead of the tenant's -git slot
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - sa.swarm-api
   evidence:
@@ -6851,14 +6862,14 @@ entries:
 - id: secret.swarm-tenant-git-u.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-tenant-$T-git-u-'
   apply: 'swarm-api at onboarding (forgeapp.py:447 create_secret), under terraform/bootstrap/forge_user_slots.tf''s swarmForgeSlotCreator role: secretmanager.secrets.create ONLY, granted at the PROJECT (unconditioned by name, since create cannot see a resource name)'
   verify: gcloud secrets get-iam-policy swarm-tenant-$T-git-u-<hex> shows only that person's grant
   explain: a member's own per-owner GitHub credential slot, `git-u-<16 hex of sha256(email|owner)>`; self-service at onboarding (#780)
   guards: '#780, #1225'
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - sa.swarm-api
   evidence:
@@ -6874,7 +6885,7 @@ entries:
 - id: secret.swarm-tenant-mcpc.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-tenant-$T-mcpc-'
   apply: swarm-api's McpCredentials.store at MCP-SUBMIT (mcp_credentials.py:180-192 create_secret, with Secret Manager's own ttl field set)
@@ -6897,14 +6908,14 @@ entries:
 - id: secret.swarm-tenant-typesafe.container
   kind: secret-container
   scope: addon:typesafe
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets describe swarm-tenant-$T-typesafe --project $P
   apply: scripts/create-secrets.sh --tenant $T --provider typesafe --stdin (same generic path as anthropic/openai) OR swarm-api's credentials.py put_credential
   verify: terraform/bootstrap/typesafe_forwarder.tf's condition names swarm-tenant-{t}-typesafe/versions/ as what the forwarder may read
   explain: the tenant's TypeSafe per-project key the forwarder reads under an attempt's minted ticket
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - sa.swarm-api
   evidence:
@@ -6916,7 +6927,7 @@ entries:
 - id: secret.swarm-tenant-wsec.container
   kind: secret-container
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets list --project $P --filter='name:swarm-tenant-$T-wsec-'
   apply: swarm-api at workspace-secret create (workspace_secrets.py:315-333 create_secret), under terraform/bootstrap/workspace_secrets.tf's conditioned read-only IAM role for swarm-api (the create call itself still needs a project-level unconditioned grant, same shape as forge_user_slots.tf)
@@ -6939,13 +6950,13 @@ entries:
 - id: secret.swarm-account.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets versions list swarm-account-<tenant>--<label> --project $P --filter=state:ENABLED
   apply: quota-broker's SecretStore.add_version, called from its own token-refresh loop; never an operator script
   verify: a worker mounting this secret authenticates against the pool account's provider
   explain: the short-lived access token the broker republishes after refreshing the account's OAuth/session credential
-  guards: 'null'
+  guards: null
   secret_entry: null (quota-broker only)
   depends_on:
   - secret.swarm-account.container
@@ -6958,63 +6969,63 @@ entries:
 - id: secret.swarm-tenant-browser.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets versions list swarm-tenant-$T-browser-<kind>-<name> --project $P --filter=state:ENABLED
   apply: agent-worker's browser_login.py:_write, called only after browser_slots.provision() succeeds for the same name; the worker writes the version itself (it holds secretVersionAdder on that one secret, never secrets.create)
   verify: a resumed task's browser session carries over its cookie jar
   explain: JSON envelope of the exported cookie jar; the worker never creates the container, only adds a version to a slot swarm-api already provisioned and bound to it alone
-  guards: 'null'
+  guards: null
   secret_entry: null (worker-written, never an operator script)
   depends_on:
   - secret.swarm-tenant-browser.container
   evidence:
   - apps/agent-worker/agent_worker/browser_login.py:346-357
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-r.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: human-in-console
   check: gcloud secrets versions list swarm-tenant-$T-git-r-<hex> --project $P --filter=state:ENABLED
   apply: swarm-api's repository registration route, when a repository registers its own forge credential instead of inheriting the tenant's -git slot
   verify: a push to that repository under this attempt authenticates with the repository's own token, not the tenant's
   explain: named by the repository's repo_id hash; audited by suffix only (git, git-u-<hex>, git-r-<hex>), never by value
-  guards: 'null'
+  guards: null
   secret_entry: null (API only)
   depends_on:
   - secret.swarm-tenant-git-r.container
   evidence:
   - apps/swarm-api/swarm_api/gittokens.py:19-20
   - apps/swarm-api/swarm_api/gittools.py:66-73
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-git-u.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets versions list swarm-tenant-$T-git-u-<hex> --project $P --filter=state:ENABLED
   apply: swarm-api writes the version when the member links their GitHub identity (forgeapp.py); a -refresh twin holds the OAuth refresh token
   verify: a push made under this slot shows that person's GitHub identity as author
   explain: never a tenant's own -git slot when a person has linked their own identity (codec.py:357-374 source precedence)
-  guards: 'null'
+  guards: null
   secret_entry: null (API-minted, never an operator script)
   depends_on:
   - secret.swarm-tenant-git-u.container
   evidence:
   - apps/swarm-api/swarm_api/forgeapp.py:62-64
   - apps/swarm-api/swarm_api/gittokens.py:19-20
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-mcpc.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: engine
   check: gcloud secrets versions list swarm-tenant-$T-mcpc-<hex> --project $P --filter=state:ENABLED
   apply: McpCredentials.store, called from MCP-SUBMIT's submission path after every other check passes
@@ -7026,13 +7037,13 @@ entries:
   - secret.swarm-tenant-mcpc.container
   evidence:
   - apps/swarm-api/swarm_api/mcp_credentials.py:28-33
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: secret.swarm-tenant-wsec.value
   kind: secret-value
   scope: core
-  stage: 7
+  stage: 13
   provider: human-in-console
   check: gcloud secrets versions list swarm-tenant-$T-wsec-<hex> --project $P --filter=state:ENABLED
   apply: workspace_secrets.py create/rotate routes, a workspace admin (group) or the owning person (personal), through SecretWriter.add_version
@@ -7044,7 +7055,7 @@ entries:
   - secret.swarm-tenant-wsec.container
   evidence:
   - apps/swarm-api/swarm_api/workspace_secrets.py:54-60
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: sa.swarm-workspace-deployer
@@ -7557,7 +7568,7 @@ entries:
 - id: role.custom.swarmAcceptanceLister
   kind: custom-role
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: gcloud iam roles describe swarmAcceptanceLister --project=$P
   apply: terraform/bootstrap/acceptance.tf resource "google_project_iam_custom_role" "acceptance_lister"
@@ -7576,7 +7587,7 @@ entries:
 - id: role.custom.swarmAcceptanceRunner
   kind: custom-role
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: gcloud iam roles describe swarmAcceptanceRunner --project=$P
   apply: terraform/bootstrap/acceptance.tf resource "google_project_iam_custom_role" "acceptance_runner"
@@ -7595,7 +7606,7 @@ entries:
 - id: declared-value.ci_fix_service_account
   kind: declared-value
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: grep -n ci_fix_service_account terraform/bootstrap/terraform.tfvars; gcloud iam service-accounts describe swarm-ci-fix@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/terraform.tfvars:34 ci_fix_service_account = "swarm-ci-fix@example-shared-project.iam.gserviceaccount.com"
@@ -7614,7 +7625,7 @@ entries:
 - id: github-app-installation.per-owner
   kind: github-app-installation
   scope: core
-  stage: 9
+  stage: 13
   provider: human-in-console
   check: GET /v1/forge/permissions's 'orgs' section, one card per installation
   apply: 'human step, repeated per org/user: each GitHub account that wants SwarmCloud to act on its repositories installs the App on itself (''Any account'' install scope) and selects which repositories, then the owner (self, for a personal account; any org owner, for an org) approves it'
@@ -7631,7 +7642,7 @@ entries:
 - id: github-app-setting.commit-statuses-read-gap
   kind: github-app-setting
   scope: core
-  stage: 9
+  stage: 13
   provider: human-in-console
   check: GET /v1/forge/permissions (apps/swarm-api/swarm_api/forgeperms.py) for the tenant, inspect the 'app' section's requested-vs-lacking and each org card's pending_update
   apply: 'human step, PER INSTALLATION (an org''s owners must separately accept any permission the App newly requests -- the platform cannot grant itself anything): accept the App''s Commit statuses: Read update on the org''s installation settings page (review_url)'
@@ -7649,7 +7660,7 @@ entries:
 - id: github-app-setting.merge-app
   kind: github-app-setting
   scope: addon:ci
-  stage: 9
+  stage: 13
   provider: human-in-console
   check: gh variable list --repo example-org/example-repo ; gh secret list --repo example-org/example-repo (names only, never values)
   apply: 'human step, THIS REPOSITORY''s own CI only, entirely separate from the tenant-facing GitHub App above: create a second GitHub App ''swarmcloud-merge'' (Contents RW, Pull requests RW, Workflows RW, Actions variables RW, Metadata R-auto), install it ONLY on example-org/example-repo, generate a private key, then gh variable set MERGE_APP_ID and gh secret set MERGE_APP_PRIVATE_KEY on this repo'
@@ -7666,7 +7677,7 @@ entries:
 - id: github-app-setting.push-webhook
   kind: github-app-setting
   scope: core
-  stage: 9
+  stage: 13
   provider: human-in-console
   check: on the App's settings page, Webhook -> Active; gcloud secrets versions list swarm-github-app-webhook-secret --project=$P --filter=state=ENABLED
   apply: 'human step 9 of github-app.md, after swarm-github-hooks (terraform/infra/github_hooks.tf, switched on by enable_github_hooks) is deployed and holds the webhook secret: tick Webhook Active, set Webhook URL to the deployed receiver''s /github/events, subscribe to push only, and run scripts/create-secrets.sh --github-app-webhook-secret --stdin with the value chosen on GitHub''s settings page'
@@ -7684,7 +7695,7 @@ entries:
 - id: github-app-setting.tenant-forge-app
   kind: github-app-setting
   scope: core
-  stage: 9
+  stage: 13
   provider: human-in-console
   check: an App owner reads its permissions at https://github.com/settings/apps/<slug>/permissions (or GET /app with the App's own JWT)
   apply: 'human step: Settings -> Developer settings -> GitHub Apps -> New GitHub App, on an org the owner controls (not one person''s account). Homepage https://swarm.example.com, Callback https://swarm.example.com/onboarding/github/callback, Expire user tokens ticked, Request user authorization during installation ticked, Device Flow unticked, Webhook unticked until Step 9'
@@ -7701,7 +7712,7 @@ entries:
 - id: iam-binding.acceptance-account-grants
   kind: iam-binding
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-accept@*'
   apply: 'terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED, #965) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix)'
@@ -7725,7 +7736,7 @@ entries:
 - id: iam-binding.ci-fix-wif-binding
   kind: iam-binding
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: gcloud iam service-accounts get-iam-policy swarm-ci-fix@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/ci_fix.tf resource "google_service_account_iam_member" "ci_fix_wif"
@@ -7751,13 +7762,13 @@ entries:
   apply: scripts/create-secrets.sh --github-app client-secret --stdin
   verify: an ENABLED version exists
   explain: the App's OAuth client secret; stdin only, same reasoning as the private key
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --github-app client-secret --stdin
   depends_on:
   - secret.swarm-github-app-client-secret.container
   evidence:
   - scripts/create-secrets.sh:64-65
-  notes: 'null'
+  notes: null
   step: github.pass-3
   refs:
     secret_flag:
@@ -7771,14 +7782,14 @@ entries:
   apply: scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
   verify: an ENABLED version exists; swarm-api's /v1/admin/platform-secrets row reads status=set
   explain: the value is GitHub's own App private key; read from stdin only, never a file argument or env var, because argv and tfvars are not private
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --github-app private-key --stdin
   depends_on:
   - secret.swarm-github-app-private-key.container
   evidence:
   - apps/swarm-api/swarm_api/platform_secrets.py:93-94
   - scripts/create-secrets.sh:66-70
-  notes: 'null'
+  notes: null
   step: github.pass-3
   refs:
     secret_flag:
@@ -7792,13 +7803,13 @@ entries:
   apply: scripts/create-secrets.sh --github-app-webhook-secret --stdin, value typed into the GitHub App settings and here
   verify: a delivery's signature verifies at swarm-github-hooks within a minute of rotation (the receiver re-reads latest on a mismatch at most once/minute)
   explain: never generated -- GitHub's own value; inner characters kept exactly, only the paste's trailing newline dropped
-  guards: 'null'
+  guards: null
   secret_entry: scripts/create-secrets.sh --github-app-webhook-secret --stdin
   depends_on:
   - secret.swarm-github-app-webhook-secret.container
   evidence:
   - scripts/create-secrets.sh:103-114
-  notes: 'null'
+  notes: null
   step: github.pass-3
   refs:
     secret_flag:
@@ -7806,7 +7817,7 @@ entries:
 - id: sa.swarm-accept
   kind: service-account
   scope: addon:ci
-  stage: 9
+  stage: 7
   provider: engine
   check: gcloud iam service-accounts describe swarm-accept@$P.iam.gserviceaccount.com
   apply: terraform/bootstrap/acceptance.tf resource "google_service_account" "acceptance", count=wif_enabled
@@ -7926,13 +7937,13 @@ entries:
   verify: kubectl describe storageclass <name> shows the expected provisioner/params; a worker PVC using it leaves Pending only for a real capacity reason, not a missing class
   explain: cluster-scoped StorageClass for the worker cache PVC (CACHE-PVC); applied first in POLICY_FILES because nothing else depends on it and a pod dispatched before it exists waits Pending for a class
   guards: CACHE-PVC
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/render.py:521-533
   - kubernetes/storage/cache-storage-class.yaml:32
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -7946,13 +7957,13 @@ entries:
   apply: kubernetes/policies/pod-security.yaml:172-252 (+ binding 252-287)
   verify: a Job spec missing required fields is rejected at admission
   explain: constrains the worker Job template shape cluster-wide (second of three pod-security policies)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/pod-security.yaml:172-287
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -7966,13 +7977,13 @@ entries:
   apply: kubernetes/policies/pod-security.yaml:42-156 (ValidatingAdmissionPolicy + its Binding), applied by kubernetes/apply.sh --policies --confirm
   verify: kubectl apply a worker pod spec that violates the constraint and confirm it is rejected at admission, not merely documented
   explain: one of three admission policies enforcing pod security hardening on worker Jobs cluster-wide
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/pod-security.yaml:42-156
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -7986,13 +7997,13 @@ entries:
   apply: kubernetes/policies/pod-security.yaml:156-172
   verify: kubectl get validatingadmissionpolicybinding shows validationActions enforcing (not just Audit)
   explain: binds the pod-constraints policy; without the binding the policy exists but enforces nothing
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster-policy.swarm-worker-pod-constraints
   evidence:
   - kubernetes/policies/pod-security.yaml:156-172
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8006,14 +8017,14 @@ entries:
   apply: kubernetes/policies/pod-security.yaml:287-358 (+ binding 358-end)
   verify: 'a pod spec setting automountServiceAccountToken: true where disallowed is rejected'
   explain: the hardening layer referenced by worker-serviceaccount.yaml's own comment (LimitRanger/automount ordering); third of three pod-security policies
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/pod-security.yaml:287-358
   - kubernetes/service-accounts/worker-serviceaccount.yaml:89
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8028,13 +8039,13 @@ entries:
   apply: kubernetes/policies/workspace-provisioner-scope.yaml:229-320 (+ binding)
   verify: a Namespace create/update outside the swarm-tenant-u-* shape is rejected for the deployer principal
   explain: second of four workspace-deployer scope policies
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/workspace-provisioner-scope.yaml:229-320
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8048,15 +8059,15 @@ entries:
   apply: kubernetes/policies/workspace-provisioner-scope.yaml:403-459 (+ binding 459-end)
   verify: a RoleBinding the deployer creates outside the expected subject/roleRef shape is rejected
   explain: fourth of four workspace-deployer scope policies, carrying swarm-spec-verify-keys' grant and the scope policy's own name map (provisioner-rbac.yaml:43,59 comment)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/workspace-provisioner-scope.yaml:403-459
   - kubernetes/rbac/provisioner-rbac.yaml:43
   - kubernetes/rbac/provisioner-rbac.yaml:59
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8071,13 +8082,13 @@ entries:
   apply: kubernetes/policies/workspace-provisioner-scope.yaml:331-392 (+ binding)
   verify: a Role the deployer creates outside the expected name map is rejected
   explain: third of four; narrows which Roles the deployer identity may create
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/policies/workspace-provisioner-scope.yaml:331-392
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8092,7 +8103,7 @@ entries:
   verify: the deployer identity cannot create/act on a namespace outside swarm-tenant-u-*
   explain: narrows the keyless swarm-workspace-apply Cloud Build job's ClusterRole to personal tenant namespaces only
   guards: docs/workspaces.md §2.3
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - cluster-policy.swarm-workspace-deployer-roles
   - rbac.provisioner-clusterrole
@@ -8113,15 +8124,15 @@ entries:
   apply: kubernetes/swarm-system/{swarm-egress,swarm-graph,swarm-live,swarm-typesafe-fwd,tailscale-egress}.yaml each declare their own Namespace object; applied by kubernetes/apply.sh --swarm-system --confirm (and --swarm-graph/--swarm-typesafe-fwd for those two)
   verify: kubectl get ns swarm-system
   explain: the one shared system namespace for the five platform workloads below
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
   - kubernetes/apply.sh:11-14
   - kubernetes/apply.sh:215-216
   - kubernetes/apply.sh:283-296
-  notes: 'null'
+  notes: null
   step: cluster.swarm-system
 - id: rbac.provisioner-clusterrole
   kind: namespace-object
@@ -8133,13 +8144,13 @@ entries:
   verify: kubectl get clusterrolebinding <name> -o yaml shows the deployer's uniqueId-based subject bound
   explain: the swarm-workspace-deployer's cluster-wide identity; applied after the scope policies on purpose so no window exists with an unconstrained ClusterRole
   guards: docs/workspaces.md §2.3
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - cluster-policy.swarm-workspace-deployer-scope
   evidence:
   - kubernetes/rbac/provisioner-rbac.yaml:64-167
   - kubernetes/render.py:524-528
-  notes: 'null'
+  notes: null
   step: cluster.policies
   refs:
     kubernetes:
@@ -8153,8 +8164,8 @@ entries:
   apply: kubernetes/swarm-system/swarm-egress.yaml:44(Namespace),56(SA),73(NetworkPolicy),105(ConfigMap),120(Service),138(StatefulSet); kubernetes/apply.sh --swarm-system --confirm
   verify: kubectl -n swarm-system get pods -l app=swarm-egress shows Running; a proxied CONNECT through it succeeds
   explain: the browser egress forwarder workload (1 of swarm-system's ~5)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-egress-key.value
@@ -8180,8 +8191,8 @@ entries:
   apply: kubernetes/swarm-system/swarm-graph.yaml:62(Namespace),74(SA),100(NetworkPolicy),145(ConfigMap),160+188(Service x2),212(PodDisruptionBudget),226(Deployment)
   verify: kubectl -n swarm-system get pods -l app=swarm-graph shows Running; swarm-api's graph ticket mint+verify round-trips
   explain: the shared code graph service workload (4 of ~5); the only one with its own PodDisruptionBudget
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-graph-ticket-key.value
@@ -8212,8 +8223,8 @@ entries:
   apply: kubernetes/swarm-system/swarm-live.yaml:60(Namespace),71(SA),94(NetworkPolicy),139+163(Service x2),185(StatefulSet)
   verify: kubectl -n swarm-system get pods -l app=swarm-live shows Running; a live session reaches it
   explain: the live-browser relay workload (3 of ~5)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-live-key.value
@@ -8241,8 +8252,8 @@ entries:
   apply: kubernetes/swarm-system/swarm-typesafe-fwd.yaml:52(Namespace),63(SA),80(NetworkPolicy),113(ConfigMap),128(Service),146(Deployment)
   verify: kubectl -n swarm-system get pods -l app=swarm-typesafe-fwd shows Running
   explain: the TypeSafe forwarder workload (2 of ~5)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-typesafe-fwd-key.value
@@ -8268,8 +8279,8 @@ entries:
   apply: kubernetes/swarm-system/tailscale-egress.yaml:96(Namespace),108(SA),125(NetworkPolicy),161(Service),182(Deployment)
   verify: kubectl -n swarm-system get pods -l app=tailscale-egress shows Running; the tailnet device registers (docs/runbooks/tailscale-egress.md)
   explain: the internal judge's tailnet forwarder workload (5 of ~5, lane JUDGE-NET)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-tailscale-oauth.value
@@ -8287,14 +8298,14 @@ entries:
 - id: namespace-object.legacy-worker-ksa
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get serviceaccount swarm-worker 2>/dev/null || echo absent
   apply: kubernetes/service-accounts/legacy-worker-serviceaccount.yaml:36, included by render.py ONLY where the tenant's GSA's IAM policy already binds this older KSA name
   verify: kubectl get sa swarm-worker -n swarm-tenant-$T; absent is correct for a from-scratch install
   explain: kept for exactly one historically-bound tenant; render.py reads the tenant GSA's live IAM policy to decide whether to include it at all
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -8308,20 +8319,20 @@ entries:
 - id: namespace-object.tenant-limitrange
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get limitrange -o name
   apply: kubernetes/namespaces/tenant-namespace.yaml:138 (LimitRange), same document stream
   verify: a pod spec that omits resources gets the LimitRange's defaults applied (visible in kubectl get pod -o yaml), before pod-security.yaml's hardening policy even sees it
   explain: supplies default requests/limits so invariant 7 (request==limit for memory/ephemeral, CPU burst ratio) holds even for a spec that forgot to set them; pod-security.yaml:108-118 notes a pod without them has bypassed LimitRanger entirely
   guards: contract invariant 7
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
   - kubernetes/namespaces/tenant-namespace.yaml:138
   - kubernetes/policies/pod-security.yaml:108-118
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8331,14 +8342,14 @@ entries:
 - id: namespace-object.tenant-namespace
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E get namespace swarm-tenant-$T
   apply: kubernetes/namespaces/tenant-namespace.yaml:44 (Namespace), rendered by kubernetes/render.py and applied by kubernetes/apply.sh --tenant $T --confirm; ALSO the release workflow's release-namespaces job, but ONLY when vars.APPLY_TENANT_NAMESPACES is 'true' (off by default -- see notes)
   verify: kubectl get ns swarm-tenant-$T -o yaml shows the expected labels; a worker Job dispatches into it
   explain: one namespace per tenant; NAMESPACE_PREFIX + tenant id
   guards: '#1590'
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - cluster-policy.swarm-workspace-deployer-scope
   evidence:
@@ -8353,14 +8364,14 @@ entries:
 - id: namespace-object.tenant-resourcequota
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get resourcequota -o name
   apply: kubernetes/namespaces/tenant-namespace.yaml:87 (ResourceQuota), same document stream as the namespace
   verify: kubectl describe resourcequota -n swarm-tenant-$T shows the flat ceiling; a pod over it is refused at admission with the quota's own message, not a scheduling stall
   explain: a FLAT ceiling for every tenant (owner decision, render.py:1597); a GKE-path backstop, NOT a platform-wide cap -- the Cloud Run worker path is unaffected (kubernetes/README.md:266-272)
   guards: '#2039'
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -8377,14 +8388,14 @@ entries:
 - id: namespace-object.verify-keys-configmap
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get configmap swarm-spec-verify-keys
   apply: kubernetes/render.py:1166,1289 renders it from 'terraform output -json spec_verify_keys_configmap'; applied by kubernetes/apply.sh --spec-verify-keys (apply.sh:1096-1098)
   verify: kubectl get configmap swarm-spec-verify-keys -n swarm-tenant-$T -o yaml; its data matches the current step-spec signing key version
   explain: 'the GKE worker''s FALLBACK source of step-spec verification keys; the primary path is SPEC_VERIFY_KEYS in the scheduler-set pod env at Job creation (owner decision 2026-10-08, since #346)'
   guards: '#346, docs/runbooks/spec-signing-rollout.md'
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -8401,14 +8412,14 @@ entries:
 - id: namespace-object.worker-ksa
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get serviceaccount swarm-agent-worker
   apply: kubernetes/service-accounts/worker-serviceaccount.yaml:47 (rendered __KSA_NAME__ -> swarm-agent-worker), applied with the tenant namespace
   verify: 'kubectl get sa swarm-agent-worker -n swarm-tenant-$T -o yaml shows automountServiceAccountToken: false and the iam.gke.io/gcp-service-account annotation matching terraform''s WI binding'
   explain: the GKE pod's Kubernetes identity; the name scheduler.dispatch.GkeJobDispatcher.ksa_for() puts in every pod spec. Nothing in terraform creates a Kubernetes object, so this file is the ONLY thing creating it
   guards: the 2026-09-24 KSA rename (swarm-<tenant> -> swarm-agent-worker)
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   - iam-binding.worker-wi
@@ -8424,14 +8435,14 @@ entries:
 - id: rbac.dispatcher-role
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep dispatcher
   apply: kubernetes/rbac/dispatcher-rbac.yaml:46,76,121,142; TWO Role+RoleBinding pairs, applied per tenant via TENANT_FILES
   verify: kubectl get rolebinding <name> -n swarm-tenant-$T -o yaml shows the scheduler GSA bound BOTH by email and by its numeric uniqueId subject
   explain: the control plane's own GKE dispatch access, without which the GKE backend cannot dispatch at all; bound twice deliberately -- the uniqueId binding is the one that actually authorizes, because GKE presents the scheduler's identity by uniqueId, not email
   guards: the 2026-09-24 dispatch failure (email-only binding authorised nobody)
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -8443,7 +8454,7 @@ entries:
   - kubernetes/rbac/dispatcher-rbac.yaml:142
   - kubernetes/rbac/dispatcher-rbac.yaml:151-164
   - kubernetes/render.py:399-405
-  notes: 'null'
+  notes: null
   probe:
     type: kubernetes_can_i
     subject: swarm-reconciler
@@ -8458,14 +8469,14 @@ entries:
 - id: rbac.verify-role
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep verify
   apply: kubernetes/rbac/verify-rbac.yaml:50,70,79-94; applied only when verify_read_wanted() and --verify-uid are both given (kubernetes/render.py:503-519 verify_read_files)
   verify: kubectl get rolebinding -n swarm-tenant-$T -o yaml shows swarm-verify bound by its numeric uniqueId, same reasoning as the dispatcher's
   explain: lets the smoke/verify identity read the namespace during a verification pass; deliberately excluded from every render that doesn't ask for it, including the workspace deployer's and register-tenant.sh's A9 check
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -8474,19 +8485,19 @@ entries:
   - kubernetes/rbac/verify-rbac.yaml:50
   - kubernetes/rbac/verify-rbac.yaml:70
   - kubernetes/rbac/verify-rbac.yaml:79-94
-  notes: 'null'
+  notes: null
   step: handoff.console
 - id: rbac.worker-role
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep worker
   apply: kubernetes/rbac/worker-rbac.yaml:45 (Role), 60 (RoleBinding)
   verify: the worker KSA can read only what the Role allows inside its own namespace
   explain: the tenant worker's namespaced RBAC, bound to the worker KSA
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   - namespace-object.worker-ksa
@@ -8494,7 +8505,7 @@ entries:
   - kubernetes/rbac/worker-rbac.yaml:45
   - kubernetes/rbac/worker-rbac.yaml:60
   - kubernetes/rbac/worker-rbac.yaml:69
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8503,21 +8514,21 @@ entries:
 - id: network.allow-egress
   kind: network
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep allow-egress$
   apply: kubernetes/network-policies/allow-egress.yaml:91
   verify: a worker pod reaches DNS and its provider APIs
   explain: the ordinary worker egress path, applied right after default-deny
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - network.default-deny
   evidence:
   - kubernetes/render.py:407
   - kubernetes/network-policies/allow-egress.yaml:91
   - kubernetes/network-policies/allow-egress.yaml:117
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8526,19 +8537,19 @@ entries:
 - id: network.allow-egress-proxy
   kind: network
   scope: addon:bright-data-egress
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep egress-proxy
   apply: kubernetes/network-policies/allow-egress-proxy.yaml:23; rendered after allow-live-egress for the same reason
   verify: a proxied-browser attempt reaches swarm-egress
   explain: the browser egress path to swarm-egress (docs/browser-egress.md §2.5)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - network.allow-live-egress
   evidence:
   - kubernetes/render.py:412-415
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8547,19 +8558,19 @@ entries:
 - id: network.allow-judge-egress
   kind: network
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep judge-egress
   apply: kubernetes/network-policies/allow-judge-egress.yaml:27; rendered LAST of all, for the same digest-stability reason
   verify: the internal judge reaches the tailnet forwarder
   explain: lane JUDGE-NET's path to kubernetes/swarm-system/tailscale-egress.yaml
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - network.allow-egress-proxy
   evidence:
   - kubernetes/render.py:416-419
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8568,19 +8579,19 @@ entries:
 - id: network.allow-live-egress
   kind: network
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep live-egress
   apply: kubernetes/network-policies/allow-live-egress.yaml:37; rendered LAST on purpose so every document before it is byte-identical to before the live browser existed (test_live_netpol.py pins the digests)
   verify: a live-browser attempt's pod reaches the swarm-live relay on TCP 8080
   explain: the live browser's path to its relay (docs/design/live-browser.md §8.3)
   guards: test_live_netpol.py digest pin
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - network.allow-egress
   evidence:
   - kubernetes/render.py:408-411
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8589,21 +8600,21 @@ entries:
 - id: network.default-deny
   kind: network
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get networkpolicy -o name | grep default-deny
   apply: kubernetes/network-policies/default-deny.yaml:21,51 (ingress+egress deny), first in TENANT_FILES' network-policies block
   verify: a pod in the namespace cannot reach anything until an allow- policy admits it
   explain: zero-trust baseline per tenant namespace
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
   - kubernetes/render.py:406
   - kubernetes/network-policies/default-deny.yaml:21
   - kubernetes/network-policies/default-deny.yaml:51
-  notes: 'null'
+  notes: null
   step: handoff.console
   refs:
     kubernetes:
@@ -8612,25 +8623,25 @@ entries:
 - id: secret.swarm-tenant-qa.value
   kind: secret-value
   scope: core
-  stage: 11
+  stage: 13
   provider: human-in-console
   check: gcloud secrets versions list swarm-tenant-$T-qa --project $P --filter=state:ENABLED
   apply: PUT /v1/qa-targets/{id}/credential, a workspace admin, via a one-time link (15 min, single use, bound to the minting person's email/tenant/target)
   verify: a QA run against the approved host authenticates
   explain: JSON map keyed by target id; IAM V-1 (add version) and V-2 (read latest) are swarm-api's only operations on it
-  guards: 'null'
+  guards: null
   secret_entry: null (API route only, never scripts/create-secrets.sh)
   depends_on:
   - secret.swarm-tenant-qa.container
   evidence:
   - apps/swarm-api/swarm_api/qatargets.py:42-50
-  notes: 'null'
+  notes: null
   step: handoff.console
   expand: per_tenant
 - id: switch.platform_admin_reach
   kind: switch
   scope: core
-  stage: 11
+  stage: 7
   provider: engine
   check: grep -n platform_admin_reach terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:997, type bool, default false
@@ -8648,7 +8659,7 @@ entries:
 - id: switch.platform_memberships
   kind: switch
   scope: core
-  stage: 11
+  stage: 7
   provider: engine
   check: grep -n platform_memberships terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:1026, type bool, default false
@@ -8666,7 +8677,7 @@ entries:
 - id: switch.repository_grants_enforced
   kind: switch
   scope: core
-  stage: 11
+  stage: 7
   provider: engine
   check: grep -n repository_grants_enforced terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:981, type bool, default false
@@ -8685,7 +8696,7 @@ entries:
 - id: switch.workspace_gate
   kind: switch
   scope: core
-  stage: 11
+  stage: 9
   provider: engine
   check: grep -n workspace_gate terraform/environments/*/*.tfvars
   apply: terraform/infra/variables.tf:1101, type bool, default false
@@ -8704,7 +8715,7 @@ entries:
 - id: claude-account.subscription
   kind: claude-account
   scope: core
-  stage: 12
+  stage: 13
   provider: human-in-terminal
   check: 'uv run sc accounts (lists each account''s state: AVAILABLE/PAUSED/DRAINING, never a credential)'
   apply: 'human step, per account added to the pool: either the console''s Capacity -> Accounts ''add'' flow, or `uv run sc account add --label <name>` in a terminal, which drives a browser OAuth sign-in against Anthropic''s own authorize/token endpoints and a one-time code exchange server-side -- the CLI session never sees the resulting token, only the one-time code, printed once'
@@ -8904,7 +8915,7 @@ entries:
 - id: addon.brave-search
   kind: addon
   scope: addon:brave-search
-  stage: 15
+  stage: 7
   provider: human-in-terminal
   check: gcloud secrets versions list swarm-search-api-key --project=$P --filter=state=ENABLED --limit=1
   apply: 'swarm addon enable brave-search: the API key through create-secrets.sh --search-api-key --stdin'
@@ -8923,7 +8934,7 @@ entries:
 - id: addon.bright-data-egress
   kind: addon
   scope: addon:bright-data-egress
-  stage: 15
+  stage: 7
   provider: human-in-terminal
   check: gcloud secrets versions list swarm-egress-credential --project=$P --filter=state=ENABLED --limit=1
   apply: 'swarm addon enable bright-data-egress: the account is the company''s own; the credential goes in through scripts/create-secrets.sh equivalents with --stdin; then the egress switch'
@@ -8944,7 +8955,7 @@ entries:
 - id: addon.ci
   kind: addon
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: company-external
   check: gh api repos/<owner>/<repo>/actions/variables (the CI add-on's variables present)
   apply: 'swarm addon enable ci: the WIF pool for GitHub Actions, the merge App, merge train, CI fixer, sandbox repo, self-hosted runners'
@@ -8963,7 +8974,7 @@ entries:
 - id: addon.typesafe
   kind: addon
   scope: addon:typesafe
-  stage: 15
+  stage: 7
   provider: engine
   check: gcloud secrets versions list swarm-typesafe-fwd-key --project=$P --filter=state=ENABLED --limit=1
   apply: 'swarm addon enable typesafe: the forwarder key, then enable_typesafe_forwarder'
@@ -8984,7 +8995,7 @@ entries:
 - id: local-tool.sc-cli-config-file
   kind: local-tool
   scope: core
-  stage: 15
+  stage: 14
   provider: human-in-terminal
   check: cat $XDG_CONFIG_HOME/swarmcloud/config.json (or ~/.config/swarmcloud/config.json, or macOS's ~/Library/Application Support/SwarmCloud/config.json)
   apply: created automatically the first time `sc context add` or the plugin's install-time prompts run; holds only url and oauth_client_id per named context, never a secret
@@ -9001,7 +9012,7 @@ entries:
 - id: other.plugin-mcp-bridge-fetch
   kind: other
   scope: core
-  stage: 15
+  stage: 14
   provider: human-in-terminal
   check: uv tool run --from 'swarm-mcp @ git+https://github.com/<owner>/<repo>@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp --help
   apply: 'no infra creation: plugin/.claude-plugin/plugin.json''s mcpServers.swarmcloud.args fetches the bridge straight from this GitHub repository at git ref sc-v<plugin version> (SWARM_MCP_FROM overrides it); a fresh install that forks the repo must push that exact tag before anyone installs the plugin, or the MCP server fails to start'
@@ -9139,7 +9150,7 @@ entries:
 - id: other.plugin-marketplace
   kind: other
   scope: core
-  stage: 15
+  stage: 14
   provider: company-external
   check: curl -fsS https://storage.googleapis.com/swarmcloud/marketplace.json | jq -e '.plugins[] | select(.name == "sc")'
   apply: 'NEW (DAYONE-RELEASE-1): marketplace.json and releases/<V>/plugin/ published to gs://swarm-artifacts-example-project'
@@ -9156,7 +9167,7 @@ entries:
 - id: other.plugin-version-skew
   kind: other
   scope: core
-  stage: 15
+  stage: 14
   provider: engine
   check: sc doctor prints the plugin version, the deployment version and the supported range
   apply: NEW (DAYONE-PLUGIN-1 reads it; DAYONE-RELEASE-1 publishes compat.json; DAYONE-DISCOVERY-1 serves plugin.min_version)

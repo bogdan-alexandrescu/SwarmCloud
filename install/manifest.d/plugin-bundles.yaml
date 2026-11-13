@@ -44,7 +44,7 @@ entries:
 - id: registry.plugin-bundles
   kind: registry
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud artifacts repositories describe ${name_prefix}-plugin-bundles --project=$P --location=$R
   apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.plugin_bundles, once builtins_managed
@@ -66,7 +66,7 @@ entries:
 - id: registry.mirror-npm
   kind: registry
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud artifacts repositories describe ${name_prefix}-mirror-npm --project=$P --location=$R
   apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository.mirror_npm, mode=REMOTE_REPOSITORY,
@@ -88,7 +88,7 @@ entries:
 - id: iam-binding.plugin-bundler-reads
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P; gcloud artifacts repositories
     get-iam-policy ${name_prefix}-mirror-npm --location=$R --project=$P
@@ -120,7 +120,7 @@ entries:
 - id: iam-binding.plugin-bundler-push
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
   apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundler_push
@@ -141,7 +141,7 @@ entries:
 - id: iam-binding.plugin-bundles-pull
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud artifacts repositories get-iam-policy ${name_prefix}-plugin-bundles --location=$R --project=$P
   apply: terraform/infra/plugin-bundles.tf google_artifact_registry_repository_iam_member.plugin_bundles_readers
@@ -207,7 +207,7 @@ entries:
 - id: network.plugin-bundle
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
   apply: terraform/infra/plugin-bundles.tf google_compute_network.plugin_bundle, once builtins_managed is on
@@ -228,7 +228,7 @@ entries:
 - id: network.plugin-bundle-subnet
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
   apply: terraform/infra/plugin-bundles.tf google_compute_subnetwork.plugin_bundle, once builtins_managed is on
@@ -249,7 +249,7 @@ entries:
 - id: network.fw-plugin-bundle-deny-egress
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
   apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_deny_egress, once builtins_managed is on
@@ -270,7 +270,7 @@ entries:
 - id: network.fw-plugin-bundle-allow-apis
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-bundle
   apply: terraform/infra/plugin-bundles.tf google_compute_firewall.plugin_bundle_allow_google_apis, once builtins_managed is on
