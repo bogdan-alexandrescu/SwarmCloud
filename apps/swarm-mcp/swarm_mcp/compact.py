@@ -77,10 +77,12 @@ from .progress import (
     fix_loop_command,
     fix_loop_phase,
     fix_loop_words,
+    hold_rejected_files,
     outcome,
     owner_questions,
     questions_count,
     questions_words,
+    rejected_files_words,
     waiting_key,
     waiting_words,
 )
@@ -731,6 +733,11 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
     # The agent's questions for the owner (2026-10-05), with "" for a text it
     # left out, so this object still holds no null. `[]` when it asked none.
     result["questions"] = [_no_null_question(q) for q in found.get("questions") or [] if isinstance(q, dict)]
+    # And why that `[]` is not "asked none" when it is not (#3086): a file
+    # the worker did not take, or one it took that could not be read back.
+    # No key otherwise, so this object still holds no null.
+    if found.get("questions_unavailable_because"):
+        result["questions_unavailable_because"] = _text(found["questions_unavailable_because"])
     # And which of them the owner has answered (ANSWERS-429, part of #1904):
     # the follow payload carried `owner_answers` (TASK-ANSWERS) and this
     # result did not, so a step row could not tell an answered question from
@@ -963,6 +970,11 @@ def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: s
     brief = waiting_brief(task)
     if brief is not None:
         out["summary"] = brief["summary"]
+    if hold:
+        # Each questions file the hold could not take, by its place (#3086).
+        rejected = hold_rejected_files(task)
+        if rejected:
+            out["rejected_files"] = rejected
     if asked:
         return out
     route = detail.get("answer_route")
@@ -1009,6 +1021,9 @@ def person_wait_result(task_id: str, wait: dict[str, Any]) -> dict[str, Any]:
         n = len(wait["questions"])
         what = (f"answer the {n} owner question{'' if n == 1 else 's'} its hold names; it resumes on its own"
                 if n else "answer the owner questions its hold names")
+        if wait.get("rejected_files"):
+            what += ("; no answer clears the questions files the platform could not take: "
+                     + rejected_files_words(wait["rejected_files"]))
     else:
         what = "sign in on its console page, then say it is ready"
         if wait.get("human_ready_route"):
