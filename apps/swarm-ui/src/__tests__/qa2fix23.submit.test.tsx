@@ -35,17 +35,17 @@ describe('runs2-10: the footnote says what became of each window it read', () =>
       { kind: 'issue run' as const, read: 2, yours: 0 },
     ]
     // MUTATION: name every window after "Found among" again and this reads
-    // "Found among your newest 30 agents, the tenant’s newest 3 workflows, its
+    // "Found among your newest 30 agents, the workspace’s newest 3 workflows, its
     // newest 2 issue runs." under two agents.
     expect(recentScope(items, looked)).toBe(
-      'Listed: 2 agents, newest first. Found among your newest 30 agents. None of yours among the tenant’s newest 3 workflows or its newest 2 issue runs.',
+      'Listed: 2 agents, newest first. Found among your newest 30 agents. None of yours among the workspace’s newest 3 workflows or its newest 2 issue runs.',
     )
     // A window whose yours are older than the five says so, and a run
     // window after it is the tenant's, not a dangling "its".
     // MUTATION: call every unlisted window "none of yours" and the first
-    // reads "None of yours among the tenant’s newest 3 workflows or …".
+    // reads "None of yours among the workspace’s newest 3 workflows or …".
     expect(recentScope(items, [looked[0]!, { ...looked[1]!, yours: 4 }, looked[2]!])).toBe(
-      'Listed: 2 agents, newest first. Found among your newest 30 agents. Yours among the tenant’s newest 3 workflows are older than these. None of yours among the tenant’s newest 2 issue runs.',
+      'Listed: 2 agents, newest first. Found among your newest 30 agents. Yours among the workspace’s newest 3 workflows are older than these. None of yours among the workspace’s newest 2 issue runs.',
     )
   })
 
@@ -58,16 +58,18 @@ describe('runs2-10: the footnote says what became of each window it read', () =>
     // The fixture's workflows of yours are older than its five agents, and
     // none of its issue runs is yours. MUTATION: name every window after
     // "Found among" again and this reads "Found among your newest … agents,
-    // the tenant’s newest … workflows, its newest … issue runs.".
+    // the workspace’s newest … workflows, its newest … issue runs.".
     expect(visible(recent.querySelector('.sb-recent-scope'))).toMatch(
-      /^Listed: 5 agents, newest first\. Found among your newest \d+ agents\. Yours among the tenant’s newest \d+ workflows? are older than these\. None of yours among the tenant’s newest \d+ issue runs?\.$/,
+      /^Listed: 5 agents, newest first\. Found among your newest \d+ agents\. Yours among the workspace’s newest \d+ workflows? are older than these\. None of yours among the workspace’s newest \d+ issue runs?\.$/,
     )
   }, 20000)
 })
 
 async function readyForm() {
   const view = render(<SubmitWorkflowScreen />)
-  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+  // The first render pays the cold import of the whole form (about 5 s on a
+  // lane, more on a loaded runner): 4 s timed out before it drew, not the form.
+  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 10_000 })
   const select = view.container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!
   fireEvent.change(select, { target: { value: 'mock' } })
   return view
