@@ -748,6 +748,12 @@ class GroupReadStep(_Base):
         return Observation(MET, f"swarm-api read {group} in {mode or chosen} mode",
                            {"groups_auth": mode or chosen, "probed_groups": [group]})
 
+    def deep_link(self, ctx: Any) -> str:
+        """The Admin console page of the chosen path. Without one, the engine
+        would open the first https string of the plan, the Groups API scope,
+        which is no page."""
+        return DELEGATION_PAGE if ctx.outputs.get("groups_auth") == DELEGATION else ADMIN_ROLES_PAGE
+
     def plan(self, ctx: Any) -> Plan:
         account = swarm_api_email(ctx.project)
         return Plan(

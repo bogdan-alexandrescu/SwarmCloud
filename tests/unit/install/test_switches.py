@@ -139,6 +139,27 @@ def test_pass4_records_the_receiver_serving(monkeypatch) -> None:
     assert applied == ["infra-4"] and ctx.outputs["github_hooks_serving"] is True
 
 
+def test_pass4_without_a_serving_receiver_fails_and_runs_again(monkeypatch) -> None:
+    """A pass 4 whose receiver is not serving (the release names no
+    swarm-github-hooks image) stops the step with that said, never a quiet
+    False the hook's trigger then waits on forever; and the step is not met
+    on the next run, so it runs again."""
+    from swarm_install.steps import bootstrap
+
+    monkeypatch.setattr(bootstrap, "apply_pass",
+                        lambda ctx, deps, pass_name, **kw: {"github_hooks": {"serving": False, "webhook_url": ""}})
+    ctx = FakeCtx()
+    step = Pass4Step(Deps(gcp=lambda: SecretMetadata()))
+    with pytest.raises(github_switches.ReceiverNotServing, match="swarm-github-hooks"):
+        step.apply(ctx, step.plan(ctx))
+    assert not HookStep(Deps(gcp=lambda: SecretMetadata())).trigger(ctx)
+
+    monkeypatch.setattr(bootstrap.PassStep, "_pending", lambda self, ctx_: None)  # infra-4 applied as it is now
+    assert step.check(ctx).status == "unmet"
+    ctx.outputs["github_hooks_serving"] = True
+    assert step.check(ctx).status == "met"
+
+
 def _served(status: int, body: dict):
     """The error as the engine reads it from swarm-api's served body
     (`ApiError.to_payload`: a flat `{code, message, detail?}`), never a
