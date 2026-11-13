@@ -2402,6 +2402,12 @@ export interface Runtime {
   disabled_reason: string
   image: string
   /**
+   * The Node release the image carries, e.g. "24.22.3" (#3929); null for a
+   * control_plane profile, which runs no image; absent from a platform from
+   * before it was served.
+   */
+  node_version?: string | null
+  /**
    * DECLARED. `AUTO` is a value the frozen `Backend` enum permits, and a caller
    * shown only "AUTO" learns nothing about where the task runs.
    */
