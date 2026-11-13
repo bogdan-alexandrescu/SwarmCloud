@@ -15,6 +15,7 @@ from swarm_install.steps.bootstrap import Deps, applied_key, generate, inputs_di
 from swarm_install.steps.github_switches import HookStep, Pass3Step, Pass4Step
 from swarm_install.steps.preflight import remember
 from swarm_install import tfvars
+from swarm_install.verbs import install
 
 from .test_engine_loop import FakeStep, Rig
 from .test_terraform_runner import DESKTOP_CLIENT_ID, FakeCtx
@@ -190,7 +191,10 @@ def test_ready_only_after_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
         ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
     ready.apply(ctx, ready.plan(ctx))
     assert ctx.state.ready_at == ctx.clock.now()
-    assert said == [f"\nREADY: SwarmCloud answers at https://{HOST}\n"]
+    assert said[0] == f"\nREADY: SwarmCloud answers at https://{HOST}\n"
+    # A team's next step is said at READY, not only by --status (audit).
+    assert said[1:] == [install.teammates_line(ctx.state, f"https://{HOST}")]
+    assert "claude plugin marketplace add" in said[1]
     assert ready.check(ctx).status == "met"
 
     # Through the engine: a verify step that fails stops the run before READY.
@@ -321,3 +325,27 @@ def test_console_that_never_answers_opens_the_certificate_page(tmp_path: Path,
     urls = [url for line in said for url in re.findall(r"https://\S+", line)]
     assert urls == [handoff.certificates_page("p-test")], said
     assert URL not in urls, "the console's own URL is not handed off while it does not answer"
+
+
+def test_ready_for_one_person_names_no_teammates(tmp_path: Path) -> None:
+    said: list[str] = []
+    ready = handoff.ReadyStep(Deps(gcp=lambda: None), verify_ids=lambda: [], say=said.append)
+    ctx = FakeCtx()
+    ctx.state.outputs["sizing"] = {"mode": "individual", "members": 1}
+    for switch in handoff.SWITCHES:
+        ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    ready.apply(ctx, ready.plan(ctx))
+    assert said == [f"\nREADY: SwarmCloud answers at https://{HOST}\n"]
+
+
+def test_the_hand_off_names_its_bound_and_the_button_it_waits_for(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """The terminal waits up to 6 hours for the console's "Hand over to swarm
+    install" button: the hand-off says both, in the printed text and the event."""
+    rig, world, engine, said = rig_for(tmp_path, monkeypatch, finished=10**6)
+    engine.run()
+    assert len(said) == 1
+    assert "6 hours" in said[0] and '"Hand over to swarm install"' in said[0], said[0]
+    applied = [e for e in rig.events.of_kind("step_apply") if e.get("step") == "handoff.console"]
+    assert any("6 hours" in e.get("message", "") and "Hand over to swarm install" in e.get("message", "")
+               for e in applied), applied

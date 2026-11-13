@@ -78,7 +78,9 @@ HUMAN_WAIT = WaitSpec(
     expected="a few minutes",
     expected_s=5 * 60,
     bound_s=30 * 60,
-    look_at="the step's instructions above; run swarm install again once it is done",
+    # The engine polls the step's check itself: the person finishes the step
+    # and this run goes on, never "run swarm install again" (audit finding 33).
+    look_at="the step's instructions above; this run checks again by itself and goes on once it is done",
 )
 
 
