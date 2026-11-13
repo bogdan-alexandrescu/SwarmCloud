@@ -209,11 +209,11 @@ jobs:
           WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           MERGE_TRAIN: ${{ vars.MERGE_TRAIN }}
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
-          # Unset, the script's defaults: 4 pull requests, 90 minutes.
+          # Unset, the script's defaults: 40 pull requests, 90 minutes.
           MERGE_TRAIN_MAX_PRS: ${{ vars.MERGE_TRAIN_MAX_PRS }}
           MERGE_TRAIN_MAX_AGE_MINUTES: ${{ vars.MERGE_TRAIN_MAX_AGE_MINUTES }}
           # The gather: a train boards once this many would board, or once the
-          # oldest has been ready this long. Unset, the script's 6 and 20
+          # oldest has been ready this long. Unset, the script's 8 and 15
           # minutes; 1 or 0 boards at once, as before (docs/runbooks/merge-train.md).
           MERGE_TRAIN_MIN_PRS: ${{ vars.MERGE_TRAIN_MIN_PRS }}
           MERGE_TRAIN_MAX_WAIT_MINUTES: ${{ vars.MERGE_TRAIN_MAX_WAIT_MINUTES }}
