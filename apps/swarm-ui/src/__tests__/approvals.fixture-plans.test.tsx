@@ -74,7 +74,8 @@ describe('the fixture inbox', () => {
     for (const id of [SMALL, HIGH, STEPS]) {
       const r = await run(id)
       expect(r.state).toBe('PLANNED')
-      const link = await screen.findByRole('link', { name: `${r.issue.ref}: ${r.plan!.summary}` }, WAIT)
+      const card = await screen.findByRole('region', { name: `${r.issue.ref}: ${r.plan!.summary}` }, WAIT)
+      const link = within(card).getByRole('link', { name: 'Review' })
       expect(link.getAttribute('href')).toContain(encodeURIComponent(`run:${id}`))
     }
   })
@@ -147,6 +148,7 @@ describe('a decision on an example plan', () => {
 
   it('Reject turns its run down with the reason typed', async () => {
     const h = await open(HIGH)
+    fireEvent.click(within(h).getByRole('button', { name: 'Reject' }))
     fireEvent.change(within(h).getByRole('textbox', { name: /Reason/ }), { target: { value: 'split the contract change out first' } })
     fireEvent.click(within(h).getByRole('button', { name: 'Reject' }))
     await waitFor(async () => expect((await run(HIGH)).state).toBe('REJECTED'), WAIT)
