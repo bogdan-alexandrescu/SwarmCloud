@@ -51,6 +51,7 @@ import yaml
 
 from .ci_fold_layout import FOLDED, FOLDED_HOSTS, PATCH_NOTE, check_steps, host_job
 from .test_ci_reuse import reuse as ci_reuse
+from .test_fast_checks_on_lane_prs import without_lane_clause
 from .test_merge_queue_workflows import REQUIRED_CONTEXTS
 
 REPO = Path(__file__).resolve().parents[3]
@@ -112,8 +113,9 @@ def _needs(job: dict) -> list[str]:
 
 
 def _keeper_condition(name: str, job_id: str) -> str:
-    """The old job's own condition: the keeper's `if` after `always() && `."""
-    condition = str(_jobs(name)[job_id].get("if") or "")
+    """The old job's own condition: the keeper's `if` after `always() && `,
+    before the lane clause every job ends with (test_fast_checks_on_lane_prs.py)."""
+    condition = without_lane_clause(_jobs(name)[job_id].get("if"))
     assert condition == "always()" or condition.startswith("always() && "), f"{job_id}: {condition} {PATCH_NOTE}"
     return condition.removeprefix("always()").removeprefix(" && ")
 
@@ -172,7 +174,8 @@ def test_a_name_keeper_runs_hosted_and_reads_only_its_own_verdict(file, job_id, 
     if file == "security.yml":
         # A required check: `!cancelled()`, so a run concurrency cancelled
         # never posts a `failure` for it (#2582).
-        assert job.get("if") == "${{ !cancelled() }}", (job_id, job.get("if"))
+        # (Then the lane clause, test_fast_checks_on_lane_prs.py.)
+        assert without_lane_clause(job.get("if")) == "${{ !cancelled() }}", (job_id, job.get("if"))
     else:
         assert str(job.get("if") or "").startswith("always()"), (job_id, job.get("if"))
     (step,) = job["steps"]
@@ -294,7 +297,7 @@ def _evaluate(expression: str, app: str, python: str, reused: set[str]) -> bool:
 def test_the_folded_job_runs_exactly_when_one_of_its_checks_would():
     """Over every reach and reuse combination. MUTATION: drop the
     `python-checks` arm from `quick-checks`' `if`."""
-    host_if = host_job("application.yml")["if"]
+    host_if = without_lane_clause(host_job("application.yml")["if"])
     keep = list(FOLDED["application.yml"][1])
     conditions = [_keeper_condition("application.yml", k) for k in keep]
     seen = set()
