@@ -1,0 +1,32 @@
+# Installer epic findings (engine stages 0-2): stage 0 reads no quota of a
+# project that does not exist yet, nor of a service not enabled yet, so
+# preflight.quotas-recheck reads every quota preflight.quotas checks again once
+# stage 1 has created the project and foundations.apis has enabled its APIs.
+# The quota.* entries stay preflight.quotas'; this entry is the recheck's own,
+# so swarm doctor names the step and swarm install --repair can run it.
+version: 1
+entries:
+- id: quota.recheck-after-apis
+  kind: quota
+  scope: core
+  stage: 1
+  provider: engine
+  check: every quota of preflight.QUOTAS (quota.kms-signing-h4, quota.cloud-run-jobs,
+    quota.compute-regional-cpus, quota.gke-regional, quota.nat-static-ips) read through the Service Usage API
+    once the project exists and its services are enabled, each at or above its floor
+  apply: preflight.quotas-recheck opens the console's Quotas page, on the metric itself when the quota names
+    one exactly, for each quota below its floor; a person requests the increase there
+  verify: preflight.quotas-recheck re-check is MET
+  explain: a new project's quotas, and those of a service enabled only in stage 1, cannot be read in stage 0;
+    the NAT addresses', the regional GKE clusters' and the KMS signing quotas bind at the first apply
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.serviceusage
+  - api.cloudkms
+  - api.run
+  - api.compute
+  - api.container
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  step: preflight.quotas-recheck

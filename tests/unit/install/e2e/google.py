@@ -660,3 +660,8 @@ def register(world: World, cloud: Cloud) -> None:
     @route("GET", r"https://(api\.ipify\.org|ipv4\.icanhazip\.com|checkip\.amazonaws\.com|ifconfig\.me)(/.*)?")
     def my_ip(call: Call) -> Any:
         return Response(200, (INSTALLER_IP + "\n").encode(), "OK")
+
+    # -- GitHub's public users API: preflight.inputs checks the login exists ------------------
+    @route("GET", r"https://api\.github\.com/users/([^/]+)")
+    def github_user(call: Call) -> Any:
+        return Response(200, json.dumps({"login": call.group(1), "type": "Organization"}).encode(), "OK")
