@@ -257,7 +257,7 @@ def test_another_tenants_workflow_is_refused_as_a_missing_one(world, db):
     with pytest.raises(ApiError) as missing:
         _hold(ctx, [{"workflow_id": "wf_doesnotexist"}])
 
-    assert other.value.code == missing.value.code == "after_merge_unknown"
+    assert other.value.code == missing.value.code == "not_found"
     assert other.value.message.replace(theirs, "X") == missing.value.message.replace(
         "wf_doesnotexist", "X")
     assert not _paths(db, f"{heldworkflows.HELD_WORKFLOWS}/")
@@ -273,7 +273,7 @@ def test_a_cycle_is_refused(world, db):
 
     with pytest.raises(ApiError) as refused:
         _hold(ctx, [{"workflow_id": second["id"]}])
-    assert refused.value.code == "after_merge_refused"
+    assert refused.value.code == "validation_failed"
     assert "cycle" in refused.value.message
 
 

@@ -87,16 +87,17 @@ _WAIT = "wait"
 
 class AfterMergeRefused(ValidationFailed):
     """An `after_merge` the hold refuses: a cycle, a duplicate, a pull request
-    of a workflow with no GitHub repository, or a spec field a row must not keep."""
+    of a workflow with no GitHub repository, or a spec field a row must not keep.
 
-    code = "after_merge_refused"
+    The established `validation_failed` code, not a new one: a new 4xx code
+    ships switched off (`refusals`), and a hold let through would hold a
+    cycle forever or keep a credential in a ledger row."""
 
 
 class AfterMergeUnknown(NotFound):
     """A `workflow_id` naming no workflow of this tenant. Another tenant's is
-    refused in the same words as a missing one (invariant 9)."""
-
-    code = "after_merge_unknown"
+    refused in the same words as a missing one (invariant 9). The established
+    `not_found` code: switched off, another tenant's id would be let through."""
 
 
 @dataclass
