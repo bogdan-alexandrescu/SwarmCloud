@@ -343,6 +343,9 @@ ANSWERS_NAME = "answers.json"
 #: (`swarm_api.validation.OWNER_ANSWERS_METADATA_KEY`). Spelled again: the
 #: worker does not carry swarm-api.
 OWNER_ANSWERS_KEY = "owner_answers"
+#: An answer's stamp: the `digest` at its index in the `DIGESTS_KEY` of the
+#: attempt it answered (`swarm_api.agent_questions.ASKED_DIGEST_KEY`).
+ASKED_DIGEST_KEY = "asked_digest"
 #: The largest `await-release.json` read: one sha and its key.
 MAX_RELEASE_BYTES = 1024
 
@@ -407,11 +410,74 @@ def _wait_of(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return None
 
 
+def stored_answers(metadata: Any) -> dict[int, Mapping[str, Any]]:
+    """`metadata.owner_answers` by `question_index`, whatever is asked there now."""
+    stored = metadata.get(OWNER_ANSWERS_KEY) if isinstance(metadata, Mapping) else None
+    by_index: dict[int, Mapping[str, Any]] = {}
+    for entry in stored if isinstance(stored, list) else ():
+        index = entry.get("question_index") if isinstance(entry, Mapping) else None
+        if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+            by_index[index] = entry
+    return by_index
+
+
+def summary_digests(doc: Mapping[str, Any]) -> list[str] | None:
+    """The task's `DIGESTS_KEY`, one per counted question, else None.
+
+    None for a summary from before the worker wrote them, and for a list that
+    does not hold one non-empty string per counted question, as swarm-api
+    reads it (`agent_questions.question_digests`).
+    """
+    summary = doc.get("result_summary")
+    if not isinstance(summary, Mapping):
+        return None
+    count, raw = summary.get(SUMMARY_KEY), summary.get(DIGESTS_KEY)
+    if isinstance(count, bool) or not isinstance(count, int) or not isinstance(raw, list) \
+            or len(raw) != count or not all(isinstance(d, str) and d for d in raw):
+        return None
+    return raw
+
+
+def recorded(entry: Mapping[str, Any]) -> bool:
+    """Whether a stored answer records the question it answered (a stamp or its text)."""
+    return isinstance(entry.get(ASKED_DIGEST_KEY), str) or isinstance(entry.get("question"), str)
+
+
+def answers_question(entry: Mapping[str, Any], question: Mapping[str, Any]) -> bool:
+    """Whether the stored answer `entry` answers `question`, as its asker wrote it.
+
+    THE INDEX IS NOT THE QUESTION (#3349), by swarm-api's rules
+    (`agent_questions.answers_question`): a later attempt may ask another
+    question at an answer's index. An answer stamped `ASKED_DIGEST_KEY` is
+    compared with this question's `digest`; one stored before the stamp, by
+    the question text it records. Recorded text is the served, redacted
+    text, so a question it was redacted out of reads unanswered: that holds,
+    it never answers. An answer recording neither is kept by its index.
+    """
+    stamp = entry.get(ASKED_DIGEST_KEY)
+    if isinstance(stamp, str):
+        return stamp == digest(question)
+    text = entry.get("question")
+    if isinstance(text, str):
+        return text == question.get("question")
+    return True
+
+
+def answers_asked(asked: list[Any], metadata: Any) -> dict[int, Mapping[str, Any]]:
+    """The stored answers by index, only those that answer the question `asked` there now."""
+    return {
+        index: entry for index, entry in stored_answers(metadata).items()
+        if index < len(asked) and isinstance(asked[index], Mapping)
+        and answers_question(entry, asked[index])
+    }
+
+
 def answers_for(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The owner's answers to the questions this task last waited on, in order.
 
     One row per question of the wait: its number, its text, whether it
-    blocked, and the answer (`choice`, `text`), None for one not answered.
+    blocked, and the answer (`choice`, `text`), None for one not answered --
+    an answer given to another question at its index included.
     Empty when the task never waited on a question.
     """
     wait = _wait_of(task)
@@ -421,13 +487,8 @@ def answers_for(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(questions, list):
         return []
     waited = {i for i in wait.get("blocking") or () if isinstance(i, int)}
-    metadata = task.get("metadata")
-    stored = metadata.get(OWNER_ANSWERS_KEY) if isinstance(metadata, Mapping) else None
-    by_index: dict[int, Mapping[str, Any]] = {}
-    for entry in stored if isinstance(stored, list) else ():
-        index = entry.get("question_index") if isinstance(entry, Mapping) else None
-        if isinstance(index, int) and not isinstance(index, bool):
-            by_index[index] = entry
+    # Only an answer to the question the wait asks at its index (#3349).
+    by_index = answers_asked(questions, task.get("metadata"))
     rows: list[dict[str, Any]] = []
     for i, question in enumerate(questions):
         if not isinstance(question, Mapping):
