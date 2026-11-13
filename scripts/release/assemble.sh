@@ -93,7 +93,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "${VERSION}" && -n "${IMAGES}" && -n "${OUT}" ]] || usage
-if ! [[ "${VERSION}" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+# N and the rc number carry no leading zero: the wheels are named by int(N)
+# (marketplace.py wheel_version), install.sh by N as written, so 2026.10.01
+# would publish wheels install.sh never asks for.
+if ! [[ "${VERSION}" =~ ^[0-9]{4}\.[0-9]{2}\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$ ]]; then
   err "--version ${VERSION} is not a release name (YYYY.MM.N or YYYY.MM.N-rc.N)"
   exit 2
 fi
