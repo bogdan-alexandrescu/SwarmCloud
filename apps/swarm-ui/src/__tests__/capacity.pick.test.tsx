@@ -43,6 +43,8 @@ const api = vi.hoisted(() => ({
   loadHolders: vi.fn(),
   loadRuntimeTopology: vi.fn(),
   loadAdminQuota: vi.fn(),
+  // An admin's session: `limit` links to Pool limits for an admin only (#3015).
+  loadMe: vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })),
 }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
@@ -211,7 +213,7 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
       ok(leasePage([lease(1, ['global', 'runner:codex']), lease(2, ['global', 'runner:codex']), lease(3, ['global'])])),
     )
     const links = (name: string) => [...rowOf(name).querySelectorAll('.cap-links a')].map((a) => a.textContent)
-    expect(links('global')).toEqual(['3 holders', 'limit'])
+    await waitFor(() => expect(links('global')).toEqual(['3 holders', 'limit']))
     expect(links('runner:codex')).toEqual(['2 holders', 'limit'])
     // 1 unit on the counter and no lease row naming it is not `0 holders`
     // (QA2-FIX-14, capacity-02): the units are counter only.
