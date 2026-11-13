@@ -99,11 +99,15 @@ The release home is project `swarmcloud-prod`: images in
    is never deleted while a release that carries that image is. A later
    release with the same Lightpanda finds the object there and writes nothing
    (`--no-clobber` as well), so there is one copy, not one per release.
-   A candidate (`-rc.N`) then writes `channels/rc.marketplace.json` (its
+   A final release then writes the root `install.sh`, what every stable
+   install runs. A candidate (`-rc.N`) never does: it writes its own script as
+   `channels/rc.install.sh`, then `channels/rc.marketplace.json` (its
    marketplace, which an rc deployment's teammates add) and, last,
    `channels/rc` (one line, its version), after SHA256SUMS, so
-   `SWARM_CHANNEL=rc` installs it, and reads `channels/rc` back: the publish
-   fails unless it holds exactly that version. A channel is objects directly
+   `curl .../channels/rc.install.sh | SWARM_CHANNEL=rc sh` installs it, and
+   reads `channels/rc.install.sh` and `channels/rc` back: the publish fails
+   unless the first is the bundle's `install.sh` and the second holds exactly
+   that version. A channel is objects directly
    under `channels/`, never a `channels/<channel>/` prefix: where one exists,
    `gcloud storage cp FILE gs://swarmcloud/channels/rc` copies INTO it, which is
    how 2026.10.1-rc.1's line landed as `channels/rc/rc` (audit 3, A5). Those
