@@ -138,10 +138,10 @@ describe('runs-submit-13: one tenant before and after the read', () => {
   it('keeps the tenant the page was read for, whatever the preview names', async () => {
     serve({ status: 200, body: preview() }, RUNS)
     const { container } = await mount()
-    expect(factText(container as HTMLElement, 'tenant')).toBe('tenant u-owner')
+    expect(factText(container as HTMLElement, 'workspace')).toBe('workspace u-owner')
     await readIssue('example-org/agent-swarm-infra#512')
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
-    expect(factText(container as HTMLElement, 'tenant'), 'the tenant changed with the read').toBe('tenant u-owner')
+    expect(factText(container as HTMLElement, 'workspace'), 'the tenant changed with the read').toBe('workspace u-owner')
   })
 })
 
