@@ -115,17 +115,23 @@ PLATFORM_MADE = "per_tenant"
 #: a test holds its command equal to `team_repair_command`).
 TEAM_REPAIR = "swarm team repair"
 
+# A plain `swarm install` skips a met pass: its check compares the recorded input
+# digest with today's inputs and reads no live traffic, digest or target, so drift
+# made out of band stays. The repair of an entry an infra pass owns through `step:`
+# runs the latest applied pass of its root again (repair.py), and that acts.
+INFRA_REPAIR = ("a plain swarm install skips infra's passes once they are done and reads none of this live, so "
+                "swarm install --repair {entry} (manifest step: {step}) runs infra's latest applied pass again, "
+                "which ")
+
 #: Stage 14's checks repair nothing (`steps.verify`'s steps keep the base
 #: `apply`, a no-op): `swarm install --repair` only checks them again. The fix
 #: names what makes each one right instead (epic finding 66).
 CHECK_ONLY: dict[str, str] = {
-    "verify.scheduler-targets": (
-        "swarm install re-runs infra's passes, which make the Scheduler jobs, their targets and the "
-        "targets' invoker grants"),
-    "verify.digests": (
-        "swarm install re-runs infra's passes, which deploy each service at the release's recorded digest and "
-        "send all its traffic to the latest ready revision (swarm upgrade to the release it already runs does "
-        "nothing)"),
+    "verify.scheduler-targets": INFRA_REPAIR.format(entry="sched.scheduler-tick", step="infra.pass-1") + (
+        "makes the Scheduler jobs, their targets and the targets' invoker grants"),
+    "verify.digests": INFRA_REPAIR.format(entry="cloud-run-service.swarm-api", step="infra.pass-1") + (
+        "deploys each service at the release's recorded digest and sends all its traffic to the latest ready "
+        "revision (swarm upgrade to the release it already runs does nothing)"),
     "verify.reconciler-jobs": (
         "the reconciler's read of Jobs is a RoleBinding in each team's namespace (the tenant render): "
         f"{TEAM_REPAIR} <team> --project <project> applies it again"),
@@ -133,9 +139,8 @@ CHECK_ONLY: dict[str, str] = {
         "swarm install rewrites the install record at this engine's schema; an install state at another schema "
         "moves only when swarm upgrade --to <a newer release> runs that release's numbered migrations (swarm "
         "upgrade to the release it already runs does nothing)"),
-    "verify.plugins": (
-        "swarm install re-runs infra's passes, which apply terraform/infra/plugins.tf (the plugins bucket, "
-        "its grants and the swarm-plugin-intake job)"),
+    "verify.plugins": INFRA_REPAIR.format(entry="bucket.plugins", step="infra.pass-1") + (
+        "applies terraform/infra/plugins.tf (the plugins bucket, its grants and the swarm-plugin-intake job)"),
 }
 
 
