@@ -22,8 +22,8 @@
 // `versions`; tests/unit/control_plane/test_runner_sizes_api.py). Nothing
 // here is token-shaped.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { serve, visible } from './repofixture'
 
@@ -143,6 +143,18 @@ async function mount(routes: Routes = {}) {
   await waitFor(() => expect(card('standard')).not.toBeNull(), WAIT)
   return { ...utils, calls }
 }
+
+// THE FIRST IMPORT OF THE SCREEN'S MODULE GRAPH IS COLD: transformed and
+// evaluated once, ~13 s alone and past 30 s beside two other files under the
+// pre-publish gate, and it landed inside whichever case mounted first. One
+// mount here, under a hook's own timeout, warms it and the first render, so each case times only itself; `mount`
+// still resets the modules, which re-evaluates from the warm cache in 1-2 s.
+beforeAll(async () => {
+  await mount()
+  cleanup()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+}, 120_000)
 
 const card = (name: string) => document.querySelector<HTMLElement>(`.rs-class[data-class="${name}"]`)
 /** What a reader sees without opening an (i): the words, less every hidden tooltip. */
