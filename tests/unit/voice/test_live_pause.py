@@ -2,7 +2,7 @@
 it by cause with refreshed instructions (docs/design/voice-it.md §3.12.7, the
 design's lane V2; the owner picked the automatic pause on 11 November 2026).
 
-* 15 s in which neither side speaks, with a delegation in flight, no read-back
+* PAUSE_AFTER_SECONDS (45 s since 12 November 2026) in which neither side speaks, with a delegation in flight, no read-back
   pending and nothing playing, appends the one pause sentence, waits for it to
   be spoken (at most PAUSE_SAY_SECONDS), closes the Live session keeping its
   usage seconds, and tells the sink `session.state: paused`. The planner turn,
@@ -239,18 +239,18 @@ async def _paused(world: World) -> tuple[live.LiveSession, str]:
     return session, voice_id
 
 
-def test_fifteen_seconds_of_silence_with_a_delegation_in_flight_says_the_sentence_and_closes():
+def test_the_pause_window_of_silence_with_a_delegation_in_flight_says_the_sentence_and_closes():
     world = World()
 
     async def scenario():
         session, voice_id = await _talking_then_delegated(world)
         socket = world.socket(session)
-        # 14 s of nothing: not yet.
+        # One second short of the window: not yet.
         world.clock.now += live.PAUSE_AFTER_SECONDS - 1
         socket.push({"type": AUDIO})
         await _settle()
         assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
-        # The 15th second: the sentence, for the delegation in flight.
+        # The last second: the sentence, for the delegation in flight.
         world.clock.now += 1
         socket.push({"type": AUDIO})
         await _until(lambda: _said(socket, live.PAUSE_SENTENCE))
@@ -310,7 +310,7 @@ def test_speech_inside_the_window_resets_it():
         await after(10, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE)
         await after(4, {"type": VOICE_DELTA, "delta": "Still working.", "response_id": "resp_c"})
-        await after(14, {"type": AUDIO})
+        await after(live.PAUSE_AFTER_SECONDS - 1, {"type": AUDIO})
         assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
         await after(1, {"type": AUDIO})
         await _until(lambda: _said(socket, live.PAUSE_SENTENCE))
