@@ -18,7 +18,8 @@
  * swarm-voice behind swarm-api (rtc.ts).
  *
  * SPEECH IS INPUT. Every final caption, from either side, while a session is
- * live calls Shell.tsx's `noteActivity`, so the console's fifteen-minute idle
+ * live calls Shell.tsx's `noteActivity`, and so does every caption line closed
+ * without a final (a pause, the other side, the end of a turn), so the console's fifteen-minute idle
  * stop does not pause the screens of someone who is only talking. When the
  * session ends the call is hung up and nothing calls it.
  *
