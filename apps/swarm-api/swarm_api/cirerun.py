@@ -40,6 +40,13 @@ RERUN_SETTLE_SECONDS = 600
 #: on without one (#3006): a refused re-run ran nothing, so it may be asked
 #: once more, and a credential without `actions: write` costs one request.
 RERUN_REFUSALS_MAX = 2
+#: The re-runs GitHub may accept at one head (#3080, owner decision
+#: 2026-11-12). A head gets one free re-run; a second is earned only after a
+#: CI-fix round ended there `no_change` (it read the red as a flake) while
+#: the first re-run had already answered red on other jobs -- PR #3049 at
+#: dd72fa3e and PR #3055 at d82d2635 refused `checks_failed` on a second
+#: flake and later merged unchanged. Two, so a persistent red cannot loop.
+RERUNS_PER_HEAD_MAX = 2
 #: The App whose check runs are Actions jobs, the only ones a re-run reaches.
 ACTIONS_APP_SLUG = "github-actions"
 
