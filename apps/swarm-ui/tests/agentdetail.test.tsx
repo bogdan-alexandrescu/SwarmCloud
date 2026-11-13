@@ -713,7 +713,7 @@ test('the timeline does not draw a read in flight once its read has landed', () 
   const unproven = timelineToolbar(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events })))
   assert.ok(!unproven.includes('is-pending'), 'the landed timeline still says `reading`')
   // Reworded as a sentence (QA2 overview-agents-29): the caveat is still drawn.
-  assert.ok(unproven.includes('Newest first · the first page of events'), 'the paging caveat is gone from the event list')
+  assert.ok(unproven.includes('Newest first · first page'), 'the paging caveat is gone from the event list')
   // THE PROVEN CASE KEEPS ITS MARK: a SUCCEEDED task with no terminal event
   // on the page proves the page ends early.
   const proven = timelineToolbar(surface(run({ events })))

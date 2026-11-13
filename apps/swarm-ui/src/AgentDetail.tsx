@@ -1845,18 +1845,25 @@ function DtEventRow({ e, prev, owner, now }: { e: TaskEvent; prev: TaskEvent | u
   const bad = /fail|lost|expired|refused/.test(kind)
   const at = instant(e.at)
   const before = prev === undefined ? null : instant(prev.at)
+  // THE OLDEST ROW ON THE PAGE HAS NO GAP (#3015): nothing before it is on the
+  // page to measure from, so it drew no time at all. Its time cell shows its
+  // own age instead of HH:MM, as `EventWhen` does on the Attempts tab; the
+  // clock time joins the absolute instant in the title. Folded into the cell,
+  // not added beside it, so the page shows no more words (the prose ratchet).
+  const aged = at !== null && before === null
   return (
     <li className={`dt-ev${bad ? ' is-bad' : ''}`} data-kind={kind}>
-      <time className="dt-ev-t mono" dateTime={e.at} title={absTime(e.at)}>
-        {hhmm(e.at)}
+      <time
+        className="dt-ev-t mono"
+        dateTime={e.at}
+        title={aged ? `${hhmm(e.at)} · ${absTime(e.at)}` : absTime(e.at)}
+        data-when={aged ? 'age' : undefined}
+      >
+        {aged ? ageText(e.at, now) : hhmm(e.at)}
       </time>
       <span>
         <span className="dt-ev-k">{eventWord(e)}</span>
-        {/* THE OLDEST ROW ON THE PAGE HAS NO GAP (#3015): nothing before it is
-            on the page to measure from, so it drew no time at all. It shows its
-            own age instead, as `EventWhen` does on the Attempts tab. */}
         {at !== null && before !== null && <small data-when="gap"> {gapText(at - before)}</small>}
-        {at !== null && before === null && <small data-when="age"> {ageText(e.at, now)}</small>}
         {owner !== null && <small> · {owner}</small>}
       </span>
     </li>
@@ -2006,9 +2013,10 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
           ) : (
             <p
               className="dt-note"
+              title="Newest first · the first page of events"
               aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
             >
-              Newest first · the first page of events
+              Newest first · first page
             </p>
           )}
           {events.length > 5 && (

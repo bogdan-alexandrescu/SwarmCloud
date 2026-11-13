@@ -2,9 +2,11 @@
 //
 // Each event row shows the gap since the event before it on the page. The
 // oldest row on the page has no event before it, so it showed no time at all;
-// it now shows its own age, as `EventWhen` does on the Attempts tab. The note
-// under the list says it is `the first page of events`, so a short list is not
-// read as the whole history. Unit tests, no credentials.
+// it now shows its own age in its time cell, in place of HH:MM, as `EventWhen`
+// does on the Attempts tab. The note under the list says `first page` and its
+// tooltip `the first page of events`, so a short list is not read as the whole
+// history. Neither adds a visible word (the prose ratchet). Unit tests, no
+// credentials.
 
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -77,6 +79,9 @@ describe('Progress: the oldest event on the page shows its age', () => {
     // MUTATION: draw nothing when there is no predecessor -- the oldest row has no time.
     expect(when(first[2]!)?.dataset.when).toBe('age')
     expect(when(first[2]!)?.textContent).toMatch(/ago/)
+    // Folded into the time cell: the clock time moves to its title.
+    expect(when(first[2]!)?.tagName).toBe('TIME')
+    expect(when(first[2]!)?.getAttribute('title')).toMatch(/^\d\d:\d\d · /)
     for (const li of first.slice(0, 2)) {
       expect(when(li)?.dataset.when).toBe('gap')
       expect(when(li)?.textContent?.trim()).toMatch(/^\+/)
@@ -101,12 +106,13 @@ describe('Progress: the oldest event on the page shows its age', () => {
 })
 
 describe('Progress: the paging note says it is the first page of events', () => {
-  it('says `Newest first · the first page of events`', async () => {
+  it('says `Newest first · first page`, `the first page of events` in its tooltip', async () => {
     const { card } = await rows(3)
-    const note = [...card.querySelectorAll('.dt-note')].find((n) => (n.textContent ?? '').includes('the first page of events'))
-    // MUTATION: put `first page only` back.
+    const note = [...card.querySelectorAll<HTMLElement>('.dt-note')].find((n) => (n.title ?? '').includes('the first page of events'))
+    // MUTATION: drop the tooltip, or put `first page only` back.
     expect(note, 'the note does not say it is the first page of events').toBeTruthy()
-    expect(note!.textContent).toBe('Newest first · the first page of events')
+    expect(note!.textContent).toBe('Newest first · first page')
+    expect(note!.title).toBe('Newest first · the first page of events')
     expect(note!.getAttribute('aria-label')).toMatch(/^One page, as served\./)
   })
 })

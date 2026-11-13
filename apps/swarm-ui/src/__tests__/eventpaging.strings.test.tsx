@@ -123,7 +123,7 @@ describe('the rendered sentences put the one-page limit on this screen', () => {
     )
     const note = [...el.querySelectorAll('.dt-progress .dt-note')].find((n) =>
       // Reworded as a sentence (QA2 overview-agents-29); the aria-label is unchanged.
-      (n.textContent ?? '').includes('the first page of events'),
+      (n.textContent ?? '').includes('first page'),
     )
     expect(note, 'the event list lost its paging qualifier').toBeTruthy()
     const say = note!.getAttribute('aria-label') ?? ''
