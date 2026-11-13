@@ -24,6 +24,17 @@ on:
   # request's run alone (application.yml says why).
   push:
     branches: [main]
+  # A LANE'S PULL REQUEST RUNS NOTHING (owner direction, 12 November 2026:
+  # no testing on lane pull requests, only on the merge train's run on its
+  # way to main, to cut CI wait time; docs/ci.md "A lane's pull request runs
+  # no checks"). A pull request whose head is a `swarm/` branch of this
+  # repository skips every job here: each job's `if:` ends with
+  # `&& !(<that pull request>)`, a job skipped by its own `if:` reports a
+  # passing required check, and application.yml's ci-gate waits for no
+  # run of this workflow there.
+  # The train's pull request (`train/`), main, a queue entry, a fork and any
+  # other branch run exactly what they ran before.
+  # tests/unit/scripts/test_fast_checks_on_lane_prs.py.
   pull_request:
     paths:
       - "terraform/**"
@@ -95,6 +106,7 @@ jobs:
     # (tests/unit/scripts/test_ci_fold.py).
     name: offline checks (fmt / validate / tflint, terraform test)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     outputs:
       validate: ${{ steps.verdict.outputs.validate }}
       test: ${{ steps.verdict.outputs.test }}
@@ -216,7 +228,7 @@ jobs:
     name: fmt / validate / tflint
     runs-on: ubuntu-24.04
     needs: offline
-    if: always()
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: the folded check passed in `offline`
         env:
@@ -237,7 +249,7 @@ jobs:
     name: terraform test
     runs-on: ubuntu-24.04
     needs: offline
-    if: always()
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: the folded check passed in `offline`
         env:
@@ -264,7 +276,7 @@ jobs:
     # A merge queue entry cannot plan either (its ref is not main), so it
     # says so there too.
     # A lane push cannot plan either (the plan's `if:`), and says so too.
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
+    if: (github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref != 'refs/heads/main')) && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: say what was not checked
         run: |
@@ -293,6 +305,7 @@ jobs:
   checkov:
     name: checkov
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -339,7 +352,7 @@ jobs:
     # through the merge queue").
     # Nor on a lane push (`swarm/**`, LANE CI-EARLY): main's push and a
     # dispatch are the only plans, as before lane branches ran this workflow.
-    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
