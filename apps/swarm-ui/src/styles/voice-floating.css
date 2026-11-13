@@ -1,0 +1,97 @@
+/* VOICE IT'S FLOATING VIEW (voice/Floating.tsx), ported from the corner bubble
+   the owner picked on 11 November 2026. Every colour is a console token, mixed
+   with transparency as Talk's glass is, so both themes hold. The bubble keeps
+   to its corner, in a band the page's scroller gives up (`--vtb-band`,
+   measured in Floating.tsx): the page ends above it, so it never covers a
+   row, an action or a Needs you strip. */
+
+.vtb { position: fixed; z-index: 24; display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+  --vtb-size: 64px; --vtb-gap: 24px; max-width: calc(100vw - 2 * var(--vtb-gap, 24px)); }
+.vtb > * { pointer-events: auto; }
+.vtb.is-br { right: var(--vtb-gap, 24px); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-end; }
+.vtb.is-bl { left: calc(var(--vtb-gap, 24px) + var(--vtb-left, 0px)); bottom: calc(var(--dock-h, 28px) + 12px); align-items: flex-start; }
+.vtb.is-tr { right: var(--vtb-gap, 24px); top: calc(var(--vtb-gap, 24px) + 56px); align-items: flex-end; flex-direction: column-reverse; }
+.vtb.is-tl { left: calc(var(--vtb-gap, 24px) + var(--vtb-left, 0px)); top: calc(var(--vtb-gap, 24px) + 56px); align-items: flex-start; flex-direction: column-reverse; }
+/* The band: the scroller stops short of the bubble, on the side it sits. */
+.sk-main:has(> .vtb.is-br) > .ctl-scroll, .sk-main:has(> .vtb.is-bl) > .ctl-scroll { margin-bottom: var(--vtb-band, 0px); }
+.sk-main:has(> .vtb.is-tr) > .ctl-scroll, .sk-main:has(> .vtb.is-tl) > .ctl-scroll { margin-top: var(--vtb-band, 0px); }
+/* A left corner starts at the page's left edge (`--vtb-left`, measured in
+   Floating.tsx), clear of the spine and the side panel. */
+
+.vtb-row { display: flex; align-items: center; gap: 12px; pointer-events: none; }
+.vtb-row > * { pointer-events: auto; }
+.vtb.is-bl .vtb-row, .vtb.is-tl .vtb-row { flex-direction: row-reverse; }
+
+/* ---- the bubble ------------------------------------------------------------ */
+.vtb-orb { position: relative; width: var(--vtb-size, 64px); height: var(--vtb-size, 64px); flex: none; }
+.vtb-core { display: block; width: 100%; height: 100%; padding: 0; border-radius: 50%; cursor: grab; touch-action: none;
+  color: var(--info); border: 1.5px solid color-mix(in srgb, var(--info) 65%, var(--line));
+  background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--info) 30%, var(--surface)) 0, color-mix(in srgb, var(--info) 12%, var(--surface)) 46%, var(--surface) 78%);
+  box-shadow: 0 10px 28px rgba(6, 16, 30, .28), 0 0 0 4px color-mix(in srgb, var(--info) 10%, transparent); transition: box-shadow 160ms ease, transform 160ms ease; }
+.vtb-core:hover { box-shadow: 0 12px 30px rgba(6, 16, 30, .32), 0 0 0 6px color-mix(in srgb, var(--info) 16%, transparent); }
+.vtb-core:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; }
+.vtb.is-open .vtb-core { box-shadow: 0 0 0 2px var(--info), 0 10px 28px rgba(6, 16, 30, .28); }
+.vtb.is-dragging .vtb-core { cursor: grabbing; transform: scale(1.06); }
+.vtb.is-dragging .vtb-orb { z-index: 50; }
+.vtb-core.is-muted { color: var(--bad-ink); border: 2px dashed var(--bad-ink); background: color-mix(in srgb, var(--bad-ink) 10%, var(--surface)); }
+
+.vtb-voice { display: block; width: 100%; height: 100%; overflow: visible; }
+.vtb-halo { opacity: 1; }
+.vtb-base { fill: none; stroke: currentColor; stroke-opacity: .25; stroke-width: 1; }
+.vtb-still { fill: none; stroke: currentColor; stroke-opacity: 1; stroke-width: 3; transform-origin: 50px 50px; animation: vtb-breathe 3.2s ease-in-out infinite; }
+.vtb-voice.is-speaking .vtb-still { stroke-opacity: 0; animation: none; }
+.vtb-voice.is-muted .vtb-still { animation: none; stroke-dasharray: 6 5; stroke-opacity: 1; }
+.vtb-voice.is-muted .vtb-halo { opacity: 0; }
+.vtb-wave { fill: color-mix(in srgb, currentColor 10%, transparent); stroke: currentColor; stroke-width: 2.2; stroke-linejoin: round; }
+.vtb-glow { fill: none; stroke: currentColor; stroke-width: 6; opacity: .45; }
+@keyframes vtb-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+@media (prefers-reduced-motion: reduce) { .vtb-still { animation: none; } }
+
+/* The mic on the bubble's edge, at eight o'clock; the count at one. */
+.vtb-mic { position: absolute; left: -6px; bottom: -4px; width: 28px; height: 28px; padding: 0; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  color: var(--text); background: var(--surface); border: 1px solid var(--ctl-bd, var(--line)); box-shadow: 0 2px 8px rgba(6, 16, 30, .22); }
+.vtb-mic:hover { background: var(--surface-2, var(--surface)); }
+.vtb-mic:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vtb-mic.is-off { color: #fff; background: var(--bad-ink); border-color: var(--bad-ink); }
+.vtb.is-bl .vtb-mic, .vtb.is-tl .vtb-mic { left: auto; right: -6px; }
+
+.vtb-count { position: absolute; right: -4px; top: -4px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; display: grid; place-items: center;
+  font: 700 var(--t-micro)/var(--lh-flush) var(--font); color: var(--ctl-onac, #fff); background: var(--info); box-shadow: 0 0 0 2px var(--surface); }
+.vtb.is-bl .vtb-count, .vtb.is-tl .vtb-count { right: auto; left: -4px; }
+
+/* ---- what slides out beside it ------------------------------------------------ */
+.vtb-pill { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; max-width: 520px; min-width: 0; padding: 6px 6px 6px 14px; border-radius: 18px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  box-shadow: 0 8px 22px rgba(6, 16, 30, .18); animation: vtb-slide 260ms ease-out both; }
+.vtb-pill-who { flex: none; font-weight: 600; color: var(--info-ink); }
+.vtb-pill-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes vtb-slide { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+.vtb.is-bl .vtb-pill, .vtb.is-tl .vtb-pill { animation-name: vtb-slide-r; }
+@keyframes vtb-slide-r { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .vtb-pill { animation: none; } }
+
+/* ---- the one line beside it: the working line, the new item's kind, the controls -- */
+.vtb-pill-line { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 320px; }
+.vtb-live { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--info); animation: vtb-pulse 1.4s ease-in-out infinite; }
+@keyframes vtb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .vtb-live { animation: none; } }
+.vtb-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* The fold mark under the bubble; collapsed, the ring and the mic are all there is. */
+.vtb-fold { position: absolute; right: -4px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; pointer-events: none;
+  color: var(--text-dim); background: var(--surface); border: 1px solid var(--line); }
+.vtb.is-bl .vtb-fold, .vtb.is-tl .vtb-fold { right: auto; left: -4px; }
+.vtb-count.is-dot { min-width: 10px; width: 10px; height: 10px; padding: 0; right: 0; top: 0; background: var(--text-dim); }
+.vtb.is-bl .vtb-count.is-dot, .vtb.is-tl .vtb-count.is-dot { right: auto; left: 0; }
+
+/* ---- the spine's marker ---------------------------------------------------- */
+.sk-badge.vtb-mark { background: var(--info); color: var(--ctl-onac, #06101e); }
+.sk-dot.vtb-wait { background: var(--text-dim); }
+.sk-dot.vtb-wait.is-beside { top: 22px; }
+
+/* ---- a phone ----------------------------------------------------------------- */
+@media (max-width: 760px) {
+  .vtb { --vtb-size: 56px; --vtb-gap: 14px; }
+  .vtb-pill { max-width: calc(100vw - 2 * var(--vtb-gap, 24px) - var(--vtb-size, 64px) - 12px); }
+  .vtb-pill .c-btn { min-height: 44px; }
+}
