@@ -18,7 +18,7 @@ import pytest
 from swarm_install import cli
 from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.state import STATE_OBJECT, InstallState
-from swarm_install.steps import Observation, Plan
+from swarm_install.steps import Observation, Plan, preflight
 from swarm_install.verbs import install
 
 
@@ -78,6 +78,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(install, "holder_identity", lambda: "admin@example.test")
     store = MemoryStore()
     monkeypatch.setattr(install, "open_bucket", lambda project: store)
+    monkeypatch.setattr(install, "organisation_seen", lambda: True, raising=False)
     found = [
         FakeStep("preflight", 0, ("other.fake-preflight",), met=True),
         FakeStep("state-bucket", 1, ("other.fake-bucket",)),
@@ -224,3 +225,38 @@ def test_a_bad_region_is_asked_again(world, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("? Region [us-central1]:") == 2
     assert "'mars' is not a Google Cloud region" in out
+
+
+@pytest.mark.parametrize("seen", [False, None])
+def test_the_organisation_is_said_before_the_project_or_domain_is_asked(world, monkeypatch, capsys, seen):
+    """Audit m2: stage 0 says an organisation is needed before any question;
+    the CLI's own questions come before stage 0, so they say it first too:
+    with none visible (the sign-up page named), or not signed in yet."""
+    monkeypatch.setattr(install, "organisation_seen", lambda: seen, raising=False)
+    _terminal(monkeypatch, "acme-swarm-1\nswarm.acme.example\n\n\n")
+
+    assert cli.main(["install"]) == ExitCode.OK
+
+    out = capsys.readouterr().out
+    said = out.index("SwarmCloud needs a Google organisation")
+    assert said < out.index("? Google Cloud project to create or use:") < out.index("? Domain")
+    assert (preflight.CLOUD_IDENTITY_SIGNUP in out) is (seen is False)
+    assert out.count("SwarmCloud needs a Google organisation") == 1
+
+
+def test_a_project_given_still_hears_of_the_organisation_before_the_domain(world, monkeypatch, capsys):
+    monkeypatch.setattr(install, "organisation_seen", lambda: False, raising=False)
+    _terminal(monkeypatch, "swarm.acme.example\n\n\n")
+
+    assert cli.main(["install", "--project", "acme-swarm-1"]) == ExitCode.OK
+
+    out = capsys.readouterr().out
+    assert out.index("SwarmCloud needs a Google organisation") < out.index("? Domain")
+
+
+def test_an_organisation_seen_is_not_mentioned(world, monkeypatch, capsys):
+    _terminal(monkeypatch, "acme-swarm-1\nswarm.acme.example\n\n\n")
+
+    assert cli.main(["install"]) == ExitCode.OK
+
+    assert "Google organisation" not in capsys.readouterr().out

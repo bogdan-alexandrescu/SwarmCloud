@@ -47,6 +47,16 @@ CONSOLE = WaitSpec(
     look_at="the console's Admin › Setup page says which step is next; run swarm install again to resume",
     interval_s=10,
 )
+#: The console button that ends Admin › Setup and writes `console/finished`
+#: (apps/swarm-ui/src/AdminSetupSteps.tsx), named as the page shows it.
+HAND_OVER = '"Hand over to swarm install"'
+
+
+def _hours(seconds: float) -> str:
+    hours = seconds / 3600
+    return f"{hours:g} hour" + ("" if hours == 1 else "s")
+
+
 #: The output the sign-in passes record the Desktop client they applied under:
 #: `iap_programmatic_client` is in IAP's programmatic-clients list (bootstrap)
 #: and the engine document's `sign_in_client`, which Admin › Setup reads as
@@ -215,10 +225,17 @@ class HandoffStep:
             ctx.events.emit("step_apply", step=self.id, url=url,
                             message="the console's setup is finished; turning the GitHub App's switches on")
             return
+        # Say how long this terminal waits and for what: the console's "Hand
+        # over to swarm install" button writes `console/finished`, the signal
+        # these polls wait for (audit: the bound and the button went unsaid).
+        bound = _hours(CONSOLE.bound_s)
         ctx.events.emit("step_apply", step=self.id, url=url,
-                        message=f"open {url} to finish setup (keep this terminal open)")
-        open_page(url, why="\nFinish setup in the console's Admin › Setup (opening it now). Keep this terminal "
-                           "open: it turns the GitHub App on and runs verify when the console is done.",
+                        message=f"open {url} to finish setup; this terminal waits up to {bound} for the console's "
+                                f"{HAND_OVER} button (keep it open)")
+        open_page(url, why=(f"\nFinish setup in the console's Admin › Setup (opening it now), then press its "
+                            f"{HAND_OVER} button: that is what this terminal waits for, for up to {bound}. Keep "
+                            "this terminal open: it turns the GitHub App on and runs verify once you hand over. "
+                            f"Past {bound} it pauses; run swarm install again to resume."),
                   say=self._say)
 
 
@@ -261,6 +278,13 @@ class ReadyStep:
         url = console_url(ctx).removesuffix("/admin/setup")
         ctx.events.emit("step_apply", step=self.id, url=url, message=f"READY: {url}")
         self._say(f"\nREADY: SwarmCloud answers at {url}\n")
+        # A team's next step is its teammates' plugin, said here and not only
+        # by `swarm install --status`; a one-person install has no teammates.
+        from ..verbs.install import teammates_line  # lazy: the verb discovers these steps
+
+        teammates = teammates_line(ctx.state, url)
+        if teammates is not None:
+            self._say(teammates)
 
 
 def _verify_step_ids() -> list[str]:
