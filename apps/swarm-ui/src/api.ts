@@ -1356,9 +1356,23 @@ export interface AgentQuestion {
 }
 
 /**
+ * A `questions.json` the worker's validator did not take (#3086): which task
+ * and step wrote it, the file, and the worker's reason. One entry of a held
+ * merge's `rejected_files` (its owner-question park record, and the wait
+ * detail drawn from it); `step_id` is null when it was not recorded.
+ */
+export interface RejectedQuestionsFile {
+  task_id: string
+  step_id: string | null
+  file: string
+  reason: string
+}
+
+/**
  * `GET /v1/tasks/{id}/questions`. `status` is `ok`, `none` (asked none --
  * `questions: []`, never a 404) or `unavailable` (the worker counted some
- * and they could not be read; `unavailable_because` says why).
+ * and they could not be read, or rejected the file it wrote while counting
+ * 0; `unavailable_because` says why, and `rejected` names that file).
  */
 export interface TaskQuestions {
   task_id: string
@@ -1367,6 +1381,8 @@ export interface TaskQuestions {
   questions: AgentQuestion[]
   attempt_id?: string | null
   unavailable_because?: string
+  /** The file the worker did not take and its reason (#3086); absent otherwise. */
+  rejected?: { file: string; reason: string }
   redacted: boolean
   redaction_count: number
   /** Whether this viewer may answer: the task's submitter or an admin. Absent from an API older than answers. */
