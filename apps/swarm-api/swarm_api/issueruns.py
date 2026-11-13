@@ -1671,39 +1671,16 @@ def hard_stop_hold(
     paths, from `patches` (path to unified diff; the pull request's at
     merge) and from `prompt_text` (the steps' prompts at plan).
     """
-    paths = sorted({str(p) for p in paths if str(p).strip()})
-    reasons: list[str] = []
-    matched: list[str] = []
-    iam = _matching(paths, IAM_PATTERNS) + sorted(set(_IAM_RESOURCE.findall(prompt_text)))
-    iam += [p for p in sorted({str(f) for f in iam_files or ()}) if p not in iam]
-    if iam:
-        reasons.append(STOP_IAM)
-        matched += iam
-    if platform:
-        contract = _matching(paths, CONTRACT_PATTERNS)
-        if contract:
-            reasons.append(STOP_CONTRACT)
-            matched += contract
-    if platform or workflow_files:
-        workflows = _matching(paths, WORKFLOW_HOLD_PATTERNS)
-        if workflows:
-            reasons.append(STOP_WORKFLOWS)
-            matched += workflows
-    if platform:
-        for stop, hits in _category_hits(paths, patches, prompt_text):
-            reasons.append(stop)
-            matched += hits
-    protected = [p for p in hard_stop_paths or () if p != WORKFLOWS_PATTERN]
-    protected_hits = [p for p in _matching(paths, protected) if p not in matched]
-    if protected_hits:
-        reasons.append(STOP_PROTECTED_PATH)
-        matched += protected_hits
+    stops = _stop_hits(paths, platform=platform, hard_stop_paths=hard_stop_paths,
+                       workflow_files=workflow_files, prompt_text=prompt_text, iam_files=iam_files,
+                       patches=patches)
     security = is_security_issue(issue_read)
     if security:
-        reasons.append(STOP_SECURITY)
-        matched += security
-    if not reasons:
+        stops.append((STOP_SECURITY, security))
+    if not stops:
         return None
+    reasons = [stop for stop, _ in stops]
+    matched = [path for _, hits in stops for path in hits]
     # Q3: a workflow change's merge is the owner's, in any repository.
     owner = platform or STOP_WORKFLOWS in reasons
     return {
@@ -1713,6 +1690,79 @@ def hard_stop_hold(
         "matched": list(dict.fromkeys(matched))[:MAX_HOLD_MATCHED],
         "set_at": at,
     }
+
+
+def _stop_hits(
+    paths: Any,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    workflow_files: bool = False,
+    prompt_text: str = "",
+    iam_files: Any = (),
+    patches: Mapping[str, str | None] | None = None,
+) -> list[tuple[str, list[str]]]:
+    """`hard_stop_hold`'s path stops, in its order, each with what matched it:
+    every stop but the issue's security class. A protected path already
+    matched by an earlier stop is not matched again."""
+    paths = sorted({str(p) for p in paths if str(p).strip()})
+    stops: list[tuple[str, list[str]]] = []
+    iam = _matching(paths, IAM_PATTERNS) + sorted(set(_IAM_RESOURCE.findall(prompt_text)))
+    iam += [p for p in sorted({str(f) for f in iam_files or ()}) if p not in iam]
+    if iam:
+        stops.append((STOP_IAM, iam))
+    if platform:
+        contract = _matching(paths, CONTRACT_PATTERNS)
+        if contract:
+            stops.append((STOP_CONTRACT, contract))
+    if platform or workflow_files:
+        workflows = _matching(paths, WORKFLOW_HOLD_PATTERNS)
+        if workflows:
+            stops.append((STOP_WORKFLOWS, workflows))
+    if platform:
+        stops.extend(_category_hits(paths, patches, prompt_text))
+    matched = {path for _, hits in stops for path in hits}
+    protected = [p for p in hard_stop_paths or () if p != WORKFLOWS_PATTERN]
+    protected_hits = [p for p in _matching(paths, protected) if p not in matched]
+    if protected_hits:
+        stops.append((STOP_PROTECTED_PATH, protected_hits))
+    return stops
+
+
+def step_holds(
+    plan: Mapping[str, Any] | None,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    workflow_files: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
+    """`plan_risk.steps` (docs/design/plans-pipeline.md §3.7): for each step,
+    the stops `plan_hold` puts on the run that this step's own `files` and
+    the paths and terms its own prompt names reach, each with the paths that
+    matched it (at most MAX_HOLD_MATCHED per step).
+
+    The same `_stop_hits` `hard_stop_hold` reads, with the registration
+    exactly as `plan_hold` is given it, so the browser never restates a
+    pattern. The issue's security class is the run's, not a step's: it is in
+    the run's hold, drawn above the steps. Computed on read and never
+    stored: it clears no hold and is outside the digest."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for step in (plan or {}).get("steps") or []:
+        if not isinstance(step, Mapping) or not step.get("step_id"):
+            continue
+        one = {"steps": [step]}
+        stops = _stop_hits(
+            plan_files(one) | prompt_paths(one), platform=platform, hard_stop_paths=hard_stop_paths,
+            workflow_files=workflow_files, prompt_text=str(step.get("prompt") or ""),
+        )
+        rows: list[dict[str, Any]] = []
+        budget = MAX_HOLD_MATCHED
+        for stop, hits in stops:
+            kept = list(dict.fromkeys(hits))[:max(budget, 0)]
+            budget -= len(kept)
+            rows.append({"stop": stop, "matched": kept})
+        out[str(step["step_id"])] = rows
+    return out
 
 
 def plan_hold(
@@ -2556,6 +2606,93 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
         else:
             parts.append(f"**{step_id}**\n\n{content.strip()}")
     return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
+
+
+#: `expected_cost_usd` (docs/design/plans-pipeline.md §3.8): the agent-hours
+#: the compiled review and fix steps (`compile_plan`) add to a plan's own
+#: steps, low and high. A planning allowance, not a measurement: the review
+#: reads the patch once, and the fix step usually changes little.
+EXPECTED_REVIEW_FIX_HOURS = (0.5, 1.5)
+#: The platform's default dollars per agent-hour by model class, used for a
+#: class the tenant has no recorded history of. A planning figure chosen to
+#: sit near what a busy agent of each class spends at list price; the
+#: approver reads the range, never a bill.
+DEFAULT_USD_PER_AGENT_HOUR: dict[str, float] = {"opus": 6.0, "sonnet": 3.0, "haiku": 1.0}
+#: An estimate that reads as hours or agent-hours: "2 agent-hours", "1-2
+#: hours", "about 3h", "0.5 hr". Anything else is words, and makes the figure
+#: a dash.
+_HOURS_ESTIMATE = re.compile(
+    r"^\s*(?:~|about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)"
+    r"(?:\s*(?:-|\u2013|to)\s*(\d+(?:\.\d+)?))?\s*"
+    r"(?:agent[- ]?)?(?:hours?|hrs?|h)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def estimate_hours(text: Any) -> tuple[float, float] | None:
+    """`(low, high)` agent-hours from an estimate that reads as hours, else None."""
+    found = _HOURS_ESTIMATE.match(str(text or ""))
+    if not found:
+        return None
+    low = float(found.group(1))
+    high = float(found.group(2)) if found.group(2) else low
+    return (low, high) if low <= high else (high, low)
+
+
+def expected_step_class() -> str:
+    """The class a plan step runs when it names none: the step profile's default."""
+    return RUNNER_PROFILES[STEP_PROFILE].default_model_class or "opus"
+
+
+def expected_cost(plan: Mapping[str, Any] | None, rates: Mapping[str, float], *,
+                  prices_at: str | None) -> dict[str, Any]:
+    """`expected_cost_usd` (§3.8): a dollar range for `plan`, computed on read
+    and outside the digest, because prices move.
+
+    Each step's `estimate` is parsed only when it reads as hours
+    (`estimate_hours`) and priced at its model class's `rates` (dollars per
+    agent-hour); the compiled review and fix add EXPECTED_REVIEW_FIX_HOURS at
+    the step profile's default class. Any step whose estimate is missing or in
+    words, or whose class has no rate, makes the whole figure a dash with
+    `why_none` -- never 0, which would claim the plan is free."""
+    steps = [s for s in (plan or {}).get("steps") or [] if isinstance(s, Mapping)]
+    if not steps:
+        return {"low": None, "high": None, "why_none": "the plan has no steps"}
+    low = high = 0.0
+    classes: dict[str, int] = {}
+    for step in steps:
+        hours = estimate_hours(step.get("estimate"))
+        if hours is None:
+            said = str(step.get("estimate") or "").strip()
+            return {"low": None, "high": None, "why_none": (
+                f"step {step.get('step_id')}'s estimate {said[:100]!r} is not in hours or agent-hours"
+                if said else f"step {step.get('step_id')} has no estimate"
+            )}
+        cls = str(step.get("model_class") or expected_step_class())
+        rate = rates.get(cls)
+        if not isinstance(rate, (int, float)) or isinstance(rate, bool) or rate <= 0:
+            return {"low": None, "high": None,
+                    "why_none": f"no price per agent-hour is known for model class {cls!r}"}
+        low += hours[0] * rate
+        high += hours[1] * rate
+        classes[cls] = classes.get(cls, 0) + 1
+    review_cls = expected_step_class()
+    review_rate = rates.get(review_cls)
+    if not isinstance(review_rate, (int, float)) or review_rate <= 0:
+        return {"low": None, "high": None,
+                "why_none": f"no price per agent-hour is known for model class {review_cls!r}"}
+    low += EXPECTED_REVIEW_FIX_HOURS[0] * review_rate
+    high += EXPECTED_REVIEW_FIX_HOURS[1] * review_rate
+    named = ", ".join(f"{n} {c}" for c, n in sorted(classes.items()))
+    return {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "basis": (f"{len(steps)} step{'s' if len(steps) != 1 else ''} at their estimates ({named}), "
+                  f"plus {EXPECTED_REVIEW_FIX_HOURS[0]:g}-{EXPECTED_REVIEW_FIX_HOURS[1]:g} agent-hours "
+                  f"of review and fix at {review_cls}"),
+        "model_classes": dict(sorted(classes.items())),
+        "prices_at": prices_at,
+    }
 
 
 def compile_plan(run: "IssueRun", review_context: str | None = None, *,
@@ -3562,6 +3699,11 @@ class IssueRun:
     #: submission. None on a run created before #1569 -- which is refused --
     #: and where no signer is configured. Never served (`to_api`).
     owner_signature: dict[str, Any] | None = None
+    #: What produced the run (docs/design/plans-pipeline.md §3.1), `run_source`'s
+    #: shape, written at creation. A run stored before it reads with the one
+    #: `derived_source` makes from its schedule mark. Not signed: it decides
+    #: nothing anyone may do.
+    source: dict[str, Any] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -3635,6 +3777,7 @@ class IssueRun:
                 **({"schedule": dict(self.schedule)} if self.schedule is not None else {}),
                 **sessiontag.tag(self.claude_session),
             },
+            **({"source": dict(self.source)} if self.source is not None else {}),
         }
 
     @classmethod
@@ -3725,6 +3868,7 @@ class IssueRun:
                 else None
             ),
             schedule=_schedule_mark(data.get("metadata")),
+            source=stored_source(data.get("source"), _schedule_mark(data.get("metadata"))),
             claude_session=sessiontag.of(data.get("metadata")),
             security_review=data.get("security_review") is True,
             owner_signature=(
@@ -3875,6 +4019,8 @@ class IssueRun:
             # SC-SESSION-SCOPE: the Claude Code session that asked, or null.
             "claude_session": self.claude_session,
             "security_review": self.security_review,
+            # §3.1: what produced the run, derived for one stored before it.
+            "source": dict(self.source) if self.source is not None else derived_source(self.schedule),
         }
 
 
@@ -3973,6 +4119,58 @@ def _planner_entry(task_id: str, name: str, row: Mapping[str, Any]) -> dict[str,
             f"?{urlencode({'name': name, 'disposition': 'inline'}, quote_via=quote)}"
         ),
     }
+
+
+#: `run.source.kind` (plans-pipeline.md §3.1): a person's `POST /v1/runs`,
+#: or the schedule type whose firing started the run.
+SOURCE_HAND = "hand"
+SOURCE_SWEEP = "sweep"
+SOURCE_FAILURE_REVIEW = "failure_review"
+SOURCE_PLAN_ONLY = "plan_only"
+SOURCE_KINDS = (SOURCE_SWEEP, SOURCE_FAILURE_REVIEW, SOURCE_PLAN_ONLY, SOURCE_HAND)
+#: The schedule types that start issue runs, and the kind each names.
+SOURCE_KIND_OF_TYPE: dict[str, str] = {
+    "issue-sweep": SOURCE_SWEEP,
+    "failure-review": SOURCE_FAILURE_REVIEW,
+    "issue-plan-only": SOURCE_PLAN_ONLY,
+}
+_SOURCE_KEYS = ("kind", "schedule_type", "schedule_id", "firing_id", "fingerprint", "proposal_id")
+
+
+def run_source(schedule: Mapping[str, Any] | None = None, *, fingerprint: str | None = None,
+               proposal_id: str | None = None) -> dict[str, Any]:
+    """`run.source` for a run started by `schedule`'s firing (its
+    `metadata.schedule` mark), or by hand when there is none. A schedule type
+    that is not one of SOURCE_KIND_OF_TYPE's is still a run nobody asked for
+    by hand, and names its type as its kind, so a card never says `hand` for
+    it."""
+    mark = schedule or {}
+    stype = _opt_str(mark.get("type"))
+    if not mark:
+        kind = SOURCE_HAND
+    else:
+        kind = SOURCE_KIND_OF_TYPE.get(stype or "", stype or SOURCE_HAND)
+    return {
+        "kind": kind,
+        "schedule_type": stype,
+        "schedule_id": _opt_str(mark.get("schedule_id")),
+        "firing_id": _opt_str(mark.get("firing_id")),
+        "fingerprint": _opt_str(fingerprint) if kind == SOURCE_FAILURE_REVIEW else None,
+        "proposal_id": _opt_str(proposal_id),
+    }
+
+
+def derived_source(schedule: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The source of a run stored before §3.1: from its stored schedule mark,
+    `hand` with none, and never a fingerprint (that is written at start)."""
+    return run_source(schedule)
+
+
+def stored_source(raw: Any, schedule: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The stored `source`, its keys only, else the derivation."""
+    if not isinstance(raw, Mapping) or not _opt_str(raw.get("kind")):
+        return derived_source(schedule)
+    return {key: _opt_str(raw.get(key)) for key in _SOURCE_KEYS}
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:

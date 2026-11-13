@@ -376,6 +376,7 @@ def test_the_pipeline_writes_nothing(client, db, clock):
     # A merge whose run has moved on: the inbox would close it; the board must not.
     merge = _record(db, clock, "m1", kind=approvals.MERGE, subject={"run_id": "run_pr"},
                     digest={"head_sha": "b" * 40})
+    _pipeline(client)  # the app's first request seeds its platform owner; that is not the board's
     before = {k: dict(v) for k, v in db.docs.items()}
     _pipeline(client)
     # MUTATION: reusing `approvals.inbox`, which syncs and closes records.
