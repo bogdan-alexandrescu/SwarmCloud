@@ -1881,12 +1881,7 @@ jobs:
         # The two runners `npm test` chains after vitest: node:test over
         # tests/*.test.ts(x) and over test/*.test.mjs. Seconds, not minutes,
         # so they are not sharded; vitest is, in the job below.
-        # test/no-company-name.test.mjs walks the console for the deployment's
-        # names and skips without a list; the masked repository secret gives it
-        # one (scripts/guards/sync-patterns.sh writes it; empty on a fork).
         working-directory: apps/swarm-ui
-        env:
-          DEPLOYMENT_PATTERNS: ${{ secrets.DEPLOYMENT_PATTERNS }}
         run: npm run test:node
 
       - name: production build
