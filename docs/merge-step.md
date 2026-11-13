@@ -356,6 +356,25 @@ slot:
   goes to its conflict fix round, and a red check at its head to its CI-fix
   round; a round's new head is labelled `ready` afresh. Green and still not
   `ready`, which removed it decides:
+  * **A person:** FAILED `ready_removed_by_person` (`merge_refused`) at
+    once, naming them and quoting their latest comment on the pull request.
+    Who removed `ready` is read from the issue timeline's latest `unlabeled`
+    event for it (`GET /issues/{n}/timeline`), not from the comments: a
+    person who takes a pull request off the train by hand writes a comment
+    without the ejection marker, and reading only the platform's comments
+    once refused such a step `train_ejected`, quoting a stale bot comment
+    from hours before. Both platform removers -- auto-merge.yml's gate and
+    `merge-train.sh eject_pr` -- use the workflow's `github.token`, so their
+    actor is `github-actions[bot]`, a Bot; only a `User` actor is a person.
+    Why a distinct code: the owner's deliberate removal is a decision, not a
+    defect, so failure-review's `person_ready_removal` rule skips it, as
+    `person_push` skips `superseded_by_person_push`. The frozen `EndCause`
+    has no member for it, so the step still ends FAILED. Not a person's,
+    though a `User` removed it: a pull request carrying `review-not-yet`,
+    whose `ready` the platform's own NOT_YET path took off, possibly under a
+    person's forge token. That, a Bot's removal, no such event, or a
+    timeline read that fails (recorded as `removal_unread` in the step's
+    `repository_train`) falls to the comments, below, exactly as before.
   * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
     the latest comment an App wrote. What the gate refused (a closing
     keyword, a dependency not landed) does not change by waiting.
@@ -870,9 +889,16 @@ defaulted to 0. What this lane changed, and why:
   and the re-run that later passed was run by hand. The tick asks for the
   re-run before it wakes the step `fix_round_ended`; the worker
   (`merge._red`) parks `ci_rerun_pending` while it settles and
-  `ci_rerun_due` once when none is recorded at the head, and refuses after
-  the round on its red answer. It is still one re-run per head: a head the
-  tick re-ran before the round refuses as before. A round that pushed,
+  `ci_rerun_due` when the head is due one, and refuses after the round on
+  the last one's red answer. After a `no_change` round the head may be
+  re-run up to `RERUNS_PER_HEAD_MAX` (2) accepted times, not once (#3080,
+  the owner's decision of 2026-11-12): the tick's free re-run is spent
+  before any round, and it can answer red on a *different* flake, which the
+  round then reads as a flake too and pushes nothing. With one re-run per
+  head the step then refused `checks_failed` with no re-run of that second
+  flake -- PR #3049 at dd72fa3e and PR #3055 at d82d2635 both did, and a
+  later manual re-run went green and merged both unchanged. A head with no
+  round at it is still re-run once. A round that pushed,
   failed, was cancelled or ended without `no_change` refuses as before.
   While GitHub still serves the very runs that were re-run, the tick waits,
   at most `RERUN_SETTLE_SECONDS` (10 min). A wake inside that window parks
@@ -899,10 +925,25 @@ defaulted to 0. What this lane changed, and why:
   in `runs` reads not `completed` (`GitHubWriter.read_run`, the latest
   attempt's status), bounded as every park is by `MERGE_CI_MAX_SECONDS`;
   when that status cannot be read the 10-minute window is the floor, as
-  before. This is not the wider "more re-runs per head" question the round-flake re-run change left to the
-  owner: it is still one answered re-run per head, with at most one retry of
-  a refusal, and waiting for an accepted re-run's own answer is still that
-  one re-run.
+  before. Waiting for an accepted re-run's own answer is still that one
+  re-run: a re-run is settling, not spent, while every failing check is a
+  job it re-ran.
+  The bounded rule after a `no_change` round (#3080), the same on both
+  sides -- swarm-api's tick (`mergewake._rerun_first` on the
+  `fix_round_ended` path, `cirerun.RERUNS_PER_HEAD_MAX`) and the worker
+  (`merge._rerun_due` with `after_no_change`, `merge.RERUNS_PER_HEAD_MAX`),
+  the constants held equal by `tests/unit/worker/test_merge_fix_round.py`:
+  a red reading no accepted re-run at the head is still settling on gets
+  another re-run while fewer than `RERUNS_PER_HEAD_MAX` accepted re-runs
+  are recorded there. A refused re-run does not count against it, and
+  `RERUN_REFUSALS_MAX` still bounds the refusals. At the bound the last
+  re-run's red answer refuses `checks_failed` naming the round, so a
+  persistent red costs at most one more re-run, never a loop. The worker
+  parks `ci_rerun_due` at most once per request: when its last park was
+  already `ci_rerun_due` at the head, it parks again only if the tick has
+  claimed a re-run there since (the newest record's `claimed_at` after the
+  park's `parked_at`, `merge._rerun_since_park`); a tick that found nothing
+  to re-run and woke the step red is answered with the refusal.
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to

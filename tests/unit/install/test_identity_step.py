@@ -102,6 +102,27 @@ def test_unauthorized_client_names_admin_console_not_iam() -> None:
     assert "signJwt" in detail and "admin.google.com" not in detail
 
 
+@pytest.mark.parametrize(("chosen", "page"), [
+    (None, identity.ADMIN_ROLES_PAGE),
+    (ADMIN_ROLE, identity.ADMIN_ROLES_PAGE),
+    (DELEGATION, identity.DELEGATION_PAGE),
+])
+def test_group_read_opens_its_admin_page_never_the_oauth_scope(chosen: str | None, page: str) -> None:
+    """The plan names the Groups API scope, an https string that is no page:
+    the page the engine opens is the Admin console page of the chosen path,
+    never the scope."""
+    from swarm_install.steps import deep_link_of
+
+    gcp = IdentityGcp()
+    step = identity.GroupReadStep(lambda: gcp, Answers(), lambda c: FakeApi())
+    ctx = ctx_for()
+    if chosen:
+        ctx.state.outputs["groups_auth"] = chosen
+    plan = step.plan(ctx)
+    assert any(identity.GROUPS_SCOPE in line for line in plan.actions)
+    assert deep_link_of(step, ctx, plan) == page
+
+
 def test_admin_role_path_offered_first(tmp_path: Path) -> None:
     """Q2: the plan prints the Groups Reader admin role first, delegation as
     the fallback; the person's default answer is the admin-role path, and

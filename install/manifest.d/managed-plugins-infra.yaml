@@ -13,7 +13,7 @@ entries:
 - id: bucket.plugins
   kind: bucket
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets describe gs://$P-swarm-plugins
   apply: terraform/infra/plugins.tf google_storage_bucket.plugins
@@ -33,7 +33,7 @@ entries:
 - id: iam-binding.plugins-api-objects
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_api_objects
@@ -53,7 +53,7 @@ entries:
 - id: iam-binding.plugins-intake-read
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_intake_read
@@ -73,7 +73,7 @@ entries:
 - id: iam-binding.plugins-intake-stage
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_intake_stage
@@ -93,7 +93,7 @@ entries:
 - id: iam-binding.plugins-reconciler-list
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_reconciler_list
@@ -113,7 +113,7 @@ entries:
 - id: iam-binding.plugins-reconciler-gc
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_reconciler_gc
@@ -133,7 +133,7 @@ entries:
 - id: iam-binding.plugins-tenant-read
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
   apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_tenant_read
@@ -153,7 +153,7 @@ entries:
 - id: iam-binding.plugins-api-secret-versions
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud projects get-iam-policy $P | grep "swarm plugin secrets"
   apply: terraform/infra/plugins.tf google_project_iam_member.plugins_api_secret_versions
@@ -215,7 +215,7 @@ entries:
 - id: iam-binding.plugin-intake-deployer-acts-as
   kind: iam-binding
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud iam service-accounts get-iam-policy swarm-plugin-intake@$P.iam.gserviceaccount.com
   apply: terraform/infra/plugins.tf google_service_account_iam_member.plugin_intake_deployer_acts_as
@@ -235,7 +235,7 @@ entries:
 - id: network.plugin-intake
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-intake
   apply: terraform/infra/plugins.tf google_compute_network.plugin_intake
@@ -255,7 +255,7 @@ entries:
 - id: network.plugin-intake-subnet
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-intake
   apply: terraform/infra/plugins.tf google_compute_subnetwork.plugin_intake
@@ -275,7 +275,7 @@ entries:
 - id: network.fw-plugin-intake-deny-egress
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-intake
   apply: terraform/infra/plugins.tf google_compute_firewall.plugin_intake_deny_egress
@@ -295,7 +295,7 @@ entries:
 - id: network.fw-plugin-intake-allow-apis
   kind: network
   scope: core
-  stage: 7
+  stage: 5
   provider: engine
   check: gcloud compute networks list --project=$P --filter=name~plugin-intake
   apply: terraform/infra/plugins.tf google_compute_firewall.plugin_intake_allow_google_apis

@@ -17,7 +17,7 @@ entries:
 - id: secret.swarm-deployment-patterns.container
   kind: secret-container
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: engine
   check: gcloud secrets describe swarm-deployment-patterns --project=$P
   apply: swarm addon enable ci creates it through the Secret Manager API if it is missing (labels
@@ -37,7 +37,7 @@ entries:
 - id: secret.swarm-deployment-patterns.value
   kind: secret-value
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: human-in-terminal
   check: gcloud secrets versions list swarm-deployment-patterns --project=$P --filter=state=ENABLED --limit=1
     lists one version
@@ -60,7 +60,7 @@ entries:
 - id: other.deployment-patterns-repository-secret
   kind: other
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: human-in-terminal
   check: gh secret list --repo <github_repository> lists DEPLOYMENT_PATTERNS
   apply: scripts/guards/sync-patterns.sh sets it with the person's own gh sign-in, from the same source and with the

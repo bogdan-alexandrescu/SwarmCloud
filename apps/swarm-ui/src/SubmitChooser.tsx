@@ -305,8 +305,8 @@ export interface RecentWindow {
 function windowWords(w: RecentWindow, after: RecentWindow | undefined): string {
   const plural = w.read === 1 ? '' : 's'
   if (w.kind === 'task') return `your newest ${w.read} agent${plural}`
-  if (w.kind === 'workflow') return `the tenant\u2019s newest ${w.read} workflow${plural}`
-  return `${after?.kind === 'workflow' ? 'its' : 'the tenant\u2019s'} newest ${w.read} issue run${plural}`
+  if (w.kind === 'workflow') return `the workspace\u2019s newest ${w.read} workflow${plural}`
+  return `${after?.kind === 'workflow' ? 'its' : 'the workspace\u2019s'} newest ${w.read} issue run${plural}`
 }
 
 function windowsWords(ws: readonly RecentWindow[], last: ', ' | ' and ' | ' or '): string {

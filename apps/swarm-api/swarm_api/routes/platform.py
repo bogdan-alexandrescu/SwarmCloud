@@ -21,7 +21,7 @@ from swarm_common.profiles import (
     resolve_backend,
 )
 
-from .. import route_scope, runnersizes
+from .. import route_scope, runnerimages, runnersizes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
@@ -257,6 +257,14 @@ def runtimes(
             "available": profile.available,
             "disabled_reason": profile.disabled_reason,
             "image": profile.image,
+            # The Node the image carries (#3929), so a brief can rely on
+            # `node --version`. A fact ABOUT the name, like everything here:
+            # invariant 10 is untouched, nothing is accepted from a caller.
+            # Null for a control_plane profile, which runs no image. The
+            # frozen catalogue has no toolchain field, so the table is
+            # `runnerimages`, held to the base Dockerfile's NODE_VERSION by
+            # tests/unit/control_plane/test_runtimes_node_version.py.
+            "node_version": runnerimages.node_version_for(profile),
             # DECLARED and RESOLVED, both, because they are different questions.
             # `Backend.AUTO` is a value the frozen enum permits and
             # `resolve_backend` is the frozen function that turns it into the

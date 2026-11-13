@@ -236,7 +236,7 @@ class _Reader:
         # documents need not carry it. Read on every refresh, once per task
         # (`progress.stored_answers`); a read that failed keeps the questions
         # no answer is known for, each saying why.
-        answered, why = progress.stored_answers(self.client, task)
+        answered, why = progress.stored_answers(self.client, task, questions=kept["questions"])
         live = {**kept, "answered": sorted(answered)}
         if why:
             live["answer_unknown_because"] = why
@@ -294,14 +294,22 @@ class _Reader:
 
 
 def _answered(task: dict[str, Any], asked: list[dict[str, Any]]) -> set[str]:
-    """The texts of the questions `task`'s recorded answers answer."""
+    """The texts of the questions `task`'s recorded answers answer.
+
+    An answer answers the question it records, not its index (#3349): a later
+    attempt may ask another question at that index, which stays open. Only an
+    answer stored before answers recorded their question counts by index.
+    """
     texts = set()
     for answer in progress.owner_answers(task):
-        if answer.get("question"):
-            texts.add(str(answer["question"]))
+        recorded = str(answer.get("question") or "")
+        if recorded:
+            texts.add(recorded)
         index = answer.get("question_index")
         if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(asked):
-            texts.add(str(asked[index].get("question") or ""))
+            now = str(asked[index].get("question") or "")
+            if not recorded or recorded == now:
+                texts.add(now)
     return texts
 
 

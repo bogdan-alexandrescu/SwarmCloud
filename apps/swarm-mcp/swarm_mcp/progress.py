@@ -1281,6 +1281,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
 #: the worker.
 QUESTIONS_NAME = "questions.json"
 QUESTIONS_KEY = "questions"
+#: The worker's reason beside `questions: 0` when it did not take the file
+#: (`agent_worker.questions.REJECTED_KEY`). Spelled again: the worker is not
+#: installed with the bridge.
+QUESTIONS_REJECTED_KEY = "questions_rejected"
 
 #: The worker takes no file larger than this, so one window of the artifacts
 #: route reads it whole; one byte more says whether it was cut.
@@ -1323,10 +1327,22 @@ def owner_questions(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]
 
     A task that asked none reads nothing more and answers `[]`. A counted file
     that cannot be read answers `[]` with `questions_unavailable_because`, so
-    "asked none" and "asked some we could not read" are never the same.
+    "asked none" and "asked some we could not read" are never the same. Nor
+    is a file the worker did not take (#3086): it is counted 0 with
+    `questions_rejected` beside it, and answers `[]` with the worker's reason
+    -- the file was never uploaded, so nothing more is read.
     """
     count = questions_count(task)
     if count == 0:
+        rejected = (task.get("result_summary") or {}).get(QUESTIONS_REJECTED_KEY)
+        if isinstance(rejected, str) and rejected.strip():
+            return {
+                "questions": [],
+                "questions_unavailable_because": (
+                    f"the worker did not take {QUESTIONS_NAME} as questions for the owner: "
+                    f"{clip(rejected, REJECTED_REASON_CHARS)}"
+                ),
+            }
         return {"questions": []}
     task_id = task_id_of(task)
     why = None
@@ -1375,6 +1391,58 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: How long one rejected file's reason may be where a hold names it: a
+#: reason, not the worker's whole text.
+REJECTED_REASON_CHARS = 200
+
+#: The owner-question hold's `blocked_by[].park_phase`, and the key its
+#: record rides under (`agent_worker.merge`'s owner-question park).
+OWNER_QUESTIONS_PHASE = "owner_questions"
+
+
+def hold_rejected_files(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each questions file the merge's owner-question hold could not take,
+    `{task_id, step_id, file, reason}`, the reason clipped.
+
+    WHY (#3086). The hold recorded only `unreadable: 1`: a person saw a
+    merge waiting on a person and nothing to answer, nor which step's file
+    was refused or why. The park's record names each one as
+    `rejected_files`; read from `blocked_by[].owner_questions`, else from
+    the API's `waiting.detail`. An entry that names no asking task or no
+    file is left out -- the document is tenant-writable, so nothing in it
+    is guessed at. `[]` for a hold that names none, or any other park.
+    """
+    raw: Any = None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == OWNER_QUESTIONS_PHASE:
+            record = block.get(OWNER_QUESTIONS_PHASE)
+            if isinstance(record, dict) and isinstance(record.get("rejected_files"), list):
+                raw = record["rejected_files"]
+    if raw is None:
+        waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+        detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+        if detail.get("park_phase") == OWNER_QUESTIONS_PHASE and isinstance(detail.get("rejected_files"), list):
+            raw = detail["rejected_files"]
+    out = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        asker, name = entry.get("task_id"), entry.get("file")
+        if not isinstance(asker, str) or not asker or not isinstance(name, str) or not name:
+            continue
+        step, reason = entry.get("step_id"), entry.get("reason")
+        out.append({"task_id": asker, "step_id": step if isinstance(step, str) else "", "file": name,
+                    "reason": clip(reason, REJECTED_REASON_CHARS) if isinstance(reason, str) else ""})
+    return out
+
+
+def rejected_files_words(rejected: list[dict[str, Any]]) -> str:
+    """`step implement (task_x) questions.json: <reason>; ...`, for a sentence."""
+    return "; ".join(
+        f"step {e['step_id'] or '?'} ({e['task_id']}) {e['file']}" + (f": {e['reason']}" if e["reason"] else "")
+        for e in rejected)
+
+
 #: Where the owner's stored answers are read, per task (`swarm_api.routes.tasks.read_questions`):
 #: each question as `questions.json` holds it, with its `answer` or null.
 QUESTIONS_ROUTE = "/v1/tasks/{task_id}/questions"
@@ -1383,32 +1451,60 @@ QUESTIONS_ROUTE = "/v1/tasks/{task_id}/questions"
 ANSWER_UNKNOWN_CHARS = 200
 
 
-def stored_answers(client: SwarmClient, task: dict[str, Any]) -> tuple[set[int], str | None]:
+def answered_by_document(task: dict[str, Any], questions: list[Any] | None) -> set[int]:
+    """The indexes of `questions` (as asked now) the task document's
+    `owner_answers` answer.
+
+    An answer answers the question it records, not its index (#3349): one
+    recording a question counts only where that same question is asked at
+    its index now, and not at all when `questions` is not known. Only an
+    answer stored before answers recorded their question counts by index.
+    """
+    out: set[int] = set()
+    for answer in owner_answers(task):
+        index = answer.get("question_index")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            continue
+        recorded = answer.get("question")
+        asked = questions[index] if questions is not None and index < len(questions) else None
+        if not isinstance(recorded, str) or not recorded:
+            out.add(index)
+        elif isinstance(asked, dict) and asked.get("question") == recorded:
+            out.add(index)
+    return out
+
+
+def stored_answers(client: SwarmClient, task: dict[str, Any], *,
+                   questions: list[Any] | None = None) -> tuple[set[int], str | None]:
     """`(indexes, why)`: which of the task's questions hold a stored answer.
 
     Read the way `swarm_check` reads a parked task's (`check._parked_questions`):
     one `GET /v1/tasks/{id}/questions` per call, never cached, since an answer
     can be given at any time -- `swarm_task_answer` and the console store it,
-    and a task document read before that does not carry it. The task's own
-    `owner_answers` count too. `why` is set when the route could not be read
-    or did not serve the questions: the indexes are then only what the task
-    document carried, and the rest cannot be told answered or open.
+    and a task document read before that does not carry it.
+
+    When the route reads ok, its answers are the answer: it serves only an
+    answer to the question now asked at its index (#3349), so the task
+    document's `owner_answers` never add an index it served unanswered -- a
+    later attempt may have asked another question there. `why` is set when
+    the route could not be read or did not serve the questions: the indexes
+    are then the task document's `owner_answers` that answer the question
+    now asked at their index (`answered_by_document`, given the caller's
+    `questions`), and the rest cannot be told answered or open.
     """
-    known = {a.get("question_index") for a in owner_answers(task)}
-    indexes = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
+    documented = answered_by_document(task, questions)
     tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
     try:
         served = client.request("GET", QUESTIONS_ROUTE.format(task_id=tid))
     except SwarmError as exc:
-        return indexes, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
+        return documented, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
     if (not isinstance(served, dict) or served.get("status") != "ok"
             or not isinstance(served.get("questions"), list)):
         status = served.get("status") if isinstance(served, dict) else None
-        return indexes, clip(f"its stored answers could not be read: the questions route says {status}",
+        return documented, clip(f"its stored answers could not be read: the questions route says {status}",
                              ANSWER_UNKNOWN_CHARS)
-    for index, question in enumerate(served["questions"]):
-        if isinstance(question, dict) and question.get("answer") is not None:
-            indexes.add(index)
+    indexes = {index for index, question in enumerate(served["questions"])
+               if isinstance(question, dict) and question.get("answer") is not None}
     return indexes, None
 
 
@@ -1437,7 +1533,7 @@ def open_owner_questions(client: SwarmClient, task: dict[str, Any], *,
     questions = asked.get("questions") or []
     if not questions:
         return asked
-    answered, why = stored_answers(client, task)
+    answered, why = stored_answers(client, task, questions=questions)
     open_ = [{"index": i, **q, **({"answer_unknown_because": why} if why else {})}
              for i, q in enumerate(questions) if i not in answered]
     out = {**asked, "questions": open_, "questions_answered": len(questions) - len(open_)}
@@ -1452,7 +1548,7 @@ def asked_with_answers(client: SwarmClient, task: dict[str, Any],
     questions = asked.get("questions") or []
     if not questions:
         return []
-    answered, why = stored_answers(client, task)
+    answered, why = stored_answers(client, task, questions=questions)
     out = []
     for i, q in enumerate(questions):
         entry = {"index": i, **q, "answered": True if i in answered else (None if why else False)}

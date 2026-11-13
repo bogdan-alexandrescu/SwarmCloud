@@ -229,9 +229,9 @@ describe('G4-15: the selection policy never says "inherited" and "not served" to
     routes({ detail: { status: 200, body: detail({ policy: null, mode: null, inherited_from_tenant: true }) } })
     await mount('settings')
     const card = document.querySelector<HTMLElement>('.ur-policy')!
-    expect(visible(card.querySelector('.c-chip'))).toBe('from the tenant default')
+    expect(visible(card.querySelector('.c-chip'))).toBe('from the workspace default')
     expect(visible(card)).not.toContain('The policy was not served.')
-    expect(visible(card)).toContain("Inherited from the tenant default, which this page does not read")
+    expect(visible(card)).toContain("Inherited from the workspace default, which this page does not read")
   })
 
   it('a policy that was not served draws no inheritance chip', async () => {

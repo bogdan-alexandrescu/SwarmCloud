@@ -13,7 +13,7 @@ entries:
 - id: sa.ci-build
   kind: service-account
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: engine
   check: gcloud iam service-accounts describe swarm-ci-build@$P.iam.gserviceaccount.com
   apply: swarm addon enable ci creates it through the IAM API (no key, no project role)
@@ -28,7 +28,7 @@ entries:
 - id: other.ci-runner-label
   kind: other
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: engine
   check: gh variable get SWARM_CI_RUNNER_LABEL --repo <github_repository> and gh variable get
     SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL --repo <github_repository> equal the add-on's recorded choices
@@ -45,7 +45,7 @@ entries:
 - id: other.ci-environments-protected
   kind: other
   scope: addon:ci
-  stage: 15
+  stage: 7
   provider: human-in-console
   check: gh api repos/<github_repository>/environments lists dev and prod, and prod has a protection rule
   apply: the person creates them at https://github.com/<github_repository>/settings/environments (the preflight
