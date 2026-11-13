@@ -572,10 +572,89 @@ def test_a_no_change_round_at_the_red_head_gets_the_free_re_run(db, wake_client,
     clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
     body = _tick(wake_client).json()
 
+    # #3080: the first answer is red on a new id, so after the no_change
+    # round the head is re-run once more, up to RERUNS_PER_HEAD_MAX.
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert len(github.reruns) == 2
+    assert all("error" not in r for r in _fix_record(db)[mergewake.RERUNS_KEY])
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+    github.check(HEAD, CHECK, "failure")  # the second re-run's answer: red again
+    clock.now = NOW + 2 * timedelta(seconds=issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
     assert body["report"]["woken"] == 1, body
     assert _wait(db)["wake_reason"] == "fix_round_ended"
-    assert len(github.reruns) == 1, "a head is re-run once"
+    assert len(github.reruns) == mergewake.RERUNS_PER_HEAD_MAX, "a head is re-run at most twice"
     assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+
+
+RERUN_ANSWERED = NOW - timedelta(seconds=mergewake.RERUN_SETTLE_SECONDS + 1)
+
+
+def _answered_reruns_at_head(db, github, count: int) -> None:
+    """`count` accepted re-runs at HEAD, each of a job (A) that is not the
+    one failing now (B), its window lapsed and its run completed: answered."""
+    (failing,) = [c["id"] for c in github.check_runs[HEAD] if c["name"] == CHECK]
+    record = db.docs["tasks/task_merge"]["metadata"].setdefault(
+        mergewake.MERGE_FIX_METADATA_KEY, {})
+    record[mergewake.RERUNS_KEY] = [
+        {"round": n, "head": HEAD, "claimed_at": RERUN_ANSWERED, "jobs": [failing + 1000 + n],
+         "runs": [7_700 + n], "requested_at": RERUN_ANSWERED}
+        for n in range(1, count + 1)]
+    for n in range(1, count + 1):
+        github.runs[7_700 + n] = {"id": 7_700 + n, "status": "completed"}
+
+
+def test_a_no_change_round_after_an_answered_re_run_on_other_jobs_re_runs_again(
+        db, wake_client, github):
+    """#3080 (PR #3049 at dd72fa3e, PR #3055 at d82d2635): the head's re-run
+    before round 1 answered red on another flake, and the round ended
+    no_change. The tick re-runs once more instead of waking the step to
+    refuse checks_failed."""
+    _round_ended_at_head(db, github, no_change=True)
+    _answered_reruns_at_head(db, github, 1)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert len(github.reruns) + len(github.run_reruns) == 1
+    first, second = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert "error" not in first
+    assert second["head"] == HEAD and "error" not in second and second["requested_at"] == NOW
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+
+def test_a_no_change_round_after_the_per_head_re_runs_wakes_the_step(db, wake_client, github):
+    """The bound (#3080): RERUNS_PER_HEAD_MAX accepted re-runs at the head,
+    each answered red, and the step is woken to refuse."""
+    _round_ended_at_head(db, github, no_change=True)
+    _answered_reruns_at_head(db, github, mergewake.RERUNS_PER_HEAD_MAX)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert github.reruns == [] and github.run_reruns == []
+    assert len(_fix_record(db)[mergewake.RERUNS_KEY]) == mergewake.RERUNS_PER_HEAD_MAX
+
+
+def test_a_red_head_with_no_round_is_still_re_run_once(db, wake_client, github):
+    """The widening is the no_change path's only (#3080): with no round at
+    the head, an answered re-run there hands the red to a round, as before."""
+    fixable_merge(db, github, rounds=2)
+    _answered_reruns_at_head(db, github, 1)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert github.reruns == [] and github.run_reruns == []
+    assert len(_fix_record(db)[mergewake.RERUNS_KEY]) == 1
+    assert body["report"]["fixing"] == 1 and body["report"]["woken"] == 0, body
+    assert len(_fix_workflows(db)) == 1
 
 
 def test_a_no_change_round_whose_re_run_github_refuses_wakes_the_step(db, wake_client, github,
@@ -652,7 +731,9 @@ def test_a_no_change_round_waits_while_the_accepted_re_runs_attempt_is_in_progre
     """#3006 (PR #2973, 22ef10c2): an accepted run-level re-run past
     RERUN_SETTLE_SECONDS whose run is still re-running a fan-in gate's needs
     holds the tick; once the run has completed, or its status cannot be read
-    (None: the read answers 404), the window alone decides, as before."""
+    (None: the read answers 404), the window alone decides: the re-run has
+    answered, and after the no_change round the head is asked once more,
+    the second of RERUNS_PER_HEAD_MAX (#3080)."""
     _round_ended_at_head(db, github, no_change=True)
     (failing,) = [c["id"] for c in github.check_runs[HEAD] if c["name"] == CHECK]
     record = db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY]
@@ -665,14 +746,15 @@ def test_a_no_change_round_waits_while_the_accepted_re_runs_attempt_is_in_progre
 
     body = _tick(wake_client).json()
 
-    assert github.reruns == [] and github.run_reruns == []
     assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
     if status == "in_progress":
+        assert github.reruns == [] and github.run_reruns == []
         assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
-        assert mergewake.WAKE_MARKER not in _wait(db)
     else:
-        assert body["report"]["woken"] == 1, body
-        assert _wait(db)["wake_reason"] == "fix_round_ended"
+        assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+        assert len(github.reruns) + len(github.run_reruns) == 1
+        assert len(_fix_record(db)[mergewake.RERUNS_KEY]) == mergewake.RERUNS_PER_HEAD_MAX
 
 
 def test_a_round_that_ended_at_the_red_head_with_changes_asks_no_re_run(db, wake_client, github):
