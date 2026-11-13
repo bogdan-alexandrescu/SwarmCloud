@@ -23,8 +23,8 @@ entries:
     device registers (docs/runbooks/tailscale-egress.md); service decision-api-internal reports the reserved address
   explain: the internal judge's tailnet forwarder workload (5 of ~5, lane JUDGE-NET), and swarm-api's route to it
     through the internal passthrough load balancer decision-api-internal (jev-contract.md section 4.1)
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - secret.swarm-tailscale-oauth.value
