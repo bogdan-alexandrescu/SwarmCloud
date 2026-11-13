@@ -57,6 +57,16 @@ paths and changed-line counts:
     only"). An issue-run implementer, `allow_empty_diff` and handing only
     `swarm-work.patch`, with a diff of its own, is counted on its lines as
     before;
+  * the review RUNS when a direct parent published rendered images (#3066:
+    the mock-up workflow's build steps commit nothing -- their frames are
+    artifacts -- and both its reviews were skipped on "0 changed lines"):
+    any artifact ending in `SHOT_SUFFIXES`, under `shots/` or not
+    (`images_of`). The reason names them ("its parent published N rendered
+    image(s) (...); the gate counts code lines only");
+  * a RENDERED REVIEW -- a review step on `RENDERED_REVIEW_PROFILE`, whose
+    whole job is to read rendered frames -- is never gated on line count
+    (#3066): after a risk path and an over-count, it RUNS ("it is a rendered
+    review, which reads rendered pages whatever the line count");
   * the review RUNS when what was changed cannot be told: a parent that
     cannot be read, has no git record, has no line counts, or whose file
     list was cut with no risk path in what it kept. A gate that could not
@@ -96,8 +106,10 @@ RENDERS PUBLISHED. The parents' `result_summary.artifacts` are read for an
 image under `shots/` -- the directory the browser runner's rendered-review
 rule names (`agent_worker.verdict.RENDERED_REVIEW_SHOTS`); no compare-report
 manifest is written by any runner today, so the listing is the check. What
-was found is recorded on the decision (`renders_published`); it does not
-move the review off the browser (the owner 2026-10-28: a follow-up lane).
+was found is recorded on the decision (`renders_published`). Since #3066
+renders make the review run: any image a direct parent published (`renders`
+on the decision) is work the line count cannot see. Moving the review onto
+the browser runner stays a follow-up (the owner 2026-10-28: a follow-up lane).
 """
 
 from __future__ import annotations
@@ -194,6 +206,10 @@ MAX_INLINE_BYTES = 4096
 #: there. `agent_worker.verdict.RENDERED_REVIEW_SHOTS` / `SHOT_SUFFIXES`.
 SHOTS_DIRECTORY = "shots/"
 SHOT_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+#: The runner profile a rendered review runs on, whose job is to read rendered
+#: frames (#3066). `agent_worker.verdict.RENDERED_REVIEW_PROFILE`, restated here
+#: because swarm-api cannot import the worker; held equal by the test.
+RENDERED_REVIEW_PROFILE = "claude-code-browser"
 
 #: Task documents read per decision, as in `scheduler.runtime.MAX_DOCUMENTS_READ`.
 MAX_DOCUMENTS_READ = 40
@@ -210,6 +226,8 @@ REASON_NO_PARENTS = "no_parent_changes"
 REASON_OFF = "review_gate_off"
 REASON_HANDED = "parent_hands_files"
 REASON_EMPTY_BY_DESIGN = "parent_allows_empty_diff"
+REASON_RENDERS = "parent_published_renders"
+REASON_RENDERED_REVIEW = "rendered_review"
 
 #: What a parent may hand its dependants and still be counted on its lines:
 #: the diff itself (`issueruns.PATCH_FILE`, which the line counts measure)
@@ -355,6 +373,7 @@ class Decision:
     unreadable: tuple[str, ...] = ()
     shots: tuple[str, ...] = field(default=())
     handed: tuple[str, ...] = ()
+    renders: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -371,6 +390,13 @@ class Decision:
         if self.reason == REASON_HANDED:
             return ("review runs: its parent hands it " + ", ".join(self.handed[:MAX_PATHS_SHOWN])
                     + "; the gate counts code lines only")
+        if self.reason == REASON_RENDERED_REVIEW:
+            return ("review runs: it is a rendered review, which reads rendered pages "
+                    "whatever the line count")
+        if self.reason == REASON_RENDERS:
+            return (f"review runs: its parent published {len(self.renders)} rendered image(s) ("
+                    + ", ".join(self.renders[:MAX_PATHS_SHOWN])
+                    + "); the gate counts code lines only")
         if self.reason == REASON_EMPTY_BY_DESIGN:
             return ("review runs: its parent allows an empty diff, so its work is not code "
                     "lines; the gate counts code lines only")
@@ -396,6 +422,7 @@ class Decision:
             "shots": list(self.shots[:MAX_PATHS_SHOWN]),
             "shots_count": len(self.shots),
             "handed": list(self.handed[:MAX_PATHS_SHOWN]),
+            "renders": list(self.renders[:MAX_PATHS_SHOWN]),
         }
 
 
@@ -447,6 +474,17 @@ def shots_of(document: Any) -> list[str]:
     return found
 
 
+def images_of(document: Any) -> list[str]:
+    """Every image (`SHOT_SUFFIXES`) a parent published, by artifact name, wherever it lives."""
+    entries = _mapping(_mapping(document).get("result_summary")).get("artifacts")
+    found: list[str] = []
+    for entry in entries if isinstance(entries, list) else ():
+        name = _mapping(entry).get("name")
+        if isinstance(name, str) and name.lower().endswith(SHOT_SUFFIXES):
+            found.append(name)
+    return found
+
+
 def handed_of(document: Any) -> list[str]:
     """The files a parent hands its dependants through `input_from` that are not code lines.
 
@@ -475,6 +513,8 @@ def resolve(
     task_depends_on: list[str],
     gate: Gate,
     read: Callable[[str], Mapping[str, Any] | None],
+    *,
+    runner_profile: str | None = None,
 ) -> Decision:
     """Whether a gated review runs, from its parents' changes.
 
@@ -484,6 +524,10 @@ def resolve(
     summed over every document read; a step that joined several carries
     their diffs in its own, so the sum can only over-count, and an over-count
     only runs a review.
+
+    `runner_profile` is the review step's own: a rendered review
+    (`RENDERED_REVIEW_PROFILE`) reads rendered frames, so it is never skipped
+    on line count; only a risk path or an over-count decides it first (#3066).
     """
     queue = list(dict.fromkeys(task_depends_on))
     direct = set(queue)
@@ -493,6 +537,7 @@ def resolve(
     hits: dict[str, None] = {}
     shots: dict[str, None] = {}
     handed: dict[str, None] = {}
+    renders: dict[str, None] = {}
     empty_by_design = False
     total = 0
     cut = False
@@ -521,6 +566,7 @@ def resolve(
         shots.update(dict.fromkeys(shots_of(document)))
         if task_id in direct:
             handed.update(dict.fromkeys(n.strip() for n in handed_of(document)))
+            renders.update(dict.fromkeys(images_of(document)))
             empty_by_design = empty_by_design or (allows_empty_diff(document) and lines == 0)
         if lines is None:
             unknown.append(task_id)
@@ -531,13 +577,18 @@ def resolve(
         if upstream and upstream not in seen:
             queue.append(upstream)
     common = {"changed_lines": total, "min_lines": gate.min_lines, "read": tuple(visited),
-              "unreadable": tuple(unknown), "shots": tuple(shots), "handed": tuple(handed)}
+              "unreadable": tuple(unknown), "shots": tuple(shots), "handed": tuple(handed),
+              "renders": tuple(renders)}
     if hits:
         return Decision(True, REASON_RISK, risk_hits=tuple(hits), **common)
     if total > gate.min_lines:
         return Decision(True, REASON_OVER, **common)
+    if runner_profile == RENDERED_REVIEW_PROFILE:
+        return Decision(True, REASON_RENDERED_REVIEW, **common)
     if handed:
         return Decision(True, REASON_HANDED, **common)
+    if renders:
+        return Decision(True, REASON_RENDERS, **common)
     if empty_by_design:
         return Decision(True, REASON_EMPTY_BY_DESIGN, **common)
     if unknown:
