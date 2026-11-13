@@ -1166,7 +1166,11 @@ ARG CHECKOV_VERSION=3.3.17
 # resolved certifi 2026.10.18, and the image scan refused the base images on
 # GHSA-6q48-6c7w-9gw2 (CRITICAL: bundled emSign root CAs with compromised keys),
 # fixed in certifi 2026.10.19, published 2026-10-20T02:24Z.
-ARG CHECKOV_EXCLUDE_NEWER=2026-10-21T00:00:00Z
+# MOVED 2026-11-13 to 2026-11-04T00:00:00Z, checkov unchanged: the 10-21 cutoff
+# resolved soupsieve 3.0.3, and the image scan refused agent-runtime-browser,
+# agent-runtime-indexer and agent-runtime-lightpanda on CVE-2026-126190 (HIGH),
+# fixed in soupsieve 4.0.0, published 2026-11-03T14:28Z.
+ARG CHECKOV_EXCLUDE_NEWER=2026-11-04T00:00:00Z
 RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/uv-cache \
       uv tool install --python /usr/local/bin/python3.11 \
