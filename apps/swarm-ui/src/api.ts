@@ -15854,7 +15854,7 @@ function fixtureSetupState(): Record<string, unknown> {
     engine: {
       release: 'v1.0.0',
       hostname: 'console.example.com',
-      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: i === 9 ? 'switches_on' : 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
+      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
       lease: { holder: 'ana@example.com laptop', heartbeat: at(0) },
       verify: { check: 'digests', done: 2, total: 8, started: t0, expected_end: t0 + 600, deadline: t0 + 1800, result: null },
       hand_off_at: at(30),
