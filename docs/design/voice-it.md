@@ -743,7 +743,10 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   accepts typed turns as an alternative to speaking.
 * **The idle stop.** `Shell.tsx` exports a `noteActivity()` beside its
   private `noteInput`. The Talk pane calls it on every final caption from
-  either side while a session is live, so the spine's capacity meter and any
+  either side while a session is live, and on every caption line closed
+  without a final (by a pause, the other side speaking or the end of a turn:
+  GPT-Live sends the browser deltas and no final, so a closed line is the only
+  whole segment it ever draws), so the spine's capacity meter and any
   card that polls do not pause on a person who is only talking. When the
   session ends, nothing calls it and the 15-minute rule applies again. That
   keeps the rule's intent: speech is proof someone is there.
