@@ -45,7 +45,10 @@ an App connection only):
     OB4's), each `read` or `write`, and the checks Work › Access's Verify
     stored on them with their `verified_at` (`repos_chosen`,
     `access_verified`; #896). Setup and Access read the same records, so
-    pressing Verify on Access completes the step on the next read;
+    pressing Verify on Access completes the step on the next read. The
+    workspace's grant (`workspace_repository_grants`, which Admin › Setup
+    enforces for every member) covers each repository the person holds no
+    grant of their own on, as passed;
   * for a token connection (the tenant token, or a PAT of one's own) -- the
     LEGACY path -- the tenant's repository registrations, each `write` when
     its read found push and `read` otherwise (`repos_chosen`), and the
@@ -243,6 +246,11 @@ APP_USER = "app_user"
 #: `forgeapp.GRANTS`: one document per person x repository they chose
 #: (§3.1). Restated for the same reason as APP_USER.
 GRANTS = "forge_grants"
+
+#: `access.WORKSPACE_GRANTS`: one document per workspace x repository, the
+#: grant `routes.setup.enforce_grant` writes for everyone in the workspace
+#: (access imports this module, so the word is restated, not imported).
+WORKSPACE_GRANTS = "workspace_repository_grants"
 
 #: `forgeapp.ORGS`: one document per person x owner they enabled on Work ›
 #: Access (or asked to install). Restated for the same reason as APP_USER.
@@ -726,6 +734,33 @@ def _own_grants(caller: Caller, grants: list[dict[str, Any]]) -> list[dict[str, 
                   key=lambda g: str(g.get("repository") or "").lower())
 
 
+def _covered_grants(caller: Caller, own: list[dict[str, Any]],
+                    workspace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The caller's own grants, then their tenant's workspace grants on every
+    other repository (`via: workspace`): the grant Admin › Setup enforces for
+    everyone in the workspace covers a teammate with no grant of their own.
+    Only the caller's tenant's, with a read or write mode (invariant 9).
+
+    An own grant copied from the workspace's (`access.person_grant_from_workspace`,
+    on the person's first task there: `via: workspace_repository_grants`, no
+    checks of its own) yields to the workspace grant still covering it, so
+    that first task does not send the teammate back to Verify."""
+    covering = {str(doc.get("repository") or "").lower() for doc in workspace
+                if doc.get("tenant_id") == caller.tenant_id
+                and doc.get("mode") in ("read", "write") and doc.get("repository")}
+    own = [g for g in own if not (g.get("via") == WORKSPACE_GRANTS and not g.get("checks")
+                                  and str(g.get("repository") or "").lower() in covering)]
+    mine = [{**g, "via": "own"} for g in own]
+    held = {str(g.get("repository") or "").lower() for g in own}
+    for doc in sorted(workspace, key=lambda g: str(g.get("repository") or "").lower()):
+        repository = str(doc.get("repository") or "")
+        if repository.lower() not in covering or repository.lower() in held:
+            continue
+        held.add(repository.lower())
+        mine.append({**doc, "via": "workspace"})
+    return mine
+
+
 def _repos_step(caller: Caller, record: GitTokenRecord, regs: list[dict[str, Any]],
                 capped: bool, now: datetime, *,
                 grants: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -734,7 +769,8 @@ def _repos_step(caller: Caller, record: GitTokenRecord, regs: list[dict[str, Any
     if grants is not None:
         rows = [{"repository": str(g.get("repository") or ""), "repo_id": g.get("repo_id"),
                  "owner": _grant_owner(g), "mode": _grant_mode(g),
-                 "archived": bool(g.get("archived"))} for g in grants]
+                 "archived": bool(g.get("archived")), "via": g.get("via", "own")}
+                for g in grants]
         capped = len(grants) >= MAX_GRANTS
     else:
         rows = [{"repository": _repository(reg), "repo_id": reg.get("repo_id"),
@@ -817,6 +853,16 @@ def _grants_verified_step(record: GitTokenRecord, grants: list[dict[str, Any]],
     checked: datetime | None = None
     for grant in grants:
         mode = _grant_mode(grant)
+        if grant.get("via") == "workspace":
+            # Admin › Setup granted it from the App installation that lists
+            # the repository, and the submission path honours it for every
+            # member: there is no Verify of the person's own to wait for.
+            at = grant.get("granted_at")
+            rows.append({"repository": grant.get("repository"), "repo_id": grant.get("repo_id"),
+                         "mode": mode, "checks": {}, "result": "passed",
+                         "verified_at": _iso(at if isinstance(at, datetime) else None),
+                         "via": "workspace"})
+            continue
         needed = ("clone", "push", "open_pull_requests") if mode == "write" else ("clone",)
         stored = grant.get("checks") if isinstance(grant.get("checks"), dict) else {}
         row_checks: dict[str, str] = {}
@@ -852,7 +898,7 @@ def _grants_verified_step(record: GitTokenRecord, grants: list[dict[str, Any]],
             result = "passed"
         rows.append({"repository": grant.get("repository"), "repo_id": grant.get("repo_id"),
                      "mode": mode, "checks": row_checks, "result": result,
-                     "verified_at": _iso(at)})
+                     "verified_at": _iso(at), "via": "own"})
     evidence = {"source": "grants", "token_id": record.token_id, "repositories": rows,
                 "unverified": unverified}
     if issues:
@@ -948,6 +994,7 @@ def derive(
     installations: dict[str, Any] | None = None,
     grants: list[dict[str, Any]] | None = None,
     orgs: list[dict[str, Any]] | None = None,
+    workspace_grants: list[dict[str, Any]] | None = None,
     workspace: dict[str, Any] | None = None,
     accounts: dict[str, Any] | None = None,
     loan: dict[str, Any] | None = None,
@@ -962,7 +1009,9 @@ def derive(
     `installations` is `AccessService.installations`'s answer for an App
     connection, or None when it was not asked. `grants` is the caller's
     `forge_grants`, read only for an App connection; None is none. `orgs` is
-    the caller's `forge_orgs`, likewise; None is none.
+    the caller's `forge_orgs`, likewise; None is none. `workspace_grants`
+    is the tenant's `workspace_repository_grants`, likewise: each covers the
+    caller on a repository they hold no grant of their own on.
 
     Every input is filtered on `caller.tenant_id` again here, whatever the
     reads returned, and only the caller's own user slot is ever considered.
@@ -1006,8 +1055,10 @@ def derive(
                                 pending=_pending_issues(installations)
                                 if uses_app(record, via) else [],
                                 enabled=(orgs or []) if uses_app(record, via) else None))
-        # An App connection's repositories are the caller's own grants (#896).
-        mine = _own_grants(caller, grants or []) if uses_app(record, via) else None
+        # An App connection's repositories are the caller's own grants (#896),
+        # and the workspace's grant on the rest (enforce_grant, every member).
+        mine = _covered_grants(caller, _own_grants(caller, grants or []),
+                               workspace_grants or []) if uses_app(record, via) else None
         chosen = _repos_step(caller, record, regs, registrations_capped, now, grants=mine)
         steps.append(chosen)
         steps.append(_waiting(ACCESS_VERIFIED, REPOS_CHOSEN) if chosen["state"] == NOT_STARTED
@@ -1054,6 +1105,14 @@ def _read_grants(db: Any, caller: Caller) -> list[dict[str, Any]]:
     query = db.collection(GRANTS).where(
         filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
         filter=FieldFilter("user_hash", "==", hashed)).limit(MAX_GRANTS)
+    return [snap.to_dict() or {} for snap in query.stream()]
+
+
+def _read_workspace_grants(db: Any, caller: Caller) -> list[dict[str, Any]]:
+    """The caller's tenant's workspace grants, queried on the tenant alone,
+    as `routes.setup.enforce_grant` writes them; filtered again in `derive`."""
+    query = db.collection(WORKSPACE_GRANTS).where(
+        filter=FieldFilter("tenant_id", "==", caller.tenant_id)).limit(MAX_GRANTS)
     return [snap.to_dict() or {} for snap in query.stream()]
 
 
@@ -1138,6 +1197,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         found = installations()
     grants = _read_grants(db, caller) if uses_app(record, via) else None
     orgs = _read_orgs(db, caller) if uses_app(record, via) else None
+    shared = _read_workspace_grants(db, caller) if uses_app(record, via) else None
     view = derive(
         caller,
         records=records,
@@ -1149,6 +1209,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         installations=found,
         grants=grants,
         orgs=orgs,
+        workspace_grants=shared,
         workspace=workspace,
         accounts=accounts,
         loan=loan,

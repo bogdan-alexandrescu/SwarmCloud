@@ -169,13 +169,14 @@ describe('Admin › Setup, the page', () => {
       const dl = within(flow).getByRole('group', { name: 'From a terminal' }).querySelector('.c-dl')!
       return [...dl.childNodes].filter((n) => !(n instanceof Element && n.classList.contains('c-ln'))).map((n) => n.textContent).join('')
     }
-    // Before anything is typed, the line names its one required value.
-    expect(line()).toBe('swarm team add <group>')
+    // Before anything is typed, the line names its two required values.
+    expect(line()).toBe('swarm team add <group> --project=<project-id>')
     fireEvent.change(within(flow).getByLabelText(/Workspace group/), { target: { value: 'research@example.com' } })
     fireEvent.change(within(flow).getByLabelText(/First workspace admin/), { target: { value: 'lea@example.com' } })
     fireEvent.change(within(flow).getByLabelText(/Invite/), { target: { value: 'ravi@example.com, omar@example.com' } })
     // MUTATION: print a fixed line, or one that drops a field the form holds -> fails.
-    expect(line()).toBe('swarm team add research@example.com --admin lea@example.com --invite ravi@example.com --invite omar@example.com')
+    // Invites are no flag of swarm team add: the line leaves them to the console.
+    expect(line()).toBe('swarm team add research@example.com --project=<project-id> --first-admin lea@example.com')
     // The same call the CLI makes: the setup API's team route.
     fireEvent.click(within(flow).getByRole('button', { name: /Add the team/ }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(true))

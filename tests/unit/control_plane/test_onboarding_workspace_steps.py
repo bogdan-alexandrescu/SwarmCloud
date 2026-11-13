@@ -158,3 +158,111 @@ def test_an_approval_nothing_will_build_says_so_in_the_steps_evidence() -> None:
     assert evidence["request_id"] == "req-1"
     # A caller that does not know the publisher sends no block, not a guess.
     assert "provisioning" not in _step(_derive(workspace=record), "workspace")["evidence"]
+
+
+# -- the workspace's grant covers a teammate with none of their own -----------------
+#
+# Admin › Setup's enforce_grant writes `workspace_repository_grants` keyed by the
+# tenant alone, for everyone in the workspace; a teammate with no `forge_grants`
+# row of their own is not sent to choose and verify those repositories again.
+
+DAVE = Caller(email="dave@example.com", tenant_id="eng")
+INSTALLED = {"read": True, "source": "enabled", "installed": ["example-org"],
+             "not_installed": [], "install_url": "https://github.com/apps/example-app/installations/new"}
+
+
+def _app_record(email: str = "dave@example.com"):
+    from swarm_api.gittokens import Scope, TokenState, record_for_slot
+
+    record = record_for_slot("eng", Scope.USER, user=email, registered_by=email,
+                             now=T0 - timedelta(days=3))
+    record.kind = "app_user"
+    record.forge_login = "dave-gh"
+    record.state = TokenState.ACTIVE
+    record.verified_at = record.probe_attempted_at = record.access_evidence_at = T0 - timedelta(hours=1)
+    record.probe_complete = True
+    record.orgs = ["example-org"]
+    return record
+
+
+def _workspace_grant(repository: str, *, tenant_id: str = "eng", mode: str = "write") -> dict:
+    from swarm_api.onboarding import repo_id_for
+
+    owner, repo = repository.split("/")
+    return {"tenant_id": tenant_id, "repo_id": repo_id_for(tenant_id, owner, repo),
+            "repository": repository, "owner": owner.lower(), "mode": mode,
+            "granted_at": T0 - timedelta(hours=3), "granted_by": "root@example.com",
+            "source": "admin-setup"}
+
+
+def _derive_app(*, grants=(), workspace_grants=()) -> dict:
+    return derive(DAVE, records=[_app_record()], pair_docs=[], registrations=[],
+                  tenant_lists_git=True, now=T0, installations=INSTALLED,
+                  grants=list(grants), orgs=[], workspace_grants=list(workspace_grants))
+
+
+def test_the_workspace_grant_completes_the_repository_steps_for_a_teammate() -> None:
+    view = _derive_app(workspace_grants=[_workspace_grant("example-org/api")])
+    chosen, verified = _step(view, "repos_chosen"), _step(view, "access_verified")
+    assert chosen["state"] == "done", chosen
+    assert [(r["repository"], r["via"]) for r in chosen["evidence"]["repositories"]] == [
+        ("example-org/api", "workspace")]
+    assert verified["state"] == "done", verified
+    assert [r["result"] for r in verified["evidence"]["repositories"]] == ["passed"]
+    assert _step(view, "ready")["evidence"]["first_repository"] == "example-org/api"
+
+
+def test_another_workspaces_grant_covers_no_one_here() -> None:
+    view = _derive_app(workspace_grants=[_workspace_grant("example-org/api", tenant_id="research")])
+    assert _step(view, "repos_chosen")["state"] == "todo"
+    assert _step(view, "access_verified")["state"] == "todo"
+
+
+def test_the_persons_own_grant_is_read_before_the_workspaces() -> None:
+    own = {**_workspace_grant("example-org/api"), "user": "dave@example.com",
+           "user_hash": "0" * 16, "checks": {}, "verified_at": None}
+    view = _derive_app(grants=[own], workspace_grants=[_workspace_grant("example-org/api"),
+                                                       _workspace_grant("example-org/docs")])
+    rows = {r["repository"]: r["via"] for r in _step(view, "repos_chosen")["evidence"]["repositories"]}
+    assert rows == {"example-org/api": "own", "example-org/docs": "workspace"}
+    verified = _step(view, "access_verified")
+    assert verified["state"] == "in_progress"
+    assert [u["repository"] for u in verified["evidence"]["unverified"]] == ["example-org/api"]
+
+
+def test_the_read_finds_the_workspace_grant_enforce_grant_wrote(db) -> None:
+    from swarm_api import onboarding
+    from swarm_api.access import write_workspace_grants
+    from swarm_api.gittokens import COLLECTION
+
+    from .conftest import seed_tenant
+
+    seed_tenant(db, "eng", credentials=("git",))
+    record = _app_record()
+    db.docs[f"{COLLECTION}/{record.token_id}"] = record.to_firestore()
+    write_workspace_grants(db, "eng", ["example-org/api"], mode="write",
+                           by="root@example.com", at=T0, source="admin-setup")
+    tenant = onboarding.Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
+                               credentials=["git"], created_at=T0)
+    view = onboarding.read(db, DAVE, tenant=tenant, now=T0, installations=lambda: INSTALLED)
+    assert _step(view, "repos_chosen")["state"] == "done"
+    assert _step(view, "access_verified")["state"] == "done"
+
+
+def test_the_grant_a_first_task_copies_from_the_workspace_keeps_the_steps_done(db) -> None:
+    # SubmissionService records the workspace grant as the person's own on their
+    # first task there (person_grant_from_workspace): no checks, no verified_at.
+    from swarm_api.access import GRANTS, person_grant_from_workspace, write_workspace_grants
+
+    write_workspace_grants(db, "eng", ["example-org/api"], mode="write",
+                           by="root@example.com", at=T0, source="admin-setup")
+    workspace = _workspace_grant("example-org/api")
+    assert person_grant_from_workspace(db, "eng", "dave@example.com", workspace["repo_id"],
+                                       at=T0) == "write"
+    copied = [doc for key, doc in db.docs.items() if key.startswith(f"{GRANTS}/")]
+    assert len(copied) == 1 and copied[0]["checks"] == {} and copied[0]["verified_at"] is None
+    view = _derive_app(grants=copied, workspace_grants=[workspace])
+    chosen, verified = _step(view, "repos_chosen"), _step(view, "access_verified")
+    assert chosen["state"] == "done", chosen
+    assert verified["state"] == "done", verified
+    assert verified["evidence"]["unverified"] == []

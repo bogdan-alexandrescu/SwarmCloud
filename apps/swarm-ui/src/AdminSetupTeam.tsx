@@ -8,6 +8,12 @@
  * as it is typed, so what the console sends and what the terminal would send
  * are visibly one call: both are `POST /v1/admin/setup/teams`
  * (`createSetupTeam`), then `swarm-workspace-apply` (design §5.7, one writer).
+ * The line carries only the flags `swarm team add` defines (swarm_install
+ * verbs/team.py): `--project` is required and the page does not know it, so
+ * it stays a placeholder; invites are no flag of it, so they are not printed.
+ * The route answers each invite with the group's Google Admin members page,
+ * which is where the person adds them: the form links it once the team is
+ * asked for (as the first team's invite control does).
  *
  * Nothing here takes a credential: the team's git slot is filled through a
  * one-time link its owner opens (CLAUDE.md forge-token rule), never this form.
@@ -16,7 +22,7 @@ import { useId, useState } from 'react'
 import { createSetupTeam, type ApiError, type SetupTeam } from './api'
 import { About } from './AdminSetupHealth'
 import { Facts, type Fact } from './AdminSetupSteps'
-import { Button, Card, CodeBlock, Tooltip } from './components'
+import { Button, ButtonLink, Card, CodeBlock, Tooltip } from './components'
 
 /** One value of the line, quoted for a POSIX shell when it holds anything but an address's characters. */
 function arg(v: string): string {
@@ -35,15 +41,15 @@ export function teamBody(f: { group: string; name: string; admin: string; invite
   }
 }
 
-/** The `swarm team add` line for the form as it stands; `<group>` until the group is named. */
+/** The `swarm team add` line for the form as it stands; `<group>` until the group is named, `<project-id>` always. */
 export function teamAddLine(f: { group: string; name: string; admin: string; invites: string }): string {
   const b = teamBody(f)
   return [
     'swarm team add',
     b.group === '' ? '<group>' : arg(b.group),
-    ...(b.display_name === undefined ? [] : [`--name ${arg(b.display_name)}`]),
-    ...(b.first_admin === undefined ? [] : [`--admin ${arg(b.first_admin)}`]),
-    ...b.invites.map((i) => `--invite ${arg(i)}`),
+    '--project=<project-id>',
+    ...(b.display_name === undefined ? [] : [`--display-name ${arg(b.display_name)}`]),
+    ...(b.first_admin === undefined ? [] : [`--first-admin ${arg(b.first_admin)}`]),
   ].join(' ')
 }
 
@@ -91,6 +97,7 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [asked, setAsked] = useState<string | null>(null)
+  const [page, setPage] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const form = { group, name, admin, invites }
   const line = teamAddLine(form)
@@ -110,13 +117,17 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
     const body = teamBody(form)
     setBusy(true)
     setError(null)
+    setPage(null)
     void createSetupTeam(body).then((r) => {
       setBusy(false)
       if (r.status === 'error') {
         setError(r.error)
         return
       }
-      setAsked(r.status === 'ok' || r.status === 'stale' ? (r.data.team ?? body.group) : body.group)
+      const ok = r.status === 'ok' || r.status === 'stale'
+      setAsked(ok ? (r.data.team ?? body.group) : body.group)
+      // The group's members page in Google Admin, where the invites are added.
+      setPage(ok ? (r.data.invites.map((i) => i.add_members_url).find((u): u is string => u !== null) ?? null) : null)
       setGroup('')
       setName('')
       setAdmin('')
@@ -160,6 +171,14 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
           {asked !== null && error === null && (
             <p className="ur-hint" role="status">
               {asked} was asked for: its progress shows under Teams as swarm-workspace-apply reports it.
+              {page !== null && (
+                <>
+                  {' '}
+                  <ButtonLink size="sm" kind="ghost" href={page} target="_blank" rel="noreferrer">
+                    Open the group in Google Admin
+                  </ButtonLink>
+                </>
+              )}
             </p>
           )}
         </form>
@@ -174,8 +193,7 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
         >
           <div role="group" aria-label="From a terminal">
             <CodeBlock
-              title="Same steps"
-              lang="shell"
+              title="Shell"
               text={line}
               action={
                 <Button size="sm" kind="ghost" onClick={() => void navigator.clipboard?.writeText(line).then(() => setCopied(true))}>
