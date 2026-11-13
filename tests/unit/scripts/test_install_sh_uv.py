@@ -174,3 +174,46 @@ def test_every_platform_pins_a_uv_digest() -> None:
         variable = "UV_SHA256_" + target.upper().replace("-", "_")
         assert re.search(rf'^{variable}="[0-9a-f]{{64}}"$', text, re.M), variable
     assert "| sh" not in text.split("set -eu", 1)[1], "never pipes a remote script to a shell"
+
+
+def test_uv_tool_install_needs_a_python_whose_tarfile_has_the_data_filter(tmp_path: Path) -> None:
+    # swarm_install extracts archives with extractall(filter="data"), which
+    # Python 3.11.0-3.11.3 does not have.
+    env = _sandbox(tmp_path, uv_on_path=True)
+    proc, _, calls = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    (call,) = calls
+    assert call[call.index("--python") + 1] == ">=3.11.4"
+
+
+def test_uv_tool_install_is_quiet(tmp_path: Path) -> None:
+    # The script puts the tool bin directory on PATH itself; uv's own PATH
+    # advice beside it would contradict it.
+    env = _sandbox(tmp_path, uv_on_path=True)
+    proc, _, calls = _run(tmp_path, env)
+    assert proc.returncode == 0, proc.stderr
+    (call,) = calls
+    assert call[:2] == ["tool", "install"]
+    assert "--quiet" in call
+
+
+@pytest.mark.parametrize("version", ["2026.10.01", "2026.10.00", "2026.10.1-rc.01"])
+def test_a_release_name_with_a_leading_zero_is_refused_before_anything_is_fetched(
+        tmp_path: Path, version: str) -> None:
+    # The wheels carry int(N) (marketplace.py wheel_version), so 2026.10.01
+    # would ask for a ...-2026.10.01-... wheel no release has.
+    env = _sandbox(tmp_path, uv_on_path=True)
+    env["SWARMCLOUD_VERSION"] = version
+    proc, urls, calls = _run(tmp_path, env)
+    assert proc.returncode == 1
+    assert "is not a SwarmCloud release name" in proc.stderr
+    assert not [u for u in urls if "/releases/" in u]
+    assert calls == []
+
+
+def test_a_two_digit_month_with_a_leading_zero_is_still_a_release_name(tmp_path: Path) -> None:
+    env = _sandbox(tmp_path, uv_on_path=True)
+    env["SWARMCLOUD_VERSION"] = "2026.01.2"
+    proc, urls, _ = _run(tmp_path, env)
+    assert "is not a SwarmCloud release name" not in proc.stderr
+    assert "https://storage.googleapis.com/swarmcloud/releases/2026.01.2/SHA256SUMS" in urls
