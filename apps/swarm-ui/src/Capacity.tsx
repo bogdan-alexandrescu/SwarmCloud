@@ -21,6 +21,7 @@ import { Absent } from './primitives'
 import { Screen, SkeletonRows, staleFoot, type ScreenReading } from './Shell'
 import './styles/capacity.css'
 import { Segmented, ToneMark, UsageTrack } from './components'
+import { useIsAdmin } from './PermissionCards'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -393,6 +394,9 @@ function CeilingTables({
   holders: HolderCounts
 }) {
   const classes = useResourceClasses()
+  // ONE SESSION READ FOR EVERY ROW (#3015): read here, not per row, and
+  // passed down to PoolRow's `limit` link.
+  const admin = useIsAdmin() === true
   // ONE POOL ORDER (QA G5-22): `comparePools`, the order Pool limits draws
   // the same pools in -- family, problems first, this tenant, name.
   const order = comparePools(viewer)
@@ -427,6 +431,7 @@ function CeilingTables({
           target={target}
           holders={holders}
           classes={classes}
+          admin={admin}
         />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
@@ -441,6 +446,7 @@ function CeilingTables({
             target={target}
             holders={holders}
             classes={classes}
+            admin={admin}
           />
         )
       })}
@@ -483,6 +489,7 @@ function Family({
   target,
   holders,
   classes,
+  admin,
 }: {
   title: string
   className?: string
@@ -494,6 +501,8 @@ function Family({
   holders: HolderCounts
   /** The resource-class catalogue, for a `resource:` pool's `too small`; null unread. */
   classes: ResourceClasses | null
+  /** The session is a platform admin's, so the rows link to Pool limits. */
+  admin: boolean
 }) {
   // Trap E: a number may only sit beside another number of the same scope, so
   // the scope is declared rather than left to be inferred -- ON EVERY ROW
@@ -510,7 +519,7 @@ function Family({
         <h2 className="ctl-card-title" id={titleId}>{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} labelledBy={titleId} />
+        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} admin={admin} labelledBy={titleId} />
       </div>
     </section>
   )
@@ -556,6 +565,7 @@ function PoolTable({
   target,
   holders,
   classes,
+  admin,
   labelledBy,
 }: {
   pools: Pool[]
@@ -563,6 +573,7 @@ function PoolTable({
   target: string | null
   holders: HolderCounts
   classes: ResourceClasses | null
+  admin: boolean
   /** The id of the family's heading, which names the table. */
   labelledBy: string
 }) {
@@ -593,6 +604,7 @@ function PoolTable({
               target={p.name === target}
               holders={holders}
               classes={classes}
+              admin={admin}
             />
           ))}
         </tbody>
@@ -673,12 +685,14 @@ function PoolRow({
   target,
   holders,
   classes,
+  admin,
 }: {
   pool: Pool
   scope: string
   target: boolean
   holders: HolderCounts
   classes: ResourceClasses | null
+  admin: boolean
 }) {
   // The weight `needsAction` weighed this pool against, so the row draws the
   // reason it was filed under Needs a look (QA-052).
@@ -795,14 +809,21 @@ function PoolRow({
       </td>
       <td role="cell" data-label="Links" className="cap-links">
         {/* Both name the pool (#125): Holders filtered to it, and its own row
-            on Pool limits (#134), where an admin edits it and anyone else
-            reads it with Edit locked. */}
+            on Pool limits (#134). AN ADMIN'S LINK ONLY (#3015): Pool limits
+            is a platform-admin page that Spine refuses in place to anyone
+            else, workspace admins included, so for them the link would be
+            dead. A session not yet read, or a failed read, draws no link and
+            no ` · `. */}
         {/* ONE ELEMENT (visual QA V012): the bare ` · ` between the links
             was an anonymous grid item when stacked, a keyless row of its own. */}
         <span className="cap-open">
           <HoldersLink pool={pool.name} active={pool.active} holders={holders} />
-          {' · '}
-          <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+          {admin && (
+            <>
+              {' · '}
+              <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+            </>
+          )}
         </span>
       </td>
     </tr>
