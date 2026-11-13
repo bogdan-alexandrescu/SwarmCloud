@@ -247,3 +247,22 @@ def test_the_read_finds_the_workspace_grant_enforce_grant_wrote(db) -> None:
     view = onboarding.read(db, DAVE, tenant=tenant, now=T0, installations=lambda: INSTALLED)
     assert _step(view, "repos_chosen")["state"] == "done"
     assert _step(view, "access_verified")["state"] == "done"
+
+
+def test_the_grant_a_first_task_copies_from_the_workspace_keeps_the_steps_done(db) -> None:
+    # SubmissionService records the workspace grant as the person's own on their
+    # first task there (person_grant_from_workspace): no checks, no verified_at.
+    from swarm_api.access import GRANTS, person_grant_from_workspace, write_workspace_grants
+
+    write_workspace_grants(db, "eng", ["example-org/api"], mode="write",
+                           by="root@example.com", at=T0, source="admin-setup")
+    workspace = _workspace_grant("example-org/api")
+    assert person_grant_from_workspace(db, "eng", "dave@example.com", workspace["repo_id"],
+                                       at=T0) == "write"
+    copied = [doc for key, doc in db.docs.items() if key.startswith(f"{GRANTS}/")]
+    assert len(copied) == 1 and copied[0]["checks"] == {} and copied[0]["verified_at"] is None
+    view = _derive_app(grants=copied, workspace_grants=[workspace])
+    chosen, verified = _step(view, "repos_chosen"), _step(view, "access_verified")
+    assert chosen["state"] == "done", chosen
+    assert verified["state"] == "done", verified
+    assert verified["evidence"]["unverified"] == []
