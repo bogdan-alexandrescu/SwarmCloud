@@ -1,10 +1,11 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Em } from './AgentDetail'
 import { Button, ToneMark } from './components'
 import { loadCheckpoints } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { Absent, Mark } from './primitives'
 import { FailedPanel } from './Shell'
+import { LivenessBadge, livenessOf } from './Liveness'
 import type { Result } from './fetch'
 import {
   ageSpan,
@@ -19,6 +20,7 @@ import {
   type LogStream,
   type LogStreamName,
   type Task,
+  type TaskEvent,
   type TaskLogs,
 } from './types'
 
@@ -1070,6 +1072,17 @@ export function streamLabel(name: string): string {
  * EXPORTED for the Artifacts pane's Logs, which draws the agent's streams
  * with this same row, so the four answers read the same in both panes.
  */
+/**
+ * THE AGENT'S EVENTS, FOR THE LIVE TAIL'S AGE (epic 2596, comment 155). A
+ * tail is `live` by the task's state alone, so a RUNNING agent whose worker
+ * had sent no event for days drew `3s ago live` here while Details' Now card
+ * said the worker may be gone. Where the events were read (the Logs tab,
+ * AgentLogs.tsx), a silent agent's tail carries the same heartbeat badge
+ * Details draws (`livenessOf`), not `live`. Undefined: nobody read them, and
+ * the row draws as it did.
+ */
+export const StreamEvents = createContext<TaskEvent[] | null | undefined>(undefined)
+
 export function Stream({
   stream,
   logs,
@@ -1087,6 +1100,8 @@ export function Stream({
   const ended = logs.attempt.completed_at
   const writing = ended === null && CONCURRENCY_STATES.has(task.state)
   const at = now ?? Date.now()
+  const events = useContext(StreamEvents)
+  const silent = writing && events !== undefined && livenessOf(task, events, at).kind === 'silent'
   const age = objectAge(stream, fetchedAt, at)
   return (
     <tr role="row">
@@ -1169,7 +1184,14 @@ export function Stream({
           writing ? (
             // How long ago the tail object last changed (#172), with `live`
             // beneath it; `live` alone only when no time was served.
-            age !== null ? (
+            silent ? (
+              <>
+                {age !== null ? `${ageSpan(age)} ago` : <Em />}
+                <span className="ctl-sub">
+                  <LivenessBadge task={task} events={events ?? null} now={at} />
+                </span>
+              </>
+            ) : age !== null ? (
               <>
                 {`${ageSpan(age)} ago`}
                 <span className="ctl-sub">live</span>
