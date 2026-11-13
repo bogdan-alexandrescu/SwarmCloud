@@ -709,7 +709,8 @@ describe('live QA: automate, the list and the page', () => {
     await screen.findByRole('heading', { name: 'Dry sweep', level: 1 }, WAIT)
     // The sheet's head line (frame A2) carries the state word and the chip.
     const state = await screen.findByTestId('as-meta', undefined, WAIT)
-    expect(visible(state.querySelector('.as-word'))).toBe('paused')
+    // Paused asks for nothing, so the head carries the chip and no word.
+    expect(state.querySelector('[data-testid="acd-word"]')).toBeNull()
     expect(visible(state)).toContain('dry run')
   })
 

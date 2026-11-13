@@ -216,26 +216,40 @@ describe('one schedule in the side sheet (frame A2)', () => {
     await waitFor(() => expect(sheet()).toBeNull(), WAIT)
   })
 
-  it('says the state word per state, a disabled schedule reading paused', async () => {
-    const cases: [Json, string][] = [
-      [{ state_word: 'active' }, 'active'],
-      [{ state: 'paused', next_run_at: null, state_word: 'paused' }, 'paused'],
-      [{ state: 'disabled', next_run_at: null, state_word: 'paused' }, 'paused'],
-      [{ state: 'auto_paused', next_run_at: null, state_word: 'paused_by_tripwire' }, 'paused by its tripwire'],
-      [{ state_word: 'waiting_on_approval' }, 'waiting on approval'],
-      [{ state_word: 'failing', consecutive_failures: 2 }, 'failing'],
-      [{ state_word: 'never_fired', last_firing: null }, 'never fired'],
+  it('says the state word only where the schedule asks for something', async () => {
+    // The cards pick (2026-11-12): active, paused and never fired carry no word.
+    const cases: [Json, string | null][] = [
+      [{ state_word: 'active' }, null],
+      [{ state: 'paused', next_run_at: null, state_word: 'paused' }, null],
+      [{ state: 'disabled', next_run_at: null, state_word: 'paused' }, null],
+      [{ state: 'auto_paused', next_run_at: null, state_word: 'paused_by_tripwire' }, 'Paused by its tripwire'],
+      [{ state_word: 'waiting_on_approval' }, 'Waiting on approval'],
+      [{ state_word: 'failing', consecutive_failures: 2 }, 'Failing · 2 in a row'],
+      [{ state_word: 'never_fired', last_firing: null }, null],
     ]
     let seen = 0
     for (const [over, words] of cases) {
       const { unmount } = await open(schedule('sch_a', over), [])
-      // MUTATION: the stored `state` drawn instead of `state_word`, and disabled reads disabled.
-      expect(visible(sheet()!.querySelector('.as-word'))).toBe(words)
-      expect(visible(sheet()!.querySelector('.as-head'))).not.toMatch(/\bdisabled\b/)
+      // MUTATION: the word drawn on every state, or the stored `state` drawn instead of `state_word`.
+      const word = sheet()!.querySelector<HTMLElement>('[data-testid="acd-word"]')
+      if (words === null) expect(word, JSON.stringify(over)).toBeNull()
+      else expect(visible(word).replace(/\s+/g, ' ')).toBe(words)
+      expect(visible(sheet()!.querySelector('.as-head'))).not.toMatch(/\bdisabled\b|\bactive\b|never fired/)
       unmount()
       seen += 1
     }
     expect(seen).toBe(cases.length)
+  })
+
+  it('draws each part of one schedule as a card, the how-to behind an (i)', async () => {
+    await open(schedule('sch_a'), [NEWEST])
+    for (const name of ['what', 'cadence', 'firings', 'spend', 'gate', 'settings', 'audit']) {
+      // MUTATION: a section left a bare ruled heading, not a card.
+      expect(sheet()!.querySelector(`[data-sec="${name}"]`)!.classList.contains('acd-panel'), name).toBe(true)
+    }
+    const panel = sheet()!.querySelector<HTMLElement>('[data-sec="spend"]')!
+    expect(painted(panel, 'min-width', PHONE)).toBe('0')
+    expect(painted(panel, 'border-radius', WIDE)).toBe('var(--r-card)')
   })
 
   it('says a paused schedule has no next firing, and reads none for it', async () => {
@@ -292,8 +306,10 @@ describe('one schedule in the side sheet (frame A2)', () => {
     // MUTATION: a bar of `spend_today` alone drops the unreported and live parts.
     expect([width('reported'), width('unreported'), width('live'), width('free')]).toEqual(['18.83%', '12.5%', '12.5%', '56.17%'])
     const facts = sec('spend').querySelector<HTMLElement>('dl.as-kv')!
-    expect(kv(facts, 'Day budget')).toBe('$120.00 a day. When it is spent, the next firing is skipped.')
-    expect(kv(facts, 'Per-run tripwire')).toBe('$15.00 a run. A run that costs more fails its firing and pauses this schedule.')
+    // The rule behind each figure is its (i)'s, not the page's (the prose rule).
+    expect(kv(facts, 'Day budget')).toBe('$120.00 a day')
+    expect(kv(facts, 'Per-run tripwire')).toBe('$15.00 a run')
+    expect(facts.querySelector('.c-tip-host')!.textContent).toContain('the next firing is skipped')
     expect(kv(facts, 'Live runs')).toBe('at most 4 at once')
   })
 
