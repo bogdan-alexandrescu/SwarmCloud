@@ -13787,6 +13787,18 @@ async function fixtureSchedule(scheduleId: string): Promise<Result<{ schedule: S
   return { status: 'ok', fetchedAt: Date.now(), data: { schedule, firings: [] } }
 }
 
+/** A listed schedule's audit, empty as a schedule that has not fired has none; any other id is the route's own 404. */
+async function fixtureScheduleAudit(scheduleId: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  const target = route('/v1/schedules/{id}/audit', { id: scheduleId })
+  await new Promise((r) => setTimeout(r, 90))
+  if (!fixtureScheduleRows().some((s) => s.schedule_id === scheduleId)) {
+    noteFixtureProbe(target, 90, false)
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `schedule '${scheduleId}' not found`, template: target.template } }
+  }
+  noteFixtureProbe(target, 90, true)
+  return { status: 'empty', fetchedAt: Date.now() }
+}
+
 /** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
 export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
   if (USE_FIXTURES) return fixtureSchedule(scheduleId)
@@ -13795,6 +13807,7 @@ export async function loadSchedule(scheduleId: string): Promise<Result<{ schedul
 
 /** `GET /v1/schedules/{id}/audit`: the decisions, newest first (§4.8). */
 export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  if (USE_FIXTURES) return fixtureScheduleAudit(scheduleId)
   return read(route('/v1/schedules/{id}/audit', { id: scheduleId }), (d) => d.audit.length === 0)
 }
 
@@ -15037,12 +15050,16 @@ export interface SetupGrant {
   /** `all` or `selected`: what the installation was given on GitHub. */
   selection: string | null
   repositories: string[]
+  /** The installation's settings page on GitHub, built from the grant's `installation_id`; null before the App is installed. */
+  installation_url: string | null
 }
 
 /** One invitee's (or the first admin's) membership of the team's group, per the Groups API; null when it did not answer. */
 export interface SetupMember {
   email: string
   member: boolean | null
+  /** The team's first admin, shown on its own line rather than among the invitees. */
+  is_first_admin?: boolean
 }
 
 /**
@@ -15324,7 +15341,14 @@ function normGrant(raw: unknown): SetupGrant | null {
         account: strOf(grant.account),
         selection: strOf(grant.selection),
         repositories: Array.isArray(grant.repositories) ? grant.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : [],
+        installation_url: installationPage(strOf(grant.account), grant.installation_id),
       }
+}
+
+/** The installation's settings page on GitHub, where its repositories are chosen; null without an id or an account. */
+function installationPage(account: string | null, id: unknown): string | null {
+  const n = typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : typeof id === 'string' && /^[1-9][0-9]*$/.test(id) ? Number(id) : null
+  return n === null || account === null || !/^[A-Za-z0-9-]+$/.test(account) ? null : `https://github.com/organizations/${account}/settings/installations/${n}`
 }
 
 const labelsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
@@ -15392,7 +15416,7 @@ function normTeam(raw: unknown): SetupTeam | null {
     members: (Array.isArray(t.members) ? t.members : [])
       .map(objOf)
       .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
-      .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
+      .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null, is_first_admin: m.is_first_admin === true })),
     pool_accounts: labelsOf(t.pool_accounts),
     workspace_id: strOf(t.workspace_id),
     add_members_url: adminMembersPage(t.add_members_url),
@@ -15870,7 +15894,7 @@ function fixtureSetupState(): Record<string, unknown> {
     engine: {
       release: 'v1.0.0',
       hostname: 'console.example.com',
-      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: i === 9 ? 'switches_on' : 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
+      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
       lease: { holder: 'ana@example.com laptop', heartbeat: at(0) },
       verify: { check: 'digests', done: 2, total: 8, started: t0, expected_end: t0 + 600, deadline: t0 + 1800, result: null },
       hand_off_at: at(30),
@@ -15888,11 +15912,11 @@ function fixtureSetupState(): Record<string, unknown> {
         invites: ['ravi@example.com', 'lea@example.com'],
         progress: { workspace_state: 'ready', created_at: at(18) },
         smoke: { state: 'succeeded', detail: 'green in 2 min 48 s', url: null },
-        grant: { state: 'granted', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/web'] },
+        grant: { state: 'granted', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/web'], installation_url: 'https://github.com/organizations/example-org/settings/installations/51877204' },
         members: [
-          { email: 'ana@example.com', member: true },
-          { email: 'lea@example.com', member: false },
-          { email: 'ravi@example.com', member: true },
+          { email: 'ana@example.com', member: true, is_first_admin: true },
+          { email: 'lea@example.com', member: false, is_first_admin: false },
+          { email: 'ravi@example.com', member: true, is_first_admin: false },
         ],
       },
     ],
