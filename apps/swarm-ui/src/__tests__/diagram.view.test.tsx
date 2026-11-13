@@ -7,7 +7,7 @@
 // out, so the test proves the image the page shows holds none of them.
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import mermaid from 'mermaid'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 
 import DiagramView from '../DiagramView'
 
@@ -30,7 +30,7 @@ function hostileSvg(fill: string): string {
   )
 }
 
-let renderSpy: ReturnType<typeof vi.spyOn>
+let renderSpy: MockInstance<typeof mermaid.render>
 let lastBackground = ''
 
 beforeEach(() => {
@@ -64,6 +64,7 @@ describe('a source that could run something is shown as source, never rendered',
     ['a click handler', 'flowchart LR\n  A --> B\n  click A call alert()', /click/i],
     ['an init directive', '%%{init: {"securityLevel": "loose"}}%%\nflowchart LR\n  A --> B', /directive/i],
     ['an HTML label', 'flowchart LR\n  A["<img src=x onerror=alert(1)>"] --> B', /HTML/i],
+    ['an actor link menu', 'sequenceDiagram\n  participant A\n  link A: Docs @ https://example.invalid/\n  A->>A: hi', /link/i],
   ]
   for (const [what, source, reason] of cases) {
     it(`refuses ${what}, naming the reason and the line`, async () => {
@@ -188,7 +189,13 @@ describe('export', () => {
     expect(click).toHaveBeenCalled()
     expect(blobs).toHaveLength(1)
     expect(blobs[0]!.type).toBe('image/svg+xml')
-    expect(await blobs[0]!.text()).toBe(decodedSvg(img))
+    // jsdom's Blob has no text(); a FileReader reads it
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.readAsText(blobs[0]!)
+    })
+    expect(text).toBe(decodedSvg(img))
     expect(screen.getByRole('button', { name: /download a png/i })).toBeTruthy()
   })
 })
