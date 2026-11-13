@@ -363,6 +363,8 @@ def test_a_state_filter_leaves_its_columns(client, db, clock):
     assert stages == {"running", "pr_ci"}
     assert {c["stage"] for c in _pipeline(client, state="ended")["cards"]} == {"ended"}
     assert {c["stage"] for c in _pipeline(client, state="waiting")["cards"]} == {"found", "planned"}
+    # MUTATION: `decided` serving ended cards nobody decided (done, failed...).
+    assert {c["card_id"] for c in _pipeline(client, state="decided")["cards"]} == {"run:run_rejected"}
 
 
 def test_an_unknown_filter_value_is_422(client):
