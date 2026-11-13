@@ -49,7 +49,7 @@ import {
 import { apiHeaders, chosenTenant, read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { leave } from '../signoutState'
-import { applyStreamEvent, EMPTY_LIST, readSessionStream, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
+import { applyStreamEvent, EMPTY_LIST, readSessionStream, seedCards, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
 import {
   applyCaption,
   captionEnd,
@@ -248,8 +248,19 @@ function startProblem(e: unknown): { line: string; tip: string | null } {
   return { line: `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`, tip: null }
 }
 
+/** A resumed project's cards, as swarm-api serves them (`{cards: [card_view, ...]}`). */
+export const VOICE_PROJECT_CARDS = '/v1/voice/projects/{project_id}/cards'
+
+/** The project's cards, read once when a start takes a resumed project; null when they could not be read. */
+async function projectCards(projectId: string): Promise<unknown[] | null> {
+  const r = await read<unknown>(route(VOICE_PROJECT_CARDS, { project_id: projectId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  const rows = (r.data as { cards?: unknown } | null)?.cards
+  return Array.isArray(rows) ? rows : null
+}
+
 /**
- * The end a closing tab sends: the session's end route, kept alive past the
+ * The end a closing tab sends:the session's end route, kept alive past the
  * page, with the session cookie and the workspace the session started in.
  * A `sendBeacon` cannot carry `X-Swarm-Tenant`, so it is a fetch. It names
  * its cause, `tab_closed`; End names none, which swarm-api records as
@@ -393,6 +404,9 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   // The Resume's project: undefined until the first start takes it, then the
   // id until a start succeeds, then null.
   const resumed = useRef<string | null | undefined>(undefined)
+  // The resumed project's open cards, read once per start: the list the start's stream opens on.
+  const seeded = useRef<CardListState>(EMPTY_LIST)
+  const seedRead = useRef(0)
   const live = phase === 'live'
   const textMode = live && talkMode === 'text'
   const { mic, setMuted, setMode, hold } = useMic(track, live && viewing > 0)
@@ -751,6 +765,18 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     setPhase('connecting')
     if (resumed.current === undefined) resumed.current = takeResumedProject()
     setProjectId(resumed.current)
+    const project = resumed.current
+    const reading = ++seedRead.current
+    seeded.current = EMPTY_LIST
+    if (project !== null) {
+      // A resumed project's open cards are drawn before its stream opens; the stream then updates them in place.
+      setCards(EMPTY_LIST)
+      void projectCards(project).then((rows) => {
+        if (!mounted.current || reading !== seedRead.current || rows === null) return
+        seeded.current = seedCards(EMPTY_LIST, rows)
+        setCards((s) => seedCards(s, rows))
+      })
+    }
     try {
       // Only an engine read as GPT-Live sends the offer; `own` or not read yet starts with none.
       const own = !USE_FIXTURES && engine.current !== GPT_LIVE ? await connectOwnSpeech(resumed.current) : GPT_LIVE
@@ -775,6 +801,11 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
       tenant.current = chosenTenant()
       // A new session's project is the one swarm-api opened: the stage reads its visuals.
       setProjectId(c.projectId)
+      if (project !== null && c.projectId !== project) {
+        // swarm-api opened another project: the resumed one's cards are not this session's.
+        seedRead.current += 1
+        seeded.current = EMPTY_LIST
+      }
       setTalkMode(c.mode)
       if (c.mode === 'text') {
         const f = 'fallback' in c ? c.fallback : null
@@ -798,10 +829,10 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   }, [onEvent, dropped, beginText, beginSpeech])
 
   // THE STREAM, for as long as the call is held, whichever screen is mounted.
-  // A new session starts an empty list; an ended one keeps its cards. An event
-  // at or below the last sequence applied (a stream reopened from further
-  // back) is dropped, so nothing reaches the stage, the turn line or the
-  // reopen twice.
+  // A new session starts from its resumed project's open cards, else empty; an
+  // ended one keeps its cards. An event at or below the last sequence applied
+  // (a stream reopened from further back) is dropped, so nothing reaches the
+  // stage, the turn line or the reopen twice.
   const shownFor = useRef<string | null>(null)
   const lastSeq = useRef(0)
   useEffect(() => {
@@ -809,7 +840,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     if (shownFor.current !== streamId) {
       shownFor.current = streamId
       lastSeq.current = 0
-      setCards(EMPTY_LIST)
+      setCards(seeded.current)
       setMeter(null)
     }
     if (typeof EventSource === 'undefined') return
