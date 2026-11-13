@@ -230,6 +230,25 @@ SETTINGS_DOC = "settings"
 #:                     default: nobody has recorded Jev's price, so the page
 #:                     shows "rate not set" and blank dollars rather than an
 #:                     invented figure. A malformed unit reads as unset.
+#:   plan_diagrams_default
+#:                     whether a planner may draw diagrams in a plan, for a
+#:                     workspace and a schedule that leave it to the platform
+#:                     (docs/design/plans-pipeline.md §6.4, `plansettings`).
+#:                     `true`: the owner 2026-10-28, "by default on". Anything
+#:                     but a bool reads as the default.
+#:   plan_chat_model_class
+#:                     the class the plan review chat runs at when neither the
+#:                     plan nor its workspace names one (§7.8). `"sonnet"`:
+#:                     the owner 2026-10-28, Sonnet by default. Accepted: a
+#:                     class the `claude-code` profile carries; anything else
+#:                     reads as the default.
+#:   plan_review_caps  what one run's review may ask for (§7.8): `replans`
+#:                     0-20, `diagram_asks` 0-100, `chat_turns` 0-200 and
+#:                     `review_usd` 0-500.00. 5 / 20 / 40 / $25: the owner
+#:                     2026-10-28, "configurable in platform". 0 refuses that
+#:                     kind of ask on every run. A cap out of its range or of
+#:                     the wrong type reads as its default
+#:                     (`plansettings.CAPS_RANGES`).
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
@@ -237,6 +256,10 @@ PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "model_prices": modelprices.SEED,
     "agent_budget_ceiling": {},
     "jev_token_rates": {},
+    "plan_diagrams_default": True,
+    "plan_chat_model_class": "sonnet",
+    "plan_review_caps": {"replans": 5, "diagram_asks": 20, "chat_turns": 40,
+                         "review_usd": 25.00},
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -264,6 +287,10 @@ def _platform_setting(key: str, data: dict[str, Any]) -> Any:
 
         rates = rates_of(data.get(key))
         return {unit: rate for unit, rate in rates.items() if rate is not None}
+    if key in ("plan_diagrams_default", "plan_chat_model_class", "plan_review_caps"):
+        from .plansettings import platform_value  # lazy, as `budget` above
+
+        return platform_value(key, data)
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -2875,7 +2902,13 @@ class Store:
             rates = changes["jev_token_rates"]
             changes = {**changes, "jev_token_rates": {
                 unit: rates.get(unit) for unit in ("input", "output")}}
-        payload = {**changes, "updated_at": self._now(), "updated_by": by}
+        now = self._now()
+        from .plansettings import PLATFORM_KEYS, platform_changes
+
+        if any(key in changes for key in PLATFORM_KEYS):
+            changes = platform_changes(
+                changes, self.get_platform_settings()["plan_review_caps"], by=by, now=now)
+        payload = {**changes, "updated_at": now, "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()
 
