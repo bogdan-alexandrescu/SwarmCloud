@@ -7,6 +7,9 @@
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
+    POST /v1/runs/{run_id}:end            {"reason"}  the workspace's admin: an
+                                          APPROVED run whose workflow was never
+                                          stored ends FAILED (#3612)
     POST /v1/runs/owner-signatures        ?dry_run=&listing_digest=  platform admins:
                                           sign runs made before the signature, once
 
@@ -68,9 +71,10 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field, replace
-from typing import Mapping
+from typing import Callable, Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import Field
 from google.cloud import firestore
 
 from swarm_common import specsign
@@ -90,6 +94,7 @@ from ..errors import (
     Forbidden,
     Gone,
     NotFound,
+    RoleAdminRequired,
     RoleMemberRequired,
     RoleUnavailable,
     UpstreamUnavailable,
@@ -144,7 +149,7 @@ from ..repositories import (
 from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
 from ..specsigning import SpecSigningUnavailable
-from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
+from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate, StrictModel
 from ..validation import parse_issue_ref
 from .tasks import require_member
 
@@ -568,6 +573,17 @@ def _approve(
     ctx.submissions.workspace_gate(auth, ctx.submissions.tenant_for(auth))
     def claim(current: IssueRun) -> dict:
         verify_run_owner(ctx, current)
+        if by == AUTO_APPROVER and approvals.hold_blocks(current.approval_hold):
+            # #3612: an auto-approval never claims a run with a blocking hold,
+            # asked of the document this transaction read on EVERY auto
+            # approval -- not only when the hold differs from the read above.
+            hold = current.approval_hold
+            raise approvals.HoldApproverRequired(
+                f"run {current.id} is held {hold.get('code')}: an auto-approval never satisfies a hold",
+                detail={"hold": hold.get("code"), "approvers": hold.get("approvers"),
+                        "reasons": list(hold.get("reasons") or []),
+                        "matched": list(hold.get("matched") or [])},
+            )
         if current.approval_hold != run.approval_hold:
             approvals.check_hold(ctx, current, email=by, is_owner=is_owner, confirm=confirm)
         return {
@@ -909,9 +925,66 @@ def _territory_hold(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun 
     return run
 
 
+_APPROVED_ONLY = frozenset({RunState.APPROVED})
+
+
+def _no_workflow_yet(patch: dict) -> Callable[[IssueRun], dict]:
+    """`patch`, inside the transaction, only while the run still has no
+    workflow: a RUNNING write that lands first wins, and the Conflict sends
+    the caller to re-read it."""
+    def check(current: IssueRun) -> dict:
+        if current.workflow_id:
+            raise Conflict(f"run {current.id} has workflow {current.workflow_id} now")
+        return patch
+    return check
+
+
+def _settle_submission(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """An APPROVED run whose workflow was never stored, past the bound (#3612).
+
+    `_approve` claims APPROVED, submits, then writes RUNNING in one request;
+    a swarm-api that died or timed out in between left the run APPROVED with
+    no workflow for ever, and the territory guard (`_WORKING`) held every
+    later run naming one of its files behind it. Inside
+    APPROVED_SUBMISSION_BOUND_SECONDS a submission may still be in flight and
+    the run is left alone. Past it: a step task of the run's OWN tenant
+    linked to the run means the workflow WAS stored and only the RUNNING
+    write was lost, so that workflow is adopted; otherwise the run is FAILED,
+    which creates no demand (invariant 1) and releases its territory.
+    """
+    if not issueruns_module.submission_overdue(run, ctx.now()):
+        return run
+    runs = _runs(ctx)
+    workflow_id = issueruns_module.linked_workflow_id(ctx.db, tenant_id, run.id)
+    if workflow_id:
+        try:
+            ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        except NotFound:
+            workflow_id = None
+    if workflow_id:
+        log.info("issue run %s tenant=%s adopts workflow %s: its RUNNING write was lost",
+                 run.id, tenant_id, workflow_id)
+        return runs.transition(
+            tenant_id, run.id, RunState.RUNNING, by=SYSTEM, from_states=_APPROVED_ONLY,
+            patch=_no_workflow_yet({"workflow_id": workflow_id}),
+        )
+    at = run.approved_at.isoformat() if run.approved_at else "at an unknown time"
+    log.info("issue run %s tenant=%s FAILED: approved %s and no workflow was stored", run.id, tenant_id, at)
+    return runs.transition(
+        tenant_id, run.id, RunState.FAILED, by=SYSTEM, from_states=_APPROVED_ONLY,
+        patch=_no_workflow_yet({"error": failure_text(
+            f"its workflow submission was never stored: approved at {at} by "
+            f"{run.approved_by or 'nobody recorded'}, no workflow after "
+            f"{issueruns_module.APPROVED_SUBMISSION_BOUND_SECONDS} s"
+        )}),
+    )
+
+
 def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone. Never raises for a race."""
     try:
+        if run.state == RunState.APPROVED and not run.workflow_id:
+            run = _settle_submission(ctx, tenant_id, run)
         if run.state == RunState.PLANNING:
             run = _from_planner(ctx, tenant_id, run)
         # Only an `auto` run is ever submitted here: a `required` run stays
@@ -1434,6 +1507,64 @@ def reject_plan(
         from_states=_PLANNED_ONLY,
         patch={"rejected_by": auth.email, "rejection_reason": body.reason},
     )
+    return {"run": sync_issue(ctx, run).to_api()}
+
+
+class RunEnd(StrictModel):
+    #: Why the run is ended; stored in its `error`, so a person reads it.
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def _ends_runs(ctx: AppContext, auth: AuthContext) -> bool:
+    """The caller is the selected workspace's admin: its own grant, a
+    personal workspace's person, or a platform admin. Read fresh, past the
+    role cache, as every decision is; an unreadable role is a 503, never a
+    wider one."""
+    if auth.is_admin:
+        return True
+    store = getattr(ctx, "roles", None)
+    return store is not None and store.resolve(auth, fresh=True).role == roles.ADMIN
+
+
+@router.post("/{run_id}:end")
+def end_run(
+    run_id: str,
+    body: RunEnd,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """End an APPROVED run whose workflow was never stored, as FAILED (#3612).
+
+    The tick does this itself past APPROVED_SUBMISSION_BOUND_SECONDS; this is
+    the workspace admin's way to do it sooner, with a reason, without writing
+    Firestore by hand. Only that state: a run with a workflow is moved by its
+    workflow, and a PLANNED one is rejected with plan:reject -- anything else
+    is 409. The run is read under the caller's tenant, so another tenant's
+    run is 404 (invariant 9). FAILED creates no demand (invariant 1): the run
+    holds nothing and its plan's files are released to the runs behind it.
+    """
+    if not _ends_runs(ctx, auth):
+        # Raised, never `refuse`d: the route is new, so no existing caller is
+        # refused, and letting a member end a run is the breach itself -- as
+        # on the role write routes, which raise the same code.
+        raise RoleAdminRequired(
+            f"only an admin of {tenant_id} ends a run by hand; nothing was changed",
+            detail={"tenant_id": tenant_id, "required": roles.ADMIN},
+        )
+    current = _runs(ctx).get(tenant_id, run_id)
+    if current.state != RunState.APPROVED or current.workflow_id:
+        raise issueruns_module.InvalidRunTransition(
+            f"run {run_id!r} is {current.state.value}"
+            + (f" with workflow {current.workflow_id}" if current.workflow_id else "")
+            + "; only an APPROVED run whose workflow was never stored is ended here",
+            detail={"state": current.state.value},
+        )
+    run = _runs(ctx).transition(
+        tenant_id, run_id, RunState.FAILED, by=auth.email, from_states=_APPROVED_ONLY,
+        patch=_no_workflow_yet({"error": failure_text(f"ended by {auth.email}: {body.reason}")}),
+    )
+    log.info("issue run %s tenant=%s ended by an admin", run_id, tenant_id)
     return {"run": sync_issue(ctx, run).to_api()}
 
 
