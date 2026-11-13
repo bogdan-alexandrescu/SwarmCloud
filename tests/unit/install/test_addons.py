@@ -444,11 +444,14 @@ def test_disable_keeps_secret_containers(name: str) -> None:
 def test_disable_refuses_a_plan_that_deletes_a_container_or_the_deployer() -> None:
     for address, kind in (("google_secret_manager_secret.typesafe_fwd_key[0]", "google_secret_manager_secret"),
                           ("google_service_account.deployer[0]", "google_service_account")):
-        world = FakeWorld(plan_deletes=[(address, kind)])
+        world = FakeWorld()
         the_flow, _ = flow(world)
+        the_flow.enable("typesafe", given=GIVEN["typesafe"])
+        applied = list(world.applied)
+        world.plan_deletes = [(address, kind)]
         with pytest.raises(addons.AddonRefused, match="never deletes"):
             the_flow.disable("typesafe")
-        assert world.applied == []
+        assert world.applied == applied
 
 
 def test_deleting_containers_is_a_second_typed_step() -> None:
@@ -1231,3 +1234,96 @@ def test_the_decision_api_tailnet_name_comes_from_the_asked_target() -> None:
     assert re.search(r"decision_api_tailnet_name\s*=\s*var\.internal_decision_api_enabled\s*\?\s*"
                      r"var\.tailscale_egress_target\s*:\s*\"\"", locals_tf)
     assert locals_tf.count("SWARM_DECISION_API_TAILNET_NAME = local.decision_api_tailnet_name") >= 1
+
+
+# ---------------------------------------------------------------------------
+# Epic 2806 comments 50-53: the record, the verb's errors, the never-on
+# disable and the owner's own link
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_apply_leaves_the_previous_phase_recorded() -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    the_flow.enable("typesafe", given=GIVEN["typesafe"])
+    before = addons.recorded(the_flow.state.outputs)["typesafe"]
+    world.plan_deletes = [("google_service_account.deployer[0]", "google_service_account")]
+    with pytest.raises(addons.AddonRefused):
+        the_flow.disable("typesafe")
+    assert addons.recorded(the_flow.state.outputs)["typesafe"] == before
+    assert before["phase"] == addons.ON
+
+
+def test_a_failed_first_apply_leaves_no_record() -> None:
+    world = FakeWorld(plan_deletes=[("google_service_account.deployer[0]", "google_service_account")])
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonRefused):
+        the_flow.enable("brave-search")
+    assert "brave-search" not in addons.recorded(the_flow.state.outputs)
+
+
+@pytest.mark.parametrize("name", addons.NAMES)
+def test_disabling_an_addon_that_was_never_on_applies_nothing(name: str) -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    the_flow.disable(name)
+    assert world.applied == []
+    assert "swarm-typesafe-fwd-key" not in world.containers
+    assert addons.recorded(the_flow.state.outputs).get(name, {}).get("phase", addons.OFF) == addons.OFF
+
+
+def test_the_callers_own_secret_link_is_opened_in_the_browser() -> None:
+    world = FakeWorld()
+    the_flow, out = flow(world)
+    the_flow.caller = INSTALLER
+    opened: list[tuple[str, str]] = []
+    the_flow.open_page = lambda url, why: opened.append((url, why))
+    the_flow.enable("brave-search")
+    links = [url for url, _ in opened if "/admin/setup/link/" in url]
+    assert len(links) == 1 and "for you only" in dict(opened)[links[0]]
+
+
+def test_another_persons_secret_link_is_printed_not_opened() -> None:
+    world = FakeWorld()
+    the_flow, out = flow(world)
+    the_flow.caller = INSTALLER
+    opened: list[tuple[str, str]] = []
+    the_flow.open_page = lambda url, why: opened.append((url, why))
+    the_flow.enable("brave-search", owner="bob@example.com")
+    assert not [url for url, _ in opened if "/admin/setup/link/" in url]
+    assert "for bob@example.com only" in out.getvalue() and "/admin/setup/link/" in out.getvalue()
+
+
+def test_the_workload_wait_names_no_bare_kubectl() -> None:
+    assert not addons.WORKLOAD_WAIT.look_at.startswith("kubectl")
+    assert "swarm doctor" in addons.WORKLOAD_WAIT.look_at
+
+
+def _verb_error(name: str) -> BaseException:
+    from swarm_install.steps.preflight import ApiError
+    from swarm_install.terraform import TerraformRefused
+    from swarm_mcp.client import SwarmError
+
+    return {"terraform": TerraformRefused("the destroy approval was not typed"),
+            "google": ApiError(403, "PERMISSION_DENIED", "the caller lacks secretmanager.secrets.create"),
+            "swarm-api": SwarmError("swarm-api answered 503")}[name]
+
+
+@pytest.mark.parametrize(("name", "code"), [("terraform", 5), ("google", 1), ("swarm-api", 1)])
+def test_the_verb_prints_terraform_google_and_swarm_api_errors(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], name: str, code: int) -> None:
+    from swarm_install.verbs import addon as addon_verb
+
+    error = _verb_error(name)
+
+    class Raising:
+        def enable(self, *args: Any, **kwargs: Any) -> str:
+            raise error
+
+    monkeypatch.setattr(addon_verb, "open_state", lambda project: (None, ready_state()))
+    monkeypatch.setattr(addon_verb, "build", lambda *args: Raising())
+    parser = argparse.ArgumentParser()
+    discover()["addon"].add_arguments(parser)
+    args = parser.parse_args(["enable", "brave-search", "--project", PROJECT])
+    assert addon_verb.run(args) == code
+    assert f"swarm addon enable: {error}" in capsys.readouterr().err
