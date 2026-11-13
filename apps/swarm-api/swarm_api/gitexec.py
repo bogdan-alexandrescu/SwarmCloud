@@ -55,15 +55,27 @@ FETCH → BUNDLE. The worker reports the shas its clone already has (`haves`).
 Each is fetched at depth 1, so the fetch of `ref` negotiates against them and
 the bundle (`refs/swarm/want ^<haves>`) carries only what the clone lacks. A
 have the remote does not know is skipped, not an error: the bundle is then
-merely larger.
+merely larger. A have whose fetch is stopped by a limit is REFUSED
+`too_large`, naming it, never skipped (#2926): skipping it made the fetch of
+`ref` negotiate against nothing and pull the whole history, which the cap then
+refused with no word about the have.
 
 BOUNDED IN THE KERNEL, NOT ONLY BY THE CAP (security review, 2026-10-13).
-Every git runs under RLIMIT_AS (`max_git_memory_bytes`) and RLIMIT_FSIZE (the
-bundle cap), set by `_LIMIT_SHIM` before it becomes git; a call has one
-deadline across all its commands; at most `MAX_CONCURRENT_CALLS_PER_INSTANCE`
-run in an instance (`MAX_CONCURRENT_CALLS` in each of its uvicorn workers),
-and a timeout kills git's whole process group. A write or an
-allocation over a limit is `too_large`.
+Every git runs under RLIMIT_AS (`max_git_memory_bytes`) and RLIMIT_FSIZE, set
+by `_LIMIT_SHIM` before it becomes git; a call has one deadline across all its
+commands; at most `MAX_CONCURRENT_CALLS_PER_INSTANCE` run in an instance
+(`MAX_CONCURRENT_CALLS` in each of its uvicorn workers), and a timeout kills
+git's whole process group. A write or an allocation over a limit is
+`too_large`, and the refusal names the limit that applied.
+
+TWO FILE CAPS (#2926). RLIMIT_FSIZE is the bundle cap (`max_bundle_bytes`,
+256 MiB) for every git that writes or reads what is DELIVERED -- `bundle
+create`, the unbundle of a worker's upload, fsck, push -- and the larger fetch
+cap (`max_fetch_file_bytes`, 512 MiB) only for the scratch packs a fetch from
+the FORGE writes: the haves, the wanted ref, a push bundle's bases, the
+branch's tip. A have is fetched at depth 1, so its pack is a whole snapshot of
+the repository; one that packs to more than the bundle cap is still a have,
+and the bundle made against it is checked against the bundle cap as before.
 
 Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_depth`, `bad_bundle`,
 `too_large`, `non_fast_forward`, `remote_rejected`, `busy`, `timed_out`,
@@ -97,6 +109,18 @@ from swarm_api.workers import per_worker
 #: Q6 = A (owner, 2026-10-13): a 256 MiB bundle, either way. Bounds the
 #: memory and tmpfs one call can take in swarm-api.
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
+#: The file cap (RLIMIT_FSIZE) of a fetch FROM THE FORGE into the scratch
+#: repository (#2926): twice the bundle cap. A have is fetched at depth 1, so
+#: its pack is the repository's whole snapshot; one repository's packs to
+#: ~276 MiB, which the bundle cap stopped, and the fetch of `main` then had no
+#: have and was refused too_large. At 512 MiB a snapshot up to ~500 MiB lands
+#: as scratch, while the 256 MiB bundle cap still holds what is delivered.
+#: Scratch is tmpfs (memory) on Cloud Run, and an instance runs at most
+#: MAX_CONCURRENT_CALLS_PER_INSTANCE (2) calls in 2 GiB: 2 x (512 MiB pack +
+#: 512 MiB of git under MAX_GIT_MEMORY_BYTES) is the bound for a call's
+#: largest pack. RLIMIT_FSIZE is per file: a have fetched after the first is
+#: negotiated against it, so its pack is the delta, not another snapshot.
+MAX_FETCH_FILE_BYTES = 512 * 1024 * 1024
 #: How long one git command may run. A fetch of a large repository with no
 #: have is the slow case; a request that needs longer is the wrong shape.
 GIT_TIMEOUT_SECONDS = 300
@@ -395,6 +419,8 @@ class GitExec:
     runner: Runner = run_git
     local_remotes: bool = False
     max_git_memory_bytes: int = MAX_GIT_MEMORY_BYTES
+    #: RLIMIT_FSIZE of a fetch from the remote; every other git has the bundle cap.
+    max_fetch_file_bytes: int = MAX_FETCH_FILE_BYTES
     deadline_seconds: float = CALL_DEADLINE_SECONDS
     #: Shared by every GitExec in the process unless a test passes its own.
     slots: Any = _CALL_SLOTS
@@ -474,7 +500,7 @@ class GitExec:
 
     def _git(self, scratch: Path, repo: Path, args: Sequence[str], *, token: str,
              credential: Path | None = None, extra: Sequence[str] = (),
-             stdin: Path | None = None) -> GitRun:
+             stdin: Path | None = None, fetch: bool = False) -> GitRun:
         config = list(_BASE_CONFIG)
         config += ["-c", "protocol.https.allow=always"]
         if self.local_remotes:
@@ -483,20 +509,25 @@ class GitExec:
         if credential is not None:
             config += ["-c", f"credential.helper=store --file={credential}"]
         return self._run(scratch, [*config, "--git-dir", str(repo), *args], token=token,
-                         stdin=stdin)
+                         stdin=stdin, fetch=fetch)
 
     def _run(self, scratch: Path, args: Sequence[str], *, token: str,
-             stdin: Path | None = None) -> GitRun:
-        """git under the per-process limits, within what is left of the call's deadline."""
+             stdin: Path | None = None, fetch: bool = False) -> GitRun:
+        """git under the per-process limits, within what is left of the call's deadline.
+
+        `fetch` is for a fetch from the remote only: its scratch pack is bounded
+        by `max_fetch_file_bytes`, every other git by `max_bundle_bytes` (#2926).
+        """
         left = _DEADLINE.get() - time.monotonic()
         if left <= 0:
             raise GitExecError("timed_out", f"the call ran longer than {self.deadline_seconds:g}s")
+        fsize = self.max_fetch_file_bytes if fetch else self.max_bundle_bytes
         if stdin is None:
             argv = [sys.executable, "-I", "-c", _LIMIT_SHIM, str(self.max_git_memory_bytes),
-                    str(self.max_bundle_bytes), self.git_binary, *args]
+                    str(fsize), self.git_binary, *args]
         else:
             argv = [sys.executable, "-I", "-c", _LIMIT_SHIM_STDIN,
-                    str(self.max_git_memory_bytes), str(self.max_bundle_bytes), str(stdin),
+                    str(self.max_git_memory_bytes), str(fsize), str(stdin),
                     self.git_binary, *args]
         run = self.runner(argv, cwd=scratch, env=self._env(scratch),
                           timeout=min(self.timeout_seconds, left))
@@ -516,15 +547,21 @@ class GitExec:
             _DEADLINE.reset(reset)
             self.slots.release()
 
-    def _must(self, run: GitRun, what: str, code: str = "failed") -> GitRun:
+    def _must(self, run: GitRun, what: str, code: str = "failed", *,
+              cap: int | None = None) -> GitRun:
+        """`run`, or its refusal. `cap` is the file cap it ran under: the
+        fetch cap for a fetch from the remote, else the bundle cap."""
         if run.code != 0 and _OVER_LIMIT.search(run.stderr):
-            raise GitExecError("too_large", f"{what} went over the {self.max_bundle_bytes}-byte "
-                                            f"file cap or the {self.max_git_memory_bytes}-byte "
-                                            "memory bound")
+            raise GitExecError("too_large", self._over_limit(what, cap))
         if run.code != 0:
             raise GitExecError(code, f"{what} failed with exit {run.code}: "
                                      f"{run.stderr.strip()[-STDERR_TAIL_CHARS:]}")
         return run
+
+    def _over_limit(self, what: str, cap: int | None) -> str:
+        cap = self.max_bundle_bytes if cap is None else cap
+        return (f"{what} went over the {cap}-byte file cap or the "
+                f"{self.max_git_memory_bytes}-byte memory bound")
 
     def _init(self, scratch: Path) -> Path:
         repo = scratch / "repo.git"
@@ -573,7 +610,8 @@ class GitExec:
                 self._must(self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                                      "--no-write-fetch-head", *shallow, "--",
                                                      url, f"{ref}:{WANT_REF}"],
-                                     token=token, credential=cred), f"fetch of {ref}")
+                                     token=token, credential=cred, fetch=True),
+                           f"fetch of {ref}", cap=self.max_fetch_file_bytes)
             sha = self._resolve(scratch, repo, WANT_REF, token)
             if sha is None:
                 raise GitExecError("bad_ref", f"{ref} does not name a commit")
@@ -636,9 +674,18 @@ class GitExec:
 
     def _fetch_tip(self, scratch: Path, repo: Path, url: str, sha: str, token: str,
                    cred: Path) -> bool:
-        """`sha`, fetched from the remote at depth 1: True when it landed."""
+        """`sha`, fetched from the remote at depth 1: True when it landed.
+
+        False when it did not for any reason but a limit (the remote lacks it,
+        say). A fetch stopped by a limit is `too_large`, naming `sha` (#2926):
+        dropping it would make the caller's next fetch a whole-history one.
+        """
         run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
-                                        "--depth=1", "--", url, sha], token=token, credential=cred)
+                                        "--depth=1", "--", url, sha], token=token, credential=cred,
+                        fetch=True)
+        if run.code != 0 and _OVER_LIMIT.search(run.stderr):
+            raise GitExecError("too_large", self._over_limit(
+                f"the depth-1 fetch of {sha}", self.max_fetch_file_bytes))
         return run.code == 0
 
     # -- which of these does the remote have (#2413) -------------------------
@@ -649,7 +696,8 @@ class GitExec:
         Each is fetched at depth 1, exactly as `fetch_bundle` learns its haves,
         and kept only if it then resolves to itself as a commit (a tag's sha
         peels to another). A sha the remote does not have is left out, not an
-        error. Nothing is bundled: the answer is the names. The worker's push
+        error; one whose fetch is stopped by a limit is `too_large`, naming
+        it, as in `fetch_bundle` (#2926). Nothing is bundled: the answer is the names. The worker's push
         asks this before it refuses `foreign_author` over a commit somebody
         else wrote, so origin's own history is never the task's to answer for,
         and a ref the agent wrote in its clone never has to be believed.
@@ -741,7 +789,8 @@ class GitExec:
             for _ in range(PREREQUISITE_FETCHES):
                 run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                                 "--no-write-fetch-head", "--depth=1", "--",
-                                                url, sha], token=token, credential=cred)
+                                                url, sha], token=token, credential=cred,
+                                fetch=True)
                 if run.code == 0 or _OVER_LIMIT.search(run.stderr):
                     break
             if run.code == 0:
@@ -750,7 +799,8 @@ class GitExec:
                 raise GitExecError("bad_bundle", f"the bundle is built on {sha}, which "
                                                  "the remote does not have; fetch again")
             if _OVER_LIMIT.search(run.stderr):
-                self._must(run, f"fetch of the bundle's base {sha}")     # too_large
+                self._must(run, f"fetch of the bundle's base {sha}",     # too_large
+                           cap=self.max_fetch_file_bytes)
             raise GitExecError(REMOTE_UNAVAILABLE, (
                 f"the remote did not answer the fetch of the bundle's base {sha} twice "
                 f"(exit {run.code}: {run.stderr.strip()[-STDERR_TAIL_CHARS:]}); "
@@ -794,7 +844,8 @@ class GitExec:
         self._must(self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                              "--no-write-fetch-head", "--depth=1", "--", url,
                                              f"refs/heads/{branch}:{_TIP_REF}"],
-                             token=token, credential=cred), "fetch of the branch tip")
+                             token=token, credential=cred, fetch=True),
+                   "fetch of the branch tip", cap=self.max_fetch_file_bytes)
         return self._resolve(scratch, repo, _TIP_REF, token) or tips[0]
 
     def _pushed(self, run: GitRun, branch: str, old: str | None, new: str) -> PushedBranch:

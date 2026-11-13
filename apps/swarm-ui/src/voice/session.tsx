@@ -50,7 +50,17 @@ import { apiHeaders, chosenTenant, read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { leave } from '../signoutState'
 import { applyStreamEvent, EMPTY_LIST, readSessionStream, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
-import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
+import {
+  applyCaption,
+  captionEnd,
+  captionEvent,
+  closeCaption,
+  trimCaptions,
+  CAPTION_PAUSE_MS,
+  closedLine,
+  type CaptionLine,
+  type CaptionSide,
+} from './captions'
 import { micEnabled, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, VOICE_SESSION_END, type TalkCall, type TalkMode } from './rtc'
@@ -100,6 +110,22 @@ export const REOPEN_WAIT_MS = 15_000
 /** The call the holder holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
 export type PaneMode = TalkMode | 'speech'
+
+/** Stop every side's caption pause timer. */
+function clearPauses(timers: { current: Partial<Record<CaptionSide, ReturnType<typeof setTimeout>>> }): void {
+  for (const t of Object.values(timers.current)) clearTimeout(t)
+  timers.current = {}
+}
+
+/**
+ * `after`, having noted activity when it closed a line: a segment closed with
+ * no final (a pause, the other side, the end of a turn) is speech as much as a
+ * final is. Calling it twice, as React may an updater, notes the same moment.
+ */
+function noted(before: readonly CaptionLine[], after: CaptionLine[]): CaptionLine[] {
+  if (closedLine(before, after)) noteActivity()
+  return after
+}
 
 /** The caption of the phrase a text session is hearing right now. */
 const HEARD = 'you:heard'
@@ -360,6 +386,8 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   const turns = useRef<Promise<void>>(Promise.resolve())
   const turnSeq = useRef(0)
   const mounted = useRef(true)
+  // Each side's open caption line closes after CAPTION_PAUSE_MS with no new delta.
+  const captionPause = useRef<Partial<Record<CaptionSide, ReturnType<typeof setTimeout>>>>({})
   const audio = useRef<HTMLAudioElement | null>(null)
   const feed = useMemo(stageFeed, [])
   // The Resume's project: undefined until the first start takes it, then the
@@ -410,11 +438,20 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     const type = eventType(data)
     if (type !== null && VOICE_STARTED.has(type)) setVoicePlaying(true)
     if (type !== null && VOICE_STOPPED.has(type)) setVoicePlaying(false)
+    const ended = captionEnd(data)
+    if (ended !== null) setLines((l) => noted(l, closeCaption(l, ended)))
     const ev = captionEvent(data)
     if (ev === null) return
     // Speech is proof someone is there; a word still being spoken is not yet a segment.
     if (ev.final) noteActivity()
-    setLines((l) => trimCaptions(applyCaption(l, ev)))
+    setLines((l) => trimCaptions(noted(l, applyCaption(l, ev))))
+    const side = ev.side
+    clearTimeout(captionPause.current[side])
+    if (!ev.final) {
+      captionPause.current[side] = setTimeout(() => {
+        if (mounted.current) setLines((l) => trimCaptions(noted(l, closeCaption(l, side))))
+      }, CAPTION_PAUSE_MS)
+    }
   }, [])
 
   const hangUp = useCallback((): AnyCall | null => {
@@ -433,6 +470,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     setVoicePlaying(false)
     setStreamId(null)
     // A segment cut off mid-word stays as it was heard, not as a growing line.
+    clearPauses(captionPause)
     setLines((l) => l.filter((x) => x.final))
     return c
   }, [closeSpeech])
@@ -837,6 +875,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     mounted.current = true
     return () => {
       mounted.current = false
+      clearPauses(captionPause)
       if (dropTimer.current !== null) clearTimeout(dropTimer.current)
       dropTimer.current = null
       listener.current?.close()

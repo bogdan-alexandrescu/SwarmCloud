@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 from swarm_api.gitexec import (
+    WANT_REF,
     GitExec,
     GitExecError,
     GitRun,
@@ -535,17 +536,55 @@ def test_a_bundle_carrying_a_malformed_object_is_refused_by_fsck(world) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fetches_from_the_remote(world, argv: list[str]) -> bool:
+    """A `git fetch` whose source is the forge URL (not the uploaded bundle)."""
+    return "fetch" in argv and world["url"] in argv
+
+
+def _assert_limits(world, rec: Recorder, memory: int, bundle_cap: int, fetch_cap: int) -> int:
+    """Every argv runs under the shim; a remote fetch's file limit is the fetch
+    cap, every other git's is the bundle cap. The count of remote fetches."""
+    assert rec.calls
+    remote = 0
+    for argv in rec.calls:
+        assert argv[1:3] == ["-I", "-c"] and "RLIMIT_AS" in argv[3], argv[:4]
+        fsize = fetch_cap if _fetches_from_the_remote(world, argv) else bundle_cap
+        remote += _fetches_from_the_remote(world, argv)
+        assert argv[4:7] == [str(memory), str(fsize), "git"], argv[argv.index("git"):]
+        assert "core.bigFileThreshold=1m" in argv and "transfer.unpackLimit=1" in argv
+    return remote
+
+
 def test_every_git_runs_under_the_memory_and_file_limits(world) -> None:
+    """#2926: the bundle cap bounds what is delivered or unpacked from a
+    worker; the forge's scratch packs get the larger fetch cap."""
     c = _commit(world["work"], "c")
     data = _bundle(world["work"], world["tmp"] / "c.bundle", c, world["b"])
     rec = Recorder()
-    gx = _exec(world, rec, max_git_memory_bytes=300 * 1024 * 1024, max_bundle_bytes=10 ** 7)
+    gx = _exec(world, rec, max_git_memory_bytes=300 * 1024 * 1024, max_bundle_bytes=10 ** 7,
+               max_fetch_file_bytes=3 * 10 ** 7)
     gx.push_bundle(url=world["url"], token=_token(), bundle=data, branch="swarm/x")
-    assert rec.calls
-    for argv in rec.calls:
-        assert argv[1:3] == ["-I", "-c"] and "RLIMIT_AS" in argv[3], argv[:4]
-        assert argv[4:7] == [str(300 * 1024 * 1024), str(10 ** 7), "git"]
-        assert "core.bigFileThreshold=1m" in argv and "transfer.unpackLimit=1" in argv
+    # The branch tip and the bundle's one base come from the remote ...
+    assert _assert_limits(world, rec, 300 * 1024 * 1024, 10 ** 7, 3 * 10 ** 7) == 2
+    # ... the unbundle from the uploaded file does not.
+    [unbundle] = [argv for argv in rec.calls
+                  if "fetch" in argv and any(item.endswith("in.bundle") for item in argv)]
+    assert unbundle[5] == str(10 ** 7)
+
+
+def test_every_git_of_a_fetch_bundle_with_haves_runs_under_the_right_file_limit(world) -> None:
+    c = _commit(world["work"], "c")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    rec = Recorder()
+    gx = _exec(world, rec, max_git_memory_bytes=300 * 1024 * 1024, max_bundle_bytes=10 ** 7,
+               max_fetch_file_bytes=3 * 10 ** 7)
+    fetched = gx.fetch_bundle(url=world["url"], token=_token(), ref="main",
+                              haves=[world["a"], world["b"]])
+    assert fetched.sha == c
+    # Two haves and the wanted ref.
+    assert _assert_limits(world, rec, 300 * 1024 * 1024, 10 ** 7, 3 * 10 ** 7) == 3
+    [create] = [argv for argv in rec.calls if "bundle" in argv and "create" in argv]
+    assert create[5] == str(10 ** 7)
 
 
 def test_a_fetch_whose_pack_outgrows_the_cap_is_stopped_while_it_is_written(world) -> None:
@@ -557,10 +596,57 @@ def test_a_fetch_whose_pack_outgrows_the_cap_is_stopped_while_it_is_written(worl
     _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
     rec = Recorder()
     with pytest.raises(GitExecError) as caught:
-        _exec(world, rec, max_bundle_bytes=64 * 1024).fetch_bundle(
+        _exec(world, rec, max_bundle_bytes=256 * 1024 * 1024,
+              max_fetch_file_bytes=64 * 1024).fetch_bundle(
             url=world["url"], token=_token(), ref="main")
     assert caught.value.code == "too_large"
+    assert f"{64 * 1024}-byte" in caught.value.message
+    assert str(256 * 1024 * 1024) not in caught.value.message
     assert not [argv for argv in rec.calls if "bundle" in argv]
+    assert _scratch_is_empty(world)
+
+
+def _a_big_have_then_a_tiny_head(world) -> tuple[str, str]:
+    """main moves to H (a 2 MB incompressible blob) and then to T (one tiny
+    file): the have's depth-1 pack is large, the delta from it is not."""
+    (world["work"] / "big").write_bytes(os.urandom(2_000_000))
+    _git(world["work"], "add", "big")
+    _git(world["work"], "commit", "-q", "-m", "big")
+    have = _git(world["work"], "rev-parse", "HEAD")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    head = _commit(world["work"], "tiny")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    return have, head
+
+
+def test_a_have_whose_pack_is_over_the_bundle_cap_still_yields_a_small_bundle(world) -> None:
+    """#2926: the bundle cap is for what is delivered. A have whose snapshot
+    packs to more than it is still fetched, so the bundle carries only the
+    delta -- it used to be dropped silently and the fetch of `main` then
+    pulled the whole history and was refused `too_large`."""
+    have, head = _a_big_have_then_a_tiny_head(world)
+    fetched = _exec(world, max_bundle_bytes=64 * 1024).fetch_bundle(
+        url=world["url"], token=_token(), ref="main", haves=[have])
+    assert fetched.sha == head
+    assert fetched.size == len(fetched.bundle) < 64 * 1024
+    # T, its tree and the one new blob: not the big blob the have carries.
+    assert _pack_object_count(fetched.bundle) == 3
+    assert f"-{have}" in fetched.bundle[:fetched.bundle.index(b"\n\n")].decode()
+    assert _scratch_is_empty(world)
+
+
+def test_a_have_that_goes_over_the_fetch_cap_is_too_large_and_named(world) -> None:
+    """A have stopped by a limit is refused, never skipped: skipping it turns
+    the next fetch into a whole-history one."""
+    have, _ = _a_big_have_then_a_tiny_head(world)
+    rec = Recorder()
+    with pytest.raises(GitExecError) as caught:
+        _exec(world, rec, max_fetch_file_bytes=64 * 1024).fetch_bundle(
+            url=world["url"], token=_token(), ref="main", haves=[have])
+    assert caught.value.code == "too_large"
+    assert have in caught.value.message
+    assert f"{64 * 1024}-byte" in caught.value.message
+    assert not [argv for argv in rec.calls if f"main:{WANT_REF}" in argv]
     assert _scratch_is_empty(world)
 
 

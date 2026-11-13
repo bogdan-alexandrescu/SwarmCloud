@@ -56,6 +56,7 @@ The owner answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
 | Above the page (2026-11-11) | The session **follows him across the console** in a floating view; a **working card** between replies; the **agents pulled in** listed; the paid voice **pauses after about 15 s** waiting on delegated work and reopens on the result, his voice or Resume | (none; the pause was picked from options) | §3.12 |
 | Projects and cards (2026-11-11) | Projects **keep their state** (in progress, waiting, completed, cancelled, archived) and **resume with a catch-up**; one session **switches between projects**, starts new ones and takes side requests; cards **draw by their content**, in **"Cards and a viewer"**: compact cards in the list and a viewer that opens one full size with its actions | (none; the viewer was picked from two mock-up directions) | §3.13 |
+| The core loop (2026-11-12) | **Speak, see the work, hear the result.** Updates interrupt the conversation for four things only: a result is ready, something needs the owner, a milestone, and a check-in about every 45 s while work runs with no milestone; each comes **at a gap**, never over the owner; the voice **pauses after 45 s** of silence (was 15) and speaking or any update wakes it; **cards appear as they happen**, a mock-up's frames one by one, a live Work card per start; a resumed project opens with its cards and mock-ups | (none; picked after three talks on the development deployment looked frozen) | §3.12.0, §3.12.7 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus the owner's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
 | Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs the owner | The command deck | §11 |
 
@@ -743,7 +744,10 @@ only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
   accepts typed turns as an alternative to speaking.
 * **The idle stop.** `Shell.tsx` exports a `noteActivity()` beside its
   private `noteInput`. The Talk pane calls it on every final caption from
-  either side while a session is live, so the spine's capacity meter and any
+  either side while a session is live, and on every caption line closed
+  without a final (by a pause, the other side speaking or the end of a turn:
+  GPT-Live sends the browser deltas and no final, so a closed line is the only
+  whole segment it ever draws), so the spine's capacity meter and any
   card that polls do not pause on a person who is only talking. When the
   session ends, nothing calls it and the 15-minute rule applies again. That
   keeps the rule's intent: speech is proof someone is there.
@@ -807,10 +811,119 @@ card** shows what the agent is doing. The **agents pulled in** (the planner,
 implementation agents and workflows) are listed with their state. **Picked by
 the owner:** the paid voice **pauses automatically** after about 15 seconds of
 waiting on delegated work, and **reopens** when the result is ready, when he
-starts talking, or on Resume.
+starts talking, or on Resume. **Revised by the owner on 12 November 2026**
+(§3.12.0): the pause comes after 45 seconds of silence, and any update wakes
+it as well.
 
 Read on `main` at `217598f`, 2026-11-11. Where this section and the code
 disagree, the code is quoted and this section says what changes.
+
+#### 3.12.0 The core loop: speak, see the work, hear the result
+
+**The owner's picks (12 November 2026).** Three talks on the development
+deployment looked frozen while the planner worked: the owner spoke, the
+voice went quiet, nothing on screen moved, and the cards arrived all at once at
+the end of the turn. Nothing showed or said that work was running, so a
+working session could not be told from a stuck one. The loop he picked, in his
+words: **speak, see the work, hear the result.** He speaks; the work shows on
+screen as it happens; the voice tells him what came of it, and tells him
+between times that it is still going.
+
+**Updates interrupt the conversation for four things, and only four.** An
+update is a short spoken line (one sentence, two for a result) that the voice
+says without being asked. Anything else waits for the owner to ask, so the
+voice is never chatty for its own sake.
+
+| Kind | What it is | Where it comes from |
+|---|---|---|
+| **A result is ready** | A delegation ended and the planner's spoken summary is waiting to be said | The delegation's end (`work.delegation` `done`, `failed` or `refused`, §3.12.5) and the summary `Live._say` holds today |
+| **Something needs the owner** | An agent's question, an approval, a failure, a budget stop | A card moving into a waiting state (a Review `waiting`, a Plan or Proposal `proposed`, a Details or Credential card `waiting`, a Budget or Stop card, §3.12.4's attention items); a roster row moving to *waiting on the owner* or *failed* (§3.12.6); the ledger's stop at 80% and at the cap (§3.8) |
+| **A milestone** | A card drawn, an agent or a workflow started, a pull request opened, a merge | A `card.upsert` or `visual.upsert` of a new card or mock-up; a `voice_starts` row written by an act tool; a roster row's pull request first seen open, or merged, by the follower (§3.12.6) |
+| **A check-in** | "Still on it: reading the repository, a minute and a half in." About every 45 seconds while work runs and no milestone has been said | A timer in swarm-voice (`CHECKIN_AFTER_SECONDS = 45`, the owner's "about every 45 seconds"), counted from the last update or reply spoken, armed while a delegation is in flight or a roster row is queued or running. Its words come from the working card's newest step and the roster's counts (§3.12.5, §3.12.6), filled into a fixed sentence: no planner turn, no model text, nothing that costs more than the seconds it is spoken |
+
+Why these four: the first two are what the owner is waiting to hear; the third
+and fourth are what was missing in the three talks. A milestone proves work is
+moving; a check-in proves it when nothing visible has changed for a while.
+Forty-five seconds is the owner's figure: long enough that a short turn ends
+before the first check-in, short enough that no silence lasts as long as the
+ones that looked frozen.
+
+**One queue, fed from the session stream.** swarm-voice keeps one update queue
+per session (`swarm_voice/updates.py`). It learns of an update where the fact
+already is: its own act and card tools (a card drawn, a start written), the
+delegation's end, and the follower, which on each tick also reads the session
+stream from the last sequence it saw (one read) for what swarm-api wrote itself
+(a Budget or Stop card, a card a person moved). Several updates due together
+are said as one line, the most urgent first (needs the owner, then a result,
+then milestones, counted: "two cards drawn and a workflow started"); a
+check-in is dropped when anything else is said, and its timer restarts.
+
+**The gap rule: an update comes in at a gap.**
+
+* **The voice never cuts the owner off.** While he is speaking (his utterance
+  has not ended, by the whole-utterance rule `live.py` already keeps:
+  `UTTERANCE_END_GAP_SECONDS`, `UTTERANCE_IDLE_GAP_SECONDS`) an update waits.
+* **It speaks at the next pause in his speech,** the moment his utterance
+  ends, as the fast front already speaks a delegation's sentences "at the next
+  silence".
+* **It finishes its own sentence first.** While the voice is playing (the
+  sideband's playback events, which already hold off the pause), an update
+  waits for the end of the sentence being said, never cutting its own reply
+  in half.
+* **It wakes from a pause to speak.** A paused voice is reopened by the update
+  (cause `result`, `attention`, `milestone` or `checkin`, §3.12.7) and says it
+  first.
+
+An update that is still waiting when the owner starts a new request is not
+lost: it is said after the planner's next reply if it is still true (a check-in
+never is; it is dropped), and it is on screen meanwhile.
+
+**The 45-second pause, and the wake.** Silence pauses the voice after **45
+seconds** (was 15, §3.12.7), and **speaking or any update wakes it at once.**
+Fifteen seconds paused in the middle of the owner's thinking and made the
+voice disappear while work ran; together with the silent planner, that is what
+looked frozen. While work runs, a check-in falls due before the silence reaches
+45 seconds, and the update wins: the voice stays open while work runs and
+pauses when the work and the talk have both stopped. That costs the open
+voice's $0.05 a minute while work runs, about $3 for an hour of delegated
+work (question 21 asks whether a check-in should wake a paused voice).
+
+**Cards appear as they happen, not at the end of the turn.**
+
+* **Each card appears when it is drawn.** The planner draws a card the moment
+  it has decided it, not in its last steps (`prompts.py`: "draw each card as
+  soon as you have it; never save cards for the end of the turn"), and the
+  card write is already a stream event the page applies at once
+  (`card.upsert`, `STREAM_EVENTS` in `CardList.tsx`).
+* **A mock-up's frames appear one by one.** `show_mockup` writes its visual
+  with the first frame and adds each next frame as a further `visual.upsert`
+  as it passes `frame_refusal`, so the owner sees the first version while the
+  rest are drawn; the visual says "2 of 3 drawn" until the last.
+* **A live Work card per agent or workflow started.** Every start written to
+  `voice_starts` draws a Work card at once, whose state and progress the
+  follower's `roster.update` events move (queued, running, waiting on the
+  owner, a pull request opened, merged, failed). The roster lists it too; the
+  Work card is where its progress is seen beside the cards it led to.
+
+Why: the cards were already written during the turn; they looked late because
+the planner drew them last and a mock-up was one write with every frame. Not
+verified: how much of the delay each of the two caused.
+
+**A resumed project opens with its cards and mock-ups.** Resume (from Projects,
+or a spoken switch to a project not yet open in this session, §3.13.5) opens the
+project on Talk with every card and mock-up it holds, drawn from
+`GET /v1/voice/projects/{id}` and `GET /v1/voice/projects/{id}/visuals` before
+the voice says a word, the catch-up (§3.13.4) beside them. Why: a resumed
+project that opens on an empty page looks frozen in the same way, and the
+catch-up points at cards the owner must be able to see.
+
+**Invariants.** Updates, check-ins and frames are events and spoken lines:
+nothing here creates infrastructure demand (1) or changes admission, fencing
+or the ledger's reservation (2, 3, 5); a Work card is drawn from a start that
+was already admitted. Nothing waits on the voice (4): the queue holds lines,
+never work. An update carries kinds, counts, titles and step phrases, never a
+card's content, a transcript or a tool argument (§3.12.5's masking), so the
+floating view still shows no card content (§3.12.8).
 
 #### 3.12.1 What is true today
 
@@ -1027,13 +1140,14 @@ through `go`, which is a click, not an offer.
 
 #### 3.12.7 The pause and the reopen
 
-**When it pauses (the owner's pick).** In a `live` (GPT-Live) session, when a
-delegation is in flight and **neither side has spoken for 15 seconds**
-(`PAUSE_AFTER_SECONDS = 15`, the owner's "about 15 seconds"), with no
-read-back pending and nothing playing, swarm-voice:
+**When it pauses (the owner's pick, revised 12 November 2026).** In a `live`
+(GPT-Live) session, when **neither side has spoken for 45 seconds**
+(`PAUSE_AFTER_SECONDS = 45`, the owner's "45 seconds", was 15), with no
+update due (§3.12.0), no read-back pending and nothing playing, swarm-voice:
 
 1. appends one sentence for the voice to say ("I'll pause while that runs; I'll
-   be back when it's ready, or just start talking"), and waits for it to be
+   be back when it's ready, or just start talking"; with nothing running,
+   "I'll pause; just start talking when you're ready"), and waits for it to be
    spoken, at most 8 s;
 2. closes the Live session (`session.close`), which stops GPT-Live's
    per-second billing, and keeps its `usage.seconds`;
@@ -1043,17 +1157,39 @@ read-back pending and nothing playing, swarm-voice:
 The browser closes its peer connection on that event. The session stays `live`
 in swarm-api.
 
+**Why 45 seconds, and why no longer only while a delegation is in flight.**
+At 15 seconds the voice paused while the owner was still thinking, and while
+the planner worked: in the owner's three talks on the development deployment that silence,
+with nothing on screen, is what looked frozen. The owner's 45 seconds leaves
+room to think between sentences. While work runs a check-in falls due every
+45 seconds and an update due wins over the pause (§3.12.0), so the voice stays
+open while work runs and the pause takes effect when the work and the talk
+have both stopped; the owner's words make silence alone the cause, so the
+pause no longer waits for a delegation to be in flight. It costs the open
+voice while work runs (§3.12.0), which is what the owner traded for never
+looking frozen.
+
 **What keeps running:** the session, its grant and its ledger; the planner turn
 and the delegated work; the follower; the stream (so the working card, the
 cards, the roster and the marker keep updating); the Voice it pool lease (held
 and renewed, so a wake never waits for a key); the browser's mic stream, unless
 muted, for local voice detection only.
 
-**What wakes it.** Whichever comes first, once:
+**What wakes it.** Whichever comes first, once. **Speaking or any update
+wakes it at once** (the owner's pick, 12 November 2026): every one of
+§3.12.0's four update kinds is a wake cause, so a paused voice never sits on
+something the owner was promised to hear.
 
 * **The result is ready:** the delegation ends (`done`, `failed` or
   `refused`); swarm-voice asks the holder to reopen through a
   `session.state: waking` event with `cause: result`.
+* **Something needs the owner:** a question, an approval, a failure or a
+  budget stop is queued (§3.12.0); the same event with `cause: attention`.
+* **A milestone:** a card drawn, an agent or a workflow started, a pull
+  request opened or a merge is queued; `cause: milestone`.
+* **A check-in falls due:** about 45 seconds of running work with no milestone
+  said; `cause: checkin`. Question 21 asks whether this one should wake a
+  paused voice or only show on screen.
 * **The owner starts talking:** the holder runs `vad.ts`'s detector on the mic
   while paused, and only its start-of-speech (`onStart`) is used. Frames are
   never sent anywhere while paused; the detector runs in the browser and costs
@@ -1066,7 +1202,8 @@ posts `POST /v1/voice/sessions/{id}/reopen` with the offer and the cause.
 swarm-api checks the person and the session (live, not ended) and forwards it
 to swarm-voice's new `POST /internal/sessions/{id}/reopen`, which runs the same
 `_reopen` the tier move runs today, generalised by cause (`tier`, `rollover`,
-`wake`): a new Live session on the held key, attached before the answer goes
+`wake`; a wake names its own cause: `result`, `attention`, `milestone`,
+`checkin`, `speech` or `resume`): a new Live session on the held key, attached before the answer goes
 back, carrying the transcript segments, the grant, the planner model and the
 trace. Two things are new for a wake:
 
@@ -1077,7 +1214,8 @@ trace. Two things are new for a wake:
   (`swarm_voice/instructions.py`, Phase 4's row). What finished while paused is
   in the brief and the cards, so the voice knows it without being told twice.
 * **The first words.** For `cause: result` the planner's summary goes in at
-  once as commentary and is spoken. For `cause: speech` the voice is told to
+  once as commentary and is spoken; for `attention`, `milestone` and
+  `checkin` the queued update is, by §3.12.0's line. For `cause: speech` the voice is told to
   listen first: the page plays a short tone when the voice is back, and the
   words said during the reopen (create and attach, inside `START_SECONDS`) are
   **not heard**; the voice says "go ahead" if the owner stopped before it was
@@ -1093,7 +1231,7 @@ is queued and spoken at the next silence after his utterance, as the fast
 front already speaks a delegation's sentences "at the next silence". Open, the
 same queue holds. The cards, the working card and the roster update at once
 either way, and one reopen serves both causes: a wake already in flight
-absorbs the other.
+absorbs the other. Every update kind keeps the same gap rule (§3.12.0).
 
 **A failed reopen** (no key, OpenAI refusing, the start deadline passed) keeps
 the session paused and says one line on Talk and in the floating view with
@@ -1112,8 +1250,10 @@ paused; a wake starts it again and the status line shows its boot phases.
 and the meter's talk line stops. The planner and the delegated work cost what
 they cost open. The stream costs its Firestore reads (about 3,600 an hour, as
 open). Voice detection is the browser's. Each pause and wake costs the few
-seconds of the pause sentence and the resumption, at $0.05 a minute: a
-three-minute delegation saves about 2 min 45 s, about 14 cents.
+seconds of the pause sentence and the resumption, at $0.05 a minute. Since
+12 November the voice stays open while work runs (the check-ins, §3.12.0), so
+the pause saves its cost after the work and the talk have stopped: each paused
+minute saves 5 cents.
 
 #### 3.12.8 Cost and privacy
 
@@ -1157,6 +1297,20 @@ below) before they build the look; their behaviour and tests may start first.
 | **V8. The floating view follows the owner, and the spine marks what waits** | `voice/Floating.tsx` (new), `Spine.tsx` (the marker on the `voice` item), `Shell.tsx` (draws the floating view off Talk), `__tests__/voice.floating.test.tsx` | V7, V1 | No card content in the floating view's markup; the number counts after `seen_seq`; the dot stays while a seen card waits | **mock-up** |
 | **V9. The working card, the roster and the Navigate card are drawn in the main view** | `voice/WorkingCard.tsx` (new), `voice/Roster.tsx` (new), `voice/cards/NavigateCard.tsx` (new), `voice/CardList.tsx` (`STREAM_EVENTS`), `__tests__/voice.working.test.tsx` | V4, V5, V6, V1 | Collapsed is one line; the next output replaces it; an accepted offer navigates once and a history card never does | **mock-up** |
 | **V10. The pause and the navigation run end to end on a deployment** | none in the repository: a recorded session on the epic with the pause, a spoken wake, a result wake, a spoken yes and the meter | everything | n/a | no |
+| **L1. swarm-voice holds updates in one queue and says them at a gap; the pause comes after 45 s and any update wakes it** | `apps/swarm-voice/swarm_voice/updates.py` (new: the four kinds, their order, merging several into one line, `CHECKIN_AFTER_SECONDS = 45` and the fixed check-in sentence), `swarm_voice/live.py` (the queue released at the end of the owner's utterance and of the voice's playback; `PAUSE_AFTER_SECONDS = 45` with no delegation condition; an update due wins over the pause; `WAKE_CAUSES` gains `attention`, `milestone`, `checkin`), `tests/unit/voice/test_updates.py` (new), `tests/unit/voice/test_live_pause.py` (its 15 s cases become 45 s) | V2 | With a fake clock and a fake Live API: an update due while the owner speaks is said only after his utterance ends; one due while the voice plays waits for the end of its sentence; 44 s of silence pauses nothing and 45 s pauses; 45 s of running work with no milestone says one check-in and keeps the voice open; a queued milestone wakes a paused voice with `cause: milestone` | no |
+| **L2. swarm-api forwards a wake for every update kind** | `swarm_api/voice/sessions.py` (the wake causes it accepts, after V3), `swarm_api/routes/voice.py` (`/reopen`'s cause), `tests/unit/control_plane/test_voice_pause.py` | L1 | A reopen with `cause: attention`, `milestone` or `checkin` reaches swarm-voice; an unknown cause is 422 | no |
+| **L3. The follower turns roster moves and swarm-api's own cards into updates** | `swarm_voice/follow.py` (a row's pull request first seen open or merged is a milestone; a move to waiting on the owner or failed is an attention update; one read of the session stream from its last sequence per tick), `swarm_api/voice/roster.py` (each row's pull request and its state, from the reads it already makes), `tests/unit/voice/test_follow.py` | L1, V6 | A pull request opening is one milestone and its merge another; a Budget card written by swarm-api is one attention update; a tick with nothing changed queues nothing and still makes one query | no |
+| **L4. The planner draws each card as soon as it has it, and a mock-up frame by frame** | `swarm_voice/prompts.py` (the draw-as-you-go rule, after V5 and P3), `swarm_voice/tools_visual.py` (`show_mockup` writes the first frame, then each next one as a further `visual.upsert`), `swarm_voice/tools_read.py` (a card written queues a milestone), `tests/unit/voice/test_mockup_tools.py` | L1 | A three-frame mock-up makes three writes in order, the first carrying one frame; a refused frame leaves the others drawn; each card write queues one milestone | no |
+| **L5. Every start draws a live Work card** | `swarm_api/voice/store.py` (`record_start` writes the Work card in the same transaction as the start row), `tests/unit/control_plane/test_voice_storage.py` | Phase 3's act lane (the first caller of `record_start`) | One start is one `card.upsert` of kind `work` naming the target; a roster move updates that card's state | no |
+| **L6. The page draws a mock-up's frames as they arrive and each Work card live** | `apps/swarm-ui/src/voice/Stage.tsx` (frames appended in order, "2 of 3 drawn"), `voice/CardList.tsx` (a Work card moved by `roster.update`, after V9 and C2), `__tests__/voice.stage.test.tsx` | L4, L5 | A second `visual.upsert` adds a frame without redrawing the first; a Work card's state follows the roster event | no |
+| **L7. The core loop runs end to end on a deployment** | none in the repository: a recorded session on the epic with a check-in during a long turn, a milestone per card, a mock-up drawn frame by frame, a result said at a gap while the owner talks, a pause after 45 s woken by an update, and a resumed project opening with its cards and mock-ups (§3.13.9's L8) | everything | n/a | no |
+
+Lanes **L1 to L7** build the core loop (§3.12.0), the owner's picks of 12
+November 2026: the talks looked frozen because nothing showed or said that
+work was running, so the updates, the gap, the 45-second pause and the cards
+as they happen are one lane set, ordered after the V lanes whose files they
+share. The resumed project's opening is §3.13.9's L8, beside the Projects
+lanes it shares `Talk.tsx` with.
 
 **Invariants.** A paused session holds no lease and no pool slot (invariant 1):
 it is a voice session, not an agent, and the Voice it pool key it keeps is not
@@ -1648,6 +1802,7 @@ whitelist, so a lane that writes a new event lists `stream.py`.
 | **C4. swarm-voice runs a person's actions as the next planner turn** | `swarm_voice/main.py` (`/internal/sessions/{id}/input`, after V2), `swarm_voice/planner.py` (actions as fenced input, after P6), `tests/unit/voice/test_card_action_turn.py` | C3, P6 | Two actions during a turn ride one next turn; each is marked consumed once; an action's text cannot change the system prompt | no |
 | **C5. Each content type has its renderer** | `voice/viewer/kinds/` (new: options, frames, graph, code, diff, markdown, tests), `__tests__/voice.viewer.kinds.test.tsx` | C2 | A frame's markup is `sandbox="allow-scripts"` with the policy, never `allow-same-origin`, and a script inside it cannot reach the network; a document's `javascript:` link is text; a diff over its bound reads from the blob | no |
 | **C6. Projects shows the states and Talk the open projects** | `voice/Projects.tsx` (states, filter, tooltips, Resume into a live session), `voice/Talk.tsx` (the current project, the switcher, the caption line on a switch and on each action; after V7), `voice/CardList.tsx` (`STREAM_EVENTS`: `project.switch`, `card.action`; after C2), `__tests__/voice.projects.test.tsx` | P1, P4, C2, C3, P0 | Each state draws its tooltip line; a `project.switch` event draws the caption line; archived is hidden by default; Resume with a live session switches it and writes no `RESUME_KEY` | **mock-up** (P0) |
+| **L8. A resumed project opens with its cards and mock-ups** | `apps/swarm-ui/src/voice/Talk.tsx` (on Resume, reads `GET /v1/voice/projects/{id}` and its visuals and draws them before the session's first stream event; after V7 and C6), `__tests__/voice.talk.resume.test.tsx` (new) | C6, L6 | A Resume draws the project's cards and its mock-ups before the voice says a word; a project with none draws the empty state; a card read this way is never acted on (§3.12.3) | no |
 | **P7. Projects, the catch-up, a switch and a picked card run end to end on a deployment** | none in the repository: a recorded session on the epic resuming a project with its catch-up, switching to a second, taking a side request, picking a proposal and a mock-up page, and the project states after a merge | everything | n/a | no |
 
 **Invariants.** Nothing here creates infrastructure demand (1): a project's
@@ -2177,6 +2332,13 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     mock-up can be a clickable prototype (§4's rendering rules). The other
     option was none, `sandbox=""` as the Stage on `main` still draws it until
     the renderers lane (C5) lands.
+21. **Whether a check-in wakes a paused voice (§3.12.0, §3.12.7):** built as
+    the owner's words say, "speaking or any update wakes it at once", so a
+    check-in reopens a paused voice and the voice stays open while work runs
+    (about $3 an hour of delegated work). The other option: results, what
+    needs the owner and milestones wake it, and a check-in while paused only
+    shows on the working card and the floating view, so the pause still saves
+    its cost while work runs.
 
 ---
 

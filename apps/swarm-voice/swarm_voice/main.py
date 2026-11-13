@@ -181,6 +181,7 @@ from .live import (LISTENING, MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, PAUSED, REOP
 from .planner import build_planner
 from .plannerlease import FRONT_HOLDER, PlannerAccounts
 from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
+from .worksink import build_work_sink
 
 log = logging.getLogger("swarm_voice")
 
@@ -540,12 +541,15 @@ def build_texts(http: Any, sessions: Sessions) -> TextSessions:
                         planner=sessions._planner)  # noqa: SLF001 -- one planner
 
 
-def build_fronts(sessions: Sessions) -> FrontSessions:
+def build_fronts(sessions: Sessions, http: Any = None) -> FrontSessions:
     """Own speech's fast fronts (claudefront.py), on the Live sessions' broker
     client, holding each session's Claude account as the front, and on their
-    planner: a front's delegation reaches the same planner."""
+    planner: a front's delegation reaches the same planner. With `http` and
+    SWARM_API_URL, each delegation's lifecycle reaches swarm-api's work route
+    through the session's grant (worksink.py); else nothing is posted."""
     return FrontSessions(accounts=PlannerAccounts(sessions._leases, holder=FRONT_HOLDER),  # noqa: SLF001
-                         planner=sessions._planner)  # noqa: SLF001 -- one planner
+                         planner=sessions._planner,  # noqa: SLF001 -- one planner
+                         work=build_work_sink(http) if http is not None else None)
 
 
 def build_caller_check() -> CallerCheck:
@@ -578,7 +582,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             if app.state.texts is None:
                 app.state.texts = build_texts(http, app.state.sessions)
             if app.state.fronts is None:
-                app.state.fronts = build_fronts(app.state.sessions)
+                app.state.fronts = build_fronts(app.state.sessions, http)
             if followers is None:
                 app.state.roster = build_roster(http)
                 if app.state.roster is not None:
