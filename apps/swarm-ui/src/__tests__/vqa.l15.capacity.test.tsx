@@ -39,6 +39,9 @@ const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
   loadLeases: vi.fn(),
   loadRuntimeTopology: vi.fn(),
+  // An admin's session (#3015): only an admin's Links cell draws the ` · `
+  // and `limit` V012 holds in one element.
+  loadMe: vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })),
 }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
@@ -243,6 +246,7 @@ describe('V012: a stacked capacity field is ONE grid item', () => {
   it('wraps every multi-part value in an element, so no text node is auto-placed into a keyless row', async () => {
     atPhone()
     await renderPools()
+    await waitFor(() => expect(document.querySelector('.cap-open a[href^="#admin/limits"]')).not.toBeNull(), WAIT)
     const cells = [...document.querySelectorAll('.cap-pools.is-stacked td[data-label]')]
     for (const td of cells) {
       if (td.children.length === 0) continue
