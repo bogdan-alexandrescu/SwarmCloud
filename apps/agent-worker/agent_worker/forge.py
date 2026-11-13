@@ -1417,6 +1417,7 @@ class PinnedForgeClient:
         host: str = PINNED_API_HOST,
         transport: Transport | None = None,
         retry: RetryPolicy | None = None,
+        read_again: Callable[[], str] | None = None,
     ) -> None:
         if host != PINNED_API_HOST:
             # Not lower-cased first: FORGE_HOST is rendered by Terraform, and
@@ -1435,6 +1436,12 @@ class PinnedForgeClient:
         #: out may have been done, and the merge and the review post each
         #: have their own answer to that, which a blind resend is not.
         self._retry = retry
+        #: Reads the token's secret afresh (#3223): swarm-api's forge refresh
+        #: replaces a person's token, and GitHub ends the one it replaced, so
+        #: a client built before the refresh is answered 401. Called at most
+        #: once in the client's life, on its first 401.
+        self._read_again = read_again
+        self._read_again_used = False
 
     def __repr__(self) -> str:
         return f"PinnedForgeClient(host={self._host!r})"
@@ -1460,8 +1467,9 @@ class PinnedForgeClient:
             what=f"GET {path}",
         )
 
-    def _send_once(self, method: str, url: str, path: str, payload: Any) -> ForgeResponse:
-        body = json.dumps(payload).encode() if payload is not None else None
+    def _exchange(
+        self, method: str, url: str, body: bytes | None
+    ) -> tuple[int, Mapping[str, str], bytes]:
         req = urllib.request.Request(url, data=body, method=method)
         req.add_header("Authorization", f"Bearer {self.__token}")
         req.add_header("Accept", "application/vnd.github+json")
@@ -1469,7 +1477,37 @@ class PinnedForgeClient:
         req.add_header("User-Agent", _UA)
         if body is not None:
             req.add_header("Content-Type", "application/json")
-        status, headers, raw = self._transport(req)
+        return self._transport(req)
+
+    def _token_read_again(self) -> bool:
+        """Replace the token with a fresh read of its secret, once per client.
+
+        False when there is no reader, it was used already, it raised or it
+        read nothing: the caller then answers the 401 it has, which the merge
+        reads as `token_lacks_rights`. The exception is not kept: its text
+        could carry what the reader read.
+        """
+        if self._read_again is None or self._read_again_used:
+            return False
+        self._read_again_used = True
+        try:
+            fresh = self._read_again()
+        except Exception:  # noqa: BLE001 - the 401 stands; never the value
+            return False
+        if not fresh:
+            return False
+        self.__token = fresh
+        return True
+
+    def _send_once(self, method: str, url: str, path: str, payload: Any) -> ForgeResponse:
+        body = json.dumps(payload).encode() if payload is not None else None
+        status, headers, raw = self._exchange(method, url, body)
+        if status == 401 and self._token_read_again():
+            # A 401 means GitHub authenticated nothing and so acted on
+            # nothing: resending the same request once with the re-read
+            # token is safe for a PUT or a POST as much as for a GET. A
+            # second 401 is answered as it is; the token is not read again.
+            status, headers, raw = self._exchange(method, url, body)
         if 300 <= status < 400:
             raise ForgeRedirectRefused(status, path)
         text = raw.decode("utf-8", errors="replace") if raw else ""
