@@ -824,7 +824,9 @@ defaulted to 0. What this lane changed, and why:
   `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` spends no
   agent on red, but still gets the one free re-run per head below: red
   again at that head refuses `checks_failed`. Conflict
-  rounds keep their own cap of 2 (`MERGE_CONFLICT_ROUNDS_MAX`) whatever
+  rounds keep their own cap of 2 spent rounds (`MERGE_CONFLICT_ROUNDS_MAX`;
+  a round that moved the head is not spent, and 6 of any outcome is the
+  ceiling, `MERGE_CONFLICT_ROUNDS_TOTAL_MAX`) whatever
   `fix_rounds` says, as the conflict-fix-round design decided: a conflict nobody resolves is never
   mergeable at all, so 0 does not turn them off.
 * **A flake costs no agent.** The first red reading at a head whose every
@@ -1028,14 +1030,32 @@ CI-fix round:
   `dispatch.conflict_round`, which swarm-api copies at submission from the
   `merge_conflict_round` record the tick submits the round with: the worker
   acts on no metadata the step-spec signature does not cover;
-* **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
-  own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
-  that budget is about red CI and defaults to none, and a conflict nobody
-  resolves is never mergeable at all. A third conflict after two merges of the
-  base means the base moves faster than an agent resolves it, a person's
-  question.
+* **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 SPENT rounds**, the PR-side CI
+  fixer's own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever
+  `merge_fix_rounds` says: that budget is about red CI and defaults to none,
+  and a conflict nobody resolves is never mergeable at all. A round is
+  **spent** when it failed or was refused (an `error` on its entry), was never
+  submitted (no agent), or ended without pushing a head other than the one it
+  was given. A round whose agent pushed a new head **moved the head** and is
+  not spent (#3073): it resolved its conflict, and a later conflict is the
+  base moving again, a new conflict, not the round failing. Counting every
+  round refused PR #3036, #3342 and `wf_76d8600f` `merge_conflict` after two
+  rounds that both succeeded. "Moved" rests on the round agent's own record,
+  never on the tenant-writable `merge_fix` entry: the worker takes the head
+  from `_fix_round_heads` (the agent read through the tenant-gated upstream
+  read, its signed spec verified, its signed `continues` the branch's root),
+  the tick from the agent read under the merge's tenant
+  (`mergewake._conflict_rounds_spent`, as `_pushed_by` reads it); one that
+  cannot be read or verified is spent. Two rounds that could not resolve a
+  conflict will not be helped by a third, a person's question;
+* **at most `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` = 6 rounds of any outcome**, the
+  cost backstop. `MERGE_CI_MAX_SECONDS` is measured per head
+  (`_ci_wait_age` starts again when a round moves the head), so it does not
+  bound rounds across a base that keeps moving; without the ceiling every
+  move of main would buy another agent run. Both constants are held equal on
+  the worker and the tick by `test_the_tick_and_the_worker_agree_on_the_conflict_rounds`.
 
-With the rounds spent, a round that ended at the conflicting head without
+With the rounds spent or the ceiling reached, a round that ended at the conflicting head without
 moving it, a round whose submission was refused, or a pull request no round
 may push to (a `merge_pr` target, or a branch that is not the root's), the
 step **fails fast with `merge_conflict`**, naming the pull request. A conflict
@@ -1046,8 +1066,10 @@ takes the same path. `merge_conflict` is a step failure code in
 
 **Invariants.** Every wait is a `CI_PENDING` park holding no lease, pool count
 or Job (1, 3, 4); a round is an ordinary admitted agent. The rounds are bounded
-twice: by `MERGE_CONFLICT_ROUNDS_MAX`, and by `MERGE_CI_MAX_SECONDS` on the
-step's park, past which a conflict wait is `merge_conflict` too. Every forge
+three times: by `MERGE_CONFLICT_ROUNDS_MAX` spent rounds, by
+`MERGE_CONFLICT_ROUNDS_TOTAL_MAX` rounds of any outcome, and by
+`MERGE_CI_MAX_SECONDS` on the step's park at each head, past which a conflict
+wait is `merge_conflict` too. Every forge
 write is still behind the fencing recheck (5). The fixer's agent is read under
 the merge's tenant only (9).
 
