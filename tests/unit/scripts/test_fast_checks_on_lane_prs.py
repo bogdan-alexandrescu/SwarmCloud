@@ -441,5 +441,5 @@ def test_docs_say_a_lane_s_pull_request_runs_no_checks_and_why():
     section = text[start:text.index("\n## ", start + 1)]
     assert "### A lane's pull request runs no checks" in section
     for needle in ("swarm/", "CI wait time", "owner's direction", "ci-gate", "skipped", "train/",
-                   "15 pull requests", "30 minutes", "up to 40", LANE_SKIP):
+                   "8 pull requests", "15 minutes", "up to 40", LANE_SKIP):
         assert needle in section, needle
