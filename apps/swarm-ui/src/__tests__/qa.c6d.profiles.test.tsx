@@ -21,7 +21,10 @@ import type { Result } from '../fetch'
 import type { Capacity, Pool, ProfileAdmission, RunnerProfile } from '../types'
 
 const loadCapacity = vi.hoisted(() => vi.fn<() => Promise<Result<Capacity>>>())
-vi.mock('../api', () => ({ loadCapacity }))
+// An admin's session (#3015): Pools and the opened profile row link to Pool
+// limits only for an admin, and an unmocked `loadMe` would throw.
+const loadMe = vi.hoisted(() => vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })))
+vi.mock('../api', () => ({ loadCapacity, loadMe }))
 
 const { ProfilesScreen } = await import('../Profiles')
 const { disabledSentence } = await import('../ProfileMatrix')
