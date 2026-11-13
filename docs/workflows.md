@@ -1613,7 +1613,7 @@ full commit sha:
            {"step_id": "fix-pr", "prompt": "...", "repository_ref": "feature/x"}]}
 ```
 
-swarm-api writes it as that step's task's own `repository_ref` (an existing,
+swarm-api writes it as that step's agent's own `repository_ref` (an existing,
 signed task field) and marks the step's signed dispatch block `step_ref:
 true`. Every other step keeps the workflow's ref. The step's clone checks out
 its own ref and records that clone's start as `result_summary.git.base`, as
