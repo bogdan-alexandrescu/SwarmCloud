@@ -483,7 +483,7 @@ describe('the approvals inbox (V169, V248, V249)', () => {
   it('V169: holds the decision bar in view while the evidence scrolls', async () => {
     // A plan reads as its brief now, its decision in the header card (owner,
     // 6 November 2026), so the pinned bar is measured on a run's page.
-    // MUTATION: drop the sticky `.ad-bar` rule.
+    // MUTATION: drop the sticky `.apd-decide` rule.
     await mountApprovals(
       'approval=apr_39',
       approvalRoutes((m, url) =>
@@ -491,7 +491,7 @@ describe('the approvals inbox (V169, V248, V249)', () => {
       ),
     )
     const detail = await loaded()
-    const bar = await within(detail).findByTestId('ad-decide', undefined, WAIT)
+    const bar = await within(detail).findByTestId('apd-decide', undefined, WAIT)
     expect(painted(bar, 'position', WIDE)).toBe('sticky')
     expect(painted(bar, 'bottom', WIDE)).toBe('0')
   })
