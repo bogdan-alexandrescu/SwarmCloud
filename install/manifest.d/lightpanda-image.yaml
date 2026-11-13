@@ -19,14 +19,14 @@ entries:
   explain: agent-runtime-base plus the Lightpanda 1.0.2 binary, its AGPL-3.0 licence and SOURCE notice, for the
     claude-code-lightpanda profile. Its own image so the AGPL binary and its source obligation reach only the
     agents that run it.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
   - images/agent-runtime-lightpanda/Dockerfile:1
   - images/agent-runtime-base/tool-mirror.sha256:1
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:

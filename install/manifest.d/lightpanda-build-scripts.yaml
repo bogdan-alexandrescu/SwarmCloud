@@ -18,8 +18,8 @@ entries:
   verify: the release's build record and promotion manifest carry an agent-runtime-lightpanda digest
   explain: The release builds the Lightpanda runner image with every other runner image, from the same commit,
     so the install copies it by digest like the rest.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - image.agent-runtime-lightpanda
   evidence:
