@@ -8,6 +8,7 @@ are fakes that answer by URL.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import urllib.error
@@ -390,7 +391,19 @@ def test_a_verify_check_says_repair_only_rechecks_it():
         assert "re-runs the check and changes nothing" in words, entry.id
         assert doctor.CHECK_ONLY[str(entry.step)] in words
     words = doctor.fix_words(m.load().by_id()["other.verify-digests"])
-    assert "swarm install re-runs infra's passes" in words and "makes it: swarm install --repair" not in words
+    assert "makes it: swarm install --repair other.verify-digests" not in words
+    # A plain `swarm install` skips a met pass (its check compares input digests, never live
+    # traffic, digests or targets), so the fix for drift is the repair of an entry an infra pass
+    # owns through `step:`, which runs that root's latest applied pass again.
+    by_id = m.load().by_id()
+    for step in ("verify.digests", "verify.scheduler-targets", "verify.plugins"):
+        words = doctor.CHECK_ONLY[step]
+        assert "swarm install re-runs" not in words, step
+        found = re.search(r"swarm install --repair (\S+) ", words)
+        assert found, step
+        owner = by_id[found.group(1)]
+        assert str(owner.step or "").startswith("infra.pass-") and owner.expand != doctor.PLATFORM_MADE, step
+        assert f"(manifest step: {owner.step})" in words, step
     # On the release it already runs, swarm upgrade does nothing: it is no fix for either check.
     for step in ("verify.digests", "verify.firestore-migrations"):
         assert "swarm upgrade --to <the running release>" not in doctor.CHECK_ONLY[step]
