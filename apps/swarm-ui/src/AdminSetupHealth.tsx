@@ -16,9 +16,10 @@
  * fix, cause, repair}`; api.ts's normSetupHealth maps it, and the test holds
  * the fixture to the writer's keys.
  *
- * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): the hourly doctor is off unless
- * `enable_scheduled_doctor` turned it on (terraform/infra/doctor.tf), so no
- * run recorded says it is off rather than promising one every hour.
+ * SAYS ONLY WHAT EXISTS (DAYONE-SETUP-UI-4): every install turns the hourly
+ * doctor on in infra pass 2 (swarm_install tfvars.py, SCHEDULED_DOCTOR_SHIPPED
+ * sets `enable_scheduled_doctor`), so no run recorded says it has not run yet,
+ * never that it is off, and never that anything passes.
  *
  * "NOT CHECKED" IS SHOWN AS SUCH, NEVER AS PASSING: a check the doctor could
  * not decide (`unknown`, or any status it did not write) is drawn as not
@@ -148,7 +149,9 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
   if (health === null) {
     return (
       <Card title="Health" action={reload ?? undefined}>
-        <p className="ur-hint">The hourly doctor is off: no doctor run is recorded, so nothing here is known to pass. Its findings show here once it is on and has run.</p>
+        <p className="ur-hint">
+          The hourly doctor has not run yet <About label="the doctor run" tip="No doctor run is recorded, so nothing here is known to pass. Its findings show here after its first hourly run." />
+        </p>
       </Card>
     )
   }
