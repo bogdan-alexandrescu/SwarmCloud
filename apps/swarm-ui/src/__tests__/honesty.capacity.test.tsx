@@ -31,7 +31,10 @@ const loadLeases = vi.hoisted(() =>
     error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
   })),
 )
-vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology, loadLeases }))
+// An admin's session (#3015): Pools and the opened profile row link to Pool
+// limits only for an admin, and an unmocked `loadMe` would throw.
+const loadMe = vi.hoisted(() => vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })))
+vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology, loadLeases, loadMe }))
 
 const { CapacityScreen } = await import('../Capacity')
 const { ProfilesScreen } = await import('../Profiles')
