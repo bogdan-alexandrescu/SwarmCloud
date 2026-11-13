@@ -70,7 +70,9 @@ A PULL REQUEST THAT CONFLICTS WITH ITS BASE is never waited on for checks
 (#1076): GitHub runs none on it. Mergeability is read before the checks, and
 a conflict parks for a conflict fix round -- a claude-code continuation of the
 branch that merges the base in, submitted by swarm-api's wake tick as a CI-fix
-round is -- at most MERGE_CONFLICT_ROUNDS_MAX of them, then `merge_conflict`.
+round is -- at most MERGE_CONFLICT_ROUNDS_MAX SPENT ones (a round that moved
+the head is not spent, #3073) and MERGE_CONFLICT_ROUNDS_TOTAL_MAX of any
+outcome, then `merge_conflict`.
 A round's pushed head, one the PR-side CI fixer recorded for this pull
 request (#1073, `_ci_fixer_heads`), and one swarm-api's tick recorded for
 this pull request from a fix round of ANY workflow (epic #1334,
@@ -505,15 +507,27 @@ WORKFLOW_PATHS_NAMED = 10
 CONFLICT_FIX_PENDING = "conflict_fix_pending"
 CONFLICT_FIX_RUNNING = "conflict_fix_running"
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
-#: How many conflict fix rounds a merge step gets before it refuses
+#: How many SPENT conflict fix rounds a merge step gets before it refuses
 #: `merge_conflict`. TWO, the PR-side CI fixer's own bound
 #: (`swarm_api.cifix.DEFAULT_MAX_ATTEMPTS`, scripts/ci-fix.sh's
-#: MAX_FIX_ATTEMPTS): a second conflict at a head a round already merged the
-#: base into means the base is moving under the branch faster than an agent
-#: resolves it, and a third attempt spends quota on a person's question. Not
+#: MAX_FIX_ATTEMPTS). A round is spent when it failed or was refused (an
+#: `error`), was never submitted (no task), or ended without pushing a head
+#: other than the one it was given: two rounds that could not resolve a
+#: conflict will not be helped by a third. A round that resolved its
+#: conflict and pushed a new head is NOT spent (#3073): a later conflict is
+#: main moving again, a new conflict, not the round failing (PR #3036, #3342
+#: and wf_76d8600f were refused after two rounds that both succeeded). Not
 #: the workflow's `merge_fix_rounds`, which is about red CI and defaults to
 #: none: a conflict nobody resolves is never mergeable at all.
 MERGE_CONFLICT_ROUNDS_MAX = 2
+#: The most conflict fix rounds a merge step gets WHATEVER they achieved:
+#: the cost backstop (#3073). MERGE_CI_MAX_SECONDS does not bound rounds
+#: across moving heads -- it is measured per head (`_ci_wait_age` starts
+#: again when a round moves the head) -- so without this a base that keeps
+#: moving would buy an agent run per move for ever. SIX: three times the
+#: spent budget, room for a busy main to move under the branch a few times
+#: while every round succeeds.
+MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 
 #: The PR-side CI fixer's record on its fix task (#1073): scripts/ci-fix.sh
 #: submits a `continues_task` workflow for a red `swarm/<task>` pull request
@@ -3805,7 +3819,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # reads mergeability again before it merges.
     if conflicting(pr):
         return _conflicted(run, own, head=head, number=number, base=default,
-                           fixable=branch is not None)
+                           fixable=branch is not None, fix_heads=fix_heads)
 
     # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
@@ -3945,13 +3959,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"mergeability was read at {head}")
     if conflicting(pr):
         return _conflicted(run, own, head=head, number=number, base=default,
-                           fixable=branch is not None)
+                           fixable=branch is not None, fix_heads=fix_heads)
     if pr.mergeable is None:
         return wait("mergeability_unknown",
                     f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads", [])
     if pr.mergeable_state == "behind":
         return _update_branch(run, merger, number=number, head=head, updates=updates,
-                              base=default, slot=slot, own=own, fixable=branch is not None)
+                              base=default, slot=slot, own=own, fixable=branch is not None,
+                              fix_heads=fix_heads)
 
     # ---- §2.2 8: fencing and cancel, immediately before the call.
     if ctx.recheck():
@@ -3984,7 +3999,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 summary["merge_answered"] = {"status": answer.status, "message": answer.message}
                 return _update_branch(run, merger, number=number, head=head, updates=updates,
                                       base=default, slot=slot, own=own,
-                                      fixable=branch is not None)
+                                      fixable=branch is not None, fix_heads=fix_heads)
             if _CONFLICT.search(answer.message):
                 # Answered, so nothing was merged: a conflict GitHub found at
                 # merge time is handed to a conflict fix round, as one read
@@ -3992,7 +4007,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 summary.pop("merge_called")
                 summary["merge_answered"] = {"status": answer.status, "message": answer.message}
                 return _conflicted(run, own, head=head, number=number, base=default,
-                                   fixable=branch is not None,
+                                   fixable=branch is not None, fix_heads=fix_heads,
                                    detail=f"GitHub refused the merge ({answer.status}){detail}")
             return run.refuse("protection_refused",
                               f"GitHub's branch protection refused the merge "
@@ -4754,7 +4769,8 @@ def _dirs(path: str) -> list[str]:
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
                    base: str, slot: mergeslot.SlotUse | None = None,
                    own: Mapping[str, Any] | None = None,
-                   fixable: bool = False) -> ActionOutcome:
+                   fixable: bool = False,
+                   fix_heads: list[tuple[str, str]] | None = None) -> ActionOutcome:
     """GitHub merges the base into a branch that is behind; then park at the new head.
 
     A write to the forge, so the fencing and cancel recheck runs first and a
@@ -4794,7 +4810,7 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
             # round's to resolve (#1076), as a conflict read from `mergeable`.
             summary["update_answered"] = {"status": answer.status, "message": answer.message}
             return _conflicted(run, own or {}, head=head, number=number, base=base,
-                               fixable=fixable, detail=f"GitHub could not merge {base} into "
+                               fixable=fixable, fix_heads=fix_heads, detail=f"GitHub could not merge {base} into "
                                f"#{number}{detail}")
         return run.refuse("head_moved",
                           f"GitHub refused to update #{number} at {head}{detail}")
@@ -5398,7 +5414,8 @@ def conflicting(pr: PullRequestFacts) -> bool:
 
 
 def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, base: str,
-                fixable: bool, detail: str = "") -> ActionOutcome:
+                fixable: bool, fix_heads: list[tuple[str, str]] | None = None,
+                detail: str = "") -> ActionOutcome:
     """A pull request that conflicts with `base` at `head`: a conflict fix round's, or
     `merge_conflict` (#1076).
 
@@ -5406,11 +5423,20 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
     The shape is `_red`'s. A round running at this head, or one due that the
     tick has not claimed yet, parks (CONFLICT_FIX_RUNNING / _PENDING, which
     release the merge slot). A round that ended at this head without moving
-    it, or was never submitted, is spent. With MERGE_CONFLICT_ROUNDS_MAX
-    spent -- or for a pull request no SwarmCloud task's branch carries
-    (`fixable` False: a `merge_pr` target, whose branch no round may push
-    to) -- the step fails fast with `merge_conflict`, naming the pull
-    request. A park past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
+    it is `merge_conflict` at once.
+
+    THE BUDGET COUNTS SPENT ROUNDS ONLY (#3073, `_conflict_rounds_spent`):
+    a round that failed or was refused, was never submitted, or did not
+    push a head other than the one it was given. A round whose task pushed
+    a new head resolved its conflict; the next one is main moving again.
+    `fix_heads` are the heads this merge's rounds pushed, each read from the
+    round task's own record and verified (`_fix_round_heads`), never from
+    the tenant-writable `merge_fix` record. With MERGE_CONFLICT_ROUNDS_MAX
+    spent, MERGE_CONFLICT_ROUNDS_TOTAL_MAX run whatever they achieved, or
+    for a pull request no SwarmCloud task's branch carries (`fixable`
+    False: a `merge_pr` target, whose branch no round may push to), the
+    step fails fast with `merge_conflict`, naming the pull request. A park
+    past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
 
     One writer per pull request (#2577): while an earlier round of any kind
     (CI-fix, conflict or pick) is still running at another head, the step
@@ -5456,12 +5482,44 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
         return wait(CONFLICT_FIX_RUNNING,
                     f"{kind} fix round {entry.get('round')} ({_task_id(entry.get('task_id'))}) "
                     f"is still running at {str(entry.get('head') or '?')[:12]}")
-    if len(rounds) < MERGE_CONFLICT_ROUNDS_MAX:
-        return wait(CONFLICT_FIX_PENDING,
-                    f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due")
-    return run.refuse("merge_conflict",
-                      f"{message}, after {len(rounds)} conflict fix round(s), the most a merge "
-                      "step gets")
+    if len(rounds) >= MERGE_CONFLICT_ROUNDS_TOTAL_MAX:
+        return run.refuse("merge_conflict",
+                          f"{message}, after {len(rounds)} conflict fix round(s) of any outcome, "
+                          f"the ceiling of {MERGE_CONFLICT_ROUNDS_TOTAL_MAX} a merge step gets")
+    spent = _conflict_rounds_spent(rounds, fix_heads or [])
+    if spent >= MERGE_CONFLICT_ROUNDS_MAX:
+        return run.refuse("merge_conflict",
+                          f"{message}, after {spent} conflict fix round(s) spent "
+                          f"({len(rounds)} run), the most a merge step gets")
+    moved = len(rounds) - spent
+    due = f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due"
+    if moved:
+        due = (f"conflict fix round {len(rounds) + 1} is due: {spent} of "
+               f"{MERGE_CONFLICT_ROUNDS_MAX} spent, {moved} moved the head")
+    return wait(CONFLICT_FIX_PENDING, due)
+
+
+def _conflict_rounds_spent(rounds: list[Mapping[str, Any]],
+                           fix_heads: list[tuple[str, str]]) -> int:
+    """How many of `rounds` count against MERGE_CONFLICT_ROUNDS_MAX (#3073).
+
+    Spent: an `error` (failed or refused), no task (never submitted), or no
+    verified push of a head other than the entry's `head` -- the round
+    ended where it began, or its task is unreadable or fails
+    `_fix_round_heads`' checks. `fix_heads` is (task, pushed head) as the
+    tasks' own verified records say; the entry only names the task. Held
+    equal to swarm-api's `mergewake._conflict_rounds_spent`.
+    """
+    pushed: dict[str, str] = {}
+    for task, head in fix_heads:
+        pushed.setdefault(task, head)
+    spent = 0
+    for entry in rounds:
+        task_id = _task_id(entry.get("task_id"))
+        if entry.get("error") or task_id is None or pushed.get(task_id) in (None,
+                                                                            entry.get("head")):
+            spent += 1
+    return spent
 
 
 def _ended(ctx: ActionContext, task_id: str) -> bool:
