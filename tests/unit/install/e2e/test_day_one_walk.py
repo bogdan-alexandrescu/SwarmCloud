@@ -132,3 +132,70 @@ def test_every_wait_in_the_walk_says_why_it_is_still_waiting(monkeypatch, tmp_pa
         first = next(i for i in waits if lines[i].startswith(f"  waiting on {step}:"))
         assert lines[first + 1].startswith("      now: "), (step, lines[first:first + 2])
     assert any("swarm-ui-cert is PROVISIONING" in line for line in lines if line.startswith("      now: "))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_walk_applies_the_core_workloads_terraform_renders(mode, monkeypatch, tmp_path, capsys):
+    """Epic 2806, comment 82: with enable_live_browser and graph_service.serve
+    on and their images released, terraform/infra renders swarm_live_manifest
+    and swarm_graph_manifest, so stage 10's WorkloadsStep applies both to
+    swarm-system and waits for their rollouts; Voice it is off, so its output
+    renders null and nothing of it is applied."""
+    world, code = walked(mode, monkeypatch, tmp_path, capsys)
+    assert code == 0, world.said[-1][-3000:]
+    infra = [inputs for root, inputs, targets in world.tf_applies if root == "infra" and not targets][-1]
+    assert infra["enable_live_browser"] and infra["graph_service"]["serve"], infra
+    outputs = world.tf_outputs["infra"]
+    assert outputs.get("swarm_live_manifest") and outputs.get("swarm_graph_manifest"), sorted(outputs)
+    assert outputs.get("swarm_voice_manifest") is None
+    objects = world.kube_objects
+    images = infra["image_refs"]
+    for kind, name in (("statefulset", "swarm-live"), ("deployment", "swarm-graph")):
+        held = objects.get((kind, "swarm-system", name))
+        assert held is not None, f"{kind}/{name} was never applied to swarm-system"
+        containers = held["spec"]["template"]["spec"]["containers"]
+        assert images[name] in {c["image"] for c in containers}, containers
+        assert held["status"]["readyReplicas"] >= 1
+    assert ("statefulset", "swarm-system", "swarm-voice") not in objects
+    labels = [k for doc in objects.values() for k in ((doc.get("metadata") or {}).get("labels") or {})]
+    assert not any("__" in k for k in labels), "the engine fills the label prefix of what it applies"
+
+
+@pytest.mark.parametrize("voice_it, rendered", [("off", False), ("account", False), ("on", True)])
+def test_the_infra_effect_renders_voice_only_when_terraform_would(voice_it, rendered):
+    """voice.tf renders swarm_voice_manifest only while voice_it is "on" on
+    the Autopilot cluster with a swarm-voice image; live.tf and
+    graph_service.tf likewise null their outputs while switched off."""
+    images = {"swarm-live": "live@sha256:" + "1" * 64, "swarm-graph": "graph@sha256:" + "2" * 64,
+              "swarm-voice": "voice@sha256:" + "3" * 64}
+    on = effects.workload_manifests(PROJECT, "europe-west1", {
+        "enable_live_browser": True, "enable_graph_service": True, "graph_service": {"serve": True, "enabled": True},
+        "voice_it": voice_it, "image_refs": images})
+    assert bool(on["swarm_voice_manifest"]) is rendered
+    assert images["swarm-live"] in on["swarm_live_manifest"]
+    assert images["swarm-graph"] in on["swarm_graph_manifest"]
+    if rendered:
+        assert images["swarm-voice"] in on["swarm_voice_manifest"]
+    off = effects.workload_manifests(PROJECT, "europe-west1", {
+        "enable_live_browser": True, "enable_graph_service": True, "graph_service": {"serve": True},
+        "voice_it": "on", "enable_gke_autopilot": False, "image_refs": images})
+    assert off == {"swarm_live_manifest": None, "swarm_graph_manifest": None, "swarm_voice_manifest": None}
+    imageless = effects.workload_manifests(PROJECT, "europe-west1", {
+        "enable_live_browser": True, "enable_graph_service": False, "graph_service": {"serve": True},
+        "voice_it": "off", "image_refs": {}})
+    assert imageless == {"swarm_live_manifest": None, "swarm_graph_manifest": None, "swarm_voice_manifest": None}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_verify_connects_github_when_the_deployment_says_it_is_not_connected(mode, monkeypatch, tmp_path, capsys):
+    """Epic 2806, comment 83: on a new deployment the person has not connected
+    GitHub in the first workspace yet, so `sc access repos` is refused with
+    swarm-api's github_not_connected; verify runs `swarm sc setup` once (the
+    browser connection) and reads the repositories again."""
+    world, code = walked(mode, monkeypatch, tmp_path, capsys)
+    assert code == 0, world.said[-1][-3000:]
+    sc = [" ".join(argv[1:4]) for argv in world.commands
+          if Path(str(argv[0])).name == "swarm" and argv[1:2] == ["sc"]]
+    assert sc == ["sc access repos", "sc setup --context", "sc access repos"], sc
+    assert world.deployment.github_connected == {world.first_workspace}
+    assert world.person.asked_to_run_elsewhere() == []
