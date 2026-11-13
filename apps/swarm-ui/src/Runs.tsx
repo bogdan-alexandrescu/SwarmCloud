@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
 import type { AdvisedIssueRun, PlanAdvisory } from './api'
 import type { ApiError, Result } from './fetch'
-import { InlineText as RnText, runAddress } from './IssueSubmit'
+import { InlineText as RnText, WorkspaceNamed, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, Tabs, WarnMark } from './components'
 import { Dash } from './components/Chip'
@@ -486,7 +486,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
       // Workflows' are links.
       empty={{
         heading: 'No runs yet',
-        body: <>This tenant has not planned an issue. <SubmitIssueLink go={go} /> starts one.</>,
+        body: <>This workspace has not planned an issue. <SubmitIssueLink go={go} /> starts one.</>,
       }}
     >
       {(d) => <RunList first={d} go={go} view={view} names={names} want={want} />}
@@ -656,6 +656,7 @@ function RunList({ first, go, view = null, names = null, want }: {
   const rows = [...first.runs, ...older.runs]
   const counts = Object.fromEntries(RUN_FILTERS.map((f) => [f, rows.filter((r) => RUN_FILTER_TEST[f](r)).length])) as Record<RunFilter, number>
   const shown = rows.filter((r) => RUN_FILTER_TEST[which](r) && runMatches(r, text))
+  const attempts = runAttempts(rows)
   const filtering = which !== 'all' || text.trim() !== ''
   return (
     <div className="rn-list">
@@ -667,10 +668,10 @@ function RunList({ first, go, view = null, names = null, want }: {
         <Absent
           kind="zero"
           heading="No runs yet"
-          say={older.next === null ? 'No run has been read for this tenant.' : 'The newest page of runs holds none; older runs may exist.'}
+          say={older.next === null ? 'No run has been read for this workspace.' : 'The newest page of runs holds none; older runs may exist.'}
           className="rn-empty"
         >
-          {older.next === null ? 'This tenant has not planned an issue.' : 'The newest page holds no run; older ones may exist.'}{' '}
+          {older.next === null ? 'This workspace has not planned an issue.' : 'The newest page holds no run; older ones may exist.'}{' '}
           <SubmitIssueLink go={go} /> starts one.
         </Absent>
       ) : (
@@ -698,7 +699,9 @@ function RunList({ first, go, view = null, names = null, want }: {
             )}
           </div>
           <p className="sb-note rn-count" role="status">
-            {filtering ? `${shown.length} of ` : ''}{pluralise(rows.length, 'run')} read · {older.next === null ? 'no older runs' : 'older runs exist'}
+            {/* "all 3 runs read", not "3 runs read · no older runs": the same fact
+                in fewer words, which paid for the Run cell's `2/3`. */}
+            {filtering ? `${shown.length} of ` : ''}{older.next === null ? 'all ' : ''}{pluralise(rows.length, 'run')} read{older.next === null ? '' : ' · older runs exist'}
           </p>
           {shown.length === 0 && (
             <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${RUN_FILTER_LABEL[which]}`}.</p>
@@ -727,7 +730,14 @@ function RunList({ first, go, view = null, names = null, want }: {
                     {/* THE CUT IS ON A SPAN, NOT THE CELL (visual QA V036): `.rn-cut`
                         is `display: block`, and on the `<td>` it took the Run cell
                         out of the table's row, ~16px off the others on a tall row. */}
-                    <td data-label="Run"><span className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></span></td>
+                    <td data-label="Run">
+                      <span className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></span>
+                      {attempts.get(r.id) !== undefined && (
+                        <span className="sb-note rn-cut rn-attempt" title={`${r.issue.ref}: run ${attempts.get(r.id)!.n} of ${attempts.get(r.id)!.of} read here, oldest first`}>
+                          {attempts.get(r.id)!.n}/{attempts.get(r.id)!.of}
+                        </span>
+                      )}
+                    </td>
                     <td data-label="Issue">
                       {r.issue_read?.title ? (
                         <>
@@ -781,6 +791,24 @@ function RunList({ first, go, view = null, names = null, want }: {
       )}
     </div>
   )
+}
+
+/**
+ * WHICH RUN OF ITS ISSUE A ROW IS (visual QA, runs table, 2026-11-12): two runs
+ * of one issue showed the same title and told apart only by hex ids. Among
+ * the rows read, each run of an issue read more than once is numbered oldest
+ * first, `2/3`, the sentence in its title; an issue read once needs no number.
+ */
+export function runAttempts(rows: readonly Pick<IssueRunSummary, 'id' | 'issue' | 'created_at'>[]): Map<string, { n: number; of: number }> {
+  const byIssue = new Map<string, Pick<IssueRunSummary, 'id' | 'created_at'>[]>()
+  for (const r of rows) byIssue.set(r.issue.ref, [...(byIssue.get(r.issue.ref) ?? []), r])
+  const out = new Map<string, { n: number; of: number }>()
+  for (const runs of byIssue.values()) {
+    if (runs.length < 2) continue
+    const oldest = [...runs].sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : 1))
+    oldest.forEach((r, i) => out.set(r.id, { n: i + 1, of: runs.length }))
+  }
+  return out
 }
 
 /**
@@ -1129,9 +1157,9 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
           <div className="rn-wait">
             <p className="rn-wait-t">
               {run.plan_approval === 'required' ? (
-                <><b>Waiting for a person.</b> Anyone in tenant <code>{run.tenant_id}</code> may approve, edit or reject.</>
+                <><b>Waiting for a person.</b> Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may approve, edit or reject.</>
               ) : (
-                <><b>Approval is automatic:</b> the next read approves this plan. Anyone in tenant <code>{run.tenant_id}</code> may act on it first.</>
+                <><b>Approval is automatic:</b> the next read approves this plan. Anyone in <WorkspaceNamed id={run.tenant_id} phrase /> may act on it first.</>
               )}{' '}
               Approving carries this plan&rsquo;s digest, so a plan edited by someone else since you opened it is refused
               rather than run.

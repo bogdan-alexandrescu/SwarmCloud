@@ -1042,7 +1042,7 @@ export function SubmitScreen() {
       load={loadCapacity}
       summary={(c) => { const n = Object.keys(c.runner_profiles).length; return `${n} runner${n === 1 ? '' : 's'} to choose from` }}
       empty={{ heading: 'No pools came back',
-        body: 'The read of the pools this tenant is admitted against succeeded and returned none. The runner profiles arrive in that same response, so there is no name to choose and this screen cannot submit.' }}
+        body: 'The read of the pools this workspace is admitted against succeeded and returned none. The runner profiles arrive in that same response, so there is no name to choose and this screen cannot submit.' }}
     >
       {(c) => <Form capacity={c} />}
     </Screen>
@@ -1937,7 +1937,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
         ) : (
           <>
             Room for <strong>{room.agents}</strong> more agent{room.agents === 1 ? '' : 's'} of this
-            profile right now, for {tenant ?? 'a tenant this response does not name'}
+            profile right now, for {tenant === null ? 'a workspace this response does not name' : <>workspace {tenant}</>}
             {leadCopy !== null
               ? <>. {leadCopy}</>
               : <>
