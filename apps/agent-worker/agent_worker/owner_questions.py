@@ -242,7 +242,12 @@ def _validated(data: bytes, where: str) -> list[dict[str, Any]]:
 def questions_of(
     task_id: str, doc: Mapping[str, Any], *, store: ObjectStore, tenant_id: str
 ) -> list[dict[str, Any]]:
-    """One step's validated questions, each with its stored answer or None."""
+    """One step's validated questions, each with its stored answer or None.
+
+    The answer is the one given to the question asked at that index now
+    (`questions.answers_asked`), never one a later attempt's other question
+    took over by its index.
+    """
     if doc.get("state") != TaskState.SUCCEEDED.value:
         return []
     metadata = doc.get("metadata") if isinstance(doc.get("metadata"), Mapping) else {}
@@ -263,11 +268,8 @@ def questions_of(
         if not isinstance(raw, list) or not raw:
             return []
         asked = _validated(json.dumps(raw).encode("utf-8"), f"the question wait of task {task_id}")
-    answers: dict[int, Mapping[str, Any]] = {}
-    for entry in metadata.get(questions_mod.OWNER_ANSWERS_KEY) or ():
-        index = entry.get("question_index") if isinstance(entry, Mapping) else None
-        if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
-            answers[index] = entry
+    # An answer to another question at the same index is not this one's (#3349).
+    answers = questions_mod.answers_asked(asked, metadata)
     step_id = doc.get("step_id") if isinstance(doc.get("step_id"), str) else None
     rows: list[dict[str, Any]] = []
     for index, question in enumerate(asked):

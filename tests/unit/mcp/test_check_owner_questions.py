@@ -41,19 +41,25 @@ def _question(n: int) -> dict:
 
 
 def _finished(db, task_id: str, sid: str, *, asked: int = 2, answered=(), days_ago: float = 1,  # noqa: F811
-              repository: str = _REPO, workflow: bool = True, state: str = "SUCCEEDED") -> None:
+              repository: str = _REPO, workflow: bool = True, state: str = "SUCCEEDED",
+              recorded: dict | None = None, stamps: dict | None = None,
+              digests: list | None = None) -> None:
     now = datetime.now(timezone.utc)
     ended = now - timedelta(days=days_ago)
     metadata = {"claude_session": sid, "title": "SC · QUOTA-PARK-RECHECK · 3 steps", "unit": "quota-park"}
     if answered:
+        # `recorded`: the question text an answer records, by index (#3349).
         metadata["owner_answers"] = [{"question_index": i, "choice": "wake", "text": None, "by": "alice@example.com",
-                                      "at": ended, "history": []} for i in answered]
+                                      "at": ended, "history": [],
+                                      **({"question": recorded[i]} if recorded and i in recorded else {}),
+                                      **({"asked_digest": stamps[i]} if stamps and i in stamps else {})}
+                                     for i in answered]
     doc = {
         "id": task_id, "tenant_id": "eng", "state": state,
         "created_at": ended - timedelta(minutes=30), "updated_at": ended, "started_at": ended - timedelta(minutes=29),
         "completed_at": ended, "runner_profile": "mock", "resource_class": "standard", "input": {},
         "metadata": metadata, "repository_url": repository, "submitted_by": "alice@example.com",
-        "result_summary": {"questions": asked},
+        "result_summary": {"questions": asked, **({"question_digests": digests} if digests else {})},
     }
     if workflow:
         doc.update({"workflow_id": "wf_q", "step_id": "implement"})
@@ -127,6 +133,22 @@ def test_an_answered_one_is_not_listed_and_costs_no_read(swarm, db, sid, reads):
     # MUTATION: reading the questions of a task whose every question is
     # answered, or of one that asked none.
     assert reads == [], reads
+
+
+def test_an_index_answered_for_another_question_is_listed_open(swarm, db, sid, reads):  # noqa: F811
+    # Index 0's answer records the question an earlier attempt asked there
+    # (and its digest, which the API's open-questions read compares);
+    # index 1's records the question asked there now.
+    _finished(db, "task_reasked", sid, asked=2, answered=(0, 1),
+              recorded={0: "Which model path writes it?", 1: _question(1)["question"]},
+              stamps={0: "e0e0e0e0e0e0e0e0", 1: "d1d1d1d1d1d1d1d1"},
+              digests=["d0d0d0d0d0d0d0d0", "d1d1d1d1d1d1d1d1"])
+    result = _check(swarm)
+    # MUTATION: counting answers by question_index alone leaves the task out
+    # as answered, without even reading its questions.
+    (entry,) = result["owner_questions"]
+    assert reads == ["task_reasked"], reads
+    assert entry["open"] == 1 and entry["questions"] == [{"index": 0, **_question(0)}], entry
 
 
 def test_another_sessions_task_and_another_repositorys_are_not_listed(swarm, db, sid, reads):  # noqa: F811
