@@ -74,6 +74,7 @@ from ..state import (
 from ..steps import Step, triggered_of
 from ..steps import preflight
 from ..steps.foundations import PROJECT_ID
+from ..steps.identity import one_person
 from ..steps.preflight import DEFAULT_REGION, HOSTNAME, REGION
 from ..steps import discover as _discover_steps
 from ..waits import SystemClock
@@ -253,17 +254,51 @@ def _recorded(project: str) -> InstallState | None:
     return InstallState.from_bytes(local.read_bytes()) if local.is_file() else None
 
 
+def organisation_seen() -> bool | None:
+    """Whether the signed-in account sees a Google organisation (or a folder,
+    which lives in one): None when it cannot tell, before stage 0's sign-in
+    or with no right to search."""
+    try:
+        gcp = preflight.GCP()
+        return bool(gcp.organizations() or gcp.folders())
+    except Exception:  # no credentials yet, or no access: stage 0 checks it after its sign-in
+        return None
+
+
+def _say_organisation() -> None:
+    """Stage 0's organisation check, said before the first question (audit
+    m2): no project or domain is asked for before the person hears that
+    SwarmCloud needs an organisation, and whether this account has one."""
+    seen = organisation_seen()
+    if seen:
+        return
+    print(preflight.NEEDS_ORGANISATION)
+    if seen is None:
+        print("Stage 0 signs you in and checks for one before anything is created.")
+    else:
+        print(
+            f"The signed-in account sees none yet. Sign one up at {preflight.CLOUD_IDENTITY_SIGNUP}; "
+            "stage 0 opens that page and goes on by itself once the organisation exists."
+        )
+    print()
+
+
 def _ask_missing(args: argparse.Namespace) -> int | None:
     """Fill in what the command line left out, or say which flags are missing.
 
     Returns an exit code to stop with, or None to go on as if the flags had
-    been given."""
+    been given. A run checks for an organisation before its first question."""
     tty = interactive()
+    run = not (args.status or args.dry_run or getattr(args, "repair", None) is not None)
+    said = False
     if args.project is None:
         if not tty:
             raise _Usage("no --project given and no terminal to ask on: pass --project")
+        if run:
+            _say_organisation()
+            said = True
         args.project = _ask("Google Cloud project to create or use:", _project)
-    if args.status or args.dry_run or getattr(args, "repair", None) is not None:
+    if not run:
         return None
     recorded = _recorded(args.project)
     missing = [
@@ -272,6 +307,8 @@ def _ask_missing(args: argparse.Namespace) -> int | None:
     ]
     if not missing or not tty:
         return None
+    if not said:
+        _say_organisation()
     if "--domain" in missing:
         args.hostname = _ask("Domain for the console (a hostname you control):", _hostname)
     if "--region" in missing:
@@ -334,13 +371,36 @@ class _RunStore(StateStore):
         return super().attach_bucket(bucket)
 
 
+#: Said instead of the bucket's error when no application-default credentials
+#: exist yet: a fresh laptop's expected first run, not a failure (audit 34).
+NOT_SIGNED_IN = "not signed in yet; stage 0 signs you in"
+
+
+def _first_run(exc: Exception) -> str | None:
+    """What a fresh laptop's bucket read raises, said plainly: no credentials
+    yet (`NOT_SIGNED_IN`), or no bucket or project yet (""); None for any
+    other failure, which is said as it is."""
+    from google.api_core import exceptions as api_exceptions
+    from google.auth import exceptions as auth_exceptions
+
+    if isinstance(exc, auth_exceptions.DefaultCredentialsError):
+        return NOT_SIGNED_IN
+    if isinstance(exc, api_exceptions.NotFound):
+        return ""  # stage 1 makes the bucket (and foundations the project)
+    return None
+
+
 def _read_bucket(project: str) -> tuple[ObjectStore | None, InstallState | None, str | None]:
     """The bucket, the state in it (None before stage 1 made it) and, when it
-    could not be read, why."""
+    could not be read, why: `NOT_SIGNED_IN` before stage 0's sign-in, nothing
+    for a bucket or project that does not exist yet."""
     try:
         bucket = open_bucket(project)
         found = bucket.read(STATE_OBJECT)
-    except Exception as exc:  # no credentials, no access: said, never taken as "no install"
+    except Exception as exc:  # no access: said, never taken as "no install"
+        first = _first_run(exc)
+        if first is not None:
+            return None, None, first or None
         return None, None, f"{type(exc).__name__}: {exc}"
     if found is None:
         return bucket, None, None
@@ -406,7 +466,9 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
     manifest = load_manifest(args.manifest)
     local = local_path(args.project)
     bucket, remote, problem = _read_bucket(args.project)
-    if problem is not None:
+    if problem == NOT_SIGNED_IN:
+        print(f"swarm install: {NOT_SIGNED_IN}")
+    elif problem is not None:
         print(
             f"swarm install: the state bucket {_bucket_uri(args.project)} could not be read "
             f"({problem}); using the local state at {local}",
@@ -484,6 +546,17 @@ def channel_of(release: str | None) -> str:
 def plugin_marketplace(release: str | None) -> str:
     channel = channel_of(release)
     return PLUGIN_MARKETPLACE if channel == "stable" else CHANNEL_MARKETPLACE.format(channel=channel)
+
+
+def teammates_line(state: InstallState, url: str) -> str | None:
+    """The line that tells a team how its teammates add the plugin; None for
+    a one-person install (`sizing.mode`), which has no teammates."""
+    if one_person(state):
+        return None
+    return (
+        f"  Teammates:  claude plugin marketplace add {plugin_marketplace(state.release)}"
+        f"  (deployment URL: {url})"
+    )
 
 
 def _when(at: float | None) -> str:
@@ -574,10 +647,9 @@ def _status(args: argparse.Namespace) -> int:
         url = f"https://{state.hostname}"
         print("Ready.")
         print(f"  Console:    {url}/")
-        print(
-            f"  Teammates:  claude plugin marketplace add {plugin_marketplace(state.release)}"
-            f"  (deployment URL: {url})"
-        )
+        teammates = teammates_line(state, url)
+        if teammates is not None:
+            print(teammates)
         print("  Health:     swarm doctor")
     elif code != ExitCode.OK:
         print(f"Not finished. Resume with: swarm install --project {args.project} --env {args.env}")
