@@ -48,6 +48,7 @@ import pytest
 import yaml
 
 from .application_paths import reaches
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "build-images.sh"
@@ -620,7 +621,8 @@ def test_mains_build_and_push_is_unchanged():
     build = _jobs()["build"]
     # ...and not on a merge queue entry, whose ref the pool rejects as it
     # rejects a pull request's (test_merge_queue_workflows.py).
-    assert build["if"] == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(build["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
         # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
         "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}")
     runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]

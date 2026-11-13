@@ -44,6 +44,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .test_fast_checks_on_lane_prs import LANE_SKIP
 from .test_release_reuses_ci_images import _evaluate, _render
 
 
@@ -72,10 +73,11 @@ def test_a_lane_push_never_builds_or_pushes_images():
     every event but pull_request and merge_group, which would now include a
     lane push. MUTATION: keep the old `github.event_name != 'pull_request'` if."""
     build = _workflow("application.yml")["jobs"]["build"]
+    # The lane clause (test_fast_checks_on_lane_prs.py) ends every job's `if:`.
     assert build["if"] == (
-        "${{ !cancelled() && !failure() && github.event_name != 'pull_request' && "
+        "${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && "
         "github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || "
-        "!cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"
+        "!cancelled() && !failure() && github.event_name == 'workflow_dispatch') && " + LANE_SKIP + " }}"
     ), build["if"]
 
 
@@ -85,12 +87,12 @@ def test_a_lane_push_never_plans_and_says_so():
     MUTATION: keep the plan's `!= 'pull_request' && != 'merge_group'` if."""
     jobs = _workflow("terraform.yml")["jobs"]
     assert jobs["plan"]["if"] == (
-        "github.event_name != 'pull_request' && github.event_name != 'merge_group' && "
-        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'"
+        "(github.event_name != 'pull_request' && github.event_name != 'merge_group' && "
+        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && " + LANE_SKIP
     ), jobs["plan"]["if"]
     assert jobs["plan-not-run"]["if"] == (
-        "github.event_name == 'pull_request' || github.event_name == 'merge_group' || "
-        "(github.event_name == 'push' && github.ref != 'refs/heads/main')"
+        "(github.event_name == 'pull_request' || github.event_name == 'merge_group' || "
+        "(github.event_name == 'push' && github.ref != 'refs/heads/main')) && " + LANE_SKIP
     ), jobs["plan-not-run"]["if"]
 
 
