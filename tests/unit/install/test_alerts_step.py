@@ -121,3 +121,48 @@ def test_descriptors_that_never_appear_open_the_log_metrics_page(monkeypatch: py
         step.apply(ctx, step.plan(ctx))
     assert opened == [f"https://console.cloud.google.com/logs/metrics?project={ctx.project}"]
     assert "metric_descriptors_ready" not in ctx.outputs
+
+
+class SomeDescriptors:
+    """Cloud Monitoring with `count` of the platform's log metric descriptors."""
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def metric_descriptors(self, project, prefix):
+        return [f"{prefix}/{name}" for name in alerts.LOG_METRICS[:self.count]]
+
+
+def test_the_registered_step_waits_for_every_log_metric_descriptor() -> None:
+    """One descriptor is not every descriptor: the step the engine runs turns
+    create_alerts on only once each log metric's descriptor exists, else a
+    policy on a missing one fails with "Cannot find metric" (lesson 23)."""
+    ctx = FakeCtx(clock=FakeClock())
+    every = len(alerts.LOG_METRICS)
+    for build in (lambda deps: alerts.build_steps(deps)[0], alerts.AlertsStep):
+        assert not build(Deps(gcp=lambda: SomeDescriptors(1))).descriptors_ready(ctx)
+        assert not build(Deps(gcp=lambda: SomeDescriptors(every - 1))).descriptors_ready(ctx)
+        assert build(Deps(gcp=lambda: SomeDescriptors(every))).descriptors_ready(ctx)
+
+
+def test_log_metrics_are_every_metric_the_monitoring_module_makes() -> None:
+    """`LOG_METRICS` is held to terraform/modules/monitoring: a metric added
+    there and not here would let the alert policies go on before it exists."""
+    import re
+    from pathlib import Path
+
+    module = Path(__file__).resolve().parents[3] / "terraform" / "modules" / "monitoring"
+    names: list[str] = []
+    for tf in sorted(module.glob("*.tf")):
+        text = tf.read_text()
+        for match in re.finditer(r'^resource "google_logging_metric" "(\w+)" \{\n(.*?)^\}', text, re.S | re.M):
+            body = match.group(2)
+            assert not re.search(r"^\s*count\s*=", body, re.M), f"{match.group(1)} is conditional"
+            if re.search(r"^\s*for_each\s*=\s*local\.event_metrics", body, re.M):
+                block = re.search(r"^  event_metrics = \{\n(.*?)^  \}", text, re.S | re.M)
+                assert block, "the event_metrics local"
+                names += [key.replace("_", "-") for key in re.findall(r'^    "(\w+)" = \{', block.group(1), re.M)]
+            else:
+                names += re.findall(r'^\s*name\s*=\s*"\$\{var\.name_prefix\}/([^"]+)"', body, re.M)
+    assert len(names) > 7
+    assert sorted(names) == sorted(alerts.LOG_METRICS)

@@ -29,6 +29,7 @@ those are never answered by a pipe either.
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Callable
 from typing import Any, NoReturn, Protocol, TypeVar
 
@@ -37,9 +38,20 @@ T = TypeVar("T")
 #: The `reason` of the `step_paused` event a step emits when it has no terminal.
 NEEDS_TERMINAL = "needs_terminal"
 
-#: What the person types, in their own terminal, to go on (`!` runs it outside
-#: the Claude session in Claude Code).
+#: The start of the line the Claude Code skill hands on to go on (`!` runs it
+#: outside the Claude session in Claude Code); `resume_line` adds the install's
+#: --project and --env.
 RESUME_LINE = "! swarm install"
+
+
+def resume_line(ctx: Any, *, bang: bool = False) -> str:
+    """The line that resumes this install: `swarm install --project P --env E`,
+    with the leading `!` only for the Claude Code skill's own session."""
+    line = RESUME_LINE if bang else RESUME_LINE.removeprefix("! ")
+    for flag, value in (("--project", ctx.project), ("--env", getattr(ctx, "environment", ""))):
+        if value:
+            line += f" {flag} {shlex.quote(str(value))}"
+    return line
 
 
 class NoTerminal(OSError):
@@ -116,10 +128,10 @@ def needs_terminal(ctx: Any, step_id: str, what: str) -> NoReturn:
 
     message = (
         f"{step_id} needs {what} typed at a hidden prompt in a terminal, never through a "
-        f"chat or a pipe. In your own terminal run: {RESUME_LINE}"
+        f"chat or a pipe. In your own terminal run: {resume_line(ctx)}"
     )
     ctx.events.emit(
-        "step_paused", step=step_id, reason=NEEDS_TERMINAL, command=RESUME_LINE, message=message
+        "step_paused", step=step_id, reason=NEEDS_TERMINAL, command=resume_line(ctx, bang=True), message=message
     )
     raise _Stop("paused", step_id, message)
 

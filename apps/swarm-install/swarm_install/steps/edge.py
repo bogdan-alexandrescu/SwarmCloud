@@ -57,7 +57,7 @@ from .. import swarm_context
 from ..exitcodes import MET, UNMET, WAITING
 from ..waits import CERTIFICATE, WaitSpec
 from . import Observation, Plan, open_page
-from .preflight import ASK, COMPUTE, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
+from .preflight import ASK, COMPUTE, CRM, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: The frontend module's names (terraform/modules/frontend/main.tf:101, :297,
 #: `${var.name_prefix}-ui` with the default prefix `swarm`).
@@ -110,7 +110,7 @@ def _dns_look_at(ctx: Any) -> str:
     if not hostname:
         return f"the hostname's A record must answer {address} and nothing else"
     return (f"{PUBLIC_RESOLVER}?name={hostname}&type=A must answer {address} and nothing else; the record "
-            "is set where the step above said (the project's Cloud DNS zone, or your DNS provider)")
+            "is set where the step above said (a Cloud DNS zone, or your DNS provider)")
 
 
 #: plan §9.1: DNS, 60 min.
@@ -122,6 +122,12 @@ DNS_WAIT = WaitSpec(
     look_at=_dns_look_at,
     interval_s=30,
 )
+
+
+#: How many of the person's other projects edge.dns looks in for the
+#: hostname's zone when the install project has none: one page of
+#: `projects.search`, so a person who sees thousands waits for no scan of them.
+ZONE_PROJECTS = 50
 
 
 class EdgeApi:
@@ -137,6 +143,13 @@ class EdgeApi:
     def managed_zones(self, project: str) -> list[dict[str, Any]]:
         """Cloud DNS `managedZones.list` for the project."""
         return self._gcp()._pages(f"{DNS_API}/projects/{project}/managedZones", "managedZones")
+
+    def visible_projects(self) -> list[str]:
+        """The ids of the ACTIVE projects the person can see (Resource Manager
+        `projects.search`), the first `ZONE_PROJECTS` of them."""
+        found = self._gcp()._call("GET", f"{CRM}/v3/projects:search",
+                                  params={"query": "state:ACTIVE", "pageSize": ZONE_PROJECTS}) or {}
+        return [str(p["projectId"]) for p in found.get("projects") or () if p.get("projectId")][:ZONE_PROJECTS]
 
     def a_records(self, project: str, zone: str, name: str) -> list[dict[str, Any]]:
         """Cloud DNS `resourceRecordSets.list`, the A records named `name` (a fully qualified name)."""
@@ -499,8 +512,9 @@ class DnsStep(_Base):
     satisfies = ("dns.frontend-hostname",)
     _explain = (
         "Google issues the managed certificate only once the hostname resolves to the load balancer's "
-        "address; until then it stays FAILED_NOT_VISIBLE (lesson 17). When the project's Cloud DNS holds "
-        "the hostname's zone the engine creates the record there, after a typed approval; otherwise it is "
+        "address; until then it stays FAILED_NOT_VISIBLE (lesson 17). When Cloud DNS holds the hostname's "
+        "zone, in the install project or another one the person can see, the engine creates the record "
+        "there, after a typed approval that names the project; otherwise it is "
         "set at the person's DNS provider. Either way it is polled through Google Public DNS."
     )
 
@@ -512,14 +526,33 @@ class DnsStep(_Base):
         return f"{self._hostname(ctx)}.  {RECORD_TTL}  IN  A  {_reserved_ip(self, ctx)}"
 
     def zone(self, ctx: Any) -> dict[str, Any] | None:
-        """The project's public Cloud DNS zone covering the hostname, or None:
-        none covers it, or the zones cannot be listed (Cloud DNS off, or no
-        right to list them), and the record is then set by hand."""
+        """The public Cloud DNS zone covering the hostname, with the project
+        holding it as `project`: the install project's, else the longest one
+        in another project the person can see (a DNS project of its own is
+        common), a deny-listed project never looked in. None when no zone
+        covers it or none can be listed (Cloud DNS off, or no right to list
+        them): the record is then set by hand."""
+        hostname = self._hostname(ctx)
+        found = self._covering(ctx.project, hostname)
+        if found is not None:
+            return found
         try:
-            zones = self.edge.managed_zones(ctx.project)
+            others = self.edge.visible_projects()
         except ApiError:
             return None
-        return covering_zone(zones, self._hostname(ctx))
+        deny = set(getattr(ctx.state, "deny_list", None) or ())
+        candidates = [zone for zone in (self._covering(project, hostname) for project in others
+                                        if project != ctx.project and project not in deny)
+                      if zone is not None and str(zone.get("name")) not in deny]
+        return max(candidates, key=lambda z: len(str(z["dnsName"])), default=None)
+
+    def _covering(self, project: str, hostname: str) -> dict[str, Any] | None:
+        try:
+            zones = self.edge.managed_zones(project)
+        except ApiError:
+            return None
+        found = covering_zone(zones, hostname)
+        return None if found is None else {**found, "project": project}
 
     def plan(self, ctx: Any) -> Plan:
         record = self._record(ctx)
@@ -528,7 +561,7 @@ class DnsStep(_Base):
             return Plan(
                 f"create the hostname's A record in Cloud DNS zone {zone.get('name')} after your typed approval "
                 "(the hostname); the install continues once it resolves",
-                (record, f"Cloud DNS zone {zone.get('name')} ({zone.get('dnsName')}) in {ctx.project}"),
+                (record, f"Cloud DNS zone {zone.get('name')} ({zone.get('dnsName')}) in {zone['project']}"),
             )
         return Plan(
             "set the hostname's A record at your DNS provider; the install continues once it resolves",
@@ -544,7 +577,7 @@ class DnsStep(_Base):
         return f"https://toolbox.googleapps.com/apps/dig/#A/{self._hostname(ctx)}"
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """In the project's Cloud DNS zone, the record is created after one
+        """In the hostname's Cloud DNS zone, the record is created after one
         typed approval; else it is set at the person's DNS provider: print it,
         open the page that shows it landing, and let the engine poll."""
         zone = self.zone(ctx)
@@ -555,27 +588,27 @@ class DnsStep(_Base):
         """Create (or correct) the A record in `zone`; False when the person
         chose to set it themselves."""
         hostname, ip = self._hostname(ctx), _reserved_ip(self, ctx)
-        name, zone_name = _fqdn(hostname), str(zone["name"])
+        name, zone_name, project = _fqdn(hostname), str(zone["name"]), str(zone["project"])
         edge = self.edge
-        existing = edge.a_records(ctx.project, zone_name, name)
+        existing = edge.a_records(project, zone_name, name)
         if [r.get("rrdatas") for r in existing] == [[ip]]:
             return True  # already there: the engine polls until it resolves
         replacing = "".join(f"\n  replacing {r.get('name')} {r.get('ttl')} IN A {' '.join(r.get('rrdatas') or ())}"
                             for r in existing)
         typed = self._ask(ctx, self.id, (
             f"The installer will {'replace' if existing else 'create'} this record in Cloud DNS zone {zone_name} "
-            f"({zone.get('dnsName')}) of {ctx.project}:\n  {self._record(ctx)}{replacing}\n"
+            f"({zone.get('dnsName')}) of {project}:\n  {self._record(ctx)}{replacing}\n"
             f"Type the hostname ({hostname}) to approve, or {MANUAL} to set it at your DNS provider yourself"
         )).strip()
         if typed == MANUAL:
             return False
         if typed != hostname:
             raise PermissionError(f"not confirmed (typed {typed!r}, not {hostname!r}); no DNS record was changed")
-        edge.change_records(ctx.project, zone_name, {
+        edge.change_records(project, zone_name, {
             "deletions": existing,
             "additions": [{"name": name, "type": "A", "ttl": RECORD_TTL, "rrdatas": [ip]}],
         })
-        remember(ctx, outputs={"dns_zone": zone_name})
+        remember(ctx, outputs={"dns_zone": zone_name, "dns_zone_project": project})
         return True
 
     def _by_hand(self, ctx: Any) -> None:

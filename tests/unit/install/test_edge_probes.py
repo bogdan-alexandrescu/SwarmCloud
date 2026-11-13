@@ -50,6 +50,9 @@ class FakeEdge:
         self.writes: list[tuple[str, tuple[Any, ...]]] = []
         self.zones: list[dict[str, Any]] = []
         self.zones_error: ApiError | None = None
+        #: Other projects the person can see, and the zones each holds.
+        self.projects: list[str] = []
+        self.zones_in: dict[str, list[dict[str, Any]]] = {}
         self.records: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.answers: dict[str, set[str] | None] = {}
         #: Seconds after a Cloud DNS change before Google Public DNS answers it.
@@ -65,9 +68,15 @@ class FakeEdge:
 
     def managed_zones(self, project):
         self.calls.append(("managed_zones", (project,)))
+        if project in self.zones_in:
+            return list(self.zones_in[project])
         if self.zones_error is not None:
             raise self.zones_error
-        return list(self.zones)
+        return list(self.zones) if project == PROJECT else []
+
+    def visible_projects(self):
+        self.calls.append(("visible_projects", ()))
+        return list(self.projects)
 
     def a_records(self, project, zone, name):
         self.calls.append(("a_records", (project, zone, name)))
@@ -257,6 +266,48 @@ def test_dns_in_a_cloud_dns_zone_is_created_after_a_typed_approval(
     assert rig.store.load().outputs["dns_zone"] == "example-com"
 
 
+def test_dns_zone_in_another_visible_project_is_found_and_written_there(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hostname's zone often lives in a DNS project of its own: with none in
+    the install project, the longest covering public zone in a project the
+    person can see holds the record, after the same typed approval, which names
+    that project; a deny-listed project is never looked in."""
+    opened = _pages(monkeypatch)
+    rig = _rig(tmp_path)
+    rig.store.update(lambda s: setattr(s, "deny_list", ["shared-dns"]))
+    fake = FakeEdge(rig.clock)
+    fake.projects = [PROJECT, "dns-hub", "shared-dns", "no-dns"]
+    fake.zones_in = {"dns-hub": [{"name": "com", "dnsName": "com.", "visibility": "public"}, ZONE],
+                     "shared-dns": [{"name": "swarm", "dnsName": f"{HOST}.", "visibility": "public"}]}
+    fake.zones_error = ApiError(403, "PERMISSION_DENIED", "dns.managedZones.list")  # no-dns: Cloud DNS off
+    ask = Answers(edge_dns=[HOST])
+
+    result = rig.engine([edge.DnsStep(lambda: FakeGcp(), ask, lambda: fake)]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert opened == [], "nothing to set by hand"
+    assert len(ask.asked) == 1 and "dns-hub" in ask.asked[0][1]
+    assert fake.writes == [("change_records", ("dns-hub", "example-com", {
+        "deletions": [],
+        "additions": [{"name": f"{HOST}.", "type": "A", "ttl": 300, "rrdatas": [IP]}],
+    }))]
+    assert ("shared-dns",) not in fake.called("managed_zones"), "a deny-listed project is never read"
+    outputs = rig.store.load().outputs
+    assert outputs["dns_zone"] == "example-com" and outputs["dns_zone_project"] == "dns-hub"
+
+
+def test_dns_zone_in_the_install_project_comes_first(tmp_path: Path) -> None:
+    ctx = ctx_for(outputs={"project_number": NUMBER, "global_ip": IP}, hostname=HOST)
+    fake = FakeEdge(ctx.clock)
+    fake.zones = [ZONE]
+    fake.projects = ["dns-hub"]
+    fake.zones_in = {"dns-hub": [{"name": "swarm", "dnsName": f"{HOST}.", "visibility": "public"}]}
+    step = edge.DnsStep(lambda: FakeGcp(), Answers(), lambda: fake)
+    zone = step.zone(ctx)
+    assert zone is not None and zone["name"] == "example-com" and zone["project"] == PROJECT
+    assert fake.called("visible_projects") == [], "other projects are looked in only when the install's has none"
+    assert PROJECT in step.plan(ctx).actions[1]
+
+
 def test_dns_replaces_a_wrong_record_in_the_zone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _pages(monkeypatch)
     rig = _rig(tmp_path)
@@ -386,6 +437,11 @@ def test_edge_api_urls_and_the_public_resolver() -> None:
     assert session.requests[1][3] == {"name": f"{HOST}.", "type": "A"}
     assert api.resolve(HOST) == {IP}, "only the A answers count, a CNAME is followed by the resolver"
     assert asked == [("https://dns.google/resolve", {"name": HOST, "type": "A"})]
+
+    search = "https://cloudresourcemanager.googleapis.com/v3/projects:search"
+    session.answers[search] = {"projects": [{"projectId": PROJECT}, {"projectId": "dns-hub"}, {"name": "x"}]}
+    assert api.visible_projects() == [PROJECT, "dns-hub"]
+    assert session.requests[-1][:2] == ("GET", search) and session.requests[-1][3]["query"] == "state:ACTIVE"
 
     nx = edge.EdgeApi(lambda: Gcp(session), http_get=lambda url, **_: _Response(200, {"Status": 3}))
     assert nx.resolve(HOST) == set(), "NXDOMAIN: resolves to nothing"
