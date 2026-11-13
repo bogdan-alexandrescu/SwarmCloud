@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from swarm_install.api_client import deployer_email
+from swarm_install.steps import alerts
 from swarm_install.steps.bootstrap import PLATFORM_ACCOUNTS
 from swarm_install.terraform import IMPERSONATE_ENV
 
@@ -204,9 +205,9 @@ def infra(world: World, cloud: Cloud, project: str, inputs: dict[str, Any], targ
     for email in inputs.get("alert_emails") or []:
         if not any(c["labels"]["email_address"] == email for c in cloud.channels):
             cloud.channels.append({"type": "email", "labels": {"email_address": email}})
-    for metric in ("swarm_dispatch_errors", "swarm_stale_generation"):
-        if f"logging.googleapis.com/user/{metric}" not in cloud.descriptors:
-            cloud.descriptors.append(f"logging.googleapis.com/user/{metric}")
+    for metric in alerts.LOG_METRICS:  # every one terraform/modules/monitoring makes, under name_prefix swarm
+        if f"{alerts.LOG_METRIC_PREFIX}/{metric}" not in cloud.descriptors:
+            cloud.descriptors.append(f"{alerts.LOG_METRIC_PREFIX}/{metric}")
     if inputs.get("create_alerts") and not cloud.alert_policies:
         cloud.alert_policies.append({"displayName": "swarm dispatch errors"})
     # swarm-api's revision, its environment as terraform/infra/locals.tf renders it.
