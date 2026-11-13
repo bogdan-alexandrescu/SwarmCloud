@@ -1,0 +1,121 @@
+# Lane EPIC-FINDINGS install manifest: a registered engine step that no entry
+# named was out of reach of `swarm doctor` and `swarm install --repair <id>`.
+# Each step below checks a dependency of its own, so it gets an entry here;
+# the steps that only re-apply another step's pass are excused, with their
+# reasons, in tests/unit/install/test_manifest_steps.py (NO_ENTRY_STEPS).
+version: 1
+entries:
+- id: other.google-organisation
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-console
+  check: the signed-in account sees a Google organisation (the project's, when the project exists in one)
+  apply: preflight.organization says first, before any question, that an organisation is needed, opens the
+    Cloud Identity Free sign-up and waits until one appears; a consumer account is signed in again as the
+    organisation's account
+  verify: preflight.organization re-check is MET
+  explain: the project lives in an organisation, IAP admits the organisation's domain and the console's people
+    are its accounts; a personal account has none, and no path installs without one
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.installer-sign-in
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  notes: null
+  step: preflight.organization
+- id: other.region-confirmed
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: state.region is set and state.outputs.region_confirmed equals it
+  apply: preflight.region takes the verb's region and asks only for its typed confirmation; it never defaults
+    the region back
+  verify: preflight.region re-check is MET
+  explain: Firestore's location can never change once the database exists (lesson 2), so the region is chosen
+    and confirmed before stage 1 creates anything
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/preflight.py
+  notes: null
+  step: preflight.region
+- id: other.never-touch-list
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: config/$E/deny-list.json in the state bucket reads as a usable never-touch list and equals the install
+    state's deny_list
+  apply: foundations.config writes the list once (explicitly empty for a project the installer created; for one
+    that existed, what it holds that the deployment does not own, after a typed approval) and reads it into the
+    state; a list already there is never replaced
+  verify: foundations.config re-check is MET
+  explain: every script and the engine refuse to touch what the never-touch list names, and refuse everything
+    when it cannot be read; a missing or malformed list is never taken as empty
+  guards: a list that cannot be read stops the step; the installer never replaces one
+  secret_entry: null
+  depends_on:
+  - other.install-state
+  evidence:
+  - apps/swarm-install/swarm_install/steps/foundations.py
+  notes: null
+  step: foundations.config
+- id: other.github-webhook-active
+  kind: other
+  scope: core
+  stage: 9
+  provider: engine
+  check: state.outputs.github_hook_active is set by swarm-api
+  apply: github.hook asks swarm-api, once github.pass-4 is done and the hooks endpoint serves, to set the App's
+    webhook active; swarm-api signs the App JWT itself
+  verify: github.hook re-check is MET
+  explain: the webhook is turned on only after the App's self-check passed and its secret has a version; the
+    engine never holds the App's key
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/github_switches.py
+  notes: null
+  step: github.hook
+- id: other.verify-reconciler-jobs
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: swarm-reconciler may list Jobs in every tenant namespace, as its email and as its uniqueId
+  apply: nothing is made; verify.reconciler-jobs reads it, and a failure names the grant the infra pass makes
+  verify: verify.reconciler-jobs re-check is MET
+  explain: the reconciler releases a dead GKE lease only if it can see the Job; it once listed Jobs at cluster
+    scope, which it was never granted, and saw nothing (lessons 29, 30)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - sa.swarm-reconciler
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  notes: null
+  step: verify.reconciler-jobs
+- id: other.verify-plugins
+  kind: other
+  scope: core
+  stage: 14
+  provider: engine
+  check: the plugins bucket and the swarm-plugin-intake job are as plugins.tf makes them, a tenant account can
+    read platform/, and with the built-ins switch on the bundle build pushes only to the plugin bundles repository
+  apply: nothing is made; verify.plugins reads it with the doctor's plugin checks
+  verify: verify.plugins re-check is MET
+  explain: managed plugins are pinned in one bucket and unpacked only by the swarm-plugin-intake job, and a
+    worker loads platform plugins from platform/ (managed-plugins.md sections 1.4.2 and 15)
+  guards: null
+  secret_entry: null
+  depends_on:
+  - bucket.plugins
+  evidence:
+  - apps/swarm-install/swarm_install/steps/verify.py
+  notes: null
+  step: verify.plugins

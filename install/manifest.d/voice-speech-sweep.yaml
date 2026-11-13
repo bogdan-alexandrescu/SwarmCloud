@@ -13,7 +13,7 @@ entries:
 - id: iam-binding.tick-invokes-api-speech-sweep
   kind: iam-binding
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud run services get-iam-policy swarm-api --region=$REGION --project=$P --flatten=bindings
@@ -37,7 +37,7 @@ entries:
 - id: sched.voice-speech-sweep
   kind: scheduler-job
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   step: infra.pass-1
   check: gcloud scheduler jobs describe ${name_prefix}-voice-speech-sweep --project=$P --location=$REGION
