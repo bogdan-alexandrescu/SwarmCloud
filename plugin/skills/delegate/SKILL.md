@@ -231,6 +231,19 @@ key the contract does not have) is refused before anything is sent, naming
 the step and the field. `review_gate` and `work_contract` are the only step
 metadata a spec sets.
 
+**A step that must start from another ref takes the step's
+`repository_ref`**, never a `git checkout` line in its prompt. A branch, tag
+or full commit sha, in a `swarm_workflow` step and in a `/sc:swarmcloud` spec
+alike: one step works on an open pull request's branch while the rest of the
+workflow stays on `main`. The step's clone starts from it and its attempt
+reports that ref's head; a checkout in the prompt happens after the clone, so
+the attempt reports the wrong base and an agent that skips it works on the
+wrong tree. It is sent as given: swarm-api refuses an abbreviated sha, a ref
+the forge does not have, and a step ref beside `builds_on` or a `pr_role`, in
+a workflow with `continues_task`, `merge_pr` or `publish_to_pr`, or on a step
+an `integrate` integrator merges. Report the refusal as given. It names a
+ref of the same repository, nothing else (docs/workflows.md).
+
 **A repository's whole Playwright suite is `swarm_suite_gate`, not a
 hand-written workflow.** Name the registered `repository`, the `ref`, `suite:
 "playwright"`, `working_dir` and `shards` (1 to 20, default 8). The bridge
