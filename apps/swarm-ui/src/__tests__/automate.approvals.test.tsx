@@ -2,20 +2,19 @@
 // proposal B; lane AUTO-A4A5).
 //
 // WHAT EACH CASE HOLDS:
-//   * the list's lead counts every waiting item -- not only the reader's --
-//     and names the oldest item's expiry;
-//   * Waiting is oldest first as the route serves it, each row with its
-//     expiry and who may decide (`may_decide.deciders`), and a row opens the
-//     item's own page at `/automate/approvals/<id>`;
-//   * Decided and Expired-or-superseded are drawn from what the read serves in
+//   * Waiting is cards, oldest first, each with its expiry and its approvers
+//     (`may_decide.deciders`), and a card opens the item's own page at
+//     `/automate/approvals/<id>` (the cards mock-up, 12 November 2026);
+//   * Decided, Expired and Superseded are drawn from what the read serves in
 //     those states, and not drawn when it serves none;
-//   * an empty inbox is the Absent state, with no lead and no table;
+//   * an empty inbox is one "Nothing waiting" line, with no card;
 //   * the decision page offers Reject (never Deny) and Approve to a reader who
-//     may approve, with the reason box beside them; a reader who may do
-//     neither sees no button and is told who decides and why not them; a
-//     reader who may only reject sees only Reject;
-//   * each state says its word: waiting, approved, rejected (its reason
-//     quoted), expired, superseded (the head it moved to, the newer request);
+//     may approve, Reject asking for its reason once pressed; a reader who may
+//     do neither sees no button and is told who decides, why not them in a
+//     tooltip; a reader who may only reject sees only Reject;
+//   * each decided state says its word on the strip: approved, rejected (its
+//     reason quoted), expired, superseded (the head it moved to, the newer
+//     request); a waiting item's strip carries the verbs, no word;
 //   * a merge's check counts are drawn when served and a dash when not, and
 //     a hold's reasons are paired with the files they matched;
 //   * at 390px nothing is laid out wider than the screen.
@@ -132,36 +131,33 @@ afterEach(() => {
 })
 
 describe('the Approvals list (A4)', () => {
-  it('counts every waiting item in its lead, the reader’s or not, and names the oldest one’s expiry', async () => {
+  it('counts the waiting items on the Waiting panel, oldest first, the reader’s or not', async () => {
     await mount('', routes(INBOX))
-    const lead = await screen.findByTestId('apl-lead', undefined, WAIT)
+    const waiting = await screen.findByTestId('apl-waiting', undefined, WAIT)
     // MUTATION: count only the items the reader may decide (2), not every item (3).
-    expect(visible(within(lead).getByTestId('apl-count'))).toBe('3 items wait for a decision.')
-    // MUTATION: name the newest item, or leave its expiry out.
-    const oldest = visible(within(lead).getByTestId('apl-oldest'))
-    expect(oldest).toContain('(apr_oldest)')
-    expect(oldest).toMatch(/expires in 4[12]h/)
-    expect(within(lead).getByRole('link', { name: 'Open the oldest' }).getAttribute('href')).toBe('/automate/approvals/apr_oldest')
+    expect(visible(waiting.querySelector('.apc-panel-h'))).toMatch(/^Waiting\s*3, oldest first$/)
+    // The cards mock-up draws no lead above the list.
+    expect(screen.queryByTestId('apl-lead')).toBeNull()
   })
 
   it('lists waiting items oldest first with expiry and who may decide, each opening its own page', async () => {
     await mount('', routes(INBOX))
     const card = await screen.findByTestId('apl-waiting', undefined, WAIT)
-    const rows = [...card.querySelectorAll<HTMLElement>('tbody tr[data-approval]')]
+    const rows = [...card.querySelectorAll<HTMLElement>('.apc-card[data-approval]')]
     expect(rows.map((r) => r.dataset.approval)).toEqual(['apr_oldest', 'run:run_4f0c', 'apr_newest'])
-    const heads = [...card.querySelectorAll('thead th')].map((th) => th.textContent)
-    expect(heads).toEqual(['Kind', 'What', 'Asked', 'Expires in', 'Who may decide'])
     // MUTATION: read who may decide off `approvers` when `deciders` is served.
-    const who = (r: HTMLElement) => visible(r.querySelector('td[data-l="Who may decide"]'))
-    expect(who(rows[0]!)).toMatch(/^the platform owner\s*you may decide$/)
-    expect(who(rows[1]!)).toMatch(/^the platform owner\s*not you$/)
-    expect(who(rows[2]!)).toMatch(/^any member of this workspace\s*you may decide$/)
-    expect(visible(rows[1]!)).toContain('held for the platform owner')
+    const fact = (r: HTMLElement, name: string) => visible([...r.querySelectorAll('dt')].find((t) => t.textContent === name)?.nextElementSibling ?? null)
+    const who = (r: HTMLElement) => fact(r, 'Approvers')
+    expect(who(rows[0]!)).toBe('the platform owner')
+    expect(who(rows[1]!)).toBe('the platform owner · not you')
+    expect(who(rows[2]!)).toBe('any member of this workspace')
+    for (const r of rows) expect(fact(r, 'Expires')).toMatch(/^in \d+[hd]$/)
     // MUTATION: open the item in a pane beside the list again.
-    expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/run%3Arun_4f0c')
+    expect(within(rows[1]!).getByRole('link', { name: 'Review' }).getAttribute('href')).toBe('/automate/approvals/run%3Arun_4f0c')
     expect(document.querySelector('[data-testid="ap-detail"]')).toBeNull()
     expect(screen.queryByTestId('apl-decided')).toBeNull()
-    expect(screen.queryByTestId('apl-ended')).toBeNull()
+    expect(screen.queryByTestId('apl-expired')).toBeNull()
+    expect(screen.queryByTestId('apl-superseded')).toBeNull()
   })
 
   it('counts each kind on its chip from the whole inbox, and draws no chip for a kind with nothing waiting', async () => {
@@ -174,7 +170,7 @@ describe('the Approvals list (A4)', () => {
     expect(chips.queryByRole('button', { name: /^Spec/ })).toBeNull()
   })
 
-  it('draws decided and expired items the read serves in their own cards, with who decided and the reason', async () => {
+  it('draws decided, expired and superseded items the read serves in their own panels, with who decided', async () => {
     const inbox = [
       ...INBOX,
       item('apr_r', { state: 'rejected', decided_by: 'teammate@example.com', decided_at: hoursFromNow(-3), reason: 'split the workflow change out' }),
@@ -185,29 +181,21 @@ describe('the Approvals list (A4)', () => {
     await mount('', routes(inbox))
     const decided = await screen.findByTestId('apl-decided', undefined, WAIT)
     // MUTATION: draw a decided item among the waiting ones.
-    expect([...screen.getByTestId('apl-waiting').querySelectorAll('tbody tr')]).toHaveLength(3)
-    expect(visible(within(decided).getByRole('heading'))).toBe('Decided · 2')
-    const r = decided.querySelector<HTMLElement>('tr[data-approval="apr_r"]')!
-    expect(visible(r.querySelector('td[data-l="Decision"]'))).toBe('rejected')
-    // MUTATION: let the decided word wrap, and an auto-layout cell under
-    // overflow-wrap:anywhere shrinks to one character ("approve / d").
-    expect(painted(r.querySelector<HTMLElement>('.apl-state')!, 'white-space', WIDE)).toBe('nowrap')
-    expect(visible(r)).toContain('teammate@example.com')
-    expect(visible(r)).toContain('split the workflow change out')
-    const ended = screen.getByTestId('apl-ended')
-    expect(visible(within(ended).getByRole('heading'))).toBe('Expired or superseded · 2')
-    expect(visible(ended.querySelector('tr[data-approval="apr_x"] td[data-l="Ended"]'))).toBe('expired')
-    expect(visible(ended.querySelector('tr[data-approval="apr_s"] td[data-l="Ended"]'))).toBe('superseded')
-    // The lead counts the waiting items only.
-    expect(visible(screen.getByTestId('apl-count'))).toBe('3 items wait for a decision.')
+    expect(screen.getByTestId('apl-waiting').querySelectorAll('.apc-card')).toHaveLength(3)
+    expect(visible(within(decided).getByRole('heading', { level: 2 }))).toBe('Decided')
+    const r = decided.querySelector<HTMLElement>('.apc-card[data-approval="apr_r"]')!
+    expect(visible(r)).toMatch(/Rejected by\s*teammate@example\.com/)
+    expect(visible(decided.querySelector('.apc-card[data-approval="apr_a"]'))).toMatch(/Approved by\s*owner@example\.com/)
+    expect(screen.getByTestId('apl-expired').querySelector('[data-approval="apr_x"]')).not.toBeNull()
+    expect(visible(screen.getByTestId('apl-superseded').querySelector('[data-approval="apr_s"]'))).toContain('head moved')
   })
 
   it('is the Absent state when nothing waits: no lead, no table, the filter kept', async () => {
     await mount('', routes([]))
-    // MUTATION: draw the lead or an empty Waiting table over a measured zero.
-    await screen.findByText('Nothing waiting', undefined, WAIT)
-    expect(screen.queryByTestId('apl-lead')).toBeNull()
-    expect(document.querySelector('table')).toBeNull()
+    // MUTATION: draw an empty Waiting grid over a measured zero.
+    await screen.findByTestId('apl-nothing', undefined, WAIT)
+    expect(visible(screen.getByTestId('apl-nothing'))).toMatch(/^Nothing waiting/)
+    expect(document.querySelector('.apc-card')).toBeNull()
     expect(screen.getByRole('group', { name: 'Kind' })).toBeTruthy()
   })
 })
@@ -223,9 +211,9 @@ describe('one approval’s decision page (A5)', () => {
     const d = await page()
     await within(d).findByRole('button', { name: 'Approve merge at dbd00f0' }, WAIT)
     // MUTATION: the old "Reject…" that opens a form, or B's "Deny".
-    const reject = within(d).getByRole('button', { name: 'Reject' }) as HTMLButtonElement
     expect(visible(document.body)).not.toMatch(/\bden(y|ied)\b/i)
-    expect(reject.disabled).toBe(true)
+    fireEvent.click(within(d).getByRole('button', { name: 'Reject' }))
+    expect((within(d).getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(within(d).getByRole('textbox', { name: /Reason/ }), { target: { value: 'split the workflow change out' } })
     fireEvent.click(within(d).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/apr_oldest:reject')).toHaveLength(1), WAIT)
@@ -241,10 +229,11 @@ describe('one approval’s decision page (A5)', () => {
     // MUTATION: draw Reject for everyone, as the old page did.
     expect(within(d).queryByRole('button', { name: /Approve|Reject/ })).toBeNull()
     expect(within(d).queryByRole('textbox')).toBeNull()
-    expect(visible(bar)).toContain('Only the platform owner decides this')
-    expect(visible(bar)).toContain('Only the platform owner may approve an item held NEEDS_OWNER.')
+    expect(visible(bar)).toContain('The platform owner only')
+    // Why not them is the tooltip's.
+    expect(within(bar).getByRole('tooltip', { hidden: true }).textContent).toBe('Only the platform owner may approve an item held NEEDS_OWNER.')
     // The evidence is still read in full.
-    expect(visible(d)).toContain('10 passed')
+    expect(visible(d)).toContain('of 10 checks passed')
   })
 
   it('offers only Reject to a reader the server lets reject but not approve', async () => {
@@ -257,18 +246,21 @@ describe('one approval’s decision page (A5)', () => {
 
   it('says each state in its word: waiting, approved, rejected with its reason, expired, superseded', async () => {
     const cases: [Json, string, RegExp][] = [
-      [{}, 'waiting', /You may decide this/],
-      [{ state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-1) }, 'approved', /Approved by owner@example\.com/],
-      [{ state: 'rejected', decided_by: 'owner@example.com', decided_at: hoursFromNow(-1), reason: 'split the workflow change out' }, 'rejected', /Rejected by owner@example\.com.*split the workflow change out/],
-      [{ state: 'expired', expires_at: hoursFromNow(-1) }, 'expired', /Expired .*nobody decided it in time.*The pull request stays open/],
+      [{}, 'pending', /Approve merge at dbd00f0/],
+      [{ state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-1) }, 'Approved', /Approved\s*by owner@example\.com/],
+      [{ state: 'rejected', decided_by: 'owner@example.com', decided_at: hoursFromNow(-1), reason: 'split the workflow change out' }, 'Rejected', /Rejected\s*by owner@example\.com.*split the workflow change out/],
+      [{ state: 'expired', expires_at: hoursFromNow(-1) }, 'Expired', /Expired.*nobody decided.*the pull request stays open/],
     ]
     for (const [over, word, said] of cases) {
       const view = await mount('approval=apr_oldest', routes(INBOX, detail(over)))
       const d = await page()
-      // MUTATION: print the API's `pending` instead of the page's word.
-      await waitFor(() => expect(within(d).getByTestId('ap-state').textContent).toBe(word), WAIT)
-      expect(visible(d)).toMatch(said)
-      if (word !== 'waiting') expect(within(d).queryByRole('button', { name: /Approve|Reject/ })).toBeNull()
+      const strip = await within(d).findByTestId('apd-decide', undefined, WAIT)
+      // MUTATION: print the API's `pending` instead of the page's word, or a
+      // word on a waiting item, which asks through its verbs.
+      if (word === 'pending') expect(within(d).queryByTestId('ap-state')).toBeNull()
+      else expect(within(strip).getByTestId('ap-state').textContent).toBe(word)
+      expect(visible(strip)).toMatch(said)
+      if (word !== 'pending') expect(within(d).queryByRole('button', { name: /Approve|Reject/ })).toBeNull()
       view.unmount()
     }
   })
@@ -279,12 +271,13 @@ describe('one approval’s decision page (A5)', () => {
       routes(INBOX, detail({ state: 'superseded', head_sha_now: MOVED, superseded_by: { approval_id: 'apr_newer', head_sha: MOVED, at: hoursFromNow(-1) } }, { green_sha: MOVED })),
     )
     const d = await page()
-    const bar = await within(d).findByTestId('ap-decided', undefined, WAIT)
-    expect(visible(bar)).toContain('Superseded: the head moved to 7a3e19c.')
+    const bar = await within(d).findByTestId('apd-decide', undefined, WAIT)
+    expect(visible(bar)).toContain('Superseded')
+    expect(visible(bar)).toContain('the head moved')
     expect(visible(bar)).toContain('This approval was for dbd00f0')
-    expect(within(d).getByTestId('ad-head-now').textContent).toBe('now 7a3e19c')
+    expect(visible(within(d).getByTestId('ad-head-now'))).toBe('Head moved to 7a3e19c')
     // MUTATION: leave out `superseded_by`, and the reader cannot find what to decide instead.
-    const next = within(bar).getByRole('link', { name: 'Open the newer request ›' })
+    const next = within(bar).getByRole('link', { name: 'Open the new approval ›' })
     expect(next.getAttribute('href')).toBe('/automate/approvals/apr_newer')
     fireEvent.click(next)
     expect(go).toHaveBeenCalledWith('automate/approvals?approval=apr_newer')
@@ -294,11 +287,11 @@ describe('one approval’s decision page (A5)', () => {
     const view = await mount('approval=apr_oldest', routes(INBOX, detail()))
     let d = await page()
     await waitFor(() => expect(within(d).getByTestId('ad-check-counts')).toBeTruthy(), WAIT)
-    expect(visible(within(d).getByTestId('ad-check-counts'))).toBe('10 passed · 0 failed · 0 pending at dbd00f0')
+    expect(visible(within(d).getByTestId('ad-check-counts'))).toMatch(/^10\s*of 10 checks passed\s*head dbd00f0$/)
     expect(d.querySelector('.ad-cbar')!.getAttribute('aria-label')).toBe('10 passed, 0 failed, 0 pending')
     const held = within(d).getByRole('region', { name: 'Why it is held' })
-    expect(visible(held)).toMatch(/workflows\s*\.github\/workflows\/unit-weights-refresh\.yml/)
-    expect(visible(held)).toMatch(/shared\s*scripts\/lib\/common\.sh/)
+    expect(visible(held)).toMatch(/\.github\/workflows\/unit-weights-refresh\.yml\s*workflows/)
+    expect(visible(held)).toMatch(/scripts\/lib\/common\.sh\s*shared/)
     view.unmount()
     await mount('approval=apr_oldest', routes(INBOX, detail({}, { checks: undefined })))
     d = await page()
@@ -320,40 +313,24 @@ describe('one approval’s decision page (A5)', () => {
 })
 
 describe('the layout', () => {
-  it('pins the decision bar on a desktop, and lays nothing out wider than a 390px phone', async () => {
+  it('pins the decision strip on a desktop, and lays nothing out wider than a 390px phone', async () => {
     await mount('approval=apr_oldest', routes(INBOX, { approval: item('apr_oldest'), merge: merge() }))
     const d = await page()
-    const bar = await within(d).findByTestId('ad-decide', undefined, WAIT)
+    const bar = await within(d).findByTestId('apd-decide', undefined, WAIT)
     // MUTATION: drop the sticky rule, and the verbs scroll away under the evidence.
     expect(painted(bar, 'position', WIDE)).toBe('sticky')
     expect(painted(bar, 'position', PHONE)).toBe('static')
     // MUTATION: keep two evidence columns at 390px.
-    expect(painted(d.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', WIDE)).toBe('minmax(0, 1fr) minmax(0, 1fr)')
-    expect(painted(d.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    const cols = d.querySelector<HTMLElement>('.apd-cols')!
+    expect(painted(cols, 'grid-template-columns', WIDE)).toBe('repeat(2, minmax(0, 1fr))')
+    expect(painted(cols, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
   })
 
-  it('reads the numbered evidence cards in their numbers’ order on one column at 390px', async () => {
-    await mount('approval=apr_oldest', routes(INBOX, { approval: item('apr_oldest'), merge: merge() }))
-    const d = await page()
-    await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
-    const cards = [...d.querySelectorAll<HTMLElement>('.ad-card')]
-    expect(cards.length).toBeGreaterThan(2)
-    expect(cards.map((c) => Number(c.getAttribute('data-n'))).sort((a, b) => a - b)).toEqual(cards.map((_, i) => i + 1))
-    const col = d.querySelector<HTMLElement>('.ad-col')!
-    expect(painted(col, 'display', WIDE)).toBe('grid')
-    // MUTATION: keep the two side columns as boxes at 390px, and the cards
-    // stack left column then right: 1, 3, 2, 4.
-    expect(painted(col, 'display', PHONE)).toBe('contents')
-    for (const c of cards) expect(painted(c, 'order', PHONE)).toBe(c.getAttribute('data-n'))
-  })
-
-  it('stacks the list’s rows at 390px, each cell under its column’s name, and the row’s link a 44px target', async () => {
+  it('stacks the list’s cards on one column at 390px, each card’s action a 44px target', async () => {
     await mount('', routes(INBOX))
     const card = await screen.findByTestId('apl-waiting', undefined, WAIT)
-    // MUTATION: leave the five-column table at 390px, and the page scrolls sideways.
-    expect(painted(card.querySelector<HTMLElement>('thead')!, 'display', PHONE)).toBe('none')
-    expect(painted(card.querySelector<HTMLElement>('tbody tr')!, 'display', PHONE)).toBe('block')
-    expect(painted(card.querySelector<HTMLElement>('td')!, 'content', PHONE, 'before')).toBe('attr(data-l)')
-    expect(painted(card.querySelector<HTMLElement>('.apl-open')!, 'min-height', PHONE)).toBe('44px')
+    // MUTATION: keep three cards across at 390px, and the page scrolls sideways.
+    expect(painted(card.querySelector<HTMLElement>('.apc-grid')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    expect(painted(card.querySelector<HTMLElement>('.apc-card-f > .c-btn')!, 'min-height', PHONE)).toBe('44px')
   })
 })

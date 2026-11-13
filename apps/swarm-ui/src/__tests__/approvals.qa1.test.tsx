@@ -114,8 +114,8 @@ describe('the kind chips (automate-05, automate-22)', () => {
     const { go } = await mount('kind=spec', routes(INBOX))
     const empty = await screen.findByTestId('apl-elsewhere', undefined, WAIT)
     // MUTATION: say only "Nothing waiting" while three wait elsewhere.
-    expect(visible(empty)).toContain('3 items wait under other kinds.')
-    const every = within(empty).getByRole('link', { name: 'Read every kind ›' })
+    expect(visible(empty)).toContain('3 items under other kinds')
+    const every = within(empty).getByRole('link', { name: 'Every kind ›' })
     expect(every.getAttribute('href')).toBe('/automate/approvals')
     every.click()
     expect(go).toHaveBeenCalledWith('automate/approvals')
@@ -184,11 +184,13 @@ describe('a plan’s decision page (automate-06, automate-07, automate-08)', () 
   it('says a superseded plan’s plan changed, never a head', async () => {
     await mount('approval=apr_plan', routes(INBOX, detail({ state: 'superseded' })))
     const d = await page()
-    const bar = await within(d).findByTestId('ap-decided', undefined, WAIT)
+    const bar = await within(d).findByTestId('apd-decide', undefined, WAIT)
     // MUTATION: the merge's words, "No newer request is served for the new head yet."
     expect(visible(bar)).not.toMatch(/\bhead\b/)
-    expect(visible(bar)).toContain('Superseded: the run’s plan changed.')
-    expect(visible(bar)).toContain('The new plan has its own request; none is served yet.')
+    expect(visible(within(bar).getByTestId('ap-state'))).toBe('Superseded')
+    expect(visible(bar)).toContain('the run’s plan changed')
+    // The rest is the outcome's tooltip.
+    expect(within(bar).getByRole('tooltip', { hidden: true }).textContent).toContain('No newer request is served for it yet.')
   })
 })
 
@@ -237,7 +239,7 @@ describe('a merge’s checks (automate-23)', () => {
     expect(visible(ci)).toContain('green at dbd00f0; per-check counts not served')
     // Visual QA pass 2 automate2-20: a digest with no verdict draws no
     // Verdict row (approvals.qa2.test.tsx holds it); the head row stays.
-    expect(within(within(d).getByRole('region', { name: 'What you approve' })).queryByText('Verdict')).toBeNull()
+    expect(within(within(d).getByRole('region', { name: 'At its head' })).queryByText('Verdict')).toBeNull()
   })
 
   it('keeps the counts line, with its dash and reason, when the head is not green', async () => {
