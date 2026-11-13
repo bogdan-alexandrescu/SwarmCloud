@@ -433,12 +433,23 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: attempt that has not completed (#3006: PR #2973 refused at 22ef10c2 while
 #: its re-run was still running); the window alone decides when that cannot
 #: be read. A record with `error` re-ran nothing: after a no_change round
-#: it is not the head's free re-run (`_rerun_due`).
+#: it is not the head's free re-run (`_rerun_due`). Still one free re-run
+#: per head with no round there; after a no_change round, up to
+#: RERUNS_PER_HEAD_MAX accepted ones (#3080).
 RERUNS_KEY = "reruns"
 RERUN_SETTLE_SECONDS = 600
 #: How many re-runs GitHub refused at one head before the step stops
 #: parking for another (#3006): the tick asks again at most once.
 RERUN_REFUSALS_MAX = 2
+#: How many re-runs GitHub accepted at one head the step parks `CI_RERUN_DUE`
+#: for after a CI-fix round ended there `no_change` (#3080, owner decision
+#: 2026-11-12): the tick's free re-run, spent before the round on one flake,
+#: can answer red on another (PR #3049 at dd72fa3e, PR #3055 at d82d2635
+#: refused unchanged and merged green on a manual re-run). Written to match
+#: `swarm_api.cirerun.RERUNS_PER_HEAD_MAX` (re-exported by mergewake), held
+#: equal by tests/unit/worker/test_merge_fix_round.py. Without a round the
+#: head keeps one.
+RERUNS_PER_HEAD_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
@@ -470,7 +481,9 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: re-run GitHub refused (`error`) re-ran nothing, so it is not the head's
 #: free re-run (#3006, PR #2971 at a1e16b2c): the step parks again while
 #: fewer than RERUN_REFUSALS_MAX refusals are recorded at the head, then
-#: refuses naming the last refusal's error.
+#: refuses naming the last refusal's error. After that round an accepted
+#: re-run that answered red parks it again while fewer than
+#: RERUNS_PER_HEAD_MAX are recorded at the head (#3080).
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -5157,18 +5170,32 @@ def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, 
                after_no_change: bool = False) -> bool:
     """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
 
-    Only while nothing at this head has answered it: no re-run GitHub
-    accepted is recorded at `head` (answered or settling -- `_rerun_settling`
-    holds the latter), and this step's own last park (`merge_wait`) was not
-    already `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to
-    re-run and woke the step red is answered with the refusal, not a second
-    park. After a CI-fix round ended at `head` with nothing to change
-    (`after_no_change`), a re-run GitHub refused (`error`) re-ran nothing,
-    so it is not the head's free re-run (#3006, PR #2971 at a1e16b2c): the
-    step parks again while fewer than RERUN_REFUSALS_MAX refusals are
-    recorded at `head` -- the tick asks again only then -- so a credential
-    that cannot re-run costs one more request, not a loop. Without a round,
-    a refused re-run hands the red to a round or refuses, as before.
+    Without a round at `head`, only while nothing there has answered it: no
+    re-run is recorded at `head` (answered or settling -- `_rerun_settling`
+    holds the latter). One free re-run per head.
+
+    After a CI-fix round ended at `head` with nothing to change
+    (`after_no_change`), while fewer than RERUNS_PER_HEAD_MAX re-runs GitHub
+    accepted are recorded there (#3080, owner decision 2026-11-12): the
+    free re-run spent before the round on one flake can answer red on
+    another, which the round reads as a flake too (PR #3049 at dd72fa3e,
+    PR #3055 at d82d2635). One still settling never reaches here
+    (`_rerun_settling` parks `CI_RERUN_PENDING`), so every one counted has
+    answered. A re-run GitHub refused (`error`) re-ran nothing and does not
+    count (#3006, PR #2971 at a1e16b2c): the step parks again while fewer
+    than RERUN_REFUSALS_MAX refusals are recorded at `head` -- the tick asks
+    again only then -- so a credential that cannot re-run costs one more
+    request, not a loop. The tick's `mergewake._rerun_first` applies the
+    same two bounds.
+
+    Either way, never twice for the same request: when this step's own last
+    park (`merge_wait`) was already `CI_RERUN_DUE` at `head`, it parks again
+    only when the tick has recorded a re-run at `head` since -- the newest
+    record's `claimed_at` (else `requested_at`) is later than the park's
+    `parked_at`, and not in the future (`_rerun_since_park`). So a tick that
+    found no Actions job to re-run and woke the step red is answered with
+    the refusal, not a second park, while one that re-ran and was answered
+    red can be given the next re-run the bounds allow.
     Never for a failing run no re-run replaces (`failing_ids` None, a commit
     status): waiting changes nothing. The document is tenant-writable; a
     forged record can at most refuse at once, as before #2351, or park,
@@ -5180,10 +5207,33 @@ def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, 
     if not after_no_change:
         if mine:
             return False
-    elif any(not r.get("error") for r in mine) or len(mine) >= RERUN_REFUSALS_MAX:
-        return False
+    else:
+        accepted = sum(1 for r in mine if not r.get("error"))
+        if accepted >= RERUNS_PER_HEAD_MAX or len(mine) - accepted >= RERUN_REFUSALS_MAX:
+            return False
     parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
-    return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+    if parked.get("code") != CI_RERUN_DUE or parked.get("head") != head:
+        return True
+    return _rerun_since_park(mine, parked)
+
+
+def _rerun_since_park(mine: list[Mapping[str, Any]], parked: Mapping[str, Any]) -> bool:
+    """Whether the newest re-run recorded at the head was claimed after the
+    step's `CI_RERUN_DUE` park there (`_rerun_due`, #3080).
+
+    The tick claims a re-run (`claimed_at`) only after it read that park, so
+    a later claim is the park's answer. The record and the park are
+    tenant-writable: an instant that cannot be read, on either side, or a
+    claim in the future proves nothing, and the step refuses as before.
+    """
+    if not mine:
+        return False
+    since = _stored_instant(parked.get("parked_at"))
+    entry = mine[-1]
+    claimed = _stored_instant(entry.get("claimed_at")) or _stored_instant(entry.get("requested_at"))
+    if since is None or claimed is None:
+        return False
+    return since < claimed <= utcnow()
 
 
 def _rerun_refused(own: Mapping[str, Any], head: str) -> str | None:
@@ -5559,11 +5609,16 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     ended at this head having found nothing to change (`no_change`,
     `_round_left_nothing`) gets the same: the re-run settling parks
     `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
-    and anything else refuses after the round (#2684). Still one free re-run
-    per head: a head the tick re-ran before the round refuses. A re-run
-    GitHub refused re-ran nothing, so it is not that one (#3006, PR #2971 at
-    a1e16b2c): the step parks `CI_RERUN_DUE` for one more request, and a
-    second refusal refuses `checks_failed` naming its error.
+    and anything else refuses after the round (#2684). There a re-run the
+    tick asked for at this head that answered red -- the free re-run spent
+    before the round, which can answer red on a different flake -- parks
+    `CI_RERUN_DUE` again while fewer than RERUNS_PER_HEAD_MAX accepted
+    re-runs are recorded at the head (#3080, owner decision 2026-11-12);
+    the last one's red answer refuses. With no round at the head it is
+    still one free re-run per head. A re-run GitHub refused re-ran nothing,
+    so it does not count (#3006, PR #2971 at a1e16b2c): the step parks
+    `CI_RERUN_DUE` for one more request, and a second refusal refuses
+    `checks_failed` naming its error.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -5635,8 +5690,9 @@ def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
     """The park a red reading at `head` owes the tick's free re-run, or None.
 
     `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
-    then, with `due`, `CI_RERUN_DUE` once when none is recorded there
-    (`_rerun_due`). One rule for a red reading with no round at the head and
+    then, with `due`, `CI_RERUN_DUE` when the head is due one (`_rerun_due`:
+    once with none recorded there, up to RERUNS_PER_HEAD_MAX accepted after
+    a no_change round, #3080). One rule for a red reading with no round at the head and
     for a round that ended there with nothing to change (#2684). `run_states`
     is this reading's Actions runs (`workflow_run_states`): a re-run whose
     run is still going holds past the window (#3006).
@@ -5648,7 +5704,7 @@ def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
                     "and the re-run has not answered yet", [])
     if due and _rerun_due(own, head, failing_ids, after_no_change=after_no_change):
         return wait(CI_RERUN_DUE,
-                    f"{message}; the failing jobs are due their one free re-run at this head", [])
+                    f"{message}; the failing jobs are due a re-run at this head", [])
     return None
 
 
