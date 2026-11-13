@@ -20,12 +20,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { LogStream, Task, TaskLogs, TaskTranscript, TranscriptStep } from '../types'
-import { attempt, task as runTask } from './runfixture'
+import { attempt, ev, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadAttempts: vi.fn(),
   loadTranscript: vi.fn(),
   loadTaskLogs: vi.fn(),
+  loadTaskEventsPage: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -160,6 +161,7 @@ beforeEach(() => {
   api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1, { attempt_id: 'att_1' }), attempt(2, { attempt_id: 'att_2' })] }))
   api.loadTranscript.mockResolvedValue(ok(transcript([step(1)])))
   api.loadTaskLogs.mockResolvedValue(ok(logs([stream('agent_stderr'), stream('stdout'), stream('stderr')])))
+  api.loadTaskEventsPage.mockResolvedValue(ok({ events: [], next_page_token: null }))
 })
 
 afterEach(() => {
@@ -185,6 +187,34 @@ describe('the tab opens on the stream the runner has', () => {
       'Runner',
     ])
     await waitFor(() => expect(dock().textContent).toContain('step 1'))
+  })
+})
+
+// Epic 2596, comment 155: a stream's Age said `3s ago live` while Details
+// said the worker may be gone. The tab reads the newest events while the
+// agent holds a slot, and a silent agent's tail carries the heartbeat badge.
+describe('a live tail is not called live once the agent has gone silent', () => {
+  it('reads the newest events and draws the silent badge in the stream Age, not live', async () => {
+    const old = new Date(Date.now() - 12_819 * 60_000).toISOString()
+    api.loadTaskEventsPage.mockResolvedValue(ok({ events: [ev('running', old, 'att_2')], next_page_token: null }))
+    api.loadTaskLogs.mockResolvedValue(ok(logs([stream('agent_stderr', { source: 'live' }), stream('stdout'), stream('stderr')])))
+    render(<AgentLogs task={running()} />)
+    chooseStream('Agent stderr')
+    const age = await waitFor(() => {
+      const c = dock().querySelector<HTMLElement>('td[data-label="Age"]')
+      expect(c?.querySelector('.liveness')?.getAttribute('data-liveness')).toBe('silent')
+      return c!
+    })
+    expect(api.loadTaskEventsPage).toHaveBeenCalledWith(ID, { order: 'desc' })
+    expect(age.querySelector('.ctl-sub')?.textContent ?? '').not.toMatch(/\blive\b/)
+  })
+
+  it('still says live while the newest event is recent', async () => {
+    api.loadTaskEventsPage.mockResolvedValue(ok({ events: [ev('running', new Date().toISOString(), 'att_2')], next_page_token: null }))
+    api.loadTaskLogs.mockResolvedValue(ok(logs([stream('agent_stderr', { source: 'live' }), stream('stdout'), stream('stderr')])))
+    render(<AgentLogs task={running()} />)
+    chooseStream('Agent stderr')
+    await waitFor(() => expect(dock().querySelector('td[data-label="Age"] .ctl-sub')?.textContent).toBe('live'))
   })
 })
 

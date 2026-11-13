@@ -56,9 +56,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { CheckpointRecord, CheckpointsPage, LogStream, LogStreamName, Task, TaskLogs } from '../types'
+import type { CheckpointRecord, CheckpointsPage, LogStream, LogStreamName, Task, TaskEvent, TaskLogs } from '../types'
 import { painted } from './marks'
-import { attempt, task } from './runfixture'
+import { attempt, ev, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadCheckpoints: vi.fn(),
@@ -70,7 +70,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-import { RunFiles } from '../RunFiles'
+import { RunFiles, StreamEvents } from '../RunFiles'
 import { StreamsFrom } from '../Artifacts'
 
 const PREFIX = 'tenants/acme/tasks/tsk_files/checkpoints'
@@ -780,6 +780,36 @@ describe("every file's Age is its object's own time, from the API (#172)", () =>
     expect(age.textContent).toMatch(/^42s ago/)
     // Still says it is being written, on the line under the age.
     expect(age.querySelector('.ctl-sub')?.textContent).toBe('live')
+  })
+
+  // Epic 2596, comment 155: the tail said `3s ago live` while Details said
+  // the worker may be gone. Where the events were read, a silent agent's
+  // tail carries Details' own heartbeat badge, not `live`.
+  it('does not call a tail live when the agent has sent no event for longer than silent', () => {
+    const tail = stream('stdout', { source: 'live', tail_window: null, object_updated_at: iso(0), age_seconds: 3 })
+    const open = { status: 'latest' as const, known: true, generation: 1, created_at: iso(30), completed_at: null, exit_code: null }
+    const t = task({ id: 'tsk_files', state: 'RUNNING' })
+    const drawn = (events: TaskEvent[]) => {
+      const { container } = render(
+        <StreamEvents.Provider value={events}>
+          <section className="section">
+            <StreamsFrom logs={ok(logs([tail], { attempt: open }))} names={['stdout']} task={t} now={NOW} />
+          </section>
+        </StreamEvents.Provider>,
+      )
+      return cell(rowFor(container, 'runner stdout'), 'Age')
+    }
+
+    const gone = drawn([ev('running', iso(12_819), 'att_1')])
+    expect(gone.textContent ?? '').toMatch(/^3s ago/)
+    expect(gone.querySelector('.ctl-sub')?.textContent ?? '', 'a silent worker\'s tail is called live').not.toMatch(/\blive\b/)
+    const badge = gone.querySelector('.liveness')
+    expect(badge?.getAttribute('data-liveness')).toBe('silent')
+    expect(badge?.getAttribute('aria-label') ?? '').toMatch(/worker may be gone/i)
+
+    // An agent whose events are recent is still being written.
+    const fresh = drawn([ev('running', iso(1), 'att_1')])
+    expect(fresh.querySelector('.ctl-sub')?.textContent).toBe('live')
   })
 
   it("dates a final log by its object, not by its attempt's end", async () => {

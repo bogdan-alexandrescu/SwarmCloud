@@ -203,6 +203,19 @@ describe('Now: one line of what the agent is doing, ahead of the phases', () => 
     expect(parts).toHaveLength(2)
     expect(parts[0]).toBe('running')
   })
+
+  // Epic 2596, comments 19 and 241: a just-dispatched agent read
+  // `starting · dispatched · dispatched` -- its newest event and its elapsed
+  // figure are both the state word.
+  it('says each word once for a dispatched agent whose newest event is its dispatch', () => {
+    const t = running({ state: 'DISPATCHED', started_at: null })
+    const events = [ev('created', ago(2), null), ev('leased', ago(1), 'att_1'), ev('dispatched', ago(0.5), 'att_1')]
+    const attempts = [attempt(1, { backend: 'GKE_JOB', created_at: ago(1), started_at: null, completed_at: null, exit_code: null })]
+    const dt = host(runOf({ task: t, events, attempts }))
+    const parts = [...dt.querySelectorAll('.dt-nowline .dt-nowline-p')].map(text)
+    expect(parts.filter((p) => p === 'dispatched')).toHaveLength(1)
+    expect(new Set(parts).size).toBe(parts.length)
+  })
 })
 
 describe('Resources: one row, the prose behind “details”', () => {
