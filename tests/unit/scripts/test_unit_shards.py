@@ -42,6 +42,7 @@ import pytest
 import yaml
 
 from .ci_fold_layout import check_steps
+from .test_fast_checks_on_lane_prs import LANE_SKIP
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -114,7 +115,8 @@ def test_the_kept_names_stand_for_their_shards(job_id, needs):
     which reads as passed. MUTATION: drop a shard job from `needs`."""
     job = _jobs()[job_id]
     assert set(_needs(job)) == needs, _needs(job)
-    assert job.get("if") == "always()", job.get("if")
+    # Plus the lane clause every job ends with (test_fast_checks_on_lane_prs.py).
+    assert job.get("if") == "always() && " + LANE_SKIP, job.get("if")
 
 
 def test_the_unit_tests_gate_the_release_not_the_build():

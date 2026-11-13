@@ -52,6 +52,7 @@ import yaml
 
 from .application_paths import app_paths, diff_step, reaches
 from .ci_fold_layout import PATCH_NOTE
+from .test_fast_checks_on_lane_prs import LANE_SKIP, without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -84,8 +85,10 @@ def test_each_job_runs_only_on_the_gates_output():
     # answer through (test_select_unit_tests.py runs it).
     for name in ("python", "areas", "tests"):
         assert gate["outputs"][name].replace(" ", "") == "${{steps.select.outputs.%s}}" % name, gate["outputs"]
-    # The gate itself is never filtered: if it were skipped, so would everything be.
-    assert "if" not in gate
+    # The gate itself is filtered by nothing but the lane clause: if it were
+    # skipped, so would everything be -- which is what a lane's pull request
+    # wants and nothing else does (test_fast_checks_on_lane_prs.py).
+    assert gate.get("if") == "${{ " + LANE_SKIP + " }}", gate.get("if")
     # `base...head` needs the history; a depth-1 clone has no merge base.
     checkout = next(s for s in gate["steps"] if str(s.get("uses", "")).startswith("actions/checkout"))
     assert checkout.get("with", {}).get("fetch-depth") == 0
@@ -119,7 +122,7 @@ def test_each_job_runs_only_on_the_gates_output():
         assert "changes" in _needs(jobs[job_id]), f"{job_id} does not need changes"
         if job_id in folded:
             condition = "always() && " + condition
-        assert jobs[job_id].get("if") == condition, f"{job_id}: {jobs[job_id].get('if')} {PATCH_NOTE}"
+        assert without_lane_clause(jobs[job_id].get("if")) == condition, f"{job_id}: {jobs[job_id].get('if')} {PATCH_NOTE}"
     assert "quick-checks" in jobs, f"no quick-checks job {PATCH_NOTE}"
     assert "changes" in _needs(jobs["quick-checks"]), "quick-checks does not need changes"
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
