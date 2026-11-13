@@ -38,6 +38,7 @@ its approvals.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -175,7 +176,22 @@ class RepairEngine(Engine):
             return self._end("failed", None, f"{lost}; run swarm install --repair again")
         finally:
             if acquired:
+                self._close_reach()
                 self.lease.release()
+
+    def _close_reach(self) -> None:
+        """The closing pass again when a step's kubectl reopened the control plane
+        for this machine (`steps/cluster.py` `kube_for`), under the lease, as
+        `swarm team`, `swarm addon` and `swarm upgrade` do after theirs; a dry run
+        applies nothing. A failure is printed, and `swarm install`'s closing pass
+        removes the address later."""
+        from .steps import infra
+
+        if self.dry_run:
+            return
+        left = infra.REACH.close_after(self.ctx, "swarm install --repair")
+        if left:
+            print(left, file=sys.stderr)
 
 
 def repair(entry_id: str, *, manifest: Manifest, engine: RepairEngine,
