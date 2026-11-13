@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .test_fast_checks_on_lane_prs import without_lane_clause
+
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 UI = REPO / "apps" / "swarm-ui"
@@ -300,7 +302,7 @@ def test_the_ui_shard_count_is_written_once_in_the_changes_job():
     assert job["strategy"].get("fail-fast") is False
     # The reuse rule and the path gate are kept as they were, behind the
     # fast-checks-only rule (test_fast_checks_on_lane_prs.py).
-    assert job["if"] == ("needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && "
+    assert without_lane_clause(job["if"]) == ("needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && "
                          "!contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests')"), job["if"]
 
 

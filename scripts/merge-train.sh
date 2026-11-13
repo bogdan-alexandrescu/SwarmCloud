@@ -24,14 +24,14 @@
 #     the deploy-starvation hold below holds it); red goes through RED's
 #     three rules.
 #   * No train in flight, and rule 2 below not waiting for main: up to
-#     MERGE_TRAIN_MAX_PRS (default 4) open pull
+#     MERGE_TRAIN_MAX_PRS (default 40) open pull
 #     requests that are green at head, labelled `ready`, mergeable, not drafts,
 #     not forks and aimed at main board a new one, oldest first, each still
 #     passing main's closing-references and dependency checks (the same two
 #     scripts auto-merge.yml's gate runs). Fewer than MERGE_TRAIN_MIN_PRS
-#     (default 6) of them board nothing while the oldest has been `ready` (the
+#     (default 15) of them board nothing while the oldest has been `ready` (the
 #     label's last addition, read from GitHub) less than
-#     MERGE_TRAIN_MAX_WAIT_MINUTES (default 20), and the tick says so in one
+#     MERGE_TRAIN_MAX_WAIT_MINUTES (default 30), and the tick says so in one
 #     line; a `train-first` one, or a ready time that cannot be read, boards
 #     them at once (THE GATHER, gather_waits). A bisection's held-back half
 #     never gathers.
@@ -179,8 +179,12 @@ TRAIN_PREFIX="train/"
 FIRST_LABEL="train-first"
 STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
-# Four, the owner's brief: a red train of four is found in two more trains.
-MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
+# Forty, the owner's direction of 12 November 2026 ("15 pull requests or 30
+# minutes, up to 40"): a lane's pull request runs no checks, so the train's
+# run is the only test a change gets, and large trains pay the full suite
+# once for many changes. A red train of forty is found in about six more
+# trains (bisection halves it each time).
+MAX_PRS="${MERGE_TRAIN_MAX_PRS:-40}"
 # THE GATHER's defaults are stated ONCE, in GATHER_FILE, which swarm-api's
 # merge wake tick reads too (swarm_api.trainboard): past the deadline it
 # starts one run of this workflow, so a lone `ready` pull request never waits
@@ -196,10 +200,12 @@ gather_default() {
 }
 # THE GATHER (gather_waits). A train boards once this many pull requests would
 # board, or once the oldest of them has been `ready` this long: the owner's
-# pick on 11 November 2026, "6 ready or 20 minutes", so fewer, larger trains
-# each pay the full suite once. Six: a red train of six is found in three more
-# trains. Twenty minutes: no `ready` pull request waits longer than about one
-# CI run before it boards. MIN_PRS 1 or MAX_WAIT_MINUTES 0 boards as soon as
+# direction of 13 November 2026, "8 ready or 15 minutes, up to 40", for
+# maximum merge speed (it was "15 pull requests or 30 minutes" on 12 November
+# and "6 ready or 20 minutes" from 11 November) -- and since a lane's pull
+# request runs no checks, the train's run is the only one. Eight: a red train
+# of eight is found in about three more trains. Fifteen minutes: no `ready`
+# pull request waits longer than about one CI run before it boards. MIN_PRS 1 or MAX_WAIT_MINUTES 0 boards as soon as
 # one is green, as the train did before. A minimum above MAX_PRS counts as
 # MAX_PRS: a train never holds more. Set from MERGE_TRAIN_MIN_PRS and
 # MERGE_TRAIN_MAX_WAIT_MINUTES, else GATHER_FILE, by gather_knobs_valid: only
