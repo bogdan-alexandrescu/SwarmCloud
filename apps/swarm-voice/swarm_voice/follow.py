@@ -36,6 +36,13 @@ swarm_api/voice/roster.py; a test holds them equal); `done`/`total` a
 workflow's steps succeeded of its steps. No title: the page reads titles from
 `GET /v1/voice/projects/{id}/roster` and by id.
 
+ITS CHANGES ARE TOLD TO THE SESSION'S UPDATE QUEUE (updates.py, the owner's
+pick of 12 November 2026): after each write, the rows it wrote, each with the
+state it had before, and a run's own phase (CHECKING: it opened its pull
+request; DONE; PLANNED: a plan waits for the owner), so the voice says what
+started, what finished or failed and what waits on the owner. The first pass
+is the baseline: it tells nothing. Telling never waits on the voice.
+
 IT RUNS WHILE THE VOICE IS PAUSED. The pause closes the Live session and
 keeps the voice session, its grant and the follower (§3.12.7); nothing here
 reads the voice's state. It stops when the session ends: the end route runs
@@ -62,6 +69,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 import httpx
 
 from . import tools_read
+from . import updates as vupdates
 from .grant import SessionGrant
 from .tools_read import ApiRefused, SwarmApi
 
@@ -155,6 +163,9 @@ class ApiReads:
 
     def __init__(self, api: RosterApi) -> None:
         self._api = api
+        #: Each started run's own state as last read (issueruns' states): what
+        #: the update queue says of its pull request. Never written to the roster.
+        self.phases: dict[tuple[str, str], str] = {}
 
     async def tagged(self, project_id: str) -> list[Row]:
         try:
@@ -190,7 +201,10 @@ class ApiReads:
             tasks = [t for t in body.get("tasks") or [] if isinstance(t, dict)]
             done = sum(1 for t in tasks if t.get("state") == "SUCCEEDED")
             return _row(kind, item_id, workflow.get("state"), min(done, len(steps)), len(steps))
-        return _row(kind, item_id, (body.get("run") or {}).get("state"))
+        state = (body.get("run") or {}).get("state")
+        if isinstance(state, str) and state:
+            self.phases[(kind, item_id)] = state.upper()
+        return _row(kind, item_id, state)
 
     async def started(self, items: list[tuple[str, str]]) -> list[Row]:
         if not items:
@@ -218,6 +232,12 @@ class Follower:
     items: list[tuple[str, str]] = field(default_factory=list)
     #: The rows as last written, by (kind, id).
     seen: dict[tuple[str, str], Row] = field(default_factory=dict)
+    #: The update board the changes are told to (updates.py); None tells nothing.
+    updates: vupdates.Board | None = None
+    #: Each run's phase as last told.
+    phases_told: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: Whether a pass has completed: the first is the baseline, told nothing.
+    baseline: bool = False
 
     def note(self, kind: str, item_id: str) -> None:
         if kind in READ_ROUTES and isinstance(item_id, str) and ID_RE.match(item_id) \
@@ -233,6 +253,7 @@ class Follower:
         for row in [*tagged, *started]:
             now[(row["kind"], row["id"])] = row
         changed = [row for key, row in now.items() if self.seen.get(key) != row]
+        before = {key: (self.seen[key] or {}).get("state") for key in now if key in self.seen}
         written: list[Row] = []
         for at in range(0, len(changed), ROSTER_MAX):
             part = changed[at:at + ROSTER_MAX]
@@ -240,7 +261,29 @@ class Follower:
             for row in part:
                 self.seen[(row["kind"], row["id"])] = row
             written += part
+        self._tell(now, written, before)
         return written
+
+    def _tell(self, now: dict[tuple[str, str], Row], written: list[Row],
+              before: dict[tuple[str, str], Any]) -> None:
+        """Tell the update queue what this pass wrote, each row with its state
+        before, and each run whose phase moved; the first pass tells nothing."""
+        phases = dict(getattr(self.reads, "phases", None) or {})
+        told = self.baseline
+        self.baseline = True
+        changes: list[vupdates.Change] = []
+        for row in written:
+            key = (row["kind"], row["id"])
+            changes.append(vupdates.Change(row["kind"], row["id"], row["state"], before.get(key),
+                                           phases.get(key)))
+        named = {(c.kind, c.id) for c in changes}
+        for key, phase in phases.items():
+            if key in now and key not in named and self.phases_told.get(key) != phase:
+                state = now[key]["state"]
+                changes.append(vupdates.Change(key[0], key[1], state, state, phase))
+        self.phases_told.update(phases)
+        if told and changes and self.updates is not None:
+            self.updates.roster(self.voice_id, changes)
 
     async def run(self, *, every: float, sleep: Sleep) -> None:
         while True:
@@ -260,8 +303,10 @@ class RosterFollowers:
     """Every live session's follower, registered on main.py's follower hook."""
 
     def __init__(self, reads_for: Callable[[SessionGrant], RosterReads], *,
-                 every: float = TICK_SECONDS, sleep: Sleep = asyncio.sleep) -> None:
+                 every: float = TICK_SECONDS, sleep: Sleep = asyncio.sleep,
+                 updates: vupdates.Board | None = vupdates.BOARD) -> None:
         self._reads_for = reads_for
+        self._updates = updates
         self._every = every
         self._sleep = sleep
         self._followers: dict[str, Follower] = {}
@@ -278,7 +323,7 @@ class RosterFollowers:
         if grant is None or self.running(voice_id):
             return
         follower = Follower(voice_id=voice_id, project_id=grant.project_id,
-                            reads=self._reads_for(grant))
+                            reads=self._reads_for(grant), updates=self._updates)
         self._followers[voice_id] = follower
         self._tasks[voice_id] = asyncio.create_task(
             follower.run(every=self._every, sleep=self._sleep), name=f"roster-{voice_id}")

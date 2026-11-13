@@ -8,7 +8,8 @@ THE SHAPE OF textchat.TextSessions: `start`, `turn`, `end`, `end_all` and
 
 THE MODEL. The haiku class (claudeturn.front_model(), VOICE_FRONT_MODEL from
 Terraform's `local.runner_models.haiku`), picked by first-reply latency: the
-front says one or two sentences and makes one choice, answer or `delegate`.
+front says one or two sentences and makes one choice: answer, read, or
+`delegate`.
 Voice it › Settings' `conversation_model`, which swarm-api reads at the start
 and sends in the start body, overrides it for that session: the warm child
 (and a re-lease's) runs on that id, and only an id of FRONT_MODELS, the
@@ -20,10 +21,17 @@ The planner keeps the planning class (claudeturn.planner_model(),
 ONE WARM CHILD PER SESSION. `ClaudeCode.converse` starts `claude -p
 --input-format stream-json` at the session's start, with claudeturn.py's
 rules (built environment, `--tools ""`, `--strict-mcp-config` offering only
-`delegate`, a private HOME removed at the end, scrubbed output); each final is
-one user message on its stdin. The child never sees the grant: `delegate`
-runs in THIS process, on `Planner.delegate`, with the session's person and
-grant.
+`delegate` and the read tools, a private HOME removed at the end, scrubbed
+output); each final is one user message on its stdin. The child never sees the
+grant: `delegate` runs in THIS process, on `Planner.delegate`, with the
+session's person and grant, and so does every read, on `Planner.read`.
+
+THE FRONT ANSWERS A READ-ONLY QUESTION ITSELF (the owner's pick on #3954,
+12 November 2026). "How many agents are running" took two planning-model rounds
+behind a delegation: one read, one answer. The front now holds the read tools
+(tools_read.py: list, count, get, search; GET only), so it reads once and says
+the answer in the same turn, on the haiku class. Anything that draws, shows,
+plans or acts is still delegated: the front holds no draw, visual or act tool.
 
 ONE ACCOUNT FOR THE SESSION. `PlannerAccounts(broker, holder="voice-front")`
 assigns one Claude account of the person's own workspace pool at the start,
@@ -47,6 +55,19 @@ answers with the front's sentence and the delegation's id at once; swarm-api
 waits on `GET /delegations/{id}` (`delegations_router`) and speaks the
 planner's two sentences at the next silence.
 
+EACH DELEGATION'S LIFECYCLE REACHES THE STREAM (voice-it.md §3.12.5, the live
+finding of 12 November 2026: a minute-long delegation showed nothing on
+screen). With a work sink (worksink.py, wired by main.py from SWARM_API_URL),
+a delegation reports `started` when it begins running and one end when it
+stops: `done`; `refused` when the planner declined the turn (no grant, no pool
+account, a full pool: its refusal sentences); `failed` when the planner raised
+or ended in error, or the session ended under it. The planner reports no step
+to this module, so no `progress` is sent. Each report goes through the grant
+the delegation started with, carries only its id and state, and is posted in
+the background: the turn and the delegation's result never wait on it. A
+delegation that never ran (still waiting when the session ended) reports
+nothing.
+
 NO OPENAI. Nothing here, nor the planner, calls an OpenAI host; the only
 network the front's own code reaches is the quota broker (and the planner's
 swarm-api). NOTHING SECRET IN A REPR OR A LOG: the token lives in the lease's
@@ -67,11 +88,13 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import claudeturn, prompts
+from . import claudeturn, prompts, tools_read
 from . import trace as vtrace
 from .credential import CredentialError
 from .grant import SessionGrant
+from .planner import SAY_NO_GRANT, SAY_NO_LEASE, SAY_NO_POOL, SAY_POOL_FULL
 from .plannerlease import FRONT_HOLDER, LeaseFailed, PlannerAccounts, PlannerLease, PoolFull
+from .worksink import DONE, FAILED, REFUSED, STARTED, WorkSink
 
 if TYPE_CHECKING:
     from .planner import Planner, TurnResult
@@ -96,13 +119,17 @@ MAX_WAITING = 2
 KEEP_DONE = 16
 #: The longest `GET /delegations/{id}?wait=` holds (planner.TURN_SECONDS).
 MAX_WAIT_SECONDS = 240.0
-#: The child's model rounds per sentence: an answer, or `delegate` then an answer.
-MAX_ROUNDS = 3
+#: The child's model rounds per sentence: an answer; `delegate` then an answer;
+#: or a read or two then an answer (a count is one read: tools_read's `total`).
+MAX_ROUNDS = 4
 BILLING = "subscription"
 #: The curated conversation models swarm-api's Voice it › Settings offers
 #: (`speech_catalogue.CONVERSATION_MODELS`' ids, held equal by a test), the
 #: haiku class's pin first: the only ids a start may run the front on.
 FRONT_MODELS: tuple[str, ...] = (claudeturn.FRONT_MODEL, "claude-sonnet-5", "claude-sonnet-4-6")
+
+#: The planner's spoken refusals: a delegation that ends on one is `refused`.
+PLANNER_REFUSALS = (SAY_NO_GRANT, SAY_NO_LEASE, SAY_NO_POOL, SAY_POOL_FULL)
 
 SAY_EMPTY = "I didn't catch an answer to that; could you say it again?"
 SAY_BUSY = "refused: two requests are already waiting for the planner; tell the person to wait for them"
@@ -111,8 +138,14 @@ FRONT_INSTRUCTIONS = (
     "You are the voice of Voice it, a planning partner for the person talking to you; what you "
     "write is spoken aloud. Answer every message at once in one or two short spoken sentences: "
     "no lists, no markdown, no code. "
-    "When the person asks for something to be planned, drawn, shown, looked up, explained from "
-    "SwarmCloud, or done (a task, a merge, a cancel, an approval), call the `delegate` tool with "
+    "When the person asks a read-only question about SwarmCloud (how many agents or workflows "
+    "are running, what state an agent, workflow or run is in, what is waiting for them), answer "
+    "it yourself in this turn with the read tools: to count, call `list_agents` or "
+    "`list_workflows` once with its state filter (submitted_by me for the person's own; "
+    "everything in flight is LEASED,DISPATCHED,STARTING,RUNNING) and say its `total`, and never "
+    "count with `search`. Say only what the read returned. "
+    "When the person asks for something to be planned, drawn, shown on screen, explained in "
+    "depth, or done (a task, a merge, a cancel, an approval), call the `delegate` tool with "
     "what they asked for in one sentence, then say in a few words that you are on it, for example "
     "\"Looking at that now.\"; the planner's answer is spoken to them later, so never invent a "
     "plan, a status or a result yourself, and never say an action is done. "
@@ -122,8 +155,14 @@ FRONT_INSTRUCTIONS = (
 )
 
 
+def front_tools() -> list[dict[str, Any]]:
+    """The front's tools, as claudeturn.ToolBridge offers them: `delegate` and
+    the read tools (GET only, run on `Planner.read`)."""
+    return [delegate_tool(), *tools_read.tool_schemas()]
+
+
 def delegate_tool() -> dict[str, Any]:
-    """The front's one tool, as claudeturn.ToolBridge offers it."""
+    """The front's tool that hands a request to the planner."""
     return {
         "name": DELEGATE_TOOL,
         "description": ("Hand the person's request to SwarmCloud's planner, which draws cards on "
@@ -260,10 +299,14 @@ class FrontSession:
 class FrontSessions:
     """Every own-speech front this process holds, by swarm-api's voice session id."""
 
+    #: Where each delegation's lifecycle is posted (worksink.py); None posts nothing.
+    _work: WorkSink | None = None
+
     def __init__(self, *, accounts: PlannerAccounts, planner: "Planner | None" = None,
                  claude: claudeturn.ClaudeCode | None = None, clock: Callable[[], float] = time.monotonic,
                  idle_seconds: float = IDLE_SECONDS, turn_seconds: float = TURN_SECONDS,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 work: WorkSink | None = None) -> None:
         if accounts.holder != FRONT_HOLDER:
             raise ValueError(f"the front's accounts are held as {FRONT_HOLDER!r}")
         self._accounts = accounts
@@ -273,6 +316,7 @@ class FrontSessions:
         self._idle = idle_seconds
         self._turn_seconds = turn_seconds
         self._sleep = sleep
+        self._work = work
         self._held: dict[str, FrontSession] = {}
         self._starting: set[str] = set()
 
@@ -337,7 +381,7 @@ class FrontSessions:
         try:
             token = lease.bearer.reveal()
             conversation = await session.claude.converse(
-                system=FRONT_INSTRUCTIONS, token=token, tools=[delegate_tool()],
+                system=FRONT_INSTRUCTIONS, token=token, tools=front_tools(),
                 handler=self._handler(session), known=(token,))
         except BaseException:
             await self._accounts.release(lease)
@@ -471,6 +515,11 @@ class FrontSessions:
 
     def _handler(self, session: FrontSession) -> claudeturn.ToolHandler:
         async def handler(name: str, args: dict) -> tuple[str, bool]:
+            if tools_read.is_read_tool(name):
+                if self._planner is None:
+                    return "refused: SwarmCloud cannot be read here; tell the person you cannot look", True
+                return await self._planner.read(grant=session.grant, name=name, args=args,
+                                                known=self._known(session))
             if name != DELEGATE_TOOL:
                 return f"refused: {name[:64]!r} is not a tool offered", True
             request = args.get("request")
@@ -499,8 +548,12 @@ class FrontSessions:
         while session.queue and not session.ended:
             delegation = session.queue.popleft()
             session.running, delegation.state = delegation, "running"
+            # The grant it started with: the session's end clears session.grant.
+            grant = session.grant
+            self._report(grant, delegation, STARTED)
             given = self._given(session, delegation)
             result: "TurnResult | None" = None
+            ended = FAILED
             try:
                 result = await self._delegate(session, delegation)
                 delegation.spoken, delegation.cards = result.spoken, list(result.cards)
@@ -509,6 +562,7 @@ class FrontSessions:
                 session.add_usage(model, result.usage)
                 session.turns = [*session.turns, ("voice", result.spoken)][-HISTORY_TURNS:]
                 delegation.state = "done"
+                ended = REFUSED if result.spoken in PLANNER_REFUSALS else FAILED if result.error else DONE
             except asyncio.CancelledError:
                 delegation.state, delegation.error = "cancelled", "the session ended"
                 raise
@@ -518,12 +572,18 @@ class FrontSessions:
                 delegation.state, delegation.error = "failed", type(exc).__name__
             finally:
                 session.running = None
+                self._report(grant, delegation, ended)
                 delegation.done.set()
                 self._trim(session)
                 if delegation.state in ("done", "failed"):
                     self._traced(session, delegation, given, result)
             log.info("voice session %s: delegation %s %s (%d card(s))", session.voice_id,
                      delegation.delegation_id, delegation.state, len(delegation.cards))
+
+    def _report(self, grant: SessionGrant | None, delegation: Delegation, state: str) -> None:
+        """Hand `state` to the work sink; it posts in the background."""
+        if self._work is not None:
+            self._work.report(grant, delegation.delegation_id, state)
 
     @staticmethod
     def _given(session: FrontSession, delegation: Delegation) -> list[tuple[str, str]]:
@@ -593,6 +653,9 @@ class FrontSessions:
     async def end_all(self) -> None:
         for voice_id in list(self._held):
             await self.end(voice_id, "shutdown")
+        if self._work is not None:
+            # The ends the shutdown cut short are posted before the client closes.
+            await self._work.drain()
 
 
 def delegations_router(front: FrontSessions | Callable[[], FrontSessions | None],
