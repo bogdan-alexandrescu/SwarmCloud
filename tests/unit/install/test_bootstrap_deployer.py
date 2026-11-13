@@ -7,6 +7,7 @@ On fakes, with no credentials and no terraform binary.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -22,13 +23,14 @@ from swarm_install.steps.bootstrap import (
     BootstrapPass1Step,
     BootstrapPass2Step,
     Deps,
-    ImpersonationPending,
     applied_key,
     await_impersonation,
     generate,
+    held_roles,
     inputs_digest,
 )
 from swarm_install.terraform import AS_PERSON, IMPERSONATE_ENV, Guards
+from swarm_install.waits import WaitGaveUp
 
 from .test_terraform_runner import PROJECT, FakeCtx, FakeExec, install_state, run
 
@@ -153,10 +155,20 @@ def test_the_poll_waits_until_the_grant_has_spread(tmp_path: Path) -> None:
 def test_the_poll_gives_up_after_the_wait_with_what_to_do(tmp_path: Path) -> None:
     minter, clock = Minter(refusals=10_000), Clock()
     ctx = FakeCtx()
-    with pytest.raises(ImpersonationPending, match="run swarm install again"):
+    with pytest.raises(WaitGaveUp, match="Run swarm install again") as gave_up:
         await_impersonation(ctx, deps_for(tmp_path, minter, clock), deployer_email(PROJECT), step="bootstrap.pass-1")
     assert clock.now >= IMPERSONATION_WAIT_S
     assert IMPERSONABLE_KEY not in ctx.outputs
+    # A WaitGaveUp is what the engine records as a pause (exit 4), not a failure (exit 1).
+    assert gave_up.value.step == "bootstrap.pass-1"
+    assert f"project={PROJECT}" in gave_up.value.look_at
+
+
+def test_roles_held_past_their_undelete_name_the_date_their_ids_come_free() -> None:
+    said = held_roles(("swarmDeployer", "swarmRuntime"), date(2026, 11, 13))
+    assert "swarmDeployer, swarmRuntime" in said
+    assert "2026-12-13" in said, "a held id comes free at most 30 days after a refused undelete"
+    assert "Wait, or" not in said
 
 
 def test_pass_1_polls_after_its_apply(tmp_path: Path) -> None:

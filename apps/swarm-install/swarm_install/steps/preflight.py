@@ -20,6 +20,7 @@ zero mutating calls).
 | `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the CPUS quota is the smaller of the region's and the project-wide CPUS_ALL_REGIONS (audit 4a F5); the Quotas page opens (a Free Trial account's upgrade page when that is the cap) and the increase is polled for (#32) |
 | `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
 | `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's usable CPU quota (regional and project-wide) |
+| `preflight.quotas-recheck` (stage 1, registered after foundations.apis) | none (preflight.quotas owns `quota.*`) | every quota of preflight.quotas read again once the project exists and its APIs are enabled |
 | `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry; records `state.release` (audit #2) |
 
 This module also holds `Gcp`, the engine's one REST client for stages 0-2. It
@@ -475,6 +476,25 @@ def confirm(ask: Ask, ctx: Any, step_id: str, question: str, expected: str, *,
                      + nothing)
 
 
+def ask_until(ask: Ask, ctx: Any, step_id: str, question: str, parse: Callable[[str], Any], *,
+              default: str | None = None, nothing: str = "nothing was recorded") -> Any:
+    """Ask `question` until `parse` takes the answer, at most `CONFIRM_TRIES`
+    times, and return what it made of it. `parse` raises ValueError saying
+    what is wrong with an answer; that is said before the question is asked
+    again, so a mistyped answer is asked again rather than ending the run.
+    Raises ValueError ending in `nothing` when no answer was taken."""
+    asked = question
+    wrong = ""
+    for _ in range(CONFIRM_TRIES):
+        answer = ask(ctx, step_id, asked) if default is None else ask(ctx, step_id, asked, default=default)
+        try:
+            return parse(answer)
+        except ValueError as exc:
+            wrong = str(exc)
+        asked = f"{wrong}. {question}"
+    raise ValueError(f"{wrong} (after {CONFIRM_TRIES} tries); {nothing}")
+
+
 def choose(ask: Ask, ctx: Any, step_id: str, what: str, options: Sequence[tuple[str, str]], *,
            pattern: re.Pattern[str], typed: str) -> str:
     """A numbered choice of `options` (value, label), read through the APIs.
@@ -591,9 +611,11 @@ def run_version(argv: Sequence[str]) -> str:
 
 
 def run_login(gcloud: str) -> int:
-    """`gcloud auth login --update-adc` on the person's terminal: gcloud opens
-    the browser and the person signs in (their credential step, never ours)."""
-    return subprocess.run([gcloud, "auth", "login", "--update-adc"], check=False).returncode
+    """`gcloud auth login` on the person's terminal: gcloud opens the browser
+    and the person signs in (their credential step, never ours). It signs in
+    gcloud only: the application-default credentials are preflight.sign-in's
+    one scoped login, so the person signs in to them once, not twice."""
+    return subprocess.run([gcloud, "auth", "login"], check=False).returncode
 
 
 def find_tool(tool: Tool) -> str | None:
@@ -1132,6 +1154,14 @@ BILLING_ACCOUNT = re.compile(r"^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$")
 #: A GitHub login: letters, digits and single inner hyphens, at most 39.
 GITHUB_LOGIN = re.compile(r"^(?=.{1,39}$)[A-Za-z0-9](?:-?[A-Za-z0-9])*$")
 
+#: GitHub's public users API: an unauthenticated GET says whether a login
+#: exists (404 when it does not) and whether it is an organisation or a person.
+GITHUB_USERS = "https://api.github.com/users/"
+GITHUB_ORGANIZATION = "Organization"
+GITHUB_USER = "User"
+#: The output the kind of the `github_org` account lands in, when GitHub said it.
+GITHUB_TYPE_OUTPUT = "github_owner_type"
+
 #: Each question stage 0 asks, the output it lands in and what a valid answer is.
 #: The hostname is the verb's when it asked (the state's), and the billing
 #: account is read when the project is already billed or chosen from the list.
@@ -1185,12 +1215,53 @@ class InputsStep(_Base):
     def _answer(self, ctx: Any, key: str, question: str, pattern: re.Pattern[str]) -> str:
         if key == "billing_account":
             return self._billing_account(ctx, question)
-        answer = self._ask(ctx, self.id, question).strip()
-        if key == "hostname":
-            answer = answer.lower().rstrip(".")
-        if not pattern.match(answer):
-            raise ValueError(f"{answer!r} is not a valid answer to: {question}")
+        found: dict[str, str] = {}
+
+        def parse(typed: str) -> str:
+            answer = typed.strip()
+            if key == "hostname":
+                answer = answer.lower().rstrip(".")
+            if not pattern.match(answer):
+                raise ValueError(f"{answer!r} is not a valid answer to: {question}")
+            if key == "github_org":
+                kind = self._github_account(ctx, answer)
+                if kind:
+                    found[GITHUB_TYPE_OUTPUT] = kind
+            return answer
+
+        answer = ask_until(self._ask, ctx, self.id, question, parse)
+        if found:
+            remember(ctx, outputs=found)
         return answer
+
+    def _github_account(self, ctx: Any, login: str) -> str:
+        """The kind of GitHub account `login` is ("Organization" or "User"),
+        read unauthenticated from GitHub's users API; ValueError when GitHub
+        has no account of that name (a mistyped login is asked again). Any
+        other answer (offline, rate-limited) is said and the login taken as
+        typed, "" for its kind: the check is a help, not a gate."""
+        try:
+            body = self.gcp.read_public(f"{GITHUB_USERS}{login}")
+        except ApiError as exc:
+            if exc.status == 404:
+                raise ValueError(f"GitHub has no account named {login!r} (github.com/{login} does not exist)") from None
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"GitHub could not be asked whether {login!r} exists (HTTP {exc.status}); it is taken as typed"))
+            return ""
+        except OSError as exc:
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"GitHub could not be asked whether {login!r} exists ({type(exc).__name__}); it is taken as typed"))
+            return ""
+        try:
+            kind = str(json.loads(body).get("type") or "")
+        except (ValueError, AttributeError):
+            return ""
+        if kind == GITHUB_USER:
+            ctx.events.emit("step_apply", step=self.id, message=(
+                f"github.com/{login} is a personal GitHub account, not an organisation; it is recorded as one"))
+        elif kind == GITHUB_ORGANIZATION:
+            ctx.events.emit("step_apply", step=self.id, message=f"github.com/{login} is a GitHub organisation")
+        return kind
 
     def _billing_account(self, ctx: Any, question: str) -> str:
         """The project's own billing account when it is billed; else a numbered
@@ -1299,6 +1370,14 @@ def holds(gcp: Gcp, resources: Iterable[str], permission: str) -> tuple[bool, li
     return False, asked
 
 
+def console_page(path: str, resource: str) -> str:
+    """A console page (`iam-admin/iam`, `iam-admin/orgpolicies`) for a project,
+    folder or organization ("projects/P", "folders/N", "organizations/N")."""
+    kind, _, name = resource.partition("/")
+    key = {"projects": "project", "folders": "folderId", "organizations": "organizationId"}.get(kind, "project")
+    return f"https://console.cloud.google.com/{path}?" + urllib.parse.urlencode({key: name})
+
+
 class RightsStep(_Base):
     id = "preflight.rights"
     satisfies = ("switch.project-create-right", "switch.billing-link-right")
@@ -1362,11 +1441,31 @@ class RightsStep(_Base):
         """A right is granted by an admin, never by the installer: the plan names
         each fix. The one thing asked is where a new project will live."""
         gcp = self.gcp
-        if ctx.outputs.get("parent") or gcp.project(ctx.project) is not None:
-            return
-        parent = choose(self._ask, ctx, self.id, f"Project {ctx.project} does not exist yet. Create it under",
-                        self._creatable(ctx, gcp), pattern=PARENT, typed="organizations/N or folders/N")
-        remember(ctx, outputs={"parent": parent})
+        if not ctx.outputs.get("parent") and gcp.project(ctx.project) is None:
+            parent = choose(self._ask, ctx, self.id, f"Project {ctx.project} does not exist yet. Create it under",
+                            self._creatable(ctx, gcp), pattern=PARENT, typed="organizations/N or folders/N")
+            remember(ctx, outputs={"parent": parent})
+        problems = self.findings(ctx)[0]
+        if problems:
+            # What is missing is an admin's grant: the page it is granted on opens.
+            open_page(self.page(ctx), why=f"{self.id}: " + "; ".join(problems) + ". Grant it on this page, "
+                                                                                   "then run swarm install again:")
+
+    def page(self, ctx: Any) -> str:
+        """Where the missing right is granted: the project's IAM page when its
+        IAP right is missing, its parent's when a project cannot be created
+        there, else the billing account's page for the billing link."""
+        if self.gcp.project(ctx.project) is not None:
+            if not holds(self.gcp, self.gcp.ancestry(ctx.project), IAP_SETTINGS)[0]:
+                return console_page("iam-admin/iam", f"projects/{ctx.project}")
+        else:
+            parent = str(ctx.outputs.get("parent") or "")
+            if parent and not holds(self.gcp, [parent], PROJECT_CREATE)[0]:
+                return console_page("iam-admin/iam", parent)
+        account = str(ctx.outputs.get("billing_account") or "").removeprefix("billingAccounts/")
+        if account:
+            return f"https://console.cloud.google.com/billing/{account}/manage"
+        return console_page("iam-admin/iam", f"projects/{ctx.project}")
 
     def _creatable(self, ctx: Any, gcp: Gcp) -> list[tuple[str, str]]:
         """Each organization, then each folder, the person can create a project in."""
@@ -1470,17 +1569,22 @@ class OrgDomainStep(_Base):
             ctx.events.emit("step_apply", step=self.id, message=f"the organization could not be read ({exc})")
         if not domain or _domain_problem(domain):
             domain, source = self._confirmed(ctx), "the signed-in account, confirmed"
-        problem = _domain_problem(domain)
-        if problem:
-            raise ValueError(problem)
         ctx.events.emit("step_apply", step=self.id, message=f"organization domain {domain}, from {source}")
         remember(ctx, outputs={"org_domain": domain, LABEL_PREFIX_OUTPUT: default_label_prefix(domain)})
 
     def _confirmed(self, ctx: Any) -> str:
         guess = self._account().rpartition("@")[2].strip().lower()
         offered = guess if guess and _domain_problem(guess) is None else None
-        return self._ask(ctx, self.id, "Your Google Workspace or Cloud Identity domain (IAP admits every "
-                                       "account in it)", default=offered).strip().lower()
+
+        def parse(typed: str) -> str:
+            domain = typed.strip().lower()
+            problem = _domain_problem(domain)
+            if problem:
+                raise ValueError(problem)
+            return domain
+
+        return ask_until(self._ask, ctx, self.id, "Your Google Workspace or Cloud Identity domain (IAP admits "
+                                                  "every account in it)", parse, default=offered)
 
 
 # -- preflight.installer-address -----------------------------------------------
@@ -1546,11 +1650,15 @@ class InstallerAddressStep(_Base):
         address = self.agreed(echoes)
         if address is None:
             said = ", ".join(f"{url} answered {found or 'nothing usable'}" for url, found in zip(ADDRESS_ECHOES, echoes))
-            typed = self._ask(ctx, self.id, f"The public-address echoes disagree ({said}). This machine's public "
-                                            "IPv4 address").strip()
-            address = _public_ipv4(typed)
-            if address is None:
-                raise ValueError(f"{typed!r} is not a public IPv4 address")
+
+            def parse(typed: str) -> str:
+                found = _public_ipv4(typed.strip())
+                if found is None:
+                    raise ValueError(f"{typed.strip()!r} is not a public IPv4 address")
+                return found
+
+            address = ask_until(self._ask, ctx, self.id, f"The public-address echoes disagree ({said}). This "
+                                                         "machine's public IPv4 address", parse)
         remember(ctx, outputs={"installer_cidr": f"{address}/32"})
 
 
@@ -1629,7 +1737,14 @@ class OrgPoliciesStep(_Base):
         return Plan("org policies an admin must change", tuple(self.findings(ctx)[0]))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """An organization policy is an admin's to change: the plan names each one."""
+        """An organization policy is an admin's to change: the plan names each
+        one, and the organization policies page of the resource they are read
+        on opens for the admin to change them there."""
+        problems, outputs = self.findings(ctx)
+        if problems:
+            open_page(console_page("iam-admin/orgpolicies", outputs["org_policies_read_on"]),
+                      why=f"{self.id}: " + "; ".join(problems) + ". An organization admin changes them on this "
+                          "page; then run swarm install again:")
 
 
 # -- preflight.quotas (lesson 4) -------------------------------------------------
@@ -1802,6 +1917,29 @@ class QuotasStep(_Base):
         if rest:
             open_page(quotas_page(ctx.project), why="Request these quota increases on the Quotas page:\n  "
                                                     + "\n  ".join(rest))
+
+
+class QuotasRecheckStep(QuotasStep):
+    """Every quota of QUOTAS read again once stage 1 has created the project
+    and enabled its APIs: stage 0 could read none of a project that did not
+    exist yet, nor one of a service not enabled yet, and the NAT addresses',
+    the regional GKE clusters' and the KMS signing quotas bind at the first
+    apply as surely as the CPU quota preflight.sizing-quota rechecks. It
+    satisfies no entry of its own (preflight.quotas owns them); it is
+    registered after foundations.apis (foundations.build_steps)."""
+
+    id = "preflight.quotas-recheck"
+    stage = 1
+    satisfies = ()
+    _explain = (
+        "A new project's quotas, and those of a service enabled only in stage 1, cannot be read in stage 0; "
+        "each one preflight.quotas checks is read again here, before anything that needs it is created."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        if self.gcp.project(ctx.project) is None:
+            return Observation(UNMET, f"project {ctx.project} does not exist yet (foundations.project creates it)")
+        return super().check(ctx)
 
 
 def _answered(ctx: Any) -> tuple[str, int] | None:
