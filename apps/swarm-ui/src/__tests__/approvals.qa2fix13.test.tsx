@@ -8,7 +8,7 @@
 // is token-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -68,7 +68,7 @@ describe('automate2-08: the Decided card', () => {
 
   it('orders its rows by when they were decided, newest first', async () => {
     const card = await mount()
-    const rows = within(card).getAllByRole('row').slice(1)
+    const rows = [...card.querySelectorAll<HTMLElement>('.apc-card')]
     // MUTATION: drop the sort -> the route's order, apr_a, apr_b, apr_c.
     expect(rows.map((r) => /plan (apr_\w)/.exec(visible(r))?.[1])).toEqual(['apr_a', 'apr_c', 'apr_b'])
   })

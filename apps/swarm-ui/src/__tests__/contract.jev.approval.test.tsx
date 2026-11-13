@@ -200,12 +200,12 @@ describe('the approval screen', () => {
     const bar = within(d).getByTestId('ap-contract-step')
     expect(visible(bar)).toContain('Not decided in this inbox')
     expect(within(bar).getByRole('link', { name: /open the step/i }).getAttribute('href')).toContain('task_7')
-    expect(visible(d)).toContain('it waits for its owner')
+    expect(visible(d)).toMatch(/it waits for its owner/i)
   })
 
   it('draws no card where the detail carries no acceptance record', async () => {
     const d = await openApproval(detail(null))
-    await within(d).findByRole('region', { name: 'What asked for it' }, WAIT)
+    await within(d).findByRole('region', { name: 'The request' }, WAIT)
     expect(within(d).queryByRole('region', { name: 'Jev’s judgment of the work contract' })).toBeNull()
     expect(contractAcceptance({ status: 'met' })).toBeNull()
     expect(contractAcceptance('met')).toBeNull()
