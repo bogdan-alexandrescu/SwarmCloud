@@ -506,6 +506,12 @@ class FakeFirestore:
         return FakeCollectionRef(self, path)
 
     def document(self, path: str) -> FakeDocumentRef:
+        # `Client.document` refuses a path with an odd segment count (that is a
+        # collection) or an empty segment; so does the fake, so a bad path fails
+        # its test instead of silently working.
+        segments = path.split("/")
+        if not path or "" in segments or len(segments) % 2:
+            raise ValueError(f"A document must have an even number of path elements: {path!r}")
         return FakeDocumentRef(self, path)
 
     def batch(self) -> FakeWriteBatch:
