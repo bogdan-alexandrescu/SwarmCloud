@@ -8,6 +8,9 @@ holds that:
 * the front's reply comes back before a slow planner ends, carrying the
   delegation's id, and `GET /delegations/{id}` serves the planner's answer;
 * `delegate` runs `Planner.delegate` with the session's person and grant;
+* a read-only question ("how many agents are running") is answered in the
+  front's own turn with a read tool, on `Planner.read` with the session's
+  grant, and starts no delegation (the owner's pick on #3954);
 * delegations run one at a time per session, at most two waiting;
 * no request reaches an OpenAI host;
 * one lease for the session (`holder: voice-front`), renewed, released on
@@ -37,7 +40,7 @@ _APP = str(Path(__file__).resolve().parents[3] / "apps" / "swarm-voice")
 if _APP not in sys.path:
     sys.path.insert(0, _APP)
 
-from swarm_voice import accountlease, claudefront, claudeturn, plannerlease  # noqa: E402
+from swarm_voice import accountlease, claudefront, claudeturn, plannerlease, tools_act, tools_read, tools_visual  # noqa: E402
 from swarm_voice.grant import GRANT_HEADER, SessionGrant  # noqa: E402
 
 PERSON = "person@example.com"
@@ -127,7 +130,11 @@ class FakeConversation:
             raise claudeturn.ChildGone("gone")
         self.said.append(text)
         reply = "Hi there."
-        if "plan" in text:
+        if "how many" in text:
+            answer, is_error = await self.handler("list_agents", {"state": "RUNNING", "workflow_id": None,
+                                                                  "submitted_by": "me"})
+            reply = f"Read: {answer}" if not is_error else "I couldn't look."
+        elif "plan" in text:
             answer, is_error = await self.handler("delegate", {"request": text})
             reply = "Looking at that now." if not is_error else "Too much is waiting; give me a moment."
         return claudeturn.ChildOutcome(result_text=reply, usage={"input_tokens": 5, "output_tokens": 1})
@@ -183,6 +190,8 @@ class FakePlanner:
         self.most = 0
         #: The planner model each delegation was asked for (None: the pin).
         self.models: list[str | None] = []
+        #: Every read the front ran (`Planner.read`).
+        self.reads: list[dict] = []
 
     async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None):  # noqa: ANN001
         self.calls.append({"person": person, "grant": grant, "transcript": list(transcript),
@@ -197,6 +206,10 @@ class FakePlanner:
         return SimpleNamespace(spoken="It's on screen.", cards=[{"kind": "plan", "card_id": "vc_1"}], error=None,
                                usage={"input_tokens": 100, "output_tokens": 20, "model": PLANNER_PIN,
                                       "billing": "subscription"})
+
+    async def read(self, *, grant, name, args, known=()):  # noqa: ANN001
+        self.reads.append({"grant": grant, "name": name, "args": dict(args), "known": known})
+        return '{"total": 7}', False
 
     def forget(self, session_id: str) -> None:
         self.forgotten.append(session_id)
@@ -455,7 +468,36 @@ def test_usage_is_by_model_with_both_pins():
     run(body)
 
 
-def test_the_front_runs_the_haiku_pin_and_offers_only_delegate(monkeypatch):
+def test_a_read_only_question_is_answered_in_the_fronts_own_turn():
+    async def body(w: World):
+        grant = _grant()
+        await w.front.start("vs-1", person=PERSON, grant=grant)
+        answer = await w.front.turn("vs-1", "how many agents do I have running")
+        assert answer.delegation_id is None
+        assert "7" in answer.reply
+        assert w.planner.calls == []
+        [read] = w.planner.reads
+        assert read["name"] == "list_agents" and read["grant"] is grant
+        assert read["args"]["state"] == "RUNNING"
+        # The lease's token is scrubbed from what the read hands the child.
+        assert w.front.get("vs-1").lease.bearer.reveal() in read["known"]
+    run(body)
+
+
+def test_without_a_planner_a_read_is_refused_to_the_model():
+    async def body(w: World):
+        front = claudefront.FrontSessions(accounts=w.accounts, claude=w.claude, clock=lambda: w.now[0],
+                                          sleep=w.sleep)
+        try:
+            await front.start("vs-2", person=PERSON, grant=_grant())
+            answer = await front.turn("vs-2", "how many agents do I have running")
+            assert answer.reply == "I couldn't look." and answer.delegation_id is None
+        finally:
+            await front.end_all()
+    run(body)
+
+
+def test_the_front_runs_the_haiku_pin_and_offers_delegate_and_the_read_tools(monkeypatch):
     monkeypatch.delenv("VOICE_FRONT_MODEL", raising=False)
     world = World()
     front = claudefront.FrontSessions(accounts=world.accounts)
@@ -465,8 +507,13 @@ def test_the_front_runs_the_haiku_pin_and_offers_only_delegate(monkeypatch):
 
     async def body(w: World):
         await w.front.start("vs-1", person=PERSON)
-        assert [t["name"] for t in w.claude.tools[0]] == ["delegate"]
+        names = [t["name"] for t in w.claude.tools[0]]
+        assert names == ["delegate", *(t["name"] for t in tools_read.tool_schemas())]
+        # Reads only: nothing that draws, shows or acts is the front's.
+        assert not any(tools_visual.is_visual_tool(n) or tools_act.is_act_tool(n)
+                       or n.startswith("draw_") or n == "speak" for n in names)
         assert "delegate" in w.claude.systems[0]
+        assert "never count with `search`" in w.claude.systems[0]
     run(body)
     asyncio.run(world.http.aclose())
 

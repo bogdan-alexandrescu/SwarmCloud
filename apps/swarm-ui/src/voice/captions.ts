@@ -7,6 +7,19 @@
  * region, so a screen reader announces each segment once, whole, and never
  * the words as they grow (§3.10; MDN's live-region guide).
  *
+ * DELTAS AND NO FINAL (the live deployment, 12 November 2026: both sides read
+ * one word per line; the trace counted 43 transcript pieces and 0 finals).
+ * GPT-Live sends the browser deltas only, each with its own event id and no
+ * item id, so a side's deltas are one line (a segment is keyed by `item_id`,
+ * then `response_id`, never the event id) and that line closes, whole, on the
+ * first of: a final for that side; a new item of that side; the other side
+ * starting to speak over a line that names no item (one that does may still be
+ * transcribed behind the reply); the end of the side's turn or response
+ * (`captionEnds`); or CAPTION_PAUSE_MS with no new delta of that side, timed
+ * by the session (`closeCaption`). swarm-voice's live.py joins the same stream
+ * the same way for its planner ("THE SIDEBAND SENDS ONLY DELTAS" and "WHOLE
+ * UTTERANCES", 10 November 2026).
+ *
  * WHICH EVENT NAMES. OpenAI's Live reference names the transcript deltas
  * `session.input_transcript.delta` (the person) and
  * `session.output_transcript.delta` (the agent); the final events are read as
@@ -22,8 +35,8 @@ export type CaptionSide = 'you' | 'agent'
 /** One caption-bearing event, reduced to what the page draws. */
 export interface CaptionEvent {
   side: CaptionSide
-  /** The segment it belongs to (OpenAI's item id). */
-  key: string
+  /** The segment it belongs to (OpenAI's item id, then response id); null when the event names neither. */
+  key: string | null
   /** A delta's new words, or a final event's whole text. */
   text: string
   final: boolean
@@ -35,6 +48,10 @@ export interface CaptionLine {
   text: string
   /** False while the segment is still being spoken: muted, and not announced. */
   final: boolean
+  /** The segment's key, when its events named one: a final for it replaces the line. */
+  key?: string | null
+  /** Closed by the segment's own final event: a later delta of it adds nothing. */
+  settled?: boolean
 }
 
 const EVENTS: Readonly<Record<string, { side: CaptionSide; final: boolean }>> = {
@@ -72,31 +89,133 @@ export function captionEvent(raw: unknown): CaptionEvent | null {
   const m = msg as Record<string, unknown>
   const kind = EVENTS[str(m.type) ?? '']
   if (kind === undefined) return null
-  const key = str(m.item_id) ?? str(m.response_id) ?? str(m.event_id)
+  // Never the event id: every delta has its own, and keyed by it each word was a line.
+  const key = str(m.item_id) || str(m.response_id) || null
   const text = kind.final ? (str(m.transcript) ?? str(m.text)) : (str(m.delta) ?? str(m.text))
-  if (key === null || text === null) return null
+  if (text === null) return null
   return { side: kind.side, key, text, final: kind.final }
 }
 
 /**
- * The lines after one event. A delta grows its segment's partial line (or
- * starts one); a final replaces it with the final text, or starts a final
- * line when its deltas never came. A final with no words drops the line.
+ * Events that end a side's line without a final, by type. What the data
+ * channel sends besides the transcript deltas (live.py, 10 November 2026):
+ * `session.output_audio.started`/`.stopped` around the voice's playback and
+ * `session.delegation.created` when the voice hands the person's request to
+ * the planner; it sends no end of the person's turn. The Realtime API's names
+ * are read too: `output_audio_buffer.stopped`/`.cleared` (playback ended or
+ * was cut off) and `response.done` (the response is complete).
+ */
+const ENDS: Readonly<Record<string, CaptionSide>> = {
+  'session.output_audio.stopped': 'agent',
+  'output_audio_buffer.stopped': 'agent',
+  'output_audio_buffer.cleared': 'agent',
+  'response.done': 'agent',
+  'session.delegation.created': 'you',
+}
+
+/** The side whose line a data-channel message ends (`ENDS`), or null. */
+export function captionEnd(raw: unknown): CaptionSide | null {
+  let msg: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      msg = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (msg === null || typeof msg !== 'object') return null
+  return ENDS[str((msg as Record<string, unknown>).type) ?? ''] ?? null
+}
+
+/**
+ * How long a side's line stays open with no new delta: about one second, the
+ * middle of live.py's utterance gaps (0.8 s after a sentence's end mark, 1.6 s
+ * without one). A caption only draws, so one gap serves both.
+ */
+export const CAPTION_PAUSE_MS = 1000
+
+let opened = 0
+
+/** A fresh line id: a key a pause split, or no key at all, can open several lines. */
+function lineId(lines: readonly CaptionLine[], side: CaptionSide, key: string | null): string {
+  const id = `${side}:${key ?? '~'}`
+  if (key !== null && !lines.some((l) => l.id === id)) return id
+  opened += 1
+  return `${id}#${opened}`
+}
+
+/** The index of the side's open line, or -1. */
+function openAt(lines: readonly CaptionLine[], side: CaptionSide): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]
+    if (l !== undefined && l.side === side && !l.final) return i
+  }
+  return -1
+}
+
+/**
+ * The lines with the side's open line closed: final, its text as the deltas
+ * sent it, the ends' spaces trimmed. A line with no words is dropped.
+ */
+export function closeCaption(lines: readonly CaptionLine[], side: CaptionSide): CaptionLine[] {
+  const at = openAt(lines, side)
+  if (at === -1) return [...lines]
+  const was = lines[at] as CaptionLine
+  const text = was.text.trim()
+  if (text === '') return lines.filter((_, i) => i !== at)
+  return lines.map((l, i) => (i === at ? { ...l, text, final: true } : l))
+}
+
+/**
+ * Whether `after` has a line closed that `before` had open, or had not at all:
+ * a line closed without a final (a pause, the other side, the end of a turn)
+ * is a segment someone spoke, so it counts as activity for the idle stop just
+ * as a final does (the owner's pick on #3956, 12 November 2026).
+ */
+export function closedLine(before: readonly CaptionLine[], after: readonly CaptionLine[]): boolean {
+  const wasFinal = new Set(before.filter((l) => l.final).map((l) => l.id))
+  return after.some((l) => l.final && !wasFinal.has(l.id))
+}
+
+/**
+ * The lines after one event. A delta grows its side's open line, or closes it
+ * and starts one when its key differs; it closes the other side's open line
+ * when that line names no item. A final replaces its segment's lines (every
+ * line of its key, else the side's open line) with its text, or lands as a new
+ * line when its deltas never came; a final with no words drops them. A delta
+ * of a segment its final already closed adds nothing.
  */
 export function applyCaption(lines: readonly CaptionLine[], ev: CaptionEvent): CaptionLine[] {
-  const id = `${ev.side}:${ev.key}`
-  const at = lines.findIndex((l) => l.id === id)
+  const key = ev.key
   if (ev.final) {
+    const ofKey = (l: CaptionLine) => key !== null && l.side === ev.side && (l.key === key || l.id === `${ev.side}:${key}`)
+    let first = lines.findIndex(ofKey)
+    const open = openAt(lines, ev.side)
+    // A keyed final takes over an open line of no key (or of its own); never another item's.
+    if (first === -1 && open !== -1 && (key === null || (lines[open]?.key ?? null) === null)) first = open
+    const gone = (l: CaptionLine, i: number) => i === first || ofKey(l)
     const text = ev.text.trim()
-    if (text === '') return lines.filter((l) => l.id !== id)
-    const line: CaptionLine = { id, side: ev.side, text, final: true }
-    return at === -1 ? [...lines, line] : lines.map((l, i) => (i === at ? line : l))
+    const kept: CaptionLine[] = []
+    lines.forEach((l, i) => {
+      if (i === first && text !== '') kept.push({ id: l.id, side: ev.side, text, final: true, key, settled: true })
+      else if (!gone(l, i)) kept.push(l)
+    })
+    if (first !== -1 || text === '') return kept
+    return [...kept, { id: lineId(lines, ev.side, key), side: ev.side, text, final: true, key, settled: true }]
   }
-  if (at === -1) return [...lines, { id, side: ev.side, text: ev.text, final: false }]
-  const was = lines[at]
-  // A delta after the final (out of order) changes nothing that was announced.
-  if (was === undefined || was.final) return [...lines]
-  return lines.map((l, i) => (i === at ? { ...l, text: l.text + ev.text } : l))
+  if (key !== null && lines.some((l) => l.side === ev.side && l.settled === true && (l.key === key || l.id === `${ev.side}:${key}`))) {
+    return [...lines]
+  }
+  const other: CaptionSide = ev.side === 'you' ? 'agent' : 'you'
+  const otherAt = openAt(lines, other)
+  let next = otherAt !== -1 && (lines[otherAt]?.key ?? null) === null ? closeCaption(lines, other) : [...lines]
+  const at = openAt(next, ev.side)
+  const was = next[at]
+  if (was !== undefined && (was.key ?? null) === key) {
+    return next.map((l, i) => (i === at ? { ...l, text: l.text + ev.text } : l))
+  }
+  next = closeCaption(next, ev.side)
+  return [...next, { id: lineId(next, ev.side, key), side: ev.side, text: ev.text, final: false, key }]
 }
 
 /**

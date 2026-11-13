@@ -2110,6 +2110,10 @@ def run_cli_agent(
     # `ceiling.SESSION_TAIL_ENV`); the note file, todos, notes files, diff
     # summary and commits carry what it knew.
     ceiling_session_tail = ceiling_mod.session_tail_enabled(os.environ)
+    # The notes files' contents in a handoff (#2897): ON unless
+    # SWARM_CEILING_NOTES_INLINE turns them off (`ceiling.NOTES_INLINE_ENV`,
+    # the rollback). The minimal handoff after a refusal never carries them.
+    ceiling_notes_inline = ceiling_mod.notes_inline_enabled(os.environ)
     if spec.context_ceiling:
         ceiling_state_path = ceiling_state_file()
         ceiling_seed = ceiling_mod.read_state(ceiling_state_path)
@@ -2606,6 +2610,20 @@ def run_cli_agent(
                 if ceiling_watcher is not None and ceiling_session_tail else None)
         note = ceiling_mod.agent_note(Path(ctx.artifacts_dir))
         todos = _scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None
+        notes = (ceiling_mod.notes_contents(
+            Path(ctx.artifacts_dir),
+            scrub=lambda text: replace_lone_surrogates(scrub_text(text, secrets))[0])
+            if ceiling_notes_inline else [])
+        if ceiling_watcher is not None and ceiling_notes_inline:
+            # Names and sizes only, never the content: what lets a deployed
+            # handoff be checked from the result summary.
+            ceiling_watcher.notes_inlined.append({
+                "session": ceiling_watcher.sessions + 1,
+                "inlined": [{"name": item.name, "bytes": item.bytes, "cut": item.cut}
+                            for item in notes if item.text is not None],
+                "not_inlined": [item.name for item in notes if item.text is None],
+            })
+            ctx.report["context_ceiling"] = ceiling_watcher.summary()
         handoff_minimal[0] = ceiling_mod.minimal_handoff_prompt(
             task_prompt=task_prompt, note=note, todos=todos, then=then)
         return ceiling_mod.handoff_prompt(
@@ -2614,6 +2632,7 @@ def run_cli_agent(
             session_tail=scrub_text(tail, secrets) if tail else None,
             todos=todos,
             files=ceiling_mod.notes_files(Path(ctx.artifacts_dir)),
+            notes=notes,
         )
 
     if ceiling_watcher is not None:

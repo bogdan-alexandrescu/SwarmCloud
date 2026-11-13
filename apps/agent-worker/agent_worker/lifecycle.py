@@ -6770,7 +6770,14 @@ class Worker:
         branch change is therefore NOT a move when the end branch has no
         `refs/remotes/origin/<name>` in the clone (the clone tracks every
         branch, `gitops.TRACK_EVERY_BRANCH`, so a branch fetched by name has
-        one) and HEAD descends from the start, the last rule above. A
+        one) and HEAD descends from the start, the last rule above. A name
+        collision alone is not a move either (#3435): task_884a993427ce44feb7a6
+        ran `git checkout -b rebuild/pr-1233` at its start, committed a merge
+        and two fixes, then a `git fetch --deepen=50 origin` wrote an unrelated
+        `refs/remotes/origin/rebuild/pr-1233`, and its 3 commits were lost. The
+        branch is fetched only when its line HOLDS that tip -- the tip is an
+        ancestor of HEAD and not of `floor` -- and otherwise falls to the
+        descent check. A
         detached HEAD, from any start, therefore publishes in exactly two
         cases: it is the start sha (`floor`) itself, whether or not an origin
         tip sits on that commit; or it descends from the start and equals no
@@ -6812,6 +6819,26 @@ class Worker:
         def where() -> str:
             return short_head() if end == DETACHED_HEAD else end.removeprefix("refs/heads/")
 
+        def contains(tip: str | None) -> bool:
+            # The agent's line holds the fetched tip (#3435): HEAD's history is
+            # fetched into publish_repo, so a tip absent there is not in it.
+            # A tip that is not a full sha stays fetched (fail closed).
+            if not isinstance(tip, str) or not _FULL_SHA_RE.fullmatch(tip):
+                return True
+            asked = [
+                (["rev-parse", "--verify", "--quiet", f"{tip}^{{commit}}"], "harvest-moved-fetched", True),
+                (["merge-base", "--is-ancestor", tip, "HEAD"], "harvest-moved-fetched-head", True),
+            ]
+            if floor and _FULL_SHA_RE.fullmatch(floor):
+                asked.append((["merge-base", "--is-ancestor", tip, floor], "harvest-moved-fetched-start", False))
+            for argv, slug, want in asked:
+                code, _ = git(argv, slug)
+                if code not in (0, 1):
+                    raise GitError("could not tell whether HEAD's line holds the branch it fetched")
+                if (code == 0) != want:
+                    return False
+            return True
+
         end = read_head_branch_as_data(repo)
         start = self._start_branch
         left_branch = start is not None and end != start
@@ -6827,7 +6854,9 @@ class Worker:
                 and self._fetched_line(repo, end)
             )
         else:
-            fetched = left_branch and self._fetched_line(repo, end)
+            fetched = left_branch and self._fetched_line(repo, end) and contains(
+                read_origin_ref_as_data(repo, end)
+            )
         if fetched:
             self.log.warning(
                 "HEAD left the line this step was given for one it fetched; nothing "
@@ -6860,6 +6889,8 @@ class Worker:
         it made (#2094): a branch with a `refs/remotes/origin/<name>` in the
         clone, or a detached HEAD standing exactly on a `refs/remotes/origin/*`
         tip. Read from the clone's files as data (`gitops`), never by git.
+        For a branch the name is only the first filter: `_head_moved` then
+        asks, in `publish_repo`, whether the line holds that tip (#3435).
 
         The branch this step itself publishes (`_publish_branch_name`) is never
         a fetched line: a `git_fetch` of it writes its tracking ref, and its

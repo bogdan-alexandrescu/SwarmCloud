@@ -83,6 +83,7 @@ export const BROWSER_KEYS: readonly string[] = [
   'swarm.schedule.history.view', // ScheduleHistoryTimeline.tsx HISTORY_VIEW_KEY: Timeline or Table
   'swarm.config.setupSteps', // ConfigSetup.tsx SHOW_STEPS_KEY: a finished setup strip unfolded
   'swarm.live.logsSplit', // LiveBrowser.tsx SPLIT_KEY: the logs column's share of the Browser tab
+  'swarm.voice.floating', // voice/Floating.tsx PLACE_KEY: the bubble's corner and collapsed state
 ]
 
 function ours(key: string): boolean {

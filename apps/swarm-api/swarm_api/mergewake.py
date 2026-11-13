@@ -150,9 +150,14 @@ reported"). The tick reads `mergeable`/`mergeable_state` from the same
 pull request read, BEFORE the checks; on a conflict it hands the pull
 request to a conflict fix round exactly as a red reading goes to a CI-fix
 round: claimed in `merge_fix.conflict_rounds` under the same guard, at most
-`MERGE_CONFLICT_ROUNDS_MAX` of them whatever the workflow asked for, as the
-merge task's submitter while still a member, only for a pull request on the
-root's own branch. The round is a one-step claude-code continuation of that
+`MERGE_CONFLICT_ROUNDS_MAX` SPENT ones whatever the workflow asked for, as
+the merge task's submitter while still a member, only for a pull request on
+the root's own branch. A round is spent when it failed or was refused, was
+never submitted, or its task pushed no head other than the one it was given
+(`_conflict_rounds_spent`, #3073); one that resolved its conflict and pushed
+a new head is not, for the next conflict is the base moving again, not that
+round failing. Because MERGE_CI_MAX_SECONDS starts again at every new head,
+`MERGE_CONFLICT_ROUNDS_TOTAL_MAX` rounds of any outcome is the ceiling. The round is a one-step claude-code continuation of that
 branch (`conflict_fix_continuation`) that merges the base in and resolves
 the conflicts keeping both sides' intent. Its pushed head is a fix round's
 head to the worker (`agent_worker.merge._fix_round_heads`). With no round
@@ -234,8 +239,18 @@ whose own loop fixes CI before it merges). Three things come with them:
   window alone as the floor. PR #2971 (a1e16b2c) and PR #2973 (22ef10c2)
   refused `checks_failed` with no re-run answer: one head's re-run was
   refused, the other's fixed 600 s window lapsed while its fan-in
-  `ci-gate` run was still running. This is still one answered re-run per
-  head, with at most one retry of a refusal.
+  `ci-gate` run was still running. Before any round this is one answered
+  re-run per head, with at most one retry of a refusal.
+  After a no_change round an answered re-run no longer ends it (#3080,
+  the owner's decision of 2026-11-12): PR #3049 at dd72fa3e and PR #3055
+  at d82d2635 spent their re-run before the round on one flake, read red
+  on another, and refused `checks_failed` with no re-run; a later manual
+  re-run went green and both merged unchanged. On that path a red reading
+  no accepted re-run at the head is still settling on is re-run again
+  while fewer than RERUNS_PER_HEAD_MAX accepted re-runs are recorded
+  there (and fewer than RERUN_REFUSALS_MAX refused ones), so a second
+  answered red wakes the step and a persistent red cannot loop. With no
+  round at the head it stays one free re-run.
   The rule itself -- which failing checks a re-run reaches, what is asked
   of GitHub, whether an accepted re-run still runs, and the bounds -- is
   `cirerun`'s, shared with an issue run in CHECKING, which re-runs a red
@@ -351,6 +366,7 @@ from .cirerun import (
     ACTIONS_APP_SLUG,  # noqa: F401 - re-exported: mergewake.ACTIONS_APP_SLUG
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
+    RERUNS_PER_HEAD_MAX,
     rerun_running as _rerun_running,
     rerun_targets as _rerun_targets,
     rerunnable as _rerunnable,
@@ -526,19 +542,27 @@ FIX_ROUND_LOST = "fix_round_lost"
 CONFLICTING = "conflicting"
 #: The conflict fix rounds' list in `metadata.merge_fix`, beside the CI-fix
 #: `rounds` and counted apart from them, and its bound: the PR-side CI
-#: fixer's own (`cifix.DEFAULT_MAX_ATTEMPTS`). Held equal to
-#: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` by
+#: fixer's own (`cifix.DEFAULT_MAX_ATTEMPTS`), counting SPENT rounds only
+#: (`_conflict_rounds_spent`, #3073), and the ceiling on rounds of any
+#: outcome: SIX, because MERGE_CI_MAX_SECONDS is measured per head and starts
+#: again whenever a round moves the head, so it alone does not bound rounds
+#: across a base that keeps moving. Held equal to
+#: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` /
+#: `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` by
 #: tests/unit/worker/test_merge_conflict_round.py.
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
 MERGE_CONFLICT_ROUNDS_MAX = 2
+MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 #: The one step of a conflict fix round's workflow.
 CONFLICT_FIX_STEP = "conflict-fix"
 #: The re-runs of failing Actions jobs in `metadata.merge_fix`, one accepted
-#: per head at most (SPEED-D2; a refused one is asked once more, #3006): each
+#: per head before any round (SPEED-D2), RERUNS_PER_HEAD_MAX after a no_change
+#: one (#3080); a refused one is asked once more (#3006): each
 #: `{round, head, claimed_at}` as a round is claimed, then `jobs`, `runs`
 #: and `requested_at`, or `error` when GitHub refused.
 RERUNS_KEY = "reruns"
-#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX and ACTIONS_APP_SLUG are
+#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX, RERUNS_PER_HEAD_MAX and
+#: ACTIONS_APP_SLUG are
 #: `cirerun`'s, imported above: the issue run's CHECKING read shares the
 #: re-run rule (#3200), so it is defined there once.
 #: A merge parked on an owner pick its branch did not build (PICK-FIX-ROUND,
@@ -1162,7 +1186,8 @@ def round_step_id(key: str, round_no: int) -> str:
 
 
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
-                 head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
+                 head: str, read: _Reading, token: str, now: datetime, *,
+                 after_no_change: bool = False) -> tuple[str, None] | None:
     """Re-run the failed jobs of a red head's failing Actions checks' workflow
     runs once before a round (SPEED-D2, #2841).
 
@@ -1170,8 +1195,11 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
     waiting for GitHub to make it; None to go on to the round: no job a
     re-run could fix, a re-run at this head already answered red, or one
     GitHub refused twice. A refused re-run ran nothing, so it is not the
-    head's re-run: asked once more, at most (RERUN_REFUSALS_MAX, #3006). See
-    the module docstring.
+    head's re-run: asked once more, at most (RERUN_REFUSALS_MAX, #3006).
+    `after_no_change` (a CI-fix round ended at `head` with nothing to
+    change): an answered re-run no longer ends it, and the head is asked
+    again while fewer than RERUNS_PER_HEAD_MAX accepted re-runs are
+    recorded there (#3080). See the module docstring.
     """
     task_id = str(doc.get("id") or "")
     metadata = _mapping(doc.get("metadata"))
@@ -1179,8 +1207,9 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
     jobs = _rerunnable(read.checks)
     mine = [r for r in reruns if r.get("head") == head]
     refused = [r for r in mine if r.get("error")]
-    if mine and len(refused) < len(mine):
-        entry = [r for r in mine if not r.get("error")][-1]
+    accepted = [r for r in mine if not r.get("error")]
+    if accepted:
+        entry = accepted[-1]
         asked = {j for j in entry.get("jobs") or [] if isinstance(j, int)}
         since = entry.get("requested_at")
         if (
@@ -1189,7 +1218,10 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
                  or _rerun_running(ctx.forge_writer, ref, entry, token))
         ):
             return _WAITING, None
-        return None
+        # Answered. Before any round that is the head's one re-run; after a
+        # no_change round it is asked again, up to the bound (#3080).
+        if not after_no_change or len(accepted) >= RERUNS_PER_HEAD_MAX:
+            return None
     if len(refused) >= RERUN_REFUSALS_MAX:
         return None
     if not jobs:
@@ -1372,7 +1404,7 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
     task_id = str(doc.get("id") or "")
     asked = _rounds_asked(_mapping(doc.get("metadata")))
 
-    def first() -> tuple[str, None] | None:
+    def first(*, after_no_change: bool = False) -> tuple[str, None] | None:
         # A PR-side fix (scripts/ci-fix.sh, `cifix.stamp`) already on this
         # head's failure: a round, or a re-run, would be a second hand on the
         # branch it pushes to. Stay parked on CI_PENDING until it ends; its
@@ -1399,7 +1431,8 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
                     {"main_red": {"checks": [str(n)[:256] for n in names[:40]],
                                   "head": sha, "read_at": now}})
             return _WAITING, None
-        return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
+        return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now,
+                            after_no_change=after_no_change)
 
     def build(target: str, round_no: int, resource_class: str | None) -> WorkflowCreate:
         excerpt = excerpt_at(ctx.forge_writer, ref, head, read.checks, token,
@@ -1538,7 +1571,9 @@ def _on_train(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mapp
     task_id = str(doc.get("id") or "")
     asked = _rounds_asked(_mapping(doc.get("metadata")))
 
-    def first() -> tuple[str, None] | None:
+    def first(*, after_no_change: bool = False) -> tuple[str, None] | None:
+        # No re-run here (the re-board was it), after a round or not:
+        # `after_no_change` is `_hand_off`'s, and only the claim holds.
         held = live_claim(db, tenant.tenant_id, str(doc.get("repository_url") or ""),
                           ref.number, head, now)
         if held is None:
@@ -1925,8 +1960,9 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
         if (reason == FIX_ROUND_ENDED and key == "rounds" and first is not None
                 and _round_left_nothing(ctx, tenant_id, rounds[-1])):
             # The round found nothing to change -- a flake, read as one
-            # (#2684): the head's one free re-run, if it has not had it.
-            early = first()
+            # (#2684): the head's free re-run, if it has not had it, or one
+            # more after an answered one, up to RERUNS_PER_HEAD_MAX (#3080).
+            early = first(after_no_change=True)
             if early is not None:
                 return early
         return (_WAITING, None) if reason is None else (_WAKE, reason)
@@ -1941,7 +1977,13 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
         early = first()
         if early is not None:
             return early
-    if len(rounds) >= asked:
+    if key == CONFLICT_ROUNDS_KEY:
+        # A conflict round that moved the head is not spent (#3073); the
+        # ceiling bounds them all. `seen` below is still the round NUMBER.
+        if (len(rounds) >= MERGE_CONFLICT_ROUNDS_TOTAL_MAX
+                or _conflict_rounds_spent(ctx, tenant_id, rounds) >= asked):
+            return _WAKE, spent
+    elif len(rounds) >= asked:
         return _WAKE, spent
     return _submit_round(ctx, db, tenant, doc, head, read, now, key=key, asked=asked,
                          seen=len(rounds), spent=spent, label=label, build=build)
@@ -2095,6 +2137,31 @@ def conflict_fix_continuation(
             **metadata,
         },
     })
+
+
+def _conflict_rounds_spent(ctx: Any, tenant_id: str, rounds: list[Mapping[str, Any]]) -> int:
+    """How many conflict `rounds` count against MERGE_CONFLICT_ROUNDS_MAX (#3073).
+
+    Spent: an `error` (failed or refused), no task (never submitted), or a
+    task -- read under the merge's own tenant, as `_pushed_by` reads it --
+    that is gone or pushed no head other than the entry's `head`. A round
+    whose task pushed a new head moved the head and is not spent. Held
+    equal to `agent_worker.merge._conflict_rounds_spent`.
+    """
+    spent = 0
+    for entry in rounds:
+        fix_task = entry.get("task_id")
+        pushed = None
+        if not entry.get("error") and isinstance(fix_task, str) and TASK_ID_RE.match(fix_task):
+            try:
+                task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+            except NotFound:
+                task = None
+            git = _mapping(_mapping(getattr(task, "result_summary", None)).get("git"))
+            pushed = git.get("pushed_head")
+        if not isinstance(pushed, str) or not pushed or pushed == entry.get("head"):
+            spent += 1
+    return spent
 
 
 def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> str | None:

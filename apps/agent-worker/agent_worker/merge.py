@@ -70,7 +70,9 @@ A PULL REQUEST THAT CONFLICTS WITH ITS BASE is never waited on for checks
 (#1076): GitHub runs none on it. Mergeability is read before the checks, and
 a conflict parks for a conflict fix round -- a claude-code continuation of the
 branch that merges the base in, submitted by swarm-api's wake tick as a CI-fix
-round is -- at most MERGE_CONFLICT_ROUNDS_MAX of them, then `merge_conflict`.
+round is -- at most MERGE_CONFLICT_ROUNDS_MAX SPENT ones (a round that moved
+the head is not spent, #3073) and MERGE_CONFLICT_ROUNDS_TOTAL_MAX of any
+outcome, then `merge_conflict`.
 A round's pushed head, one the PR-side CI fixer recorded for this pull
 request (#1073, `_ci_fixer_heads`), and one swarm-api's tick recorded for
 this pull request from a fix round of ANY workflow (epic #1334,
@@ -435,12 +437,23 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: attempt that has not completed (#3006: PR #2973 refused at 22ef10c2 while
 #: its re-run was still running); the window alone decides when that cannot
 #: be read. A record with `error` re-ran nothing: after a no_change round
-#: it is not the head's free re-run (`_rerun_due`).
+#: it is not the head's free re-run (`_rerun_due`). Still one free re-run
+#: per head with no round there; after a no_change round, up to
+#: RERUNS_PER_HEAD_MAX accepted ones (#3080).
 RERUNS_KEY = "reruns"
 RERUN_SETTLE_SECONDS = 600
 #: How many re-runs GitHub refused at one head before the step stops
 #: parking for another (#3006): the tick asks again at most once.
 RERUN_REFUSALS_MAX = 2
+#: How many re-runs GitHub accepted at one head the step parks `CI_RERUN_DUE`
+#: for after a CI-fix round ended there `no_change` (#3080, owner decision
+#: 2026-11-12): the tick's free re-run, spent before the round on one flake,
+#: can answer red on another (PR #3049 at dd72fa3e, PR #3055 at d82d2635
+#: refused unchanged and merged green on a manual re-run). Written to match
+#: `swarm_api.cirerun.RERUNS_PER_HEAD_MAX` (re-exported by mergewake), held
+#: equal by tests/unit/worker/test_merge_fix_round.py. Without a round the
+#: head keeps one.
+RERUNS_PER_HEAD_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
@@ -472,7 +485,9 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: re-run GitHub refused (`error`) re-ran nothing, so it is not the head's
 #: free re-run (#3006, PR #2971 at a1e16b2c): the step parks again while
 #: fewer than RERUN_REFUSALS_MAX refusals are recorded at the head, then
-#: refuses naming the last refusal's error.
+#: refuses naming the last refusal's error. After that round an accepted
+#: re-run that answered red parks it again while fewer than
+#: RERUNS_PER_HEAD_MAX are recorded at the head (#3080).
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -509,15 +524,27 @@ WORKFLOW_PATHS_NAMED = 10
 CONFLICT_FIX_PENDING = "conflict_fix_pending"
 CONFLICT_FIX_RUNNING = "conflict_fix_running"
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
-#: How many conflict fix rounds a merge step gets before it refuses
+#: How many SPENT conflict fix rounds a merge step gets before it refuses
 #: `merge_conflict`. TWO, the PR-side CI fixer's own bound
 #: (`swarm_api.cifix.DEFAULT_MAX_ATTEMPTS`, scripts/ci-fix.sh's
-#: MAX_FIX_ATTEMPTS): a second conflict at a head a round already merged the
-#: base into means the base is moving under the branch faster than an agent
-#: resolves it, and a third attempt spends quota on a person's question. Not
+#: MAX_FIX_ATTEMPTS). A round is spent when it failed or was refused (an
+#: `error`), was never submitted (no task), or ended without pushing a head
+#: other than the one it was given: two rounds that could not resolve a
+#: conflict will not be helped by a third. A round that resolved its
+#: conflict and pushed a new head is NOT spent (#3073): a later conflict is
+#: main moving again, a new conflict, not the round failing (PR #3036, #3342
+#: and wf_76d8600f were refused after two rounds that both succeeded). Not
 #: the workflow's `merge_fix_rounds`, which is about red CI and defaults to
 #: none: a conflict nobody resolves is never mergeable at all.
 MERGE_CONFLICT_ROUNDS_MAX = 2
+#: The most conflict fix rounds a merge step gets WHATEVER they achieved:
+#: the cost backstop (#3073). MERGE_CI_MAX_SECONDS does not bound rounds
+#: across moving heads -- it is measured per head (`_ci_wait_age` starts
+#: again when a round moves the head) -- so without this a base that keeps
+#: moving would buy an agent run per move for ever. SIX: three times the
+#: spent budget, room for a busy main to move under the branch a few times
+#: while every round succeeds.
+MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 
 #: The PR-side CI fixer's record on its fix task (#1073): scripts/ci-fix.sh
 #: submits a `continues_task` workflow for a red `swarm/<task>` pull request
@@ -638,7 +665,11 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: non-failure end: superseded_by_person_push (not FAILED) when the committer
 #: is not the platform identity, so failure-review stops filing it; a foreign
 #: head from an unknown branch-mate still refuses." The refusal is unchanged:
-#: `_accept` takes no head a person made of content, and nothing merges. The
+#: `_accept` takes no head a person made of content, and nothing merges. A
+#: person's push is a one-parent commit or, since #3601 (the owner's hand
+#: merges of main into six train-parked pull requests, 2026-11-06 23:25Z), a
+#: two-parent merge of the base onto an accepted head that `_merge_impurity`
+#: refused: their conflict resolution is their content. The
 #: step's end cause is the frozen `EndCause`, which has no such member yet, so
 #: until contract request SUPERSEDED_BY_PERSON_PUSH lands the step ends
 #: FAILED/MERGE_REFUSED with this code, and failure-review's `person_push`
@@ -2828,6 +2859,7 @@ def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionR
     that lets the merge go on.
     """
     rows: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]]] = {}
     for ref in refs:
         try:
             doc = _mapping(ctx.fetch_upstream(ref.task_id))
@@ -2835,10 +2867,10 @@ def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionR
             doc = {}
         answer: dict[str, Any] | None = None
         if ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id:
-            for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
-                if (isinstance(entry, Mapping) and type(entry.get("question_index")) is int
-                        and entry.get("question_index") == ref.question_index):
-                    answer = {"choice": entry.get("choice"), "text": entry.get("text")}
+            # Only an answer to the question asked at that index now (#3349).
+            entry = _answer_of(ctx, ref.task_id, doc, ref.question_index, asked)
+            if entry is not None:
+                answer = {"choice": entry.get("choice"), "text": entry.get("text")}
         rows.append({"task_id": ref.task_id, "step_id": ref.step_id,
                      "question_index": ref.question_index, "question": ref.question,
                      "answer": answer})
@@ -2931,13 +2963,44 @@ def _closed_outside(summary: dict[str, Any], number: int) -> ActionOutcome:
                     f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
 
 
-def _answered(doc: Mapping[str, Any], index: int) -> bool:
-    """Whether the task's `metadata.owner_answers` holds an answer to question `index`."""
-    for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
-        if isinstance(entry, Mapping) and type(entry.get("question_index")) is int \
-                and entry.get("question_index") == index:
-            return True
-    return False
+def _answer_of(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
+               asked: dict[str, dict[int, Mapping[str, Any]]]) -> Mapping[str, Any] | None:
+    """The task's stored answer to the question it asks at `index` now, else None.
+
+    THE INDEX IS NOT THE QUESTION (#3349): a later attempt may ask another
+    question there (`questions.answers_question`). A stamped answer is
+    compared with the task's `question_digests`; one the document cannot
+    check -- unstamped with its question's text, or stamped where the
+    summary holds no digests -- with the question as the task's own
+    validated file asks it (`owner_questions.questions_of`, read once per
+    task into `asked`). FAIL CLOSED: that file unreadable, or holding no
+    such index, is no answer. An answer recording no question is kept by its
+    index, as before.
+    """
+    entry = questions_mod.stored_answers(doc.get("metadata")).get(index)
+    if entry is None or not questions_mod.recorded(entry):
+        return entry
+    stamp = entry.get(questions_mod.ASKED_DIGEST_KEY)
+    digests = questions_mod.summary_digests(doc)
+    if isinstance(stamp, str) and digests is not None:
+        return entry if index < len(digests) and stamp == digests[index] else None
+    if task_id not in asked:
+        try:
+            rows = owner_questions_mod.questions_of(
+                task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+            asked[task_id] = {row["question_index"]: row for row in rows}
+        except InputUnavailable:
+            asked[task_id] = {}
+    question = asked[task_id].get(index)
+    if question is None or not questions_mod.answers_question(entry, question):
+        return None
+    return entry
+
+
+def _answered(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
+              asked: dict[str, dict[int, Mapping[str, Any]]]) -> bool:
+    """Whether the task holds an answer to the question it asks at `index` now (`_answer_of`)."""
+    return _answer_of(ctx, task_id, doc, index, asked) is not None
 
 
 def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
@@ -3381,6 +3444,7 @@ def _unanswered(ctx: ActionContext,
     out: list[dict[str, Any]] = []
     docs: dict[str, Mapping[str, Any] | None] = {}
     asked: dict[str, dict[int, Any]] = {}
+    answered: dict[str, dict[int, Mapping[str, Any]]] = {}
     for ref in refs:
         if ref.task_id not in docs:
             try:
@@ -3390,7 +3454,8 @@ def _unanswered(ctx: ActionContext,
         doc = docs[ref.task_id]
         ours = (doc is not None and ctx.workflow_id is not None
                 and doc.get("workflow_id") == ctx.workflow_id)
-        if ours and doc is not None and _answered(doc, ref.question_index):
+        if ours and doc is not None \
+                and _answered(ctx, ref.task_id, doc, ref.question_index, answered):
             continue
         row = ref.as_dict()
         if ours and doc is not None and isinstance(doc.get("step_id"), str) and doc["step_id"]:
@@ -3766,7 +3831,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         record = None if head is None else _head_record(
             merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven,
             people=pr.people)
-        person = None if head is None else _person_push(merger, head=head, pr=pr, lane=lane)
+        person = None if head is None else _person_push(
+            merger, head=head, pr=pr, lane=lane, pinned=pinned, fix_heads=fix_heads,
+            base=default, proven=proven)
         if person is not None:
             return _superseded(run, number=number, head=head, was=pinned, person=person,
                                record=record)
@@ -3823,7 +3890,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # reads mergeability again before it merges.
     if conflicting(pr):
         return _conflicted(run, own, head=head, number=number, base=default,
-                           fixable=branch is not None)
+                           fixable=branch is not None, fix_heads=fix_heads)
 
     # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
@@ -3948,22 +4015,29 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
-        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr,
-                                                               lane=lane)
+        # The accepted head is `head` now, so a person's refused merge of
+        # the base onto it is theirs (#3601).
+        person = None if pr.head_sha is None else _person_push(
+            merger, head=pr.head_sha, pr=pr, lane=lane, pinned=head, fix_heads=fix_heads,
+            base=default, proven=proven)
         if person is not None:
-            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
+            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person,
+                               record=_head_record(merger, head=pr.head_sha, pinned=head,
+                                                   fix_heads=fix_heads, base=default,
+                                                   proven=proven, people=pr.people))
         return run.refuse("head_moved",
                           f"pull request #{number}'s head moved to {pr.head_sha} while its "
                           f"mergeability was read at {head}")
     if conflicting(pr):
         return _conflicted(run, own, head=head, number=number, base=default,
-                           fixable=branch is not None)
+                           fixable=branch is not None, fix_heads=fix_heads)
     if pr.mergeable is None:
         return wait("mergeability_unknown",
                     f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads", [])
     if pr.mergeable_state == "behind":
         return _update_branch(run, merger, number=number, head=head, updates=updates,
-                              base=default, slot=slot, own=own, fixable=branch is not None)
+                              base=default, slot=slot, own=own, fixable=branch is not None,
+                              fix_heads=fix_heads)
 
     # ---- §2.2 8: fencing and cancel, immediately before the call.
     if ctx.recheck():
@@ -3996,7 +4070,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 summary["merge_answered"] = {"status": answer.status, "message": answer.message}
                 return _update_branch(run, merger, number=number, head=head, updates=updates,
                                       base=default, slot=slot, own=own,
-                                      fixable=branch is not None)
+                                      fixable=branch is not None, fix_heads=fix_heads)
             if _CONFLICT.search(answer.message):
                 # Answered, so nothing was merged: a conflict GitHub found at
                 # merge time is handed to a conflict fix round, as one read
@@ -4004,7 +4078,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 summary.pop("merge_called")
                 summary["merge_answered"] = {"status": answer.status, "message": answer.message}
                 return _conflicted(run, own, head=head, number=number, base=default,
-                                   fixable=branch is not None,
+                                   fixable=branch is not None, fix_heads=fix_heads,
                                    detail=f"GitHub refused the merge ({answer.status}){detail}")
             return run.refuse("protection_refused",
                               f"GitHub's branch protection refused the merge "
@@ -4513,18 +4587,27 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
 
 
 def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
-                   lane: Callable[[str], bool] | None = None) -> str | None:
+                   lane: Callable[[str], bool] | None = None, *,
+                   refused_merge_onto_accepted: bool = False) -> str | None:
     """The login of the person on `pr` who made `commit`, or None (#2505).
 
-    A person's push is a commit that is not a merge (the owner's decision is about
-    a person's content commit: a two-parent merge the purity proof refuses
-    stays `head_moved`, since the proof may refuse what git accepts and that
-    is the platform's to look at), that the platform did not make -- not
-    under one of its own committer addresses, nor ending with the worker's
-    line -- and that GitHub links to a `User` account which is the pull
-    request's author or one of its assignees. GitHub commits a web-UI edit
-    itself, so for those the person is the commit's author. Anyone else is
-    an unknown branch-mate, and their head is `head_moved` as before.
+    A person's push is a commit that the platform did not make -- not under
+    one of its own committer addresses, nor ending with the worker's line --
+    and that GitHub links to a `User` account which is the pull request's
+    author or one of its assignees. GitHub commits a web-UI edit itself, so
+    for those the person is the commit's author. Anyone else is an unknown
+    branch-mate, and their head is `head_moved` as before.
+
+    It is a one-parent commit, or (#3601) a two-parent merge of the base
+    the caller found `refused_merge_onto_accepted`: its first parent is a
+    head `_accept` takes, its second is on the base, GitHub did not commit
+    it, and `_merge_impurity` refused it. That is a person's hand
+    resolution of a conflict on top of the step's own head -- the owner
+    merged main into six train-parked pull requests so on 2026-11-06 at
+    23:25Z, each refused 'both parents change <path>' -- and so their
+    content, as #2505 means. A clean merge is accepted and merged before
+    this is asked; any other merge, and every commit of three or more
+    parents, names nobody.
 
     One worker commit is a person's push: one whose line names a task
     `lane` says is a plain lane a person dispatched onto this pull
@@ -4533,7 +4616,8 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
     publishes as that person (#765), so the person is still the committer
     GitHub links, held to the pull request's people as any other push is.
     """
-    if len(commit.parents) >= 2:
+    if len(commit.parents) > 2 or (len(commit.parents) == 2
+                                   and not refused_merge_onto_accepted):
         return None
     if commit.by_worker and (lane is None or commit.worker_task is None
                              or not lane(commit.worker_task)):
@@ -4549,11 +4633,30 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
 
 
 def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts,
-                 lane: Callable[[str], bool] | None = None) -> str | None:
+                 lane: Callable[[str], bool] | None = None, pinned: str,
+                 fix_heads: list[tuple[str, str]], base: str,
+                 proven: dict[str, str | None] | None = None) -> str | None:
     """`_person_pusher` of the commit at `head`, read best-effort: a read that
-    fails names nobody, and the refusal stays `head_moved`."""
+    fails names nobody, and the refusal stays `head_moved`.
+
+    For a two-parent commit it first reads what `_person_pusher` takes as
+    given (#3601): whether its first parent is a head `_accept` takes from
+    `pinned` and `fix_heads`, its second is on `base`, and, GitHub not
+    having committed it, `_merge_impurity` refused it (through `proven`,
+    the walk's cache, so no tree is proved twice)."""
+    proven = {} if proven is None else proven
     try:
-        return _person_pusher(merger.commit(head), pr, lane)
+        commit = merger.commit(head)
+        refused = False
+        if len(commit.parents) == 2 and not commit.by_github:
+            first, second = commit.parents
+            if (_accept(merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
+                        proven=proven) is not None
+                    and merger.on_base(base, second)):
+                if commit.sha not in proven:
+                    proven[commit.sha] = _merge_impurity(merger, commit)
+                refused = proven[commit.sha] is not None
+        return _person_pusher(commit, pr, lane, refused_merge_onto_accepted=refused)
     except (forge_mod.ForgeError, ValueError):
         return None
 
@@ -4737,7 +4840,8 @@ def _dirs(path: str) -> list[str]:
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
                    base: str, slot: mergeslot.SlotUse | None = None,
                    own: Mapping[str, Any] | None = None,
-                   fixable: bool = False) -> ActionOutcome:
+                   fixable: bool = False,
+                   fix_heads: list[tuple[str, str]] | None = None) -> ActionOutcome:
     """GitHub merges the base into a branch that is behind; then park at the new head.
 
     A write to the forge, so the fencing and cancel recheck runs first and a
@@ -4777,7 +4881,7 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
             # round's to resolve (#1076), as a conflict read from `mergeable`.
             summary["update_answered"] = {"status": answer.status, "message": answer.message}
             return _conflicted(run, own or {}, head=head, number=number, base=base,
-                               fixable=fixable, detail=f"GitHub could not merge {base} into "
+                               fixable=fixable, fix_heads=fix_heads, detail=f"GitHub could not merge {base} into "
                                f"#{number}{detail}")
         return run.refuse("head_moved",
                           f"GitHub refused to update #{number} at {head}{detail}")
@@ -5124,18 +5228,32 @@ def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, 
                after_no_change: bool = False) -> bool:
     """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
 
-    Only while nothing at this head has answered it: no re-run GitHub
-    accepted is recorded at `head` (answered or settling -- `_rerun_settling`
-    holds the latter), and this step's own last park (`merge_wait`) was not
-    already `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to
-    re-run and woke the step red is answered with the refusal, not a second
-    park. After a CI-fix round ended at `head` with nothing to change
-    (`after_no_change`), a re-run GitHub refused (`error`) re-ran nothing,
-    so it is not the head's free re-run (#3006, PR #2971 at a1e16b2c): the
-    step parks again while fewer than RERUN_REFUSALS_MAX refusals are
-    recorded at `head` -- the tick asks again only then -- so a credential
-    that cannot re-run costs one more request, not a loop. Without a round,
-    a refused re-run hands the red to a round or refuses, as before.
+    Without a round at `head`, only while nothing there has answered it: no
+    re-run is recorded at `head` (answered or settling -- `_rerun_settling`
+    holds the latter). One free re-run per head.
+
+    After a CI-fix round ended at `head` with nothing to change
+    (`after_no_change`), while fewer than RERUNS_PER_HEAD_MAX re-runs GitHub
+    accepted are recorded there (#3080, owner decision 2026-11-12): the
+    free re-run spent before the round on one flake can answer red on
+    another, which the round reads as a flake too (PR #3049 at dd72fa3e,
+    PR #3055 at d82d2635). One still settling never reaches here
+    (`_rerun_settling` parks `CI_RERUN_PENDING`), so every one counted has
+    answered. A re-run GitHub refused (`error`) re-ran nothing and does not
+    count (#3006, PR #2971 at a1e16b2c): the step parks again while fewer
+    than RERUN_REFUSALS_MAX refusals are recorded at `head` -- the tick asks
+    again only then -- so a credential that cannot re-run costs one more
+    request, not a loop. The tick's `mergewake._rerun_first` applies the
+    same two bounds.
+
+    Either way, never twice for the same request: when this step's own last
+    park (`merge_wait`) was already `CI_RERUN_DUE` at `head`, it parks again
+    only when the tick has recorded a re-run at `head` since -- the newest
+    record's `claimed_at` (else `requested_at`) is later than the park's
+    `parked_at`, and not in the future (`_rerun_since_park`). So a tick that
+    found no Actions job to re-run and woke the step red is answered with
+    the refusal, not a second park, while one that re-ran and was answered
+    red can be given the next re-run the bounds allow.
     Never for a failing run no re-run replaces (`failing_ids` None, a commit
     status): waiting changes nothing. The document is tenant-writable; a
     forged record can at most refuse at once, as before #2351, or park,
@@ -5147,10 +5265,33 @@ def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, 
     if not after_no_change:
         if mine:
             return False
-    elif any(not r.get("error") for r in mine) or len(mine) >= RERUN_REFUSALS_MAX:
-        return False
+    else:
+        accepted = sum(1 for r in mine if not r.get("error"))
+        if accepted >= RERUNS_PER_HEAD_MAX or len(mine) - accepted >= RERUN_REFUSALS_MAX:
+            return False
     parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
-    return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+    if parked.get("code") != CI_RERUN_DUE or parked.get("head") != head:
+        return True
+    return _rerun_since_park(mine, parked)
+
+
+def _rerun_since_park(mine: list[Mapping[str, Any]], parked: Mapping[str, Any]) -> bool:
+    """Whether the newest re-run recorded at the head was claimed after the
+    step's `CI_RERUN_DUE` park there (`_rerun_due`, #3080).
+
+    The tick claims a re-run (`claimed_at`) only after it read that park, so
+    a later claim is the park's answer. The record and the park are
+    tenant-writable: an instant that cannot be read, on either side, or a
+    claim in the future proves nothing, and the step refuses as before.
+    """
+    if not mine:
+        return False
+    since = _stored_instant(parked.get("parked_at"))
+    entry = mine[-1]
+    claimed = _stored_instant(entry.get("claimed_at")) or _stored_instant(entry.get("requested_at"))
+    if since is None or claimed is None:
+        return False
+    return since < claimed <= utcnow()
 
 
 def _rerun_refused(own: Mapping[str, Any], head: str) -> str | None:
@@ -5381,7 +5522,8 @@ def conflicting(pr: PullRequestFacts) -> bool:
 
 
 def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, base: str,
-                fixable: bool, detail: str = "") -> ActionOutcome:
+                fixable: bool, fix_heads: list[tuple[str, str]] | None = None,
+                detail: str = "") -> ActionOutcome:
     """A pull request that conflicts with `base` at `head`: a conflict fix round's, or
     `merge_conflict` (#1076).
 
@@ -5389,11 +5531,20 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
     The shape is `_red`'s. A round running at this head, or one due that the
     tick has not claimed yet, parks (CONFLICT_FIX_RUNNING / _PENDING, which
     release the merge slot). A round that ended at this head without moving
-    it, or was never submitted, is spent. With MERGE_CONFLICT_ROUNDS_MAX
-    spent -- or for a pull request no SwarmCloud task's branch carries
-    (`fixable` False: a `merge_pr` target, whose branch no round may push
-    to) -- the step fails fast with `merge_conflict`, naming the pull
-    request. A park past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
+    it is `merge_conflict` at once.
+
+    THE BUDGET COUNTS SPENT ROUNDS ONLY (#3073, `_conflict_rounds_spent`):
+    a round that failed or was refused, was never submitted, or did not
+    push a head other than the one it was given. A round whose task pushed
+    a new head resolved its conflict; the next one is main moving again.
+    `fix_heads` are the heads this merge's rounds pushed, each read from the
+    round task's own record and verified (`_fix_round_heads`), never from
+    the tenant-writable `merge_fix` record. With MERGE_CONFLICT_ROUNDS_MAX
+    spent, MERGE_CONFLICT_ROUNDS_TOTAL_MAX run whatever they achieved, or
+    for a pull request no SwarmCloud task's branch carries (`fixable`
+    False: a `merge_pr` target, whose branch no round may push to), the
+    step fails fast with `merge_conflict`, naming the pull request. A park
+    past MERGE_CI_MAX_SECONDS is `merge_conflict` too.
 
     One writer per pull request (#2577): while an earlier round of any kind
     (CI-fix, conflict or pick) is still running at another head, the step
@@ -5439,12 +5590,44 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
         return wait(CONFLICT_FIX_RUNNING,
                     f"{kind} fix round {entry.get('round')} ({_task_id(entry.get('task_id'))}) "
                     f"is still running at {str(entry.get('head') or '?')[:12]}")
-    if len(rounds) < MERGE_CONFLICT_ROUNDS_MAX:
-        return wait(CONFLICT_FIX_PENDING,
-                    f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due")
-    return run.refuse("merge_conflict",
-                      f"{message}, after {len(rounds)} conflict fix round(s), the most a merge "
-                      "step gets")
+    if len(rounds) >= MERGE_CONFLICT_ROUNDS_TOTAL_MAX:
+        return run.refuse("merge_conflict",
+                          f"{message}, after {len(rounds)} conflict fix round(s) of any outcome, "
+                          f"the ceiling of {MERGE_CONFLICT_ROUNDS_TOTAL_MAX} a merge step gets")
+    spent = _conflict_rounds_spent(rounds, fix_heads or [])
+    if spent >= MERGE_CONFLICT_ROUNDS_MAX:
+        return run.refuse("merge_conflict",
+                          f"{message}, after {spent} conflict fix round(s) spent "
+                          f"({len(rounds)} run), the most a merge step gets")
+    moved = len(rounds) - spent
+    due = f"conflict fix round {len(rounds) + 1} of {MERGE_CONFLICT_ROUNDS_MAX} is due"
+    if moved:
+        due = (f"conflict fix round {len(rounds) + 1} is due: {spent} of "
+               f"{MERGE_CONFLICT_ROUNDS_MAX} spent, {moved} moved the head")
+    return wait(CONFLICT_FIX_PENDING, due)
+
+
+def _conflict_rounds_spent(rounds: list[Mapping[str, Any]],
+                           fix_heads: list[tuple[str, str]]) -> int:
+    """How many of `rounds` count against MERGE_CONFLICT_ROUNDS_MAX (#3073).
+
+    Spent: an `error` (failed or refused), no task (never submitted), or no
+    verified push of a head other than the entry's `head` -- the round
+    ended where it began, or its task is unreadable or fails
+    `_fix_round_heads`' checks. `fix_heads` is (task, pushed head) as the
+    tasks' own verified records say; the entry only names the task. Held
+    equal to swarm-api's `mergewake._conflict_rounds_spent`.
+    """
+    pushed: dict[str, str] = {}
+    for task, head in fix_heads:
+        pushed.setdefault(task, head)
+    spent = 0
+    for entry in rounds:
+        task_id = _task_id(entry.get("task_id"))
+        if entry.get("error") or task_id is None or pushed.get(task_id) in (None,
+                                                                            entry.get("head")):
+            spent += 1
+    return spent
 
 
 def _ended(ctx: ActionContext, task_id: str) -> bool:
@@ -5484,11 +5667,16 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     ended at this head having found nothing to change (`no_change`,
     `_round_left_nothing`) gets the same: the re-run settling parks
     `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
-    and anything else refuses after the round (#2684). Still one free re-run
-    per head: a head the tick re-ran before the round refuses. A re-run
-    GitHub refused re-ran nothing, so it is not that one (#3006, PR #2971 at
-    a1e16b2c): the step parks `CI_RERUN_DUE` for one more request, and a
-    second refusal refuses `checks_failed` naming its error.
+    and anything else refuses after the round (#2684). There a re-run the
+    tick asked for at this head that answered red -- the free re-run spent
+    before the round, which can answer red on a different flake -- parks
+    `CI_RERUN_DUE` again while fewer than RERUNS_PER_HEAD_MAX accepted
+    re-runs are recorded at the head (#3080, owner decision 2026-11-12);
+    the last one's red answer refuses. With no round at the head it is
+    still one free re-run per head. A re-run GitHub refused re-ran nothing,
+    so it does not count (#3006, PR #2971 at a1e16b2c): the step parks
+    `CI_RERUN_DUE` for one more request, and a second refusal refuses
+    `checks_failed` naming its error.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -5560,8 +5748,9 @@ def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
     """The park a red reading at `head` owes the tick's free re-run, or None.
 
     `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
-    then, with `due`, `CI_RERUN_DUE` once when none is recorded there
-    (`_rerun_due`). One rule for a red reading with no round at the head and
+    then, with `due`, `CI_RERUN_DUE` when the head is due one (`_rerun_due`:
+    once with none recorded there, up to RERUNS_PER_HEAD_MAX accepted after
+    a no_change round, #3080). One rule for a red reading with no round at the head and
     for a round that ended there with nothing to change (#2684). `run_states`
     is this reading's Actions runs (`workflow_run_states`): a re-run whose
     run is still going holds past the window (#3006).
@@ -5573,7 +5762,7 @@ def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
                     "and the re-run has not answered yet", [])
     if due and _rerun_due(own, head, failing_ids, after_no_change=after_no_change):
         return wait(CI_RERUN_DUE,
-                    f"{message}; the failing jobs are due their one free re-run at this head", [])
+                    f"{message}; the failing jobs are due a re-run at this head", [])
     return None
 
 
