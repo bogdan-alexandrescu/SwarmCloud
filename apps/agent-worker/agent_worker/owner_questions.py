@@ -45,8 +45,15 @@ finding: the merge step builds the owner's pick in a pick-fix round (#3149;
 wf_f0044e94's re-review wrote it as a finding instead, and the merge
 refused).
 
-A workflow, or a review, with no questions behaves exactly as before: no
-file, no prompt text.
+A FILE THE WORKER DID NOT TAKE IS NAMED (#3086). An earlier step whose
+questions.json was rejected (`questions_rejected`) offers no question, so
+the review is told which step's file it was and the worker's reason
+(`rejected_files`, `rejected_guidance`) instead of writing a free-text
+`needs_owner` entry the merge cannot read; the merge's owner-question park
+names the same files (`merge._Run.wait_for_owner`).
+
+A workflow, or a review, with no questions and no rejected file behaves
+exactly as before: no file, no prompt text.
 """
 
 from __future__ import annotations
@@ -94,6 +101,11 @@ PICKS_BUILT_NAME = "picks-built.json"
 MAX_ANCESTORS: int = next(
     f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
 )
+
+#: The longest a rejected questions.json's reason is shown (`rejected_files`):
+#: a worker's reason is one position and key, well under this; the bound
+#: keeps a park record and a prompt line short whatever the summary holds.
+MAX_REJECTED_REASON_CHARS = 300
 
 Fetch = Callable[[str], dict[str, Any]]
 
@@ -318,6 +330,50 @@ def collect(
     return workflow_questions(task, fetch=fetch, store=store, tenant_id=tenant_id)
 
 
+def rejected_files(task: Mapping[str, Any], fetch: Fetch) -> list[dict[str, Any]]:
+    """`{task_id, step_id, file, reason}` of each earlier step's questions.json not taken.
+
+    Issue #3086: a file the worker's validator rejected is recorded as
+    `questions: 0` with `questions_rejected` (`questions.summarise`), so no
+    reader saw a question in it, and the merge parked on the review's
+    free-text entry for it with nothing naming the file. Each SUCCEEDED step
+    `workflow_ancestors` walks to, in its order, whose summary holds that
+    key. The reason is the worker's own, which never quotes the file
+    (`questions.Rejected`), clipped to `MAX_REJECTED_REASON_CHARS`.
+    """
+    found: list[dict[str, Any]] = []
+    for task_id, doc in workflow_ancestors(task, fetch):
+        if doc.get("state") != TaskState.SUCCEEDED.value:
+            continue
+        summary = doc.get("result_summary")
+        if not isinstance(summary, Mapping) or questions_mod.REJECTED_KEY not in summary:
+            continue
+        reason = summary[questions_mod.REJECTED_KEY]
+        reason = " ".join(reason.split()) if isinstance(reason, str) else ""
+        if len(reason) > MAX_REJECTED_REASON_CHARS:
+            reason = reason[:MAX_REJECTED_REASON_CHARS - 3].rstrip() + "..."
+        found.append({
+            "task_id": task_id,
+            "step_id": doc.get("step_id") if isinstance(doc.get("step_id"), str) else None,
+            "file": questions_mod.NAME,
+            "reason": reason or "the worker recorded no reason",
+        })
+    return found
+
+
+def rejected_line(entry: Mapping[str, Any]) -> str:
+    """One rejected file, as the review's prompt and the merge's park name it."""
+    return (f"step {entry.get('step_id') or entry.get('task_id')} (task {entry.get('task_id')}) "
+            f"wrote {entry.get('file')} the worker did not take: {entry.get('reason')}")
+
+
+def collect_rejected(task: Mapping[str, Any], *, fetch: Fetch) -> list[dict[str, Any]]:
+    """`rejected_files` for a review; [] for any other step."""
+    if not is_review(task.get("metadata")):
+        return []
+    return rejected_files(task, fetch)
+
+
 def picks_built(
     task_id: str, doc: Mapping[str, Any], *, store: ObjectStore, tenant_id: str
 ) -> dict[tuple[str, int], tuple[str | None, bool]]:
@@ -396,18 +452,36 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
     )
 
 
-def stage(work: Path | str, payload: dict[str, Any], rows: list[dict[str, Any]]) -> int:
+def rejected_guidance(rejected: list[dict[str, Any]]) -> str:
+    """The review's instructions for the earlier questions.json files not taken (#3086)."""
+    named = "; ".join(rejected_line(entry) for entry in rejected)
+    return (
+        f"\n\nEarlier steps of this workflow wrote a {questions_mod.NAME} the worker did not "
+        f"take, so no question in it reached you or the owner: {named}. Say so in your "
+        "review, naming the step and the reason. Do not write a free-text "
+        f"`{NEEDS_OWNER_KEY}` entry for it: there is no question index to cite, the merge "
+        "step cannot read a sentence, and it would hold on it until a person says ready. "
+        "The merge step names these files itself when it holds for the owner."
+    )
+
+
+def stage(work: Path | str, payload: dict[str, Any], rows: list[dict[str, Any]], *,
+          rejected: list[dict[str, Any]] | None = None) -> int:
     """Write `work/owner-questions.json` and close the prompt with `guidance`; how many.
 
     Written whole on every attempt, and removed when there is nothing to
     stage, so a stale file restored from a checkpoint is never trusted.
+    `rejected` (`collect_rejected`) closes the prompt with
+    `rejected_guidance` too, with or without questions.
     """
     path = Path(work) / NAME
+    prompt = payload.get("prompt")
+    if rejected and isinstance(prompt, str):
+        payload["prompt"] = prompt = prompt + rejected_guidance(rejected)
     if not rows:
         path.unlink(missing_ok=True)
         return 0
     path.write_text(json.dumps(rows, indent=2))
-    prompt = payload.get("prompt")
     if isinstance(prompt, str):
         payload["prompt"] = prompt + guidance(path.resolve(), rows)
     return len(rows)

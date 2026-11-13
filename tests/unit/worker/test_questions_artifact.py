@@ -125,11 +125,10 @@ def test_no_file_is_zero_questions(db, worker_factory, agent_cli):
         (json.dumps({"question": "one, not a list"}), "not a JSON list"),
         (json.dumps([_question(options="per task or per workflow")]), "question 1: `options`"),
         (json.dumps([_question(), _question(recommended="neither")]), "question 2: `recommended`"),
-        (json.dumps([_question(run="rm -rf /")]), "question 1: a key"),
         (json.dumps([_question(context="x" * (MAX_BYTES + 1))]), "larger than"),
     ],
     ids=["not-json", "not-a-list", "options-not-a-list", "recommended-not-an-option",
-         "unknown-key", "too-large"],
+         "too-large"],
 )
 def test_an_invalid_file_is_rejected_with_a_reason_and_the_task_still_finishes(
     db, worker_factory, agent_cli, content, reason
@@ -144,7 +143,30 @@ def test_an_invalid_file_is_rejected_with_a_reason_and_the_task_still_finishes(
     assert reason in summary[REJECTED_KEY], summary[REJECTED_KEY]
 
 
-def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_cli):
+def test_an_unknown_key_is_dropped_and_the_question_still_counted(
+    db, worker_factory, agent_cli
+):
+    """#3086: an unknown key once rejected the whole file, so a well-formed
+    question with one field of the agent's own was counted 0 and could not be
+    answered. The key is dropped; the summary names where, not what."""
+    _seed(db, {"write_artifact": {NAME: json.dumps([_question(run="rm -rf /")])}})
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+
+    summary = _summary(db)
+    # MUTATION: reject on an unknown key (the #3086 bug) and this is 0.
+    assert summary[COUNT_KEY] == 1, summary
+    assert REJECTED_KEY not in summary, summary
+    assert summary["questions_ignored_keys"] == ["question 1"], summary
+    assert "rm -rf" not in json.dumps(summary)
+
+
+def test_the_prompt_says_once_that_the_agent_may_ask(db, worker_factory, agent_cli, monkeypatch):
+    # The browser image's note (`claude_code.BROWSER_NOTE`) also names the
+    # folder; it is added only where that image set the variable, so a run on
+    # it would count the folder twice.
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
     _seed(db, {"echo_prompt": True})
 
     assert _run(worker_factory) == ExitCode.OK

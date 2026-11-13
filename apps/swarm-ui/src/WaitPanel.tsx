@@ -29,6 +29,7 @@ import { useState, type ReactNode } from 'react'
 import { HelpCard } from './HelpCard'
 import { agentPath } from './OverviewRegions'
 import { InfoTip } from './People'
+import { addressToPath } from './paths'
 import { clockTime, formatDuration, type Task, type TaskState, type Waiting, type WaitingHistoryEntry } from './types'
 
 /** History entries shown before "show all N". The newest stay; the oldest fold. */
@@ -294,6 +295,25 @@ function PersonFacts({ reason, d, now }: { reason: string; d: Record<string, unk
 }
 
 /**
+ * THE QUESTIONS.JSON FILES THE PLATFORM DID NOT TAKE (#3086), as the merge's
+ * owner-question park recorded them: `rejected_files` [{task_id, step_id,
+ * file, reason}], off the wait detail, else off the park record itself (an API
+ * that copies the detail field by field and not this one still shows them).
+ * An entry that names no task is skipped: it has no place to show.
+ */
+function rejectedFiles(d: Record<string, unknown>, task: Task): Record<string, unknown>[] {
+  let raw: unknown = d.rejected_files
+  if (!Array.isArray(raw)) {
+    for (const b of task.blocked_by ?? []) {
+      const r = b as Record<string, unknown>
+      if (r.park_phase === 'owner_questions') raw = obj(r.owner_questions)?.rejected_files
+    }
+  }
+  if (!Array.isArray(raw)) return []
+  return raw.map(obj).filter((r): r is Record<string, unknown> => r !== null && str(r.task_id) !== null)
+}
+
+/**
  * A MERGE HELD BY THE OWNER'S QUESTIONS (#2313): who may answer, how many
  * questions and where they are -- the held-questions card under this panel,
  * with the answer control -- and NO "Answer with" human-ready route: the API
@@ -301,8 +321,9 @@ function PersonFacts({ reason, d, now }: { reason: string; d: Record<string, unk
  * last answer resumes it by itself. Only a hold the answer route cannot read
  * whole carries one, and then it is drawn.
  */
-function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
+function OwnerQuestionFacts({ d, task }: { d: Record<string, unknown>; task: Task }) {
   const who = obj(d.who_may_answer)
+  const rejected = rejectedFiles(d, task)
   const asked = Array.isArray(d.questions) ? d.questions.length : null
   const unreadable = int(d.unreadable)
   const route = str(d.answer_route)
@@ -336,6 +357,24 @@ function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
           {String(unreadable)}
         </Fact>
       )}
+      {rejected.length > 0 && (
+        <Fact k="rejected" label="Not taken">
+          <ul className="wp-on">
+            {rejected.map((r, i) => {
+              const id = str(r.task_id)!
+              return (
+                <li key={`${id}-${i}`} data-rejected-file={id}>
+                  <a className="ctl-link" href={addressToPath(`work/task/${encodeURIComponent(id)}/details`, 'recent')}>
+                    {str(r.step_id) ?? id}
+                  </a>{' '}
+                  wrote {str(r.file) ?? 'questions.json'} the platform did not take:{' '}
+                  {str(r.reason) ?? 'the worker recorded no reason'}
+                </li>
+              )
+            })}
+          </ul>
+        </Fact>
+      )}
       {route !== null && (
         <Fact k="answer" label="Then">
           <code className="wp-cmd">{route}</code>
@@ -345,7 +384,7 @@ function OwnerQuestionFacts({ d }: { d: Record<string, unknown> }) {
   )
 }
 
-function DetailFacts({ w, now }: { w: Waiting; now: number }) {
+function DetailFacts({ w, task, now }: { w: Waiting; task: Task; now: number }) {
   const d = obj(w.detail) ?? {}
   switch (w.reason) {
     case 'CI_PENDING':
@@ -378,7 +417,7 @@ function DetailFacts({ w, now }: { w: Waiting; now: number }) {
         </>
       )
     case 'HUMAN_REQUIRED':
-      if (d.park_phase === 'owner_questions') return <OwnerQuestionFacts d={d} />
+      if (d.park_phase === 'owner_questions') return <OwnerQuestionFacts d={d} task={task} />
       return <PersonFacts reason={w.reason} d={d} now={now} />
     case 'AWAITING_INPUT':
       return <PersonFacts reason={w.reason} d={d} now={now} />
@@ -500,7 +539,7 @@ export function WaitPanel({ task, now }: { task: Task; now: number }) {
         <Fact k="next-check" label="Next check">
           <NextCheck w={w} now={now} />
         </Fact>
-        <DetailFacts w={w} now={now} />
+        <DetailFacts w={w} task={task} now={now} />
       </dl>
       <WaitHistory w={w} now={now} />
     </section>
