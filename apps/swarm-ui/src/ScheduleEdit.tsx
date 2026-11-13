@@ -46,6 +46,7 @@ import {
   type ScheduleTypeRow,
 } from './api'
 import { Button } from './components'
+import { Info } from './AccountsVerdict'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
@@ -1166,7 +1167,7 @@ function ScheduleForm({
       {!oneColumn && (
         <div className="ae-next">
           {previewNode}
-          <span className="c-hint">From the server’s own parser, read as you type.</span>
+          <Info about="The next firings" tip="From the server’s own parser, read as you type." />
         </div>
       )}
       {!oneColumn && templateNode}
@@ -1202,14 +1203,14 @@ function ScheduleForm({
           )}
 
           {schedule === null ? (
-            <Card title="1 · Type and template">
+            <Card title="Type">
               <div className="ae-jump" data-jump="type">
                 <TemplateTiles types={types} value={d.type} onPick={pickType} />
               </div>
               {oneColumn && templateNode}
             </Card>
           ) : (
-            <Card title="1 · Type">
+            <Card title="Type">
               <Field label="Type" hint="The type is fixed once a schedule exists. Make a new schedule to change it.">
                 <input className="c-inp" value={schedule.type} readOnly />
               </Field>
@@ -1217,7 +1218,7 @@ function ScheduleForm({
             </Card>
           )}
 
-          <Card title="2 · Target">
+          <Card title="Target">
             <div className="sc-facts">
               <Field label="Name">
                 <input className="c-inp" value={d.name} maxLength={80} data-jump="name" onChange={(e) => set({ name: e.target.value })} />
@@ -1285,7 +1286,7 @@ function ScheduleForm({
             )}
           </Card>
 
-          <Card title="3 · Cadence">
+          <Card title="Cadence">
             <div className="sc-presets" role="group" aria-label="Presets">
               {CRON_PRESETS.map((p) => (
                 <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
@@ -1347,7 +1348,7 @@ function ScheduleForm({
             </div>
           </Card>
 
-          <Card title="4 · Gates and approvers">
+          <Card title="Gates">
             <div className="ae-g3">
               <Segmented label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={gateOptions(t, 'run', RUN_PLAN)} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
                 hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
@@ -1415,7 +1416,7 @@ function ScheduleForm({
             </p>
           </Card>
 
-          <Card title="5 · Budget and tripwire">
+          <Card title="Budget">
             <div className="ae-g3">
               <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')} error={budgetErr('per_run_usd')}>
                 <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} data-jump="budget-per_run_usd" value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
@@ -1436,7 +1437,7 @@ function ScheduleForm({
           </Card>
 
           {schedule === null && (
-            <Card title="6 · Start">
+            <Card title="Start">
               <StartChoice value={d.start} onChange={(v) => set({ start: v })} />
             </Card>
           )}
