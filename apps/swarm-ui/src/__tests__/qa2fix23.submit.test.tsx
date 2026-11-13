@@ -67,7 +67,9 @@ describe('runs2-10: the footnote says what became of each window it read', () =>
 
 async function readyForm() {
   const view = render(<SubmitWorkflowScreen />)
-  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+  // The first render pays the cold import of the whole form (about 5 s on a
+  // lane, more on a loaded runner): 4 s timed out before it drew, not the form.
+  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 10_000 })
   const select = view.container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!
   fireEvent.change(select, { target: { value: 'mock' } })
   return view
