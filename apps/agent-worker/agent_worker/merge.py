@@ -2855,6 +2855,7 @@ def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionR
     that lets the merge go on.
     """
     rows: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]]] = {}
     for ref in refs:
         try:
             doc = _mapping(ctx.fetch_upstream(ref.task_id))
@@ -2862,10 +2863,10 @@ def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionR
             doc = {}
         answer: dict[str, Any] | None = None
         if ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id:
-            for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
-                if (isinstance(entry, Mapping) and type(entry.get("question_index")) is int
-                        and entry.get("question_index") == ref.question_index):
-                    answer = {"choice": entry.get("choice"), "text": entry.get("text")}
+            # Only an answer to the question asked at that index now (#3349).
+            entry = _answer_of(ctx, ref.task_id, doc, ref.question_index, asked)
+            if entry is not None:
+                answer = {"choice": entry.get("choice"), "text": entry.get("text")}
         rows.append({"task_id": ref.task_id, "step_id": ref.step_id,
                      "question_index": ref.question_index, "question": ref.question,
                      "answer": answer})
@@ -2951,13 +2952,44 @@ def _ended_outside(run: _Run, target: MergeTarget,
     return None
 
 
-def _answered(doc: Mapping[str, Any], index: int) -> bool:
-    """Whether the task's `metadata.owner_answers` holds an answer to question `index`."""
-    for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
-        if isinstance(entry, Mapping) and type(entry.get("question_index")) is int \
-                and entry.get("question_index") == index:
-            return True
-    return False
+def _answer_of(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
+               asked: dict[str, dict[int, Mapping[str, Any]]]) -> Mapping[str, Any] | None:
+    """The task's stored answer to the question it asks at `index` now, else None.
+
+    THE INDEX IS NOT THE QUESTION (#3349): a later attempt may ask another
+    question there (`questions.answers_question`). A stamped answer is
+    compared with the task's `question_digests`; one the document cannot
+    check -- unstamped with its question's text, or stamped where the
+    summary holds no digests -- with the question as the task's own
+    validated file asks it (`owner_questions.questions_of`, read once per
+    task into `asked`). FAIL CLOSED: that file unreadable, or holding no
+    such index, is no answer. An answer recording no question is kept by its
+    index, as before.
+    """
+    entry = questions_mod.stored_answers(doc.get("metadata")).get(index)
+    if entry is None or not questions_mod.recorded(entry):
+        return entry
+    stamp = entry.get(questions_mod.ASKED_DIGEST_KEY)
+    digests = questions_mod.summary_digests(doc)
+    if isinstance(stamp, str) and digests is not None:
+        return entry if index < len(digests) and stamp == digests[index] else None
+    if task_id not in asked:
+        try:
+            rows = owner_questions_mod.questions_of(
+                task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+            asked[task_id] = {row["question_index"]: row for row in rows}
+        except InputUnavailable:
+            asked[task_id] = {}
+    question = asked[task_id].get(index)
+    if question is None or not questions_mod.answers_question(entry, question):
+        return None
+    return entry
+
+
+def _answered(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
+              asked: dict[str, dict[int, Mapping[str, Any]]]) -> bool:
+    """Whether the task holds an answer to the question it asks at `index` now (`_answer_of`)."""
+    return _answer_of(ctx, task_id, doc, index, asked) is not None
 
 
 def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
@@ -3401,6 +3433,7 @@ def _unanswered(ctx: ActionContext,
     out: list[dict[str, Any]] = []
     docs: dict[str, Mapping[str, Any] | None] = {}
     asked: dict[str, dict[int, Any]] = {}
+    answered: dict[str, dict[int, Mapping[str, Any]]] = {}
     for ref in refs:
         if ref.task_id not in docs:
             try:
@@ -3410,7 +3443,8 @@ def _unanswered(ctx: ActionContext,
         doc = docs[ref.task_id]
         ours = (doc is not None and ctx.workflow_id is not None
                 and doc.get("workflow_id") == ctx.workflow_id)
-        if ours and doc is not None and _answered(doc, ref.question_index):
+        if ours and doc is not None \
+                and _answered(ctx, ref.task_id, doc, ref.question_index, answered):
             continue
         row = ref.as_dict()
         if ours and doc is not None and isinstance(doc.get("step_id"), str) and doc["step_id"]:
