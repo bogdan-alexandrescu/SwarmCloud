@@ -172,11 +172,11 @@ afterEach(() => {
 })
 
 describe('A3a: a new schedule', () => {
-  it('is one page of numbered cards in B’s order', async () => {
+  it('is one page of cards in the cards mock-up’s words', async () => {
     await mount('schedule=new', routes(() => null))
     const f = await form()
     // MUTATION: draw the old run of `.sc-h3` headings and there is no card.
-    expect(cardTitles(f)).toEqual(['1 · Type and template', '2 · Target', '3 · Cadence', '4 · Gates and approvers', '5 · Budget and tripwire', '6 · Start'])
+    expect(cardTitles(f)).toEqual(['Type', 'Target', 'Cadence', 'Gates', 'Budget', 'Start'])
     const cards = [...f.querySelectorAll<HTMLElement>('.ae-card')]
     expect(within(cards[0]!).getByRole('radiogroup', { name: 'Type' })).toBeTruthy()
     // MUTATION: draw Scope or Merge as a `<select>` again and it is a combobox, not a radio group (A3-SEGMENTED).
@@ -265,7 +265,7 @@ describe('A3a: a new schedule', () => {
   it('says only the rule the API holds about a gate below the type’s default', async () => {
     await mount('schedule=new', routes(() => null))
     const f = await form()
-    const gates = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === '4 · Gates and approvers')!
+    const gates = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === 'Gates')!
     // MUTATION: the mock-up's "Merge off is below the type's default" back; off is the strictest merge, so anyone may set it.
     expect(visible(gates)).not.toContain('Merge off is below')
     expect(visible(gates)).toContain('A gate below the type’s default needs a platform admin.')
@@ -285,7 +285,7 @@ describe('A3b: editing a schedule', () => {
   it('fixes the type, offers no Start, names the revision and lists the change against it', async () => {
     await mount('schedule=sch_a&edit=1', routes(() => null))
     const f = await form()
-    expect(cardTitles(f)).toEqual(['1 · Type', '2 · Target', '3 · Cadence', '4 · Gates and approvers', '5 · Budget and tripwire'])
+    expect(cardTitles(f)).toEqual(['Type', 'Target', 'Cadence', 'Gates', 'Budget'])
     expect(screen.getByRole('heading', { name: 'Edit Bug sweep', level: 2 })).toBeTruthy()
     expect(visible(screen.getByRole('region', { name: 'Edit this schedule' }))).toContain('revision 7')
     expect(visible(sheet())).toContain('Before you save')
@@ -355,7 +355,7 @@ describe('A3 at 390', () => {
     media(true)
     await mount('schedule=new', routes((m, url) => (m === 'POST' && url === '/v1/schedules:preview' ? { status: 200, body: REFUSED } : null)))
     const f = await form()
-    const cadence = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === '3 · Cadence')!
+    const cadence = [...f.querySelectorAll<HTMLElement>('.ae-card')].find((c) => visible(c.querySelector('h3')!) === 'Cadence')!
     await waitFor(() => expect(visible(cadence)).toContain('This type would refuse it'), WAIT)
     // MUTATION: draw the cron field's error at one column too and the card says it twice, 100px apart.
     expect(visible(cadence).split('issue-sweep fires at most every 15 minutes')).toHaveLength(2)
