@@ -1074,13 +1074,16 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
       ) : (
         <>
           {confirm !== null && (
-            <label className="c-field apd-confirm">
-              <span className="c-lbl">
-                Type <code>{confirm.expected}</code> to approve your own hold{' '}
-                <InfoTip about="the typed confirmation" tip="You are the only person in this workspace, so no second member can approve this hold." />
-              </span>
-              <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
-            </label>
+            <span className="apd-confirm">
+              {/* The (i) sits outside the label: a label holding a button labels the button, not the field. */}
+              <label className="c-field">
+                <span className="c-lbl">
+                  Type <code>{confirm.expected}</code> to approve it yourself
+                </span>
+                <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
+              </label>
+              <InfoTip about="the typed confirmation" tip="You are the only person in this workspace, so no second member can approve this hold." />
+            </span>
           )}
           {offerApprove && (
             <HeldButton kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
