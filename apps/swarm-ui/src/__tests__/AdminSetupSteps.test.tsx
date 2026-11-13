@@ -1190,7 +1190,7 @@ describe('epic findings: the console setup page', () => {
     const row = document.querySelector('[data-step="accounts"]') as HTMLElement
     expect(row.className).toContain('is-done')
     // MUTATION: "Pool: 1 of 2 signed in" alone -> reads as every account being required.
-    expect(visible(row)).toContain('more are optional')
+    expect(visible(row)).toContain('enough; more optional')
   })
 
   it('stage 9 counts as run only in the engine’s own words', async () => {

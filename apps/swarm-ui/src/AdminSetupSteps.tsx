@@ -1358,7 +1358,7 @@ export function accountsRow(state: SetupState, onChanged: () => void, nowMs: num
       state.accounts.length === 0
         ? `Each subscription’s owner signs in once, through a one-time link this page makes, into ${pool}`
         : signed > 0
-          ? `Pool: ${signed} of ${state.accounts.length} signed in · one is enough; more are optional, one link each, whenever convenient`
+          ? `Pool: ${signed} of ${state.accounts.length} signed in · enough; more optional`
           : `Pool: ${signed} of ${state.accounts.length} signed in`,
     body: (
       <>
