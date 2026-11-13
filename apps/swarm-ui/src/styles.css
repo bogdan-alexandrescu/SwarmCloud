@@ -341,9 +341,9 @@
   --lh-body: 1.50;
 
   /* The ONE prose paragraph a screen is allowed: the sentence under the
-     heading that says what the screen is for, and the sentence an empty or
-     failed state answers with. A second one on the same screen means one of
-     them is not a lead.
+     heading that says what the screen is for. (An empty or failed state's
+     sentence is body text, `.ctl-empty > p`: its h3 carries this step.) A
+     second one on the same screen means one of them is not a lead.
      AND EVERY HEADING BELOW THE H1, at 600 (TS-18): section, panel, card and
      step titles share this step and are told from the lead sentence by
      weight. See --t-title for what sits above it. */
@@ -6265,10 +6265,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   font-weight: 600;
   color: var(--text);
 }
+/* The sentence is body text: at --t-lead it read larger than the page body
+   around it, and the heading above already carries the lead step. */
 .ctl-empty > p {
   margin: 0 0 var(--ctl-s2);
-  font-size: var(--t-lead);
-  line-height: var(--lh-lead);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
   color: var(--text-dim);
 }
 .ctl-empty > p:last-child { margin-bottom: 0; }
