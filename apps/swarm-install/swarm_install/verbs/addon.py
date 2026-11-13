@@ -28,6 +28,8 @@ from ..engine import _Stop  # how a step with no terminal pauses the run (secret
 from ..events import Events
 from ..exitcodes import MET, ExitCode
 from ..state import STATE_OBJECT, GcsObjectStore, InstallState, StateStore, local_path, state_bucket
+from ..steps.preflight import ApiError
+from ..terraform import TerraformRefused
 from ..waits import SystemClock, WaitGaveUp
 
 NAME = "addon"
@@ -127,12 +129,22 @@ def build(args: argparse.Namespace, store: StateStore, state: InstallState, even
                              api_context=getattr(args, "context", None))
     flow = addons.Flow(world=world, state=state, save=save, events=events, clock=SystemClock(), out=sys.stdout,
                        ask=ask, confirm=bootstrap.DEPS.confirm, hidden_entry=hidden,
-                       open_page=lambda url, why: open_page(url, why=why))
+                       open_page=lambda url, why: open_page(url, why=why), caller=ctx.holder)
     return flow
 
 
 def _given(args: argparse.Namespace) -> dict[str, str]:
     return {choice: getattr(args, flag) for flag, choice in CHOICE_FLAGS.items() if getattr(args, flag, None)}
+
+
+def _client_errors() -> tuple[type[BaseException], ...]:
+    """swarm-api's client error (the secret link's mint), when the swarm_mcp
+    wheel install.sh installs beside this one is there to raise it."""
+    try:
+        from swarm_mcp.client import SwarmError
+    except ImportError:
+        return ()
+    return (SwarmError,)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -160,7 +172,10 @@ def run(args: argparse.Namespace) -> int:
     except addons.AddonRefused as exc:
         print(f"swarm addon {args.action}: {exc}", file=sys.stderr)
         return int(ExitCode.REFUSED)
-    except addons.AddonError as exc:
+    except TerraformRefused as exc:
+        print(f"swarm addon {args.action}: {exc}", file=sys.stderr)
+        return int(ExitCode.REFUSED)
+    except (addons.AddonError, ApiError, *_client_errors()) as exc:
         print(f"swarm addon {args.action}: {exc}", file=sys.stderr)
         return int(ExitCode.FAIL)
     events.emit("run_end", outcome="ok", exit_code=int(ExitCode.OK), message=message, state=MET)
