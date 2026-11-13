@@ -4276,6 +4276,15 @@ vitest ids its log names. It is read-only. Then:
 
 ## What runs where
 
+**A lane's pull request runs no checks (the owner's direction, 2026-11-12):**
+*no testing on lane pull requests, only on the merge train's run on its way to
+main, with large merge trains, to cut CI wait time.* A pull request whose head
+is a `swarm/` branch of this repository skips every job of `application.yml`,
+`security.yml` and `terraform.yml`, and `ci-gate` passes at once
+([below](#a-lanes-pull-request-runs-no-checks)). The rest of this section is
+the rule every other pull request still follows, and the one lanes followed
+from 2026-11-11 to 2026-11-12.
+
 **The owner's pick, 2026-11-11:** *"skip pr testing and only run tests when
 merging to main"*, choosing "Fast checks only on PRs". Until then every pull
 request head ran the whole of `application.yml` -- ten unit-test shards of
@@ -4286,7 +4295,8 @@ change, and main a third time unless it reused the train's tree.
 
 | run | fast checks | heavy jobs |
 |---|---|---|
-| a lane's pull request (any head but `train/`), no label | run | **skipped** |
+| a lane's pull request (`swarm/` head, this repository), labelled or not | **skipped** | **skipped** (only `ci-gate` runs, and passes) |
+| any other pull request (any head but `swarm/` and `train/`, or a fork), no label | run | **skipped** |
 | a pull request labelled `full-ci` | run | run |
 | the merge train's pull request (`train/<id>`, [`scripts/merge-train.sh`](../scripts/merge-train.sh)) | run | run |
 | a push to `main`, a merge queue entry, a dispatch | run | run (main may reuse the train's green tree, [below](#the-full-suite-runs-once-per-change-in-the-merge-train)) |
@@ -4342,6 +4352,65 @@ main never sees the failure. A lane's own agent still runs the tests related
 to its change before it finishes (`scripts/related-tests.sh --run`).
 `tests/unit/scripts/test_fast_checks_on_lane_prs.py` holds the rule against
 the three workflow files.
+
+### A lane's pull request runs no checks
+
+**Why.** The owner's direction of 2026-11-12: no testing on lane pull
+requests, only on the merge train's run on its way to main, with large merge
+trains, to cut CI wait time. Under the fast-checks rule above a lane's pull
+request still ran a dozen jobs, each queueing for a runner, and the train's
+pull request ran every one of them again on the same change. Every lane
+pull request's run took runners from the train's, which is the run a change
+actually waits on to reach main. Testing once, in the train, and boarding
+more pull requests per train, pays the full suite once for many changes.
+
+**The rule.** On a `pull_request` run whose head branch starts with `swarm/`
+and whose head repository is this one, every job of `application.yml`,
+`security.yml` and `terraform.yml` is skipped by its own `if:`, which ends
+with the same clause in each:
+
+```
+&& !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+```
+
+A job skipped by its own `if:` reports a passing required check, so `secret
+scan`, `trivy (repo)`, `checkov (terraform + kubernetes)` and
+`platform policy assertions` read as passed. `ci-gate` (`if: !cancelled()`)
+starts as soon as the jobs it needs are skipped, skips its judging, checkout,
+reuse and terraform-wait steps by the same clause, and runs one step that
+says in the job summary that the merge train tests this change: it passes in
+seconds and waits for nothing. The `full-ci` label no longer changes a lane's
+pull request; the train runs the whole suite on it anyway.
+
+**What a lane's pull request shows**: `ci-gate` passed, and every other job of
+the three workflows `skipped` -- `secret scan`, `trivy (repo)`,
+`checkov (terraform + kubernetes)`, `platform policy assertions`,
+`shellcheck`, `ruff check`, the unit and component-test shards, and the rest.
+The merge train's own required `merge-train` check is not one of these
+workflows' jobs and is unchanged.
+
+**Every other run is unchanged.** The merge train's pull request (`train/`),
+a push to `main`, a merge queue entry, a dispatch, a fork's pull request and a
+pull request from any other branch run exactly what they ran before: the
+clause is false on each.
+
+**Larger trains.** With the lane's own run gone, the train's run is the only
+test a change gets, so a train gathers more: it boards once 8 pull requests
+would board or once the oldest has been `ready` 15 minutes, up to 40 in one
+train (the owner, 13 November 2026: maximum merge speed) (`min_prs` and `max_wait_minutes` in
+`apps/swarm-api/swarm_api/merge_train_gather.json`, `MAX_PRS` in
+[`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
+variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
+`MERGE_TRAIN_MAX_PRS` still override them). A red train is bisected and the
+pull request that broke it ejected, so main never sees the failure.
+
+**What a lane gives up.** A lane's pull request no longer catches a lint,
+format or contract slip before the train does: the lane's agent runs the
+tests related to its change (`scripts/related-tests.sh --run`) and, under the
+worker's pre-publish gate, `scripts/changed-guards.sh` before it publishes.
+A defect either misses costs one train its bisection.
+`tests/unit/scripts/test_fast_checks_on_lane_prs.py` holds the clause on
+every job, ci-gate's steps and the events it leaves alone.
 
 ## The full suite runs once per change, in the merge train
 
