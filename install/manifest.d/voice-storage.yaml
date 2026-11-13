@@ -18,14 +18,14 @@ entries:
     which admits tenants/<t>/voice/<project>/ objects only
   explain: swarm-api creates Voice it transcripts and card bodies too large for a document (section 3.7); create-only,
     and the writer uploads with if_generation_match=0 so nothing is overwritten.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - bucket.artifacts
   - sa.swarm-api
   evidence:
   - terraform/infra/voice.tf:312-324
-  notes: 'null'
+  notes: null
   step: infra.pass-2
   refs:
     terraform:
@@ -41,15 +41,15 @@ entries:
     condition voice-it-blobs-delete, which admits tenants/<t>/voice/<project>/ objects only
   explain: deleting a Voice it project removes its objects before its documents (section 3.7); the role is the
     history purge's delete-only custom role, which terraform/bootstrap defines.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - bucket.artifacts
   - sa.swarm-api
   - role.custom.swarmHistoryPurgeDeleter
   evidence:
   - terraform/infra/voice.tf:326-338
-  notes: 'null'
+  notes: null
   step: infra.pass-2
   refs:
     terraform:
