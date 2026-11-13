@@ -20,7 +20,7 @@ zero mutating calls).
 | `preflight.quotas` | `quota.*` | 4: the KMS signing quota is read; the CPUS quota is the smaller of the region's and the project-wide CPUS_ALL_REGIONS (audit 4a F5); the Quotas page opens (a Free Trial account's upgrade page when that is the cap) and the increase is polled for (#32) |
 | `preflight.sizing` | `other.deployment-sizing` | decision 7: one person or a team of N, the proposed ceilings |
 | `preflight.sizing-quota` (stage 1) | `other.deployment-sizing-quota` | the sizing against a new project's usable CPU quota (regional and project-wide) |
-| `preflight.quotas-recheck` (stage 1, registered after foundations.apis) | none (preflight.quotas owns `quota.*`) | every quota of preflight.quotas read again once the project exists and its APIs are enabled |
+| `preflight.quotas-recheck` (stage 1, registered after foundations.apis) | `quota.recheck-after-apis` (preflight.quotas owns the other `quota.*`) | every quota of preflight.quotas read again once the project exists and its APIs are enabled |
 | `preflight.release` | `other.release-home`, `other.release-bundle` | 27: CVE acceptances with expiry; records `state.release` (audit #2) |
 
 This module also holds `Gcp`, the engine's one REST client for stages 0-2. It
@@ -1925,12 +1925,13 @@ class QuotasRecheckStep(QuotasStep):
     exist yet, nor one of a service not enabled yet, and the NAT addresses',
     the regional GKE clusters' and the KMS signing quotas bind at the first
     apply as surely as the CPU quota preflight.sizing-quota rechecks. It
-    satisfies no entry of its own (preflight.quotas owns them); it is
+    satisfies its own entry, quota.recheck-after-apis (preflight.quotas owns
+    the quota.* entries it reads), so doctor and --repair reach it; it is
     registered after foundations.apis (foundations.build_steps)."""
 
     id = "preflight.quotas-recheck"
     stage = 1
-    satisfies = ()
+    satisfies = ("quota.recheck-after-apis",)
     _explain = (
         "A new project's quotas, and those of a service enabled only in stage 1, cannot be read in stage 0; "
         "each one preflight.quotas checks is read again here, before anything that needs it is created."

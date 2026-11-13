@@ -2319,7 +2319,7 @@ def test_every_quota_is_read_again_in_stage_1(pages: list[Any]) -> None:
     fresh = FakeGcp(exists=False)
     assert preflight.QuotasStep(lambda: fresh, answers()).check(ctx_for()).status == MET
     recheck = preflight.QuotasRecheckStep(lambda: fresh, answers())
-    assert recheck.stage == 1 and recheck.satisfies == () and recheck.kind == "wait"
+    assert recheck.stage == 1 and recheck.satisfies == ("quota.recheck-after-apis",) and recheck.kind == "wait"
     assert recheck.check(ctx_for()).status == UNMET
 
     gcp = FakeGcp()
