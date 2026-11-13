@@ -70,7 +70,8 @@ describe('the decision page (automate2-15, automate2-16)', () => {
       if ((init?.method ?? 'GET') === 'POST') await new Promise<void>((done) => (answer = done))
       return served(input, init)
     }) as unknown as typeof fetch
-    fireEvent.change(await screen.findByPlaceholderText('Say why it is rejected', undefined, WAIT), { target: { value: 'Not this week.' } })
+    fireEvent.click(await within(await screen.findByTestId('ap-detail', undefined, WAIT)).findByRole('button', { name: 'Reject' }, WAIT))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Reason' }, WAIT), { target: { value: 'Not this week.' } })
     const reject = await waitFor(() => {
       const b = within(screen.getByTestId('ap-detail')).getByRole('button', { name: 'Reject' })
       expect(b.getAttribute('aria-describedby')).toBeNull()

@@ -138,7 +138,7 @@ describe('a merge’s digest (automate2-20)', () => {
   it('draws no Verdict row when the digest names no verdict', async () => {
     await mount('approval=apr_merge', routes(INBOX, merge({ head_sha: HEAD })))
     const d = await page()
-    const card = await within(d).findByRole('region', { name: 'What you approve' }, WAIT)
+    const card = await within(d).findByRole('region', { name: 'At its head' }, WAIT)
     // MUTATION: draw "Verdict —, the digest names no verdict" again.
     expect(within(card).queryByText('Verdict')).toBeNull()
     expect(visible(card)).not.toContain('names no verdict')
@@ -148,7 +148,7 @@ describe('a merge’s digest (automate2-20)', () => {
   it('keeps the Verdict row when the digest names one', async () => {
     await mount('approval=apr_merge', routes(INBOX, merge({ head_sha: HEAD, verdict: 'MERGE' })))
     const d = await page()
-    const card = await within(d).findByRole('region', { name: 'What you approve' }, WAIT)
+    const card = await within(d).findByRole('region', { name: 'At its head' }, WAIT)
     expect(visible(within(card).getByText('Verdict').nextElementSibling)).toContain('MERGE')
   })
 })
