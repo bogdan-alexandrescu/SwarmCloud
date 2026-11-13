@@ -47,6 +47,7 @@ one is refused before anything is asked.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -735,9 +736,11 @@ class Uninstall:
         for remain in record.remains:
             if remain.kind not in MANUAL_PAGES or "(not recorded)" in remain.name or "<" in remain.step:
                 continue
-            url, _, what = remain.step.partition(": ")
-            if url.startswith("https://"):
-                open_page(url.split(" ")[0], why=f"To remove {remain.kind} {remain.name}: {what}", say=self.say)
+            # Every page the step names: an App whose owner's account type is
+            # unknown names both its organisation and its personal-account page.
+            what = remain.step.rsplit(": ", 1)[-1]
+            for url in re.findall(r"https://[^\s)]+", remain.step):
+                open_page(url.rstrip(":"), why=f"To remove {remain.kind} {remain.name}: {what}", say=self.say)
 
     def _step_state(self, who: str | None) -> str:
         budget = self._budget()

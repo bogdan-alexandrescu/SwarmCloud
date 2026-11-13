@@ -390,7 +390,11 @@ def test_a_verify_check_says_repair_only_rechecks_it():
         assert "re-runs the check and changes nothing" in words, entry.id
         assert doctor.CHECK_ONLY[str(entry.step)] in words
     words = doctor.fix_words(m.load().by_id()["other.verify-digests"])
-    assert "swarm upgrade --to" in words and "makes it: swarm install --repair" not in words
+    assert "swarm install re-runs infra's passes" in words and "makes it: swarm install --repair" not in words
+    # On the release it already runs, swarm upgrade does nothing: it is no fix for either check.
+    for step in ("verify.digests", "verify.firestore-migrations"):
+        assert "swarm upgrade --to <the running release>" not in doctor.CHECK_ONLY[step]
+        assert "the release it already runs does nothing" in doctor.CHECK_ONLY[step]
 
 
 def test_check_only_names_every_verify_step_that_applies_nothing():

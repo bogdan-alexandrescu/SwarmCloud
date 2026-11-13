@@ -678,6 +678,22 @@ def test_manual_remains_open_their_pages(tmp_path, opened):
     assert all("1234-desktop" in why or "acme" in why for _, why in opened)
 
 
+def test_an_unknown_account_type_opens_both_app_pages(tmp_path, opened):
+    """When GitHub's users API cannot say who owns the App, step 8 opens both
+    of its pages, never only the organisation one (a personal account's 404s)."""
+    store, _ = stored_store(tmp_path, install_state())
+    f = flow(tmp_path, store, FakeWorld(tmp_path))
+    f.github_account_type = lambda login: ""
+    assert f.run() == ExitCode.OK
+    app = [(url, why) for url, why in opened if "github.com" in url]
+    assert [url for url, _ in app] == [
+        "https://github.com/organizations/acme-org/settings/apps/acme-swarm/advanced",
+        "https://github.com/settings/apps/acme-swarm/advanced"]
+    assert all(why.endswith(": Delete GitHub App") for _, why in app)
+    console = [url for url, _ in opened if "console.cloud.google.com" in url]
+    assert console == [f"https://console.cloud.google.com/auth/clients?project={PROJECT}"]
+
+
 @pytest.mark.parametrize(("kind", "page"), [
     ("Organization", "https://github.com/organizations/acme-org/settings/apps/acme-swarm/advanced"),
     ("User", "https://github.com/settings/apps/acme-swarm/advanced"),

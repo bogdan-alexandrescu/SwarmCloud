@@ -122,11 +122,17 @@ CHECK_ONLY: dict[str, str] = {
     "verify.scheduler-targets": (
         "swarm install re-runs infra's passes, which make the Scheduler jobs, their targets and the "
         "targets' invoker grants"),
-    "verify.digests": "swarm upgrade --to <the running release> deploys the release's images by digest again",
+    "verify.digests": (
+        "swarm install re-runs infra's passes, which deploy each service at the release's recorded digest and "
+        "send all its traffic to the latest ready revision (swarm upgrade to the release it already runs does "
+        "nothing)"),
     "verify.reconciler-jobs": (
         "the reconciler's read of Jobs is a RoleBinding in each team's namespace (the tenant render): "
         f"{TEAM_REPAIR} <team> --project <project> applies it again"),
-    "verify.firestore-migrations": "swarm upgrade runs the release's numbered migrations",
+    "verify.firestore-migrations": (
+        "swarm install rewrites the install record at this engine's schema; an install state at another schema "
+        "moves only when swarm upgrade --to <a newer release> runs that release's numbered migrations (swarm "
+        "upgrade to the release it already runs does nothing)"),
     "verify.plugins": (
         "swarm install re-runs infra's passes, which apply terraform/infra/plugins.tf (the plugins bucket, "
         "its grants and the swarm-plugin-intake job)"),
