@@ -115,6 +115,23 @@ PLATFORM_MADE = "per_tenant"
 #: a test holds its command equal to `team_repair_command`).
 TEAM_REPAIR = "swarm team repair"
 
+#: Stage 14's checks repair nothing (`steps.verify`'s steps keep the base
+#: `apply`, a no-op): `swarm install --repair` only checks them again. The fix
+#: names what makes each one right instead (epic finding 66).
+CHECK_ONLY: dict[str, str] = {
+    "verify.scheduler-targets": (
+        "swarm install re-runs infra's passes, which make the Scheduler jobs, their targets and the "
+        "targets' invoker grants"),
+    "verify.digests": "swarm upgrade --to <the running release> deploys the release's images by digest again",
+    "verify.reconciler-jobs": (
+        "the reconciler's read of Jobs is a RoleBinding in each team's namespace (the tenant render): "
+        f"{TEAM_REPAIR} <team> --project <project> applies it again"),
+    "verify.firestore-migrations": "swarm upgrade runs the release's numbered migrations",
+    "verify.plugins": (
+        "swarm install re-runs infra's passes, which apply terraform/infra/plugins.tf (the plugins bucket, "
+        "its grants and the swarm-plugin-intake job)"),
+}
+
 
 def team_repairable(entry: Entry) -> bool:
     """A per-tenant entry the tenant render holds, so `swarm team repair`
@@ -293,10 +310,9 @@ def _project_number(t: Target, deps: Deps) -> str:
 
 
 def _frontend_backends(t: Target, deps: Deps) -> list[str]:
-    """This deployment's IAP-enabled backends: the recorded list
-    (`frontend_iap_backends`), else every `swarm-*` backend with IAP on. Never
-    another team's backend in a shared project."""
-    recorded = t.outputs.get("frontend_iap_backends")
+    """This deployment's IAP-enabled backends: every `swarm-*` backend with IAP
+    on. Never another team's backend in a shared project. (No step records the
+    list: `frontend_iap_backends` is an infra input, never an install output.)"""
     found = deps.gcp.get(
         f"https://compute.googleapis.com/compute/v1/projects/{t.project}/global/backendServices",
         permission="compute.backendServices.list",
@@ -307,10 +323,7 @@ def _frontend_backends(t: Target, deps: Deps) -> list[str]:
         name = str(item.get("name") or "")
         if not (item.get("iap") or {}).get("enabled"):
             continue
-        if recorded:
-            if name in recorded:
-                names.append(name)
-        elif name.startswith("swarm-"):
+        if name.startswith("swarm-"):
             names.append(name)
     return names
 
@@ -602,6 +615,9 @@ def fix_words(entry: Entry) -> str:
         )
     elif entry.step is None:
         how = "no install step makes this; see the entry's check: " + (entry.check or entry.id)
+    elif entry.step in CHECK_ONLY:
+        how = (f"the install's step {entry.step} only checks it, so swarm install --repair {entry.id} re-runs "
+               f"the check and changes nothing; {CHECK_ONLY[entry.step]}")
     elif entry.provider == "engine":
         how = f"the install's step {entry.step} makes it: swarm install --repair {entry.id}"
     else:

@@ -53,6 +53,22 @@ def test_channel_release_reads_the_deployments_channel() -> None:
     assert read == [f"{RELEASE_HOME}/channels/stable", f"{RELEASE_HOME}/channels/rc"]
     with pytest.raises(up.UpgradeRefused, match="not a release"):
         verb.channel_release(lambda url: b"<html>", OLD)
+    with pytest.raises(up.UpgradeRefused, match="not a release"):
+        verb.channel_release(lambda url: b"v2026.11.1\n", OLD)
+
+
+@pytest.mark.parametrize("name", ["v2026.11.1", "2026.11", "2026.11.1.2", "2026.1.1", "2026.11.1-beta"])
+def test_to_takes_only_a_release_name(name: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """Epic finding 59: a name the release path is not published under (a `v`
+    prefix, a missing patch) is refused at the argument, not as a 404 later."""
+    with pytest.raises(SystemExit):
+        args_for("--to", name, "--project", PROJECT)
+    assert "is not a release name" in capsys.readouterr().err
+
+
+def test_to_takes_a_release_and_a_candidate() -> None:
+    assert args_for("--to", NEW, "--project", PROJECT).to == NEW
+    assert args_for("--to", "2026.11.3-rc.1", "--project", PROJECT).to == "2026.11.3-rc.1"
 
 
 # -- F3: V's engine ---------------------------------------------------------------------
@@ -377,6 +393,7 @@ def app_world(tmp_path: Path, api: FakeSwarmApi, *, console: dict[str, Any] | No
     gcp = RefusingGcp()
     world.deps = type("Deps", (), {"gcp": staticmethod(lambda: gcp)})()
     world.release_app_permissions = lambda version: wanted  # type: ignore[method-assign]
+    world.github_account_type = lambda login: "Organization"  # type: ignore[method-assign]
     return world
 
 
@@ -438,6 +455,26 @@ def test_still_no_route_after_the_deploy_prints_the_settings_page(
     out = capsys.readouterr().out
     assert "still cannot report the GitHub App's permissions" in out and "issues: write" in out
     assert "https://github.com/organizations/acme/settings/apps/acme-swarm" in out
+
+
+@pytest.mark.parametrize(("kind", "page"), [
+    ("Organization", "https://github.com/organizations/acme/settings/apps/acme-swarm"),
+    ("User", "https://github.com/settings/apps/acme-swarm"),
+])
+def test_the_settings_page_follows_the_owners_account_type(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        kind: str, page: str) -> None:
+    """Epic finding 22: a personal account's App has no organizations/ page, so
+    the page printed is chosen by GitHub's account type, not assumed."""
+    monkeypatch.setattr("swarm_install.steps.open_page", lambda *a, **kw: pytest.fail("a page was opened"))
+    world = app_world(tmp_path, FakeSwarmApi(404), wanted={"issues": "write"})
+    asked: list[str] = []
+    world.github_account_type = lambda login: asked.append(login) or kind  # type: ignore[method-assign]
+    assert world.app() is None
+    world.app_after_deploy(NEW)
+    out = capsys.readouterr().out
+    assert asked == ["acme"]
+    assert f"settings page: {page}\n" in out and "personal account:" not in out
 
 
 def test_with_the_route_there_is_no_read_after_the_deploy(tmp_path: Path) -> None:

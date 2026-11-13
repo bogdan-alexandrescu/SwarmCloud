@@ -536,8 +536,10 @@ class BundleStep(_Base):
             # A dry run checks the digest and writes nothing, not even the cache.
             self._bundle.read(ctx)
             return Observation(MET, f"{BUNDLE} of release {ctx.state.release} matches SHA256SUMS")
-        root = self._bundle.fetch(ctx)
-        return Observation(MET, f"{BUNDLE} of release {ctx.state.release}", {"kubernetes_bundle": str(root)})
+        # The unpacked root is `bundle_dir(project, release)`; nothing reads it
+        # from the install state, so it is not recorded there (epic finding 46).
+        self._bundle.fetch(ctx)
+        return Observation(MET, f"{BUNDLE} of release {ctx.state.release}")
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(f"fetch {BUNDLE} of release {ctx.state.release} and check it against its signed SHA256SUMS")

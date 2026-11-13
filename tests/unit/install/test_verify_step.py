@@ -1430,7 +1430,8 @@ def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest
     ctx.dry_run = False
     observed = bundle.check(ctx)
     assert observed.status == MET
-    root = Path(observed.outputs["kubernetes_bundle"])
+    assert "kubernetes_bundle" not in (observed.outputs or {}), "write-only: nothing reads it (epic finding 46)"
+    root = cluster.bundle_dir(PROJECT, VERSION)
     assert root == cluster.bundle_dir(PROJECT, VERSION) and (root / "render.py").is_file()
     policies.rendered(ctx)
     render = next(argv for argv, _, _ in shell.calls if argv[1].endswith("render.py"))
