@@ -254,9 +254,9 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     `reject_approver_required` switch is on (the owner 2026-10-26); off, any
     member past the role floor and the platform-scope rule. `why`: one
     sentence when either is false, else None. `deciders`: `approvals.deciders`.
-    `edit` and `comment` (plans-pipeline §3.9): whether `plan:edit` would pass
-    its role floor on this open plan, and whether a comment would; false for
-    every kind but `plan` and `hold`.
+    `edit` and `comment` (plans-pipeline §3.9), on a `plan` or `hold` item
+    only: whether `plan:edit` would pass its role floor on this open plan,
+    and whether a comment would.
 
     None (absent) for an await-input step, which is answered on its own
     route and never decided here, and when the reader's role cannot be read.
@@ -271,7 +271,7 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     # Comment is the role floor alone; edit is the floor `plan:edit` asks,
     # while the plan is still open to an edit.
     plan_item = item.get("kind") in (approvals.PLAN, approvals.HOLD)
-    comment = plan_item and why is None
+    comment = why is None
     edit = comment and _still_open(item, ctx.now()) is None
     platform = schedule is not None and schedule_routes._platform_scope(schedule)
     if why is None and platform and not (auth.is_admin or auth.is_owner):
@@ -287,7 +287,7 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     # The approvers `approve` asks: a projected run's and a merge's are its
     # schedule's gate (the hold is asked beside them); a record's are its own.
     by_gate = item.get("projected") or item.get("kind") == approvals.MERGE
-    return {
+    out = {
         "approve": approve,
         "reject": reject,
         "why": redact_detail(why, limit=approvals.SUMMARY_CHARS) if why else None,
@@ -298,9 +298,12 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
             merge_tier=item.get("kind") == approvals.MERGE or bool(item.get("merge_tier")),
             platform_scope=platform, run=run,
         ),
-        "edit": edit,
-        "comment": comment,
     }
+    if plan_item:
+        # Only a plan has an edit or a comment level; every other kind's
+        # `may_decide` keeps the four keys it served before §3.9.
+        out.update(edit=edit, comment=comment)
+    return out
 
 
 def _record_run(ctx: AppContext, tenant_id: str, doc: Mapping[str, Any]) -> IssueRun | None:
