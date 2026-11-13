@@ -167,6 +167,7 @@ from . import instructions as vinstructions
 from . import readback as vreadback
 from . import trace as vtrace
 from .grant import GRANT_HEADER, SessionGrant
+from . import updates as vupdates
 
 if TYPE_CHECKING:
     from .planner import Planner, TurnResult
@@ -186,13 +187,17 @@ REOPEN_EVENT = "voice.tier.reopen"
 #: How long a next tier is held for a reopen after the spent session ended.
 REOPEN_SECONDS = 60.0
 
-#: THE PAUSE (§3.12.7, the owner's pick, 11 November 2026: "about 15 seconds").
+#: THE PAUSE (§3.12.7; the owner's pick of 11 November 2026 was "about 15
+#: seconds", moved to 45 on 12 November 2026 after three talks on the
+#: development deployment in which the voice paused while the planner was still
+#: plainly at work: the updates (updates.py) now speak while work runs).
 #: In a GPT-Live session with a delegation in flight, no read-back pending and
 #: nothing playing, this many seconds in which neither side speaks pause it:
 #: GPT-Live bills every second it is open, and a voice waiting on delegated
-#: work says nothing worth paying for. Shorter would pause between a person's
-#: sentences while they think; longer pays for more silence on every delegation.
-PAUSE_AFTER_SECONDS = 15.0
+#: work says nothing worth paying for. Shorter paused while the owner was still
+#: watching the work start (15 s did); longer pays for more silence on every
+#: delegation. The update queue's check-in counts the same silence.
+PAUSE_AFTER_SECONDS = 45.0
 #: The most the pause waits for its sentence to be spoken before it closes: the
 #: sentence takes about four seconds to say, so twice that covers a slow voice
 #: and still bounds a Live session whose audio events never come.
@@ -210,6 +215,14 @@ REOPEN_CAUSES = WAKE_CAUSES + (TIER_CAUSE,)
 #: The sideband's audio playback events: while the voice plays, nothing pauses.
 OUTPUT_AUDIO_STARTED = "session.output_audio.started"
 OUTPUT_AUDIO_STOPPED = "session.output_audio.stopped"
+#: The person's voice detection on the sideband, by the end of its type
+#: (`input_audio_buffer.speech_started`, `session.input_audio.speech_started`):
+#: between the two, an update waits for the gap (updates.py).
+SPEECH_STARTED_SUFFIX = ".speech_started"
+SPEECH_STOPPED_SUFFIX = ".speech_stopped"
+#: The longest an update waits for the voice to end its current sentence when
+#: its text never ends one (a reply cut short, a transcript that stopped).
+VOICE_SENTENCE_SECONDS = 4.0
 #: How long one attach try may take to see the session confirmed (CONFIRMS_PREFIX);
 #: inside a start, also no longer than what is left of START_SECONDS.
 ATTACH_SECONDS = 10.0
@@ -754,6 +767,14 @@ class LiveSession:
         self.earlier_seconds: float = 0.0
         #: Set once Sessions has forgotten it (released its lease, or handed it on).
         self.forgotten = False
+        #: THE UPDATES (updates.py): the voice session's queue, bound by Sessions
+        #: when a planner is configured; None speaks each result at once, as before.
+        self.updates: vupdates.UpdateQueue | None = None
+        #: The newest delegation seen: an update after the work ended is said for it.
+        self.last_delegation: str | None = None
+        #: The person's voice detection says they are speaking (SPEECH_STARTED_SUFFIX).
+        self._person_speaking = False
+        self._update_lines = 0
 
     @property
     def tier(self) -> str | None:
@@ -892,6 +913,9 @@ class LiveSession:
                             log.warning("voice session %s: event sink failed: %s", self.voice_id, type(exc).__name__)
                     # ... and whether both sides have been quiet long enough to pause.
                     self.check_quiet()
+                    # ... and whether a held update has its gap now.
+                    if self.updates is not None and self.updates.pending:
+                        self.updates.poke()
         except WebSocketException as exc:
             log.info("voice session %s: sideband dropped (%s)", self.voice_id, type(exc).__name__)
         finally:
@@ -1074,6 +1098,7 @@ class LiveSession:
             log.warning("voice session %s: a delegation without an id was ignored", self.voice_id)
             return
         self.delegations[delegation_id] = None
+        self.last_delegation = delegation_id
         task = asyncio.create_task(self._plan(delegation_id, delegation_request(event)),
                                    name=f"planner-{self.voice_id}")
         self._turns.add(task)
@@ -1095,14 +1120,62 @@ class LiveSession:
                         "yes" if request else "none", self._types_seen())
             if not request:
                 # Nothing to plan from: a turn would read the inbox and report "nothing".
-                await self._say(delegation_id, SAY_ASK_AGAIN)
+                await self._result(delegation_id, SAY_ASK_AGAIN)
                 self._traced(transcript, request, None, SAY_ASK_AGAIN)
                 return
         result = await self._planner.delegate(person=self.person, grant=self.grant,
                                               transcript=transcript, delegation_id=delegation_id,
                                               model=self.planner_model, request=request or None)
-        await self._say(delegation_id, result.spoken)
+        await self._result(delegation_id, result.spoken)
         self._traced(transcript, request, result, result.spoken)
+
+    async def _result(self, delegation_id: str, spoken: str) -> None:
+        """The planner's result, through the update queue (updates.py) when one
+        is bound: spoken at the next gap, with the updates waiting merged into
+        its line, or held for the wake when paused; else at once, as before."""
+        queue = self.updates
+        if queue is None or queue.closed or not spoken:
+            await self._say(delegation_id, spoken)
+            return
+        queue.note(vupdates.Update(vupdates.RESULT, f"result:{delegation_id}", spoken, delegation_id))
+        await queue.pump()
+
+    def at_gap(self) -> bool:
+        """Whether an update may be spoken now: the Live session is open and not
+        pausing, the person is not speaking (no utterance of theirs open, no
+        speech started and not stopped) and the voice is not mid-sentence (its
+        audio playing, or its text not ending a sentence for less than
+        VOICE_SENTENCE_SECONDS)."""
+        if self.ended or self._socket is None or self.pausing or self._playing or self._person_speaking:
+            return False
+        self._end_idle_utterances()
+        if any(s.speaker == "person" and not s.ended for s in self._segments):
+            return False
+        for segment in reversed(self._segments):
+            if segment.speaker == "voice":
+                if (not segment.final and not ends_sentence(segment.text)
+                        and self._clock() - self.spoken_at < VOICE_SENTENCE_SECONDS):
+                    return False
+                break
+        return True
+
+    async def say_update(self, line: str, *, wakes: bool, delegation_id: str | None = None) -> bool:
+        """Say one update queue line (updates.py): as the result's commentary for
+        `delegation_id`, else for the delegation in flight or the newest one.
+        Paused, a line that `wakes` is held for the wake and asks for it (cause
+        `result`, as a result does); one that does not is dropped. Whether it
+        was sent or held."""
+        target = delegation_id or next(iter(self.delegations), None) or self.last_delegation
+        if target is None or (self.ended and not self.paused):
+            return False
+        if self.paused and not wakes:
+            return False
+        if delegation_id is not None:
+            await self._say(target, line)
+        else:
+            self._update_lines += 1
+            await self._say(target, line, prefix=f"update{self._update_lines}")
+        return True
 
     def _traced(self, transcript: list[tuple[str, str]], request: str,
                 result: "TurnResult | None", told: str) -> None:
@@ -1151,6 +1224,16 @@ class LiveSession:
         if kind == OUTPUT_AUDIO_STOPPED:
             self._playing = False
             self._spoken()
+            return
+        if kind.endswith(SPEECH_STARTED_SUFFIX) and not kind.startswith("session.output"):
+            self._person_speaking = True
+            self.spoken_at = self._clock()
+            if self.pausing:
+                self.person_spoke = True
+            return
+        if kind.endswith(SPEECH_STOPPED_SUFFIX) and not kind.startswith("session.output"):
+            self._person_speaking = False
+            self.spoken_at = self._clock()
             return
         speaker = final_speaker(kind)
         final = speaker is not None
@@ -1291,8 +1374,12 @@ class Sessions:
                  on_event: EventSink | None = None, planner: "Planner | None" = None,
                  finals: vreadback.Finals | None = None, pause_after: float | None = None,
                  pause_say_seconds: float = PAUSE_SAY_SECONDS,
-                 clock: Callable[[], float] | None = None) -> None:
+                 clock: Callable[[], float] | None = None,
+                 updates: vupdates.Board | None = vupdates.BOARD) -> None:
         self.api = api
+        #: THE UPDATES (updates.py): each voice session's queue, on the board the
+        #: follower and the planner feed; None speaks each result at once.
+        self._updates = updates
         #: THE PAUSE: seconds of silence with a delegation in flight that pause a
         #: session (PAUSE_AFTER_SECONDS when armed), or None: never paused.
         self._pause_after = pause_after
@@ -1360,6 +1447,8 @@ class Sessions:
         # The grant dies with the session (§3.6): an ended session presents none.
         session.grant = None
         self.holds.forget(session.voice_id)
+        if self._updates is not None and self._updates.get(session.voice_id) is session.updates:
+            self._updates.drop(session.voice_id)
         if self._planner is not None:
             self._planner.forget(session.voice_id)
 
@@ -1466,6 +1555,11 @@ class Sessions:
             self._live[voice_id] = session
             log.info("voice session %s: live session %s attached on the %s tier", voice_id, session.live_id,
                      session.tier)
+            if self._updates is not None and self._planner is not None:
+                # One queue for the voice session's life: it speaks through
+                # whichever Live session holds it now (a reopen replaces it).
+                session.updates = self._updates.bind(voice_id, lambda: self._live.get(voice_id),
+                                                     clock=self._clock)
             credential = None  # held by the session now; released when it is forgotten
             return session
         except BaseException:
@@ -1616,6 +1710,8 @@ class Sessions:
         # The planner turns in flight run on: their results reach the voice open now.
         session._turns, spent._turns = spent._turns, set()
         session.delegations = spent.delegations
+        session.updates = spent.updates
+        session.last_delegation = spent.last_delegation
         spent.held_results = []
         if spent.next_credential is credential:
             spent.next_credential = None
