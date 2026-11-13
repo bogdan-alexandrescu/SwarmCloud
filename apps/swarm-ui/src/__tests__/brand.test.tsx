@@ -969,4 +969,21 @@ describe('B19: the console uses the glass it is given', () => {
     ).toMatch(/ch$/)
     style.remove()
   })
+
+  it('sets the empty state sentence at the page body size, not the heading size', () => {
+    // An empty state's sentence sat at --t-lead (16px), larger than the 14px
+    // body of the page around it, so a screen with nothing to list shouted.
+    // BREAK IT: set `.ctl-empty > p` back to var(--t-lead)/var(--lh-lead).
+    const style = withStyles()
+    const { container } = render(
+      <div className="ctl-empty">
+        <h3>Nothing here</h3>
+        <p>a line of prose</p>
+      </div>,
+    )
+    const p = getComputedStyle(container.querySelector('.ctl-empty > p')!)
+    expect(p.fontSize).toBe('var(--t-body)')
+    expect(p.lineHeight).toBe('var(--lh-body)')
+    style.remove()
+  })
 })
