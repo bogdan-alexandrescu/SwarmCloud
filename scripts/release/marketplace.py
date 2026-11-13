@@ -17,8 +17,8 @@ Code fetches only marketplace.json, so relative paths can't resolve"). The
 plugin is therefore an `archive` source: the release's `plugin.zip` by its
 absolute URL, `releases/V/plugin.zip`, with its sha256, which Claude Code
 checks before it installs (Claude Code v2.1.224 or later). Every marketplace
-says the same: the root one (`publish.sh --promote`), `channels/rc/
-marketplace.json` (a candidate's publish) and each release's pinned
+says the same: the root one (`publish.sh --promote`),
+`channels/rc.marketplace.json` (a candidate's publish) and each release's pinned
 `releases/V/marketplace.json`, for a team that must stay on V (the skew
 message names it, swarm_mcp/discovery.py).
 
