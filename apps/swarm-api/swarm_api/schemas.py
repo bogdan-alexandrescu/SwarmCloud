@@ -727,6 +727,44 @@ class WorkflowCreate(StrictModel):
         return self
 
 
+#: At most this many `after_merge` entries on one held workflow
+#: (docs/design/merging-without-a-laptop.md §4.1).
+MAX_AFTER_MERGE = 8
+
+
+class AfterMergeEntry(StrictModel):
+    """One merge a held workflow waits for (§4.1): EXACTLY ONE of a workflow
+    of the same tenant, by id, or a pull request of the spec's own repository,
+    by number. Never a repository, an image or a command (invariant 10)."""
+
+    #: A workflow (`wf_...`) or a held workflow (`hwf_...`) of the same
+    #: tenant; satisfied when the pull request it opened is merged.
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                    pattern=r"^h?wf_[A-Za-z0-9]+$")
+    #: A pull request of the spec's own repository, a number only, as
+    #: `publish_to_pr` takes it; satisfied when GitHub reports it merged.
+    pull_request: StrictInt | None = Field(default=None, ge=1, le=10**9)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "AfterMergeEntry":
+        if (self.workflow_id is None) == (self.pull_request is None):
+            raise ValueError("an after_merge entry names exactly one of workflow_id "
+                             "or pull_request")
+        return self
+
+
+class HeldWorkflowCreate(WorkflowCreate):
+    """A workflow spec that starts only once other pull requests MERGE (§4).
+
+    `after_merge` is not a field of `WorkflowCreate`, so a plain submission
+    naming it is refused as an unknown field rather than started at once.
+    The spec is held in a `held_workflows` row (`heldworkflows.hold`) and
+    submitted as a `WorkflowCreate`, without `after_merge`, at release.
+    """
+
+    after_merge: list[AfterMergeEntry] = Field(min_length=1, max_length=MAX_AFTER_MERGE)
+
+
 # --------------------------------------------------------------------------
 # Issue runs (#454)
 # --------------------------------------------------------------------------
