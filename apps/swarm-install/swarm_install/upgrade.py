@@ -113,7 +113,6 @@ ROLLED_BACK = (INFRA, VERIFY)
 
 #: What the upgrade records in `InstallState.outputs`.
 UPGRADE_KEY = "upgrade"
-PREVIOUS_KEY = "previous_release"
 
 DRAIN_WAIT = WaitSpec(
     reason="running work to checkpoint and park before the new release rolls out",
@@ -807,7 +806,6 @@ class Upgrade:
         self.gate(plan)
         if not resuming:
             def start(state: Any) -> None:
-                state.outputs[PREVIOUS_KEY] = previous
                 state.outputs[UPGRADE_KEY] = {"from": previous, "to": target, "done": [], "failed": None,
                                               "started_at": self.clock.now()}
                 state.release = target

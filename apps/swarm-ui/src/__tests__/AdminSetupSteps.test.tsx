@@ -425,6 +425,51 @@ describe('Admin › Setup says only what exists', () => {
     expect(visible(waiting)).toContain('no repository')
   })
 
+  it('the team row shows the test repository, not the first of the grant, and picks another', async () => {
+    const TEST = 'example-org/swarm-install-test'
+    const repositories = ['example-org/aardvark', TEST]
+    let current = TEST
+    const calls = serve((m, url, body) => {
+      if (url !== '/v1/admin/setup/test-repository') return null
+      if (m === 'PUT') current = (body as Json).repository as string
+      return { status: 200, body: { test_repository: current, default: TEST, repositories } }
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const mod = await import('../AdminSetupSteps')
+    const { normSetupState } = await import('../api')
+    const reread = vi.fn()
+    render(<mod.AdminSetupSteps state={normSetupState(state(teamWith({ grant: { ...GRANTED, repositories } })))} now={NOW_MS} onChanged={reread} />)
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const pick = within(row).getByLabelText('Pick the test repository') as HTMLSelectElement
+    // MUTATION: use the grant's first repository (`repositories[0]`).
+    expect(pick.value).toBe(TEST)
+    expect(within(row).getByText(TEST, { selector: 'code' })).toBeTruthy()
+    // MUTATION: offer anything but the grant's repositories.
+    expect([...pick.options].map((o) => o.value)).toEqual(repositories)
+    fireEvent.change(pick, { target: { value: 'example-org/aardvark' } })
+    // MUTATION: pick without telling swarm-api.
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT' && c.url === '/v1/admin/setup/test-repository')?.body).toEqual({ repository: 'example-org/aardvark' }))
+    await waitFor(() => expect(within(row).getByText('example-org/aardvark', { selector: 'code' })).toBeTruthy())
+    // MUTATION: leave the page on its old read after the pick.
+    expect(reread).toHaveBeenCalled()
+  })
+
+  it('with no test repository the team row says to create it or pick one', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: fall back to the grant's first repository when there is no test repository.
+    expect(visible(row)).toContain('Create example-org/swarm-install-test or pick a repository')
+    expect((within(row).getByLabelText('Pick the test repository') as HTMLSelectElement).value).toBe('')
+    // MUTATION: say why on the surface instead of behind the (i).
+    expect(within(row).getByRole('button', { name: 'About the test repository' })).toBeTruthy()
+  })
+
   it('the invite control opens the Google Admin members page and waits for them to join', async () => {
     const tabs = fakeTabs()
     const calls = serve((m, url, body) =>
@@ -829,8 +874,9 @@ describe('the first team needs no typing the install already knows (#26, N20; DA
 // ADMIN › SETUP FOLLOWS THE ENGINE (DAYONE-SETUP-UI-7; part of #2688; audit 3).
 //
 // WHAT EACH CASE HOLDS:
-//   * N10: the plugin line installs from the marketplace of the deployment's
-//     own release channel (an rc release's `channels/rc.marketplace.json`);
+//   * the plugin line installs from the deployment's pinned release
+//     marketplace (`releases/<version>/marketplace.json`), never its
+//     channel's, which moves on with the next promotion;
 //   * A7: the engine's epoch-seconds times read as dates, ISO text still
 //     reads, and no field renders Invalid Date;
 //   * A8: a failed or cancelled console run offers "Run the console checks
@@ -843,18 +889,19 @@ const FAILED_RUNS = (retries: Json = {}): Json => ({
 })
 
 describe('Admin › Setup follows the engine', () => {
-  it('the plugin line installs from the marketplace of the deployment’s channel', async () => {
+  it('the plugin line installs from the deployment’s pinned release marketplace', async () => {
     const passed = { verify: { ...VERIFYING, done: 8, result: 'passed' } }
     await mountSteps(state({}, { ...passed, release: '2026.10.3-rc.2' }))
     const rc = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
-    // MUTATION: install every deployment from the stable marketplace.
-    expect(rc).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json ')
+    // MUTATION: install a candidate from its channel's marketplace.
+    expect(rc).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/2026.10.3-rc.2/marketplace.json ')
     cleanup()
     await mountSteps(state({}, { ...passed, release: '2026.10.3' }))
     const stable = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
-    // MUTATION: send a stable deployment to a channel file.
-    expect(stable).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/marketplace.json ')
+    // MUTATION: send a stable deployment to the bucket root's marketplace.
+    expect(stable).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/2026.10.3/marketplace.json ')
     const mod = await import('../AdminSetupSteps')
+    expect(mod.teammateMarketplace(null)).toBe(mod.PLUGIN_MARKETPLACE)
     expect(mod.releaseChannel(null)).toBe('stable')
     expect(mod.pluginMarketplace('beta')).toBe('https://storage.googleapis.com/swarmcloud/channels/beta.marketplace.json')
   })

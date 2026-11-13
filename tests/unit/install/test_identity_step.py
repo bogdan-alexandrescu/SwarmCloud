@@ -229,7 +229,7 @@ def test_allowed_domains_hold_the_organisation_never_gmail() -> None:
     step = identity.AllowedDomainsStep(lambda: gcp)
     ctx = ctx_for(outputs={"admin_groups": [ADMINS]})
     observed = step.check(ctx)
-    assert observed.status == MET and observed.outputs["allowed_domains"] == ["example.com"]
+    assert observed.status == MET and "example.com" in observed.detail and observed.outputs == {}
 
     gcp.allowed = "example.com,gmail.com"
     assert "every Google account" in step.check(ctx).detail
@@ -493,7 +493,7 @@ def test_read_only_checks_wait_for_the_stage_8_reapply(tmp_path: Path) -> None:
     assert reapply.applied == 1
     state = rig.store.load()
     assert state.done(qa.id) and state.done(domains.id) and state.done(reapply.id)
-    assert state.outputs["allowed_domains"] == [DOMAIN]
+    assert "allowed_domains" not in state.outputs, "said in the check's detail, never kept: nothing reads it"
 
 
 def test_read_only_checks_after_the_reapply_check_and_never_say_run_again() -> None:

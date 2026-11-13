@@ -54,6 +54,9 @@ ENGINE_DOC = f"swarm-install/{ENV}"
 TEAMS_PREFIX = f"swarm-install/{ENV}/teams/"
 HOSTNAME = "swarm.example.com"
 ORG = "example-org"
+#: The dedicated test repository the smoke and the verify runs open their pull
+#: requests on (`setup_routes.TEST_REPOSITORY`), sorted after the others.
+TEST_REPO = f"{ORG}/swarm-install-test"
 HOOKS_URL = "https://hooks.example.com/github"
 
 #: The settings MAC key the first admin's grant is signed with; built at run time.
@@ -78,6 +81,8 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("POST", "/v1/admin/setup/teams/platform-team/invites", {"email": CAROL}),
     ("POST", "/v1/admin/setup/smoke", None),
     ("POST", "/v1/admin/setup/verify-runs", None),
+    ("GET", "/v1/admin/setup/test-repository", None),
+    ("PUT", "/v1/admin/setup/test-repository", {"repository": f"{ORG}/demo"}),
     ("PUT", "/v1/admin/setup/health", {"run_at": "2026-10-29T12:00:00Z"}),
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
@@ -554,7 +559,8 @@ class PassingAppCheck:
         return {"ok": True, "app_id": "123456", "slug": "swarmcloud", "reason": None}
 
 
-def install_app(db, github, repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api")):
+def install_app(db, github,
+                repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api", TEST_REPO)):
     """The App created and installed on ORG, covering `repositories`, and its
     self-check passed (infra pass 3 has landed)."""
     db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 123456, "installed_on": ORG,
@@ -624,7 +630,7 @@ def test_first_team_is_granted_the_installations_repositories(setup_client, db,
     team = response.json()["team"]
     grant = response.json()["grant"]
     assert grant["state"] == "granted"
-    assert grant["repositories"] == [f"{ORG}/api", f"{ORG}/demo"]
+    assert grant["repositories"] == [f"{ORG}/api", f"{ORG}/demo", TEST_REPO]
     assert grant["installation_id"] == 77 and grant["mode"] == "write"
     assert team_doc(db, team)["grant"]["repositories"] == grant["repositories"]
     assert page_team(setup_client, team)["grant"]["state"] == "granted"
@@ -639,7 +645,8 @@ def test_grant_waits_for_the_app_and_lands_on_a_later_read(setup_client, db, git
     assert team_doc(db, team)["grant"]["state"] == "waiting_for_app"
     install_app(db, github)
     assert page_team(setup_client, team)["grant"]["state"] == "granted"
-    assert team_doc(db, team)["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo"]
+    assert team_doc(db, team)["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo",
+                                                           TEST_REPO]
 
 
 def test_a_second_team_gets_no_grant(setup_client, db, github) -> None:
@@ -712,7 +719,7 @@ def test_smoke_runs_when_the_first_pool_account_lands(setup_client, db, github, 
     smoke = page_team(setup_client, team)["smoke"]
     assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
     assert runs.tasks == [{"id": "task-1", "tenant": team, "group": TEAM_GROUP,
-                           "repository": f"{ORG}/api", "prompt": runs.tasks[0]["prompt"],
+                           "repository": TEST_REPO, "prompt": runs.tasks[0]["prompt"],
                            "label": "swarm-install-smoke", "strategy": "collect"}]
     page_team(setup_client, team)
     assert len(runs.tasks) == 1, "a second read started a second smoke"
@@ -752,7 +759,7 @@ def test_verify_runs_start_as_the_first_team_and_are_recorded(setup_client, db, 
     expected = {"console_task": "task-1", "console_workflow": "wf-1"}
     assert answer.json()["verify_runs"] == expected
     doc = db.docs[f"swarm-install/{ENV}/console/verify_runs"]
-    assert doc["verify_runs"] == expected and doc["repository"] == f"{ORG}/api"
+    assert doc["verify_runs"] == expected and doc["repository"] == TEST_REPO
     assert runs.tasks[0]["tenant"] == team and runs.workflows[0]["tenant"] == team
     assert setup_client.get("/v1/admin/setup",
                             headers=auth_header("root")).json()["verify_runs"]["verify_runs"] \
@@ -956,12 +963,12 @@ def test_an_installation_with_no_repository_is_read_again_until_one_lands(
     row = page_team(setup_client, team)
     assert row["grant"]["state"] == "waiting_for_repositories"
     assert row.get("smoke") is None and runs.tasks == []
-    github.repositories = [f"{ORG}/demo"]
+    github.repositories = [f"{ORG}/demo", TEST_REPO]
     row = page_team(setup_client, team)
     assert row["grant"]["state"] == "granted"
-    assert team_doc(db, team)["grant"]["repositories"] == [f"{ORG}/demo"]
+    assert team_doc(db, team)["grant"]["repositories"] == [f"{ORG}/demo", TEST_REPO]
     assert row["smoke"]["state"] == "running"
-    assert runs.tasks[0]["repository"] == f"{ORG}/demo"
+    assert runs.tasks[0]["repository"] == TEST_REPO
 
 
 class RecordingSubmissions:
@@ -1273,7 +1280,8 @@ def test_one_persons_smoke_runs_in_the_personal_workspace(setup_client, db, gith
     install_app(db, github)
     tenant = personal_tenant()
     body = page(setup_client)
-    assert body["personal"]["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo"]
+    assert body["personal"]["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo",
+                                                         TEST_REPO]
     assert body["personal"].get("smoke") is None and runs.tasks == []
     pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
                           "label": "pool-1"})
@@ -1365,7 +1373,7 @@ def test_one_persons_verify_runs_run_in_the_personal_workspace(setup_client, db,
     # Recorded as for a team: the engine reads the same two id keys.
     assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-1",
                                                   "console_workflow": "wf-1"}
-    assert db.docs[VERIFY_DOC]["repository"] == f"{ORG}/api"
+    assert db.docs[VERIFY_DOC]["repository"] == TEST_REPO
 
 
 def test_one_person_with_no_installer_recorded_uses_the_platform_owner(setup_client,
@@ -1895,3 +1903,255 @@ def test_a_pass_not_yet_started_is_served_with_no_start_time(setup_client, db, s
         db.docs[ENGINE_DOC]["passes"] = stored
     assert page(setup_client)["passes"] == {"sign_in_pass": {"started_at": None},
                                             "infra_pass_3": {"started_at": None}}
+
+
+# --------------------------------------------------------------------------
+# the dedicated test repository: where the smoke and the verify runs go
+# --------------------------------------------------------------------------
+
+#: A product repository that sorts before the test repository.
+PRODUCT_REPO = f"{ORG}/aardvark"
+
+
+def put_test_repository(client: TestClient, repository: str):
+    return client.put("/v1/admin/setup/test-repository", json={"repository": repository},
+                      headers=auth_header("root"))
+
+
+def team_with_pool(setup_client, db, github, pool,
+                   repositories: tuple[str, ...] = (PRODUCT_REPO, f"{ORG}/demo", TEST_REPO)) -> str:
+    """The App installed on `repositories`, the first team, and its pool account."""
+    install_app(db, github, repositories=repositories)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    return team
+
+
+def test_the_smoke_runs_on_the_test_repository_not_the_first_of_the_grant(
+        setup_client, db, github, pool, runs) -> None:
+    """A repository that sorts first is a product repository: the smoke opens
+    its pull request on `<org>/swarm-install-test`."""
+    team = team_with_pool(setup_client, db, github, pool)
+    row = page_team(setup_client, team)
+    assert row["grant"]["repositories"][0] == PRODUCT_REPO
+    assert row["smoke"]["repository"] == TEST_REPO
+    assert [t["repository"] for t in runs.tasks] == [TEST_REPO]
+
+
+def test_the_verify_runs_run_on_the_test_repository_not_the_first_of_the_grant(
+        setup_client, db, github, runs) -> None:
+    install_app(db, github, repositories=(PRODUCT_REPO, TEST_REPO))
+    create_team(setup_client)
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["repository"] == TEST_REPO
+    assert runs.tasks[0]["repository"] == TEST_REPO
+    assert runs.workflows[0]["repository"] == TEST_REPO
+
+
+def test_the_admins_pick_is_recorded_in_the_grant_and_used(setup_client, db, github, pool,
+                                                          runs) -> None:
+    """`PUT /v1/admin/setup/test-repository` records the pick as
+    `grant.test_repository`, the grant's other keys kept; the smoke and the
+    verify runs then use it."""
+    install_app(db, github, repositories=(PRODUCT_REPO, f"{ORG}/demo", TEST_REPO))
+    team = create_team(setup_client).json()["team"]
+    before = dict(team_doc(db, team)["grant"])
+    answer = put_test_repository(setup_client, f"{ORG}/demo")
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["test_repository"] == f"{ORG}/demo"
+    assert team_doc(db, team)["grant"] == {**before, "test_repository": f"{ORG}/demo"}
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    row = page_team(setup_client, team)
+    assert row["test_repository"] == f"{ORG}/demo"
+    assert row["smoke"]["repository"] == f"{ORG}/demo"
+    assert start_verify(setup_client).json()["repository"] == f"{ORG}/demo"
+    assert {t["repository"] for t in runs.tasks} == {f"{ORG}/demo"}
+    assert runs.workflows[0]["repository"] == f"{ORG}/demo"
+    read = setup_client.get("/v1/admin/setup/test-repository", headers=auth_header("root"))
+    assert read.status_code == 200, read.text
+    assert read.json() == {"test_repository": f"{ORG}/demo", "default": TEST_REPO,
+                           "repositories": [PRODUCT_REPO, f"{ORG}/demo", TEST_REPO]}
+
+
+def test_a_pick_outside_the_grant_is_refused(setup_client, db, github) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    before = dict(team_doc(db, team)["grant"])
+    for repository in (f"{ORG}/elsewhere", "other-org/api", "not-a-repository"):
+        answer = put_test_repository(setup_client, repository)
+        assert answer.status_code in (409, 422), (repository, answer.text)
+    assert team_doc(db, team)["grant"] == before
+
+
+def test_a_pick_before_the_first_workspace_is_refused(setup_client, db) -> None:
+    answer = put_test_repository(setup_client, TEST_REPO)
+    assert answer.status_code == 409, answer.text
+    assert not [k for k in db.docs if k.startswith(TEAMS_PREFIX)]
+
+
+def test_with_no_test_repository_and_no_pick_the_smoke_waits_and_verify_is_409(
+        setup_app, setup_client, db, github, pool, runs) -> None:
+    """No `<org>/swarm-install-test` in the grant and no pick: nothing is
+    submitted on a product repository. The smoke waits, saying what to do;
+    the verify runs are a 409; `finish` still waits for the smoke."""
+    team = team_with_pool(setup_client, db, github, pool,
+                          repositories=(PRODUCT_REPO, f"{ORG}/demo"))
+    row = page_team(setup_client, team)
+    assert row["test_repository"] is None
+    assert row["smoke"]["state"] == "waiting_for_test_repository"
+    assert TEST_REPO in row["smoke"]["message"]
+    assert runs.tasks == [] and "smoke" not in team_doc(db, team)
+    verify = start_verify(setup_client)
+    assert verify.status_code == 409, verify.text
+    assert TEST_REPO in verify.text
+    assert runs.workflows == [] and VERIFY_DOC not in db.docs
+    db.docs[f"swarm-install/{ENV}/console/accounts"] = {"pool-1": {"owner": ALICE}}
+    setup_app.state.forge_app = PassingAppCheck()
+    finish = setup_client.post("/v1/admin/setup/finish", headers=auth_header("root"))
+    assert finish.status_code == 409
+    assert finish.json()["detail"]["missing"] == ["first_team_smoke"]
+    assert runs.tasks == []
+    # The pick lets the smoke start, the existing way.
+    assert put_test_repository(setup_client, f"{ORG}/demo").status_code == 200
+    again = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert again.status_code == 200, again.text
+    assert again.json()["smoke"]["state"] == "running"
+    assert runs.tasks[0]["repository"] == f"{ORG}/demo"
+
+
+def test_a_pick_after_a_failed_smoke_lets_it_start_again_on_the_pick(
+        setup_client, db, github, pool, runs) -> None:
+    """A pick does not restart anything itself: a failed smoke stays failed
+    until `POST /smoke`, which then runs on the pick."""
+    team = team_with_pool(setup_client, db, github, pool)
+    page_team(setup_client, team)
+    runs.states["task-1"] = "failed"
+    assert page_team(setup_client, team)["smoke"]["state"] == "failed"
+    assert put_test_repository(setup_client, f"{ORG}/demo").status_code == 200
+    assert page_team(setup_client, team)["smoke"]["state"] == "failed"
+    assert len(runs.tasks) == 1
+    again = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert again.status_code == 200, again.text
+    assert runs.tasks[1]["repository"] == f"{ORG}/demo"
+
+
+def test_a_pick_leaves_a_running_smoke_alone(setup_client, db, github, pool, runs) -> None:
+    team = team_with_pool(setup_client, db, github, pool)
+    assert page_team(setup_client, team)["smoke"]["state"] == "running"
+    assert put_test_repository(setup_client, f"{ORG}/demo").status_code == 200
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "running" and smoke["repository"] == TEST_REPO
+    assert len(runs.tasks) == 1
+
+
+def test_the_status_route_serves_the_test_repository(setup_client, db, github) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert page_team(setup_client, team)["test_repository"] == TEST_REPO
+
+
+def test_one_persons_page_serves_the_test_repository_and_takes_a_pick(
+        setup_client, db, github, runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github, repositories=(PRODUCT_REPO, f"{ORG}/demo"))
+    assert page(setup_client)["personal"]["test_repository"] is None
+    assert start_verify(setup_client).status_code == 409
+    assert put_test_repository(setup_client, f"{ORG}/demo").status_code == 200
+    assert db.docs[PERSONAL_DOC]["grant"]["test_repository"] == f"{ORG}/demo"
+    assert page(setup_client)["personal"]["test_repository"] == f"{ORG}/demo"
+    assert start_verify(setup_client).json()["repository"] == f"{ORG}/demo"
+
+
+@pytest.mark.parametrize(("grant", "expected"), [
+    ({"account": ORG, "repositories": [PRODUCT_REPO, TEST_REPO]}, TEST_REPO),
+    # GitHub's own spelling of the name is the one answered.
+    ({"account": ORG, "repositories": [PRODUCT_REPO, f"{ORG}/Swarm-Install-Test"]},
+     f"{ORG}/Swarm-Install-Test"),
+    # No account recorded: the org is the owner part of the grant's repositories.
+    ({"repositories": [PRODUCT_REPO, TEST_REPO]}, TEST_REPO),
+    ({"account": ORG, "repositories": [PRODUCT_REPO, TEST_REPO],
+      "test_repository": PRODUCT_REPO}, PRODUCT_REPO),
+    # A pick no longer in the grant falls back to the default.
+    ({"account": ORG, "repositories": [PRODUCT_REPO, TEST_REPO],
+      "test_repository": f"{ORG}/gone"}, TEST_REPO),
+    ({"account": ORG, "repositories": [PRODUCT_REPO]}, None),
+    ({"account": ORG, "repositories": [PRODUCT_REPO], "test_repository": f"{ORG}/gone"}, None),
+    ({}, None),
+])
+def test_the_test_repository_is_the_pick_else_the_default(grant, expected) -> None:
+    assert setup_routes.chosen_test_repository(grant) == expected
+
+
+def _repository_reads(github: FakeGitHubSend) -> int:
+    return sum(1 for r in github.requests if "/installation/repositories" in r["url"])
+
+
+def test_a_grant_recorded_before_the_test_repository_existed_is_read_again(
+        setup_app, setup_client, db, github, pool, runs) -> None:
+    """The grant was recorded over product repositories only; the test
+    repository is then added to the installation. The next page read reads
+    the installation again (once), records the new list, keeps the grant's
+    other keys, enforces it for the new list, and the smoke runs there."""
+    team = team_with_pool(setup_client, db, github, pool,
+                          repositories=(PRODUCT_REPO, f"{ORG}/demo"))
+    row = page_team(setup_client, team)
+    assert row["test_repository"] is None and runs.tasks == []
+    github.repositories = [PRODUCT_REPO, f"{ORG}/demo", TEST_REPO]
+    reads = _repository_reads(github)
+    row = page_team(setup_client, team)
+    assert _repository_reads(github) == reads + 1, "read the installation once per page read"
+    assert row["test_repository"] == TEST_REPO
+    grant = team_doc(db, team)["grant"]
+    assert grant["repositories"] == [PRODUCT_REPO, f"{ORG}/demo", TEST_REPO]
+    assert grant["state"] == "granted" and grant["installation_id"] == 77
+    assert grant["enforced_at"] and grant["installation_recorded_at"]
+    assert _grant_mode(setup_app, team, ALICE, TEST_REPO) == "write"
+    assert row["smoke"]["state"] == "running"
+    assert [t["repository"] for t in runs.tasks] == [TEST_REPO]
+
+
+def test_an_unchanged_installation_rewrites_nothing(setup_client, db, github, pool,
+                                                    runs) -> None:
+    team = team_with_pool(setup_client, db, github, pool,
+                          repositories=(PRODUCT_REPO, f"{ORG}/demo"))
+    page_team(setup_client, team)
+    before = dict(team_doc(db, team)["grant"])
+    page_team(setup_client, team)
+    assert team_doc(db, team)["grant"] == before and runs.tasks == []
+
+
+def test_a_failed_installation_read_keeps_the_grant(setup_client, db, github, pool,
+                                                    runs) -> None:
+    team = team_with_pool(setup_client, db, github, pool,
+                          repositories=(PRODUCT_REPO, f"{ORG}/demo"))
+    page_team(setup_client, team)
+    before = dict(team_doc(db, team)["grant"])
+    github.installations = []  # the App no longer answers for ORG
+    row = page_team(setup_client, team)
+    assert row["grant"]["state"] == "granted"
+    assert team_doc(db, team)["grant"] == before and runs.tasks == []
+
+
+def test_a_resolved_test_repository_makes_no_github_call(setup_client, db, github, pool,
+                                                         runs) -> None:
+    team = team_with_pool(setup_client, db, github, pool)
+    page_team(setup_client, team)
+    seen = len(github.requests)
+    row = page_team(setup_client, team)
+    assert row["test_repository"] == TEST_REPO
+    assert len(github.requests) == seen, github.requests[seen:]
+
+
+def test_one_persons_grant_is_read_again_until_the_test_repository_lands(
+        setup_client, db, github, runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github, repositories=(PRODUCT_REPO,))
+    assert page(setup_client)["personal"]["test_repository"] is None
+    github.repositories = [PRODUCT_REPO, TEST_REPO]
+    reads = _repository_reads(github)
+    assert page(setup_client)["personal"]["test_repository"] == TEST_REPO
+    assert _repository_reads(github) == reads + 1
+    assert db.docs[PERSONAL_DOC]["grant"]["repositories"] == [PRODUCT_REPO, TEST_REPO]

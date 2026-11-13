@@ -746,7 +746,7 @@ class GroupReadStep(_Base):
             client = self._client_id(ctx) if chosen == DELEGATION else None
             return Observation(UNMET, why_unmet(found, chosen, ctx.project, client))
         return Observation(MET, f"swarm-api read {group} in {mode or chosen} mode",
-                           {"groups_auth": mode or chosen, "probed_groups": [group]})
+                           {"groups_auth": mode or chosen})
 
     def plan(self, ctx: Any) -> Plan:
         account = swarm_api_email(ctx.project)
@@ -983,7 +983,7 @@ class AllowedDomainsStep(_ReadOnly):
         if missing:
             return Observation(UNMET, f"ALLOWED_DOMAINS is {', '.join(domains)}; it does not hold this "
                                       f"organisation's {', '.join(missing)}")
-        return Observation(MET, f"ALLOWED_DOMAINS is {', '.join(domains)}", {"allowed_domains": domains})
+        return Observation(MET, f"ALLOWED_DOMAINS is {', '.join(domains)}")
 
 
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,

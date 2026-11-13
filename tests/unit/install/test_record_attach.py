@@ -207,17 +207,22 @@ def test_a_one_person_install_or_one_before_stage_8_publishes_no_team():
     assert record.document_for(one_person, {})["workspace_groups"] is None
 
 
-# -- N10: the ready screen names the deployment's channel's marketplace ---------------
+# -- the ready screen names the deployment's pinned release marketplace ----------------
+#
+# A teammate adds `releases/<version>/marketplace.json`, the marketplace the
+# release itself published (plugin `sc` at that version), never the channel's:
+# the channel moves on with the next promotion and its plugin would no longer
+# match the release the deployment runs.
 
 
 @pytest.mark.parametrize(
     ("release", "url"),
     [
-        ("2026.11.3", "https://storage.googleapis.com/swarmcloud/marketplace.json"),
-        ("2026.11.3-rc.2", "https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json"),
+        ("2026.11.3", "https://storage.googleapis.com/swarmcloud/releases/2026.11.3/marketplace.json"),
+        ("2026.11.3-rc.2", "https://storage.googleapis.com/swarmcloud/releases/2026.11.3-rc.2/marketplace.json"),
     ],
 )
-def test_the_ready_screen_names_the_channels_marketplace(release, url, world, monkeypatch, capsys):  # noqa: F811
+def test_the_ready_screen_names_the_releases_marketplace(release, url, world, monkeypatch, capsys):  # noqa: F811
     store, found = world
     state = InstallState(project=PROJECT, environment=ENV, hostname="swarm.acme.example",
                          region="europe-west1", release=release, ready_at=200.0)
@@ -229,6 +234,12 @@ def test_the_ready_screen_names_the_channels_marketplace(release, url, world, mo
 
     out = capsys.readouterr().out
     assert f"claude plugin marketplace add {url}" in out
+
+
+def test_the_marketplace_is_the_recorded_releases_never_its_channels():
+    assert install.plugin_marketplace("2026.11.3") == (
+        "https://storage.googleapis.com/swarmcloud/releases/2026.11.3/marketplace.json")
+    assert "channels/" not in install.plugin_marketplace("2026.11.3-rc.2")
 
 
 def test_with_no_release_recorded_the_channel_is_the_installers(monkeypatch):

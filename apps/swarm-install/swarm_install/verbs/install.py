@@ -86,10 +86,16 @@ HELP = "install SwarmCloud into a Google Cloud project, or resume one (--status:
 DEFAULT_ENV = "prod"
 
 #: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen:
-#: the stable one at the bucket root; another channel's beside its channel line,
-#: `channels/<channel>.marketplace.json` (N10), so an rc deployment's teammates
-#: get the rc's plugin. Never under a `channels/<channel>/` prefix: that makes
-#: gcloud storage copy the channel line into it (audit 3, A5).
+#: the deployment's own release's, `releases/<version>/marketplace.json`, which
+#: scripts/release/publish.sh uploads with the release and never overwrites
+#: (plugin `sc` at that version), so a teammate's plugin always matches the
+#: release the deployment runs. A channel's marketplace moves on with the next
+#: promotion, so it is named only while no release is recorded: the stable one
+#: at the bucket root, another beside its channel line,
+#: `channels/<channel>.marketplace.json` (N10). Never under a
+#: `channels/<channel>/` prefix: that makes gcloud storage copy the channel line
+#: into it (audit 3, A5).
+RELEASE_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/releases/{release}/marketplace.json"
 PLUGIN_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/marketplace.json"
 CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{channel}.marketplace.json"
 
@@ -482,6 +488,8 @@ def channel_of(release: str | None) -> str:
 
 
 def plugin_marketplace(release: str | None) -> str:
+    if release:
+        return RELEASE_MARKETPLACE.format(release=release)
     channel = channel_of(release)
     return PLUGIN_MARKETPLACE if channel == "stable" else CHANNEL_MARKETPLACE.format(channel=channel)
 

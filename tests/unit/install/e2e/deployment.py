@@ -21,7 +21,8 @@ from swarm_install.steps.verify import CHECK_RUNS, job_stem, tenant_namespace
 
 from .world import World
 
-REPOSITORY = "acme/app"
+#: The dedicated test repository the installation covers: verify and the smoke run there.
+REPOSITORY = "acme/swarm-install-test"
 PERSON, SERVICE = "person", "service"
 KIND = {PERSON: "app_user", SERVICE: "app_installation"}
 #: The profile each check run's prompt names; any other dispatch is `claude-code`.

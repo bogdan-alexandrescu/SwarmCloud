@@ -292,7 +292,7 @@ def take_client(ctx: Any, gcp: Gcp, contexts: swarm_context.Run) -> None:
         name = swarm_context.store_desktop_secret(ctx, bytes(value), run=contexts)
     finally:
         value[:] = b"\0" * len(value)
-    remember(ctx, outputs={"verify_context": name, "desktop_client_secret_version": version,
+    remember(ctx, outputs={"verify_context": name,
                            "desktop_client_saved_at": str(saved.get("saved_at") or "")})
 
 
@@ -608,8 +608,7 @@ class CertificateStep(_Base):
         if found is None or not found.get("inUseBy"):
             return Observation(MET, f"DNS resolves to the reserved address; {CERT} is provisioned once infra "
                                     "pass 1 attaches it (stage 5), and edge.console-answers waits for ACTIVE "
-                                    "before stage 8's first call through the hostname",
-                               {"certificate_precondition": True})
+                                    "before stage 8's first call through the hostname")
         return Observation(WAITING, f"{CERT} is {status}")
 
     def plan(self, ctx: Any) -> Plan:
@@ -672,8 +671,7 @@ class DesktopClientStep(_Base):
         context, missing = self._stored_context(ctx)
         if not context:
             return Observation(UNMET, missing)
-        return Observation(MET, "", {"desktop_client_id": client, "desktop_client_secret_version": version,
-                                     "verify_context": context})
+        return Observation(MET, "", {"desktop_client_id": client, "verify_context": context})
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(
@@ -704,7 +702,7 @@ class DesktopClientStep(_Base):
             name = swarm_context.store_desktop_secret(ctx, bytes(value), run=self._contexts)
         finally:
             value[:] = b"\0" * len(value)
-        remember(ctx, outputs={"verify_context": name, "desktop_client_secret_version": version})
+        remember(ctx, outputs={"verify_context": name})
 
 
 class SignInRecordStep(_Base):
