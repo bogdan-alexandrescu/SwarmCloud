@@ -20,6 +20,7 @@ no session is counted twice.
 from __future__ import annotations
 
 import json
+import os
 import secrets as pysecrets
 import sys
 from typing import Any
@@ -131,7 +132,8 @@ def ctx(tmp_path, monkeypatch) -> RunnerContext:
     monkeypatch.setenv("FAKE_BIN", str(cli))
     monkeypatch.setenv("FAKE_KEY", "k-" + pysecrets.token_hex(8))
     for name in (RESUME_SESSION_ENV, RESUME_REASON_ENV, SESSION_FILE_ENV, "SWARM_ACCOUNT_STREAM",
-                 "SWARM_ACCOUNT_MOVE", "SWARM_CLONE_BASE", ceiling.SESSION_TAIL_ENV):
+                 "SWARM_ACCOUNT_MOVE", "SWARM_CLONE_BASE", ceiling.SESSION_TAIL_ENV,
+                 ceiling.NOTES_INLINE_ENV):
         monkeypatch.delenv(name, raising=False)
     work, artifacts = tmp_path / "work", tmp_path / "artifacts"
     work.mkdir()
@@ -322,7 +324,8 @@ def test_the_handoff_carries_no_session_tail_by_default(ctx):
 def test_a_fresh_session_refused_on_its_first_call_restarts_once_minimal(ctx):
     todos = [{"content": "fix the parser", "status": "in_progress"}]
     (ctx.artifacts_dir / "handoff.md").write_text("note for the next session")
-    (ctx.artifacts_dir / "findings.md").write_text("# Findings\n")
+    inlined = "FINDING F-11: only the full handoff inlines this " + pysecrets.token_hex(4)
+    (ctx.artifacts_dir / "findings.md").write_text(f"# Findings\n{inlined}\n")
     _plan(ctx, {**STOPPED, "todos": todos}, REFUSED, LAST)
     out = run_cli_agent(ctx, _spec())
 
@@ -335,6 +338,10 @@ def test_a_fresh_session_refused_on_its_first_call_restarts_once_minimal(ctx):
     assert "- [in_progress] fix the parser" in minimal
     # Only the task, the note file and the todos.
     assert "findings.md" not in minimal and "## Recent commits" not in minimal
+    # The refused handoff inlined the notes; the minimal one leaves them out,
+    # so a refusal still falls back to what started before #2897's inlining.
+    assert inlined in refused["stdin"]
+    assert inlined not in minimal and "## Its notes and findings, as" not in minimal
     assert "--resume" not in retried["argv"]
     summary = ctx.report["context_ceiling"]
     assert summary["refusal_restarts"] == [
@@ -389,3 +396,156 @@ def test_the_session_tail_is_capped_and_keeps_the_newest_words():
 def test_the_prompt_buckets_width_is_the_workers():
     assert ceiling.PROMPT_BUCKET_TOKENS == lifecycle._PROMPT_BUCKET_TOKENS
     assert ceiling.UNNAMED_MODEL == lifecycle._UNNAMED_MODEL
+
+
+def _write(path, text: str, *, age: int = 0) -> None:
+    """`text` at `path`, its mtime `age` seconds in the past."""
+    path.write_text(text)
+    when = 1_800_000_000 - age
+    os.utime(path, (when, when))
+
+
+def test_the_handoff_inlines_the_notes_files_contents(ctx):
+    finding = "FINDING F-21: the export button drops the last row " + pysecrets.token_hex(4)
+    nested = "FINDING F-22: the market page 404s on reload " + pysecrets.token_hex(4)
+    _write(ctx.artifacts_dir / "findings.md", f"# Findings\n{finding}\n")
+    (ctx.artifacts_dir / "pages").mkdir()
+    _write(ctx.artifacts_dir / "pages" / "market.json", json.dumps({"finding": nested}))
+    _plan(ctx, STOPPED, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    assert "## Its notes and findings, as it last wrote them" in prompt
+    # MUTATION: name the files only and both findings are lost.
+    assert finding in prompt
+    assert nested in prompt
+    # The files list is still there.
+    assert "## Its notes and findings files" in prompt
+    assert f"findings.md ({len(finding) + 12} bytes)" in prompt
+    assert "pages/market.json (" in prompt
+    # After the note, before the task.
+    assert prompt.index("## The previous session's note") < prompt.index(finding)
+    assert prompt.index(finding) < prompt.index("## The task, as the first session")
+
+
+def test_the_inlined_notes_are_newest_first_and_capped(ctx):
+    per_file = ceiling.NOTES_INLINE_FILE_MAX_BYTES
+    fits = ceiling.NOTES_INLINE_TOTAL_MAX_BYTES // per_file
+    # The newest file is larger than the per-file cap: its head goes in, its
+    # tail does not, and a cut marker shows where.
+    _write(ctx.artifacts_dir / "big.md",
+           "HEAD-OF-BIG\n" + "b" * per_file + "\nTAIL-OF-BIG\n", age=0)
+    for k in range(1, fits + 2):
+        _write(ctx.artifacts_dir / f"older-{k}.md",
+               f"START-OF-OLDER-{k}\n" + "o" * (per_file - 100), age=10 * k)
+    _plan(ctx, STOPPED, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    section = prompt[prompt.index("## Its notes and findings, as it last wrote them"):]
+    assert "HEAD-OF-BIG" in section and "TAIL-OF-BIG" not in prompt
+    assert section.count(ceiling.NOTES_CUT_MARKER) == 2  # big.md, and the budget's last
+    # Newest first: big.md, then older-1, older-2, ...
+    assert section.index("HEAD-OF-BIG") < section.index("START-OF-OLDER-1")
+    assert section.index("START-OF-OLDER-1") < section.index("START-OF-OLDER-2")
+    # The total budget runs out: big.md takes one file's cap and each older
+    # file nearly one, so the next-oldest is cut at what is left and the
+    # oldest is not inlined at all -- but every file is still named.
+    oldest = f"older-{fits + 1}.md"
+    assert f"START-OF-OLDER-{fits + 1}" not in prompt
+    assert "budget" in section
+    for name in ("big.md", *(f"older-{k}.md" for k in range(1, fits + 2))):
+        assert f"- {name} (" in prompt
+    assert oldest in section  # named among those not inlined
+    inlined = sum(len(line.encode()) for line in section.splitlines()
+                  if line.startswith(("b", "o")) and set(line) <= {"b", "o"})
+    assert inlined <= ceiling.NOTES_INLINE_TOTAL_MAX_BYTES
+
+
+def test_the_inlined_notes_are_the_attempts_own(ctx, tmp_path):
+    elsewhere = tmp_path / "another-attempt"
+    elsewhere.mkdir()
+    other = "ANOTHER-TENANT " + pysecrets.token_hex(4)
+    (elsewhere / "secret-notes.md").write_text(other)
+    (elsewhere / "deep.md").write_text(other)
+    (ctx.artifacts_dir / "linked.md").symlink_to(elsewhere / "secret-notes.md")
+    (ctx.artifacts_dir / "linked-dir").symlink_to(elsewhere)
+    (ctx.artifacts_dir / "real").mkdir()
+    (ctx.artifacts_dir / "real" / "linked-inside.md").symlink_to(elsewhere / "deep.md")
+    note = "THE-NOTE-ONCE " + pysecrets.token_hex(4)
+    (ctx.artifacts_dir / "handoff.md").write_text(note)
+    (ctx.artifacts_dir / "findings.md").write_text("# Findings\n")
+    _plan(ctx, STOPPED, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    # MUTATION: follow a link and another attempt's notes are read.
+    assert other not in prompt
+    assert "secret-notes" not in prompt and "linked" not in prompt and "deep.md" not in prompt
+    # The note file is in its own section, not inlined a second time.
+    assert prompt.count(note) == 1
+    assert "# Findings" in prompt
+
+
+def test_the_inlined_notes_are_scrubbed_of_the_runs_secrets(ctx):
+    key = os.environ["FAKE_KEY"]
+    (ctx.artifacts_dir / "findings.md").write_text(f"# Findings\nused the key {key} here\n")
+    _plan(ctx, STOPPED, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    assert "used the key " in prompt
+    # MUTATION: inline the raw text and the run's key is in the prompt.
+    assert key not in prompt
+    assert "***REDACTED***" in prompt
+
+
+def test_the_kill_switch_turns_inlining_off(ctx, monkeypatch):
+    monkeypatch.setenv(ceiling.NOTES_INLINE_ENV, "0")
+    finding = "FINDING F-31: not inlined when off " + pysecrets.token_hex(4)
+    (ctx.artifacts_dir / "findings.md").write_text(finding)
+    _plan(ctx, STOPPED, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    assert finding not in prompt
+    assert "## Its notes and findings, as it last wrote them" not in prompt
+    assert f"- findings.md ({len(finding)} bytes)" in prompt
+    assert ctx.report["context_ceiling"]["notes_inlined"] == []
+
+
+@pytest.mark.parametrize("value", ["0", "false", "No", " off "])
+def test_the_kill_switch_reads_off_values(value):
+    assert ceiling.notes_inline_enabled({ceiling.NOTES_INLINE_ENV: value}) is False
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "on", "true"])
+def test_inlining_is_on_by_default(value):
+    environ = {} if value is None else {ceiling.NOTES_INLINE_ENV: value}
+    assert ceiling.notes_inline_enabled(environ) is True
+
+
+def test_the_summary_records_what_each_handoff_inlined(ctx):
+    finding = "FINDING F-41: recorded by name " + pysecrets.token_hex(4)
+    (ctx.artifacts_dir / "findings.md").write_text(finding)
+    big = "x" * (ceiling.NOTES_INLINE_FILE_MAX_BYTES + 10)
+    (ctx.artifacts_dir / "big.txt").write_text(big)
+    _plan(ctx, STOPPED, LAST)
+    out = run_cli_agent(ctx, _spec())
+
+    record = out["context_ceiling"]["notes_inlined"]
+    assert ctx.report["context_ceiling"]["notes_inlined"] == record
+    (only,) = record
+    assert only["session"] == 2
+    by_name = {item["name"]: item for item in only["inlined"]}
+    # MUTATION: record nothing and a deployed handoff cannot be checked.
+    assert by_name["findings.md"] == {"name": "findings.md", "bytes": len(finding), "cut": False}
+    assert by_name["big.txt"] == {"name": "big.txt",
+                                  "bytes": ceiling.NOTES_INLINE_FILE_MAX_BYTES, "cut": True}
+    # Names and sizes, never the content.
+    assert finding not in json.dumps(out["context_ceiling"])
