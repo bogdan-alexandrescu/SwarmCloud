@@ -108,8 +108,14 @@ waits for a person's `human-ready`, as before. That ready is recorded with
 the verdict and head it acknowledged (10 November 2026, `_unreadable_hold`),
 and the next attempt goes on past those unreadable entries; before, nothing
 recorded it, and the attempt the ready started parked again on the same
-entries, every time. A review re-running wakes
-nothing. Either way the next attempt reads every answer again. The
+entries, every time. The park also names, with its place, each earlier
+step's questions.json the worker did not take (`rejected_files`, `{task_id,
+step_id, file, reason}`, issue #3086): such a file offers no question to
+cite, so the review's entry for it was a sentence, and the park said only
+"unreadable: 1". They are read through the same tenant-gated upstream read;
+a read that fails leaves them out and never fails the park, and swarm-api's
+hold reader (`agent_questions.owner_questions_hold`) ignores the key. A
+review re-running wakes nothing. Either way the next attempt reads every answer again. The
 scheduler's human-wait expiry (`_expire_human_waits`) spares this park, as
 it spares a `question_wait` or `release_wait` one, so it never dead-letters
 at `human_park_max_seconds`. Its pull request merged or closed outside the
@@ -2349,6 +2355,13 @@ class _Run:
                                 "unreadable": unreadable}
         if unreadable and acknowledges is not None:
             wait["acknowledges"] = acknowledges
+        # #3086: each earlier step's questions.json the worker did not take,
+        # with its place, so an unreadable count is never all the park says.
+        rejected = _rejected_files(self.ctx)
+        if rejected:
+            wait["rejected_files"] = rejected
+            message += "; " + "; ".join(
+                owner_questions_mod.rejected_line(entry) for entry in rejected)
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{OWNER_QUESTIONS_OPEN}: {message}",
@@ -5096,6 +5109,29 @@ def _unread(ctx: ActionContext, unread: list[str] | None, what: str, exc: Except
         return
     reason = ctx.scrub(str(exc) or type(exc).__name__)[:FIX_RECORDS_UNREAD_CHARS]
     unread.append(f"{what} ({reason})")
+
+
+def _rejected_files(ctx: ActionContext) -> list[dict[str, Any]]:
+    """`owner_questions.rejected_files` for this merge, [] when it cannot be read (#3086).
+
+    Walked from the step's own document, or, where that names no parent,
+    from the steps its signed target names, as `_unbuilt_picks` walks.
+    Through the same tenant-gated `ctx.fetch_upstream`. A read that fails
+    leaves the list out: it informs the park, and never fails it.
+    """
+    try:
+        start = _own_doc(ctx)
+        if not start.get("depends_on"):
+            target = _mapping(ctx.dispatch.get(MERGE_TARGET_FIELD))
+            start = {"workflow_id": ctx.workflow_id, "depends_on": [
+                t for t in (target.get("review"), target.get("pull_request"))
+                if isinstance(t, str) and t]}
+        return owner_questions_mod.rejected_files(start, ctx.fetch_upstream)
+    except Exception as exc:  # noqa: BLE001 - the park goes on without the list
+        ctx.log.warning("the questions.json files the worker did not take were not read",
+                        task_id=ctx.task_id,
+                        reason=ctx.scrub(str(exc) or type(exc).__name__)[:FIX_RECORDS_UNREAD_CHARS])
+        return []
 
 
 def _own_doc(ctx: ActionContext, unread: list[str] | None = None) -> Mapping[str, Any]:
