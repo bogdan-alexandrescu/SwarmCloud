@@ -21,15 +21,15 @@ entries:
     output names this digest once voice_it is "on"
   explain: Voice it's GPT-Live session holder, which answers the browser's offer through OpenAI and holds each
     session's sideband.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
   - scripts/build-images.sh:179-185
   - apps/swarm-voice/Dockerfile:171
   - terraform/infra/images.json:33-36
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:
@@ -38,7 +38,7 @@ entries:
 - id: iam-binding.swarm-voice-workload-identity
   kind: iam-binding
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud iam service-accounts get-iam-policy swarm-voice@$P.iam.gserviceaccount.com --project=$P
   apply: terraform/infra/voice.tf:153 data.google_service_account.voice reads the account terraform/bootstrap
@@ -49,12 +49,12 @@ entries:
     token to swarm-api (the metadata server mints one only for a KSA that impersonates a GSA).
   guards: the plan fails at data.google_service_account.voice until the owner's terraform/bootstrap apply has
     created swarm-voice and granted the CI deployer serviceAccountAdmin on it
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - sa.swarm-voice
   evidence:
   - terraform/infra/voice.tf:153-168
-  notes: 'null'
+  notes: null
   step: infra.pass-1
   refs:
     terraform:
@@ -63,7 +63,7 @@ entries:
 - id: iam-binding.swarm-voice-invokes-broker
   kind: iam-binding
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud run services get-iam-policy swarm-quota-broker --project=$P --region=$R
   apply: terraform/infra/voice.tf:173 google_cloud_run_v2_service_iam_member.voice_invokes_broker, once voice_it is
@@ -71,13 +71,13 @@ entries:
   verify: swarm-quota-broker's policy lists serviceAccount:swarm-voice@$P.iam.gserviceaccount.com under roles/run.invoker
   explain: swarm-voice leases, renews and releases a Voice it pool account at the quota broker; which routes it may
     use is the broker's decision, by the caller's email in VOICE_SERVICE_ACCOUNTS.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - sa.swarm-voice
   evidence:
   - terraform/infra/voice.tf:173-183
-  notes: 'null'
+  notes: null
   step: infra.pass-1
   refs:
     terraform:
@@ -85,19 +85,19 @@ entries:
 - id: iam-binding.swarm-voice-invokes-api
   kind: iam-binding
   scope: core
-  stage: 6
+  stage: 5
   provider: engine
   check: gcloud run services get-iam-policy swarm-api --project=$P --region=$R
   apply: terraform/infra/voice.tf:193 google_cloud_run_v2_service_iam_member.voice_invokes_api, once voice_it is "on"
   verify: swarm-api's policy lists serviceAccount:swarm-voice@$P.iam.gserviceaccount.com under roles/run.invoker
   explain: swarm-voice calls swarm-api, and only swarm-api, for every read and write (section 3.6).
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - sa.swarm-voice
   evidence:
   - terraform/infra/voice.tf:193-203
-  notes: 'null'
+  notes: null
   step: infra.pass-1
   refs:
     terraform:
@@ -115,7 +115,7 @@ entries:
   explain: Voice it's swarm-voice workload, one replica, behind its internal load balancer (swarm-api's SWARM_VOICE_URL)
   guards: the FQDNNetworkPolicy needs FQDN network policy enabled on the cluster; without it swarm-voice reaches
     only DNS and the metadata server
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - cluster.swarm-system-namespace
   - sa.swarm-voice
@@ -123,7 +123,7 @@ entries:
   evidence:
   - kubernetes/swarm-system/swarm-voice.yaml:120
   - kubernetes/network-policies/swarm-system-voice.yaml:111
-  notes: 'null'
+  notes: null
   step: cluster.workloads
   refs:
     kubernetes:
