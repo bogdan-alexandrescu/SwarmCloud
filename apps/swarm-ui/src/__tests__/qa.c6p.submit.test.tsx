@@ -252,7 +252,7 @@ describe('G4-34: the issue preview says how long ago it was read', () => {
     }
     const { container } = render(<IssuePreviewCard read={read as never} at={at} closedOk={false} onPlanAnyway={() => {}} />)
     const line = container.querySelector('.in-read-at')!
-    expect(visible(line)).toBe('read just now with this tenant’s forge credential')
+    expect(visible(line)).toBe('read just now with this workspace’s forge credential')
     const iso = new Date(at).toISOString()
     expect(line.getAttribute('title')).toBe(`${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`)
   })

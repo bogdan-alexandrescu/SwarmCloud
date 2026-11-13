@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview, loadRuns } from './api'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import type { ApiError } from './fetch'
+import { chosenTenant, subscribeTenant, type ApiError } from './fetch'
+import { useWorkspaceName } from './Profile'
+import { OWN_WORKSPACE_LABEL } from './Spine'
 import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
@@ -75,6 +77,24 @@ const ONLY_RUNNER = `Issue runs always use ${ISSUE_RUN_PROFILE}`
 export const AUTO_MERGE_UNREAD = 'decided when the issue is read'
 export const AUTO_MERGE_UNSAID = 'not offered by this API'
 export const AUTO_MERGE_REFUSED = 'refused by the API'
+
+/**
+ * A WORKSPACE, NAMED AS THE SWITCHER NAMES IT (VQ-056, owner 2026-11-12):
+ * the issue page's summary said `tenant <id>` and a run's approval banner
+ * `Anyone in tenant <id>`, beside a switcher that says the workspace's name.
+ * Its name, the id in the title; the id alone while the name is read, or when
+ * another workspace is selected.
+ */
+export function WorkspaceNamed({ id, phrase = false }: { id: string; phrase?: boolean }) {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const name = useWorkspaceName()
+  const said = name !== null && (chosen === null || chosen === id) ? name : id
+  // The person's own, as the switcher's line under its name says it: `personal`
+  // under a `workspace` key, "your workspace" in a sentence.
+  if (!phrase) return <code title={id}>{said === OWN_WORKSPACE_LABEL ? 'personal' : said}</code>
+  if (said === OWN_WORKSPACE_LABEL) return <span title={id}>your workspace</span>
+  return <>workspace <code title={id}>{said}</code></>
+}
 
 /**
  * TEXT WITH ITS INLINE CODE DRAWN AS CODE (browser QA N18, 2026-10-04): a
@@ -161,7 +181,7 @@ export function IssueSubmitScreen({ go }: { go: (to: string) => void }) {
       summary={(c) => issueSubmitHead(Object.keys(c.runner_profiles).length)}
       empty={{
         heading: 'No pools came back',
-        body: 'The read of the pools this tenant is admitted against succeeded and returned none. The planner is an agent like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
+        body: 'The read of the pools this workspace is admitted against succeeded and returned none. The planner is an agent like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
       }}
     >
       {(c) => <IssueForm capacity={c} go={go} />}
@@ -320,7 +340,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           )}
           {preview.kind === 'idle' && (typed.trim() === '' || parses) && (
             <p className="sb-note">
-              Read with this tenant&rsquo;s own forge credential: only repositories it can read are reachable from
+              Read with this workspace&rsquo;s own forge credential: only repositories it can read are reachable from
               here. Nothing is created by reading.
             </p>
           )}
@@ -346,12 +366,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             keys={keys} onPick={() => {}} onlyUsable heldAs="not used for issue runs" />
           {runner === null && (
             <p className="warn-text" role="alert">
-              {ISSUE_RUN_PROFILE} is not in this tenant&rsquo;s catalogue, so the API would have no runner to plan with.
+              {ISSUE_RUN_PROFILE} is not in this workspace&rsquo;s catalogue, so the API would have no runner to plan with.
             </p>
           )}
           {runnerOff && (
             <p className="warn-text" role="alert">
-              {ISSUE_RUN_PROFILE} is disabled for this tenant: {runner?.disabled_reason || 'refused by the platform'}.
+              {ISSUE_RUN_PROFILE} is disabled for this workspace: {runner?.disabled_reason || 'refused by the platform'}.
             </p>
           )}
           <p className="sb-note">The planner and every step it plans run as {ISSUE_RUN_PROFILE}.</p>
@@ -492,8 +512,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
             </li>
             <li className={tenant === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
-              <b>tenant</b>
-              {tenant === null ? <i className="ctl-em">&mdash; not served</i> : <code>{tenant}</code>}
+              <b>workspace</b>
+              {tenant === null ? <i className="ctl-em">&mdash; not served</i> : <WorkspaceNamed id={tenant} />}
             </li>
             {/* UNDER ITS KEY, NOT BESIDE IT (visual QA QA-073): the longest
                 value in the card wrapped into a right-aligned column beside
@@ -683,7 +703,7 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway, onTakeBack 
         </span>
         <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}</span>
       </p>
-      <p className="in-meta in-read-at" title={time.title}>read {time.text} with this tenant&rsquo;s forge credential</p>
+      <p className="in-meta in-read-at" title={time.title}>read {time.text} with this workspace&rsquo;s forge credential</p>
       {issue.labels.length > 0 ? (
         <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>
       ) : (
@@ -755,18 +775,18 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
     case 'not_found':
       words = (
         <>
-          <b>{n === null ? 'No such issue' : `No issue #${n}`} that this tenant can see: not found or not visible.</b>{' '}
+          <b>{n === null ? 'No such issue' : `No issue #${n}`} that this workspace can see: not found or not visible.</b>{' '}
           GitHub gives the same answer for an issue that does not exist and for a private repository the credential
           cannot read, so this cannot tell the two apart. Check the number, or ask an operator whether this
-          tenant&rsquo;s credential covers the repository.
+          workspace&rsquo;s credential covers the repository.
         </>
       )
       break
     case 'no_access':
       words = (
         <>
-          <b>This tenant&rsquo;s forge credential was refused.</b> It lacks read access to the repository, or the
-          organisation requires single sign-on approval for it. Nothing was submitted. Another tenant&rsquo;s
+          <b>This workspace&rsquo;s forge credential was refused.</b> It lacks read access to the repository, or the
+          organisation requires single sign-on approval for it. Nothing was submitted. Another workspace&rsquo;s
           repository is not reachable from here.
         </>
       )
@@ -783,7 +803,7 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
     case 'no_forge_credential':
       words = (
         <>
-          <b>{tenant === null ? 'This tenant has' : <>Tenant <code>{tenant}</code> has</>} no forge credential,</b> so no
+          <b>{tenant === null ? 'This workspace has' : <>Workspace <code>{tenant}</code> has</>} no forge credential,</b> so no
           issue can be read and no pull request opened. An operator stores it with{' '}
           <code>scripts/create-secrets.sh --stdin</code>. It is never pasted here.
         </>
