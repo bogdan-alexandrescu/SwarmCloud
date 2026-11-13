@@ -238,3 +238,35 @@ def test_a_superseded_pass_repairs_as_the_latest_pass_of_its_root():
     assert repair.latest_pass_step(one, steps, mid) is four
     assert repair.latest_pass_step(one, steps, outputs("infra-1", "infra-2")) is identity
     assert repair.latest_pass_step(one, steps, outputs("infra-1")) is one
+
+
+class RecordingReach:
+    """`infra.REACH` as the repair calls it: `close_after` at the end of the verb."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+
+    def close_after(self, ctx, verb: str) -> str | None:
+        self.order.append(f"close_after {verb} {ctx.project}")
+        return f"{verb}: the closing pass did not apply"
+
+
+def test_repair_closes_the_control_plane_a_step_reopened(world, monkeypatch, capsys):
+    """A stage-10+ step's kubectl reopens the control plane for this machine
+    (steps/cluster.py `kube_for`); the repair takes the address out again
+    before it lets the lease go, as swarm team, swarm addon and swarm upgrade
+    do, and prints what is left when that did not apply."""
+    from swarm_install.lease import Lease
+    from swarm_install.steps import infra
+
+    order: list[str] = []
+    release = Lease.release
+    monkeypatch.setattr(Lease, "release", lambda self: (order.append("release"), release(self))[1])
+    monkeypatch.setattr(infra, "REACH", RecordingReach(order))
+    _typing(monkeypatch, "iap-setting.frontend-programmatic-clients")
+
+    code = cli.main(["install", "--project", PROJECT, "--repair", "iap-setting.frontend-programmatic-clients"])
+
+    assert code == ExitCode.OK
+    assert order == [f"close_after swarm install --repair {PROJECT}", "release"]
+    assert "swarm install --repair: the closing pass did not apply" in capsys.readouterr().err

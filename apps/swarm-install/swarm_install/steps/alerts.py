@@ -28,6 +28,22 @@ from .preflight import remember
 #: The platform's log-based metrics (google_logging_metric, `swarm_*`).
 LOG_METRIC_PREFIX = "logging.googleapis.com/user/swarm"
 
+#: Every log-based metric terraform/modules/monitoring always makes, by its
+#: name after `${name_prefix}/` (the seven `events` keys, `_` as `-`, then one
+#: per resource). The alert policies are applied only once this many
+#: descriptors exist: one is not every one, and a policy on a missing one
+#: fails with "Cannot find metric" (lesson 23). The doctor's own metric
+#: (infra/doctor.tf) is behind a `count` and is not counted. A unit test holds
+#: this list to the module's Terraform.
+LOG_METRICS = (
+    "starting", "lease-released", "generation-fenced", "quota-exhausted", "dead-lettered",
+    "checkpoint-completed", "parked",
+    "attempt-peak-rss-bytes", "attempt-oom-near-miss", "scheduler-tick-delivered", "dispatch-failures",
+    "spec-signature-invalid-v2", "spec-upstream-invalid-v2", "worker-action-ended", "schedule-auto-paused",
+    "schedule-needs-owner", "workspace-stuck", "reconciler-backend-unavailable", "reconciler-not-repairing",
+    "pr-stranded", "tenant-namespace-mismatch",
+)
+
 DESCRIPTORS = WaitSpec(
     reason="the log metrics' descriptors appearing in Cloud Monitoring",
     expected="1 to 5 min after infra pass 2",
@@ -45,7 +61,7 @@ class AlertsStep:
     kind = "engine"
     satisfies = ("monitoring.notification-channel", "monitoring.alert-policies")
 
-    def __init__(self, deps: Deps, *, expected_metrics: int | None = None) -> None:
+    def __init__(self, deps: Deps, *, expected_metrics: int = len(LOG_METRICS)) -> None:
         self.deps = deps
         self._expected = expected_metrics
 
@@ -85,9 +101,7 @@ class AlertsStep:
 
     def descriptors_ready(self, ctx: Any) -> bool:
         found = self.deps.gcp().metric_descriptors(ctx.project, LOG_METRIC_PREFIX)
-        if self._expected is not None:
-            return len(found) >= self._expected
-        return bool(found)
+        return len(found) >= self._expected
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         if not ctx.outputs.get("metric_descriptors_ready"):
@@ -109,7 +123,7 @@ def metrics_page(project: str) -> str:
 
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:
-    return [AlertsStep(deps)]
+    return [AlertsStep(deps, expected_metrics=len(LOG_METRICS))]
 
 
 STEPS = build_steps()
