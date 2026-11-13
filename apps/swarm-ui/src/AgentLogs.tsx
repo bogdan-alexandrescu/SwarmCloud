@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { DRAWER_SETTLE_MS, Mark } from './AgentDetail'
-import { loadAttempts, loadTaskLogs, loadTranscript } from './api'
+import { loadAttempts, loadTaskEventsPage, loadTaskLogs, loadTranscript } from './api'
 import {
   ARTIFACTS_POLL_MS,
   LOG_VIEWS,
@@ -28,8 +28,18 @@ import {
 import { MarkdownInline } from './ArtifactViewer'
 import { phoneWidth } from './HelpCard'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
-import { attemptLine, useRead } from './RunFiles'
-import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
+import { StreamEvents, attemptLine, useRead } from './RunFiles'
+import {
+  CONCURRENCY_STATES,
+  TERMINAL_STATES,
+  clockTime,
+  type AttemptRow,
+  type LogStream,
+  type Task,
+  type TaskEvent,
+  type TaskEventsPage,
+  type TaskTranscript,
+} from './types'
 import { useNow } from './useNow'
 import { Button, Segmented, ToneMark } from './components'
 import { Trace } from './trace/Trace'
@@ -417,6 +427,22 @@ export function AgentLogs({ task }: { task: Task }) {
     }, ARTIFACTS_POLL_MS)
     return () => clearInterval(id)
   }, [moving])
+
+  // THE NEWEST EVENTS, FOR A LIVE TAIL'S AGE (epic 2596, comment 155): a tail
+  // is `live` by the task's state alone, and Details had said the worker may
+  // be gone. Read only while the agent holds a slot and a stream row is drawn,
+  // newest page first, every sixth tick: `silent` is seven minutes without an
+  // event, so a 30 s read is ample. Not read, the rows draw as they did.
+  const holding = CONCURRENCY_STATES.has(task.state) && view !== 'transcript'
+  const eventsRead = useRead<TaskEventsPage>(
+    () =>
+      holding ? loadTaskEventsPage(taskId, { order: 'desc' }) : Promise.resolve({ status: 'empty', fetchedAt: Date.now() }),
+    taskId,
+    holding ? `${Math.floor(tick / 6)}` : 'not holding',
+    null,
+  )
+  const streamEvents: TaskEvent[] | undefined =
+    holding && eventsRead.state.status === 'ok' ? eventsRead.state.data.events : undefined
 
   // FOLLOW IS ON FOR A RUNNING ATTEMPT, OFF FOR A FINAL RECORD. Picking an
   // attempt is a choice of record, so it re-decides; scrolling up pauses.
@@ -998,7 +1024,9 @@ export function AgentLogs({ task }: { task: Task }) {
               <span className="ctl-pending art-loading-bar" />
             </p>
           ) : (
-            <LogBody key={fromStart ? 'start' : 'end'} v={shown} view={view} reading={{ fetchedAt: shownAt ?? 0, pollMs: moving ? ARTIFACTS_POLL_MS : null }} now={clock} />
+            <StreamEvents.Provider value={streamEvents}>
+              <LogBody key={fromStart ? 'start' : 'end'} v={shown} view={view} reading={{ fetchedAt: shownAt ?? 0, pollMs: moving ? ARTIFACTS_POLL_MS : null }} now={clock} />
+            </StreamEvents.Provider>
           )}
         </div>
 
