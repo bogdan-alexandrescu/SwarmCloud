@@ -63,7 +63,9 @@ describe('runs-submit-02: a refused workflow POST is classified by its status', 
 
 async function readyForm() {
   const view = render(<SubmitWorkflowScreen />)
-  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+  // The first render pays the cold import of the whole form (about 5 s on a
+  // lane, more on a loaded runner): 4 s timed out before it drew, not the form.
+  await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 10_000 })
   const select = view.container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!
   fireEvent.change(select, { target: { value: 'mock' } })
   return view
@@ -157,9 +159,9 @@ describe('runs-submit-26: each recent row says what it was, and the footnote cou
     // MUTATION: print only the windows ("Among …") again and nothing says the
     // list holds two agents and no workflow or issue run.
     expect(recentScope(items, looked)).toBe(
-      'Listed: 2 agents, newest first. Found among your newest 30 agents. None of yours among the tenant’s newest 3 workflows or its newest 2 issue runs.',
+      'Listed: 2 agents, newest first. Found among your newest 30 agents. None of yours among the workspace’s newest 3 workflows or its newest 2 issue runs.',
     )
-    expect(recentScope([], [{ kind: 'workflow', read: 1, yours: 0 }])).toBe('Among the tenant’s newest 1 workflow.')
+    expect(recentScope([], [{ kind: 'workflow', read: 1, yours: 0 }])).toBe('Among the workspace’s newest 1 workflow.')
     expect(recentScope([], [])).toBeNull()
   })
 })
