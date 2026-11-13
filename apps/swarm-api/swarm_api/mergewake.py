@@ -239,8 +239,18 @@ whose own loop fixes CI before it merges). Three things come with them:
   window alone as the floor. PR #2971 (a1e16b2c) and PR #2973 (22ef10c2)
   refused `checks_failed` with no re-run answer: one head's re-run was
   refused, the other's fixed 600 s window lapsed while its fan-in
-  `ci-gate` run was still running. This is still one answered re-run per
-  head, with at most one retry of a refusal.
+  `ci-gate` run was still running. Before any round this is one answered
+  re-run per head, with at most one retry of a refusal.
+  After a no_change round an answered re-run no longer ends it (#3080,
+  the owner's decision of 2026-11-12): PR #3049 at dd72fa3e and PR #3055
+  at d82d2635 spent their re-run before the round on one flake, read red
+  on another, and refused `checks_failed` with no re-run; a later manual
+  re-run went green and both merged unchanged. On that path a red reading
+  no accepted re-run at the head is still settling on is re-run again
+  while fewer than RERUNS_PER_HEAD_MAX accepted re-runs are recorded
+  there (and fewer than RERUN_REFUSALS_MAX refused ones), so a second
+  answered red wakes the step and a persistent red cannot loop. With no
+  round at the head it stays one free re-run.
   The rule itself -- which failing checks a re-run reaches, what is asked
   of GitHub, whether an accepted re-run still runs, and the bounds -- is
   `cirerun`'s, shared with an issue run in CHECKING, which re-runs a red
@@ -356,6 +366,7 @@ from .cirerun import (
     ACTIONS_APP_SLUG,  # noqa: F401 - re-exported: mergewake.ACTIONS_APP_SLUG
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
+    RERUNS_PER_HEAD_MAX,
     rerun_running as _rerun_running,
     rerun_targets as _rerun_targets,
     rerunnable as _rerunnable,
@@ -545,11 +556,13 @@ MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 #: The one step of a conflict fix round's workflow.
 CONFLICT_FIX_STEP = "conflict-fix"
 #: The re-runs of failing Actions jobs in `metadata.merge_fix`, one accepted
-#: per head at most (SPEED-D2; a refused one is asked once more, #3006): each
+#: per head before any round (SPEED-D2), RERUNS_PER_HEAD_MAX after a no_change
+#: one (#3080); a refused one is asked once more (#3006): each
 #: `{round, head, claimed_at}` as a round is claimed, then `jobs`, `runs`
 #: and `requested_at`, or `error` when GitHub refused.
 RERUNS_KEY = "reruns"
-#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX and ACTIONS_APP_SLUG are
+#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX, RERUNS_PER_HEAD_MAX and
+#: ACTIONS_APP_SLUG are
 #: `cirerun`'s, imported above: the issue run's CHECKING read shares the
 #: re-run rule (#3200), so it is defined there once.
 #: A merge parked on an owner pick its branch did not build (PICK-FIX-ROUND,
@@ -1173,7 +1186,8 @@ def round_step_id(key: str, round_no: int) -> str:
 
 
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
-                 head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
+                 head: str, read: _Reading, token: str, now: datetime, *,
+                 after_no_change: bool = False) -> tuple[str, None] | None:
     """Re-run the failed jobs of a red head's failing Actions checks' workflow
     runs once before a round (SPEED-D2, #2841).
 
@@ -1181,8 +1195,11 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
     waiting for GitHub to make it; None to go on to the round: no job a
     re-run could fix, a re-run at this head already answered red, or one
     GitHub refused twice. A refused re-run ran nothing, so it is not the
-    head's re-run: asked once more, at most (RERUN_REFUSALS_MAX, #3006). See
-    the module docstring.
+    head's re-run: asked once more, at most (RERUN_REFUSALS_MAX, #3006).
+    `after_no_change` (a CI-fix round ended at `head` with nothing to
+    change): an answered re-run no longer ends it, and the head is asked
+    again while fewer than RERUNS_PER_HEAD_MAX accepted re-runs are
+    recorded there (#3080). See the module docstring.
     """
     task_id = str(doc.get("id") or "")
     metadata = _mapping(doc.get("metadata"))
@@ -1190,8 +1207,9 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
     jobs = _rerunnable(read.checks)
     mine = [r for r in reruns if r.get("head") == head]
     refused = [r for r in mine if r.get("error")]
-    if mine and len(refused) < len(mine):
-        entry = [r for r in mine if not r.get("error")][-1]
+    accepted = [r for r in mine if not r.get("error")]
+    if accepted:
+        entry = accepted[-1]
         asked = {j for j in entry.get("jobs") or [] if isinstance(j, int)}
         since = entry.get("requested_at")
         if (
@@ -1200,7 +1218,10 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
                  or _rerun_running(ctx.forge_writer, ref, entry, token))
         ):
             return _WAITING, None
-        return None
+        # Answered. Before any round that is the head's one re-run; after a
+        # no_change round it is asked again, up to the bound (#3080).
+        if not after_no_change or len(accepted) >= RERUNS_PER_HEAD_MAX:
+            return None
     if len(refused) >= RERUN_REFUSALS_MAX:
         return None
     if not jobs:
@@ -1383,7 +1404,7 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
     task_id = str(doc.get("id") or "")
     asked = _rounds_asked(_mapping(doc.get("metadata")))
 
-    def first() -> tuple[str, None] | None:
+    def first(*, after_no_change: bool = False) -> tuple[str, None] | None:
         # A PR-side fix (scripts/ci-fix.sh, `cifix.stamp`) already on this
         # head's failure: a round, or a re-run, would be a second hand on the
         # branch it pushes to. Stay parked on CI_PENDING until it ends; its
@@ -1410,7 +1431,8 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
                     {"main_red": {"checks": [str(n)[:256] for n in names[:40]],
                                   "head": sha, "read_at": now}})
             return _WAITING, None
-        return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
+        return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now,
+                            after_no_change=after_no_change)
 
     def build(target: str, round_no: int, resource_class: str | None) -> WorkflowCreate:
         excerpt = excerpt_at(ctx.forge_writer, ref, head, read.checks, token,
@@ -1549,7 +1571,9 @@ def _on_train(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mapp
     task_id = str(doc.get("id") or "")
     asked = _rounds_asked(_mapping(doc.get("metadata")))
 
-    def first() -> tuple[str, None] | None:
+    def first(*, after_no_change: bool = False) -> tuple[str, None] | None:
+        # No re-run here (the re-board was it), after a round or not:
+        # `after_no_change` is `_hand_off`'s, and only the claim holds.
         held = live_claim(db, tenant.tenant_id, str(doc.get("repository_url") or ""),
                           ref.number, head, now)
         if held is None:
@@ -1936,8 +1960,9 @@ def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
         if (reason == FIX_ROUND_ENDED and key == "rounds" and first is not None
                 and _round_left_nothing(ctx, tenant_id, rounds[-1])):
             # The round found nothing to change -- a flake, read as one
-            # (#2684): the head's one free re-run, if it has not had it.
-            early = first()
+            # (#2684): the head's free re-run, if it has not had it, or one
+            # more after an answered one, up to RERUNS_PER_HEAD_MAX (#3080).
+            early = first(after_no_change=True)
             if early is not None:
                 return early
         return (_WAITING, None) if reason is None else (_WAKE, reason)
