@@ -248,6 +248,9 @@ def test_the_prompt_stays_under_its_limit_with_a_huge_snapshot_and_says_it_cut()
     # The instructions survive the cut: they come after the data.
     assert prompt.count("=== OPEN WORK run_abc ===") == 2
     assert "$SWARM_ARTIFACTS_DIR/plan.json" in prompt
+    # The plan's shape, with the planner's reasons for the plan and for each
+    # step (plans-pipeline.md §3.6), is inside the bound too.
+    assert issueruns._plan_shape() in prompt and prompt.count('"rationale"') == 2
     assert '"requirements"' in prompt
 
 

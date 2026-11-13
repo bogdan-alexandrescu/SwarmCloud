@@ -114,6 +114,8 @@ from ..issueruns import (
     InvalidPlan,
     IssueRun,
     IssueRuns,
+    PLANNER_AUTHOR,
+    PlanRevisionWrite,
     RunState,
     compile_plan,
     deny_list_refusal,
@@ -133,6 +135,7 @@ from ..issueruns import (
     refuse_auto_merge,
     refuse_planner_model_class,
     run_summary,
+    served_plan_revisions,
     territory_overlap,
     widen_hold,
     workflow_paths,
@@ -454,9 +457,12 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             )
             patch["plan_approval"] = "required"
         # The plan, its digest, the hold and any narrowing are re-signed with
-        # the run, after the run as read verifies (RUN-SIG-2).
+        # the run, after the run as read verifies (RUN-SIG-2). The plan is
+        # kept as revision 1 in the same transaction (plans-pipeline.md §3.3).
         return runs.transition(tenant_id, run.id, RunState.PLANNED, by=SYSTEM, patch=patch,
-                               sign=owner_resigner(ctx))
+                               sign=owner_resigner(ctx),
+                               revision=PlanRevisionWrite(author_kind="planner",
+                                                          by=PLANNER_AUTHOR, made_by="plan"))
     if task.state in (TaskState.FAILED, TaskState.DEAD_LETTERED):
         why = f"the planner task {task.id} ended {task.state.value}"
         if task.last_error:
@@ -1398,7 +1404,44 @@ def get_run(
 ) -> dict:
     run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
     row = with_plan_advisory(ctx, tenant_id, run, run.to_api())
+    row = with_plan_revisions(ctx, run, row)
     return {"run": with_planner_documents(ctx, tenant_id, run, row)}
+
+
+def with_plan_revisions(ctx: AppContext, run: IssueRun, row: dict) -> dict:
+    """`row` with `plan_revisions` (every revision without its plan, newest
+    first) and `plan_history_complete` (plans-pipeline.md §3.3).
+
+    Only the one-run read serves them: a plan is up to MAX_PLAN_BYTES, so the
+    list would read a run's every revision for every row. `run` was read for
+    the caller's tenant, and a revision naming another is never served."""
+    revisions, complete = served_plan_revisions(run, _runs(ctx).plan_revisions(run))
+    row["plan_revisions"] = revisions
+    row["plan_history_complete"] = complete
+    return row
+
+
+#: The highest revision number the one-revision route reads: past it, the
+#: number is refused before any read (a run is edited a handful of times).
+MAX_PLAN_REVISION_NUMBER = 1_000_000
+
+
+@router.get("/{run_id}/plan-revisions/{revision}")
+def get_plan_revision(
+    run_id: str,
+    revision: int,
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """One revision of the run's plan, whole, with `verified` saying whether
+    its plan hashes to its digest. Another tenant's run is the same 404 as no
+    run (plans-pipeline.md §3.3)."""
+    if not 1 <= revision <= MAX_PLAN_REVISION_NUMBER:
+        raise ValidationFailed(
+            f"a plan revision is a number from 1 to {MAX_PLAN_REVISION_NUMBER}",
+            detail={"revision": revision},
+        )
+    return {"revision": _runs(ctx).plan_revision(tenant_id, run_id, revision)}
 
 
 @router.post("/{run_id}/plan:approve")
@@ -1484,6 +1527,9 @@ def edit_plan(
         # hold, after the run as the claim read it verifies (RUN-SIG-2): a
         # signature from before this edit no longer verifies on the run.
         sign=owner_resigner(ctx),
+        # Kept as revision N+1, replacing revision N's digest, in the same
+        # transaction (plans-pipeline.md §3.3).
+        revision=PlanRevisionWrite(author_kind="person", by=auth.email, made_by="edit"),
     )
     return {"run": sync_issue(ctx, run).to_api()}
 
