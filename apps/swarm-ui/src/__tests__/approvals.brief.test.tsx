@@ -289,9 +289,10 @@ describe('the decision', () => {
     expect(sent(calls, 'POST', `/v1/approvals/${encodeURIComponent(ITEM)}:approve`)[0]!.body).toEqual({ digest: 'plan-digest-1' })
   })
 
-  it('rejects with the reason typed beside it, through the approval’s route', async () => {
+  it('rejects with the reason typed once Reject is pressed, through the approval’s route', async () => {
     const { calls } = await mount(routes(LEGACY, SECTIONS, {}, (m, url) => (m === 'POST' && url.split('?')[0] === `/v1/approvals/${encodeURIComponent(ITEM)}:reject` ? { status: 200, body: { approval: item({ state: 'rejected' }) } } : null)))
     const h = await head()
+    fireEvent.click(within(h).getByRole('button', { name: 'Reject' }))
     fireEvent.change(within(h).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan reads the wrong train' } })
     fireEvent.click(within(h).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', `/v1/approvals/${encodeURIComponent(ITEM)}:reject`)).toHaveLength(1), WAIT)
