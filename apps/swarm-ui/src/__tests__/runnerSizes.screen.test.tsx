@@ -405,8 +405,24 @@ describe('visual QA pass 1 (QA1-FIX-23)', () => {
   // class, left it reading for good.
   it('says what recent use waits for while it reads', async () => {
     await mount()
-    // MUTATION: go back to the bare `Recent use: reading…`.
-    expect(visible(card('standard')!.querySelector('.rs-recent'))).toBe('Recent use: reading the last 7 days of attempts with the preview…')
+    // A QUIET PROGRESS TICK, NOT A STATIC SENTENCE (visual QA pass 1, the
+    // owner's pick of 2026-11-13): the preview takes 6-30 s on the live
+    // deployment, so the card counts the read up; what it reads is the tooltip.
+    // MUTATION: go back to the static `Recent use: reading the last 7 days…`.
+    const tick = card('standard')!.querySelector('.rs-recent [role="progressbar"]')
+    expect(tick).not.toBeNull()
+    expect(visible(card('standard')!.querySelector('.rs-recent'))).toMatch(/^Recent use: reading \d:\d\d$/)
+    // MUTATION: drop what the read waits for.
+    expect(tick!.getAttribute('title')).toMatch(/last 7 days of attempts/)
+  })
+
+  it('ticks what the pools admit while the preview reads', async () => {
+    // The preview is debounced, so at mount it has not answered yet.
+    await mount()
+    // MUTATION: put back the static `Reading what the platform-wide pools admit…`.
+    const note = document.querySelector('.rs-pools-card .rs-note')
+    expect(note!.querySelector('[role="progressbar"]')).not.toBeNull()
+    expect(visible(note)).toMatch(/^reading \d:\d\d$/)
   })
 
   it('reads a failed preview as a dash with its reason, never reading for good', async () => {
