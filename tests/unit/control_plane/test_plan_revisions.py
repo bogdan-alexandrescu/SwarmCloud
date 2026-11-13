@@ -296,8 +296,13 @@ def test_a_revision_document_naming_another_tenant_is_not_served(client, db, obj
     run = _planned(client, db, objects)
     key = f"{RUNS_COLLECTION}/{run['id']}/{PLAN_REVISIONS_COLLECTION}/1"
     db.docs[key]["tenant_id"] = "research"
-    assert _revisions(client, run["id"], 1).status_code == 404
-    assert _run(client, run["id"]).json()["run"]["plan_revisions"] == []
+    db.docs[key]["plan"] = {**PLAN, "summary": "Another tenant's plan."}
+    # Read as not kept: the run's own plan is served, synthesised from it.
+    whole = _revisions(client, run["id"], 1).json()["revision"]
+    assert whole["plan"] == PLAN and whole["history_complete"] is False
+    served = _run(client, run["id"]).json()["run"]
+    assert [r.get("history_complete") for r in served["plan_revisions"]] == [False]
+    assert "Another tenant" not in json.dumps(served)
 
 
 # --------------------------------------------------------------------------
