@@ -373,6 +373,10 @@ def test_a_schedule_inherits_by_default_and_its_patch_sets_plan_diagrams(schedul
                                      headers=auth_header("alice"))
     assert response.status_code == 200, response.text
     assert db.docs[f"schedules/{sid}"]["plan_diagrams"] == "off"
+    # Audited as any field (§6.4): the edit's entry carries it before and after.
+    (edit,) = [d for p, d in db.docs.items() if p.startswith("schedule_audit/")
+               and d["schedule_id"] == sid and d["action"] == "edit"]
+    assert edit["detail"]["changed"] == {"plan_diagrams": {"from": None, "to": "off"}}
     bad = schedule_client.patch(f"/v1/schedules/{sid}", json={"revision": 2, "plan_diagrams": "yes"},
                                 headers=auth_header("alice"))
     assert bad.status_code == 422, bad.text

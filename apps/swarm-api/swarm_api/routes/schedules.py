@@ -774,8 +774,10 @@ def get_schedule(
     }
 
 
-#: The fields an edit's audit entry carries before and after (§4.8).
-_EDIT_AUDITED = ("name", "gate", "budget", "scope", "cron", "timezone", "params", "policy", "state")
+#: The fields an edit's audit entry carries before and after (§4.8); the
+#: schedule's `plan_diagrams` override is audited as any field (plans §6.4).
+_EDIT_AUDITED = ("name", "gate", "budget", "scope", "cron", "timezone", "params", "policy", "state",
+                 "plan_diagrams")
 
 
 @router.patch("/v1/schedules/{schedule_id}")
