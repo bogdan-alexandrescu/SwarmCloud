@@ -35,6 +35,7 @@ from swarm_common.profiles import (
     resolve_backend,
 )
 
+from swarm_api import runnerimages
 from swarm_api.validation import APP_CREDENTIAL_PROVIDERS, known_providers
 
 from .conftest import auth_header
@@ -59,6 +60,9 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
         assert served[name] == {
             "name": profile.name,
             "image": profile.image,
+            # #3929: the Node the image carries (test_runtimes_node_version.py
+            # holds it to the base Dockerfile); null on a control_plane profile.
+            "node_version": runnerimages.node_version_for(profile),
             "backend": profile.backend.value,
             "resolved_backend": resolve_backend(profile).value,
             "provider": profile.provider,
