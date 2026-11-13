@@ -679,6 +679,19 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: tests/unit/worker/test_merge_person_push.py) skips it.
 SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 
+#: The refusal code of a step whose train-parked pull request a person took
+#: `ready` off by hand (#3602; #3490 and #3475, each with a User comment
+#: saying why and no ejection marker). The issue timeline's latest
+#: `unlabeled` event for `ready` names who removed it: both platform removers
+#: -- auto-merge.yml's gate and `merge-train.sh eject_pr` -- use the
+#: workflow's token, so theirs is a Bot. A person's removal is a decision, not
+#: a defect, and nothing merges or boards. The step's end cause is the frozen
+#: `EndCause`, which has no such member, so the step ends FAILED/MERGE_REFUSED
+#: with this code, and failure-review's `person_ready_removal` rule
+#: (`swarm_api.failuredigest.READY_REMOVED_BY_PERSON`, held equal by
+#: tests/unit/control_plane/test_failure_digest.py) skips it.
+READY_REMOVED_BY_PERSON = "ready_removed_by_person"
+
 #: The committer addresses the platform commits under when it names no
 #: person: `WorkerConfig.git_author_email`'s default and
 #: `gitidentity.BOT_GIT_IDENTITY`'s (held equal by
@@ -1415,6 +1428,17 @@ class BranchFacts:
     protected: bool
 
 
+@dataclass(frozen=True)
+class ReadyRemoval:
+    """Who last took `ready` off a pull request, as its issue timeline says
+    (#3602): the actor's login, GitHub's `type` for it (`User`, `Bot`), and
+    the body of that actor's latest comment on it, None when there is none."""
+
+    actor: str
+    actor_type: str
+    said: str | None
+
+
 class ForgeMerger(Protocol):
     """What the merge step asks of a forge. One implementation: `GitHubMerger`."""
 
@@ -1469,6 +1493,8 @@ class ForgeMerger(Protocol):
     def commented_with(self, number: int, marker: str) -> bool: ...
 
     def train_ejection(self, number: int) -> str | None: ...
+
+    def ready_removal(self, number: int) -> ReadyRemoval | None: ...
 
     def train_skip(self, number: int, head: str) -> str | None: ...
 
@@ -1972,6 +1998,29 @@ class GitHubMerger:
                     or _mapping(comment.get("user")).get("type") == "Bot"):
                 latest = body
         return latest
+
+    def ready_removal(self, number: int) -> ReadyRemoval | None:
+        """Who last took `ready` off the pull request: the issue timeline's
+        latest `unlabeled` event for `REPOSITORY_TRAIN_LABEL`, its actor's
+        login and type, and that actor's latest comment on it; None when the
+        timeline holds no such event (#3602)."""
+        latest: Mapping[str, Any] | None = None
+        for event in self._client.paginate(f"{self._base}/issues/{number}/timeline"):
+            event = _mapping(event)
+            if (event.get("event") == "unlabeled"
+                    and _mapping(event.get("label")).get("name") == REPOSITORY_TRAIN_LABEL):
+                latest = _mapping(event.get("actor"))
+        if latest is None:
+            return None
+        actor = _str(latest.get("login")) or ""
+        said = None
+        if actor:
+            for comment in self._client.paginate(f"{self._base}/issues/{number}/comments"):
+                comment = _mapping(comment)
+                body = _str(comment.get("body"))
+                if body is not None and _mapping(comment.get("user")).get("login") == actor:
+                    said = body
+        return ReadyRemoval(actor, _str(latest.get("type")) or "", said)
 
     def train_skip(self, number: int, head: str) -> str | None:
         """Why the merge train passes over the pull request at `head`, as the
@@ -4207,11 +4256,22 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
     sends it to its fix round first, and a round's new head is labelled
     afresh.
 
-    Not `ready` though this step parked on the train at this same head: the
-    train ejected it, or auto-merge.yml's gate took `ready` off. Which one,
-    the comment `GitHubMerger.train_ejection` answers says: only one that
-    begins `REPOSITORY_TRAIN_EJECTED` is the train's.
+    Not `ready` though this step parked on the train at this same head: a
+    person took `ready` off, the train ejected it, or auto-merge.yml's gate
+    took `ready` off. Who removed it, the issue timeline's latest `unlabeled`
+    event for `ready` says (`ready_removal`, #3602); which of the platform's
+    two, the comment `GitHubMerger.train_ejection` answers says: only one
+    that begins `REPOSITORY_TRAIN_EJECTED` is the train's.
 
+      * A person's removal -- the actor is a `User` -- is their decision, not
+        a defect: refused `READY_REMOVED_BY_PERSON` at once, naming them and
+        quoting their latest comment, which failure-review skips. Both
+        platform removers use the workflow's token, so their actor is a Bot.
+        A pull request carrying `review-not-yet` is not one: the platform's
+        own NOT_YET path (`_hold_not_yet`) removed `ready`, possibly under a
+        person's forge token. With no such event, a Bot's, or a timeline
+        read that fails (recorded as `removal_unread`), the comments decide
+        as below.
       * The gate's removal is a refusal at once, `train_ejected`, with the
         gate's comment: what it refused does not change by waiting.
       * The train's ejection gets the path a red head gets (#3313). The head
@@ -4252,6 +4312,22 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         if skips:
             record["skips"] = skips
     elif reboarded or _on_repository_train(ctx, own, head=head):
+        # Who took `ready` off, from the timeline (#3602). A read that fails
+        # is recorded and the comments decide, as before.
+        removal = None
+        try:
+            removal = merger.ready_removal(number)
+        except forge_mod.ForgeError as exc:
+            record["removal_unread"] = type(exc).__name__
+        if (removal is not None and removal.actor_type == "User"
+                and REVIEW_NOT_YET_LABEL not in pr.labels):
+            record["removed_by"] = removal.actor
+            quoted = (ctx.scrub(removal.said.strip())[:1000] if removal.said
+                      and removal.said.strip() else "they left no comment")
+            return run.refuse(READY_REMOVED_BY_PERSON,
+                              f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it "
+                              f"waited in {base}'s merge train at {head}, because "
+                              f"{removal.actor} removed it: {quoted}")
         why = merger.train_ejection(number)
         said = why.strip()[:1000] if why else "no comment on it says why"
         message = (f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it waited in "
