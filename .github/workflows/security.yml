@@ -11,6 +11,17 @@
 name: security
 
 on:
+  # A LANE'S PULL REQUEST RUNS NOTHING (owner direction, 12 November 2026:
+  # no testing on lane pull requests, only on the merge train's run on its
+  # way to main, to cut CI wait time; docs/ci.md "A lane's pull request runs
+  # no checks"). A pull request whose head is a `swarm/` branch of this
+  # repository skips every job here: each job's `if:` ends with
+  # `&& !(<that pull request>)`, a job skipped by its own `if:` reports a
+  # passing required check, and the merge train's pull request runs
+  # them on the change.
+  # The train's pull request (`train/`), main, a queue entry, a fork and any
+  # other branch run exactly what they ran before.
+  # tests/unit/scripts/test_fast_checks_on_lane_prs.py.
   pull_request:
   # Main only, never a lane branch (owner decision 2026-11-02, CI once per
   # head, part of #2688): a lane head's four required checks of this workflow
@@ -64,6 +75,7 @@ jobs:
     # request can edit. One VM a run buys least privilege.
     name: trivy (repo)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     # Uploads SARIF to code scanning: the only reason this job holds
     # security-events: write.
     permissions:
@@ -183,7 +195,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-24.04
     needs: checks
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       - name: the folded check passed in `checks`
         env:
@@ -201,6 +213,7 @@ jobs:
   iac:
     name: checkov (terraform + kubernetes)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     # Uploads SARIF to code scanning: the only reason this job holds
     # security-events: write.
     permissions:
@@ -303,7 +316,7 @@ jobs:
     name: platform policy assertions
     runs-on: ubuntu-24.04
     needs: checks
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       - name: the folded check passed in `checks`
         env:
@@ -336,6 +349,7 @@ jobs:
     # (tests/unit/scripts/test_ci_fold.py).
     name: sub-minute checks (secret scan, policy)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     # Read-only (owner decision 2026-10-21 on PR 1813): these steps run
     # repository scripts, so they get no write permission of any kind.
     permissions:
@@ -539,7 +553,7 @@ jobs:
   images:
     name: trivy (published images)
     runs-on: ubuntu-24.04
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     # Scheduled only: this scans what is DEPLOYED, which is the question a PR
     # cannot answer. A base-image CVE published today affects a running fleet
     # that no pull request is touching.

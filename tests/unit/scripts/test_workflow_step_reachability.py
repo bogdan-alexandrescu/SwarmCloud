@@ -30,6 +30,8 @@ from typing import Any
 import pytest
 import yaml
 
+from .test_fast_checks_on_lane_prs import LANE_SKIP, without_lane_clause
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.yml"))
 
@@ -53,6 +55,12 @@ def _events(condition: Any, universe: frozenset[str]) -> frozenset[str]:
     text = str(condition).strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2].strip()
+    # The lane clause every job of application.yml, security.yml and
+    # terraform.yml ends with (test_fast_checks_on_lane_prs.py) only narrows a
+    # pull request by its head, never rules an event out, so it is dropped:
+    # the events read from what precedes it.
+    if text == LANE_SKIP or text.endswith(" && " + LANE_SKIP):
+        text = without_lane_clause(text)
     # A status check (!cancelled(), !failure(), success(), always()) says nothing
     # about which EVENT runs the job, so a conjunct of one is dropped before the
     # comparison is read (application.yml build, PR 1324).

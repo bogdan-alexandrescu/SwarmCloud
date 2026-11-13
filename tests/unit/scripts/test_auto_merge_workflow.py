@@ -40,6 +40,7 @@ import yaml
 
 from .application_paths import app_paths, reaches
 from .ci_fold_layout import FOLDED_HOSTS, check_steps
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -1106,7 +1107,9 @@ def _job_check_names(path: Path) -> set[str]:
         # test_ci_fold.py).
         if job_id == FOLDED_HOSTS.get(path.name):
             continue
-        condition = str(job.get("if") or "")
+        # Which events it runs on, read before the lane clause every job ends
+        # with (test_fast_checks_on_lane_prs.py), which names pull_request.
+        condition = without_lane_clause(job.get("if"), required=False)
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
             continue
         names.add(str(job.get("name") or job_id))
