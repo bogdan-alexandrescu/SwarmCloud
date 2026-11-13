@@ -119,9 +119,14 @@ ChatGPT plan, is only the fallback when this engine cannot start (§4.1).
    text)` → swarm-voice `/turn`, which on a `speech` session is `claudefront.FrontSessions.turn`,
    not `textchat.py`. The front (a haiku-class Claude on a pool account held for the session, §14
    L12) answers in one or two sentences **at once**. When the sentence asks for a plan, a card, a
-   visual or an action, the front calls its one tool, `delegate`, says so ("Looking at that now."),
-   and the planner (planning class, a pool account leased per delegation, as today) runs in the
-   background with the session's person and grant. Partials are only shown, never sent.
+   visual or an action, the front calls `delegate`, says so ("Looking at that now."), and the
+   planner (planning class, a pool account leased per delegation, as today) runs in the background
+   with the session's person and grant. A read-only question ("how many agents are running", what
+   state a workflow is in) the front answers itself in the same turn with the read tools
+   (tools_read.py, GET only, run in swarm-voice on `Planner.read` with the session's grant): two
+   planning-model rounds behind a delegation were too slow for a count, and a read changes nothing,
+   so it needs no planner (the owner's pick on #3954, 12 November 2026). Partials are only shown,
+   never sent.
 5. **The reply is spoken.** `TurnAnswer.reply`, the front's own sentence, goes to the VM's
    `/v1/speak` on the same socket (`{"t":"speak","id","text","voice"}`); Kokoro streams 24 kHz PCM
    sentence by sentence, swarm-api forwards it, the page plays it through an `AudioWorklet` and draws
@@ -750,7 +755,7 @@ child per sentence.
   engines, through `VOICE_PLANNER_MODEL` (the owner is asked to confirm its cost in questions.json).
 * **One warm child per session.** `claude -p --input-format stream-json --output-format
   stream-json`, started at the session's start with claudeturn.py's rules (built environment, `--tools
-  ""`, `--strict-mcp-config` with only `delegate`, private HOME, scrubbed output); each final is one
+  ""`, `--strict-mcp-config` with only `delegate` and the read tools, private HOME, scrubbed output); each final is one
   user message on stdin, so no sentence pays Claude Code's start (M8). It never sees the grant.
 * **Leased from the pool for the session**, not per turn: `PlannerAccounts(broker,
   holder="voice-front").lease(person, voice_session_id)` around the session's life, renewed every

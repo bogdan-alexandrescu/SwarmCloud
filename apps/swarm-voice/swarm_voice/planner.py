@@ -331,6 +331,27 @@ class Planner:
                 result.spoken, result.error = _failed(result), TIMED_OUT
                 return result
 
+    async def read(self, *, grant: SessionGrant | None, name: str, args: Any,
+                   known: tuple[str, ...] = ()) -> tuple[str, bool]:
+        """Run one read tool for the fast front (claudefront.py): (the
+        tool_result text, whether it is an error). The same swarm-api client,
+        session grant, fence and scrub as a planner turn's read; no model, no
+        lease and no turn lock, since a read changes nothing. Never raises for
+        a refusal: its text says what was refused."""
+        if not tools_read.is_read_tool(name):
+            return f"refused: {name[:64]!r} is not a read tool", True
+        try:
+            api = tools_read.SwarmApi.for_session(self._http, base_url=self._api_base,
+                                                  id_tokens=self._id_tokens, grant=grant)
+        except tools_read.NoGrant:
+            return "refused: SwarmCloud cannot be read in this conversation", True
+        known = (*known, *api.known_secrets())
+        try:
+            body = await tools_read.run_read_tool(api, name, args)
+        except (tools_read.BadInput, tools_read.ApiRefused) as exc:
+            return prompts.scrub(str(exc), known), True
+        return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False
+
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
                     transcript: list[tuple[str, str]], model: str | None,
                     request: str | None = None) -> TurnResult:
