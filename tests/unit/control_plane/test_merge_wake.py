@@ -1149,6 +1149,65 @@ def test_a_conflict_with_its_rounds_spent_wakes_the_step(db, wake_client, github
     assert _check_reads(github) == []
 
 
+def _conflict_rounds(db, pushes: list[tuple[str, str | None]]) -> None:
+    """Conflict rounds of task_merge, round n claimed at `pushes[n-1][0]`, its
+    SUCCEEDED task having pushed `pushes[n-1][1]` (None: nothing)."""
+    entries = []
+    for n, (head, pushed) in enumerate(pushes, start=1):
+        fix_id = f"task_{0xc0 + n:020x}"
+        fix = seed_task(db, task_id=fix_id, tenant_id="eng", state="SUCCEEDED",
+                        runner_profile="claude-code")
+        fix["result_summary"] = {"git": {"pushed_head": pushed} if pushed else {}}
+        entries.append({"round": n, "head": head, "task_id": fix_id,
+                        "workflow_id": f"wf_conflict{n}"})
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        mergewake.CONFLICT_ROUNDS_KEY: entries}
+
+
+def test_conflict_rounds_that_moved_the_head_leave_the_next_round_due(db, wake_client, github):
+    """#3073: two rounds each resolved a conflict and pushed a new head
+    (h0 -> h1 -> HEAD); main moved again and HEAD conflicts. Neither round is
+    spent, so round 3 is submitted, not `conflicting`."""
+    conflicting_merge(db, github)
+    _conflict_rounds(db, [("1" * 40, "2" * 40), ("2" * 40, HEAD)])
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1 and body["report"]["woken"] == 0, body
+    (workflow,) = _conflict_workflows(db)
+    (step,) = workflow["steps"]
+    assert db.docs[f"tasks/{step['task_id']}"]["metadata"]["merge_conflict_round"]["round"] == 3
+    claimed = _fix_record(db)[mergewake.CONFLICT_ROUNDS_KEY][-1]
+    assert claimed["round"] == 3 and claimed["head"] == HEAD
+
+
+@pytest.mark.parametrize("second", [None, "2" * 40], ids=["pushed-nothing", "pushed-its-own-head"])
+def test_conflict_rounds_that_left_the_head_where_it_was_are_spent(db, wake_client, github,
+                                                                     second):
+    conflicting_merge(db, github)
+    _conflict_rounds(db, [("1" * 40, None), ("2" * 40, second)])
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == mergewake.CONFLICTING
+    assert _conflict_workflows(db) == []
+
+
+def test_conflict_rounds_at_the_total_ceiling_wake_the_step_whatever_they_moved(
+    db, wake_client, github
+):
+    conflicting_merge(db, github)
+    heads = [f"{n:040x}" for n in range(1, mergewake.MERGE_CONFLICT_ROUNDS_TOTAL_MAX + 1)]
+    _conflict_rounds(db, [(head, f"{int(head, 16) + 100:040x}") for head in heads])
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == mergewake.CONFLICTING
+    assert _conflict_workflows(db) == []
+
+
 def test_a_conflict_on_another_branch_wakes_the_step_with_no_round(db, wake_client, github):
     conflicting_merge(db, github)
     github.pulls[NUMBER]["head"]["ref"] = "swarm/task_" + "9" * 20

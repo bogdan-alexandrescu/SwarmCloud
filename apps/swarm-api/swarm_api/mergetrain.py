@@ -105,7 +105,8 @@ LANES_COLLECTION = "merge_train_lanes"
 BRANCH_PREFIX = "swarm-train/"
 #: Returns before a pull request that keeps conflicting with the train is
 #: ejected instead: three is one conflict fix round's worth of tries after
-#: the step's own two (`MERGE_CONFLICT_ROUNDS_MAX`), so a pull request that
+#: the step's own budget of two SPENT rounds (`MERGE_CONFLICT_ROUNDS_MAX`;
+#: rounds that moved the head do not count, #3073), so a pull request that
 #: conflicts with everything stops holding its place.
 MAX_RETURNS = 3
 #: A lane claimed for a train that never reached testing -- a tick that
