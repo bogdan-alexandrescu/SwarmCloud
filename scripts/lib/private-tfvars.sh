@@ -1,31 +1,15 @@
 #!/usr/bin/env bash
-# The deployment's private Terraform values, as one variables file for the plans
-# that deploy.
+# Writes the values the tracked <env>.tfvars may not hold as one -var-file for
+# the deploying plans: shared_deny_list from the reviewed
+# config/<env>/deny-list.json (through deny_list_require, the guard's loader),
+# and alert_emails from config/<env>/private.tfvars.json when it exists.
+# Why: without them swarm-api's SWARM_SHARED_DENY_LIST_SET renders "0"
+# (DENY_LIST_UNSET) and the alert policies notify nobody.
 #
-# The release and main's plan read the tracked <env>.tfvars, and this
-# repository names no real resource and no person, so two values a deployment
-# needs can never live there:
+# Usage: scripts/lib/private-tfvars.sh --out FILE   (PROJECT_ID, ENVIRONMENT set)
 #
-#   * shared_deny_list. terraform/infra renders swarm-api's
-#     SWARM_SHARED_DENY_LIST and SWARM_SHARED_DENY_LIST_SET from it. It was null
-#     on every release, so the marker rendered "0" and swarm-api refused every
-#     issue run that touches infrastructure (DENY_LIST_UNSET). Its one source is
-#     the reviewed config/<env>/deny-list.json, the object the shared-project
-#     guard already reads (deny_list_require in common.sh): its entries are
-#     written unchanged, so swarm-api and the guard can never disagree.
-#   * alert_emails. The alert policies notify nobody while it is empty, and an
-#     address names a person. It comes from config/<env>/private.tfvars.json
-#     when that file exists.
-#
-# private.tfvars.json may set ONLY the keys in PRIVATE_KEYS: anything else
-# refuses, so the private file can never quietly override a tracked setting.
-#
-# Usage: scripts/lib/private-tfvars.sh --out FILE
-#   with PROJECT_ID and ENVIRONMENT set, as the release job sets them.
-#
-# Stops, writing nothing, when the never-touch list cannot be read or checked
-# (a plan with no list would turn the marker back to "0"), or when
-# private.tfvars.json is malformed. Prints counts only, never a value.
+# private.tfvars.json may set only PRIVATE_KEYS. Prints counts, never a value;
+# stops, writing nothing, when the list or the private file cannot be used.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -43,7 +27,7 @@ while [[ $# -gt 0 ]]; do
       OUT="$2"
       shift 2
       ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1 (usage: private-tfvars.sh --out FILE)" ;;
   esac
 done
