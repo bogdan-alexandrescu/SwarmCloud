@@ -13,7 +13,7 @@ move, so each one also names the symbol.
 
 ## 0. What is already fixed, and what this design is for
 
-The case #2901 reported is fixed. A `publish_to_pr` task asked to "merge main
+The case #2901 reported is fixed. A `publish_to_pr` agent asked to "merge main
 and resolve the conflicts" got a one-commit clone of the pull request's head.
 The platform's fetch of the base answered `too_large`, and a plain `git fetch`
 inside the container had no credential. Pull request 2904 (merged 2026-10-31)
@@ -40,7 +40,7 @@ agent ── git_fetch(ref) / git_rebase_onto(ref)
 This route still answers `too_large` on a large repository. It also has a
 second defect that no one has reported yet, measured in §2.2: when the bundle
 does fit, a shallow clone still finds no merge base. An agent that is not a
-publish_to_pr task, or that wants a ref other than the clone-time base (a
+publish_to_pr agent, or that wants a ref other than the clone-time base (a
 sibling branch, a release tag, the base again an hour later), has only this
 route. This design makes the route serve a shallow clone. It keeps every
 property of the git-tools security boundary
