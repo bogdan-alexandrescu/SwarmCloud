@@ -1269,6 +1269,13 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         why = (brief["summary"] if brief is not None
                else "only a person promotes it -- open its console and take control")
         text = f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: {why}"
+        # A QUESTIONS FILE THE HOLD COULD NOT TAKE (#3086), by its place: no
+        # answer clears it, so the flag says which step's file and why.
+        rejected = progress.hold_rejected_files(task)
+        if rejected:
+            evidence["rejected_files"] = rejected
+            text += ("; the platform could not take these questions files: "
+                     + progress.rejected_files_words(rejected))
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
 
 

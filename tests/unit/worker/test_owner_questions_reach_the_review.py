@@ -230,3 +230,72 @@ def test_the_guidance_puts_an_answered_unbuilt_pick_in_needs_owner():
     assert ("An answered question whose answer is NOT its `built` (another option, or "
             "free text) goes in `needs_owner` too") in text
     assert "so it is not by itself a NOT_YET finding" in text
+
+
+def test_a_build_step_question_with_an_extra_key_reaches_an_integrate_review(db, store):
+    """#3086: an integrate-shaped workflow -- two build steps, an integrator fix
+    step that opens the PR, then the review. A BUILD step's well-formed question
+    that carries one key of the agent's own is staged for the review, without
+    that key, and the owner's answer to it is read for the review and the merge."""
+    from agent_worker import owner_questions
+    from agent_worker import questions as questions_mod
+    from agent_worker.errors import InputUnavailable
+
+    asked = [{
+        "question": "One export file or one per tenant?",
+        "options": [{"label": "one file", "description": "a single export"},
+                    {"label": "per tenant", "description": "one under each prefix", "note": "x"}],
+        "recommended": "per tenant",
+        "context": "each tenant owns its prefix",
+        "built": "per tenant",
+        "severity": "high",
+    }]
+    key = f"tenants/{TENANT}/tasks/task_build_a/attempts/att_a/artifacts/questions.json"
+    data = json.dumps(asked).encode("utf-8")
+    store.upload_bytes(key, data)
+    # The count the worker records for the file (`questions.summarise`).
+    build_summary = {"questions": len(questions_mod.validate(data)), "artifacts": [
+        {"name": "questions.json", "uri": store.uri(key), "bytes": len(data)}]}
+    docs: dict[str, dict[str, Any]] = {
+        "task_build_a": {"workflow_id": WORKFLOW, "step_id": "build-a", "depends_on": [],
+                         "result_summary": build_summary, "metadata": {}},
+        "task_build_b": {"workflow_id": WORKFLOW, "step_id": "build-b", "depends_on": [],
+                         "result_summary": {"questions": 0, "artifacts": []}, "metadata": {}},
+        "task_integrate": {"workflow_id": WORKFLOW, "step_id": "integrate",
+                           "depends_on": ["task_build_a", "task_build_b"],
+                           "result_summary": {"questions": 0, "artifacts": [],
+                                              "pr_url": "https://example.com/pr/1"},
+                           "metadata": {}},
+    }
+    for task_id, doc in docs.items():
+        doc.update(id=task_id, tenant_id=TENANT, state=TaskState.SUCCEEDED.value)
+
+    def fetch(task_id: str) -> dict[str, Any]:
+        if task_id not in docs:
+            raise InputUnavailable(f"no task {task_id}")
+        return docs[task_id]
+
+    review = {"id": REVIEW, "workflow_id": WORKFLOW, "step_id": "review",
+              "depends_on": ["task_integrate"],
+              "metadata": {"expected_outputs": ["verdict.json"]}}
+
+    rows = owner_questions.collect(review, fetch=fetch, store=store, tenant_id=TENANT)
+    # MUTATION: reject the file on the extra key (the #3086 bug) and the worker
+    # counts 0, so the review is staged no questions; validate raising here
+    # instead fails the read outright.
+    assert [(r["task_id"], r["step_id"], r["question_index"]) for r in rows] == [
+        ("task_build_a", "build-a", 0)]
+    assert rows[0]["answer"] is None
+    assert rows[0]["built"] == "per tenant"
+    # The staged row holds only the keys every reader knows.
+    assert "severity" not in rows[0]
+    assert rows[0]["options"] == [{"label": "one file", "description": "a single export"},
+                                  {"label": "per tenant", "description": "one under each prefix"}]
+
+    # The owner answers on the build task; the review and the merge read it.
+    docs["task_build_a"]["metadata"] = {"owner_answers": [
+        {"question_index": 0, "question": asked[0]["question"], "choice": "per tenant",
+         "text": None, "by": "owner@example.com"}]}
+    rows = owner_questions.workflow_questions(review, fetch=fetch, store=store, tenant_id=TENANT)
+    assert rows[0]["answer"] == {"choice": "per tenant", "text": None}
+    assert rows[0]["answer"]["choice"] == rows[0]["built"]
