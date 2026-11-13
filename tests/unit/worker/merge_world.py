@@ -198,6 +198,9 @@ class MergeWorld:
         gh.route("PUT", f"{PR}/merge",
                  lambda s: self.merge_answer(s) if callable(self.merge_answer) else self.merge_answer)
         gh.route("POST", f"{API}/issues/{NUMBER}/comments", (201, {}, {"id": 5}))
+        # The issue timeline the step reads for who removed `ready` (#3602):
+        # empty unless a test serves one, so a step reads no removal.
+        gh.route("GET", f"{API}/issues/{NUMBER}/timeline", (200, {}, []))
 
         def graphql(seen):
             if self.closing is not None:
