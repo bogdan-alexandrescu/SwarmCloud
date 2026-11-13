@@ -255,7 +255,7 @@ async function mountList() {
   return { ...utils, go }
 }
 
-const shown = (c: HTMLElement) => [...c.querySelectorAll('.rn-row td[data-label="Run"]')].map(visible)
+const shown = (c: HTMLElement) => [...c.querySelectorAll('.rn-row td[data-label="Run"] > span:first-child')].map(visible)
 
 describe('G2-18: the Runs list links its workflows and filters by state and text', () => {
   it('links the Workflow column to the workflow, in the app', async () => {

@@ -77,7 +77,7 @@ describe('Settings: the hard stops card', () => {
     const card = document.querySelector('.ur-hardstops')!
     expect(card.querySelector('[data-platform]')?.getAttribute('data-platform')).toBe('false')
     expect(visible(card)).toContain('Platform repository no')
-    expect(visible(card)).toContain('held for a second member of the tenant')
+    expect(visible(card)).toContain('held for a second member of the workspace')
     expect(card.querySelectorAll('.ur-hardstop')).toHaveLength(4)
   })
 
